@@ -776,6 +776,103 @@ it is the one that changes the shape of a correspondence rather than adding a
 field. Detection is not the hard part — a target page at roughly double the
 aspect ratio of its neighbours is a strong signal, available before any hashing.
 
+### Prototyped, and it works: `align --split-spreads`
+
+The premise was checked first: cut each landscape page down the middle, hash both
+halves, and see what they match. On Go-Toubun volume 1 both halves of six of the
+seven spreads land on exactly the two consecutive raw pages that were gapped, at
+similarities of 0.72 to 0.87 — indistinguishable from ordinary matches.
+
+The implementation needs no change to the solver at all. A landscape page becomes
+**two slots** in the hashed sequence, the alignment stays strictly one-to-one, and
+the halves are folded back afterwards. The solver never learns spreads exist.
+
+| | before | after |
+| --- | ------ | ----- |
+| Go-Toubun v01 | 15 runs, 15 unmatched | **5 runs, 2 unmatched** |
+| Across twelve volumes | 110 runs, 92 unmatched | **62 runs, 41 unmatched** |
+
+Fifty-one of ninety-two unmatched pages recovered, and the run count down 44%.
+Volumes with no spreads are untouched, which is the right null result.
+
+### Reading order is not discoverable, it has to be declared
+
+The first attempt recovered only **seven** halves rather than thirteen — exactly
+one per spread, never both. The cause is worth recording because it is not
+obvious.
+
+Manga reads right to left, so the **right** half of a joined spread is the
+*earlier* page. Emitting the two halves in image order, left then right, asks the
+alignment to run backwards across the pair, and the solver enforces monotonicity
+and correctly refuses. It cannot try the other order either: monotonicity is
+global, so there is no way to reverse a single pair within an otherwise forward
+alignment.
+
+Emitting halves in *reading* order fixes it and recovers all thirteen. The
+practical consequence for the schema: **reading direction is an input, not
+something the alignment discovers.** It could be inferred by solving twice and
+keeping the better result, which is cheap given the matrix costs microseconds,
+but it cannot be left implicit.
+
+### Both sides carry spreads, so the model has to be symmetric
+
+The first version of this cut spreads on the target side only, which quietly
+assumed the raw always splits and the translation always joins. That holds for
+every raw-against-English pair in the corpus and is still wrong, because the
+colour editions join spreads too — so the *same pair* read the other way round
+puts the spreads on the source side.
+
+Measured on Go-Toubun volume 1, all four configurations:
+
+| Spreads on | plain | symmetric |
+| ---------- | ----- | --------- |
+| B only (raw → EN mono) | 15 runs, 15 unmatched | **5 runs, 2 unmatched** |
+| A only (EN colour → raw) | 21 runs, 15 unmatched | **11 runs, 10 unmatched** |
+| both (EN mono → EN colour) | 10 runs | **8 runs, 1 unmatched** |
+| neither (raw mono → raw colour) | 2 runs | 2 runs, unchanged |
+
+The A-only row looks worse than the others and is not. Reading the same pair in
+both directions gives **194 pairings either way** — 184 whole plus 10 halves,
+identical. The only difference is unmatched count, 1 against 10, and that is
+arithmetic: the colour edition is 199 pages plus 5 spreads, so 204 slots against
+the raw's 195, and nine surplus slots on the A side *must* become gaps. Runs are
+A-indexed, so surplus pages are visible in one direction and silently absent in
+the other. The correspondence itself is direction-symmetric.
+
+Note also that without symmetric handling the A-only direction scores 10.6 runs
+per hundred pages, which is above the threshold that separates good pairings from
+bad ones. A perfectly good alignment was being made to look like a broken one
+purely by which edition was named first.
+
+### What this means for the schema
+
+1. **Both sides are sequences of slots**, and a slot is `(page, Option<Half>)`.
+   The alignment is one-to-one between slots. This handles all four
+   configurations uniformly, needs no change to the solver, and collapses what
+   looked like a many-to-one problem into the one-to-one one already solved.
+2. `Half` is in image coordinates — left or right — because that is what a reader
+   has to crop. Which half is the earlier page follows from reading direction and
+   must not be baked into the field's meaning.
+3. **Reading direction belongs on the work**, alongside edition identity. It is
+   an input; the alignment cannot derive it.
+4. Run-length encoding survives intact. Across twelve volumes, runs drop from 110
+   to 62; Go-Toubun volume 1 goes from fifteen runs to five.
+
+**Known limit, accepted deliberately.** Every one of the 28 spreads in the corpus
+is exactly twice the width of its neighbours, so halves are enough. A three-page
+gatefold would not fit, and generalising `Half` to "part *i* of *n*" would cost
+nothing now. It is not worth doing on zero evidence: a gatefold needs geometry
+rather than a fraction, which is L1's problem, and inventing a shape for a case
+nobody has seen is how formats acquire fields that never get used.
+
+### Aside: the fragmentation baseline was measured on fragmented data
+
+The earlier finding that correct alignments sit at or below 8 runs per hundred
+pages was measured with spreads fragmenting every affected volume. With spreads
+handled, Go-Toubun volume 1 drops to 2.6 runs per hundred. The separation from
+the known-bad pairings at 22 and above therefore gets wider, not narrower, which
+strengthens fragmentation as a quality signal.
+
 ## Container formats: content, not extension
 
 Repackaged the same 195 raw pages six ways and aligned each against the same

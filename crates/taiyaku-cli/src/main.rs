@@ -12,6 +12,7 @@ mod fingerprint;
 mod naming;
 mod pages;
 mod report;
+mod spread;
 
 use std::path::PathBuf;
 
@@ -204,15 +205,68 @@ fn topology(args: &[String]) -> Result<(), String> {
 
 fn align(args: &[String]) -> Result<(), String> {
     let (a_members, b_members) = split_editions(args)?;
+    let split_spreads = args.iter().any(|a| a == "--split-spreads");
 
     let a_pages = pages::read_edition(&a_members)?;
     let b_pages = pages::read_edition(&b_members)?;
     let a = fingerprint::fingerprint_edition(&a_pages)?;
-    let b = fingerprint::fingerprint_edition(&b_pages)?;
-    eprintln!("A: {} pages | B: {} pages", a.len(), b.len());
 
-    let runs = solve(&a, &b);
-    report_summary(&runs, a.len());
+    if !split_spreads {
+        let b = fingerprint::fingerprint_edition(&b_pages)?;
+        eprintln!("A: {} pages | B: {} pages", a.len(), b.len());
+        let runs = solve(&a, &b);
+        report_summary(&runs, a.len());
+        return Ok(());
+    }
+
+    // Prototype: cut joined spreads in half on BOTH sides before solving.
+    // Which edition joins a spread is not fixed - raws split them and English
+    // releases join them here, but the colour editions join them too, so the
+    // same pair read the other way round puts the spreads on the other side.
+    let direction = if args.iter().any(|a| a == "--ltr") {
+        spread::Direction::LeftToRight
+    } else {
+        spread::Direction::RightToLeft
+    };
+    let (a_slots_hashes, a_slots) = fingerprint::fingerprint_edition_split(&a_pages, direction)?;
+    let (b, b_slots) = fingerprint::fingerprint_edition_split(&b_pages, direction)?;
+    let a_wide = a_slots.iter().filter(|s| s.half.is_some()).count() / 2;
+    let b_wide = b_slots.iter().filter(|s| s.half.is_some()).count() / 2;
+    eprintln!(
+        "A: {} pages in {} slots ({a_wide} spreads) | B: {} pages in {} slots ({b_wide} spreads)",
+        a_pages.len(),
+        a_slots_hashes.len(),
+        b_pages.len(),
+        b.len()
+    );
+
+    let runs = solve(&a_slots_hashes, &b);
+    let mut whole = 0u32;
+    let mut halves = 0u32;
+    let mut gaps = 0u32;
+    for (i, from) in a_slots.iter().enumerate() {
+        match counterpart(&runs, i as u32).and_then(|slot| b_slots.get(slot as usize)) {
+            Some(to) => {
+                if from.half.is_some() || to.half.is_some() {
+                    halves += 1;
+                } else {
+                    whole += 1;
+                }
+                println!(
+                    "{:>4}{:<6} -> {:>4}{}",
+                    from.page,
+                    from.half.map(|h| format!(" {h:?}")).unwrap_or_default(),
+                    to.page,
+                    to.half.map(|h| format!(" {h:?}")).unwrap_or_default()
+                );
+            }
+            None => gaps += 1,
+        }
+    }
+    eprintln!(
+        "{} runs | {whole} whole pairings | {halves} involving a spread half | {gaps} unmatched slots",
+        runs.len()
+    );
     Ok(())
 }
 

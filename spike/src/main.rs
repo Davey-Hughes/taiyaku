@@ -473,6 +473,51 @@ fn similarity(a: &Hash, b: &Hash) -> f64 {
 // commands
 // ---------------------------------------------------------------------------
 
+/// Do the halves of a joined double-page spread match two separate pages?
+///
+/// Edition B joins spreads that edition A splits, so a landscape page in B
+/// should be two portrait pages of A side by side. If that is true, cutting the
+/// wide page down the middle and hashing each half should find those two pages,
+/// and the order tells us which half is which in reading order. If it is false,
+/// the whole fractional-counterpart idea is wrong and spreads need a real
+/// geometric transform instead of a crop.
+fn cmd_spreads(a_path: &Path, b_path: &Path, cfg: &Config) {
+    let a_pages = read_pages(a_path);
+    let b_pages = read_pages(b_path);
+    let a = hash_pages(&a_pages, cfg);
+
+    println!("# b_idx  half   best_a   sim    runner_up  sim");
+    let mut found = 0;
+    for (j, page) in b_pages.iter().enumerate() {
+        let img = decode_luma(&page.bytes, cfg.scale);
+        let (w, h) = img.dimensions();
+        if w <= h {
+            continue;
+        }
+        found += 1;
+        let mid = w / 2;
+        for (name, x0) in [("left", 0u32), ("right", mid)] {
+            let half = image::imageops::crop_imm(&img, x0, 0, mid, h).to_image();
+            let prepped = preprocess(&half, cfg.edges, cfg.crop, false);
+            let hash = match cfg.algo {
+                Algo::DHash => dhash(&prepped, cfg.size as u32),
+                Algo::PHash => phash(&prepped, cfg.size),
+            };
+            let mut scored: Vec<(usize, f64)> = a
+                .iter()
+                .enumerate()
+                .map(|(i, ha)| (i, similarity(&hash, ha)))
+                .collect();
+            scored.sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap());
+            println!(
+                "{j:>7}  {name:<5} {:>6}  {:.3}  {:>9}  {:.3}",
+                scored[0].0, scored[0].1, scored[1].0, scored[1].1
+            );
+        }
+    }
+    eprintln!("{found} landscape pages in B, {} pages in A", a.len());
+}
+
 fn cmd_inventory(paths: &[PathBuf]) {
     for path in paths {
         let started = Instant::now();
@@ -799,6 +844,7 @@ fn main() {
 
     match args[0].as_str() {
         "inventory" => cmd_inventory(&paths),
+        "spreads" => cmd_spreads(&paths[0], &paths[1], &cfg),
         "hash" => cmd_hash(&paths[0], &cfg),
         "matrix" => cmd_matrix(&paths[0], &paths[1..], &cfg),
         other => {
