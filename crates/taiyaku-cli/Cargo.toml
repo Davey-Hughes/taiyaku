@@ -15,7 +15,11 @@ path = "src/main.rs"
 # Native-only work belongs here rather than in taiyaku-core: archive reading,
 # image decoding, and parallel hashing across pages.
 [dependencies]
+base64 = "0.23.0"
+image = "0.25.9"
+rayon = "1.12.0"
 taiyaku-core = { path = "../taiyaku-core" }
+zip = "7.2.0"
 
 [lints]
 workspace = true

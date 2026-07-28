@@ -4,8 +4,13 @@
 //! reader and a future native shell can share it rather than reimplementing the
 //! alignment format. CI enforces that; see `.forgejo/workflows/ci.yml`.
 //!
-//! Only the alignment lookup exists so far. Fingerprinting and the alignment
-//! solver land later.
+//! Fingerprinting stays out of here because it needs image decoding, which is
+//! native-only. Solving does not: the dynamic programming runs over page
+//! hashes, so it is portable and lives here alongside the lookup.
+
+mod solve;
+
+pub use solve::{PageConfidence, PageHash, confidence, similarity, solve};
 
 /// An inclusive range of page indices within a single edition.
 ///
@@ -76,9 +81,70 @@ pub fn counterpart(runs: &[Run], page: u32) -> Option<u32> {
     Some(b.start + (page - run.a.start))
 }
 
+/// Chain two alignments: A to a hub, then that hub to B.
+///
+/// This is what makes hub-and-spoke work. With one edition as the reference,
+/// N editions need N-1 alignments rather than N(N-1)/2, and any A-to-B lookup
+/// resolves by composing through the hub, so transitivity holds by construction
+/// and two editions cannot disagree about where a page went.
+pub fn compose(a_to_hub: &[Run], hub_to_b: &[Run]) -> Vec<Run> {
+    let chained: Vec<(u32, Option<u32>)> = a_to_hub
+        .iter()
+        .flat_map(|run| run.a.start..=run.a.end)
+        .map(|page| {
+            (
+                page,
+                counterpart(a_to_hub, page).and_then(|via| counterpart(hub_to_b, via)),
+            )
+        })
+        .collect();
+    solve::compress(&chained)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ordinary case: two constant offsets in sequence are one constant
+    /// offset, and must stay a single run rather than fragmenting.
+    #[test]
+    fn composing_two_offsets_adds_them() {
+        let a_to_hub = vec![Run::paired(PageRange::new(0, 9), PageRange::new(2, 11))];
+        let hub_to_b = vec![Run::paired(PageRange::new(0, 20), PageRange::new(3, 23))];
+
+        let composed = compose(&a_to_hub, &hub_to_b);
+
+        assert_eq!(
+            composed,
+            vec![Run::paired(PageRange::new(0, 9), PageRange::new(5, 14))]
+        );
+    }
+
+    /// The cost hub-and-spoke is predicted to carry, pinned down so it cannot
+    /// change unnoticed. A page that exists in A but not in the hub has nowhere
+    /// to land, so the chain ends there — even in the case where B does hold a
+    /// counterpart and a direct alignment would have found it. Whether that
+    /// costs anything in practice is what the topology check measures.
+    #[test]
+    fn a_page_landing_on_a_hub_gap_loses_its_counterpart() {
+        let a_to_hub = vec![
+            Run::paired(PageRange::new(0, 0), PageRange::new(0, 0)),
+            Run::gap(PageRange::new(1, 1)),
+            Run::paired(PageRange::new(2, 2), PageRange::new(1, 1)),
+        ];
+        let hub_to_b = vec![Run::paired(PageRange::new(0, 1), PageRange::new(0, 1))];
+
+        let composed = compose(&a_to_hub, &hub_to_b);
+
+        assert_eq!(
+            composed,
+            vec![
+                Run::paired(PageRange::new(0, 0), PageRange::new(0, 0)),
+                Run::gap(PageRange::new(1, 1)),
+                Run::paired(PageRange::new(2, 2), PageRange::new(1, 1)),
+            ]
+        );
+    }
 
     /// Shaped after the real corpus: Go-Toubun no Hanayome volume 1, raw
     /// monochrome (195pp) against the English official release (187pp).

@@ -24,6 +24,12 @@ thumbs/
 .Spotlight-V100
 .Trashes
 
+# Verification reports are large, self-contained, and reproducible from the
+# corpus. Browser-automation scratch output likewise.
+taiyaku-verify.html
+*.verify.html
+.playwright-mcp/
+
 # ---- Editors ----------------------------------------------------------------
 .idea/
 .vscode/*

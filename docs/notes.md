@@ -75,9 +75,9 @@ archive was replaced and the alignment is stale.
 
 ## Alignment topology: hub-and-spoke, raw as hub
 
-**Working default, not yet validated.** The target is N editions simultaneously,
-not two — the corpus already has five of Go-Toubun volume 1 — and N editions is
-not merely "more pairs".
+**Validated against all-pairs on 2026-07-28; see the results below.** The target
+is N editions simultaneously, not two — the corpus already has five of Go-Toubun
+volume 1 — and N editions is not merely "more pairs".
 
 Rejected: **all-pairs**, storing N(N-1)/2 alignments. Ten alignments for five
 editions, five new runs to add a sixth, and nothing enforcing agreement between
@@ -148,6 +148,48 @@ green without needing the archives, and run locally whenever the solver changes.
 **The decision is reversible**, which is why defaulting to the star now is safe:
 all-pairs data is a strict superset of star data, and the format already permits
 direct edges. Being wrong costs a re-solve, not a redesign.
+
+### Result: the star holds, at a measured cost of about 1.7% of pages
+
+Run with `taiyaku topology <hub>... -- <spoke>... -- <spoke>...` on volume 1 of
+both series that carry five editions. Composed `A→hub→B` against a directly
+solved `A→B`, page by page, over every ordered spoke pair.
+
+| Series | Comparisons | Loss | Disagreement | Inverse loss |
+| ------ | ----------- | ---- | ------------ | ------------ |
+| Go-Toubun | 2,316 | 1.90% | **0.00%** | 0.00% |
+| Kaguya-sama | 2,499 | 1.56% | 0.16% | 0.32% |
+
+**Disagreement is the number that mattered, and it is essentially zero.** The
+theoretical worry was contradiction — a reader landing on a different page
+depending on which edition it swapped through. Across 4,815 page comparisons
+that happened four times, all of them in Kaguya, which is the weakest pairing in
+the corpus by every other measure too. Per the criterion set out above, that
+implicates the solver rather than the topology.
+
+**Loss is real but small and safe.** Around 1.7% of pages — roughly three in a
+195-page volume — resolve through a direct alignment but not through the hub,
+exactly the predicted case of a page landing on a hub gap. The failure direction
+is the harmless one: the reader shows "no counterpart" rather than the wrong
+page.
+
+**Distance from the hub predicts loss**, which is the useful finding for where to
+spend a direct edge. In Go-Toubun the raw colour edition, which shares the raw
+mono hub's page count exactly, loses 0.0–0.5% against the other spokes. The two
+editions furthest from the hub, the English Full Colour release and the fan
+translation, lose 3.5–3.7% against each other. If any pair earns a direct edge it
+is that one, and the mitigation already designed above covers it.
+
+**Inverse loss is not noise.** Kaguya's 0.32% is composition succeeding where the
+direct solve failed, which per the criterion above marks bad direct solves. It is
+a small vote in the star's favour rather than against it.
+
+**Cost, concretely.** Five editions: eight alignments for the star against twenty
+for all-pairs, and every one of the twenty lookups is still answerable. Adding a
+sixth edition costs two more alignments rather than ten.
+
+**Verdict: keep hub-and-spoke, raw as hub.** Re-run the command whenever the
+hasher or solver changes; the numbers above are the baseline to compare against.
 
 ## CLI artifacts
 
@@ -542,6 +584,144 @@ Note that 55.4% is less obviously broken than v01's bad copy at 31.4%. A
 rather than against a fixed cutoff — every genuine pairing in the corpus scores
 87.7% or better, and every mismatched one 55.4% or worse, but the gap between
 those two numbers is where the threshold has to live and nothing yet pins it down.
+
+## The DP solver works, 2026-07-28
+
+Needleman-Wunsch over the page-similarity matrix, in `taiyaku-core`. Note this
+refines "core is lookup, not solving": the solver needs no image decoding, only
+hashes, so it is portable and belongs beside the lookup. Only fingerprinting is
+native-only.
+
+Go-Toubun volume 1, raw against the English release, in full:
+
+```
+   0-0    ->    0-0     offset  +0
+   1-1    ->     gap
+   2-4    ->    1-3     offset  -1
+   5-6    ->     gap
+   7-46   ->    5-44    offset  -2
+  47-50   ->     gap
+  51-52   ->   47-48    offset  -4
+  53-54   ->     gap
+  55-94   ->   50-89    offset  -5
+  95-96   ->     gap
+  97-126  ->   91-120   offset  -6
+ 127-128  ->     gap
+ 129-158  ->  122-151   offset  -7
+ 159-160  ->     gap
+ 161-194  ->  153-186   offset  -8
+```
+
+**Fifteen runs for 195 pages**, recovering exactly the staircase that was mapped
+by hand from the argmax paths, and landing on the same final offset of −8 that
+the design doc predicted. This is the "hand-correctable" property made real: a
+person can read that in one glance and a bad tuning change shows up as a
+readable diff rather than 195 churned lines.
+
+**Page 1 is the vindication.** It is blank, and it matched English page 186 at
+similarity 1.000 — a perfect score, and wrong. The DP gaps it, because pairing it
+would break monotonicity. That is the failure mode independent per-page matching
+cannot see and sequencing fixes for free.
+
+Across all twelve volumes: 3–17 runs each, 91.3–98.6% of pages paired.
+
+### Coverage is the wrong quality metric; fragmentation is the right one
+
+| Pairing | Runs | Paired | Runs per 100 pages |
+| ------- | ---- | ------ | ------------------ |
+| Kaguya v03 (good) | 6 | 98.6% | **2.9** |
+| Kobayashi v01 (good) | 5 | 95.9% | **3.4** |
+| [Oshi no Ko] v01 (good) | 12 | 97.3% | **5.4** |
+| Go-Toubun v01 (good) | 15 | 92.3% | **7.7** |
+| [Oshi no Ko] v03s (bad) | 41 | 90.9% | **22** |
+| [Oshi no Ko] v01 bad copy | 76 | 85.2% | **34** |
+| Kobayashi Chromatic (bad) | 79 | 72.6% | **45** |
+
+Coverage does not separate them at all — the bad `v03s` copy pairs 90.9% of its
+pages, beating correct Go-Toubun at 92.3% closely enough to be useless. **A
+wrong alignment is not sparse, it is fragmented.** It finds a counterpart for
+most pages and stitches them into confetti. Every correct pairing measured sits
+at or below 8 runs per hundred pages, every known-bad one at or above 22.
+
+That is now reported, though not enforced: the gap is drawn from four series and
+wants more evidence before a file gets rejected on it.
+
+### The separation guard catches a different failure
+
+`MIN_SEPARATION` — requiring the median best-match to stand clear of the median
+of the whole matrix — refuses to align **different works** outright. Go-Toubun's
+raw against Kaguya's English release returns a single gap run covering all 195
+pages, which is the correct answer.
+
+It does **not** catch a bad copy of the *right* work, which still paired 85.2%.
+That makes sense: a different scan of the same series shares art style, screentone
+density and panel rhythm, so its noise floor rises with its signal. The two
+checks are complementary rather than redundant — separation rejects the wrong
+work, fragmentation flags the wrong copy.
+
+### Built test-first
+
+Ten tests in the core, driven one at a time, each watched failing first. The two
+that mattered both encode corpus measurements rather than intuitions:
+
+- *a uniformly weak pairing still aligns* — a fixed floor of 0.75 returned one
+  195-page gap on hashes modelling Kaguya's weak pairing. This is what forced
+  per-pair calibration into the design rather than leaving it a note.
+- *unrelated editions produce no pairings* — calibrating from the data is
+  circular without a guard, and the failing run emitted four runs of confident
+  noise. Refusing is the correct answer.
+
+One test, *a constant offset stays a single run*, passed on first run: it covers
+the skip-B path the earlier tests had already forced into existence, so it is
+regression coverage rather than a driven behaviour.
+
+## The verification report
+
+`taiyaku verify <a>... -- <b>... [--out FILE]` writes a single self-contained
+HTML contact sheet: paired thumbnails as `data:` URIs, no loose files beside it.
+A whole volume pair is about 3.5 MB, small enough to keep next to the archives.
+
+Design is borrowed from print production, because a wrong alignment *is*
+misregistration — two plates that do not line up. Each pair's gutter carries a
+gauge of two ticks that close into one rule when the pairing is firm and slip
+apart as the margin collapses, so degree is visible where the colour buckets
+only show category.
+
+**Margin drives everything shown.** Similarity is reported but never shaded on,
+for the reason the corpus already established: a chapter divider matching all
+nine of its siblings scores 0.98 and means nothing.
+
+On Go-Toubun volume 1 the report asks for attention on **10 pages out of 195**:
+
+| Verdict | Rule | Pages |
+| ------- | ---- | ----- |
+| firm | margin ≥ 0.15 | 170 |
+| worth checking | 0.05 ≤ margin < 0.15 | 8 |
+| ambiguous | margin < 0.05 | 2 |
+| no counterpart | gap | 15 |
+
+Margins on that volume run from −0.13 to +0.29, median +0.22, so the thresholds
+sit in real gaps in the distribution rather than at round numbers. Ten pages is
+a review a person will actually do; flagging fifty would not be.
+
+Three details that turned out to matter, all found by looking at the rendered
+page rather than by reasoning about it:
+
+- **A gap needs its rejected score, labelled as rejected.** The first draft
+  printed `sim 1.00` beside "no counterpart" — true, and it reads as a
+  contradiction. It now says *best rejected*, which turns the number into the
+  explanation for the gap.
+- **A firm pairing should say nothing.** Verdict text on all 195 rows was noise
+  that made the eight that mattered harder to find.
+- **Density is the whole point.** One pair per row meant 41,000 pixels of
+  scrolling; tiling them means a dozen visible at once, which is what lets the
+  eye snag on the wrong one.
+
+The negative margins are worth keeping visible rather than clamping: they mark
+pages where the solver passed over a better-scoring candidate to hold
+monotonicity. Usually that is the sequencing doing its job, and occasionally it
+will be the alignment being wrong — either way it is exactly what a reviewer
+should be looking at.
 
 ## Naming: normalise the library, but do not depend on it
 
