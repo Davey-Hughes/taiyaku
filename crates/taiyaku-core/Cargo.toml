@@ -1,0 +1,17 @@
+[package]
+name = "taiyaku-core"
+description = "Portable core for taiyaku: page alignment between manga editions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Dependencies added here must keep `cargo build --target wasm32-unknown-unknown`
+# working. That rules out anything needing native libraries or threads (rayon in
+# particular). Put such things in taiyaku-cli instead.
+[dependencies]
+
+[lints]
+workspace = true

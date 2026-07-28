@@ -1,0 +1,128 @@
+# ---- Project-specific -------------------------------------------------------
+# Manga archives are large and copyrighted. Never commit test fixtures.
+# Point the test suite at a local corpus via TAIYAKU_CORPUS instead.
+*.cbz
+*.cbr
+*.cb7
+*.zip
+corpus/
+fixtures/
+testdata/
+
+# Generated alignment output and derived caches. Reproducible from the corpus.
+taiyaku.json
+*.taiyaku.json
+.taiyaku-cache/
+hashes/
+thumbs/
+
+# ---- macOS ------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ---- Editors ----------------------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*.swo
+*~
+.claude/settings.local.json
+
+# ---- Python (aligner) -------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+.installed.cfg
+MANIFEST
+
+# Environments
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+ENV/
+env/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+.ipynb_checkpoints/
+
+# ---- Node / TypeScript (reader PWA) -----------------------------------------
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+!.yarn/plugins
+!.yarn/versions
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Build output
+.next/
+out/
+.nuxt/
+.svelte-kit/
+.vite/
+.turbo/
+.parcel-cache/
+.cache/
+*.tsbuildinfo
+
+# Test / tooling
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+blob-report/
+.eslintcache
+.stylelintcache
+
+# ---- Rust (if the core moves to WASM later) ---------------------------------
+target/
+**/*.rs.bk
+Cargo.lock.orig
+
+# ---- Misc -------------------------------------------------------------------
+*.log
+*.pid
+*.seed
+*.tgz
+tmp/
+temp/
+scratch/

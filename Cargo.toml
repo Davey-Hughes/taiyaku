@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/taiyaku-core", "crates/taiyaku-cli"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+repository = "https://git.daveynet.xyz/davey/taiyaku"
+authors = ["Davey Hughes"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+todo = "warn"
+dbg_macro = "warn"
+
+# Release profile favours the aligner's hot loops: hashing every page of a volume
+# and the dynamic-programming pass over the similarity matrix.
+[profile.release]
+lto = "thin"
+codegen-units = 1

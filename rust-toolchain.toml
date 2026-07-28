@@ -1,0 +1,7 @@
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+# The core must keep compiling to WebAssembly so the PWA and a future native
+# shell can share it. CI enforces this; installing the target here means a
+# local `cargo build --target wasm32-unknown-unknown` works out of the box.
+targets = ["wasm32-unknown-unknown"]

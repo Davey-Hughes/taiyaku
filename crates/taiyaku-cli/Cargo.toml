@@ -1,0 +1,21 @@
+[package]
+name = "taiyaku-cli"
+description = "Command-line aligner for taiyaku"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "taiyaku"
+path = "src/main.rs"
+
+# Native-only work belongs here rather than in taiyaku-core: archive reading,
+# image decoding, and parallel hashing across pages.
+[dependencies]
+taiyaku-core = { path = "../taiyaku-core" }
+
+[lints]
+workspace = true
