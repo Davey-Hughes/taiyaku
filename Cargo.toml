@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/taiyaku-core", "crates/taiyaku-cli"]
+# Throwaway experiments live outside the workspace so their dependencies and
+# lint failures cannot affect the real crates or CI. Delete `spike/` once its
+# findings have landed in docs/notes.md.
+exclude = ["spike"]
 
 [workspace.package]
 version = "0.0.0"
