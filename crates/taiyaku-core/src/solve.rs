@@ -42,6 +42,9 @@ const GAP_PENALTY: f32 = 0.05;
 /// have long tails — blank pages score 1.0 against each other and drag a mean up.
 /// Returns `None` when the two editions show no correspondence worth trusting.
 fn calibrate_floor(a: &[PageHash], b: &[PageHash]) -> Option<f32> {
+    if a.is_empty() || b.is_empty() {
+        return None;
+    }
     let mut all: Vec<f32> = Vec::with_capacity(a.len() * b.len());
     let mut best: Vec<f32> = Vec::with_capacity(a.len());
     for pa in a {
@@ -349,6 +352,18 @@ mod tests {
             runs,
             vec![Run::paired(PageRange::new(0, 4), PageRange::new(2, 6))]
         );
+    }
+
+    /// An archive can legitimately contain no pages — a cbz holding only a
+    /// ComicInfo.xml, say. Every page of A is then unmatched, which is an
+    /// answer; panicking is not.
+    #[test]
+    fn an_empty_edition_leaves_every_page_unmatched() {
+        let a: Vec<PageHash> = (0..3).map(h).collect();
+
+        let runs = solve(&a, &[]);
+
+        assert_eq!(runs, vec![Run::gap(PageRange::new(0, 2))]);
     }
 
     /// Two editions that are not the same volume must produce nothing, rather

@@ -2,7 +2,7 @@
 
 use std::{
     fs::File,
-    io::Read,
+    io::{Read, Seek},
     path::{Path, PathBuf},
 };
 
@@ -13,6 +13,14 @@ const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", 
 pub struct Page {
     pub name: String,
     pub bytes: Vec<u8>,
+}
+
+/// Hand-written so a page prints as its name and size. Deriving it would dump
+/// several megabytes of JPEG into any error or test failure that touches one.
+impl std::fmt::Debug for Page {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Page({}, {} bytes)", self.name, self.bytes.len())
+    }
 }
 
 fn is_image(name: &str) -> bool {
@@ -93,8 +101,43 @@ fn read_directory(root: &Path) -> Result<Vec<Page>, String> {
         .collect()
 }
 
+/// Name a container taiyaku cannot read, from its leading bytes.
+///
+/// Only zip-based archives are supported. Recognising the others is not a step
+/// towards reading them — it is so the error can say which format it found
+/// rather than reporting a corrupt zip, since the extension is frequently wrong
+/// about what is actually inside.
+fn unsupported_container(bytes: &[u8]) -> Option<&'static str> {
+    const SEVEN_ZIP: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
+    const RAR: &[u8] = b"Rar!\x1a\x07";
+
+    if bytes.starts_with(SEVEN_ZIP) {
+        Some("a 7-Zip archive")
+    } else if bytes.starts_with(RAR) {
+        Some("a RAR archive")
+    } else if bytes.len() > 262 && &bytes[257..262] == b"ustar" {
+        Some("a tar archive")
+    } else {
+        None
+    }
+}
+
 fn read_archive(path: &Path) -> Result<Vec<Page>, String> {
-    let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+
+    // Look at the bytes before handing them to the zip reader, so an archive in
+    // another format is named rather than reported as a corrupt zip.
+    let mut header = [0u8; 512];
+    let read = file.read(&mut header).unwrap_or(0);
+    if let Some(kind) = unsupported_container(&header[..read]) {
+        return Err(format!(
+            "{}: this is {kind}. taiyaku reads zip-based archives and directories of page images; convert it or unpack it first",
+            path.display()
+        ));
+    }
+    file.rewind()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+
     let mut zip = zip::ZipArchive::new(file)
         .map_err(|e| format!("{}: not a readable cbz: {e}", path.display()))?;
 
@@ -128,4 +171,46 @@ fn read_archive(path: &Path) -> Result<Vec<Page>, String> {
             Ok(Page { name, bytes })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The message someone actually sees. "invalid Zip archive: could not find
+    /// EOCD" tells a person holding a perfectly good 7-Zip file nothing they
+    /// can act on; naming the format tells them exactly what happened and that
+    /// converting it will work.
+    #[test]
+    fn reading_a_seven_zip_archive_says_so() {
+        let path = std::env::temp_dir().join("taiyaku-test-container.cb7");
+        std::fs::write(&path, [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x04]).unwrap();
+
+        let error = read_member(&path).unwrap_err();
+
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("7-Zip"), "unhelpful error: {error}");
+    }
+
+    /// Extensions lie in both directions: a zip is often named `.cbr`, and a
+    /// real 7-Zip archive is often named `.cbz`. Reporting "invalid Zip
+    /// archive: could not find EOCD" to someone holding a perfectly good
+    /// 7-Zip file tells them nothing they can act on, so the leading bytes
+    /// decide what the error says.
+    #[test]
+    fn an_unreadable_container_is_named_by_its_leading_bytes() {
+        let seven_zip = [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x04];
+        let rar5 = b"Rar!\x1a\x07\x01\x00";
+        let rar4 = b"Rar!\x1a\x07\x00";
+        let mut tar = vec![0u8; 512];
+        tar[257..262].copy_from_slice(b"ustar");
+        let zip = [0x50, 0x4B, 0x03, 0x04, 0x14, 0x00];
+
+        assert_eq!(unsupported_container(&seven_zip), Some("a 7-Zip archive"));
+        assert_eq!(unsupported_container(rar5), Some("a RAR archive"));
+        assert_eq!(unsupported_container(rar4), Some("a RAR archive"));
+        assert_eq!(unsupported_container(&tar), Some("a tar archive"));
+        // Zip is supported, so it is not something to complain about.
+        assert_eq!(unsupported_container(&zip), None);
+    }
 }

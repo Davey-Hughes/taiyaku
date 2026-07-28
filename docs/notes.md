@@ -291,9 +291,14 @@ Margin over the runner-up is the discriminating signal, and it is sharp:
 
 The same raw pages get flagged against the EN official release *and* against the
 independent fan translation — {5,6,7}, {53,54}, {95,96}, {127,128}, {159,160} —
-which is two independent editions agreeing on which raw pages have no
-counterpart. That is about as good as unlabelled cross-validation gets, and it
-means the confidence heat strip the correction UI needs comes for free.
+which is two independent editions agreeing on which raw pages the margin cannot
+place. That is about as good as unlabelled cross-validation gets, and it means
+the confidence heat strip the correction UI needs comes for free.
+
+**Corrected 2026-07-28:** those pages were originally read here as one-sided
+inserts, chapter title pages present only in the raw. They are not. They are the
+two halves of joined double-page spreads, and the reason both English editions
+agree is that both join the same spreads. See "Spreads are not gaps" below.
 
 ### Decode cost, and the DCT-scaling question
 
@@ -723,6 +728,137 @@ monotonicity. Usually that is the sequencing doing its job, and occasionally it
 will be the alignment being wrong — either way it is exactly what a reviewer
 should be looking at.
 
+## Spreads are not gaps, and the format cannot currently say so
+
+**This is a schema gap, found before writing the sidecar rather than after.**
+
+Go-Toubun volume 1, English official release: seven pages are landscape at
+4294×3056, exactly double the 2147×3056 of every other page. The raws have none.
+The English filenames say so outright — `p004-005`, `p046-047`, `p048-049`,
+`p052-053`, `p094-095`, `p126-127`, `p158-159`. The English edition **joins**
+double-page spreads that the raw **splits**.
+
+Checking the solver's output against those seven indices: all seven are
+unreached, no raw page maps to any of them. And the gaps account for it exactly:
+
+```
+gapped raw pages: 15 in 7 runs
+  (1,1) (5,6) (47,50) (53,54) (95,96) (127,128) (159,160)
+7 spreads x 2 raw halves = 14, plus 1 blank page = 15
+EN 187 + 7 absorbed spread halves + 1 blank = 195 = raw pages
+```
+
+The whole eight-page drift of the core test case is now accounted for: seven
+spread joins and one blank page. Nothing else.
+
+**Why this matters more than it looks.** The alignment currently records those
+fourteen pages as having *no counterpart*, and that is simply wrong. The
+counterpart exists — it is right there, merged into a wide page. A reader on raw
+page 47 that says "no counterpart" is giving a worse answer than the one it has,
+on 7% of the volume.
+
+`Run` cannot express this: `Run::paired` asserts both sides carry the same page
+count, so a two-to-one correspondence has no representation. The options, none
+yet chosen:
+
+1. **Allow a run to be many-to-one**, with a flag distinguishing a spread join
+   from a genuine gap. Smallest change to the format; the reader has to know
+   which half of the target page it wants.
+2. **Give a page a fractional counterpart** — raw 47 → EN 45 left half, raw 48 →
+   EN 45 right half. Expresses the truth exactly and is what L1's affine
+   transform will want anyway, since "which half" is a crop.
+3. **Leave it a gap and let the reader special-case it.** Cheapest, and it
+   pushes the problem onto every reader that consumes the format, which is
+   against the point of the format.
+
+Option 2 looks right and is worth deciding before the schema is written, because
+it is the one that changes the shape of a correspondence rather than adding a
+field. Detection is not the hard part — a target page at roughly double the
+aspect ratio of its neighbours is a strong signal, available before any hashing.
+
+## Container formats: content, not extension
+
+Repackaged the same 195 raw pages six ways and aligned each against the same
+English edition. Every one produced a **byte-identical run listing**:
+
+| Container | Result |
+| --------- | ------ |
+| `.cbz` (plain zip) | identical |
+| `.cbr` holding zip content | identical |
+| nested folders two deep | identical |
+| `__MACOSX`, `.DS_Store`, `ComicInfo.xml` present | identical |
+| mixed `.jpg` / `.png` / `.PNG` | identical |
+| loose directory, no archive | identical |
+| `.cb7` (real 7-zip) | refused, clear error |
+| `.cbt` (real tar) | refused, clear error |
+
+Two things worth keeping:
+
+- **Extension is a hint, content decides.** A zip named `.cbr` reads fine, which
+  is right: misnamed archives are common, and the `zip` crate is being asked to
+  parse the bytes rather than trust the suffix.
+- **Real RAR and 7-zip are not supported and fail cleanly**, which is the correct
+  behaviour for now. The library holds 3,708 `.cbz` and **zero `.cbr`** across
+  `Manga/`, `Manga (Chapters)/` and `Manga (RAW)/`, so this is not worth a
+  dependency yet. It becomes worth it the moment the tool is pointed at someone
+  else's library, where CBR is common. `unrar` is not redistributable under
+  GPLv3-compatible terms, so the practical route is the `sevenz-rust2` and
+  `unrar` crates or shelling out — a decision to make deliberately, not by
+  accident.
+
+Re-tested with a real 7-Zip binary (`brew install sevenzip`, giving `7zz`):
+genuine LZMA2 and stored-mode `.cb7` archives are both refused, and 7-Zip's own
+zip writer — a different implementation from `zip(1)` — produces a `.cbz` whose
+run listing is byte-identical to the original. That last one matters: it shows
+the reader is parsing zip rather than one writer's quirks.
+
+**A genuine RAR fixture could not be obtained, and the attempt is worth
+recording so nobody repeats it.** RAR compression is proprietary, so only
+RARLAB's own binary can create one. The Homebrew cask is deprecated for failing
+the macOS Gatekeeper check and disappears on 2026-09-01; installing it lays down
+`unrar` and the documentation but **not the `rar` binary itself**, leaving a
+dangling symlink in `/opt/homebrew/bin`. Extracting `rar` by hand from the cached
+tarball and clearing its quarantine attribute still produces a binary that will
+not execute.
+
+A synthetic RAR header stands in instead, which is sufficient for the only thing
+under test: taiyaku recognises the magic bytes and refuses, never reading past
+them. If real CBR fixtures are ever needed, they will have to come from a
+non-macOS machine or from a real-world archive.
+
+### Errors name the container
+
+Extensions are wrong in both directions in the wild, so the leading bytes decide
+what the error says. Previously a perfectly good 7-Zip file produced
+`invalid Zip archive: Could not find EOCD`, which tells the holder nothing.
+
+```
+this is a 7-Zip archive. taiyaku reads zip-based archives and directories
+of page images; convert it or unpack it first
+```
+
+Recognising 7-Zip, RAR and tar is deliberately **not** a step towards reading
+them. No dependency, no decoder, and the bytes are never read past the header.
+
+### Bug found by this: an empty edition panicked
+
+A cbz containing only a `ComicInfo.xml` decodes to zero pages, and the floor
+calibration then took the median of an empty slice. Fixed, with a test: every
+page of A is simply unmatched, which is an answer, and panicking is not.
+
+### Limitation found by this: a partial edition is refused
+
+Aligning a *single chapter* against a whole volume returns no pairings at all.
+The floor calibration takes the median of each page's best match as the signal
+level, which assumes most pages have a counterpart. Align 52 chapter pages
+against a 195-page volume and three quarters of the volume has nothing to match,
+so the median sits at the noise level and the separation guard refuses.
+
+That is defensible for the intended use — an edition is the whole set of chapters
+— but it means `align` cannot be pointed at one chapter to see where it lands.
+Using a high percentile rather than the median for the signal estimate would fix
+it. Not urgent, but it should not be discovered by a user.
+
 ## Naming: normalise the library, but do not depend on it
 
 Every naming scheme below is one the corpus actually contains, for four series:
@@ -784,11 +920,35 @@ is free ground truth for validating the solver and seeding chapter boundaries.
 Flattening those to `p001.jpg` would destroy the most useful naming in the
 corpus. If normalising, preserve the tags or move them into ComicInfo.xml first.
 
-A reasonable canonical form, if one is wanted: one archive or directory per
-edition member; pages `p001.jpg`, fixed width, 1-based, in reading order with
-inserts in place; chapters `c005`, `c005.5` with the integer part zero-padded.
-Sorting still has to be decimal-aware — `c005.5` sorts before `c005` under plain
-lexicographic comparison no matter how tidy the names are.
+### A canonical form, and what it buys
+
+Ranked by what each actually prevents, measured against this library:
+
+1. **Zero-pad page numbers to a fixed width, 1-based, one scheme per member.**
+   Prevents the two errors that are wrong before any decoding: a 0-based copy
+   offsetting by one against its 1-based twin, and `_01.jpg` inserts sorting to
+   the end of a volume that numbers its other pages `0001.jpg`.
+2. **Put the volume number in every member's filename, and the chapter number
+   too where it applies** — `Series - v01 c005.5.cbz`. Kaguya's fan release
+   already does this and it is the only membership hint in the library, even
+   though it is wrong twice. A wrong hint that can be checked beats no hint.
+3. **Keep role tags rather than stripping them.** `[Cover]`, `[ToC]`, `p046-047`
+   are the most valuable naming in the corpus: the last of those identifies a
+   joined spread without decoding anything, and the volume's spreads are what
+   the schema now has to model.
+4. **One directory per edition, one archive or directory per member.** Do not
+   mix `Series v01`, `Series_v01` and `DLRAW.TO_Series v01` in one folder, which
+   this library does.
+5. **Suffix alternate copies distinctly** — `v01`, `v01b` is already the
+   convention here, but nothing says which is good. Since alignment quality
+   identifies the bad one, record the verdict rather than guessing at the name.
+
+What this deliberately does not ask for: a single container format, a flat page
+layout, or stripped metadata. The tool handles all of those already, and the
+metadata is load-bearing.
+
+Sorting still has to be decimal-aware regardless — `c005.5` sorts before `c005`
+under plain lexicographic comparison no matter how tidy the names are.
 
 ## Why pairing needs the matrix, not a lookup
 
