@@ -37,44 +37,32 @@ pub fn fingerprint_edition(pages: &[Page]) -> Result<Vec<PageHash>, String> {
         .collect()
 }
 
-/// Fingerprint an edition, cutting joined spreads into two hashable halves.
+/// Decode every page once and record everything the cache needs.
 ///
-/// A landscape page contributes two hashes instead of one, so the alignment can
-/// pair each half with the page the other edition split it into. The solver
-/// stays strictly one-to-one; only the sequence it is given changes.
-pub fn fingerprint_edition_split(
-    pages: &[Page],
-    direction: crate::spread::Direction,
-) -> Result<(Vec<PageHash>, Vec<crate::spread::Slot>), String> {
-    let per_page: Result<Vec<(Vec<PageHash>, bool)>, String> = pages
+/// Half hashes are computed for any landscape page whether or not it turns out
+/// to be a spread, because the spread rule is an edition-level judgement that
+/// may change while the pixels do not.
+pub fn describe_pages(pages: &[Page]) -> Result<Vec<crate::cache::CachedPage>, String> {
+    pages
         .par_iter()
         .map(|page| {
             let luma = decode_luma(&page.bytes).map_err(|e| format!("{}: {e}", page.name))?;
-            let (w, h) = luma.dimensions();
-            if w > h {
-                let mid = w / 2;
-                let left = image::imageops::crop_imm(&luma, 0, 0, mid, h).to_image();
-                let right = image::imageops::crop_imm(&luma, mid, 0, mid, h).to_image();
-                // Hashes go in reading order to match the slots.
-                let halves = match direction {
-                    crate::spread::Direction::RightToLeft => {
-                        vec![fingerprint(&right), fingerprint(&left)]
-                    }
-                    crate::spread::Direction::LeftToRight => {
-                        vec![fingerprint(&left), fingerprint(&right)]
-                    }
-                };
-                Ok((halves, true))
-            } else {
-                Ok((vec![fingerprint(&luma)], false))
-            }
+            let (width, height) = luma.dimensions();
+            let halves = (width > height).then(|| {
+                let mid = width / 2;
+                (
+                    fingerprint(&image::imageops::crop_imm(&luma, 0, 0, mid, height).to_image()),
+                    fingerprint(&image::imageops::crop_imm(&luma, mid, 0, mid, height).to_image()),
+                )
+            });
+            Ok(crate::cache::CachedPage {
+                width,
+                height,
+                hash: fingerprint(&luma),
+                halves,
+            })
         })
-        .collect();
-
-    let per_page = per_page?;
-    let landscape: Vec<bool> = per_page.iter().map(|(_, wide)| *wide).collect();
-    let hashes: Vec<PageHash> = per_page.into_iter().flat_map(|(h, _)| h).collect();
-    Ok((hashes, crate::spread::expand(&landscape, direction)))
+        .collect()
 }
 
 /// Reduce a page to its difference hash.

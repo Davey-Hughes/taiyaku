@@ -42,6 +42,16 @@ after downscaling — which discards the high-frequency detail that text lives i
 gives a strong signal for "these are the same page" while being largely blind to which
 language is printed on it.
 
+> **Corrected 2026-07-29.** The conclusion holds and has been confirmed across five
+> series, but the reasoning in the parenthetical is wrong. Downscaling does not
+> discard text; at a 16×16 grid a speech bubble is about one cell, and whether that
+> cell holds glyphs changes its brightness against its neighbour. What makes the
+> hash work is that Japanese and English glyphs fill a bubble at comparable
+> density, so translation preserves the comparison. The hash is blind to *which*
+> text, not to *whether there is* text — and a cleaned edition with the text
+> removed loses about 0.24 of similarity, more than colourisation costs. See
+> "The hash is blind to which text" in `notes.md`.
+
 It also means the problem is *sequencing*, not recognition. Getting a good similarity
 metric is the easy half.
 

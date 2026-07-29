@@ -1,4 +1,9 @@
-//! Treating a joined double-page spread as two alignable halves.
+//! Slots: the unit an alignment actually addresses.
+//!
+//! A slot is a whole page, or one half of a joined double-page spread. This
+//! lives in the core rather than the CLI because it is a property of the
+//! format: a sidecar records correspondences between slots, so any reader of
+//! the format needs the same notion.
 //!
 //! An edition that joins spreads carries one wide page where the other edition
 //! carries two. Measured on the corpus, cutting that wide page down the middle
@@ -15,7 +20,8 @@
 /// half is always the earlier page because manga reads right to left, but that
 /// is a property of the work rather than of the format, so it is measured and
 /// recorded rather than assumed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Half {
     Left,
     Right,
@@ -29,12 +35,34 @@ pub struct Slot {
 }
 
 /// Which way the work reads, which decides which half of a spread comes first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Direction {
     /// Manga: the right-hand half of a spread is the earlier page.
+    #[serde(rename = "rtl")]
     RightToLeft,
     /// Western comics: the left-hand half is the earlier page.
+    #[serde(rename = "ltr")]
     LeftToRight,
+}
+
+/// Is a landscape page a joined spread, or something else that happens to be
+/// wide?
+///
+/// Both aspect ratios are width over height. A joined spread is two portrait
+/// pages side by side, so its aspect lands near twice the aspect of an ordinary
+/// page in the same edition — measured across the corpus, between 1.95 and 2.13
+/// times, never exactly twice outside the cleanest digital releases.
+///
+/// The bound matters because not every wide page is a spread. One Piece volume
+/// 60 opens with its wraparound dust jacket scanned as one image: front cover,
+/// spine, back cover and both inside flaps, at **3.43 times** a page width.
+/// Splitting that down the middle produces two halves corresponding to nothing.
+pub fn is_spread(page_aspect: f32, ordinary_aspect: f32) -> bool {
+    if ordinary_aspect <= 0.0 {
+        return false;
+    }
+    let doubling = page_aspect / ordinary_aspect;
+    (1.7..=2.3).contains(&doubling)
 }
 
 /// Expand a sequence of pages into the slot sequence the solver aligns against.
@@ -73,6 +101,42 @@ pub fn expand(landscape: &[bool], direction: Direction) -> Vec<Slot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Real measurements, all of them. The wide pages that are spreads and the
+    /// wide page that is not have to come out on opposite sides of this.
+    #[test]
+    fn a_wraparound_cover_is_not_a_spread() {
+        let aspect = |w: f32, h: f32| w / h;
+
+        // Genuine joined spreads, from four series. None is exactly double.
+        let gotoubun = aspect(2147.0, 3056.0);
+        assert!(
+            is_spread(aspect(4294.0, 3056.0), gotoubun),
+            "Go-Toubun 2.00x"
+        );
+        let berserk = aspect(1810.0, 2560.0);
+        assert!(is_spread(aspect(3620.0, 2560.0), berserk), "Berserk 2.00x");
+        let onepiece_en = aspect(1500.0, 2250.0);
+        assert!(
+            is_spread(aspect(2922.0, 2250.0), onepiece_en),
+            "One Piece EN 1.95x"
+        );
+        let onepiece_raw = aspect(1005.0, 1600.0);
+        assert!(
+            is_spread(aspect(2140.0, 1600.0), onepiece_raw),
+            "One Piece raw 2.13x"
+        );
+
+        // One Piece volume 60 opens with its wraparound dust jacket: front,
+        // spine, back and both flaps in one image, at 3.43 times a page.
+        // Splitting it in half yields two halves matching nothing.
+        assert!(
+            !is_spread(aspect(3450.0, 1600.0), onepiece_raw),
+            "a 3.43x dust jacket is not a spread"
+        );
+        // A portrait page is never a spread however the numbers arrive.
+        assert!(!is_spread(onepiece_raw, onepiece_raw), "portrait");
+    }
 
     /// The index arithmetic is the whole risk here. Once a wide page occupies
     /// two entries, every later slot is offset, and an off-by-one silently

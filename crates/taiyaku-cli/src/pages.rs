@@ -8,7 +8,9 @@ use std::{
 
 use crate::naming::natural_cmp;
 
-const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "avif"];
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "tif", "tiff",
+];
 
 pub struct Page {
     pub name: String,
@@ -54,10 +56,48 @@ pub fn read_edition(members: &[PathBuf]) -> Result<Vec<Page>, String> {
 /// Directories are not an edge case: most of the raw editions in the test
 /// corpus are stored as loose images rather than as archives.
 fn read_member(path: &Path) -> Result<Vec<Page>, String> {
-    if path.is_dir() {
-        read_directory(path)
+    let pages = if path.is_dir() {
+        read_directory(path)?
     } else {
-        read_archive(path)
+        read_archive(path)?
+    };
+    if pages.is_empty() {
+        return Err(format!(
+            "{}: no page images{}",
+            path.display(),
+            skipped(path)
+        ));
+    }
+    Ok(pages)
+}
+
+/// Describe what a member held instead of pages, so an empty read is
+/// diagnosable rather than merely disappointing.
+fn skipped(path: &Path) -> String {
+    let mut extensions: Vec<String> = Vec::new();
+    if path.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+                    let ext = ext.to_ascii_lowercase();
+                    if !extensions.contains(&ext) {
+                        extensions.push(ext);
+                    }
+                }
+            }
+        }
+    }
+    extensions.sort();
+    match extensions.is_empty() {
+        true => String::new(),
+        false => format!(
+            ". It holds {}, none of which taiyaku reads as a page",
+            extensions
+                .iter()
+                .map(|e| format!(".{e}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -173,9 +213,60 @@ fn read_archive(path: &Path) -> Result<Vec<Page>, String> {
         .collect()
 }
 
+/// Content hash of a member, so a reader can tell the archive was replaced.
+///
+/// Over the file for an archive, and over every page in order for a directory —
+/// a directory has no single file to hash, and hashing the pages is what
+/// actually identifies the content.
+pub fn member_digest(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    if path.is_dir() {
+        for page in read_directory(path)? {
+            hasher.update(&page.bytes);
+        }
+    } else {
+        hasher.update(std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// How many pages a member holds, without keeping them in memory.
+pub fn member_pages(path: &Path) -> Result<u32, String> {
+    Ok(read_member(path)?.len() as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A member that yields no pages is almost always a mistake, and saying
+    /// nothing about it is the worst possible response. Pointing a directory of
+    /// archival TIFFs at the aligner reported `A: 0 pages` and carried on
+    /// cheerfully, because `.tif` was not in the recognised list — the files
+    /// were there, readable, and silently ignored. The error has to name what
+    /// it found instead.
+    #[test]
+    fn a_member_with_no_pages_says_what_it_found_instead() {
+        let dir = std::env::temp_dir().join("taiyaku-test-nopages");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cover.psd"), b"not an image we read").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"hello").unwrap();
+
+        let error = read_member(&dir).unwrap_err();
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(error.contains("no page images"), "unhelpful: {error}");
+        assert!(
+            error.contains("psd"),
+            "should name what it skipped: {error}"
+        );
+    }
 
     /// The message someone actually sees. "invalid Zip archive: could not find
     /// EOCD" tells a person holding a perfectly good 7-Zip file nothing they

@@ -8,9 +8,16 @@
 //! native-only. Solving does not: the dynamic programming runs over page
 //! hashes, so it is portable and lives here alongside the lookup.
 
+mod sidecar;
+mod slot;
 mod solve;
 
-pub use solve::{PageConfidence, PageHash, confidence, similarity, solve};
+pub use sidecar::{
+    Alignment, Edition, Member, RunEntry, Sidecar, SlotSpan, SolverInfo, Source, VERSION, Work,
+    entries_from_runs, resolve,
+};
+pub use slot::{Direction, Half, Slot, expand, is_spread};
+pub use solve::{PageConfidence, PageHash, calibrate_floor, confidence, similarity, solve};
 
 /// An inclusive range of page indices within a single edition.
 ///

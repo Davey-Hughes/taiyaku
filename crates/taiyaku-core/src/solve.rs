@@ -7,7 +7,7 @@ use crate::{PageRange, Run};
 /// 256 bits because that is what the corpus asked for: a 16x16 difference hash
 /// resolved 99.5% of the sanity-baseline pair against 97.9% for the usual
 /// 64-bit form, and wider hashes bought nothing further.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PageHash(pub [u64; 4]);
 
 /// Fraction of bits two hashes agree on, in `0.0..=1.0`.
@@ -41,7 +41,7 @@ const GAP_PENALTY: f32 = 0.05;
 /// midpoint separates them. Medians rather than means because both populations
 /// have long tails — blank pages score 1.0 against each other and drag a mean up.
 /// Returns `None` when the two editions show no correspondence worth trusting.
-fn calibrate_floor(a: &[PageHash], b: &[PageHash]) -> Option<f32> {
+pub fn calibrate_floor(a: &[PageHash], b: &[PageHash]) -> Option<f32> {
     if a.is_empty() || b.is_empty() {
         return None;
     }

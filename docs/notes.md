@@ -149,6 +149,38 @@ green without needing the archives, and run locally whenever the solver changes.
 all-pairs data is a strict superset of star data, and the format already permits
 direct edges. Being wrong costs a re-solve, not a redesign.
 
+### The hub should be chosen, not assumed
+
+"The raw is the hub" is a convention resting on the argument that the raw is
+usually the most complete sequence. The topology measurements say hub choice has
+real consequences — **distance from the hub predicts loss**, with editions sharing
+the hub's page count losing under 0.5% against each other and the two furthest
+losing 3.5% — so it is worth choosing on evidence rather than convention.
+
+The preference to encode is: **one edition is the base, chosen for quality and
+coverage, and everything else layers onto it.** Official releases are usually the
+cleaner scan, but not always; some fan releases beat the official one, and the
+raw is not automatically the most complete either.
+
+All three criteria are things an alignment already measures:
+
+- **Coverage** — the edition with the fewest gaps when others align onto it. This
+  is exactly what the topology command reports as loss, so the best hub is the one
+  minimising total loss across all spokes.
+- **Quality** — resolution is already read during fingerprinting, and page-count
+  completeness falls out of the alignment.
+- **Content** — an edition carrying pages the others lack shows up as those
+  editions gapping against it.
+
+So hub selection can be a measurement rather than a declaration: solve every
+candidate as hub, keep the one with the lowest total loss. For five editions that
+is eight alignments per candidate, and the matrix costs microseconds, so the whole
+comparison is cheap once fingerprints are cached.
+
+That also answers the question of what a base is *for*. Choosing a base and
+flipping between the others is the reading model, and hub-and-spoke is already
+exactly that shape — the base is the hub, and every swap resolves through it.
+
 ### Result: the star holds, at a measured cost of about 1.7% of pages
 
 Run with `taiyaku topology <hub>... -- <spoke>... -- <spoke>...` on volume 1 of
@@ -226,6 +258,120 @@ Don't lead with that ask.
 can import the module and get alignment lookup without reimplementing the format.
 "Add a dependency and a keybinding" is a far easier pitch than "here is a spec, go
 implement it."
+
+## The hash is blind to which text, not to whether there is text
+
+**This qualifies the design doc's central claim**, which reads:
+
+> A structural hash taken after downscaling — which discards the high-frequency
+> detail that text lives in — gives a strong signal for "these are the same page"
+> while being largely blind to which language is printed on it.
+
+The first half is right and the corpus has confirmed it five times over. The
+parenthetical is wrong, and a *cleaned* Berserk edition — a tankōbon scan with
+the speech-bubble text digitally removed, the base scanlators typeset onto — is
+what showed it.
+
+| Pair | Similarity peak | Monotonic |
+| ---- | --------------- | --------- |
+| raw → English, text on both sides | **0.85–0.90** | 90.3% |
+| cleaned → raw, text removed on one side | **0.60–0.65** | 60.8% |
+| cleaned → English | — | 26.6 runs per 100 pages |
+
+Removing text costs roughly **0.24 of similarity**. That is larger than the
+0.10–0.15 colourisation costs and nearly the whole 0.33 that separates signal
+from noise. Aligning a cleaned edition against anything is the hardest case in
+the corpus by a wide margin, where the premise predicts it should be the easiest.
+
+**Why, mechanically.** At a 16×16 grid a speech bubble is roughly one cell.
+Japanese glyphs and English glyphs both fill that cell with dark marks at
+comparable density, so the cell's brightness relative to its neighbour survives
+translation — which is exactly the invariance the method needs and gets. Delete
+the text and the cell becomes uniform white, and the comparison against its
+neighbour flips. The hash is invariant to text **substitution**, not to text
+**presence**.
+
+**One confound, stated rather than hidden.** The cleaned edition also varies in
+page width from 4846 to 5343 pixels, about 10%, where the raw is uniform. That is
+far more crop variation than anything else measured — Kobayashi's physical scan
+varies 0.4% — so it plausibly contributes. Text removal is the likely dominant
+cause because the effect is so much larger than any resolution or crop effect
+measured elsewhere, including a 4.8× resolution gap that cost nothing, but the
+two are not separated here and a controlled test would need a cleaned edition
+with uniform page widths.
+
+**Consequences.** Cleaned and redrawn editions are a distinct hard case, not a
+variation on the easy one. Anything wanting to align them would need to work on
+panel geometry rather than page luma — masking bubble interiors before hashing,
+say. Nothing in the corpus needs that today, and it is worth knowing that the
+method has a boundary and where it sits.
+
+## An alignment is an edition-identity oracle
+
+A side effect worth naming, because it is the only thing taiyaku can do that
+nothing else in this ecosystem can: **an alignment answers "are these the same
+work" from content rather than from names.**
+
+Measured, across twelve volumes and four series:
+
+| Relationship | What the aligner does |
+| ------------ | --------------------- |
+| Same work, any two editions | 87.7–98.6% of pages on a monotonic staircase, ≤8 runs per hundred pages |
+| Different works | **refuses outright** — Go-Toubun's raw against Kaguya's English release returns a single gap run, nothing paired |
+| Wrong copy of the right work | pairs 31–55% and fragments to 22–45 runs per hundred pages |
+
+The three regimes do not overlap, so the question is decidable without any string
+matching, publisher metadata, or human naming convention being correct.
+
+### Why that matters outside this project
+
+Every existing tool that links a local library to a tracking service matches by
+title. `komf` searches AniList, MAL and MangaUpdates by name and writes the match
+into the server's metadata; `komga-anilist-sync`, `komga-sync` and MAL-Sync then
+read that link and push progress. All three depend entirely on the name match
+being right.
+
+Name matching breaks on exactly the case this library is full of. `Go-Toubun no
+Hanayome - Full Color Edition`, `One Piece - Digital Colored Comics`,
+`Monster - The Perfect Edition`, `Uzumaki (Deluxe Edition 3-in-1)` are all
+name-distinct and work-identical. Content matching does not care.
+
+### It also derives the chapter-to-volume map
+
+The second thing that breaks tracker sync is units: AniList counts chapters, a
+volume-organised library counts volumes. Aligning a volume edition against a
+chapter edition *is* the mapping, and the corpus already shows it beating
+declared metadata:
+
+- Go-Toubun volume 1 is fan chapters c001–c005 **plus c005.5**, not the c000–c004
+  the page-count arithmetic suggested.
+- Kaguya volume 1 is c1–c10. Its fan release names two further files `v1 c5.5`
+  and `v1 c10.5`; both filenames say volume 1 and both are wrong.
+
+A metadata-derived chapter-to-volume map would be wrong in both cases. The
+content-derived one is right in both.
+
+### The shape this should take, and what it should not
+
+**Not a sync tool.** OAuth, rate limits, progress-conflict rules and tracking a
+third-party GraphQL schema are ongoing maintenance with no novelty in them, and
+the existing tools already do that part adequately. Building another one trades
+the interesting half for the tedious half.
+
+**A small command that emits identity**, for those tools to consume: which
+members of a library are one work, and which chapters constitute which volume.
+Then a person binds one tracker ID per work by hand, once, and the commodity
+tools do the commodity work.
+
+**Cost is the honest objection.** This means fingerprinting archives, which is
+O(archives) and cached but still real decode time — hours for a 122-series
+library on a first run, worse over a network share. It is a background job, not
+an interactive query.
+
+**Sequencing: after the reader exists, not before.** The estimate in the design
+doc predates spreads, mislabelled copies, and eight incompatible naming schemes,
+and every session so far has found something. A second product before the first
+one is usable is how projects die.
 
 ## Gotcha: swapping must not round-trip through the alignment
 
@@ -469,6 +615,14 @@ pages, and adding c5.5 changes the result not at all (175/213 either way).
 
 **Declared metadata is a hint. The alignment is the authority.**
 
+**Where fan editions sit.** The preference is official and clean where possible,
+but that is a default rather than a rule — some fan releases are better than the
+official one, and the chapter releases in this corpus are the messiest input by
+some distance. Nothing needs deciding in the abstract: an edition earns the base
+position by measuring better, and any edition that is not the base is a spoke
+whether it is official or not. Chapter releases are first-class as *members* of
+an edition; whether a given one deserves to be the base is a measurement.
+
 ### Hazard: repeated template pages
 
 Kaguya c10.5's pages 4–12 match raw pages 25, 47, 67, 107, 127, 147, 167, 189,
@@ -650,6 +804,12 @@ at or below 8 runs per hundred pages, every known-bad one at or above 22.
 
 That is now reported, though not enforced: the gap is drawn from four series and
 wants more evidence before a file gets rejected on it.
+
+**Important qualification, added later.** These numbers were measured without
+spread handling, and spreads fragment a correct alignment badly enough to reach
+the same range — One Piece volume 105 scores 21.9 runs per hundred unhandled and
+3.8 handled. Fragmentation separates good from bad **only once spreads are
+expressed**. See "The fragmentation metric is unusable without spread handling".
 
 ### The separation guard catches a different failure
 
@@ -955,6 +1115,162 @@ That is defensible for the intended use — an edition is the whole set of chapt
 — but it means `align` cannot be pointed at one chapter to see where it lands.
 Using a high percentile rather than the median for the signal estimate would fix
 it. Not urgent, but it should not be discovered by a user.
+
+## New raws, 2026-07-29: both schema questions closed
+
+Berserk, Monster and Tongari Boushi no Atelier raws obtained specifically to test
+the two things the sidecar draft left open. Neither changed the format, and three
+other things fell out.
+
+### No gatefolds exist in anything measured
+
+Berserk was the strongest candidate available — a series known for elaborate
+spreads, and its volume 1 carries **nine**, more than any volume in the corpus.
+Every one is 3620×2560 against a 1810×2560 page: exactly double, to the pixel.
+Tongari volume 13 and every Monster volume carry none at all.
+
+**37 spreads measured across six series, not one anything but a clean double.**
+`Half` stays as it is.
+
+### Berserk: the densest spread test, and the metric trap again
+
+The downloaded Berserk raw splits every spread the English release joins — 227
+pages, all 844×1200, no landscape at all, against 219 English pages of which nine
+are joined. The arithmetic closes: 219 + 9 = 228 against the raw's 227.
+
+| | result |
+| --- | ------ |
+| plain | 90.7% paired, **11.0 runs per 100 pages** |
+| spreads split | **7 runs**, 206 whole + 18 halves, 3 unmatched |
+
+All eighteen halves of all nine spreads recovered. And 11.0 runs per hundred is
+*above* the threshold separating good pairings from bad — the third time now that
+unhandled spreads have made a perfectly good alignment look broken.
+
+### Omnibus assembly works, and the seam is visible
+
+Monster's English Perfect Edition collects two Japanese volumes per book. The two
+Japanese volumes as one edition of two members, against the single English
+member: **416 of 444 pages paired, 6.5 runs per hundred**, inside the band every
+correct pairing occupies.
+
+What makes it convincing is the run structure rather than the totals. The offset
+holds at +1 through page 216, gaps for the ten pages of back matter the omnibus
+drops, then settles at −14 for the whole second volume. **The member seam appears
+exactly where Japanese volume 1 ends**, as an offset change rather than a
+failure. Nothing in the format needed to change, because both sides flatten
+before anything else happens.
+
+### Physically scanned raws work
+
+Monster's Japanese original is a genuine physical scan from 2002 — pages
+alternate between 736×1072 and 744×1072, which is what per-page crop variation
+looks like. It still aligns at 93.7%. This was the untested axis behind the
+autocrop experiment, and the answer is that the hash tolerates it without help.
+
+### Tongari confirms the pattern on a fifth series
+
+Raw volume 1 is 213 pages at 720×1024; the English release is 208 pages at
+3450×4913 with four joined spreads. Spread handling takes it from **14 runs to
+6**, recovering all eight halves, at 94.4% paired.
+
+Two things worth noting. The four spreads measure 6900×4913 against a 3450 page
+width — **exactly double again**, which is the fifth series to say so. And the
+resolution gap between the two editions is **4.8× linear**, the widest in the
+corpus by some way, which it aligns across without difficulty. Whatever the hash
+is sensitive to, absolute resolution is not it.
+
+### One Piece across three eras, and a wide page that is not a spread
+
+Volumes 1, 60 and 105 of a series running since 1997, against the English
+release. Raw resolution climbs with the era — 760×1200, 1005×1600, 1304×2048 —
+which is the digital transition visible inside one series.
+
+| Pair | plain | spreads split |
+| ---- | ----- | ------------- |
+| raw v01 → en v001 | 16 runs, 94.8% | 10 runs |
+| raw v60 → en v060 | 16 runs, 95.2% | 6 runs |
+| raw v105 → en v105 | **46 runs, 71.4%** | **8 runs** |
+
+Era costs nothing: the oldest and newest volumes both align. What looked like a
+failure on volume 105 was entirely spreads — the English release carries
+**twenty-two** of them against three in volume 1 and five in volume 60.
+
+**Spread density varies by an order of magnitude within one series**, which is
+worth knowing before treating any per-volume number as characteristic.
+
+### The fragmentation metric is unusable without spread handling
+
+Volume 105 unhandled scores 46 runs across 210 pages, or **21.9 runs per hundred**
+— sitting exactly on the boundary of the band that was supposed to identify a
+mislabelled file. A perfectly good pairing is indistinguishable from a bad copy
+on that measure alone.
+
+This is the fourth case where unhandled spreads made a correct alignment look
+broken, after Berserk at 11.0, the Go-Toubun colour edition at 10.6, and Kaguya.
+The rule is not "fragmentation identifies bad copies" but **"fragmentation
+identifies bad copies once spreads are expressed"**. Measured with spreads
+handled, the same volume is 8 runs, or 3.8 per hundred.
+
+### Not every wide page is a spread
+
+One Piece volume 60 opens with its **wraparound dust jacket** scanned as a single
+image — front cover, spine, back cover and both inside flaps, carrying the ISBN
+barcode and the price. It is 3450×1600 against a 1005-wide page: **3.43 times**.
+Detection was `width > height`, so it was being split down the middle into two
+halves corresponding to nothing, and two more pages were being invented.
+
+Detection is now a ratio bound rather than a landscape test: a page is a spread
+when its aspect is 1.7 to 2.3 times the median aspect of the edition's portrait
+pages. Volume 60 drops from three spreads to one, which is correct.
+
+The bound also records something the earlier measurements got slightly wrong.
+**Spreads are not exactly double.** They were in the clean digital releases
+measured first, but across the wider corpus they run 1.95× (One Piece English,
+trimmed) to 2.13× (One Piece raw). Anything demanding an exact doubling would
+have missed both.
+
+### Bug: unreadable page formats were skipped in silence
+
+Pointing the aligner at a directory of archival TIFFs reported `A: 0 pages` and
+carried on cheerfully. The files were present and readable; `.tif` simply was not
+in the recognised extension list, so every one of them was ignored without a
+word. An edition that reads as empty is nearly always a mistake, and saying
+nothing is the worst available response.
+
+Fixed twice over. TIFF is now recognised, and a member that yields no pages is an
+error naming what it found instead:
+
+```
+no page images. It holds .psd, .txt, none of which taiyaku reads as a page
+```
+
+The second half is the part that generalises — it catches any unsupported format,
+not just the one that happened to turn up.
+
+### Aside: `image` refuses oversized files rather than dying
+
+Those Color Walk scans are 430 MB per page. Once TIFF was recognised, decoding
+one returned `Memory limit exceeded` from the `image` crate's own guard, peaking
+at 768 MB resident and exiting cleanly. That guard matters more than it looks:
+fingerprinting runs across twelve cores, so without it a directory of files this
+size would try to decode twelve simultaneously.
+
+Worth remembering that Color Walk is an artbook rather than a colour edition of
+the manga — it is not a candidate for alignment at all, and its only real use to
+this project would be as a negative control.
+
+### Practical: 7-Zip cannot extract these RARs, libarchive can
+
+`7zz` fails on all three RAR5 archives with `ERROR: Unsupported Method`,
+extracting only the handful of stored entries and writing **zero-byte files for
+the other 194** — a silent-looking failure that reports success at the shell
+until the sizes are checked. `bsdtar`, which is libarchive and ships with macOS,
+extracts them completely.
+
+Worth remembering as an ingestion note: if taiyaku ever reads RAR, libarchive is
+the implementation that actually works on real-world files, and it is already
+present on macOS.
 
 ## Naming: normalise the library, but do not depend on it
 
