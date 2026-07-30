@@ -78,6 +78,10 @@ a single wide image and the other splits it in two. It is worth passing almost
 always — measured across the corpus, unhandled spreads make a correct alignment look
 broken.
 
+`--stats` prints the figures the answer was reached from: what calibration measured
+of the two editions, and what shape the alignment came out. A refusal with no numbers
+beside it is not reviewable, and these are the numbers.
+
 ## Design principles
 
 **The sidecar is the product.** The alignment format is meant to be readable by

@@ -1402,6 +1402,14 @@ then use fragmentation to judge what was. Earlier notes here said coverage was
 the wrong metric and fragmentation the right one — that holds only among pairs
 that produced an alignment, and the qualification was missing.
 
+This hole was later cited as the reason runs per hundred pages was retired as
+the fragmentation measure. That overstates it: the coverage gate described here
+already neutralises the hole, and any fragmentation measure needs the same gate
+— average run length reports 0.0 for a refusal, which is below any threshold.
+See "The margin survey, and where the refusal threshold sits" for what actually
+decided the swap, the replacement measure, and the threshold Task 5 settled on
+it.
+
 ### Bug: unreadable page formats were skipped in silence
 
 Pointing the aligner at a directory of archival TIFFs reported `A: 0 pages` and
@@ -1990,6 +1998,268 @@ Ordered by cost, each step only running on what the previous could not settle:
 On this collection that is 3 settled free, 2 more collapsed by identity, and 13
 genuine choices left — down from 19 sets to look at, with the two mislabelled ones
 flagged rather than silently ranked.
+
+## The margin survey, and where the refusal threshold sits
+
+Run with `scripts/margin-survey.sh` against the whole corpus. Every figure is
+`align --stats` output; the script is committed so the table can be rebuilt.
+
+| Group | Pair | \|A\| | \|B\| | noise | signal | sep | margin | avg_run | per_100 | verdict |
+| ----- | ---- | --- | --- | ----- | ------ | --- | ------ | ------- | ------- | ------- |
+| good | gotoubun-v01 | 195 | 194 | 0.523 | 0.875 | 0.352 | 0.258 | 64.3 | 2.6 | Sound |
+| good | gotoubun-v03 | 195 | 194 | 0.523 | 0.848 | 0.324 | 0.230 | 64.3 | 2.6 | Sound |
+| good | gotoubun-v08 | 195 | 192 | 0.508 | 0.684 | 0.176 | 0.086 | 64.0 | 2.6 | Sound |
+| good | kaguya-v01 | 213 | 214 | 0.516 | 0.730 | 0.215 | 0.109 | 52.2 | 3.8 | Sound |
+| good | kaguya-v03 | 210 | 210 | 0.500 | 0.629 | 0.129 | 0.027 | 69.3 | 2.4 | Sound |
+| good | kaguya-v08 | 211 | 210 | 0.516 | 0.777 | 0.262 | 0.148 | 69.3 | 2.4 | Sound |
+| good | kobayashi-v01 | 146 | 146 | 0.500 | 0.602 | 0.102 | 0.012 | 48.0 | 3.4 | Sound |
+| good | kobayashi-v03 | 146 | 146 | 0.500 | 0.602 | 0.102 | 0.012 | 36.0 | 3.4 | Sound |
+| good | kobayashi-v08 | 162 | 162 | 0.504 | 0.840 | 0.336 | 0.246 | 39.2 | 4.9 | Sound |
+| good | oshinoko-v01 | 223 | 229 | 0.500 | 0.625 | 0.125 | 0.016 | 44.4 | 2.7 | Sound |
+| good | oshinoko-v03 | 197 | 195 | 0.500 | 0.637 | 0.137 | 0.027 | 65.0 | 2.5 | Sound |
+| good | oshinoko-v08 | 202 | 195 | 0.504 | 0.746 | 0.242 | 0.148 | 64.3 | 2.5 | Sound |
+| good | tongari-v01 | 213 | 212 | 0.512 | 0.645 | 0.133 | 0.031 | 52.5 | 2.8 | Sound |
+| good | tongari-v09-letterbox | 180 | 177 | 0.504 | 0.656 | 0.152 | 0.047 | 44.0 | 3.9 | Sound |
+| good | monster-2to1 | 444 | 438 | 0.504 | 0.609 | 0.105 | 0.008 | 47.4 | 2.9 | Sound |
+| good | nausicaa-4to1 | 600 | 576 | 0.504 | 0.777 | 0.273 | 0.172 | 46.1 | 3.3 | Sound |
+| good | op-v092-identity | 200 | 202 | 0.504 | 0.809 | 0.305 | 0.211 | 200.0 | 0.5 | Sound |
+| good | bocchi-gaiden-real | 185 | 185 | 0.500 | 0.660 | 0.160 | 0.062 | 36.4 | 4.3 | Sound |
+| bad | oshinoko-v01-badcopy | 223 | 229 | 0.504 | 0.609 | 0.105 | 0.012 | 4.8 | 27.4 | Fragmented |
+| bad | op-v077-c0-vs-c1 | 236 | 234 | 0.500 | 0.629 | 0.129 | 0.023 | 3.5 | 44.1 | Fragmented |
+| needle | colorwalk-to-op-v105 | 9 | 188 | 0.504 | 0.609 | 0.105 | 0.004 | 1.0 | 100.0 | Fragmented |
+| subset | one-chapter-to-volume | 33 | 213 | 0.508 | 0.762 | 0.254 | 0.152 | 6.8 | 21.2 | Fragmented |
+| unrel | gotoubun-raw-vs-kaguya-en | 195 | 214 | 0.516 | 0.613 | 0.098 | 0.008 | 0.0 | 0.5 | Refused |
+| unrel | bocchi-gaiden-vs-main | 185 | 127 | 0.504 | 0.594 | 0.090 | 0.008 | 0.0 | 0.5 | Refused |
+
+**One row that this survey first filed under `needle` disqualifies itself, and
+that has to be settled before the rest of this argument rather than after it**
+— it is `one-chapter-to-volume`, relabelled `subset` in the table and in the
+script once the point below was worked out, so the table above already shows a
+single `needle` row.
+Kaguya volume 1 genuinely is chapters c1–c10 (recorded above, under "`x.y`
+chapters are a prior, not a rule"), so the fan chapter aligned in
+one-chapter-to-volume is a real subset of the raw volume rather than
+unrelated material offered a lot of candidates. Its margin of 0.152 is
+signal, not the noise this guard exists to catch — which is exactly why it
+lands inside the good cluster's own range rather than below it. **The only
+true needle in this survey is Color Walk, at 0.004**, an art book wholly
+unrelated to the One Piece volume it is aligned against; the corpus does not
+currently hold a second example of its kind.
+
+**The lowest good margin is 0.008, on Monster's 2:1 repagination (raw
+v01+v02 against the English Perfect Edition v01).** Measured against the
+correct needle, both rules pass. Rule 1's first clause holds: 0.008 is
+greater than 0.004. Its 0.75 clause holds too — 0.75 × 0.008 = 0.006, still
+above 0.004. Rule 2 agrees: Monster's ratio is 0.008 / 0.105 = 0.076 against
+Color Walk's 0.004 / 0.105 = 0.038, and 0.076 is greater than 0.038.
+
+Neither passes for long. `similarity` is `1.0 - differing / 256.0`
+(`solve.rs`), so every similarity, and every margin computed as a
+difference of two similarities, is a whole number of 256ths. The median
+compounds this rather than smoothing it — `percentile` returns
+`values[at]`, a selected sample rather than an average, so the median
+margin is a whole number of 256ths too. Color Walk's 0.004 is exactly 1 bit
+(1/256 = 0.0039); Monster's 0.008 is exactly 2 bits (2/256 = 0.0078). The
+rest of the table checks out the same way: 0.027 is 7/256, 0.047 is 12/256,
+0.086 is 22/256, 0.109 is 28/256, 0.152 is 39/256, 0.258 is 66/256, and so
+on for every figure in it — this is not a property of these two rows, it is
+how every margin in the survey is built. Rule 1's own candidate threshold,
+0.006, sits at roughly 1.5 bits: a value no median margin can ever actually
+take, in a gap that holds exactly one quantisation step and nothing either
+side of it.
+
+**Rule 3 applies — not because the margins fail to separate arithmetically,
+they do, barely, but because the entire distance between refusing Color
+Walk and accepting a correct alignment that paired 427 of Monster's 444
+pages is one bit of a 256-bit hash, and no safety factor fits inside a gap
+that size.** Task 4 remains a documentation-only task, recording this
+rather than compiling a constant.
+
+Monster is not available to discount as an outlier either. It is one of
+only two multi-volume repagination cases in the corpus, alongside Nausicaä,
+and no less a genuine good pairing than any single-volume one. Set it aside
+regardless and the next-lowest good margins — Kobayashi v01 and v03 at
+0.012 (3 bits), Oshi no Ko v01 at 0.016 (4 bits) — sit two and three bits
+clear of Color Walk, which would look like room to work with. That is
+discounting real evidence because it is inconvenient: the corpus's own
+weakest confirmed-good pairing does sit one bit from its own needle, and
+one bit is not a distance a safety factor can be asked to cover.
+
+**Kaguya was the canary and did survive**, at a margin of 0.027 against a
+separation of 0.129 (v03, its weakest volume of the three surveyed) — the
+weakest pairing in the corpus by every earlier measure, so it was expected to
+bound the threshold from above. It turns out not to be the binding
+constraint this time: Monster's 2:1 repagination posts a lower margin still,
+0.008 against a separation of 0.105, indistinguishable from the two
+unrelated pairs' own margin of 0.008. (Kaguya v01, historically the volume
+called weakest by separation and MEDBIT, is not the weakest of the three
+Kaguya volumes by margin either: it posts 0.109 against a separation of 0.215,
+four times v03's 0.027, though below v08's 0.148 — a reminder that "weakest by
+one measure" does not transfer automatically to another.)
+
+**What the survey says about average run length.** Say plainly what the table
+shows: **on this corpus both measures separate, once refusals are gated.**
+Every good pairing's average run length sits between 36.0 (Kobayashi v03) and
+200.0 (the One Piece v092 identity case, one run covering all 200 slots);
+every bad, needle and subset pairing sits at 6.8 or below, and both unrelated
+pairs at 0.0. No overlap: the gap runs from 6.8 to 36.0. But runs per hundred
+pages separates too among the pairs that get that far — the good rows run 0.5
+to 4.9, and every bad, needle and subset row runs 21.2 to 100.0, a gap wider
+in ratio than the other measure's. The one place it fails is the two refused
+pairs, which read as 0.5 runs per hundred, better than every good pairing's own
+figure (2.4 to 4.9) bar the identity case's own 0.5 — the hole this document
+has already recorded once, a total refusal reading as excellent fragmentation.
+That failure is already neutralised: `verdict` checks coverage first and only
+consults fragmentation once something was paired, so a refusal never reaches
+the comparison. Average run length needs exactly the same gate, because it
+reports 0.0 for a pairing that paired nothing and 0.0 is below any threshold.
+Swapping the measure did not retire the coverage check and could not have.
+
+So the earlier claim here — that average run length separates where runs per
+hundred does not — was overstated, and the table is what corrects it. **The
+defensible case for the swap is narrower.** First, average run length states
+the property directly, in slots, and does not vary with the edition's page
+count: "runs are two slots long" is a fact about the alignment, where "9.5 runs
+per hundred pages" needs the page count supplied before it means anything.
+Second, the two measures genuinely disagree on a shape no row of this corpus
+happens to take: twenty paired runs of two slots each across 210 pages reads as
+9.5 runs per hundred, comfortably under the old `FRAGMENTED_RUNS_PER_HUNDRED`
+of 15 and therefore sound, while averaging two slots a run. Twenty runs of two
+is confetti whatever the page count says. That case is pinned as a test in
+`solve.rs` rather than argued from, because the corpus cannot supply it.
+
+Task 5 put average run length in place of `FRAGMENTED_RUNS_PER_HUNDRED` rather
+than merely alongside it. The threshold is `MIN_AVERAGE_RUN = 27.0`, three
+quarters of the weakest confirmed-good figure (0.75 × 36.0 = 27.0), which
+clears the highest non-good figure, 6.8, by nearly four times (27.0 / 6.8 =
+3.97). Rerunning the full survey against the new threshold reclassified
+nothing: every `good` row still reads `verdict=Sound`, and every `bad`,
+`needle`, `subset` and `unrel` row reads `Fragmented` or `Refused`, exactly as
+under the old threshold.
+
+**The threshold is in absolute slots, so it has to be capped by the edition's
+own length.** An average measured in slots cannot exceed the number of slots
+there are, so a 20-page one-shot that aligns as one perfect run averages 20 and
+an uncapped 27.0 calls it `Fragmented` by arithmetic alone. Nothing in this
+survey licenses that: the shortest confirmed-good pairing measured here is
+Kobayashi v01 at 146 slots, so below 146 the constant is simply unmeasured.
+`verdict` therefore compares against `MIN_AVERAGE_RUN.min(pages)`. A pairing
+that is one clean run has an average equal to its own length, so it stays
+`Sound` at any size, and the cap can only lower the bar — no row can move from
+`Sound` to `Fragmented` under it.
+
+Checked against this table, the cap reclassifies nothing. Every good row is at
+least 146 slots, so the cap does not bind on any of them and 27.0 still
+applies. Color Walk is 9 slots averaging 1.0 against a cap of 9, still
+`Fragmented`. The subset row is 33 slots, above the constant, so its cap is
+27.0 and its 6.8 is still `Fragmented`.
+
+Making the threshold **proportional** to the edition's length is the obvious
+alternative and this table rejects it: Color Walk scores 1.0 / 9 = 0.11 where
+Nausicaä's genuine 4:1 repagination scores 46.1 / 600 = 0.077, so the needle
+would beat a real alignment. A cap keeps the measured absolute figure wherever
+it has been measured and relaxes only below the range the corpus covers, which
+is the weaker and therefore the honest claim.
+
+**Honest limits.** The needle side of this table has 1 member against 18 on
+the good side, so the threshold is anchored to the good cluster rather than
+placed between the two. (The row that would have been the second needle is the
+`subset`, disqualified above.) `|A|` is reported for every row because a
+median over nine margins (Color Walk) is not the same evidence as a median
+over two hundred. And nothing here measures an edition shorter than 146 slots,
+which is why the length cap is a cap rather than a second measured constant.
+
+**That limit has since been closed — see the next section, which replaces the
+single-needle caveat with twenty-two of them and strengthens the conclusion
+considerably.**
+
+## Twenty-two needles, and margin is not merely tight but inverted
+
+The survey above rested on one needle, and said so. The One Piece archive turns
+out to hold hundreds of the things: of its 579 directories only 141 are volumes,
+and most of the rest are weekly Jump issues, calendars and databooks at 13 to 29
+pages each. Short material, and none of it has a counterpart in any tankōbon.
+That is the needle condition exactly, occurring naturally rather than
+constructed.
+
+Twenty-two pairings measured, of three kinds. Calendars are pure artwork. Jump
+issues carry chapters 1005–1021, so against volume 105 — chapters 1055 and after
+— no page has a true counterpart, while the series, the artist, the era and the
+screentone are all shared. That makes them the hardest needles available rather
+than the easiest. Color Walk Compendium 2 is a second art book, sampled five
+pages deep at 410 MB a page, to check that the original Color Walk result was
+not a property of one book.
+
+Seven of the twenty-two cleared calibration and aligned. Every one of those
+seven paired **100% of its pages with nothing unmatched**, which is the
+behaviour that opened this whole item.
+
+| Needle | \|A\| | \|B\| | sep | margin | accepted | avg run |
+| ------ | --- | --- | --- | ------ | -------- | ------- |
+| Color Walk Compendium 2 → Go-Toubun v01 | 5 | 195 | **0.145** | **0.020** | yes | 1.7 |
+| XCalendar 2015 → One Piece v105 | 26 | 210 | 0.105 | 0.008 | yes | 1.2 |
+| Jump 2021-24 → One Piece v105 | 18 | 210 | 0.102 | 0.016 | yes | 1.1 |
+| Jump 2021-19 → One Piece v105 | 18 | 210 | 0.102 | 0.012 | yes | 1.1 |
+| Jump 2021-21/22 → One Piece v105 | 23 | 210 | 0.102 | 0.012 | yes | 1.1 |
+| Jump 2021-13 → One Piece v105 | 17 | 210 | 0.102 | 0.008 | yes | 1.1 |
+| Jump 2021-31 → One Piece v105 | 17 | 210 | 0.102 | 0.008 | yes | 1.1 |
+| fifteen others | 5–29 | 195–210 | 0.086–0.098 | 0.004–0.016 | no | — |
+
+### Margin does not merely fail to separate, it points the wrong way
+
+The survey concluded that no margin threshold fits because the needle sat one
+bit below the weakest confirmed-good pairing. The truth is worse than that.
+
+**A One Piece art book aligned against Go-Toubun no Hanayome — different series,
+different artist, different publisher, different decade — posts a margin of
+0.020.** Four confirmed-good pairings score lower: Monster's 2:1 repagination at
+0.008, Kobayashi v01 and v03 at 0.012, and [Oshi no Ko] v01 at 0.016. So the
+worst possible pairing in this corpus outscores four correct ones on the
+statistic that was supposed to reject it.
+
+Margin is therefore not a weak signal at this scale. It is not a signal at all —
+the whole population, good and needle alike, sits within five bits of a 256-bit
+hash, and the ordering inside that range carries no information about whether
+the two editions correspond.
+
+### Separation is not safe either, which was not previously known
+
+The same pairing posts a *separation* of 0.145, and **seven confirmed-good
+pairings sit below that**: both Kobayashi volumes at 0.102, Monster at 0.105,
+[Oshi no Ko] v01 at 0.125, Kaguya v03 at 0.129, Tongari v01 at 0.133 and
+[Oshi no Ko] v03 at 0.137. `MIN_SEPARATION` cannot be raised to catch these
+needles without refusing genuine volumes, and this is the first measurement that
+shows it. The constant has been carried as "provisional and untuned" since it
+was written; it is now known to be untunable in that direction.
+
+The Jump issues also show how fine the existing edge is. Their separations are
+0.086, 0.090, 0.094, 0.098, 0.102 — steps of exactly 1/256, straddling
+`MIN_SEPARATION` of 0.10. Whether a given issue is refused or aligned is decided
+by one bit.
+
+### What this leaves standing
+
+Only run structure. Every needle that got through averages **1.1 to 1.7 slots a
+run**, against 36.0 to 200.0 for every confirmed-good pairing in the survey — a
+gap of more than twenty times, where both calibration statistics overlap
+outright. `verdict` calls all seven `Fragmented`, and since both `align` paths
+now print the verdict, all seven say so on screen.
+
+Two things follow. The decision not to ship a margin guard was correct, and by a
+wider margin than the evidence available at the time showed. And a reader must
+not treat "the solver accepted this pair" as meaning the editions correspond —
+acceptance is a statement about calibration, and only the verdict is a statement
+about the alignment.
+
+### Where the material is
+
+`corpus/incoming/needles/` holds four of the twenty-two, chosen as the extremes:
+`colorwalk-comp2` (highest margin and highest separation of any needle),
+`op-xcalendar-2015` (identical to Monster on both calibration statistics),
+and `op-jump-2021-24` and `-31`. The rest are reproducible from the NAS —
+calendars and Jump issues under `needs_processing/_op/DLRAW.TO_One_Piece_ vol
+01-109/`, and Color Walk Compendium 2 under `needs_processing/manga/`, which is
+316 pages at 410 MB each and should be sampled rather than copied.
 
 ## Provenance: where the measured material came from
 

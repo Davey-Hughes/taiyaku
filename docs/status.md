@@ -18,7 +18,7 @@ started.
 
 ## What is built
 
-Two crates, 36 tests, no dependencies beyond `image`, `zip`, `rayon` and `serde`.
+Two crates, 47 tests, no dependencies beyond `image`, `zip`, `rayon` and `serde`.
 
 `taiyaku-core` is the portable half — no I/O, so it compiles to WebAssembly:
 
@@ -34,7 +34,7 @@ decoding, fingerprinting, the content-addressed cache, the HTML report.
 Four commands:
 
 ```
-taiyaku align  <a-member>... -- <b-member>...   [--write FILE] [--split-spreads] [--ltr]
+taiyaku align  <a-member>... -- <b-member>...   [--write FILE] [--split-spreads] [--ltr] [--stats]
 taiyaku verify <a-member>... -- <b-member>...   [--out FILE] [--sidecar FILE]
 taiyaku topology <hub>... -- <spoke>... -- <spoke>...
 taiyaku lookup <taiyaku.json> <from> <to> <page>...
@@ -44,6 +44,10 @@ taiyaku lookup <taiyaku.json> <from> <to> <page>...
 against seven chapter files, or two tankōbon against one deluxe volume. `verify`
 writes a contact sheet for looking at what the aligner decided. `lookup` resolves a
 page through a written sidecar, which is the operation a reader performs.
+`--stats` prints what calibration measured and what shape came out — noise,
+signal, separation, margin, run count, average run length and the verdict — one
+line each, in a fixed field order so a survey can collect them into a table.
+`scripts/margin-survey.sh` is that survey.
 
 ## What is settled
 
@@ -57,6 +61,15 @@ alternative that lost.
   globally. This is what refuses unrelated volumes.
 - **Fragmentation as the quality signal**, read together with coverage — neither is
   sufficient alone.
+- **Fragmentation is judged on average run length**, not runs per hundred pages.
+  Measured across the corpus, every confirmed-good pairing runs 36.0 to 200.0
+  slots a run and everything that must not pass 6.8 or below, with no overlap;
+  the threshold sits at 27.0, three quarters of the weakest good figure, capped
+  by the edition's own length because nothing shorter than 146 slots has been
+  measured. Both measures separate on this corpus once refusals are gated on
+  coverage; average run length was chosen because it states the property in
+  slots rather than per hundred pages, so it does not shift with the edition's
+  length.
 - **Slots, not pages, as the addressed unit.** A slot is a whole page or one half of
   a joined spread. Spreads expand before solving, so the alignment stays strictly
   1:1 and the solver never learns they exist.
@@ -84,16 +97,33 @@ Everything here is a measurement against the library, not a synthetic test.
 | Unrelated volumes | refused |
 | **A mislabelled file** (Bocchi *Gaiden* filed as v01) | refused, and its real counterpart found |
 | Art book ↔ manga | pairs everything and should not — see below |
+| **Twenty-two needles** (calendars, Jump issues, two art books) | 7 clear calibration and pair 100%; all 7 flagged `FRAGMENTED` |
 
 ## What is known to be wrong or missing
 
 Stated plainly because each is a thing a reader would hit.
 
-**A small needle in a large haystack always aligns.** When side A is much shorter
-than side B, the DP inserts gaps in B freely, so A comes back fully covered no
-matter how unrelated the two are. Coverage-based refusal does not work in that
-direction; margins separate cleanly where counts do not. This is the gap the art
-book experiment exposed, and it is the most important open correctness issue.
+**A small needle in a large haystack always aligns — but `verdict()` already
+catches it, and the tool was not saying so.** When side A is much shorter than
+side B, the DP inserts gaps in B freely, so A comes back fully covered no
+matter how unrelated the two are. Measured across twenty-two needles — One
+Piece calendars, weekly Jump issues carrying chapters no volume in the pair
+contains, and two art books — seven cleared calibration, and every one of the
+seven paired 100% of its pages with nothing unmatched.
+
+**Neither calibration statistic can refuse them, which is now measured rather
+than suspected.** A One Piece art book against Go-Toubun no Hanayome — a
+different series by a different artist — posts a margin of 0.020, beating four
+confirmed-good pairings, and a separation of 0.145, beating seven. So margin is
+not a weak signal but an inverted one, and `MIN_SEPARATION` cannot be raised to
+catch needles without refusing genuine volumes. No margin guard ships.
+
+What does separate is run structure: every needle that got through averages 1.1
+to 1.7 slots a run against 36.0 to 200.0 for every confirmed-good pairing.
+`verdict()` calls all seven `Fragmented`, and both `align` paths now print that
+verdict rather than one of them discarding it. **The consequence for a reader is
+that acceptance is a statement about calibration, not about the alignment —
+only the verdict is the latter.** See "Twenty-two needles" in `notes.md`.
 
 **Art books cannot be aligned and the solver does not say so.** Reading them works.
 Linking their pages to the manga pages they came from is a different problem —
@@ -113,12 +143,28 @@ by the person running the tool.
 Roughly in order. The first two are small and unblock things; the third is the large
 piece.
 
-### 1. Refuse on margins, not just counts
+### 1. Refuse on margins, not just counts — measured, and margin does not fit
 
-The needle-in-a-haystack gap is a correctness issue and everything else is built on
-the refusal being trustworthy. Average run length is probably the better statistic
-to expose than runs-per-hundred: measured, a genuine section ran 103 slots where
-noise ran 1.8 to 2.1.
+The candidate fix was measured against the corpus rather than shipped. Margins
+are quantised to whole 256ths, and the corpus's one confirmed needle (Color
+Walk, margin 0.004) sits exactly one bit below its weakest confirmed-good
+pairing (Monster's 2:1 repagination, margin 0.008). No safety factor fits in a
+one-bit gap, so no margin threshold ships. Average run length carries the case
+instead — every confirmed-good pairing at 36.0 to 200.0 slots, everything else
+at 6.8 or below — and on this corpus runs per hundred pages separates as well,
+once refusals are gated on coverage; the swap was made because run length is
+stated in slots rather than per hundred pages, not because the old measure
+could not tell these rows apart. `verdict()` already called the needle case
+`Fragmented`; both `align` paths now print that verdict, so the case that
+opened this item is no longer silent.
+**Closed.** Twenty-two needles have since been measured, and they settle it
+harder than the survey could: a needle outscores four confirmed-good pairings
+on margin and seven on separation, so neither calibration statistic can be made
+to refuse this case. Only run structure separates, by a factor of twenty. What
+remains open is narrower and belongs to the reader rather than the solver —
+`Fragmented` is reported and nothing refuses on it, so a reader consuming a
+sidecar has to look at the verdict rather than assume acceptance means
+correspondence.
 
 ### 2. Duplicate resolution as a command
 
@@ -157,6 +203,10 @@ material now covers repagination at 2:1 and 4:1, editions published entirely as
 joined spreads, letterboxed scans, archival TIFFs at 430 MB per page, three
 independent scans of one volume, and at least two files that are not what their
 names claim.
+
+It now also holds **negative** material, which it lacked: `incoming/needles/`
+keeps four short unrelated pairings that the solver accepts and should not. A
+corpus of things that ought to work can only measure one half of a guard rail.
 
 The awkward material is the valuable material. Every guard rail in the solver exists
 because something in this corpus broke without it.

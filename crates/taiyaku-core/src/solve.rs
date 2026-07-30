@@ -27,8 +27,62 @@ pub fn similarity(a: PageHash, b: PageHash) -> f32 {
 /// only has to break ties between equally plausible paths.
 const GAP_PENALTY: f32 = 0.05;
 
-/// Choose the similarity below which a pairing is not worth making, from the
-/// two editions themselves.
+/// What the two editions look like to each other, before any pairing is made.
+///
+/// The numbers are returned rather than collapsed to a yes-or-no because they
+/// are the explanation for the answer. A refusal with no figures beside it is
+/// not reviewable, and `align --stats` exists to print these.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Calibration {
+    /// Median of every cell in the similarity matrix. Most cells are
+    /// non-matches, so this estimates the noise level. A median rather than a
+    /// mean because blank pages score 1.0 against each other and drag a mean up.
+    pub noise: f32,
+    /// Median of each A page's best match.
+    ///
+    /// Deliberately the median, which refuses a pair where only part of A has
+    /// counterparts — a whole volume against one of its own chapters, say —
+    /// because most of A then really does match nothing and the median lands on
+    /// noise. Estimating from a high percentile instead fixes that case and
+    /// costs more than it buys: with the 90th percentile, Go-Toubun's raw
+    /// against Kaguya's English release pairs 146 of 195 pages instead of being
+    /// refused, and Kaguya's own alignment degrades from 8 runs and 204 pages
+    /// paired to 12 and 201 as the raised floor rejects real matches.
+    pub signal: f32,
+    /// Median of each A page's distance from its best match to its runner-up.
+    ///
+    /// This is the statistic that does not inflate with the length of B. A
+    /// row's best is a maximum over `|B|` candidates and climbs as candidates
+    /// are added, for reasons unrelated to whether the editions correspond;
+    /// the gap from that best to the second best does not. The survey measures
+    /// Color Walk's art book pages against a One Piece volume at a margin of
+    /// 0.004 — one bit of a 256-bit hash — where a genuine pairing of the same
+    /// shape sits an order of magnitude higher.
+    ///
+    /// Being a median of `best - runner_up`, this is never negative. The signed
+    /// per-page figures the notes quote for the art book are `confidence`'s
+    /// margin, a different quantity: that one scores the counterpart the
+    /// alignment actually chose against its best rival, so it goes negative
+    /// when a better-scoring candidate was passed over.
+    pub margin: f32,
+    /// The similarity below which a pairing is not worth making, midway
+    /// between noise and signal.
+    pub floor: f32,
+}
+
+impl Calibration {
+    /// How far the signal stands clear of the noise.
+    pub fn separation(&self) -> f32 {
+        self.signal - self.noise
+    }
+
+    /// Whether any pairing between these two editions is worth making.
+    pub fn accepted(&self) -> bool {
+        self.separation() >= MIN_SEPARATION
+    }
+}
+
+/// Measure the two editions against each other.
 ///
 /// A fixed threshold cannot work. Measured across the corpus, correct matches
 /// land anywhere from 0.65 to 0.98 depending on which pair of editions is being
@@ -36,46 +90,43 @@ const GAP_PENALTY: f32 = 0.05;
 /// sit near 0.5 throughout. What identifies a real match is therefore its
 /// distance from that noise, not its absolute value.
 ///
-/// Most cells in the matrix are non-matches, so their median estimates the noise
-/// level. A median rather than a mean because the population has a long tail —
-/// blank pages score 1.0 against each other and drag a mean up.
-///
-/// The signal is the **median** of each page's best match. That deliberately
-/// refuses a pair where only part of A has counterparts — a whole volume against
-/// one of its own chapters, say — because most of A really does match nothing and
-/// the median lands on noise.
-///
-/// Estimating the signal from a high percentile instead was tried, and it does
-/// fix that case. It was reverted, because measuring the consequences showed the
-/// trade is bad: with the 90th percentile, Go-Toubun's raw against Kaguya's
-/// English release pairs 146 of 195 pages instead of being refused, and Kaguya's
-/// own alignment degrades from 8 runs and 204 pages paired to 12 and 201 as the
-/// raised floor starts rejecting genuine matches.
-///
-/// Refusing unrelated works is a correctness property that the identity oracle
-/// rests on. Aligning a volume against a single chapter is a diagnostic
-/// convenience. Trading the first for the second is not worth it, and a partial
-/// edition remains refused by design.
-///
-/// Returns `None` when the two editions show no correspondence worth trusting.
-pub fn calibrate_floor(a: &[PageHash], b: &[PageHash]) -> Option<f32> {
+/// Returns `None` only when a side has no pages at all.
+pub fn calibrate(a: &[PageHash], b: &[PageHash]) -> Option<Calibration> {
     if a.is_empty() || b.is_empty() {
         return None;
     }
     let mut all: Vec<f32> = Vec::with_capacity(a.len() * b.len());
     let mut best: Vec<f32> = Vec::with_capacity(a.len());
+    let mut margins: Vec<f32> = Vec::with_capacity(a.len());
     for pa in a {
-        let mut row_best = 0.0f32;
+        let (mut row_best, mut row_second) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
         for pb in b {
             let s = similarity(*pa, *pb);
             all.push(s);
-            row_best = row_best.max(s);
+            if s > row_best {
+                row_second = row_best;
+                row_best = s;
+            } else if s > row_second {
+                row_second = s;
+            }
         }
         best.push(row_best);
+        // A single-page B has no runner-up, so the score stands alone. This
+        // matches how `confidence` treats the same case rather than inventing
+        // a second convention for it.
+        margins.push(match row_second.is_finite() {
+            true => row_best - row_second,
+            false => row_best,
+        });
     }
     let noise = median(&mut all);
     let signal = median(&mut best);
-    (signal - noise >= MIN_SEPARATION).then_some((noise + signal) / 2.0)
+    Some(Calibration {
+        noise,
+        signal,
+        margin: median(&mut margins),
+        floor: (noise + signal) / 2.0,
+    })
 }
 
 /// How far the signal must stand clear of the noise before any pairing is
@@ -124,8 +175,9 @@ pub fn solve(a: &[PageHash], b: &[PageHash]) -> Vec<Run> {
     if a.is_empty() {
         return Vec::new();
     }
-    let Some(floor) = calibrate_floor(a, b) else {
-        return all_unmatched(a.len());
+    let floor = match calibrate(a, b) {
+        Some(cal) if cal.accepted() => cal.floor,
+        _ => return all_unmatched(a.len()),
     };
     let (m, n) = (a.len(), b.len());
     let at = |i: usize, j: usize| i * (n + 1) + j;
@@ -232,12 +284,16 @@ pub enum Verdict {
 
 /// Judge an alignment from its shape.
 ///
-/// Coverage is checked before fragmentation, and that order is the whole point.
-/// A refused pair is a single gap run covering everything, which on a
-/// runs-per-page measure scores better than any correct alignment — so
-/// fragmentation alone calls a total refusal excellent. Measured across the
-/// corpus: refused sits near 1 run per hundred pages, correct at 3 to 8, and
-/// aligned-but-wrong at 22 to 45.
+/// Coverage is checked before fragmentation, and that order still matters. A
+/// refused pair is a single gap run covering everything, which
+/// `average_run_length` reports as 0.0 — below the fragmentation threshold, so
+/// without this check first a total refusal would read as `Fragmented` rather
+/// than `Refused`. The two mean different things: refused says nothing
+/// corresponds, fragmented says something did but too little of it to trust.
+/// Measured across the corpus: every confirmed-good pairing averages 36.0
+/// slots a run or more, and everything that must not pass 6.8 or fewer — 6.8
+/// being the one-chapter-to-volume subset, with the known-bad copies, the
+/// needle and the unrelated pairs all at 4.8 or below.
 pub fn verdict(runs: &[Run], pages: usize) -> Verdict {
     let paired: u32 = runs
         .iter()
@@ -247,21 +303,85 @@ pub fn verdict(runs: &[Run], pages: usize) -> Verdict {
     if pages == 0 || paired == 0 {
         return Verdict::Refused;
     }
-    // Fragmentation is only meaningful once something was paired.
-    match 100.0 * runs.len() as f32 / pages as f32 > FRAGMENTED_RUNS_PER_HUNDRED {
+    // Fragmentation is only meaningful once something was paired. The threshold
+    // is capped by the edition's own length because it is measured in absolute
+    // slots: an edition shorter than the constant could never reach it, and a
+    // pairing that is one clean run averages exactly its own length, so it stays
+    // `Sound` at any size.
+    match average_run_length(runs) < MIN_AVERAGE_RUN.min(pages as f32) {
         true => Verdict::Fragmented,
         false => Verdict::Sound,
     }
 }
 
-/// Runs per hundred pages above which an alignment is confetti rather than a
+/// Average paired-run length below which an alignment is confetti rather than a
 /// correspondence.
 ///
-/// Provisional, and the gap it sits in is wide but thinly populated: around
-/// twenty confirmed-good pairings measure at or under 8, and the three known
-/// mislabelled files at 22, 34 and 45. Nothing has been measured between, so the
-/// midpoint is a guess placed on the cautious side of the good examples.
-const FRAGMENTED_RUNS_PER_HUNDRED: f32 = 15.0;
+/// Measured, not guessed. Across the corpus survey every confirmed-good pairing
+/// averages 36.0 slots a run or more, up to 200.0 for a pair that is one run
+/// covering the whole volume; everything that must not pass averages 6.8 or
+/// fewer. That 6.8 is the one-chapter-to-volume subset; the highest among the
+/// known-bad copies, the needle and the unrelated pairs is 4.8. This sits at
+/// three quarters of the weakest good figure, clearing 6.8 by nearly four
+/// times (27.0 / 6.8 = 3.97).
+///
+/// This replaced runs per hundred pages, but not because that measure failed on
+/// this corpus: gated on coverage it separates too, the good rows running 0.5 to
+/// 4.9 per hundred and everything that must not pass 21.2 to 100.0. The swap was
+/// made because run length states the property in slots and so does not have to
+/// be rescaled by the edition's length before it means anything, and because the
+/// two disagree on a shape no corpus row happens to take — twenty paired runs of
+/// two slots across 210 pages reads as 9.5 per hundred and therefore sound,
+/// while averaging two slots a run.
+///
+/// The old measure's hole at the bottom is real and already gated: a wholly
+/// refused pair is one gap run covering everything and so scores 0.5 per
+/// hundred, matching the best correct alignment measured — the One Piece v092
+/// identity pairing, one run over 200 slots, also scores 0.5 — and beating every
+/// other. Average run length excludes gap runs by construction, so the same pair
+/// reports 0.0, which is equally below the threshold and equally needs coverage
+/// checked first — see `verdict`.
+///
+/// `verdict` caps this by the edition's own length, because the constant is
+/// unmeasured below 146 slots: the shortest confirmed-good pairing in the
+/// survey is Kobayashi v01 at 146, so nothing here says what a twenty-page
+/// one-shot should score. Uncapped, such an edition is `Fragmented` by
+/// arithmetic — its average cannot exceed its length — however cleanly it
+/// aligns.
+///
+/// Making the threshold *proportional* to the length is the obvious
+/// alternative, and it fails on this corpus: Color Walk's nine art book pages
+/// score 1.0 / 9 = 0.11 where Nausicaä's genuine 4:1 repagination scores
+/// 46.1 / 600 = 0.077, so the needle would outrank a real alignment. The cap
+/// keeps the measured absolute figure wherever it has been measured, and only
+/// relaxes below the range the corpus covers.
+const MIN_AVERAGE_RUN: f32 = 27.0;
+
+/// Mean length of the paired runs, in slots.
+///
+/// Runs per hundred pages and this measure describe the same thing from
+/// opposite ends, and this end may be the more legible one: measured on One
+/// Piece Starter Book against volume 1, the genuine opening section was a
+/// single run of 103 slots where the noise that followed ran 1.8 to 2.1.
+///
+/// Gap runs are excluded deliberately. A refused pair is one gap covering the
+/// whole edition, and including it would report the longest run in the corpus
+/// for the pairing that made none.
+pub fn average_run_length(runs: &[Run]) -> f32 {
+    // Folded rather than collected: the sum and the count are all this needs,
+    // and an intermediate allocation is not worth making in the crate that
+    // compiles to WebAssembly, on a path an align walks up to three times.
+    let (total, count) = runs
+        .iter()
+        .filter(|r| r.b.is_some())
+        .fold((0u32, 0u32), |(total, count), run| {
+            (total + run.a.len(), count + 1)
+        });
+    match count {
+        0 => 0.0,
+        _ => total as f32 / count as f32,
+    }
+}
 
 /// How well one page's pairing is supported by the evidence.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -350,6 +470,17 @@ mod tests {
     fn degrade(p: PageHash, bits: u32) -> PageHash {
         let mut w = p.0;
         for k in 0..bits {
+            w[(k / 64) as usize] ^= 1 << (k % 64);
+        }
+        PageHash(w)
+    }
+
+    /// Flip `bits` bits starting at `start`, so two degradations can be made
+    /// the same distance from a common original while differing from each
+    /// other. `degrade` always flips from bit zero, which cannot express that.
+    fn degrade_at(p: PageHash, start: u32, bits: u32) -> PageHash {
+        let mut w = p.0;
+        for k in start..start + bits {
             w[(k / 64) as usize] ^= 1 << (k % 64);
         }
         PageHash(w)
@@ -534,5 +665,132 @@ mod tests {
             runs,
             vec![Run::paired(PageRange::new(0, 4), PageRange::new(0, 4))]
         );
+    }
+
+    /// Margin is what does not inflate with the length of B. A row's best is a
+    /// maximum over every candidate, so it climbs as candidates are added; the
+    /// distance from that best to the runner-up does not. No guard uses it:
+    /// calibration carries it so `align --stats` can print it, and the survey
+    /// that printed it is what rejected the guard.
+    #[test]
+    fn the_margin_is_the_median_gap_from_a_row_s_best_to_its_runner_up() {
+        // Every A page has a counterpart 8 bits away and a decoy 40 bits away,
+        // so every row's margin is exactly (40 - 8) / 256.
+        let a: Vec<PageHash> = (1..=3).map(h).collect();
+        let b: Vec<PageHash> = a
+            .iter()
+            .map(|p| degrade(*p, 8))
+            .chain(a.iter().map(|p| degrade(*p, 40)))
+            .collect();
+
+        let cal = calibrate(&a, &b).expect("both sides have pages");
+
+        assert!((cal.margin - 32.0 / 256.0).abs() < 1e-6, "{cal:?}");
+        assert!(cal.signal > 0.95, "{cal:?}");
+        assert!(cal.noise < 0.60, "{cal:?}");
+        // The floor is still the midpoint of noise and signal, unchanged.
+        assert!(
+            (cal.floor - (cal.noise + cal.signal) / 2.0).abs() < 1e-6,
+            "{cal:?}"
+        );
+    }
+
+    /// Margin handling has two untested edge cases: a missing runner-up when B
+    /// is single-page, and a perfect tie between best and runner-up. Regression
+    /// in either would go undetected.
+    #[test]
+    fn the_margin_is_the_best_when_b_has_one_page_and_zero_for_tied_candidates() {
+        // B with one page: no runner-up, so margin is the best similarity itself.
+        let a_single = vec![h(1)];
+        let b_single = vec![degrade(a_single[0], 20)];
+
+        let cal_single = calibrate(&a_single, &b_single).expect("both sides have pages");
+        let expected_margin = similarity(a_single[0], b_single[0]);
+        assert!(
+            (cal_single.margin - expected_margin).abs() < 1e-6,
+            "{cal_single:?}"
+        );
+
+        // B with two equidistant pages: best and runner-up are tied, so margin is zero.
+        let a_tie = vec![h(2)];
+        let b_tie = vec![
+            degrade(a_tie[0], 10),        // Bits 0-9
+            degrade_at(a_tie[0], 10, 10), // Bits 10-19
+        ];
+
+        // Both pages score identically, verifying the tie setup.
+        let s1 = similarity(a_tie[0], b_tie[0]);
+        let s2 = similarity(a_tie[0], b_tie[1]);
+        assert!((s1 - s2).abs() < 1e-6, "equidistant setup failed");
+
+        let cal_tie = calibrate(&a_tie, &b_tie).expect("both sides have pages");
+        assert!((cal_tie.margin - 0.0).abs() < 1e-6, "{cal_tie:?}");
+    }
+
+    /// Average paired-run length is the cheaper statement of what
+    /// fragmentation measures, and the survey needs it to decide whether it is
+    /// also the better one. Gap runs are excluded: a refused pair is one long
+    /// gap, and counting it would make a total refusal look like the longest
+    /// run in the corpus.
+    #[test]
+    fn average_run_length_counts_paired_runs_only() {
+        let runs = vec![
+            Run::paired(PageRange::new(0, 9), PageRange::new(0, 9)), // 10 slots
+            Run::gap(PageRange::new(10, 109)),                       // ignored
+            Run::paired(PageRange::new(110, 129), PageRange::new(10, 29)), // 20 slots
+        ];
+
+        assert!((average_run_length(&runs) - 15.0).abs() < 1e-6);
+
+        // A refusal has no paired run at all, and must not divide by zero.
+        let refused = vec![Run::gap(PageRange::new(0, 209))];
+        assert_eq!(average_run_length(&refused), 0.0);
+    }
+
+    /// A threshold fixed in absolute slots cannot be met by an edition shorter
+    /// than the threshold. A legitimate twenty-page one-shot that aligns as one
+    /// perfect run averages twenty slots and would be called `Fragmented` by
+    /// arithmetic alone — and the constant says nothing about that size, being
+    /// measured on pairings of 146 slots and up. One clean run is the best shape
+    /// an alignment can have, so it has to read `Sound` at any length.
+    #[test]
+    fn a_short_edition_aligning_as_one_run_is_sound() {
+        let runs = vec![Run::paired(PageRange::new(0, 19), PageRange::new(0, 19))];
+
+        // Below the bare constant, which is what makes this the failing case.
+        assert!(average_run_length(&runs) < MIN_AVERAGE_RUN);
+        assert_eq!(verdict(&runs, 20), Verdict::Sound);
+
+        // The cap must not rescue a needle. Color Walk's nine art book pages
+        // against a One Piece volume pair one slot at a time, which is confetti
+        // at nine pages exactly as it is at nine hundred.
+        let needle: Vec<Run> = (0..9)
+            .map(|i| Run::paired(PageRange::new(i, i), PageRange::new(i * 20, i * 20)))
+            .collect();
+        assert_eq!(verdict(&needle, 9), Verdict::Fragmented);
+    }
+
+    /// The case that distinguishes the two fragmentation measures, which most
+    /// do not: twenty paired runs of two slots each across 210 pages is 9.5
+    /// runs per hundred, comfortably under the old threshold of 15 and so
+    /// called sound, while averaging two slots a run. Twenty runs of two is
+    /// confetti whatever the page count says, and the survey put every
+    /// confirmed-good pairing at 36 slots a run or better.
+    #[test]
+    fn a_short_run_average_is_fragmented_even_when_runs_per_page_looks_healthy() {
+        let runs: Vec<Run> = (0..20)
+            .map(|i| {
+                Run::paired(
+                    PageRange::new(i * 10, i * 10 + 1),
+                    PageRange::new(i * 10, i * 10 + 1),
+                )
+            })
+            .collect();
+
+        // The measure this replaces would have called it sound.
+        assert!(100.0 * runs.len() as f32 / 210.0 < 15.0);
+        assert!(average_run_length(&runs) < 3.0);
+
+        assert_eq!(verdict(&runs, 210), Verdict::Fragmented);
     }
 }

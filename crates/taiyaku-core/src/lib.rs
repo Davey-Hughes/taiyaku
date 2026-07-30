@@ -18,7 +18,8 @@ pub use sidecar::{
 };
 pub use slot::{Direction, Half, Slot, expand, is_spread, spread_flags};
 pub use solve::{
-    PageConfidence, PageHash, Verdict, calibrate_floor, confidence, similarity, solve, verdict,
+    Calibration, PageConfidence, PageHash, Verdict, average_run_length, calibrate, confidence,
+    similarity, solve, verdict,
 };
 
 /// An inclusive range of page indices within a single edition.

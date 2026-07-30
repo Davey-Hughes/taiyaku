@@ -14,12 +14,13 @@ mod fingerprint;
 mod naming;
 mod pages;
 mod report;
+mod stats;
 
 use std::path::PathBuf;
 
 use taiyaku_core::{
-    Alignment, Direction, Edition, Half, Member, Run, Sidecar, Slot, SolverInfo, Source, Verdict,
-    Work, compose, confidence, counterpart, entries_from_runs, solve, verdict,
+    Alignment, Direction, Edition, Half, Member, Run, Sidecar, Slot, SolverInfo, Source, Work,
+    compose, confidence, counterpart, entries_from_runs, solve,
 };
 
 fn main() {
@@ -46,7 +47,7 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("       taiyaku topology <hub>... -- <spoke>... -- <spoke>...");
             println!("       taiyaku lookup <taiyaku.json> <from> <to> <page>...");
             println!();
-            println!("align options: --split-spreads --ltr --write FILE --title NAME");
+            println!("align options: --split-spreads --ltr --stats --write FILE --title NAME");
             println!("               --name-a KEY --name-b KEY");
             Ok(())
         }
@@ -450,6 +451,7 @@ fn cached_edition(
 fn align(args: &[String]) -> Result<(), String> {
     let (a_members, b_members) = split_editions(args)?;
     let split_spreads = args.iter().any(|a| a == "--split-spreads");
+    let show_stats = args.iter().any(|a| a == "--stats");
 
     if !split_spreads {
         let a_pages = pages::read_edition(&a_members)?;
@@ -458,6 +460,14 @@ fn align(args: &[String]) -> Result<(), String> {
         let b = fingerprint::fingerprint_edition(&b_pages)?;
         eprintln!("A: {} pages | B: {} pages", a.len(), b.len());
         let runs = solve(&a, &b);
+        if show_stats {
+            let cal = taiyaku_core::calibrate(&a, &b);
+            eprintln!(
+                "{}",
+                stats::calibration_line(cal.as_ref(), a.len(), b.len())
+            );
+            eprintln!("{}", stats::shape_line(&runs, a.len()));
+        }
         report_summary(&runs, a.len());
         return Ok(());
     }
@@ -491,6 +501,14 @@ fn align(args: &[String]) -> Result<(), String> {
     );
 
     let runs = solve(&a_slots_hashes, &b);
+    if show_stats {
+        let cal = taiyaku_core::calibrate(&a_slots_hashes, &b);
+        eprintln!(
+            "{}",
+            stats::calibration_line(cal.as_ref(), a_slots_hashes.len(), b.len())
+        );
+        eprintln!("{}", stats::shape_line(&runs, a_slots_hashes.len()));
+    }
     let mut whole = 0u32;
     let mut halves = 0u32;
     let mut gaps = 0u32;
@@ -539,6 +557,12 @@ fn align(args: &[String]) -> Result<(), String> {
         "{} runs | {whole} whole pairings | {halves} involving a spread half | {gaps} unmatched slots",
         runs.len()
     );
+    // The verdict was previously printed only in the plain path, so the
+    // documented way of running the tool - `--split-spreads`, which
+    // corpus/README.md says to pass essentially always - never showed it. An
+    // art book paired page-for-page against a volume looked like a clean
+    // result.
+    eprintln!("{}", stats::verdict_sentence(&runs, a_slots.len()));
 
     if let Some(out) = option_value(args, "--write") {
         let a_name = slug(&a_members, option_value(args, "--name-a"));
@@ -578,12 +602,16 @@ fn align(args: &[String]) -> Result<(), String> {
                 // The floor the solver actually used, not a placeholder: it is
                 // calibrated from these two editions and a re-solve needs it to
                 // be reproducible.
-                solver: taiyaku_core::calibrate_floor(&a_slots_hashes, &b).map(|floor| {
-                    SolverInfo {
+                // Only a calibration the solver accepted, so a refused pair
+                // records no solver block rather than a floor that was never
+                // used. `calibrate` reports its figures either way; `accepted`
+                // is what decides whether they drove an alignment.
+                solver: taiyaku_core::calibrate(&a_slots_hashes, &b)
+                    .filter(taiyaku_core::Calibration::accepted)
+                    .map(|cal| SolverInfo {
                         hash: "dhash-16".to_string(),
-                        floor,
-                    }
-                }),
+                        floor: cal.floor,
+                    }),
                 runs: {
                     // The weakest per-page margin inside each run, which is
                     // what the verification report shades on. Storing it means
@@ -637,22 +665,19 @@ fn report_summary(runs: &[Run], a_len: usize) {
     }
     // Fragmentation, not coverage, is what tells a real alignment from a
     // plausible-looking one. A correct pairing is a few long runs; a spurious
-    // one is confetti at roughly the same coverage. Measured on the corpus,
-    // every correct pairing sits at or below 8 runs per hundred pages and every
-    // known-bad one at or above 22 — but that gap is drawn from four series and
-    // is a diagnostic to show the user, not yet a threshold to refuse on.
+    // one is confetti at roughly the same coverage. Runs per hundred pages is
+    // kept here as a diagnostic to show the user, not as the thing judged on:
+    // the 18-row survey in docs/notes.md ("The margin survey, and where the
+    // refusal threshold sits") retired it in favour of average run length,
+    // which `verdict_sentence` reports.
     let per_hundred = 100.0 * runs.len() as f64 / a_len.max(1) as f64;
     // The verdict is printed alongside the number because the number alone is
     // misleading: a refusal is one run, which reads as better than any correct
     // alignment on a runs-per-page scale.
-    let call = match verdict(runs, a_len) {
-        Verdict::Refused => "REFUSED - these editions do not correspond",
-        Verdict::Fragmented => "FRAGMENTED - paired, but too broken up to trust",
-        Verdict::Sound => "sound",
-    };
     eprintln!(
-        "{} runs | {paired}/{a_len} pages paired ({:.1}%) | {per_hundred:.1} runs per 100 pages | {call}",
+        "{} runs | {paired}/{a_len} pages paired ({:.1}%) | {per_hundred:.1} runs per 100 pages | {}",
         runs.len(),
-        100.0 * paired as f64 / a_len.max(1) as f64
+        100.0 * paired as f64 / a_len.max(1) as f64,
+        stats::verdict_sentence(runs, a_len)
     );
 }
