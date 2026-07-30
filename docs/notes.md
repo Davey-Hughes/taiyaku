@@ -1609,3 +1609,464 @@ something stranger — rather than a technical prerequisite.
 
 Verify what Komga and Stump support today before planning around this; the
 picture here may be stale.
+
+## Volume-scale repagination works, and art books do not
+
+### Two tankobon into one deluxe volume
+
+`Monster` exists in the library as 18 Japanese tankobon and as the English **Perfect
+Edition**, which is 9 volumes — two tankobon per deluxe volume. That is the
+"release granularity" drift the design listed first, at volume scale rather than
+chapter scale, and nothing in the corpus had tested it.
+
+Raw volumes 1 and 2 together are 444 slots; Perfect Edition volume 1 is 438.
+
+| Pair | runs | paired | per hundred |
+| ---- | ---- | ------ | ----------- |
+| raw v01 + v02 → PE v01 | **13** | 427 of 444 (96.2%) | 2.9 — sound |
+| raw v01 alone → PE v01 | 17 | 219 of 226 | 7.5 — sound |
+
+It works with no changes. Two things are worth drawing out.
+
+The **seam is found without being told about it**. One gap covers slots 217–230,
+which straddles the boundary between the two raw volumes — volume 1's afterword and
+ads followed by volume 2's title page and contents. Fourteen slots that exist on
+the raw side and nowhere in the deluxe edition, correctly marked one-sided rather
+than forced into a pairing.
+
+The **half-covered case also behaves**. Aligning raw volume 1 alone against a
+deluxe volume containing two tankobon leaves half of B with no counterpart, and the
+result is still sound at 7.5 runs per hundred. Fragmentation rises, which is the
+right direction, but not into the refusal band. Coverage, not fragmentation, is
+what identifies a partial pairing.
+
+### Multi-member alignment is the general answer to granularity
+
+The chapter-to-volume case and the tankobon-to-deluxe case turn out to be the same
+mechanism seen from opposite ends: several members on one side, one on the other.
+`align a... -- b...` already concatenates members before solving, so neither needed
+a special path. The only thing that varies is which side is plural.
+
+### Art books cannot be aligned, and the solver does not say so
+
+One Piece **Color Walk 10** is 151 pages at 10200×14039, 430 MB each. Reading them
+works — the TIFF and large-page handling was built for exactly this, and four pages
+fingerprint in 8.6 s at a 3.0 GB peak. Aligning them does not, and the way it fails
+is the point.
+
+Four pages sampled through the book, against One Piece raw volume 105:
+
+```
+4 runs | 4 whole pairings | 0 involving a spread half | 0 unmatched slots
+```
+
+Every page paired. Nothing refused. The margins say what is really going on:
+
+| art book page | matched to | margin |
+| ------------- | ---------- | ------ |
+| img001 | v105 p117 | 0.000 |
+| img040 | v105 p148 | −0.012 |
+| img075 | v105 p171 | 0.020 |
+| img110 | v105 p176 | −0.047 |
+
+All four sit at zero, and two are **negative** — the page chosen was a worse match
+than the runner-up, and was picked only because monotonicity forbade the better
+one. There is no discrimination here at all. A real pairing on this corpus runs an
+order of magnitude above it.
+
+Looking at what the pages actually contain explains why, and says something about
+whether the feature is worth wanting:
+
+- **img040** is rough pencil sketches on a tinted background, with the captions
+  blanked. No manga page it could correspond to.
+- **img075** is a Jump colour spread — plausibly derived from a manga page, but
+  re-cropped from a wider original and printed over a decorative border.
+- **img110** is a composite: one illustration plus merchandise art, character
+  sheets, a QR code and Japanese captions.
+
+So roughly one page in three has any manga counterpart, and even that one is
+re-composed, re-cropped, and framed by decoration that occupies enough of the page
+to dominate a 16×16 hash. The artwork-is-identical premise that the whole approach
+rests on does not hold for an art book.
+
+**Reading art books is already supported and needs nothing.** They are directories
+of images, and taiyaku decodes them.
+
+**Linking art book pages to the manga pages they came from is a different problem**,
+and the DP solver is the wrong instrument for it in three separate ways: the
+correspondence is sparse rather than near-total, unordered rather than monotonic,
+and cross-composition rather than same-artwork. It would want a nearest-neighbour
+search with a margin threshold instead — the same similarity and confidence
+machinery minus the alignment — and it would want a hash that survives re-cropping,
+which dhash does not.
+
+### A small needle in a large haystack always aligns
+
+The art book result exposes a gap in the guard rails that is not specific to art
+books. When side A is much smaller than side B, the DP can insert gaps in B freely,
+so **A is always fully covered** and the unmatched-slot count is zero no matter how
+unrelated the two are. Fragmentation does catch this case — four runs over four
+slots is 100 per hundred — but only because A was tiny. The refusal that works for
+two unrelated volumes of similar length works by coverage, and coverage is
+meaningless in this direction.
+
+Whatever eventually decides "these two do not correspond" needs to look at margins,
+not just at counts. The margin table above separates cleanly from every real
+pairing measured; the run counts do not.
+
+### New corpus material, surveyed not yet ingested
+
+Everything below has a Japanese raw and at least one English counterpart already in
+the library, which roughly triples the number of series available for testing.
+
+| Series | Raw | English editions |
+| ------ | --- | ---------------- |
+| Monster | 18 tankobon | 18-volume, Perfect Edition (9), Perfect Edition Colored (9) |
+| Nausicaä | 7 volumes | Deluxe Edition (2 volumes + extra) |
+| Chainsaw Man | 22 volumes | standard, Digital Colored |
+| Hunter × Hunter | 36 volumes + カラー版 colour (34) | standard, Official Colored |
+| Dungeon Meshi | 12 volumes | standard |
+| Bocchi the Rock | v01–v04, v01–02b, v05, anthology v01–05 | standard, anthology, Gaiden |
+| Tongari Boushi no Atelier | v01–12, v13, v16 | Tongari Boushi no Atelier |
+
+Three cases in there are worth going after specifically:
+
+1. **Nausicaä, 7 raw volumes into 2 deluxe volumes.** A 3.5:1 repagination, harder
+   than the 2:1 Monster case that already works.
+2. **Bocchi volume 1 exists three times** — twice inside the eight-volume archive
+   (`v01-02b` and `v01-04`, different publishers' digital releases) and once from
+   Manga-Zip. Three independent scans of one volume is the material for testing
+   base selection, which is the thing that has been wanted and never had data.
+3. **Monster in three editions at two paginations**, including a coloured Perfect
+   Edition, which puts colour and repagination on the same work.
+
+One archive is empty: `Berserk v01-40 (1990-2018) (Digital SD) (KG Manga)` is a
+zero-byte directory, the 7-Zip failure mode from earlier.
+
+## Choosing a base edition, and a mislabelled file caught in the act
+
+Three series turned out to carry more than one raw scan of the same volume, which
+is the material base selection needed and never had.
+
+### Chainsaw Man volume 1, three scans and a colour edition
+
+Four independent raws of one volume, each aligned against the same English release:
+
+| Raw scan | pages | runs | paired |
+| -------- | ----- | ---- | ------ |
+| `v01b` | **199** | **3** | **183** |
+| `v01` | 198 | 5 | 182 |
+| `v01-02/第01巻` | 198 | 5 | 182 |
+| `カラー版 第01巻` (colour) | 198 | 7 | 182 |
+
+`v01b` wins on every axis at once — one page more than the others, the fewest runs,
+the most pairings — so there is nothing to trade off here and it is the base. That
+will not always be true, and when it is not the ordering has to come from somewhere.
+Pages and pairings measure content; runs measure how cleanly the correspondence
+holds. Content should win, because a missing page cannot be recovered from a
+cleaner alignment of the pages that remain.
+
+Aligning the scans against **each other** is what makes the choice cheap:
+
+| Pair | runs | paired | unmatched |
+| ---- | ---- | ------ | --------- |
+| `v01` vs `v01-02/第01巻` | 1 | 198 of 198 | 0 |
+| `v01` vs `v01b` | 2 | 198 of 198 | 0 |
+| `v01` vs colour | 6 | 195 of 198 | 3 |
+
+A single run covering every slot with nothing unmatched is the identity output the
+design asked for, arrived at from two files that are not byte-identical. Two of
+these three scans are the same pagination; there is no decision to make between
+them and only one needs aligning against anything else. The colour edition is the
+one that genuinely differs, by three pages.
+
+That is the shape of the base-selection tool: align the candidates against one
+another first, collapse the ones that come back as identity, and only then spend
+alignments on the distinct ones.
+
+### Bocchi volume 1, where one of the three was not the same work
+
+The same experiment on Bocchi looked like it was going the same way and then did not:
+
+| Raw scan | pages | → EN v01 |
+| -------- | ----- | -------- |
+| `v01-02b/１巻` | 124 | 6 runs, 123 paired |
+| `v01-04/第01巻` | 125 | 7 runs, 123 paired |
+| `Manga-Zip.info_Bocchi the Rock v01` | 185 | **1 run, 0 paired — refused** |
+
+The first two are the identity case again: 1 run, 124 of 124, nothing unmatched.
+The third was refused against the English edition and against both other scans.
+
+It was refused because it is a different work. The cover reads ぼっち・ざ・ろっく！
+**外伝** 廣井きくりの深酒日記 — the *Gaiden* spinoff, drawn by くみちょう from
+はまじあき's original, following a different character. The file is named as if it
+were main-series volume 1.
+
+The confirmation is that it aligns against the edition it actually corresponds to,
+which the library already had under the right name:
+
+| Pair | result |
+| ---- | ------ |
+| the mislabelled file → **English Gaiden v01** | **8 runs, 182 of 185 paired (98.4%)** |
+| the mislabelled file → main-series raw, all three | refused |
+| main-series raw → English Gaiden | refused |
+
+This is the first time the refusal has fired on a file that was not chosen to be
+wrong. Every earlier test of it paired two volumes picked *because* they were
+unrelated. Here the file arrived labelled as a third scan of Bocchi volume 1, was
+about to be added to the corpus as one, and taiyaku both rejected it and identified
+what it really was. The identification the docs describe as a side effect of
+alignment is not hypothetical.
+
+It also says something about how a library ingest should be shaped. The natural
+move on finding several files claiming to be one volume is to pick between them.
+The right move is to align them against each other first, because "these are the
+same scan", "these are different editions of the same volume" and "one of these is
+not this volume at all" are three different answers and only the last one is
+urgent.
+
+## Four volumes into one, and working out which four
+
+`Nausicaä` is 7 Japanese volumes against a 2-volume English Deluxe Edition. That is
+a deeper repagination than the 2:1 Monster case, and unlike Monster the split is not
+even — 7 does not divide by 2 — so which raw volumes land in which deluxe volume is
+not something you can work out from the counts.
+
+Aligning raw volumes 1 to 4 against Deluxe volume 1, 600 slots against 576:
+
+```
+20 runs | 542 whole pairings | 11 involving a spread half | 47 unmatched slots
+```
+
+553 of 600 slots paired, 3.3 runs per hundred, sound. **4:1 repagination works
+unchanged**, as 2:1 did.
+
+The boundary can be measured rather than assumed. Adding one raw volume at a time:
+
+| Raw volumes | paired | unmatched |
+| ----------- | ------ | --------- |
+| v01 | 139 of 144 | 5 |
+| v01–v02 | 268 of 288 | 20 |
+| v01–v03 | 419 of 452 | 33 |
+| v01–v04 | 553 of 600 | 47 |
+| **v04 alone** | **145 of 148** | **3** |
+
+Volume 4 alone pairs 145 of its 148 slots into Deluxe volume 1, so it is inside it,
+and the edition splits 4 + 3 rather than evenly. **A one-volume probe answers the
+containment question directly** — align each raw volume alone against the deluxe
+volume and read off coverage — which is cheaper than searching over groupings and
+does not need the answer in advance.
+
+The 47 unmatched slots are the same shape as Monster's 17: each raw volume carries
+its own cover, title page, afterword and ads, and a deluxe edition that swallows
+four of them keeps one set. Unmatched slots scale with the number of members
+absorbed, not with how badly the alignment went, which is another reason coverage
+has to be read against the pairing structure rather than on its own.
+
+Nausicaä is also the most spread-dense material in the corpus: 28 joined spreads
+across 572 raw pages, against 3 in the deluxe edition. It is A4-sized artwork and
+Miyazaki uses full spreads heavily, so this is the case where spread handling earns
+the most, and it holds up.
+
+## Sorting 109 volumes' worth of duplicates
+
+The One Piece collection is the messiest thing in the library and the reason the
+identity question came up. Applying the base-selection method to it end to end.
+
+### Inventory first, and most of it is not volumes
+
+579 directories under the release. Only **141 are volume directories**; the other
+438 are weekly Jump issues, calendars, databooks and chapter compilations, at 15 to
+28 pages each. Those 141 resolve to **120 distinct volume-editions, 19 of which have
+more than one copy** — 17 with two, 2 with three.
+
+### A content signature resolves the free cases without transferring anything
+
+Before aligning anything, take per-copy file count, total bytes, and a hash of the
+sorted file-size list. **3 of the 19 came back identical on all three** — the same
+scan filed twice under different groupings. Those need no alignment and no
+transfer; either copy will do.
+
+That left 16 needing real comparison, about 4 GB rather than 12.
+
+### All pairs, not everything against the first copy
+
+The first pass compared each copy against copy 0 and reported volume 77 as three
+mutually unrelated files. It is not. Comparing **all pairs** shows:
+
+| Pair | runs | paired | verdict |
+| ---- | ---- | ------ | ------- |
+| v077 c0–c1 | 104 | 184 of 236 | fragmented |
+| v077 c0–c2 | 100 | 186 of 236 | fragmented |
+| **v077 c1–c2** | **1** | **234 of 234, none unmatched** | **identity** |
+
+c1 and c2 are the same edition and c0 is the outlier — a different crop at
+812×1320 against 764×1200, a different aspect as well as a different size. Anchoring
+on copy 0 hides that, and copy 0 is exactly the copy most likely to be the odd one
+out, because the sort that produced it was by page count. Volume 69 has the same
+shape: c1–c2 is 3 runs at 99% where either against c0 is 8 or 9.
+
+**Duplicate resolution is a clustering problem, not a ranking problem.** Find which
+copies are the same first; only then choose between the ones that differ.
+
+### Identity survives a completely different pagination
+
+The best result in the set is the one that looks least likely on the file listing.
+
+| Volume | copies | result |
+| ------ | ------ | ------ |
+| v092 | 200 images vs **101 images** | **1 run, 200 of 200 slots, nothing unmatched** |
+| v077 | 234 images vs **214 images** | **1 run, 234 of 234 slots, nothing unmatched** |
+
+Half the image count and a perfect identity, because the smaller copy is the
+all-spread edition — two facing pages per image — and slot expansion puts them back
+on the same footing. A file listing says these are different; the alignment says
+they are the same content, and it is right.
+
+This is the strongest argument for slots being the unit the format addresses rather
+than pages. Page counts are a property of packaging. Slot counts are a property of
+the work.
+
+### The full classification
+
+Twenty pairs across the sixteen volume-editions:
+
+| Verdict | pairs | meaning |
+| ------- | ----- | ------- |
+| identity | 2 | same content, drop either |
+| variant | 13 | same volume, genuinely different editions |
+| fragmented | 3 | inspect |
+| refused | 2 | not this volume |
+
+With the 3 signature-identical sets, **5 of 19 duplicated volume-editions are
+resolved with no judgement required**.
+
+### The refusals were right, and they are a different product
+
+Volumes 2 and 3 refused outright — 0 pairings against 202 and 198 slots — despite
+both copies being named for the volume. The second copy in each case comes from
+`ONE PIECE Starter Book v01-03`, and it is a **colour promotional sampler**, not a
+tankōbon. Its volume 2 opens on Nami and a lighthouse in full colour, which is
+Reverse Mountain, not the Buggy arc that tankōbon volume 2 contains.
+
+Starter Book 1 behaves differently again, and instructively. It pairs 195 of 210
+slots against volume 1 — 92% coverage, which taken alone reads as a good match —
+but at 45 runs. The run structure says what the coverage hides:
+
+```
+s0=0-s102=102 -> s2=1L-s104=52L      <- one clean run, 103 slots
+s103=103-s103=103 -> s107=54R        <- then fragments, B skipping around
+s104=104-s104=104 -> s109=55R
+```
+
+It reproduces the opening of volume 1 faithfully and then diverges. That is exactly
+what a sampler is, and **only the run structure distinguishes it from a real
+edition**. Coverage cannot: 92% would pass any threshold worth setting.
+
+### Two guards, and they catch different things
+
+Searching Starter Book 2 against all sixteen local volumes, fourteen refuse cleanly
+at the floor — 1 run, 0 pairings. Two do not: volume 56 admits 192 slots at 91 runs,
+volume 95 admits 188 at 106 runs. Both are noise, and the tell is average run
+length: **1.8 to 2.1 slots**, where a real alignment on this corpus runs to tens or
+hundreds and volume 1's genuine section was a single run of 103.
+
+So the per-pair floor rejects most unrelated material outright, and fragmentation
+catches what slips past it. Neither alone is sufficient, which is worth knowing
+before either gets simplified away. **Average run length is the cheaper statement of
+what fragmentation measures**, and it may be the better one to expose.
+
+### The protocol this suggests
+
+Ordered by cost, each step only running on what the previous could not settle:
+
+1. **Signature** — file count, total bytes, sorted size list. Settles exact
+   duplicates for free.
+2. **All-pairs alignment within the set.** Identity collapses copies that differ
+   only in packaging, including across different image counts.
+3. **Rank what remains** by content first — slots, then pairings — and only then by
+   how cleanly it aligns, per the Chainsaw Man result.
+
+On this collection that is 3 settled free, 2 more collapsed by identity, and 13
+genuine choices left — down from 19 sets to look at, with the two mislabelled ones
+flagged rather than silently ranked.
+
+## Provenance: where the measured material came from
+
+Everything measured above was extracted from archives on the server. The extracted
+copies are working data and deliberately disposable — nothing in this repository
+refers to them by path — but the measurements are only reproducible if the
+provenance is written down, so here it is.
+
+Three locations, all on the NAS:
+
+| Path | Holds |
+| ---- | ----- |
+| `media 1/needs_processing/manga/` | raw archives as downloaded |
+| `media 1/Manga/` | English editions, already organised |
+| `media 1/Manga (RAW)/` | Japanese editions, already organised |
+
+### Which archive each finding came from
+
+| Finding | Archive, under `needs_processing/manga/` | Members |
+| ------- | ---------------------------------------- | ------- |
+| 2:1 repagination | `13DL.ME_Monster vol 01-18.rar` | `…/13DL.ME_Monster v01-06/…第01巻`, `…第02巻` |
+| 4:1 repagination | `(一般コミック) [宮崎駿] 風の谷のナウシカ 全07巻/…第01巻.zip` … `第04巻.zip` | whole zips |
+| Base selection | `DLRAW.AC_Chensoman vol 01-22.rar` | groupings `v01`, `v01b`, `v01-02`, `color v01-11` |
+| Mislabelled *Gaiden* | `Manga-Zip.info_Bocchi the Rock v01.rar` | whole archive |
+| Bocchi real scans | `DLRAW.APP_Bocchi The Rock  vol 01-08.rar` | groupings `v01-02b`, `v01-04` |
+| Duplicate resolution | `DLRAW.TO_One_Piece_ vol 01-109.rar` | extracted whole to `needs_processing/_op` |
+| Art books | `Color Walk 10/`, `Color Walk Compendium 2/` | loose TIFFs, not archived |
+
+English counterparts are in `Manga/` under the obvious names, except two worth
+noting because the name does not match the raw: the Monster raws pair against
+**`Monster - The Perfect Edition`** (9 volumes, not the 18-volume `Monster`), and
+the mislabelled Bocchi file pairs against **`Bocchi the Rock! - Gaiden - Hiroi
+Kikuri no Fukazake Nikki`**.
+
+### Extracting selectively, and the one thing that goes wrong
+
+`bsdtar` reads all of these, including the RAR5 archives that 7-Zip silently turns
+into zero-byte files. Extract single volumes rather than whole archives — the One
+Piece archive alone is 61 GB:
+
+```sh
+bsdtar -xf "$ARCHIVE" "<root>/<grouping>/<volume>/*"
+```
+
+**The pattern must include the archive's own root directory.** Every one of these
+archives wraps its contents in a directory named after the archive, so a pattern
+starting at the grouping silently matches nothing and exits successfully. Two of
+these archives also have a **double space** in that root name — `Bocchi The Rock  vol
+01-08` — which is easy to lose when retyping a path.
+
+List the roots before extracting rather than guessing:
+
+```sh
+bsdtar -tf "$ARCHIVE" | awk -F/ 'NF>=3 {print $1"|"$2}' | sort -u
+```
+
+### Reproducing the headline numbers
+
+```sh
+# 2:1 repagination — 13 runs, 427 of 444 slots
+taiyaku align monster/raw-v01 monster/raw-v02 -- monster/en-pe-v01.cbz --split-spreads
+
+# 4:1 repagination — 20 runs, 553 of 600 slots
+taiyaku align nausicaa/raw-v0{1,2,3,4} -- nausicaa/en-deluxe-v01.cbz --split-spreads
+
+# the mislabelled file against its real counterpart — 8 runs, 182 of 185
+taiyaku align bocchi/raw-v01-src-mangazip -- bocchi/en-gaiden-v01.cbz --split-spreads
+
+# identity across different paginations — 1 run, 200 of 200
+taiyaku align opdup/v092-mono-c0 -- opdup/v092-mono-c1 --split-spreads
+```
+
+The duplicate survey is two steps: build an inventory of every volume directory with
+its file count, then take a signature of file count, total bytes and the hash of the
+sorted file-size list to settle exact duplicates before transferring anything. Only
+what disagrees needs aligning, which on One Piece was 4 GB rather than 12.
+
+One caution learned the expensive way: **compare all pairs within a duplicate set**,
+not every copy against the first. Anchoring on the first copy reported volume 77 as
+three unrelated files when two of them are an exact identity.

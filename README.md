@@ -10,9 +10,9 @@ you're back.
 The name is 対訳 (*taiyaku*), the Japanese term for a bilingual parallel-text edition
 where the original and its translation sit facing each other.
 
-> **Status: design only.** There is no working code in this repository yet. The
-> design lives in [`docs/`](docs/). Read that first if you're wondering whether this
-> is worth your time.
+> **Status: the aligner works, there is no reader yet.** `taiyaku align` pairs two
+> editions and writes a sidecar, measured against eleven series. What is built, what
+> is known broken, and what comes next are in [`docs/status.md`](docs/status.md).
 
 ## The problem
 
@@ -50,6 +50,33 @@ becomes arithmetic on transformed centroids.
 
 Written in Rust (edition 2024). The core compiles to WebAssembly, so the same alignment
 and reading logic runs in the browser and, later, inside a native shell.
+
+## Using it
+
+```sh
+# pair a Japanese raw against an English release and write the sidecar
+taiyaku align raw-v01.cbz -- en-v01.cbz --split-spreads \
+    --name-a raw --name-b en --write taiyaku.json
+
+# one volume against the seven chapter files it corresponds to
+taiyaku align raw-v01.cbz -- en-c001.cbz en-c002.cbz en-c003.cbz
+
+# look at what it decided
+taiyaku verify raw-v01.cbz -- en-v01.cbz --out report.html
+
+# reading raw page 47, which English page is in front of you?
+taiyaku lookup taiyaku.json raw en 47
+```
+
+Members may be `.cbz`, `.cbr`, `.zip`, plain directories, or anything else
+libarchive reads; the format is detected by content rather than by extension.
+Several members on either side of the `--` are concatenated before solving, which
+is how chapters map onto a volume and how two tankōbon map onto one deluxe edition.
+
+`--split-spreads` handles the case where one edition joins a double-page spread into
+a single wide image and the other splits it in two. It is worth passing almost
+always — measured across the corpus, unhandled spreads make a correct alignment look
+broken.
 
 ## Design principles
 
