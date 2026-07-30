@@ -36,6 +36,22 @@ document with no archives present and no solving, and its answers match what
 `align` printed. On Go-Toubun volume 1, raw page 47 resolves to the right half
 of English page 45 either way.
 
+Every call also prints how far the answer can be trusted, alongside the title
+line:
+
+```
+$ taiyaku lookup taiyaku.json raw-mono en-mono 47
+Go-Toubun no Hanayome | 2 editions | reading RightToLeft
+  alignment raw-mono -> en-mono: sound, average run 64.3
+  raw-mono   47 -> en-mono   45 right half
+```
+
+This is printed on every call, not only a bad one — a warning that appears
+sometimes teaches a reader to skip it. It reports rather than refuses: a
+`FRAGMENTED` alignment still resolves every page it can, because `lookup`
+exists to show what the format carries, including on the files most worth
+inspecting.
+
 ## Shape
 
 ```json
@@ -67,21 +83,30 @@ of English page 45 either way.
       "from": "raw-mono",
       "to": "en-mono",
       "by": "solver",
-      "solver": { "hash": "dhash-16", "floor": 0.68 },
+      "solver": { "hash": "dhash-16", "floor": 0.69921875 },
+      "quality": { "verdict": "sound", "slots": 195, "paired": 193, "avg_run": 64.333336 },
       "runs": [
-        { "a": "0",     "b": "0",     "margin": 0.086 },
+        { "a": "0",     "b": "0",     "margin": 0.08984375 },
         { "a": "1" },
-        { "a": "2-5",   "b": "1-4R",  "margin": 0.152 },
+        { "a": "2-5",   "b": "1-4R",  "margin": 0.24609375 },
         { "a": "6" },
-        { "a": "7-194", "b": "5-186", "margin": -0.133 }
+        { "a": "7-194", "b": "5-186", "margin": -0.12890625 }
       ]
     }
   ]
 }
 ```
 
-That is the real alignment of Go-Toubun volume 1, not an illustration. Five runs
-for 195 pages.
+That is the real alignment of Go-Toubun volume 1, not an illustration, and the
+figures are byte-for-byte what the tool writes. `margin`, `floor` and `avg_run`
+are `f32`s and none of them is rounded on the way out: each is written to as
+many digits as it takes to round-trip that `f32`, and no more. The eight decimal
+places on `margin` and `floor` are a property of these particular figures rather
+than of `f32` serialisation. Every margin and floor here is a multiple of 1/256,
+which is the scale a 256-bit hash distance lands on — 0.69921875 is 179/256 —
+and a floor of 0.75 would print as `0.75`. `avg_run` takes six, 64.333336 above.
+Rounding happens only where a figure is *printed*: `lookup`'s trust line reports
+this alignment as an average run of 64.3. Five runs for 195 pages.
 
 ## Why it is that short
 
@@ -198,11 +223,22 @@ correct, occasionally the thing most worth looking at.
 
 ### Alignments and the hub
 
-`hub` names the reference edition. Every other edition aligns to it, and any A→B
-lookup resolves by composing A→hub→B. This is validated rather than assumed:
-across 4,815 page comparisons on two series, composition disagreed with a direct
-solve four times, all in the weakest pairing in the corpus. Loss is about 1.7%,
-in the safe direction — a reader sees "no counterpart" rather than a wrong page.
+`hub` names the reference edition. Every other edition aligns to it, so an A→B
+correspondence can be recovered by composing A→hub→B. That composition is
+validated rather than assumed: across 4,815 page comparisons on two series, it
+disagreed with a direct solve four times, all in the weakest pairing in the
+corpus. Loss is about 1.7%, in the safe direction — a reader sees "no
+counterpart" rather than a wrong page.
+
+**Resolving through the hub is not implemented.** `resolve` walks an alignment
+stored in the direction asked for and nothing else: no stored A→B edge means no
+answer, whatever composing through the hub would have produced, and a B→A
+question is not answered by a stored A→B edge either. Composition here is
+`compose`, over solved runs, which is what `topology` measured; the only place a
+stored document composes is `Sidecar::trust`, which crosses A→hub→B for a
+verdict and takes the worse leg. `lookup` prints that verdict and says plainly
+that it cannot follow it, so the `no counterpart` lines underneath are explained
+rather than mysterious.
 
 Direct edges are permitted for pairs where composition demonstrably loses. The
 measurements say where to spend one: editions furthest from the hub lose 3.5% to
@@ -223,6 +259,58 @@ This exists because JSON has no comments, and it is the better answer anyway.
 file and any annotation floating beside the data is gone, in any format. A field
 survives, is attached to the run rather than merely near it, and the verification
 report can show it. Anything worth writing down about an alignment is data.
+
+### Quality and trust
+
+An alignment may carry a `quality` block:
+
+```json
+"quality": { "verdict": "sound", "slots": 195, "paired": 193, "avg_run": 64.333336 }
+```
+
+`verdict` is `"refused"`, `"fragmented"` or `"sound"`. `slots` and `paired`
+count the alignment's own `from` side — whichever edition the alignment itself
+calls `from`, not necessarily the side a caller looked from. `avg_run` is the
+mean length, in slots, of the runs that paired.
+
+The verdict is a function of the runs, not of calibration, which is why it sits
+on the alignment rather than inside `solver`: the floor decides whether the
+solver accepted a pairing at all, and says nothing about how coherent the
+result is once accepted. Two alignments calibrated to the same floor can still
+land on opposite verdicts.
+
+A reader of this library never reads the stored block directly.
+`Sidecar::quality_of` recomputes it from the runs on every call, and
+`Sidecar::trust` is the verdict-only view, composed through `hub` when there is
+no direct edge and taking the worse of the two legs. A hand edit to the runs
+cannot leave a stale verdict standing beside them, because nothing here trusts
+the block over the runs it summarises. Identity is the one exception: an edition
+corresponds to itself regardless of what a self-alignment's runs would say, so
+`trust(x, x)` is always `sound`.
+
+That is a rule for every reader, not a habit of this one. The stored block is a
+summary of the runs beside it, and a hand edit to those runs can leave it
+behind; a reader that can recompute the verdict from the runs **should**, and
+should treat the stored block as a hint for readers that cannot. The runs are
+the authority.
+
+An absent `quality` block means the document does not say, not that the
+alignment is good — every sidecar written before this field existed is silent
+in exactly this way. That is a statement about the JSON, not about this
+library: `quality_of` never reads the stored block at all, so its presence or
+absence changes nothing for a caller. The silence is not blindness: `quality_of`
+recomputes from the runs whether or not the block was ever written, so a
+pre-field document is still judged correctly the moment it is read, because
+the runs it is judged on were always there.
+
+The threshold behind `verdict` is measured, not chosen. Twenty-two needle
+pairings — cases with no true correspondence, from art books to Jump issues
+aligned against volumes they share no page with — were run through the solver.
+Seven cleared calibration and paired **every page they had**, indistinguishable
+from a real alignment by coverage alone; run shape was the only statistic that
+separated them from genuine pairings, which is why `verdict` judges average run
+length rather than how much of the edition was paired. See `notes.md`,
+"Twenty-two needles, and margin is not merely tight but inverted".
 
 ## Forward compatibility
 

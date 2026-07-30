@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Direction, Half, Slot};
+use crate::{Direction, Half, Run, Slot, Verdict};
 
 /// A contiguous stretch of slots, written the way the sidecar writes it.
 ///
@@ -112,6 +112,16 @@ pub fn entries_from_runs(
         .collect()
 }
 
+/// Where a slot sits in an edition's slot sequence.
+///
+/// A page reference with no half names the first slot of that page, which is
+/// what makes `"7"` mean the same thing whether page 7 is whole or a spread.
+fn slot_index(slots: &[Slot], slot: Slot) -> Option<usize> {
+    slots
+        .iter()
+        .position(|s| s.page == slot.page && (slot.half.is_none() || s.half == slot.half))
+}
+
 /// Resolve a page of one edition to its counterpart in another, from a stored
 /// sidecar alone.
 ///
@@ -127,23 +137,16 @@ pub fn resolve(sidecar: &Sidecar, from: &str, to: &str, page: u32) -> Option<Slo
     let from_slots = sidecar.editions.get(from)?.slots(sidecar.work.reading);
     let to_slots = sidecar.editions.get(to)?.slots(sidecar.work.reading);
 
-    // A whole page occupies one slot; a spread occupies two, and the first of
-    // them is the one a page reference means.
-    let index = |slots: &[Slot], slot: Slot| {
-        slots
-            .iter()
-            .position(|s| s.page == slot.page && (slot.half.is_none() || s.half == slot.half))
-    };
-    let here = index(&from_slots, Slot { page, half: None })? as u32;
+    let here = slot_index(&from_slots, Slot { page, half: None })? as u32;
 
     for entry in &alignment.runs {
-        let start = index(&from_slots, entry.a.start)? as u32;
-        let end = index(&from_slots, entry.a.end)? as u32;
+        let start = slot_index(&from_slots, entry.a.start)? as u32;
+        let end = slot_index(&from_slots, entry.a.end)? as u32;
         if here < start || here > end {
             continue;
         }
         let target = entry.b?;
-        let target_start = index(&to_slots, target.start)? as u32;
+        let target_start = slot_index(&to_slots, target.start)? as u32;
         return to_slots
             .get((target_start + (here - start)) as usize)
             .copied();
@@ -221,6 +224,33 @@ pub struct RunEntry {
     pub note: Option<String>,
 }
 
+/// Whether an alignment is believable, and the figures that say so.
+///
+/// Stored because a reader holding only the document should not have to open
+/// the archives to find out — which is the work the sidecar exists to avoid.
+/// The figures accompany the verdict rather than the verdict standing alone,
+/// because the threshold behind it is a moving policy: it is an average run
+/// length of 27 slots today and was a runs-per-hundred-pages figure a week
+/// ago, so a bare verdict would mean different things in two files written a
+/// week apart.
+///
+/// This is a summary, never an authority. `Sidecar::quality_of` recomputes it
+/// from the runs, so a hand-edited document cannot leave a stale verdict
+/// standing beside contested runs.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Quality {
+    pub verdict: Verdict,
+    /// Slots in the alignment's own `from` edition — not necessarily the
+    /// caller's `from`, since `quality_of` reads a stored edge in either
+    /// direction but runs stay indexed by whichever side the alignment itself
+    /// calls `from`.
+    pub slots: u32,
+    /// How many of those slots found a counterpart.
+    pub paired: u32,
+    /// Mean length of the paired runs, in slots.
+    pub avg_run: f32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Alignment {
     pub from: String,
@@ -228,6 +258,8 @@ pub struct Alignment {
     pub by: Source,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solver: Option<SolverInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<Quality>,
     pub runs: Vec<RunEntry>,
 }
 
@@ -257,6 +289,159 @@ impl Sidecar {
         // Pretty-printed on purpose: the format is meant to diff in git, and a
         // one-line document defeats that entirely.
         serde_json::to_string_pretty(self).expect("sidecar is always serialisable")
+    }
+
+    /// Rebuild solver runs from a stored alignment.
+    ///
+    /// The document addresses slots by page; the solver, the report and the
+    /// verdict address them by index. This is the inverse of
+    /// `entries_from_runs`, and it is what lets a hand-edited file drive a
+    /// report or be judged.
+    ///
+    /// Validated here rather than left to `PageRange::new` and `Run::paired`,
+    /// whose invariants are only `debug_assert`s: a hand-edited span can say
+    /// anything, and a library query answering in `Result` has to turn a
+    /// backwards or mismatched span into an `Err`, not a panic that a debug
+    /// build — which is what the test suite and debug wasm both are — would
+    /// turn into an abort.
+    pub fn runs_of(&self, alignment: &Alignment) -> Result<Vec<Run>, String> {
+        let from_slots = self
+            .editions
+            .get(&alignment.from)
+            .ok_or_else(|| format!("no edition named `{}`", alignment.from))?
+            .slots(self.work.reading);
+        let to_slots = self
+            .editions
+            .get(&alignment.to)
+            .ok_or_else(|| format!("no edition named `{}`", alignment.to))?
+            .slots(self.work.reading);
+
+        // A span such as `4L` names a half of a page that need not be a spread.
+        // Reporting "has no page 4" there is false — the page exists, the half
+        // does not — and it sends a reader looking for something that is right
+        // in front of them. The span is what they would search the file for, so
+        // the message names it, and names the endpoint that failed when the
+        // span covers more than one slot.
+        let at = |slots: &[Slot], want: Slot, span: SlotSpan, side: &str| {
+            slot_index(slots, want).map(|i| i as u32).ok_or_else(|| {
+                let slot = show_slot(want);
+                match slot == span.to_string() {
+                    true => format!("{side} has no slot `{slot}`"),
+                    false => format!("{side} has no slot `{slot}` in span `{span}`"),
+                }
+            })
+        };
+
+        // Resolve a span to a `PageRange`, rejecting one that runs backwards
+        // before `PageRange::new` can assert on it. Named by its own text
+        // (`span`) as well as its side, so the error points at what a person
+        // would search for in the file.
+        let range =
+            |slots: &[Slot], span: SlotSpan, side: &str| -> Result<crate::PageRange, String> {
+                let start = at(slots, span.start, span, side)?;
+                let end = at(slots, span.end, span, side)?;
+                if start > end {
+                    return Err(format!("{side} span `{span}` starts after it ends"));
+                }
+                Ok(crate::PageRange::new(start, end))
+            };
+
+        alignment
+            .runs
+            .iter()
+            .map(|entry| {
+                let a = range(&from_slots, entry.a, "the source edition")?;
+                Ok(match entry.b {
+                    Some(b_span) => {
+                        let b = range(&to_slots, b_span, "the target edition")?;
+                        // `Run::paired` asserts the two sides are the same
+                        // length; a hand edit can easily make that false, and
+                        // that has to come back as an `Err` naming both spans
+                        // rather than panic.
+                        if a.len() != b.len() {
+                            return Err(format!(
+                                "the source edition span `{}` and the target edition span `{}` cover different numbers of slots",
+                                entry.a, b_span
+                            ));
+                        }
+                        Run::paired(a, b)
+                    }
+                    None => Run::gap(a),
+                })
+            })
+            .collect()
+    }
+
+    /// The alignment relating two editions, in whichever direction it is
+    /// stored. A verdict is a property of the pairing rather than of a
+    /// direction, so either orientation answers.
+    fn edge_between(&self, from: &str, to: &str) -> Option<&Alignment> {
+        self.alignments
+            .iter()
+            .find(|a| (a.from == from && a.to == to) || (a.from == to && a.to == from))
+    }
+
+    /// Recompute how believable an alignment is, from the runs in this
+    /// document rather than from the `quality` block stored beside them.
+    ///
+    /// Recomputed rather than read because a hand-corrected alignment is a
+    /// first-class citizen of this format, and an edited run list with an
+    /// unedited verdict next to it is exactly the silent contradiction the
+    /// document is supposed to prevent. Everything needed is present: the runs
+    /// give the paired count and the run lengths, and the edition gives the
+    /// slot count.
+    ///
+    /// `None` when the path cannot be established at all — see `trust`.
+    pub fn quality_of(&self, from: &str, to: &str) -> Option<Quality> {
+        let edge = self.edge_between(from, to)?;
+        let runs = self.runs_of(edge).ok()?;
+        // Runs are indexed by the alignment's own `from` side, whichever
+        // direction the caller asked in.
+        let slots = self.editions.get(&edge.from)?.slots(self.work.reading);
+
+        Some(Quality {
+            verdict: crate::verdict(&runs, slots.len()),
+            slots: slots.len() as u32,
+            paired: crate::paired_slots(&runs),
+            avg_run: crate::average_run_length(&runs),
+        })
+    }
+
+    /// How far a lookup from one edition to another can be trusted.
+    ///
+    /// An edition corresponds to itself by definition, not by anything a
+    /// stored alignment says, so identity is answered before anything is
+    /// consulted — a self-alignment full of confetti runs can leave
+    /// `quality_of("x", "x")` at `Fragmented` while `trust("x", "x")` stays
+    /// `Sound`, and that disagreement is correct rather than a bug: identity
+    /// is a property of the edition, not of a run list that need not even
+    /// exist.
+    ///
+    /// A direct edge, where the format carries one, is the whole answer —
+    /// including a `None` from `quality_of` when the edge exists but cannot
+    /// be read. Composing through the hub in that case would answer a
+    /// different question than the one asked: not "is the edge the caller
+    /// named trustworthy", but "is some other path trustworthy instead".
+    /// Composition is used only when there is no direct edge at all, and then
+    /// it is only as good as its weaker leg, so the two are combined with
+    /// `min` over the verdict ordering.
+    ///
+    /// `None` means the document does not say, which is **not** the same as
+    /// sound: every sidecar written before the `quality` block existed is
+    /// silent, and a reader must not read silence as approval.
+    pub fn trust(&self, from: &str, to: &str) -> Option<Verdict> {
+        if !self.editions.contains_key(from) || !self.editions.contains_key(to) {
+            return None;
+        }
+        if from == to {
+            return Some(Verdict::Sound);
+        }
+        if self.edge_between(from, to).is_some() {
+            return self.quality_of(from, to).map(|quality| quality.verdict);
+        }
+        let first = self.quality_of(from, &self.hub)?.verdict;
+        let second = self.quality_of(&self.hub, to)?.verdict;
+        Some(first.min(second))
     }
 }
 
@@ -541,5 +726,236 @@ mod tests {
         for bad in ["", "-", "4X", "abc", "4-", "-4", "4R-", "1-2-3"] {
             assert!(SlotSpan::parse(bad).is_err(), "should reject {bad:?}");
         }
+    }
+
+    /// The block a reader needs in order to tell a worthless alignment from a
+    /// good one. Measured: seven short unrelated pairings pair every page they
+    /// have and are indistinguishable from a correct alignment on both
+    /// calibration statistics, so the run shape is the only thing that
+    /// separates them and the document has to carry it.
+    #[test]
+    fn an_alignment_carries_its_quality_through_a_round_trip() {
+        let json = r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "a": { "label": "A", "members": [{ "path": "a.cbz", "sha256": "00", "pages": 4 }] },
+            "b": { "label": "B", "members": [{ "path": "b.cbz", "sha256": "01", "pages": 4 }] }
+          },
+          "hub": "a",
+          "alignments": [{
+            "from": "a", "to": "b", "by": "solver",
+            "quality": { "verdict": "sound", "slots": 4, "paired": 4, "avg_run": 4.0 },
+            "runs": [{ "a": "0-3", "b": "0-3" }]
+          }]
+        }"#;
+
+        let sidecar = Sidecar::from_json(json).expect("parses");
+        let quality = sidecar.alignments[0].quality.expect("quality is present");
+        assert_eq!(quality.verdict, Verdict::Sound);
+        assert_eq!(quality.slots, 4);
+        assert_eq!(quality.paired, 4);
+
+        let round_tripped = Sidecar::from_json(&sidecar.to_json()).expect("re-parses");
+        assert_eq!(
+            round_tripped.alignments[0].quality,
+            sidecar.alignments[0].quality
+        );
+    }
+
+    /// Every sidecar written before this field existed lacks it, and those
+    /// files must keep parsing. Absent means unknown, which Task 3's `trust`
+    /// distinguishes from sound.
+    #[test]
+    fn a_document_without_quality_still_parses_and_omits_the_field() {
+        let json = r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "a": { "label": "A", "members": [{ "path": "a.cbz", "sha256": "00", "pages": 2 }] }
+          },
+          "hub": "a",
+          "alignments": [{ "from": "a", "to": "a", "by": "hand", "runs": [{ "a": "0-1", "b": "0-1" }] }]
+        }"#;
+
+        let sidecar = Sidecar::from_json(json).expect("parses");
+
+        assert_eq!(sidecar.alignments[0].quality, None);
+        // And it must not reappear as a null on the way out.
+        assert!(!sidecar.to_json().contains("quality"));
+    }
+
+    /// The test the design turns on. A document whose stored block claims
+    /// `sound` over runs that are confetti must be judged on the runs. The
+    /// stored block is a summary for readers that have only the document; it
+    /// is never what this library believes, because a hand edit to the runs
+    /// would otherwise leave a stale verdict standing beside them.
+    #[test]
+    fn a_stored_verdict_is_ignored_in_favour_of_the_runs_it_sits_beside() {
+        let json = r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "a": { "label": "A", "members": [{ "path": "a.cbz", "sha256": "00", "pages": 30 }] },
+            "b": { "label": "B", "members": [{ "path": "b.cbz", "sha256": "01", "pages": 30 }] }
+          },
+          "hub": "a",
+          "alignments": [{
+            "from": "a", "to": "b", "by": "hand",
+            "quality": { "verdict": "sound", "slots": 30, "paired": 30, "avg_run": 30.0 },
+            "runs": [
+              { "a": "0-1", "b": "0-1" }, { "a": "2-3", "b": "4-5" },
+              { "a": "4-5", "b": "8-9" }, { "a": "6-7", "b": "12-13" },
+              { "a": "8-9", "b": "16-17" }, { "a": "10-11", "b": "20-21" },
+              { "a": "12-13", "b": "24-25" }, { "a": "14-15", "b": "28-29" }
+            ]
+          }]
+        }"#;
+        let sidecar = Sidecar::from_json(json).expect("parses");
+
+        // Eight paired runs of two slots each: sixteen paired, averaging 2.0.
+        let recomputed = sidecar.quality_of("a", "b").expect("both editions exist");
+        assert_eq!(recomputed.paired, 16);
+        assert!((recomputed.avg_run - 2.0).abs() < 1e-6, "{recomputed:?}");
+        assert_eq!(recomputed.verdict, Verdict::Fragmented);
+        assert_eq!(sidecar.trust("a", "b"), Some(Verdict::Fragmented));
+    }
+
+    /// A lookup from one spoke to another resolves through the hub, so it is
+    /// only as trustworthy as the weaker of the two edges it crosses.
+    #[test]
+    fn trust_composed_through_the_hub_takes_the_worse_edge() {
+        // hub `a`; `a -> b` is one clean run, `a -> c` is confetti.
+        let json = r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "a": { "label": "A", "members": [{ "path": "a.cbz", "sha256": "00", "pages": 30 }] },
+            "b": { "label": "B", "members": [{ "path": "b.cbz", "sha256": "01", "pages": 30 }] },
+            "c": { "label": "C", "members": [{ "path": "c.cbz", "sha256": "02", "pages": 30 }] }
+          },
+          "hub": "a",
+          "alignments": [
+            { "from": "a", "to": "b", "by": "solver", "runs": [{ "a": "0-29", "b": "0-29" }] },
+            { "from": "a", "to": "c", "by": "solver", "runs": [
+              { "a": "0-1", "b": "0-1" }, { "a": "2-3", "b": "4-5" },
+              { "a": "4-5", "b": "8-9" }, { "a": "6-7", "b": "12-13" },
+              { "a": "8-9", "b": "16-17" }, { "a": "10-11", "b": "20-21" },
+              { "a": "12-13", "b": "24-25" }, { "a": "14-15", "b": "28-29" }
+            ] }
+          ]
+        }"#;
+        let sidecar = Sidecar::from_json(json).expect("parses");
+
+        assert_eq!(sidecar.trust("a", "b"), Some(Verdict::Sound));
+        assert_eq!(sidecar.trust("a", "c"), Some(Verdict::Fragmented));
+        // b -> c crosses both, and the confetti edge decides it.
+        assert_eq!(sidecar.trust("b", "c"), Some(Verdict::Fragmented));
+        // Both orderings, or an implementation that returned only the second
+        // leg would pass on this alone.
+        assert_eq!(sidecar.trust("c", "b"), Some(Verdict::Fragmented));
+        // An edge is readable in either direction for trust, because the
+        // verdict is a property of the pairing rather than of a direction.
+        assert_eq!(sidecar.trust("b", "a"), Some(Verdict::Sound));
+    }
+
+    /// The cases where the document simply does not say. `None` is not
+    /// `Sound` — every sidecar written before this field existed is unknown,
+    /// and a reader must not read silence as approval.
+    #[test]
+    fn trust_says_nothing_when_the_document_does_not() {
+        let json = r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "a": { "label": "A", "members": [{ "path": "a.cbz", "sha256": "00", "pages": 4 }] },
+            "b": { "label": "B", "members": [{ "path": "b.cbz", "sha256": "01", "pages": 4 }] },
+            "c": { "label": "C", "members": [{ "path": "c.cbz", "sha256": "02", "pages": 4 }] },
+            "lonely": { "label": "L", "members": [{ "path": "l.cbz", "sha256": "03", "pages": 4 }] }
+          },
+          "hub": "a",
+          "alignments": [
+            { "from": "a", "to": "b", "by": "solver", "runs": [{ "a": "0-3", "b": "0-3" }] },
+            { "from": "a", "to": "c", "by": "solver", "runs": [{ "a": "0-3", "b": "0-3" }] },
+            { "from": "b", "to": "c", "by": "hand", "runs": [{ "a": "0-3", "b": "0-9" }] }
+          ]
+        }"#;
+        let sidecar = Sidecar::from_json(json).expect("parses");
+
+        assert_eq!(sidecar.trust("a", "nosuch"), None);
+        assert_eq!(sidecar.trust("nosuch", "b"), None);
+        // Neither edition exists; the guard has to reject this before
+        // identity short-circuits it to `Sound`.
+        assert_eq!(sidecar.trust("nosuch", "nosuch"), None);
+        // Defined, but nothing aligns it to anything.
+        assert_eq!(sidecar.trust("b", "lonely"), None);
+        // An edition corresponds to itself.
+        assert_eq!(sidecar.trust("b", "b"), Some(Verdict::Sound));
+        // `b -> c` is a direct edge that names a page `c` does not have.
+        // Both hub legs (`a -> b`, `a -> c`) are sound, so a version that
+        // fell through to hub composition on any `None` from `quality_of`
+        // would answer `Some(Sound)` here — about a path the caller did not
+        // ask about, in place of the broken edge that was named.
+        assert_eq!(sidecar.quality_of("b", "c"), None);
+        assert_eq!(sidecar.trust("b", "c"), None);
+    }
+
+    /// A span written backwards must be reported, not turned into a panic by
+    /// `PageRange::new`'s `debug_assert`. Reproduced from review: `"9-2"`
+    /// panics with "page range must not be inverted" in a debug build, which
+    /// is what the test suite and debug wasm both are.
+    #[test]
+    fn an_inverted_span_is_rejected_rather_than_panicking() {
+        let json = r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "a": { "label": "A", "members": [{ "path": "a.cbz", "sha256": "00", "pages": 10 }] },
+            "b": { "label": "B", "members": [{ "path": "b.cbz", "sha256": "01", "pages": 10 }] }
+          },
+          "hub": "a",
+          "alignments": [{
+            "from": "a", "to": "b", "by": "hand",
+            "runs": [{ "a": "9-2", "b": "0-7" }]
+          }]
+        }"#;
+        let sidecar = Sidecar::from_json(json).expect("parses");
+
+        let err = sidecar
+            .runs_of(&sidecar.alignments[0])
+            .expect_err("must not panic");
+        assert!(err.contains("9-2"), "error should name the span: {err}");
+        assert_eq!(sidecar.quality_of("a", "b"), None);
+    }
+
+    /// A paired run whose sides cover different numbers of slots must be
+    /// reported, not turned into a panic by `Run::paired`'s `debug_assert_eq`.
+    /// Reproduced from review: `"a": "0-1", "b": "0-5"` panics with "paired
+    /// run sides must be equal length" in a debug build.
+    #[test]
+    fn a_mismatched_paired_span_is_rejected_rather_than_panicking() {
+        let json = r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "a": { "label": "A", "members": [{ "path": "a.cbz", "sha256": "00", "pages": 10 }] },
+            "b": { "label": "B", "members": [{ "path": "b.cbz", "sha256": "01", "pages": 10 }] }
+          },
+          "hub": "a",
+          "alignments": [{
+            "from": "a", "to": "b", "by": "hand",
+            "runs": [{ "a": "0-1", "b": "0-5" }]
+          }]
+        }"#;
+        let sidecar = Sidecar::from_json(json).expect("parses");
+
+        let err = sidecar
+            .runs_of(&sidecar.alignments[0])
+            .expect_err("must not panic");
+        assert!(
+            err.contains("0-1") && err.contains("0-5"),
+            "error should name both spans: {err}"
+        );
+        assert_eq!(sidecar.quality_of("a", "b"), None);
     }
 }

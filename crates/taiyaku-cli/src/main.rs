@@ -113,53 +113,6 @@ fn label(members: &[PathBuf]) -> String {
     }
 }
 
-/// Rebuild solver runs from a stored alignment.
-///
-/// The document addresses slots by page; the solver and the report address them
-/// by index. This is the inverse of what `align --write` does, and it is what
-/// lets a hand-edited file drive a report.
-fn runs_from_sidecar(sidecar: &Sidecar, alignment: &Alignment) -> Result<Vec<Run>, String> {
-    let from_slots = sidecar
-        .editions
-        .get(&alignment.from)
-        .ok_or_else(|| format!("no edition named `{}`", alignment.from))?
-        .slots(sidecar.work.reading);
-    let to_slots = sidecar
-        .editions
-        .get(&alignment.to)
-        .ok_or_else(|| format!("no edition named `{}`", alignment.to))?
-        .slots(sidecar.work.reading);
-
-    let index = |slots: &[Slot], want: Slot, side: &str| {
-        slots
-            .iter()
-            .position(|s| s.page == want.page && (want.half.is_none() || s.half == want.half))
-            .map(|i| i as u32)
-            .ok_or_else(|| format!("{side} has no page {}", want.page))
-    };
-
-    alignment
-        .runs
-        .iter()
-        .map(|entry| {
-            let a = taiyaku_core::PageRange::new(
-                index(&from_slots, entry.a.start, "the source edition")?,
-                index(&from_slots, entry.a.end, "the source edition")?,
-            );
-            Ok(match entry.b {
-                Some(b) => Run::paired(
-                    a,
-                    taiyaku_core::PageRange::new(
-                        index(&to_slots, b.start, "the target edition")?,
-                        index(&to_slots, b.end, "the target edition")?,
-                    ),
-                ),
-                None => Run::gap(a),
-            })
-        })
-        .collect()
-}
-
 fn verify(args: &[String]) -> Result<(), String> {
     let (a_members, b_members) = split_editions(args)?;
     let out = option_value(args, "--out").unwrap_or("taiyaku-verify.html");
@@ -194,7 +147,7 @@ fn verify(args: &[String]) -> Result<(), String> {
                 alignment.runs.len(),
                 alignment.by
             );
-            runs_from_sidecar(&sidecar, alignment)?
+            sidecar.runs_of(alignment)?
         }
         None => solve(&a, &b),
     };
@@ -383,6 +336,56 @@ fn lookup(args: &[String]) -> Result<(), String> {
         sidecar.editions.len(),
         sidecar.work.reading
     );
+    // Printed on every call rather than only on a bad one. A warning that
+    // appears sometimes teaches people to skip it; a line that is always there
+    // is read as part of the answer. Measured across twenty-two needles, seven
+    // pair every page they have while being wholly unrelated, and the run
+    // shape is the only thing that says so.
+    //
+    // The verdict has to describe the path this call will actually walk.
+    // `resolve` follows an alignment stored in the direction asked for and
+    // nothing else, while `trust` reads an edge either way round, composes
+    // through the hub and answers identity outright. Reporting `trust` alone
+    // would print a confident line and then say `no counterpart` for every
+    // page, which reads as a broken tool rather than as a document that does
+    // not carry the edge.
+    let walkable = sidecar
+        .alignments
+        .iter()
+        .any(|a| a.from == *from && a.to == *to);
+    match (
+        walkable.then(|| sidecar.quality_of(from, to)).flatten(),
+        sidecar.trust(from, to),
+    ) {
+        (Some(q), _) => eprintln!(
+            "  alignment {from} -> {to}: {}, average run {:.1}",
+            stats::verdict_word(q.verdict),
+            q.avg_run
+        ),
+        (None, Some(v)) => {
+            eprintln!(
+                "  alignment {from} -> {to}: {}, but not by a path this lookup can walk",
+                stats::verdict_word(v)
+            );
+            eprintln!(
+                "  no {from} -> {to} alignment is stored; lookup follows the stored \
+                 direction only, so every page below says no counterpart"
+            );
+        }
+        // Nothing to say about the pairing — but if the edge is there and
+        // unreadable, `quality_of` swallowed the reason. Those messages are
+        // written for whoever is hand-editing the file, and this is the only
+        // place they can reach them.
+        (None, None) => match sidecar
+            .alignments
+            .iter()
+            .find(|a| a.from == *from && a.to == *to)
+            .and_then(|a| sidecar.runs_of(a).err())
+        {
+            Some(why) => eprintln!("  alignment {from} -> {to}: cannot be read: {why}"),
+            None => eprintln!("  alignment {from} -> {to}: this document does not say"),
+        },
+    }
     for page in &args[3..] {
         let page: u32 = page.parse().map_err(|_| format!("not a page: {page}"))?;
         match taiyaku_core::resolve(&sidecar, from, to, page) {
@@ -612,6 +615,16 @@ fn align(args: &[String]) -> Result<(), String> {
                         hash: "dhash-16".to_string(),
                         floor: cal.floor,
                     }),
+                // Computed here rather than left for a reader to derive: the
+                // whole point of the document is that a reader should not need
+                // the archives. `Sidecar::quality_of` recomputes it anyway, so
+                // this is a summary for anything not using this library.
+                quality: Some(taiyaku_core::Quality {
+                    verdict: taiyaku_core::verdict(&runs, a_slots.len()),
+                    slots: a_slots.len() as u32,
+                    paired: taiyaku_core::paired_slots(&runs),
+                    avg_run: taiyaku_core::average_run_length(&runs),
+                }),
                 runs: {
                     // The weakest per-page margin inside each run, which is
                     // what the verification report shades on. Storing it means

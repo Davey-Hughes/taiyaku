@@ -36,11 +36,7 @@ pub fn calibration_line(cal: Option<&Calibration>, a_len: usize, b_len: usize) -
 /// refused pair is one long gap run, which reads as excellent on any
 /// runs-per-page scale.
 pub fn shape_line(runs: &[Run], a_len: usize) -> String {
-    let paired: u32 = runs
-        .iter()
-        .filter(|r| r.b.is_some())
-        .map(|r| r.a.len())
-        .sum();
+    let paired = taiyaku_core::paired_slots(runs);
     let per_hundred = 100.0 * runs.len() as f32 / a_len.max(1) as f32;
     let call = match verdict(runs, a_len) {
         Verdict::Refused => "Refused",
@@ -54,6 +50,22 @@ pub fn shape_line(runs: &[Run], a_len: usize) -> String {
     )
 }
 
+/// How a verdict is written for a person.
+///
+/// Shouted for the two that want attention and lowercase for the one that does
+/// not, so in prose output — `lookup`'s trust line and `verdict_sentence` —
+/// capitals mean "look at this". This is the form for a person and only that:
+/// the machine-readable `shape:` line keeps the enum's own spelling, title
+/// case, because `scripts/margin-survey.sh` greps `verdict=Sound` out of it and
+/// a table of measurements in `notes.md` records that spelling verbatim.
+pub fn verdict_word(verdict: Verdict) -> &'static str {
+    match verdict {
+        Verdict::Refused => "REFUSED",
+        Verdict::Fragmented => "FRAGMENTED",
+        Verdict::Sound => "sound",
+    }
+}
+
 /// The verdict in words, for a person rather than for a survey.
 ///
 /// Carries the average run length because that is the figure that states the
@@ -65,12 +77,20 @@ pub fn shape_line(runs: &[Run], a_len: usize) -> String {
 pub fn verdict_sentence(runs: &[Run], a_len: usize) -> String {
     match verdict(runs, a_len) {
         // No paired run, so there is no average worth quoting.
-        Verdict::Refused => "REFUSED - these editions do not correspond".to_string(),
+        Verdict::Refused => format!(
+            "{} - these editions do not correspond",
+            verdict_word(Verdict::Refused)
+        ),
         Verdict::Fragmented => format!(
-            "FRAGMENTED - paired, but too broken up to trust | average run {:.1} slots",
+            "{} - paired, but too broken up to trust | average run {:.1} slots",
+            verdict_word(Verdict::Fragmented),
             average_run_length(runs)
         ),
-        Verdict::Sound => format!("sound | average run {:.1} slots", average_run_length(runs)),
+        Verdict::Sound => format!(
+            "{} | average run {:.1} slots",
+            verdict_word(Verdict::Sound),
+            average_run_length(runs)
+        ),
     }
 }
 

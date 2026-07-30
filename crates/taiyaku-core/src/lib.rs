@@ -13,13 +13,13 @@ mod slot;
 mod solve;
 
 pub use sidecar::{
-    Alignment, Edition, Member, RunEntry, Sidecar, SlotSpan, SolverInfo, Source, VERSION, Work,
-    entries_from_runs, resolve,
+    Alignment, Edition, Member, Quality, RunEntry, Sidecar, SlotSpan, SolverInfo, Source, VERSION,
+    Work, entries_from_runs, resolve,
 };
 pub use slot::{Direction, Half, Slot, expand, is_spread, spread_flags};
 pub use solve::{
     Calibration, PageConfidence, PageHash, Verdict, average_run_length, calibrate, confidence,
-    similarity, solve, verdict,
+    paired_slots, similarity, solve, verdict,
 };
 
 /// An inclusive range of page indices within a single edition.

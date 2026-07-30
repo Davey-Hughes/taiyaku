@@ -272,7 +272,14 @@ pub(crate) fn compress(pairs: &[(u32, Option<u32>)]) -> Vec<Run> {
 }
 
 /// A one-line verdict on an alignment as a whole.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The variants are declared worst-first, and the derived ordering is load
+/// bearing: composing a lookup through the hub is only as trustworthy as the
+/// weaker of its two edges, which `min` expresses directly.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum Verdict {
     /// Nothing paired: these editions do not correspond.
     Refused,
@@ -295,11 +302,7 @@ pub enum Verdict {
 /// being the one-chapter-to-volume subset, with the known-bad copies, the
 /// needle and the unrelated pairs all at 4.8 or below.
 pub fn verdict(runs: &[Run], pages: usize) -> Verdict {
-    let paired: u32 = runs
-        .iter()
-        .filter(|r| r.b.is_some())
-        .map(|r| r.a.len())
-        .sum();
+    let paired = paired_slots(runs);
     if pages == 0 || paired == 0 {
         return Verdict::Refused;
     }
@@ -312,6 +315,18 @@ pub fn verdict(runs: &[Run], pages: usize) -> Verdict {
         true => Verdict::Fragmented,
         false => Verdict::Sound,
     }
+}
+
+/// How many slots of A the alignment found a counterpart for.
+///
+/// Public because a sidecar records it: a reader holding only the document
+/// should be able to see how much of an edition was placed without opening the
+/// archives.
+pub fn paired_slots(runs: &[Run]) -> u32 {
+    runs.iter()
+        .filter(|r| r.b.is_some())
+        .map(|r| r.a.len())
+        .sum()
 }
 
 /// Average paired-run length below which an alignment is confetti rather than a
@@ -451,6 +466,48 @@ pub fn confidence(a: &[PageHash], b: &[PageHash], runs: &[Run]) -> Vec<PageConfi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Composing an alignment through the hub is only as trustworthy as its
+    /// weakest edge, so the three verdicts have to compare. The declaration
+    /// order is the ranking, worst first, and `min` is what picks the weaker
+    /// of two edges.
+    #[test]
+    fn verdicts_rank_from_refused_up_to_sound() {
+        assert!(Verdict::Refused < Verdict::Fragmented);
+        assert!(Verdict::Fragmented < Verdict::Sound);
+        assert_eq!(Verdict::Sound.min(Verdict::Fragmented), Verdict::Fragmented);
+        assert_eq!(Verdict::Fragmented.min(Verdict::Refused), Verdict::Refused);
+    }
+
+    /// The verdict goes into a JSON document, so it needs a wire form, and it
+    /// must be the lowercase one the rest of the format already uses for
+    /// `Source`.
+    #[test]
+    fn a_verdict_round_trips_through_lowercase_json() {
+        assert_eq!(
+            serde_json::to_string(&Verdict::Fragmented).unwrap(),
+            "\"fragmented\""
+        );
+        assert_eq!(
+            serde_json::from_str::<Verdict>("\"sound\"").unwrap(),
+            Verdict::Sound
+        );
+    }
+
+    /// A sidecar records how many slots found a counterpart, so the count has
+    /// to be callable rather than buried inside `verdict`. Gap runs do not
+    /// count towards it.
+    #[test]
+    fn paired_slots_counts_only_the_runs_that_found_a_counterpart() {
+        let runs = vec![
+            Run::paired(PageRange::new(0, 9), PageRange::new(0, 9)),
+            Run::gap(PageRange::new(10, 19)),
+            Run::paired(PageRange::new(20, 24), PageRange::new(10, 14)),
+        ];
+
+        assert_eq!(paired_slots(&runs), 15);
+        assert_eq!(paired_slots(&[Run::gap(PageRange::new(0, 9))]), 0);
+    }
 
     /// A hash that is distinct per `seed` and stable across calls.
     fn h(seed: u64) -> PageHash {
