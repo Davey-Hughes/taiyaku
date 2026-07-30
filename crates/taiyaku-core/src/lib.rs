@@ -16,8 +16,10 @@ pub use sidecar::{
     Alignment, Edition, Member, RunEntry, Sidecar, SlotSpan, SolverInfo, Source, VERSION, Work,
     entries_from_runs, resolve,
 };
-pub use slot::{Direction, Half, Slot, expand, is_spread};
-pub use solve::{PageConfidence, PageHash, calibrate_floor, confidence, similarity, solve};
+pub use slot::{Direction, Half, Slot, expand, is_spread, spread_flags};
+pub use solve::{
+    PageConfidence, PageHash, Verdict, calibrate_floor, confidence, similarity, solve, verdict,
+};
 
 /// An inclusive range of page indices within a single edition.
 ///

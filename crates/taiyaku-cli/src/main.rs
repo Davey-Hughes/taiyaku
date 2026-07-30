@@ -18,8 +18,8 @@ mod report;
 use std::path::PathBuf;
 
 use taiyaku_core::{
-    Alignment, Direction, Edition, Half, Member, Run, Sidecar, Slot, SolverInfo, Source, Work,
-    compose, confidence, counterpart, entries_from_runs, solve,
+    Alignment, Direction, Edition, Half, Member, Run, Sidecar, Slot, SolverInfo, Source, Verdict,
+    Work, compose, confidence, counterpart, entries_from_runs, solve, verdict,
 };
 
 fn main() {
@@ -421,21 +421,15 @@ fn cached_edition(
     }
 
     // Whether a page is a spread is decided against the edition it sits in, so
-    // it cannot be cached per member: the median has to be taken over the whole
-    // flattened sequence.
-    let mut portrait: Vec<f32> = described
-        .iter()
-        .filter(|p| p.width <= p.height)
-        .map(|p| p.width as f32 / p.height as f32)
-        .collect();
-    portrait.sort_by(f32::total_cmp);
-    let ordinary = portrait.get(portrait.len() / 2).copied().unwrap_or(0.0);
+    // it cannot be cached per member: the baseline has to be taken over the
+    // whole flattened sequence.
+    let dimensions: Vec<(u32, u32)> = described.iter().map(|p| (p.width, p.height)).collect();
+    let flags = taiyaku_core::spread_flags(&dimensions);
 
     let mut hashes = Vec::new();
     let mut wide = Vec::new();
-    for page in &described {
-        let spread = taiyaku_core::is_spread(page.width as f32 / page.height as f32, ordinary);
-        match (spread, page.halves) {
+    for (page, spread) in described.iter().zip(&flags) {
+        match (*spread, page.halves) {
             (true, Some((left, right))) => {
                 // Reading order, matching the slot table.
                 match direction {
@@ -648,8 +642,16 @@ fn report_summary(runs: &[Run], a_len: usize) {
     // known-bad one at or above 22 — but that gap is drawn from four series and
     // is a diagnostic to show the user, not yet a threshold to refuse on.
     let per_hundred = 100.0 * runs.len() as f64 / a_len.max(1) as f64;
+    // The verdict is printed alongside the number because the number alone is
+    // misleading: a refusal is one run, which reads as better than any correct
+    // alignment on a runs-per-page scale.
+    let call = match verdict(runs, a_len) {
+        Verdict::Refused => "REFUSED - these editions do not correspond",
+        Verdict::Fragmented => "FRAGMENTED - paired, but too broken up to trust",
+        Verdict::Sound => "sound",
+    };
     eprintln!(
-        "{} runs | {paired}/{a_len} pages paired ({:.1}%) | {per_hundred:.1} runs per 100 pages",
+        "{} runs | {paired}/{a_len} pages paired ({:.1}%) | {per_hundred:.1} runs per 100 pages | {call}",
         runs.len(),
         100.0 * paired as f64 / a_len.max(1) as f64
     );

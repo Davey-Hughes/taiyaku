@@ -811,6 +811,10 @@ the same range — One Piece volume 105 scores 21.9 runs per hundred unhandled a
 3.8 handled. Fragmentation separates good from bad **only once spreads are
 expressed**. See "The fragmentation metric is unusable without spread handling".
 
+**And a second qualification.** A refused pair produces one run, scoring about
+0.9 per hundred, which beats every correct alignment. Coverage has to gate the
+measure. See "The fragmentation metric has a hole at the bottom".
+
 ### The separation guard catches a different failure
 
 `MIN_SEPARATION` — requiring the median best-match to stand clear of the median
@@ -1103,7 +1107,7 @@ A cbz containing only a `ComicInfo.xml` decodes to zero pages, and the floor
 calibration then took the median of an empty slice. Fixed, with a test: every
 page of A is simply unmatched, which is an answer, and panicking is not.
 
-### Limitation found by this: a partial edition is refused
+### Limitation, and a fix that was measured and rejected: a partial edition is refused
 
 Aligning a *single chapter* against a whole volume returns no pairings at all.
 The floor calibration takes the median of each page's best match as the signal
@@ -1113,8 +1117,26 @@ so the median sits at the noise level and the separation guard refuses.
 
 That is defensible for the intended use — an edition is the whole set of chapters
 — but it means `align` cannot be pointed at one chapter to see where it lands.
-Using a high percentile rather than the median for the signal estimate would fix
-it. Not urgent, but it should not be discovered by a user.
+
+**The obvious fix was tried and reverted.** Estimating the signal from the 90th
+percentile of best matches rather than the median does make the case align, and
+the distributions looked cleanly separable beforehand: an unrelated pair puts its
+90th percentile at about 0.65 against a 0.62 noise floor, a volume against one of
+its own chapters at 0.93.
+
+Measuring the consequences killed it. With the percentile in place:
+
+- Go-Toubun's raw against Kaguya's English release **pairs 146 of 195 pages**
+  instead of being refused. Fragmentation still flags it at 49 runs per hundred,
+  but refusing was the correct answer and is what the identity-oracle claim rests
+  on.
+- Kaguya's own alignment **degrades from 8 runs and 204 pages paired to 12 and
+  201**, because the raised signal raises the floor and the floor starts
+  rejecting genuine matches.
+
+Trading a correctness property for a diagnostic convenience is a bad trade, so
+the refusal stays by design and there is now a test pinning it so the same trade
+is not made again by accident.
 
 ## New raws, 2026-07-29: both schema questions closed
 
@@ -1212,6 +1234,73 @@ The rule is not "fragmentation identifies bad copies" but **"fragmentation
 identifies bad copies once spreads are expressed"**. Measured with spreads
 handled, the same volume is 8 runs, or 3.8 per hundred.
 
+### A letterbox has to come off both sides equally
+
+Tongari volume 9 is not scanned like the rest of the series. Every page is a
+joined spread letterboxed into 1920×1080, with flat white bars taking twenty per
+cent of the width. Unhandled it scores **88 runs** across 180 slots — FRAGMENTED,
+indistinguishable from a mislabelled file — because splitting a padded page down
+the middle leaves each half a fifth blank, and that shifts the content within the
+hash grid enough to wreck the comparison against a clean page.
+
+Cropping the bars off with a fixed `sips` crop, 197 pixels each side, takes it to
+**3 runs** at 176 of 180 slots paired. So the bars are the whole problem, and
+removing them is the whole fix. Getting a detector to reproduce that took three
+attempts, and the two failures are the interesting part.
+
+**Per-page trimming made things worse across the corpus.** Kaguya went from 8 runs
+to 15, Go-Toubun 5 to 7, Oshi no Ko 6 to 11, and Tongari only reached 81. Pages
+whose art reaches the edge trim less than their neighbours, so the content lands
+differently in each hash. This is the ink-bounding-box autocrop failing again from
+a different direction: any crop that moves with what a page happens to contain
+adds more variance than it removes. The trim has to be **per member** — a
+letterbox is a property of how the volume was packaged, identical on every page.
+
+**A per-member minimum detected nothing.** Sampling ten pages and taking the
+element-wise minimum gave no regressions but left Tongari at 75 runs. The cause is
+that the first page sampled is the cover, which is full-bleed and has no border at
+all, so the minimum is zero and the trim is cancelled for the entire member. A
+**median** across samples survives a handful of such pages.
+
+**The bars were then found, and the alignment got worse still** — 98 runs. Printing
+the measured border per page shows why:
+
+```
+Dl-Raw.Net-03.jpg   1920x1080   left=8   right=200   top=0   bottom=0
+Dl-Raw.Net-04.jpg   1920x1080   left=8   right=200   top=0   bottom=8
+Dl-Raw.Net-05.jpg   1920x1080   left=8   right=200   top=3   bottom=0
+```
+
+`right=200` is the true padding. `left=8` is not: a single-column scan seam near
+the left edge stops that scan dead. Cropping those unequal amounts leaves the
+content off-centre — the midpoint of `[8, 1719]` is 863 where the true centre is
+960 — so **every spread gets split in the wrong place**, which costs more than the
+bars did.
+
+The fix is not a better detector. It is that **a letterbox is centred by
+construction**: the padding exists to fit an image of one aspect into a frame of
+another, so an honest measurement of it is symmetric, and an asymmetric result
+means one side was mismeasured. Evening each opposing pair up to the larger of the
+two — the smaller being the mismeasurement — gives:
+
+| Pair | before | after |
+| ---- | ------ | ----- |
+| **Tongari v09 (padded)** | **98 runs, 139/180 paired** | **7 runs, 176/180 paired** |
+| Go-Toubun v01 | 5 runs | 5 runs |
+| Kaguya v01 | 8 runs | 8 runs |
+| Oshi no Ko v01 | 6 runs, 215 paired | 6 runs, 216 paired |
+| unrelated works | refused | refused |
+
+The exposure is a page with a genuine one-sided margin, where taking the larger
+over-crops the other side. Bounded by the existing quarter-per-side cap, and
+measured across five series without regression.
+
+Two general lessons. Detection working is not the same as alignment improving —
+the first attempt found 90 spreads correctly and still produced a worse result
+than finding none. And **for a joined spread the centre of the page is load-bearing
+geometry**, not just a framing detail: anything that moves it moves the line the
+two pages are cut along.
+
 ### Not every wide page is a spread
 
 One Piece volume 60 opens with its **wraparound dust jacket** scanned as a single
@@ -1229,6 +1318,89 @@ The bound also records something the earlier measurements got slightly wrong.
 measured first, but across the wider corpus they run 1.95× (One Piece English,
 trimmed) to 2.13× (One Piece raw). Anything demanding an exact doubling would
 have missed both.
+
+### Bug: an edition that is entirely spreads had no spreads detected
+
+Hunting for labelled bad copies in the One Piece collection turned up something
+better than the thing being looked for. Ninety-six volumes have a second copy at
+roughly half the page count, which looked like truncation. It is not.
+
+Volume 1's "short" copy is 107 images of **1524×1200 — landscape, every page** —
+against the good copy's 210 of 760×1200. Looking at one confirms it: two facing
+pages side by side, filenames ending `-000a` and `-000b`. It is the same volume
+**published two pages per image**, which is a common scan convention and not a
+defect at all.
+
+The solver refused it outright, and the reason was a bug. Spread detection
+measures each page against the median aspect of the edition's **portrait** pages,
+and this edition has none, so the baseline fell to zero and nothing was detected
+as a spread. A 107-page landscape sequence then had nothing in common with a
+210-page portrait one.
+
+Fixed by falling back: with no portrait page anywhere, the typical page *is* a
+spread, so an ordinary single page is half of one. The effect on that pair:
+
+| | before | after |
+| --- | ------ | ----- |
+| spreads detected | 0 | **107** |
+| slots paired | **0 of 107** | **202 of 214** |
+
+The rest of the corpus is unchanged, dust jacket still correctly excluded.
+
+### The threshold-tuning plan failed, and was worth doing anyway
+
+The One Piece collection looked like a gift for calibrating the bad-copy
+thresholds: ninety-six volumes with a second, much shorter copy, apparently
+ninety-six labelled good/bad pairs against a shared English release, where the
+existing thresholds rest on three.
+
+**They are not bad copies.** Every one is a spread-per-image edition of the same
+volume, and once detection was fixed all eight sampled pairs align well:
+
+| Volume | good copy | spread-per-image copy |
+| ------ | --------- | --------------------- |
+| 1 | 205 of 210 paired, 4.8 runs/100 | 202 of 214, 7.9 |
+| 5 | 189 of 194, 1.5 | 187 of 198, 4.0 |
+| 9 | 204 of 210, 2.4 | 203 of 214, 2.8 |
+| 20 | 205 of 218, 3.2 | 204 of 225, 4.4 |
+
+So the premise was wrong and the plan produced no bad examples at all. What it
+produced instead was **eight more confirmed-good examples**, all between 1.5 and
+7.9 runs per hundred, plus the spread-detection bug above and the hole in the
+metric below. A worthwhile trade, but the honest accounting is:
+
+- **Good side: around twenty examples, all at or under 8 runs per hundred.**
+- **Bad side: still the same three** — [Oshi no Ko] v01's mismatched copy at 34,
+  its v03s variant at 22, Kobayashi's Chromatic Edition at 45.
+- The range between 8 and 22 remains unpopulated, so where exactly the line sits
+  is still unmeasured. `MIN_SEPARATION` is likewise untuned.
+
+Finding genuine bad copies is harder than expected precisely because most
+odd-looking files turn out to be legitimate editions in an unexpected packaging.
+That is itself worth knowing: **"looks wrong" has meant "packaged differently"
+every time so far**, and every investigation of one has found a bug in taiyaku
+rather than a defect in the file.
+
+### The fragmentation metric has a hole at the bottom
+
+The same investigation exposed a flaw in a measure this document has been
+treating as reliable. A refused pair produces exactly **one run** — the single
+gap covering everything — which on a runs-per-hundred-pages scale reads as
+**0.9, better than any correct alignment in the corpus.**
+
+So fragmentation is not monotonic in quality:
+
+| Outcome | runs per 100 pages |
+| ------- | ------------------ |
+| refused entirely | **~1** |
+| correct alignment | 3 to 8 |
+| aligned but wrong | 22 to 45 |
+
+A threshold of "at most 8 runs per hundred is good" classifies a total refusal as
+excellent. **Coverage has to gate it**: check that something was paired at all,
+then use fragmentation to judge what was. Earlier notes here said coverage was
+the wrong metric and fragmentation the right one — that holds only among pairs
+that produced an alignment, and the qualification was missing.
 
 ### Bug: unreadable page formats were skipped in silence
 

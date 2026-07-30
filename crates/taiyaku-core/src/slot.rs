@@ -57,12 +57,57 @@ pub enum Direction {
 /// 60 opens with its wraparound dust jacket scanned as one image: front cover,
 /// spine, back cover and both inside flaps, at **3.43 times** a page width.
 /// Splitting that down the middle produces two halves corresponding to nothing.
+///
+/// The upper bound is 2.8 rather than something tighter because spreads are
+/// sometimes **padded**. Tongari volume 9 is spreads letterboxed into 1920×1080,
+/// which reads as 2.53 times an ordinary 1125×1600 page — the two pages are
+/// correct and the white bars either side are not. Everything genuinely
+/// measured falls either at 1.95 to 2.53, or at 3.43 for the jacket, so the
+/// line sits in the gap between them.
 pub fn is_spread(page_aspect: f32, ordinary_aspect: f32) -> bool {
     if ordinary_aspect <= 0.0 {
         return false;
     }
     let doubling = page_aspect / ordinary_aspect;
-    (1.7..=2.3).contains(&doubling)
+    (1.7..=2.8).contains(&doubling)
+}
+
+/// Decide which pages of an edition are joined spreads, from every page's
+/// dimensions.
+///
+/// The baseline is what an ordinary page of *this* edition looks like, which is
+/// why it cannot be judged page by page. Taking the median of the portrait pages
+/// is the obvious choice and fails on an edition that has none: some scans are
+/// published two facing pages per image throughout, so every page is landscape
+/// and there is no portrait baseline to measure against.
+pub fn spread_flags(dimensions: &[(u32, u32)]) -> Vec<bool> {
+    let aspect = |(w, h): (u32, u32)| w as f32 / h as f32;
+    let mut portrait: Vec<f32> = dimensions
+        .iter()
+        .copied()
+        .filter(|(w, h)| w <= h)
+        .map(aspect)
+        .collect();
+    portrait.sort_by(f32::total_cmp);
+
+    let ordinary = if portrait.is_empty() {
+        // No portrait page anywhere: the typical page of this edition is itself
+        // a joined spread, so an ordinary single page is half of one.
+        let mut all: Vec<f32> = dimensions.iter().copied().map(aspect).collect();
+        all.sort_by(f32::total_cmp);
+        match all.is_empty() {
+            true => return Vec::new(),
+            false => all[all.len() / 2] / 2.0,
+        }
+    } else {
+        portrait[portrait.len() / 2]
+    };
+
+    dimensions
+        .iter()
+        .copied()
+        .map(|d| is_spread(aspect(d), ordinary))
+        .collect()
 }
 
 /// Expand a sequence of pages into the slot sequence the solver aligns against.
@@ -101,6 +146,47 @@ pub fn expand(landscape: &[bool], direction: Direction) -> Vec<Slot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Real dimensions from four editions. The baseline for "ordinary page" is
+    /// per-edition, and the case that breaks a naive version is an edition
+    /// published two facing pages per image throughout — every page landscape,
+    /// no portrait page anywhere to measure against. One Piece volume 1 exists
+    /// in the corpus in exactly that form, 107 images of 1524x1200 for a
+    /// 210-page volume, and treating none of them as spreads makes the whole
+    /// edition unalignable.
+    #[test]
+    fn an_edition_that_is_entirely_spreads_is_still_all_spreads() {
+        // Mixed edition: Go-Toubun, one spread among portrait pages.
+        let mixed = vec![(2147, 3056), (2147, 3056), (4294, 3056), (2147, 3056)];
+        assert_eq!(spread_flags(&mixed), vec![false, false, true, false]);
+
+        // Two facing pages per image, throughout. Every one is a spread.
+        let paired = vec![(1524, 1200), (1524, 1200), (1518, 1200), (1524, 1200)];
+        assert_eq!(spread_flags(&paired), vec![true; 4]);
+
+        // A wraparound dust jacket among portrait pages is not a spread.
+        let jacket = vec![(3450, 1600), (1005, 1600), (1005, 1600), (2140, 1600)];
+        assert_eq!(spread_flags(&jacket), vec![false, false, false, true]);
+
+        // Tongari volume 9 is spreads letterboxed into 1920x1080. The padding
+        // inflates the aspect to 2.53 times an ordinary 1125x1600 page, so a
+        // bound tight enough to reject a 3.43x dust jacket must still be loose
+        // enough to accept this. It matters at series scope, where a padded
+        // volume sits among portrait ones and cannot rely on the
+        // all-landscape fallback.
+        let padded_in_series = vec![(1125, 1600), (1125, 1600), (1920, 1080), (1125, 1600)];
+        assert_eq!(
+            spread_flags(&padded_in_series),
+            vec![false, false, true, false]
+        );
+
+        // All portrait, nothing to split.
+        assert_eq!(
+            spread_flags(&[(760, 1200), (760, 1200)]),
+            vec![false, false]
+        );
+        assert!(spread_flags(&[]).is_empty());
+    }
 
     /// Real measurements, all of them. The wide pages that are spreads and the
     /// wide page that is not have to come out on opposite sides of this.

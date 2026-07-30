@@ -37,9 +37,26 @@ const GAP_PENALTY: f32 = 0.05;
 /// distance from that noise, not its absolute value.
 ///
 /// Most cells in the matrix are non-matches, so their median estimates the noise
-/// level; the median of each page's best match estimates the signal level. The
-/// midpoint separates them. Medians rather than means because both populations
-/// have long tails — blank pages score 1.0 against each other and drag a mean up.
+/// level. A median rather than a mean because the population has a long tail —
+/// blank pages score 1.0 against each other and drag a mean up.
+///
+/// The signal is the **median** of each page's best match. That deliberately
+/// refuses a pair where only part of A has counterparts — a whole volume against
+/// one of its own chapters, say — because most of A really does match nothing and
+/// the median lands on noise.
+///
+/// Estimating the signal from a high percentile instead was tried, and it does
+/// fix that case. It was reverted, because measuring the consequences showed the
+/// trade is bad: with the 90th percentile, Go-Toubun's raw against Kaguya's
+/// English release pairs 146 of 195 pages instead of being refused, and Kaguya's
+/// own alignment degrades from 8 runs and 204 pages paired to 12 and 201 as the
+/// raised floor starts rejecting genuine matches.
+///
+/// Refusing unrelated works is a correctness property that the identity oracle
+/// rests on. Aligning a volume against a single chapter is a diagnostic
+/// convenience. Trading the first for the second is not worth it, and a partial
+/// edition remains refused by design.
+///
 /// Returns `None` when the two editions show no correspondence worth trusting.
 pub fn calibrate_floor(a: &[PageHash], b: &[PageHash]) -> Option<f32> {
     if a.is_empty() || b.is_empty() {
@@ -77,8 +94,13 @@ pub fn calibrate_floor(a: &[PageHash], b: &[PageHash]) -> Option<f32> {
 const MIN_SEPARATION: f32 = 0.10;
 
 fn median(values: &mut [f32]) -> f32 {
+    percentile(values, 0.5)
+}
+
+fn percentile(values: &mut [f32], fraction: f32) -> f32 {
     values.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
-    values[values.len() / 2]
+    let at = ((values.len() as f32 - 1.0) * fraction).round() as usize;
+    values[at.min(values.len() - 1)]
 }
 
 /// Which predecessor a cell's score came from.
@@ -196,6 +218,50 @@ pub(crate) fn compress(pairs: &[(u32, Option<u32>)]) -> Vec<Run> {
     }
     runs
 }
+
+/// A one-line verdict on an alignment as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Nothing paired: these editions do not correspond.
+    Refused,
+    /// Paired, but stitched from so many short runs that it is not believable.
+    Fragmented,
+    /// A small number of long runs, as a real correspondence produces.
+    Sound,
+}
+
+/// Judge an alignment from its shape.
+///
+/// Coverage is checked before fragmentation, and that order is the whole point.
+/// A refused pair is a single gap run covering everything, which on a
+/// runs-per-page measure scores better than any correct alignment — so
+/// fragmentation alone calls a total refusal excellent. Measured across the
+/// corpus: refused sits near 1 run per hundred pages, correct at 3 to 8, and
+/// aligned-but-wrong at 22 to 45.
+pub fn verdict(runs: &[Run], pages: usize) -> Verdict {
+    let paired: u32 = runs
+        .iter()
+        .filter(|r| r.b.is_some())
+        .map(|r| r.a.len())
+        .sum();
+    if pages == 0 || paired == 0 {
+        return Verdict::Refused;
+    }
+    // Fragmentation is only meaningful once something was paired.
+    match 100.0 * runs.len() as f32 / pages as f32 > FRAGMENTED_RUNS_PER_HUNDRED {
+        true => Verdict::Fragmented,
+        false => Verdict::Sound,
+    }
+}
+
+/// Runs per hundred pages above which an alignment is confetti rather than a
+/// correspondence.
+///
+/// Provisional, and the gap it sits in is wide but thinly populated: around
+/// twenty confirmed-good pairings measure at or under 8, and the three known
+/// mislabelled files at 22, 34 and 45. Nothing has been measured between, so the
+/// midpoint is a guess placed on the cautious side of the good examples.
+const FRAGMENTED_RUNS_PER_HUNDRED: f32 = 15.0;
 
 /// How well one page's pairing is supported by the evidence.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -352,6 +418,61 @@ mod tests {
             runs,
             vec![Run::paired(PageRange::new(0, 4), PageRange::new(2, 6))]
         );
+    }
+
+    /// Coverage has to gate fragmentation, and the reason is a hole that a
+    /// runs-per-page measure cannot see on its own: a refused pair produces
+    /// exactly one run covering everything, which scores about 0.9 runs per
+    /// hundred pages and therefore *better* than every correct alignment
+    /// measured. Judging on fragmentation alone calls a total refusal excellent.
+    #[test]
+    fn a_refusal_is_not_mistaken_for_a_clean_alignment() {
+        // A refusal: one gap run over the whole edition.
+        let refused = vec![Run::gap(PageRange::new(0, 209))];
+        assert_eq!(verdict(&refused, 210), Verdict::Refused);
+
+        // Go-Toubun volume 1 as actually solved: five runs, two of them gaps.
+        let sound = vec![
+            Run::paired(PageRange::new(0, 0), PageRange::new(0, 0)),
+            Run::gap(PageRange::new(1, 1)),
+            Run::paired(PageRange::new(2, 5), PageRange::new(1, 4)),
+            Run::gap(PageRange::new(6, 6)),
+            Run::paired(PageRange::new(7, 194), PageRange::new(5, 192)),
+        ];
+        assert_eq!(verdict(&sound, 195), Verdict::Sound);
+
+        // A mislabelled copy: most pages paired, but in confetti. Shaped after
+        // [Oshi no Ko] v01's bad copy at 34 runs per hundred pages.
+        let fragmented: Vec<Run> = (0..70)
+            .map(|i| {
+                Run::paired(
+                    PageRange::new(i * 3, i * 3 + 2),
+                    PageRange::new(i * 3, i * 3 + 2),
+                )
+            })
+            .collect();
+        assert_eq!(verdict(&fragmented, 210), Verdict::Fragmented);
+    }
+
+    /// A pair where only a minority of A has counterparts is refused, and that
+    /// is deliberate rather than accidental. Estimating the signal from a high
+    /// percentile of best matches instead of the median does make this case
+    /// align, but it costs more than it buys: unrelated works stop being refused
+    /// and start pairing most of their pages, and genuine alignments degrade as
+    /// the raised floor rejects real matches. This test pins the refusal so the
+    /// trade is not made again by accident.
+    #[test]
+    fn a_pair_where_only_part_of_a_matches_is_refused() {
+        // Ten pages with counterparts, thirty with none.
+        let mut a: Vec<PageHash> = (0..10).map(h).collect();
+        a.extend((100..130).map(h));
+        let b: Vec<PageHash> = (0..10).map(|i| degrade(h(i), 40)).collect();
+
+        assert_eq!(solve(&a, &b), all_unmatched(a.len()));
+
+        // And a pair with nothing in common, likewise.
+        let unrelated: Vec<PageHash> = (500..540).map(h).collect();
+        assert_eq!(solve(&a, &unrelated), all_unmatched(a.len()));
     }
 
     /// An archive can legitimately contain no pages — a cbz holding only a
