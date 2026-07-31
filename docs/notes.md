@@ -631,6 +631,51 @@ idempotent now, and `corpus.rs` calls `cached_edition` without going through
 `split_editions`, so removing them would re-open the bug on the one caller that
 does not take the funnel.
 
+**The same hazard one level down, aimed at readers this project will not write.**
+Fixing the member order raised the question of what else about the page sequence
+lives only in `pages.rs`. The answer was: all of it. `sidecar.md` said an edition
+is "assembled by concatenating its `members`" and stopped there, so how a member
+itself becomes pages was never written down. That is unfixable by code — it is
+the format's contract with Komga, Stump, the PWA, and anything else — and it
+fails silently, because a reader deriving a different sequence still matches
+every `sha256` and every `pages` count in the file.
+
+Measured over the 57 cbz archives in the corpus, one row per rule a reader has
+to get right:
+
+| Rule | Archives where getting it wrong changes the sequence |
+| ---- | --------------------------------------------------- |
+| Entries sort by name, not by stored order | **32 of 57** |
+| Sort on the whole path, not the basename | **2 of the 7** that nest pages in folders |
+| Non-image entries are not pages | **12 of 57** (all `ComicInfo.xml`) |
+| Natural rather than lexicographic, *within* an archive | **0 of 57** |
+
+The second fails worst and is the least obvious. Go-Toubun's Full Colour edition
+nests pages under `Chapter 15 - What They Have Accumulated/` and puts a
+`ZBlank (1).jpg` in each chapter folder; sorted on the basename, every chapter's
+blank sorts to the front and the chapters interleave. Not an off-by-one, a
+shuffle.
+
+The last row is the useful negative. Natural ordering makes no difference at all
+*inside* an archive on this corpus — page names there are zero-padded often
+enough that lexicographic agrees — so a third-party reader doing the naive thing
+will not notice. It is load-bearing one level up, on `members`, where
+`c005.5.cbz` sorts before `c005.cbz` and cost 88.7% monotonic against 91.3%. The
+spec says natural at both levels anyway, since specifying the rule that is only
+sometimes needed is cheaper than specifying two rules.
+
+**What generalises is the rule, not the counts.** CBZ is a zip plus a
+convention: the format has no page-order field, so every reader in the ecosystem
+recovers order by sorting entry names, and central-directory order is an
+artifact of whichever tool last packed the file. Repacking is routine, which is
+why a third of these disagree with their own stored order. The frequencies above
+describe this library; the failure modes describe the format.
+
+Written into `sidecar.md` as "How a member becomes pages", marked normative, and
+pinned by two tests in `pages.rs`. Those tests passed the moment they were
+written — the code has always done this — which is the point: the behaviour was
+correct and unstated, and only the second half was a bug.
+
 **Blank pages match each other perfectly and lie about it.** Raw page 1 resolves
 to EN page 186 at similarity 1.000 — both are blank, so their hashes are
 identical, and it beats the true match outright. A near-blank page carries no

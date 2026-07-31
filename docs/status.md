@@ -18,8 +18,8 @@ started.
 
 ## What is built
 
-Two crates, 76 tests, no dependencies beyond `image`, `zip`, `rayon` and `serde`.
-One of the 76 is a standing check gated on `TAIYAKU_CORPUS`, which skips when the
+Two crates, 78 tests, no dependencies beyond `image`, `zip`, `rayon` and `serde`.
+One of the 78 is a standing check gated on `TAIYAKU_CORPUS`, which skips when the
 archives are absent so CI stays green without them.
 
 `taiyaku-core` is the portable half — no I/O, so it compiles to WebAssembly:
@@ -91,6 +91,14 @@ alternative that lost.
   the pairing relation, measured across five pairs in two series, so N−1 edges
   carry every ordered pair rather than 2(N−1).
 - **JSON for the sidecar**, with span notation (`7`, `4R`, `2-5`, `45R-46L`).
+- **How a member becomes pages is part of the format, not an implementation
+  detail.** The page sequence is derived, so a reader deriving it differently
+  disagrees with every run while still matching every `sha256` and `pages` count
+  in the file. Entries sort by whole path in natural order rather than as
+  stored; non-images are not pages. Measured over 57 archives: getting the first
+  wrong changes the sequence for 32 of them, the second shuffles chapters
+  together on 2 of the 7 that nest, the third shifts everything after a
+  `ComicInfo.xml` on 12.
 - **A content-addressed fingerprint cache** keyed on member SHA-256. 3.4 s → 189 ms.
 
 ## What has been proven against real material

@@ -304,4 +304,76 @@ mod tests {
         // Zip is supported, so it is not something to complain about.
         assert_eq!(unsupported_container(&zip), None);
     }
+
+    /// Write a cbz whose entries are stored in the order given.
+    fn cbz(name: &str, entries: &[&str]) -> PathBuf {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_file(&path);
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        for entry in entries {
+            zip.start_file(*entry, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"not a real image, and nothing here decodes one")
+                .unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    /// Two rules a reader of the sidecar has to implement identically or every
+    /// lookup is wrong, so they are guarantees of the format rather than
+    /// details of this reader — see `docs/sidecar.md`, "How a member becomes
+    /// pages".
+    ///
+    /// Central-directory order is whatever the packer happened to write: 32 of
+    /// the corpus's 57 cbz archives store their entries in an order that is not
+    /// the name order, so a reader iterating entries as stored gets a different
+    /// page sequence for over half of them. And 12 of the 57 carry a
+    /// `ComicInfo.xml`, which is not a page and must not shift the numbering.
+    #[test]
+    fn entries_are_pages_in_name_order_whatever_order_they_were_stored_in() {
+        let path = cbz(
+            "taiyaku-test-order.cbz",
+            &["p10.jpg", "ComicInfo.xml", "p2.jpg", "p1.jpg"],
+        );
+
+        let pages = read_member(&path).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["p1.jpg", "p2.jpg", "p10.jpg"]);
+    }
+
+    /// Sorting on the basename rather than the whole path scatters a
+    /// chapter-foldered edition beyond recovery, and the corpus holds the case:
+    /// Go-Toubun's Full Colour edition nests pages under `Chapter 15 - …/` and
+    /// carries a `ZBlank (1).jpg` in each folder. On the basename every
+    /// chapter's blank sorts to the front and the chapters interleave; 2 of the
+    /// 7 nested archives measured come out differently the two ways.
+    #[test]
+    fn nested_pages_sort_on_the_whole_path_not_the_basename() {
+        let path = cbz(
+            "taiyaku-test-nested.cbz",
+            &[
+                "Chapter 2/001.jpg",
+                "Chapter 1/ZBlank (1).jpg",
+                "Chapter 1/001.jpg",
+            ],
+        );
+
+        let pages = read_member(&path).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Chapter 1/001.jpg",
+                "Chapter 1/ZBlank (1).jpg",
+                "Chapter 2/001.jpg"
+            ],
+            "chapter 1 must finish before chapter 2 begins"
+        );
+    }
 }

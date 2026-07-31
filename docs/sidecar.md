@@ -234,6 +234,67 @@ pages — an edition is however many of them the work spans.
   are joined double-page spreads. Detection is by aspect ratio and is cheap;
   storing it means a reader never has to re-derive it.
 
+### How a member becomes pages
+
+**Normative.** An edition's page sequence is derived rather than stored, so a
+reader that derives it differently disagrees with every run in the file — and
+disagrees silently, because `sha256` still matches and `pages` still matches.
+The bytes are right, the numbering is not, and nothing in the document can
+detect it. These rules are therefore part of the format:
+
+1. **Concatenate `members` in the order given.** It is a JSON array and its
+   order is the page order. Do not re-sort it: paths are relative to the
+   sidecar and may point into unrelated trees, so their names need not sort
+   into reading order at all. The writer's job is to put them in it.
+2. **Within a member, the pages are its image entries sorted by whole path in
+   natural order** — not the order the archive stores them in, and not by
+   basename.
+3. **An entry is a page if its extension is an image extension** — `jpg`,
+   `jpeg`, `png`, `webp`, `gif`, `bmp`, `avif`, `tif`, `tiff`, matched
+   case-insensitively. Directories, anything under `__MACOSX`, and any entry
+   whose basename begins with `.` are excluded. `pages` counts exactly these,
+   so a `ComicInfo.xml` neither counts nor shifts the numbering.
+
+Natural order, precisely enough to reimplement: split each path into runs of
+ASCII digits and runs of everything else. A digit run is compared as a number,
+and takes a following `.` plus digits into the number so `005.5` reads as one
+value rather than as `5`, `.`, `5`. Other runs compare case-insensitively. A
+digit run sorts before a text run, so `9.jpg` precedes `cover.jpg`. Equal
+prefixes fall back to the shorter name first.
+
+**Each of the three rules is a case the corpus contains**, and they are not
+equally dangerous:
+
+| Rule | If a reader gets it wrong | Measured |
+| ---- | ------------------------- | -------- |
+| Not stored order | a different sequence for over half of all archives | stored order differs from name order in **32 of 57** cbz files |
+| Whole path, not basename | chapters interleave and the volume is unreadable | **2 of the 7** archives nesting pages in folders sort differently the two ways |
+| Non-images are not pages | the page count is over by one and every page after it shifts | **12 of 57** carry a `ComicInfo.xml` |
+
+The second is the one worth dwelling on, because it fails worst. Go-Toubun's
+Full Colour edition nests pages under `Chapter 15 - What They Have
+Accumulated/` and carries a `ZBlank (1).jpg` in every chapter folder. Sorted on
+the basename, every chapter's blank page sorts to the front and the chapters
+interleave — not an off-by-one but a shuffle.
+
+**What generalises and what does not.** The counts above are this corpus and
+should not be read as frequencies of the wider world. The *rules* generalise,
+because CBZ is a zip plus a convention: the format has no page-order field, so
+every comic reader recovers page order by sorting entry names, and an archive's
+central-directory order is only ever an artifact of whichever tool last packed
+it. Repacking is routine, which is why a third of these files disagree with
+their own stored order.
+
+The one figure that is genuinely local is the natural-versus-lexicographic
+distinction. Within an archive it made no difference anywhere: **0 of 57** sort
+differently the two ways, because page names inside an archive are
+zero-padded often enough that the two agree. It is specified as natural because
+it is load-bearing one level up, on `members` — `c005.5.cbz` sorts *before*
+`c005.cbz` lexicographically, and that bug cost a whole volume assembled out of
+order, measured at 88.7% monotonic against 91.3% once fixed. A reader
+implementing plain lexicographic sort inside archives will probably not notice;
+one implementing it over chapter files will.
+
 ### Slots and run notation
 
 A **slot** is one alignable unit: a whole page, or one half of a joined spread.
