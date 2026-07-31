@@ -19,8 +19,14 @@ env:
 #
 # The clone is authenticated because the instance requires sign-in for all
 # content, so an anonymous fetch is refused even for a public repository. The
-# runner supplies GITHUB_TOKEN for exactly this, and GITHUB_SERVER_URL is the
-# runner's own view of the forge rather than its public name.
+# runner supplies FORGEJO_TOKEN for exactly this, and FORGEJO_SERVER_URL is the
+# runner's own view of the forge — an address on its container network — rather
+# than the public hostname.
+#
+# These are Forgejo's own names. The runner also exports the same values under
+# GITHUB_*, for compatibility with actions written against GitHub, and both were
+# measured working here. Nothing in this repository is hosted on or fetched from
+# GitHub, so the names that say Forgejo are the ones used.
 #
 # The block is repeated per job rather than factored out. Extracting it would
 # need either a composite action, which reintroduces the node problem, or a
@@ -34,13 +40,13 @@ jobs:
     steps:
       - name: Checkout
         env:
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOKEN: ${{ secrets.FORGEJO_TOKEN }}
         run: |
-          host="${GITHUB_SERVER_URL#http://}"; host="${host#https://}"
-          scheme="${GITHUB_SERVER_URL%%://*}"
+          host="${FORGEJO_SERVER_URL#http://}"; host="${host#https://}"
+          scheme="${FORGEJO_SERVER_URL%%://*}"
           git init -q .
-          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${GITHUB_REPOSITORY}.git"
-          git fetch -q --depth 1 origin "$GITHUB_REF"
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$FORGEJO_REF"
           git checkout -q FETCH_HEAD
       - name: Formatting
         run: cargo fmt --all -- --check
@@ -54,13 +60,13 @@ jobs:
     steps:
       - name: Checkout
         env:
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOKEN: ${{ secrets.FORGEJO_TOKEN }}
         run: |
-          host="${GITHUB_SERVER_URL#http://}"; host="${host#https://}"
-          scheme="${GITHUB_SERVER_URL%%://*}"
+          host="${FORGEJO_SERVER_URL#http://}"; host="${host#https://}"
+          scheme="${FORGEJO_SERVER_URL%%://*}"
           git init -q .
-          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${GITHUB_REPOSITORY}.git"
-          git fetch -q --depth 1 origin "$GITHUB_REF"
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$FORGEJO_REF"
           git checkout -q FETCH_HEAD
       - name: Tests
         run: cargo test --workspace --all-features
@@ -77,13 +83,13 @@ jobs:
     steps:
       - name: Checkout
         env:
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOKEN: ${{ secrets.FORGEJO_TOKEN }}
         run: |
-          host="${GITHUB_SERVER_URL#http://}"; host="${host#https://}"
-          scheme="${GITHUB_SERVER_URL%%://*}"
+          host="${FORGEJO_SERVER_URL#http://}"; host="${host#https://}"
+          scheme="${FORGEJO_SERVER_URL%%://*}"
           git init -q .
-          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${GITHUB_REPOSITORY}.git"
-          git fetch -q --depth 1 origin "$GITHUB_REF"
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$FORGEJO_REF"
           git checkout -q FETCH_HEAD
       - name: Add wasm target
         run: rustup target add wasm32-unknown-unknown

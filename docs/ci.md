@@ -65,10 +65,23 @@ even though this repository is public — the same setting that makes the REST A
 reject unauthenticated calls. Without credentials the clone fails with
 `could not read Username for 'http://forgejo:3000'`.
 
-The runner supplies `GITHUB_TOKEN` for this. Note that `GITHUB_SERVER_URL` is
-the runner's own view of the forge, an internal address on its Docker network,
-rather than the public hostname; the workflow derives the clone URL from it
-instead of hard-coding either.
+The runner supplies `FORGEJO_TOKEN` for this. Note that `FORGEJO_SERVER_URL` is
+the runner's own view of the forge, an address on its container network rather
+than the public hostname — an unauthenticated clone fails against
+`http://forgejo:3000`, not against `git.daveynet.xyz`. The workflow derives the
+clone URL from the variable instead of hard-coding either name.
+
+## Why the variables say Forgejo and not GitHub
+
+Forgejo Actions implements GitHub's interface, so its runner exports every value
+twice: once under `GITHUB_*`, which is what lets actions written for GitHub work
+unchanged, and once under `FORGEJO_*`. Both were measured working on this
+instance, and the values are identical — `GITHUB_SERVER_URL` here is
+`http://forgejo:3000`, not anything on github.com.
+
+The `FORGEJO_*` set is used because nothing in this project is hosted on or
+fetched from GitHub, and a workflow that reads as though it were invites the
+question every time someone opens it.
 
 ## Toolchain note
 
