@@ -37,17 +37,38 @@ unsure; note that an instance-wide runner shows in neither the repository's nor
 the user's `actions/runners` API listing, so an empty list there is not evidence
 that no runner exists.
 
-## Why `uses:` carries full URLs
+## Why there are no actions at all
 
-Forgejo resolves a bare `owner/repo` in `uses:` against the instance's
-`DEFAULT_ACTIONS_URL`, which varies between deployments and versions. Writing
-`https://code.forgejo.org/actions/checkout@v4` in full removes that ambiguity, so
-these workflows behave the same on any instance.
+Every job clones with `git` in a `run:` step. No `uses:` anywhere, which is
+unusual enough to explain.
 
-The consequence is that the runner needs outbound access to `code.forgejo.org`
-and `github.com`. If that is not available, vendor the actions or drop the
-caching step — `Swatinem/rust-cache` is a build-time optimisation, not a
-correctness requirement, and removing it costs only rebuild time.
+`actions/checkout` is a JavaScript action, and a JS action needs a node inside
+the job's container to execute it. `rust:1-bookworm` carries no node —
+`command -v node` exits non-zero — and this runner does not inject one. A job
+combining `container:` with any JS action therefore dies before its first step.
+
+That was measured rather than assumed, because the symptom names none of it:
+all three jobs failed inside twenty-five seconds with no output worth reading.
+Probe jobs settled it — a container with no action passes, an action with no
+container passes, and both together is the only failing combination.
+
+The consequence to keep in mind: **no action can be added to these workflows
+while the image is `rust:1-bookworm`**. Caching, artifact upload and the rest
+are all JavaScript actions. The alternatives, if one is ever wanted, are to drop
+`container:` and install Rust with rustup on the runner's own image, or to build
+an image carrying both toolchains.
+
+## Why the clone is authenticated
+
+The instance requires sign-in for all content, so an anonymous fetch is refused
+even though this repository is public — the same setting that makes the REST API
+reject unauthenticated calls. Without credentials the clone fails with
+`could not read Username for 'http://forgejo:3000'`.
+
+The runner supplies `GITHUB_TOKEN` for this. Note that `GITHUB_SERVER_URL` is
+the runner's own view of the forge, an internal address on its Docker network,
+rather than the public hostname; the workflow derives the clone URL from it
+instead of hard-coding either.
 
 ## Toolchain note
 

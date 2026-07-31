@@ -8,10 +8,23 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-# `uses:` values spell out a full URL on purpose. Forgejo resolves a bare
-# `owner/repo` against whatever the instance sets as DEFAULT_ACTIONS_URL, which
-# differs between deployments. Naming the host keeps these workflows working
-# regardless of how git.daveynet.xyz happens to be configured.
+# Every job clones with git rather than with actions/checkout, and the reason is
+# worth stating because the failure it avoids is silent. checkout is a
+# JavaScript action, and a JS action needs a node inside the job's container to
+# execute. rust:1-bookworm carries none — `command -v node` exits non-zero — and
+# this runner does not inject one, so a job combining `container:` with any JS
+# action dies before its first step. Measured against this instance: a container
+# with no action passes, an action with no container passes, and both together
+# is the only combination that fails.
+#
+# The clone is authenticated because the instance requires sign-in for all
+# content, so an anonymous fetch is refused even for a public repository. The
+# runner supplies GITHUB_TOKEN for exactly this, and GITHUB_SERVER_URL is the
+# runner's own view of the forge rather than its public name.
+#
+# The block is repeated per job rather than factored out. Extracting it would
+# need either a composite action, which reintroduces the node problem, or a
+# script from the repository, which is not on disk until after the clone.
 
 jobs:
   lint:
@@ -19,7 +32,16 @@ jobs:
     container:
       image: rust:1-bookworm
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
+      - name: Checkout
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          host="${GITHUB_SERVER_URL#http://}"; host="${host#https://}"
+          scheme="${GITHUB_SERVER_URL%%://*}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_REF"
+          git checkout -q FETCH_HEAD
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -30,7 +52,16 @@ jobs:
     container:
       image: rust:1-bookworm
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
+      - name: Checkout
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          host="${GITHUB_SERVER_URL#http://}"; host="${host#https://}"
+          scheme="${GITHUB_SERVER_URL%%://*}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_REF"
+          git checkout -q FETCH_HEAD
       - name: Tests
         run: cargo test --workspace --all-features
 
@@ -44,7 +75,16 @@ jobs:
     container:
       image: rust:1-bookworm
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
+      - name: Checkout
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          host="${GITHUB_SERVER_URL#http://}"; host="${host#https://}"
+          scheme="${GITHUB_SERVER_URL%%://*}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_REF"
+          git checkout -q FETCH_HEAD
       - name: Add wasm target
         run: rustup target add wasm32-unknown-unknown
       - name: Build core for wasm
