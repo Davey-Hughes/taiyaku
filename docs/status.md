@@ -18,8 +18,8 @@ started.
 
 ## What is built
 
-Two crates, 75 tests, no dependencies beyond `image`, `zip`, `rayon` and `serde`.
-One of the 74 is a standing check gated on `TAIYAKU_CORPUS`, which skips when the
+Two crates, 76 tests, no dependencies beyond `image`, `zip`, `rayon` and `serde`.
+One of the 76 is a standing check gated on `TAIYAKU_CORPUS`, which skips when the
 archives are absent so CI stays green without them.
 
 `taiyaku-core` is the portable half — no I/O, so it compiles to WebAssembly:
@@ -152,26 +152,6 @@ that was the blocker, and it is gone.
 
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
-
-**`align` records members in the order given, but solves them in natural order.**
-`describe_edition` writes `members` straight from the command line while
-`cached_edition` sorts naturally first, so a glob that is not already in natural
-order produces a document whose member list is in a different order than the page
-sequence its runs address. Reproduced on Kaguya's fan translation, where
-`*.cbz` yields `c10.5, c10, c1, c2, …` and the solve used `c1, c2, … c10, c10.5`:
-
-```
-taiyaku align raw-mono -- en-fan/*.cbz --split-spreads --write t.json
-# t.json lists c10.5 first; the alignment starts at c1
-```
-
-Nothing shipped reads member order — `Edition::slots` only sums the page counts,
-so `resolve` and `lookup` are unaffected — but a reader that reconstructs the
-sequence by concatenating `members` in document order would show the wrong page
-for every lookup. **This bites the reader, and the reader is next.** The fix is
-to sort both sides naturally in `align` before describing or fingerprinting them;
-`notes.md` already requires natural order "for entries within an archive and for
-archives within an edition", and the writer is the half that never got it.
 
 **Blank pages are still anchored on.** A blank page's dhash is exactly zero, so
 every blank in every edition is identical to every other and the solver places

@@ -61,20 +61,31 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 /// Split `a... -- b...` into the two editions, pulling off trailing options.
+///
+/// Both sides come back in natural order rather than as typed. A member list is
+/// a page sequence, and a shell glob is not sorted into one — `*.cbz` yields
+/// `c10.5, c10, c1, c2` — so the order given is the one thing here that must not
+/// be trusted. Ordering at this single funnel is what keeps the consumers in
+/// agreement: `pages::read_edition` and `cached_edition` sort for themselves,
+/// but `describe_edition` writes the list straight into the sidecar and `slug`
+/// and `label` name an edition after its first member.
 fn split_editions(args: &[String]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
     let split = args
         .iter()
         .position(|a| a == "--")
         .ok_or("needs `--` between the two editions")?;
     let (left, rest) = args.split_at(split);
-    let a_members: Vec<PathBuf> = left.iter().map(PathBuf::from).collect();
-    let b_members: Vec<PathBuf> = rest[1..]
+    let mut a_members: Vec<PathBuf> = left.iter().map(PathBuf::from).collect();
+    let mut b_members: Vec<PathBuf> = rest[1..]
         .iter()
         .take_while(|a| !a.starts_with("--"))
         .map(PathBuf::from)
         .collect();
     if a_members.is_empty() || b_members.is_empty() {
         return Err("both sides need at least one member".into());
+    }
+    for side in [&mut a_members, &mut b_members] {
+        side.sort_by(|a, b| naming::natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
     }
     Ok((a_members, b_members))
 }
@@ -839,4 +850,45 @@ fn report_summary(runs: &[Run], a_len: usize) {
         100.0 * paired as f64 / a_len.max(1) as f64,
         stats::verdict_sentence(runs, a_len)
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A shell glob is not in reading order, and the sidecar used to record it
+    /// verbatim while the solver quietly worked in natural order — so a
+    /// document's member list disagreed with the page sequence its own runs
+    /// addressed. Nothing in this repository reads member order, which is why
+    /// it went unnoticed; a reader that concatenates `members` to rebuild the
+    /// sequence would show the wrong page for every lookup.
+    ///
+    /// Kaguya's fan translation is the reproduction: `*.cbz` yields
+    /// `c10.5, c10, c1, c2, …` and the solve used `c1, c2, … c10, c10.5`.
+    /// Ordering here rather than in each consumer is what makes them agree —
+    /// `slug` and `label` name an edition after its first member, and they
+    /// were reading the glob's first member too.
+    #[test]
+    fn both_editions_come_back_in_natural_order() {
+        let args: Vec<String> = [
+            "v02",
+            "v01",
+            "--",
+            "c10.5.cbz",
+            "c10.cbz",
+            "c1.cbz",
+            "c2.cbz",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let (a, b) = split_editions(&args).unwrap();
+
+        assert_eq!(a, ["v01", "v02"].map(PathBuf::from));
+        assert_eq!(
+            b,
+            ["c1.cbz", "c2.cbz", "c10.cbz", "c10.5.cbz"].map(PathBuf::from)
+        );
+    }
 }

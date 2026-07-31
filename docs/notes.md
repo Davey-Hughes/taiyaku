@@ -607,6 +607,30 @@ solve used `c1, c2, … c10, c10.5`. Nothing in this repository reads member ord
 until an external reader concatenates the members itself, which is precisely what
 the reader will do.
 
+**Fixed 2026-07-30, by ordering once rather than per consumer.** `split_editions`
+now sorts both sides naturally, so every command downstream of it — `align`,
+`verify`, `topology` — sees a member list already in reading order. Putting it
+there rather than in `describe_edition` was the point: three consumers had to
+agree and only one of them was sorting for itself, and two more were reading the
+glob's first member without anybody noticing. `slug` and `label` name an edition
+after `members.first()`, so the same Kaguya command labelled the edition
+`… v1 c10.5.cbz + 11 more`. Both halves of the bug had one cause.
+
+Measured on the reproduction itself, same command both ways:
+
+| | recorded member order | label |
+| --- | --- | --- |
+| before | `c10.5, c10, c1, c2, … c5.5, c5, …` | `v1 c10.5.cbz + 11 more` |
+| after | `c1, c2, … c5, c5.5, … c10, c10.5` | `v1 c1.cbz + 11 more` |
+
+The solve was already correct and is unchanged — 23 runs either way. What moved
+is only what gets written down, which is the half a reader consumes.
+
+`pages::read_edition` and `cached_edition` keep their own sorts. They are
+idempotent now, and `corpus.rs` calls `cached_edition` without going through
+`split_editions`, so removing them would re-open the bug on the one caller that
+does not take the funnel.
+
 **Blank pages match each other perfectly and lie about it.** Raw page 1 resolves
 to EN page 186 at similarity 1.000 — both are blank, so their hashes are
 identical, and it beats the true match outright. A near-blank page carries no
