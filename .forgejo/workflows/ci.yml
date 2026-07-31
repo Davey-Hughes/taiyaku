@@ -20,7 +20,6 @@ jobs:
       image: rust:1-bookworm
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
-      - uses: https://github.com/Swatinem/rust-cache@v2
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -32,7 +31,6 @@ jobs:
       image: rust:1-bookworm
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
-      - uses: https://github.com/Swatinem/rust-cache@v2
       - name: Tests
         run: cargo test --workspace --all-features
 
@@ -47,7 +45,6 @@ jobs:
       image: rust:1-bookworm
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
-      - uses: https://github.com/Swatinem/rust-cache@v2
       - name: Add wasm target
         run: rustup target add wasm32-unknown-unknown
       - name: Build core for wasm
