@@ -1,6 +1,6 @@
 # Status
 
-Where the project is, what is settled, and what comes next. Updated 2026-07-30.
+Where the project is, what is settled, and what comes next. Updated 2026-07-31.
 
 The detailed evidence for everything asserted here is in [`notes.md`](notes.md),
 which is a working log rather than a summary — every claim below traces to a
@@ -13,14 +13,18 @@ measurement recorded there. The format is specified in
 sidecar. It has been measured against eleven series and holds up on every case the
 design anticipated, plus several it did not.
 
-There is no reader yet. That is the next large piece of work and none of it has
-started.
+**The reader has a back end and no front end.** Milestones 1 and 2 shipped:
+page reading is a crate of its own, and `taiyaku serve` hands an HTTP client the
+sidecar, any page by index, and where you were. Nothing renders any of it yet —
+the browser reader is the next piece, and none of *that* has started.
 
 ## What is built
 
-Two crates, 78 tests, no dependencies beyond `image`, `zip`, `rayon` and `serde`.
-One of the 78 is a standing check gated on `TAIYAKU_CORPUS`, which skips when the
-archives are absent so CI stays green without them.
+Four crates, 97 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon` and
+`serde`, plus `axum`, `tokio` and `tower` in the server. Two of the 97 are
+standing checks gated on `TAIYAKU_CORPUS`, which skip when the archives are
+absent so CI stays green without them: one measures composition against a direct
+solve, the other that the server and the aligner agree about what page N is.
 
 `taiyaku-core` is the portable half — no I/O, so it compiles to WebAssembly:
 
@@ -31,16 +35,28 @@ archives are absent so CI stays green without them.
 | `sidecar` | the `taiyaku.json` format — parse, emit, judge, merge an edition in |
 | `route` | which path a lookup walks between two editions, and the page it lands on |
 
-`taiyaku-cli` is everything that touches the disk: archive and directory reading,
-decoding, fingerprinting, the content-addressed cache, the HTML report.
+The other three touch the disk or the network:
 
-Four commands:
+| Crate | Holds |
+| ----- | ----- |
+| `taiyaku-read` | how a member becomes pages — archives, directories, natural order, page counts, content hashes, one page by index |
+| `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, all behind a `PageSource` trait |
+| `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing |
+
+`taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
+a member becomes pages" — so two consumers deriving it separately is a defect the
+format cannot detect. The aligner and the server now derive it in one place, and
+a gated corpus check compares all 617 pages of the primary volume across the two
+paths.
+
+Five commands:
 
 ```
 taiyaku align  <a-member>... -- <b-member>...   [--write FILE] [--split-spreads] [--ltr] [--stats] [--direct]
 taiyaku verify <a-member>... -- <b-member>...   [--out FILE] [--sidecar FILE]
 taiyaku topology <hub>... -- <spoke>... -- <spoke>...
 taiyaku lookup <taiyaku.json> <from> <to> <page>...
+taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT]
 ```
 
 `align` takes several members on either side, which is how one volume aligns
@@ -51,7 +67,11 @@ optional and an error if it names anything else. `--direct` overrides that for a
 pair that has earned a direct edge. `verify` writes a contact sheet for looking at
 what the aligner decided. `lookup` resolves a page through a written sidecar, which
 is the operation a reader performs — through the hub where no direct edge exists,
-saying on every call which path it walked.
+saying on every call which path it walked. `serve` is handed sidecar paths the
+same way `align` is handed members, because deciding which files constitute a
+library is a different job; it serves `/api/works`, the sidecar verbatim, a page
+by index, and a reading position, and 404s with a message naming what was missing
+rather than returning a blank page.
 `--stats` prints what calibration measured and what shape came out — noise,
 signal, separation, margin, run count, average run length and the verdict — one
 line each, in a fixed field order so a survey can collect them into a table.
@@ -154,9 +174,37 @@ margin threshold plus a crop-tolerant hash. Not the DP.
 **No correction UI.** The design calls this part of the core, and it does not exist.
 `verify` shows what the aligner decided; nothing lets you fix it.
 
-**No reader.** Nothing consumes a sidecar except `lookup`. What changed is that
-`lookup` can now answer the question a reader with more than two editions asks —
-that was the blocker, and it is gone.
+**No reader UI.** `taiyaku serve` will hand a client the sidecar, its pages and a
+reading position, and nothing draws them. There is no page view, no swap, and no
+correction UI, so the thing a person can actually do with a sidecar today is
+still `lookup`.
+
+**`serve` is a first cut, and five things about it are known thin.** Each was
+found by the whole-branch review, judged not worth blocking on, and is written
+here rather than left in a scratch file:
+
+- **Page responses carry no cache headers.** The bytes for a given work, edition
+  and index never change, and the sidecar already records a `sha256` per member,
+  so an `ETag` is a line of code. The design's "one fetch, one cache entry"
+  argument for serving whole spreads assumes the client caches; nothing yet
+  helps it.
+- **Progress is written non-atomically.** `fs::write` truncates first, so a
+  crash mid-write leaves a short file and the next read answers 500 rather than
+  "nothing recorded". Write-and-rename fixes it.
+- **`PUT /progress` does not check the slot is in range.** It validates the
+  edition, so a position can name a real edition and a page past its end.
+- **Three error paths have no test**: an unknown edition through `LocalLibrary`,
+  two sidecars claiming one work id, and an out-of-range page index over HTTP.
+  All three are correct by inspection and none is silently wrong.
+- **A non-numeric page index answers axum's default 400** rather than the named
+  failure every other path gives. Comprehensible, but inconsistent with the rule
+  that a failure says what was missing.
+
+**A corpus check that skipped and one that ran look identical.** Both gates —
+`taiyaku-cli` and `taiyaku-serve` — print their skip reason to stderr, which
+`cargo test` captures for passing tests, and `check-all.sh` does not pass
+`--nocapture`. So a green gate does not tell you whether the standing checks
+measured anything. The fix belongs in the gate rather than in either test.
 
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
@@ -227,6 +275,25 @@ the reader could not have answered "show me this page in edition C". `align
 --write` now merges and `resolve` now composes. What the reader still needs from
 this side is a swap UX for five editions, which `notes.md` leaves undecided:
 cycling works for two or three and past that wants a picker.
+
+**M1 and M2 have landed.** M1 moved page reading into `taiyaku-read`, so the
+aligner and anything serving pages derive the normative sequence from one place,
+and added addressing a single page by index — serving page 47 of a 195-page
+volume costs one page rather than the volume. M2 added `taiyaku-serve` and the
+`serve` command: the work list, the sidecar verbatim, a page by index with its
+content type, and a reading position stored beside the sidecar, all behind a
+`PageSource` trait so running beside Stump and replacing it are the same code
+above that line. A gated corpus check compares every page the server serves
+against the page the aligner sequenced — 617 of them on Go-Toubun v01, no
+disagreement.
+
+What remains: the browser reader itself, the correction UI, an OPDS feed so a
+third-party iOS reader can consume a library, and the `PageSource` that proxies
+Stump. Two known deferrals are recorded rather than forgotten — the index →
+(member, offset) walk belongs in `taiyaku_core::Edition` rather than in
+`LocalLibrary`, and the handlers' blocking filesystem reads want
+`spawn_blocking`. Both were left until the second `PageSource` exists, because it
+reshapes the first and does not make the second any dearer.
 
 ### Later
 

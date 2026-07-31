@@ -6,7 +6,7 @@ use image::GrayImage;
 use rayon::prelude::*;
 use taiyaku_core::PageHash;
 
-use crate::pages::Page;
+use taiyaku_read::Page;
 
 /// Hash grid edge. 16 gives the 256 bits `PageHash` carries.
 const GRID: u32 = 16;

@@ -478,12 +478,40 @@ so it can be replaced or dropped without touching anything else.
 **What this design commits to now:** nothing beyond recording progress in slots,
 which costs nothing and keeps the chapter derivation a later pure function.
 
+## Carried into M3 from building M1 and M2
+
+Two findings from the whole-branch review were deliberately not fixed, because
+the second `PageSource` reshapes the first and does not make the second dearer.
+Both are architectural rather than cosmetic, and both should be settled while
+planning M3 rather than discovered again.
+
+- **Rule 1 is implemented where only one caller can reach it.** The index →
+  (member, offset) walk lives inside `LocalLibrary`, and the page-count sum is
+  computed there as well as in `taiyaku_core::Edition::slots` — two derivations
+  of a normative quantity, one crate apart. The spec's own argument for flat
+  page indices is that any server implementing these routes agrees "by
+  construction rather than by care"; as built, `StumpLibrary` will write the
+  same loop again and agree by care. `Edition::total_pages` and
+  `Edition::locate` in `taiyaku-core` would fix it, put the arithmetic where the
+  WASM client also needs it for the filmstrip, and narrow `PageSource` to the
+  part that genuinely varies by source — at which point `page_count` leaves the
+  trait entirely. **This originates in the plan, not the execution.**
+- **The handlers do blocking filesystem I/O on tokio workers.** Invisible with
+  one reader; with the prefetching the filmstrip and swap both need, it stalls a
+  worker per in-flight page, and this corpus holds pages of 430 MB.
+  `spawn_blocking` in the route is the fix, and keeping `PageSource` synchronous
+  is still right — the boundary belongs at the router. It gets worse in M3,
+  where `StumpLibrary` does blocking HTTP behind the same synchronous trait.
+
 ## Open questions
 
-Recorded rather than resolved, because none blocks M1.
+Recorded rather than resolved. The first is answered; the rest are open.
 
-- **Which work does a URL name?** `/api/works/:work` needs an identifier. The
-  sidecar has a title but no id, and titles are not unique or stable.
+- ~~**Which work does a URL name?**~~ **Answered in M2:** the sidecar's filename
+  stem, lowercased and slugified. The sidecar carries a title but no id, and
+  titles are neither unique across a library nor stable across an edit; a
+  filename is both, and a person reading a URL can tell which file it came from.
+  Two sidecars resolving to one id is an error rather than a silent shadowing.
 - **How does the client authenticate to Stump** under `StumpLibrary` — pass
   through the user's session, or hold a service credential.
 - **Thumbnail caching.** The filmstrip wants a thumbnail per page of the current

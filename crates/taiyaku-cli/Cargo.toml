@@ -12,17 +12,20 @@ authors.workspace = true
 name = "taiyaku"
 path = "src/main.rs"
 
-# Native-only work belongs here rather than in taiyaku-core: archive reading,
-# image decoding, and parallel hashing across pages.
+# Native-only work belongs here rather than in taiyaku-core: image decoding, the
+# content-addressed fingerprint cache, and parallel hashing across pages. Page
+# reading itself moved to taiyaku-read when taiyaku-serve became a second
+# consumer of it.
 [dependencies]
 base64 = "0.23.0"
 image = "0.25.9"
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-sha2 = "0.11.0"
 taiyaku-core = { path = "../taiyaku-core" }
-zip = "7.2.0"
+taiyaku-read = { path = "../taiyaku-read" }
+taiyaku-serve = { path = "../taiyaku-serve" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [lints]
 workspace = true

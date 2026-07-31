@@ -1,24 +1,28 @@
-//! Command-line aligner for taiyaku.
+//! Command line for taiyaku: the aligner, and the server that hands a reader
+//! what it wrote.
 //!
 //!   taiyaku align <a-member>... -- <b-member>...
+//!   taiyaku serve <taiyaku.json>...
 //!
-//! Each side is an *edition*: one or more archives or directories that flatten
-//! into a single page sequence. `--` separates the two, so a raw volume can be
-//! aligned against the several chapter files that make it up.
+//! Each side of an alignment is an *edition*: one or more archives or
+//! directories that flatten into a single page sequence. `--` separates the
+//! two, so a raw volume can be aligned against the several chapter files that
+//! make it up.
 //!
 //! Fingerprints are cached under `.taiyaku-cache/` by member content hash, so
 //! re-solving costs milliseconds rather than seconds.
+//!
+//! `serve` is a thin front for `taiyaku-serve`: argument parsing and a runtime.
+//! Everything the server does lives in that crate.
 
 mod cache;
 #[cfg(test)]
 mod corpus;
 mod fingerprint;
-mod naming;
-mod pages;
 mod report;
 mod stats;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use taiyaku_core::{
     Alignment, Anchor, Direction, Edition, Half, Member, Merged, Run, Sidecar, Slot, SolverInfo,
@@ -39,6 +43,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("verify") => verify(&args[1..]),
         Some("topology") => topology(&args[1..]),
         Some("lookup") => lookup(&args[1..]),
+        Some("serve") => serve(&args[1..]),
         Some(other) => Err(format!("unknown command `{other}`")),
         None => {
             println!("taiyaku {}", env!("CARGO_PKG_VERSION"));
@@ -48,6 +53,7 @@ fn run(args: &[String]) -> Result<(), String> {
             );
             println!("       taiyaku topology <hub>... -- <spoke>... -- <spoke>...");
             println!("       taiyaku lookup <taiyaku.json> <from> <to> <page>...");
+            println!("       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT]");
             println!();
             println!("align options: --split-spreads --ltr --stats --write FILE --title NAME");
             println!("               --name-a KEY --name-b KEY --direct");
@@ -66,9 +72,9 @@ fn run(args: &[String]) -> Result<(), String> {
 /// a page sequence, and a shell glob is not sorted into one — `*.cbz` yields
 /// `c10.5, c10, c1, c2` — so the order given is the one thing here that must not
 /// be trusted. Ordering at this single funnel is what keeps the consumers in
-/// agreement: `pages::read_edition` and `cached_edition` sort for themselves,
-/// but `describe_edition` writes the list straight into the sidecar and `slug`
-/// and `label` name an edition after its first member.
+/// agreement: `taiyaku_read::read_edition` and `cached_edition` sort for
+/// themselves, but `describe_edition` writes the list straight into the sidecar
+/// and `slug` and `label` name an edition after its first member.
 fn split_editions(args: &[String]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
     let split = args
         .iter()
@@ -85,7 +91,7 @@ fn split_editions(args: &[String]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), Strin
         return Err("both sides need at least one member".into());
     }
     for side in [&mut a_members, &mut b_members] {
-        side.sort_by(|a, b| naming::natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
+        side.sort_by(|a, b| taiyaku_read::natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
     }
     Ok((a_members, b_members))
 }
@@ -134,8 +140,8 @@ fn verify(args: &[String]) -> Result<(), String> {
     let (a_members, b_members) = split_editions(args)?;
     let out = option_value(args, "--out").unwrap_or("taiyaku-verify.html");
 
-    let a_pages = pages::read_edition(&a_members)?;
-    let b_pages = pages::read_edition(&b_members)?;
+    let a_pages = taiyaku_read::read_edition(&a_members)?;
+    let b_pages = taiyaku_read::read_edition(&b_members)?;
     let (a, a_thumbs) = report::prepare(&a_pages, report::THUMB_WIDTH)?;
     let (b, b_thumbs) = report::prepare(&b_pages, report::THUMB_WIDTH)?;
     eprintln!("A: {} pages | B: {} pages", a.len(), b.len());
@@ -167,7 +173,7 @@ fn verify(args: &[String]) -> Result<(), String> {
             let named = |members: &[PathBuf], side: &str| -> Result<String, String> {
                 let mut digests = Vec::new();
                 for member in members {
-                    digests.push(pages::member_digest(member)?);
+                    digests.push(taiyaku_read::member_digest(member)?);
                 }
                 sidecar
                     .edition_of(&digests)
@@ -298,13 +304,13 @@ fn topology(args: &[String]) -> Result<(), String> {
     let (hub, spokes) = groups.split_first().unwrap();
 
     eprintln!("hub:  {}", label(hub));
-    let hub_hashes = fingerprint::fingerprint_edition(&pages::read_edition(hub)?)?;
+    let hub_hashes = fingerprint::fingerprint_edition(&taiyaku_read::read_edition(hub)?)?;
     let mut spoke_hashes = Vec::new();
     for (i, spoke) in spokes.iter().enumerate() {
         eprintln!("spoke {i}: {}", label(spoke));
-        spoke_hashes.push(fingerprint::fingerprint_edition(&pages::read_edition(
-            spoke,
-        )?)?);
+        spoke_hashes.push(fingerprint::fingerprint_edition(
+            &taiyaku_read::read_edition(spoke)?,
+        )?);
     }
 
     // The star: one alignment per spoke, and its inverse so a spoke can reach
@@ -396,15 +402,90 @@ fn topology(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Express `target` relative to `base`, for writing into a sidecar.
+///
+/// The format says a member's path is relative to the sidecar, so what a
+/// caller typed — which is relative to wherever they happened to be — cannot
+/// be written down as-is. Both sides are canonicalised first so that `..`,
+/// symlinks and differing spellings of the same directory do not produce a
+/// relative path that walks somewhere else.
+///
+/// When either side cannot be canonicalised, returns an *absolute* path built
+/// from `target` — never the raw argument. The raw argument is exactly the
+/// working-directory-relative path this function exists to stop writing into
+/// the sidecar, so returning it on the failure path would silently reopen the
+/// bug the success path fixes. If even `std::path::absolute` fails — which
+/// essentially means the working directory is unreadable — this errors rather
+/// than falling back to it, because a sidecar that cannot be written is
+/// recoverable and one that records unresolvable paths is not.
+fn relative_to(target: &Path, base: &Path) -> Result<PathBuf, String> {
+    let (Ok(here), Ok(there)) = (target.canonicalize(), base.canonicalize()) else {
+        // Absolute, not raw. An absolute path is still correct and merely
+        // less portable; the path as the caller typed it is relative to
+        // their working directory, which is the very thing the sidecar must
+        // not record. A relative path computed against a base that could not
+        // be resolved would be worse than either — comparing a relative
+        // target's components against an absolute base's would share no
+        // prefix, producing a plausible-looking path that points elsewhere.
+        return std::path::absolute(target).map_err(|e| {
+            format!(
+                "{}: cannot be made absolute, so it cannot be recorded in a sidecar: {e}",
+                target.display()
+            )
+        });
+    };
+
+    let mut target_parts = here.components().peekable();
+    let mut base_parts = there.components().peekable();
+    while target_parts.peek().is_some() && target_parts.peek() == base_parts.peek() {
+        target_parts.next();
+        base_parts.next();
+    }
+
+    let mut relative = PathBuf::new();
+    for _ in base_parts {
+        relative.push("..");
+    }
+    for component in target_parts {
+        relative.push(component);
+    }
+    Ok(match relative.as_os_str().is_empty() {
+        true => PathBuf::from("."),
+        false => relative,
+    })
+}
+
+/// The directory a sidecar written to `out` lives in, so member paths can be
+/// recorded relative to it.
+///
+/// `Path::new("taiyaku.json").parent()` returns `Some("")` for a bare
+/// filename with no directory component, rather than `None` — and computing
+/// member paths against an empty base would be silently wrong. Normalised to
+/// `.` instead.
+fn sidecar_dir(out: &Path) -> &Path {
+    out.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
 /// Describe one edition for the sidecar: its members, their content hashes,
 /// and which of its pages are joined spreads.
-fn describe_edition(label: &str, members: &[PathBuf], slots: &[Slot]) -> Result<Edition, String> {
+///
+/// `beside` is the directory the sidecar will be written to, because the format
+/// records a member's path relative to the sidecar rather than to wherever the
+/// caller happened to be standing.
+fn describe_edition(
+    label: &str,
+    members: &[PathBuf],
+    slots: &[Slot],
+    beside: &Path,
+) -> Result<Edition, String> {
     let mut described = Vec::new();
     for member in members {
         described.push(Member {
-            path: member.to_string_lossy().to_string(),
-            sha256: pages::member_digest(member)?,
-            pages: pages::member_pages(member)?,
+            path: relative_to(member, beside)?.to_string_lossy().to_string(),
+            sha256: taiyaku_read::member_digest(member)?,
+            pages: taiyaku_read::member_pages(member)?,
         });
     }
     // A page appears twice in the slot table exactly when it is a spread.
@@ -512,6 +593,36 @@ fn lookup(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Serve a reader the sidecars it was handed.
+///
+/// Sidecar paths are arguments rather than discovered, the same way `align`
+/// takes members rather than scanning: deciding which files constitute a
+/// library is a different job, and doing it badly here would be worse than not
+/// doing it at all.
+fn serve(args: &[String]) -> Result<(), String> {
+    let paths: Vec<PathBuf> = args
+        .iter()
+        .take_while(|a| !a.starts_with("--"))
+        .map(PathBuf::from)
+        .collect();
+    if paths.is_empty() {
+        return Err("needs at least one taiyaku.json to serve".into());
+    }
+    let addr = option_value(args, "--addr").unwrap_or("127.0.0.1:8484");
+    let works = taiyaku_serve::load_works(&paths)?;
+    for work in &works {
+        eprintln!(
+            "{} | {} editions | {}",
+            work.id,
+            work.sidecar.editions.len(),
+            work.sidecar.work.title
+        );
+    }
+    tokio::runtime::Runtime::new()
+        .map_err(|e| format!("{e}"))?
+        .block_on(taiyaku_serve::serve(works, addr))
+}
+
 /// Fingerprint an edition through the cache, splitting joined spreads.
 ///
 /// Returns the hashes, the slot table, and how many members were served from
@@ -525,7 +636,7 @@ fn cached_edition(
     let mut described = Vec::new();
     let mut hits = 0;
     let mut ordered = members.to_vec();
-    ordered.sort_by(|a, b| naming::natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
+    ordered.sort_by(|a, b| taiyaku_read::natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
     for member in &ordered {
         let (pages, hit) = cache::member_pages(root, member)?;
         hits += usize::from(hit);
@@ -565,8 +676,8 @@ fn align(args: &[String]) -> Result<(), String> {
     let show_stats = args.iter().any(|a| a == "--stats");
 
     if !split_spreads {
-        let a_pages = pages::read_edition(&a_members)?;
-        let b_pages = pages::read_edition(&b_members)?;
+        let a_pages = taiyaku_read::read_edition(&a_members)?;
+        let b_pages = taiyaku_read::read_edition(&b_members)?;
         let a = fingerprint::fingerprint_edition(&a_pages)?;
         let b = fingerprint::fingerprint_edition(&b_pages)?;
         eprintln!("A: {} pages | B: {} pages", a.len(), b.len());
@@ -705,8 +816,11 @@ fn align(args: &[String]) -> Result<(), String> {
             ));
         }
 
-        let a_edition = describe_edition(&label(&a_members), &a_members, &a_slots)?;
-        let b_edition = describe_edition(&label(&b_members), &b_members, &b_slots)?;
+        // Member paths are recorded relative to the sidecar, so the writer has
+        // to know where the sidecar is going before it can describe an edition.
+        let beside = sidecar_dir(std::path::Path::new(out));
+        let a_edition = describe_edition(&label(&a_members), &a_members, &a_slots, beside)?;
+        let b_edition = describe_edition(&label(&b_members), &b_members, &b_slots, beside)?;
         let alignment = Alignment {
             from: a_name.clone(),
             to: b_name.clone(),
@@ -890,5 +1004,116 @@ mod tests {
             b,
             ["c1.cbz", "c2.cbz", "c10.cbz", "c10.5.cbz"].map(PathBuf::from)
         );
+    }
+
+    /// `docs/sidecar.md` says a member's `path` is relative to the sidecar, and
+    /// `LocalLibrary` resolves it that way. `describe_edition` wrote the path as
+    /// typed on the command line, which is relative to the working directory —
+    /// so a sidecar written from one directory and stored in another named
+    /// members that were not there, and every page 404'd.
+    ///
+    /// The same class as the member-order bug: the writer disagreeing with a
+    /// rule the format states, invisible until something resolved it.
+    #[test]
+    fn a_member_path_is_recorded_relative_to_the_sidecar() {
+        let root = std::env::temp_dir().join("taiyaku-test-relative");
+        let _ = std::fs::remove_dir_all(&root);
+        let library = root.join("library");
+        let beside = root.join("sidecars");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::create_dir_all(&beside).unwrap();
+        let member = library.join("v01.cbz");
+        std::fs::write(&member, b"placeholder").unwrap();
+
+        let recorded = relative_to(&member, &beside).unwrap();
+
+        let resolved = beside.join(&recorded);
+        let ok = resolved.canonicalize().ok() == member.canonicalize().ok();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(recorded, PathBuf::from("../library/v01.cbz"));
+        assert!(ok, "{} should resolve to the member", recorded.display());
+    }
+
+    /// The sibling case above is not the common one. The normal layout is a
+    /// sidecar sitting beside or inside the corpus it describes — `taiyaku.json`
+    /// at the root, members underneath it — which the sibling test does not
+    /// exercise at all. A regression that broke only this case would pass the
+    /// existing suite.
+    #[test]
+    fn a_member_inside_the_base_directory_is_recorded_relative_to_it() {
+        let root = std::env::temp_dir().join("taiyaku-test-relative-nested");
+        let _ = std::fs::remove_dir_all(&root);
+        let raw_mono = root.join("raw-mono");
+        std::fs::create_dir_all(&raw_mono).unwrap();
+        let member = raw_mono.join("v01.cbz");
+        std::fs::write(&member, b"placeholder").unwrap();
+        // Sidecar at <root>/taiyaku.json, so its directory is <root> itself.
+        let beside = root.clone();
+
+        let recorded = relative_to(&member, &beside).unwrap();
+
+        let resolved = beside.join(&recorded);
+        let ok = resolved.canonicalize().ok() == member.canonicalize().ok();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(recorded, PathBuf::from("raw-mono/v01.cbz"));
+        assert!(ok, "{} should resolve to the member", recorded.display());
+    }
+
+    /// Finding 1: a `let-else` pattern's bindings are not in scope inside its
+    /// `else` block, so `let (Ok(target), Ok(base)) = (...) else { return
+    /// target... }` returns the *parameter*, not a canonicalised path. In this
+    /// call chain that parameter is exactly the working-directory-relative
+    /// path this function exists to stop writing into the sidecar — the
+    /// fallback was reintroducing the bug it exists to prevent.
+    ///
+    /// Constructed the way the review asked: a base that cannot be resolved (a
+    /// sidecar directory that does not exist) and a relative target, the shape
+    /// a caller's argument actually has. Before the fix this returned
+    /// `target` completely unchanged, `relative/thing.cbz` — not absolute, not
+    /// even looked at. After the fix it returns an absolute path.
+    ///
+    /// Pinned against `current_dir().join(target)` rather than only asserting
+    /// `is_absolute()`: the weaker assertion passes for any absolute path at
+    /// all, including one built from `base`, so it would not have noticed the
+    /// two being swapped. What has to hold is that the recorded path still
+    /// names the *member*.
+    #[test]
+    fn relative_to_returns_an_absolute_path_when_the_base_cannot_be_resolved() {
+        let target = Path::new("relative/thing.cbz");
+        let missing_base = std::env::temp_dir().join("taiyaku-test-relative-missing-base");
+        let _ = std::fs::remove_dir_all(&missing_base);
+
+        let recorded = relative_to(target, &missing_base).unwrap();
+
+        assert!(
+            recorded.is_absolute(),
+            "expected an absolute path when the base cannot be resolved, got {}",
+            recorded.display()
+        );
+        assert_eq!(
+            recorded,
+            std::env::current_dir().unwrap().join(target),
+            "must be the member made absolute, not the base and not the raw argument"
+        );
+        assert!(
+            recorded.ends_with("relative/thing.cbz"),
+            "must still name the member: {}",
+            recorded.display()
+        );
+    }
+
+    /// `Path::new("taiyaku.json").parent()` returns `Some("")`, not `None`,
+    /// for a bare filename — the guard at the `--write` call site exists
+    /// because computing member paths against an empty base would be silently
+    /// wrong. Pinned directly rather than only through the inline expression
+    /// it used to be.
+    #[test]
+    fn sidecar_dir_falls_back_to_the_current_directory_for_a_bare_filename() {
+        assert_eq!(sidecar_dir(Path::new("taiyaku.json")), Path::new("."));
+    }
+
+    #[test]
+    fn sidecar_dir_is_the_parent_of_a_pathed_filename() {
+        assert_eq!(sidecar_dir(Path::new("out/taiyaku.json")), Path::new("out"));
     }
 }

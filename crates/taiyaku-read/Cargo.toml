@@ -1,0 +1,18 @@
+[package]
+name = "taiyaku-read"
+description = "Reading a manga edition's pages from archives and directories"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Native-only by design: archive reading and content hashing. taiyaku-core stays
+# free of all of this so it keeps compiling to wasm32.
+[dependencies]
+sha2 = "0.11.0"
+zip = "7.2.0"
+
+[lints]
+workspace = true

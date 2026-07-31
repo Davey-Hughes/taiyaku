@@ -2528,3 +2528,63 @@ what disagrees needs aligning, which on One Piece was 4 GB rather than 12.
 One caution learned the expensive way: **compare all pairs within a duplicate set**,
 not every copy against the first. Anchoring on the first copy reported volume 77 as
 three unrelated files when two of them are an exact identity.
+
+## The extension lies about a page's format too, and the server was believing it
+
+`taiyaku serve` has to state a content type for every page it hands out. The
+obvious source is the entry's extension, which is also what decides whether an
+entry counts as a page at all (`sidecar.md` rule 3). Measured across every page
+entry in every corpus archive, that would be wrong on more than one page in a
+hundred:
+
+```
+8637 page entries across corpus archives
+  extension says jpeg  bytes say png      : 114 entries
+```
+
+All 114 are in one fan-translated chapter of Go-Toubun v01 —
+`en-fan/… - c005.5.cbz`, whose entries are named `002.jpg` and hold PNG data.
+Nothing else in the corpus disagrees with its own extension.
+
+This is the same lesson `unsupported_container` already records one level up, at
+the container rather than the page: extensions are a naming convention and the
+bytes are the fact. A browser `<img>` re-sniffs and would never notice, which is
+exactly why it would have gone unnoticed until the OPDS feed handed an iOS reader
+a PNG labelled `image/jpeg`. `LocalLibrary` therefore sniffs the leading bytes
+and falls back to the extension only when they name nothing.
+
+Reproduce with:
+
+```sh
+python3 - <<'PY'
+import zipfile
+from pathlib import Path
+IMG = {"jpg","jpeg","png","webp","gif","bmp","avif","tif","tiff"}
+def magic(b):
+    if b[:3] == b'\xff\xd8\xff': return 'jpeg'
+    if b[:8] == b'\x89PNG\r\n\x1a\n': return 'png'
+    if b[:6] in (b'GIF87a', b'GIF89a'): return 'gif'
+    if b[:4] == b'RIFF' and b[8:12] == b'WEBP': return 'webp'
+    if b[:2] == b'BM': return 'bmp'
+    if b[:4] in (b'II*\x00', b'MM\x00*'): return 'tiff'
+    if b[4:8] == b'ftyp': return b[8:12].decode('ascii','replace')
+    return 'unknown'
+norm = {'jpg':'jpeg','tif':'tiff'}
+total, bad = 0, {}
+for cbz in Path('corpus').rglob('*.cbz'):
+    try: z = zipfile.ZipFile(cbz)
+    except Exception: continue
+    for info in z.infolist():
+        name = info.filename
+        if info.is_dir() or name.startswith('__MACOSX'): continue
+        if name.rsplit('/',1)[-1].startswith('.'): continue
+        ext = name.rsplit('.',1)[-1].lower() if '.' in name else ''
+        if ext not in IMG: continue
+        total += 1
+        with z.open(info) as f: head = f.read(16)
+        claimed, actual = norm.get(ext, ext), magic(head)
+        if claimed != actual: bad.setdefault((claimed, actual), 0)
+        if claimed != actual: bad[(claimed, actual)] += 1
+print(total, 'page entries;', bad)
+PY
+```

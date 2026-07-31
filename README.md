@@ -10,9 +10,11 @@ you're back.
 The name is 対訳 (*taiyaku*), the Japanese term for a bilingual parallel-text edition
 where the original and its translation sit facing each other.
 
-> **Status: the aligner works, there is no reader yet.** `taiyaku align` pairs two
-> editions and writes a sidecar, measured against eleven series. What is built, what
-> is known broken, and what comes next are in [`docs/status.md`](docs/status.md).
+> **Status: the aligner works, and the reader has a back end and no front end.**
+> `taiyaku align` pairs two editions and writes a sidecar, measured against eleven
+> series; `taiyaku serve` hands an HTTP client that sidecar, its pages and a reading
+> position. Nothing draws them yet. What is built, what is known broken, and what
+> comes next are in [`docs/status.md`](docs/status.md).
 
 ## The problem
 
@@ -73,12 +75,19 @@ taiyaku lookup taiyaku.json raw en 47
 
 # and between two editions that were never aligned to each other directly
 taiyaku lookup taiyaku.json en en-fan 45
+
+# hand a reader the sidecar, its pages, and where you were, over HTTP
+taiyaku serve taiyaku.json --addr 127.0.0.1:8484
 ```
 
-Members may be `.cbz`, `.cbr`, `.zip`, plain directories, or anything else
-libarchive reads; the format is detected by content rather than by extension.
-Several members on either side of the `--` are concatenated before solving, which
-is how chapters map onto a volume and how two tankōbon map onto one deluxe edition.
+Members may be `.cbz`, `.zip`, any other zip-based archive whatever it is named,
+or a plain directory of page images. The container is identified by content
+rather than by extension, because extensions lie in both directions — a zip is
+often named `.cbr`, and a real RAR or 7-Zip archive is often named `.cbz`. Only
+zip is read: the others are recognised so the error can name the format and say
+to convert it, rather than reporting a corrupt zip. Several members on either
+side of the `--` are concatenated before solving, which is how chapters map onto
+a volume and how two tankōbon map onto one deluxe edition.
 
 `--split-spreads` handles the case where one edition joins a double-page spread into
 a single wide image and the other splits it in two. It is worth passing almost

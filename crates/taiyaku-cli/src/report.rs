@@ -10,7 +10,8 @@ use image::DynamicImage;
 use rayon::prelude::*;
 use taiyaku_core::{PageConfidence, PageHash};
 
-use crate::{fingerprint::fingerprint, pages::Page};
+use crate::fingerprint::fingerprint;
+use taiyaku_read::Page;
 
 /// Width of a contact-sheet thumbnail, in pixels.
 pub const THUMB_WIDTH: u32 = 130;

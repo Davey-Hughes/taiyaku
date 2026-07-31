@@ -45,7 +45,7 @@ fn corpus() -> Option<PathBuf> {
 /// The members of one edition directory: its `.cbz` files, or the directory
 /// itself when it holds loose page images.
 ///
-/// Order does not matter — `pages::read_edition` sorts naturally, which it has
+/// Order does not matter — `taiyaku_read::read_edition` sorts naturally, which it has
 /// to, because `c005.5.cbz` sorts before `c005.cbz` in every shell glob.
 fn members(dir: &Path) -> Vec<String> {
     let archives: Vec<String> = std::fs::read_dir(dir)

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use taiyaku_core::PageHash;
 
-use crate::{fingerprint, pages};
+use crate::fingerprint;
 
 /// What decoding a page tells us, stored so it never has to be decoded again.
 ///
@@ -53,7 +53,7 @@ fn entry_path(root: &Path, digest: &str) -> PathBuf {
 /// Returns the pages and whether the work was avoided, so callers can report
 /// honestly rather than implying a cold run was fast.
 pub fn member_pages(root: &Path, member: &Path) -> Result<(Vec<CachedPage>, bool), String> {
-    let digest = pages::member_digest(member)?;
+    let digest = taiyaku_read::member_digest(member)?;
     let path = entry_path(root, &digest);
 
     if let Ok(text) = std::fs::read_to_string(&path)
@@ -64,7 +64,8 @@ pub fn member_pages(root: &Path, member: &Path) -> Result<(Vec<CachedPage>, bool
         return Ok((entry.pages, true));
     }
 
-    let decoded = fingerprint::describe_pages(&pages::read_edition(&[member.to_path_buf()])?)?;
+    let decoded =
+        fingerprint::describe_pages(&taiyaku_read::read_edition(&[member.to_path_buf()])?)?;
     let entry = CachedMember {
         version: CACHE_VERSION,
         sha256: digest,
