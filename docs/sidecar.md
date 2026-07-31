@@ -17,13 +17,49 @@ L2 fields it does not understand.
 ```
 taiyaku align  <a>... -- <b>... --split-spreads --write taiyaku.json \
                --title NAME --name-a raw-mono --name-b en-mono
+taiyaku align  <a>... -- <c>... --split-spreads --write taiyaku.json --name-b en-fan
 taiyaku lookup taiyaku.json raw-mono en-mono 47 48
 taiyaku verify <a>... -- <b>... --sidecar taiyaku.json --out report.html
 ```
 
+The second line adds a third edition to the document the first wrote. `--write`
+merges rather than overwriting, and on a merge the a-side **is** the hub — the
+file names its own — so `--name-a` is optional there and an error if it names
+anything else. That is what keeps the topology a star rather than letting it
+drift towards all-pairs one convenient alignment at a time. `--direct` overrides
+it for a pair that has earned a direct edge, and requires `--name-a` because
+there is then no hub to fall back on.
+
+Two things a merge refuses, because both would produce a valid document that
+means something other than it says: an alignment solved under the other reading
+direction, and an a-side whose members no longer hash to what the document
+records. The second is not hypothetical — the library holds two files both
+claiming to be volume 1 of the same work.
+
 `verify --sidecar` takes the alignment from the file rather than the solver,
 which is what makes a hand correction reviewable: edit the runs, render again,
 look at what changed.
+
+**It identifies the two editions by content**, hashing the members it was handed
+and matching them against the document, rather than being told or guessing.
+Paths cannot do this — the document's are relative to itself and the caller's to
+the working directory — and position cannot either: taking the first alignment
+worked only while a document could hold one. Against a five-edition document it
+rendered a confident contact sheet of a pair nobody asked about, reporting
+`sound` over 103.7% of the pages paired, which is the one failure this report
+exists to prevent. Members that are not an edition of the document are refused,
+and the error names the editions that are.
+
+It goes through the same routing a lookup does, so a **composed** pair renders
+too, and says so:
+
+```
+alignment from taiyaku.json: en-mono -> en-color, composed through raw-mono (7 runs)
+7 runs | 192/194 pages paired (99.0%) | 3.6 runs per 100 pages | sound
+```
+
+That is the alignment most worth putting in front of a person, because it is the
+one no solver ever checked.
 
 Fingerprints are cached under `.taiyaku-cache/`, keyed by each member's SHA-256,
 so re-solving costs milliseconds rather than seconds — measured at 3.4 s cold
@@ -36,21 +72,42 @@ document with no archives present and no solving, and its answers match what
 `align` printed. On Go-Toubun volume 1, raw page 47 resolves to the right half
 of English page 45 either way.
 
-Every call also prints how far the answer can be trusted, alongside the title
-line:
+Every call also prints how far the answer can be trusted and by what path,
+alongside the title line. All four shapes, against the five-edition Go-Toubun
+document:
 
 ```
 $ taiyaku lookup taiyaku.json raw-mono en-mono 47
-Go-Toubun no Hanayome | 2 editions | reading RightToLeft
+Go-Toubun no Hanayome | 5 editions | reading RightToLeft
   alignment raw-mono -> en-mono: sound, average run 64.3
   raw-mono   47 -> en-mono   45 right half
+
+$ taiyaku lookup taiyaku.json en-mono raw-mono 45
+  alignment en-mono -> raw-mono: sound, average run 64.3, from the stored raw-mono -> en-mono edge
+  en-mono   45 -> raw-mono   47
+
+$ taiyaku lookup taiyaku.json en-mono en-fan 45
+  alignment en-mono -> en-fan: FRAGMENTED, average run 26.9, composed through raw-mono
+  en-mono   45 -> en-fan   85
+
+$ taiyaku lookup taiyaku.json en-mono en-mono 45
+  alignment en-mono -> en-mono: identical edition
+  en-mono   45 -> en-mono   45 right half
 ```
 
-This is printed on every call, not only a bad one — a warning that appears
-sometimes teaches a reader to skip it. It reports rather than refuses: a
-`FRAGMENTED` alignment still resolves every page it can, because `lookup`
-exists to show what the format carries, including on the files most worth
-inspecting.
+The second and third answers are the ones only a hub makes possible, and the
+third is only as good as its weaker leg — `raw-mono -> en-fan` is the
+`FRAGMENTED` one, and the composed line says so rather than inheriting the
+`sound` of the other leg. Composition agrees with walking the legs by hand:
+en-mono 45 → raw-mono 47 → en-fan 85.
+
+The trust line is printed on every call, not only a bad one — a warning that
+appears sometimes teaches a reader to skip it. It reports rather than refuses: a
+`FRAGMENTED` alignment still resolves every page it can, because `lookup` exists
+to show what the format carries, including on the files most worth inspecting.
+Naming the path is part of the same principle: a composed answer is weaker than
+a direct one, and a `no counterpart` under a `composed through` line is the
+predicted hub-gap case rather than a broken tool.
 
 ## Shape
 
@@ -230,19 +287,37 @@ disagreed with a direct solve four times, all in the weakest pairing in the
 corpus. Loss is about 1.7%, in the safe direction — a reader sees "no
 counterpart" rather than a wrong page.
 
-**Resolving through the hub is not implemented.** `resolve` walks an alignment
-stored in the direction asked for and nothing else: no stored A→B edge means no
-answer, whatever composing through the hub would have produced, and a B→A
-question is not answered by a stored A→B edge either. Composition here is
-`compose`, over solved runs, which is what `topology` measured; the only place a
-stored document composes is `Sidecar::trust`, which crosses A→hub→B for a
-verdict and takes the worse leg. `lookup` prints that verdict and says plainly
-that it cannot follow it, so the `no counterpart` lines underneath are explained
-rather than mysterious.
+`resolve` answers any ordered pair of editions, trying four things in order:
 
-Direct edges are permitted for pairs where composition demonstrably loses. The
-measurements say where to spend one: editions furthest from the hub lose 3.5% to
-each other, editions sharing the hub's page count lose under 0.5%.
+| Case | How |
+| ---- | --- |
+| The same edition on both sides | identity, without consulting an alignment |
+| A stored A→B edge | walked as stored |
+| A stored B→A edge | reversed |
+| Neither | A→hub→B, each leg a stored edge in whichever direction it is kept |
+
+**A stored edge is the whole answer, including when it is present and cannot be
+read.** Falling through to the hub there would answer a different question than
+the one asked — not "where does this edge send the page" but "where does some
+other path send it". `Sidecar::trust` makes the same choice for the same reason,
+so the two now agree about which paths exist.
+
+Reading an edge backwards is permitted because **the solver is symmetric on the
+pairing relation**, which is measured rather than assumed: across five pairs in
+two series, including the widest length mismatch in the corpus at 195 slots
+against 240, every paired run is identical to its transpose. Only the one-sided
+gap runs differ, which is by construction. This is what lets the format store
+N−1 edges rather than 2(N−1) — had inversion been lossy, every spoke would need
+both directions kept.
+
+Composition is a read-time operation and is never written back. A composed run
+carries no `margin`: the two legs' margins are not combinable, since the minimum
+over a composed run is not the minimum of the legs' minima.
+
+Direct edges are permitted for pairs where composition demonstrably loses, and
+`align --direct` records one. The measurements say where to spend it: editions
+furthest from the hub lose 3.5% to each other, editions sharing the hub's page
+count lose under 0.5%.
 
 `by` is `"solver"` or `"hand"`. A hand-corrected run must survive a re-solve;
 this is the field that makes the correction UI more than a viewer.

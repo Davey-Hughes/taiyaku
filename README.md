@@ -61,11 +61,18 @@ taiyaku align raw-v01.cbz -- en-v01.cbz --split-spreads \
 # one volume against the seven chapter files it corresponds to
 taiyaku align raw-v01.cbz -- en-c001.cbz en-c002.cbz en-c003.cbz
 
+# add a third edition to the same document — --write merges
+taiyaku align raw-v01.cbz -- en-fan-c001.cbz --split-spreads \
+    --name-b en-fan --write taiyaku.json
+
 # look at what it decided
 taiyaku verify raw-v01.cbz -- en-v01.cbz --out report.html
 
 # reading raw page 47, which English page is in front of you?
 taiyaku lookup taiyaku.json raw en 47
+
+# and between two editions that were never aligned to each other directly
+taiyaku lookup taiyaku.json en en-fan 45
 ```
 
 Members may be `.cbz`, `.cbr`, `.zip`, plain directories, or anything else
@@ -81,6 +88,13 @@ broken.
 `--stats` prints the figures the answer was reached from: what calibration measured
 of the two editions, and what shape the alignment came out. A refusal with no numbers
 beside it is not reviewable, and these are the numbers.
+
+A work can hold any number of editions. One is the **hub** and every other aligns
+only to it, so adding the fifth costs one alignment rather than four; a lookup
+between two editions with no alignment between them composes through the hub and
+says so. Measured on the primary corpus volume at five editions: 0.91% of pages
+resolve directly but not through the hub, and nothing resolves to two different
+places.
 
 ## Design principles
 

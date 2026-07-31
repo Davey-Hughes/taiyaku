@@ -116,42 +116,10 @@ pub fn entries_from_runs(
 ///
 /// A page reference with no half names the first slot of that page, which is
 /// what makes `"7"` mean the same thing whether page 7 is whole or a spread.
-fn slot_index(slots: &[Slot], slot: Slot) -> Option<usize> {
+pub(crate) fn slot_index(slots: &[Slot], slot: Slot) -> Option<usize> {
     slots
         .iter()
         .position(|s| s.page == slot.page && (slot.half.is_none() || s.half == slot.half))
-}
-
-/// Resolve a page of one edition to its counterpart in another, from a stored
-/// sidecar alone.
-///
-/// This is the whole reader API: given a document and a page, say what to show.
-/// It works in slot indices internally because that is where the arithmetic is
-/// uniform, and returns a page plus an optional half because that is what a
-/// reader has to display — possibly one side of a joined spread.
-pub fn resolve(sidecar: &Sidecar, from: &str, to: &str, page: u32) -> Option<Slot> {
-    let alignment = sidecar
-        .alignments
-        .iter()
-        .find(|a| a.from == from && a.to == to)?;
-    let from_slots = sidecar.editions.get(from)?.slots(sidecar.work.reading);
-    let to_slots = sidecar.editions.get(to)?.slots(sidecar.work.reading);
-
-    let here = slot_index(&from_slots, Slot { page, half: None })? as u32;
-
-    for entry in &alignment.runs {
-        let start = slot_index(&from_slots, entry.a.start)? as u32;
-        let end = slot_index(&from_slots, entry.a.end)? as u32;
-        if here < start || here > end {
-            continue;
-        }
-        let target = entry.b?;
-        let target_start = slot_index(&to_slots, target.start)? as u32;
-        return to_slots
-            .get((target_start + (here - start)) as usize)
-            .copied();
-    }
-    None
 }
 
 /// Who produced a run, or an alignment as a whole.
@@ -280,6 +248,25 @@ pub struct Sidecar {
 /// The format version this build writes.
 pub const VERSION: u32 = 1;
 
+/// Where an alignment being merged is allowed to start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anchor {
+    /// The star: the alignment must begin at the document's hub, so every
+    /// edition is one hop from every other.
+    Hub,
+    /// A direct edge deliberately layered over the star, for a pair where
+    /// composition demonstrably loses. The measurements name the candidate:
+    /// the two editions furthest from the hub lose 3.5% to each other.
+    Direct,
+}
+
+/// What a merge did, so a caller can say so rather than guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Merged {
+    Added,
+    Replaced,
+}
+
 impl Sidecar {
     pub fn from_json(text: &str) -> Result<Self, String> {
         serde_json::from_str(text).map_err(|e| format!("not a readable taiyaku.json: {e}"))
@@ -289,6 +276,108 @@ impl Sidecar {
         // Pretty-printed on purpose: the format is meant to diff in git, and a
         // one-line document defeats that entirely.
         serde_json::to_string_pretty(self).expect("sidecar is always serialisable")
+    }
+
+    /// Which edition of this document a set of members is, identified by
+    /// content.
+    ///
+    /// Paths cannot be compared — the document's are relative to itself and a
+    /// caller's to the working directory — so the `sha256` list is what
+    /// identifies an edition. It is compared as a sorted set rather than in
+    /// order, because an edition is identified by which files it holds and a
+    /// caller passing a glob need not reproduce the order the document
+    /// recorded. `merge_spoke` is the place that compares in order, because
+    /// there the order is the page sequence being solved.
+    pub fn edition_of(&self, sha256: &[String]) -> Option<&str> {
+        let mut want: Vec<&str> = sha256.iter().map(String::as_str).collect();
+        want.sort_unstable();
+        self.editions.iter().find_map(|(name, edition)| {
+            let mut have: Vec<&str> = edition.members.iter().map(|m| m.sha256.as_str()).collect();
+            have.sort_unstable();
+            (have == want).then_some(name.as_str())
+        })
+    }
+
+    /// Add an edition and its alignment to a document that already exists.
+    ///
+    /// The rules live here rather than in the CLI because a browser reader
+    /// writing a correction has to apply the same ones, and because they are
+    /// worth testing without archives present.
+    ///
+    /// `from_side` is the freshly described `alignment.from` edition. It is
+    /// passed rather than looked up because the check that matters is whether
+    /// the document's copy and the just-aligned copy are the same content.
+    pub fn merge_spoke(
+        &mut self,
+        reading: Direction,
+        anchor: Anchor,
+        from_side: &Edition,
+        name: &str,
+        edition: Edition,
+        alignment: Alignment,
+    ) -> Result<Merged, String> {
+        if reading != self.work.reading {
+            return Err(format!(
+                "this document reads {:?} and the alignment was solved {reading:?}; \
+                 reading order decides which half of a spread comes first, so merging \
+                 would misfile every spread in the file",
+                self.work.reading
+            ));
+        }
+        let start = alignment.from.clone();
+        if anchor == Anchor::Hub && start != self.hub {
+            return Err(format!(
+                "the hub of this document is `{}`; align against it, or pass --direct \
+                 to record a `{start}` -> `{name}` edge deliberately",
+                self.hub
+            ));
+        }
+        let stored = self
+            .editions
+            .get(&start)
+            .ok_or_else(|| format!("this document defines no edition named `{start}`"))?;
+
+        // Content, not paths. A path in the document is relative to the
+        // document and the caller's is relative to the working directory, so
+        // only the hashes can be compared — and their order matters, because it
+        // is what defines the flattened page sequence.
+        let mismatch = stored
+            .members
+            .iter()
+            .zip(&from_side.members)
+            .position(|(here, there)| here.sha256 != there.sha256);
+        if let Some(i) = mismatch {
+            return Err(format!(
+                "`{start}` in this document is not the edition just aligned: member {i} is \
+                 `{}` here and `{}` there. Re-solve the work rather than merging into it.",
+                stored.members[i].path, from_side.members[i].path
+            ));
+        }
+        if stored.members.len() != from_side.members.len() {
+            return Err(format!(
+                "`{start}` has {} member(s) in this document and {} in the alignment. \
+                 Re-solve the work rather than merging into it.",
+                stored.members.len(),
+                from_side.members.len()
+            ));
+        }
+        if name == start {
+            return Err(format!(
+                "`{name}` is the edition being aligned against; an edition cannot be its \
+                 own counterpart"
+            ));
+        }
+
+        let replaced = self.editions.insert(name.to_string(), edition).is_some();
+        // Edition and edge are replaced together. A surviving edge would
+        // address pages of an edition that is no longer there.
+        self.alignments
+            .retain(|a| !(a.from == start && a.to == name) && !(a.from == name && a.to == start));
+        self.alignments.push(alignment);
+        Ok(match replaced {
+            true => Merged::Replaced,
+            false => Merged::Added,
+        })
     }
 
     /// Rebuild solver runs from a stored alignment.
@@ -375,7 +464,7 @@ impl Sidecar {
     /// The alignment relating two editions, in whichever direction it is
     /// stored. A verdict is a property of the pairing rather than of a
     /// direction, so either orientation answers.
-    fn edge_between(&self, from: &str, to: &str) -> Option<&Alignment> {
+    pub(crate) fn edge_between(&self, from: &str, to: &str) -> Option<&Alignment> {
         self.alignments
             .iter()
             .find(|a| (a.from == from && a.to == to) || (a.from == to && a.to == from))
@@ -482,9 +571,281 @@ mod span_option {
     }
 }
 
+/// The document from `docs/sidecar.md`, verbatim: the real alignment of
+/// Go-Toubun volume 1.
+///
+/// Shared with `route.rs`, whose tests resolve pages through it. Parsing it,
+/// writing it back, and parsing that again has to give the same thing, or a
+/// hand-edited file cannot survive a tool that rewrites it.
+#[cfg(test)]
+pub(crate) const REAL: &str = r#"{
+  "taiyaku": 1,
+  "work": { "title": "Go-Toubun no Hanayome", "reading": "rtl" },
+  "editions": {
+    "raw-mono": {
+      "label": "Raw, monochrome",
+      "members": [
+        { "path": "Go-Toubun no Hanayome - v01.cbz", "sha256": "3f9a", "pages": 195 }
+      ],
+      "spreads": []
+    },
+    "en-mono": {
+      "label": "English official, Kodansha",
+      "members": [
+        { "path": "Go-Toubun no Hanayome - v01 (2018).cbz", "sha256": "c104", "pages": 187 }
+      ],
+      "spreads": [4, 45, 46, 49, 90, 121, 152]
+    }
+  },
+  "hub": "raw-mono",
+  "alignments": [
+    {
+      "from": "raw-mono",
+      "to": "en-mono",
+      "by": "solver",
+      "solver": { "hash": "dhash-16", "floor": 0.68 },
+      "runs": [
+        { "a": "0", "b": "0", "margin": 0.09 },
+        { "a": "1" },
+        { "a": "2-5", "b": "1-4R", "margin": 0.15 },
+        { "a": "6" },
+        { "a": "7-194", "b": "5-186", "margin": 0.17 }
+      ]
+    }
+  ]
+}"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Via, route};
+
+    /// A two-edition document to merge into, and the pieces a merge needs.
+    fn two_edition() -> Sidecar {
+        Sidecar::from_json(
+            r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "a": { "label": "A", "members": [{ "path": "a.cbz", "sha256": "00", "pages": 30 }] },
+            "b": { "label": "B", "members": [{ "path": "b.cbz", "sha256": "01", "pages": 30 }] }
+          },
+          "hub": "a",
+          "alignments": [
+            { "from": "a", "to": "b", "by": "solver", "runs": [{ "a": "0-29", "b": "0-29" }] }
+          ]
+        }"#,
+        )
+        .expect("parses")
+    }
+
+    fn edition(path: &str, sha: &str) -> Edition {
+        Edition {
+            label: path.into(),
+            members: vec![Member {
+                path: path.into(),
+                sha256: sha.into(),
+                pages: 30,
+            }],
+            spreads: Vec::new(),
+        }
+    }
+
+    fn edge(from: &str, to: &str) -> Alignment {
+        Alignment {
+            from: from.into(),
+            to: to.into(),
+            by: Source::Solver,
+            solver: None,
+            quality: None,
+            runs: vec![RunEntry {
+                a: SlotSpan::parse("0-29").unwrap(),
+                b: Some(SlotSpan::parse("0-29").unwrap()),
+                margin: None,
+                by: None,
+                note: None,
+            }],
+        }
+    }
+
+    /// `verify` is handed archives, not edition names, and has to work out
+    /// which pair of the document it is being asked about. Getting this wrong
+    /// renders a confident report of the wrong alignment, which is the one
+    /// failure the verification report exists to prevent.
+    #[test]
+    fn an_edition_is_identified_by_the_content_of_its_members() {
+        let mut s = two_edition();
+        s.editions.insert(
+            "many".into(),
+            Edition {
+                label: "Many".into(),
+                members: vec![
+                    Member {
+                        path: "c1.cbz".into(),
+                        sha256: "aa".into(),
+                        pages: 10,
+                    },
+                    Member {
+                        path: "c2.cbz".into(),
+                        sha256: "bb".into(),
+                        pages: 10,
+                    },
+                ],
+                spreads: Vec::new(),
+            },
+        );
+
+        assert_eq!(s.edition_of(&["00".into()]), Some("a"));
+        assert_eq!(s.edition_of(&["01".into()]), Some("b"));
+        // Order is not identity: a glob need not reproduce what was recorded.
+        assert_eq!(s.edition_of(&["bb".into(), "aa".into()]), Some("many"));
+        // A subset is not the edition, and neither is unknown content.
+        assert_eq!(s.edition_of(&["aa".into()]), None);
+        assert_eq!(s.edition_of(&["ff".into()]), None);
+        assert_eq!(s.edition_of(&[]), None);
+    }
+
+    /// The ordinary case, and the one the whole piece of work exists for: a
+    /// third edition joins a document that had two, and the hub does not move.
+    #[test]
+    fn a_spoke_joins_an_existing_document() {
+        let mut s = two_edition();
+
+        let merged = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Hub,
+                &edition("a.cbz", "00"),
+                "c",
+                edition("c.cbz", "02"),
+                edge("a", "c"),
+            )
+            .expect("merges");
+
+        assert_eq!(merged, Merged::Added);
+        assert_eq!(s.editions.len(), 3);
+        assert_eq!(s.alignments.len(), 2);
+        assert_eq!(s.hub, "a", "a merge must never move the hub");
+        // And the point of it: the new edition is reachable from the old one.
+        assert_eq!(
+            route(&s, "b", "c").map(|r| r.via),
+            Some(Via::Hub("a".into()))
+        );
+    }
+
+    /// Re-solving a spoke after fixing its archive is ordinary. Refusing it
+    /// would make the common case the annoying one, so it replaces — edition
+    /// and edge together, so neither can outlive the other.
+    #[test]
+    fn re_aligning_a_spoke_replaces_it_rather_than_duplicating() {
+        let mut s = two_edition();
+
+        let merged = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Hub,
+                &edition("a.cbz", "00"),
+                "b",
+                edition("b2.cbz", "99"),
+                edge("a", "b"),
+            )
+            .expect("merges");
+
+        assert_eq!(merged, Merged::Replaced);
+        assert_eq!(s.editions.len(), 2);
+        assert_eq!(s.alignments.len(), 1, "the old edge must not survive");
+        assert_eq!(s.editions["b"].members[0].sha256, "99");
+    }
+
+    /// The answer to "what does a third edition align against". The star says
+    /// the hub, and the document names its own hub, so this is checkable rather
+    /// than conventional.
+    #[test]
+    fn a_spoke_aligned_against_a_non_hub_edition_is_refused() {
+        let mut s = two_edition();
+
+        let err = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Hub,
+                &edition("b.cbz", "01"),
+                "c",
+                edition("c.cbz", "02"),
+                edge("b", "c"),
+            )
+            .expect_err("must refuse");
+
+        assert!(err.contains("`a`"), "the error must name the hub: {err}");
+        assert!(err.contains("--direct"), "and the way round it: {err}");
+        assert_eq!(s.editions.len(), 2, "a refused merge must change nothing");
+    }
+
+    /// `Anchor::Direct` is the mitigation the format already designs: a direct
+    /// edge for a pair where composition demonstrably loses.
+    #[test]
+    fn a_direct_edge_may_start_anywhere_the_document_defines() {
+        let mut s = two_edition();
+
+        s.merge_spoke(
+            Direction::RightToLeft,
+            Anchor::Direct,
+            &edition("b.cbz", "01"),
+            "c",
+            edition("c.cbz", "02"),
+            edge("b", "c"),
+        )
+        .expect("merges");
+
+        assert_eq!(s.alignments.len(), 2);
+        assert_eq!(s.alignments[1].from, "b");
+        assert_eq!(s.hub, "a");
+    }
+
+    /// Reading direction decides which half of a joined spread comes first, so
+    /// merging under the wrong one misfiles every spread in the file while
+    /// producing valid JSON.
+    #[test]
+    fn a_merge_under_the_wrong_reading_direction_is_refused() {
+        let mut s = two_edition();
+
+        let err = s
+            .merge_spoke(
+                Direction::LeftToRight,
+                Anchor::Hub,
+                &edition("a.cbz", "00"),
+                "c",
+                edition("c.cbz", "02"),
+                edge("a", "c"),
+            )
+            .expect_err("must refuse");
+
+        assert!(err.contains("reading"), "{err}");
+    }
+
+    /// The library holds two files both claiming to be volume 1 of the same
+    /// work, only one of which is. If the hub's archives changed under the
+    /// document, every existing spoke is aligned to something else.
+    #[test]
+    fn a_merge_against_changed_hub_archives_is_refused() {
+        let mut s = two_edition();
+
+        let err = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Hub,
+                &edition("a-redownloaded.cbz", "ff"),
+                "c",
+                edition("c.cbz", "02"),
+                edge("a", "c"),
+            )
+            .expect_err("must refuse");
+
+        assert!(
+            err.contains("a-redownloaded.cbz"),
+            "the error must name the file: {err}"
+        );
+        assert_eq!(s.editions.len(), 2);
+    }
 
     fn whole(page: u32) -> Slot {
         Slot { page, half: None }
@@ -550,47 +911,6 @@ mod tests {
         }
     }
 
-    /// The document from `docs/sidecar.md`, verbatim: the real alignment of
-    /// Go-Toubun volume 1. Parsing it, writing it back, and parsing that again
-    /// has to give the same thing, or a hand-edited file cannot survive a tool
-    /// that rewrites it.
-    const REAL: &str = r#"{
-  "taiyaku": 1,
-  "work": { "title": "Go-Toubun no Hanayome", "reading": "rtl" },
-  "editions": {
-    "raw-mono": {
-      "label": "Raw, monochrome",
-      "members": [
-        { "path": "Go-Toubun no Hanayome - v01.cbz", "sha256": "3f9a", "pages": 195 }
-      ],
-      "spreads": []
-    },
-    "en-mono": {
-      "label": "English official, Kodansha",
-      "members": [
-        { "path": "Go-Toubun no Hanayome - v01 (2018).cbz", "sha256": "c104", "pages": 187 }
-      ],
-      "spreads": [4, 45, 46, 49, 90, 121, 152]
-    }
-  },
-  "hub": "raw-mono",
-  "alignments": [
-    {
-      "from": "raw-mono",
-      "to": "en-mono",
-      "by": "solver",
-      "solver": { "hash": "dhash-16", "floor": 0.68 },
-      "runs": [
-        { "a": "0", "b": "0", "margin": 0.09 },
-        { "a": "1" },
-        { "a": "2-5", "b": "1-4R", "margin": 0.15 },
-        { "a": "6" },
-        { "a": "7-194", "b": "5-186", "margin": 0.17 }
-      ]
-    }
-  ]
-}"#;
-
     #[test]
     fn the_real_sidecar_round_trips() {
         let parsed = Sidecar::from_json(REAL).expect("parses");
@@ -627,47 +947,6 @@ mod tests {
         let parsed = Sidecar::from_json(&with_l1).expect("L1 fields must not break L0");
 
         assert_eq!(parsed.alignments[0].runs.len(), 5);
-    }
-
-    /// The reader's whole job, done from the stored document with no archives
-    /// and no solving. These expectations come from the aligner's own output on
-    /// Go-Toubun volume 1, so agreement means the file carries what was solved.
-    #[test]
-    fn a_page_resolves_through_a_stored_sidecar() {
-        let s = Sidecar::from_json(REAL).expect("parses");
-
-        // Ordinary page inside the long final run. Raw 100 lands on English 94,
-        // not 99: five of the seven spreads sit before it, and each absorbs a
-        // page. Working that out by eye gets it wrong, which is the point.
-        assert_eq!(
-            resolve(&s, "raw-mono", "en-mono", 100),
-            Some(Slot {
-                page: 94,
-                half: None
-            })
-        );
-        // Raw page 47 lands on the right half of the spread at English page 45.
-        // Getting the slot arithmetic wrong here shows the wrong half.
-        assert_eq!(
-            resolve(&s, "raw-mono", "en-mono", 47),
-            Some(Slot {
-                page: 45,
-                half: Some(Half::Right)
-            })
-        );
-        assert_eq!(
-            resolve(&s, "raw-mono", "en-mono", 48),
-            Some(Slot {
-                page: 45,
-                half: Some(Half::Left)
-            })
-        );
-        // Page 1 is the blank the solver refused to pair.
-        assert_eq!(resolve(&s, "raw-mono", "en-mono", 1), None);
-        // Beyond the volume.
-        assert_eq!(resolve(&s, "raw-mono", "en-mono", 9999), None);
-        // An edition pair with no alignment recorded.
-        assert_eq!(resolve(&s, "en-mono", "raw-mono", 0), None);
     }
 
     /// Runs come out of the solver indexed by slot; the file records pages.

@@ -223,6 +223,114 @@ sixth edition costs two more alignments rather than ten.
 **Verdict: keep hub-and-spoke, raw as hub.** Re-run the command whenever the
 hasher or solver changes; the numbers above are the baseline to compare against.
 
+### The solver is symmetric on the pairing relation, 2026-07-30
+
+Measured because the star's cost depends on it. `topology` composes
+`solve(spoke, hub)` with `solve(hub, spoke)` — two independent solves — but a
+sidecar stores **one** edge per spoke and has to reverse it to walk the first
+leg. If reversing were lossy, the figures above would not describe the path a
+reader actually walks, and every spoke would need both directions stored.
+
+Five pairs solved both ways, comparing every paired run against its transpose:
+
+| Pair | Paired runs each way | Result |
+| ---- | -------------------- | ------ |
+| Go-Toubun raw-mono ↔ en-mono | 3 | identical transposed |
+| Go-Toubun raw-mono ↔ en-fan | 8 | identical transposed |
+| Go-Toubun en-fan ↔ en-color | 11 | identical transposed |
+| Kaguya raw-mono ↔ en-mono | 4 | identical transposed |
+| Kaguya en-fan ↔ en-color | 13 | identical transposed |
+
+Only the one-sided gap runs differ, which is by construction: a gap records
+pages of the `from` edition with no counterpart, and each direction has its own.
+The widest length mismatch available was included deliberately — Go-Toubun
+raw-mono at 195 slots against en-fan at 240.
+
+**Worth recording because the code says otherwise on paper.** `calibrate` is
+asymmetric: `signal` is the median of the best match *per page of A*, so
+swapping the sides changes it whenever the editions differ in length, and with
+it the floor. It does not reach the DP's output on any material measured. The
+asymmetry is real; its consequence is not.
+
+So `invert` is lossless with respect to the relation, and N−1 stored edges is
+enough.
+
+### The shipped path, measured, 2026-07-30
+
+The figures above are page-level and use two independent solves. What a reader
+walks is different in two ways — one stored edge per spoke, reversed, and slots
+rather than pages — so it is measured separately, by the
+`TAIYAKU_CORPUS`-gated test in `crates/taiyaku-cli/src/corpus.rs`. Go-Toubun
+v01, five editions built through the merge path, every ordered spoke pair
+against a direct solve:
+
+```
+2427 page comparisons | loss 0.91% | disagreement 0.00% | 21 blank pages not compared
+```
+
+**Loss is lower than the page-level figure, not higher**, and that is the useful
+finding: 0.91% against 2.12% on the same volume. `topology` does not split
+spreads, so a spread one edition joins and another splits is simply lost to it,
+while the sidecar path addresses slots and recovers it. Spread handling pays for
+itself once more.
+
+**Blank pages are excluded, and counted rather than dropped in silence.** The
+first run disagreed exactly once in 2,448 — `en-color` page 1, direct saying
+page 5 and composition saying 43. The page is blank and its dhash is *exactly*
+zero, 0 of 256 bits set, because a dhash asks whether the left pixel of each
+pair is brighter than the right and on a uniform page none is. Every blank page
+in every edition therefore carries the same hash, so where a solve sends one is
+arbitrary and comparing two arbitrary answers measures nothing. This is the
+hazard already recorded under "Blank pages match each other perfectly and lie
+about it"; detecting them in the solver remains open, and the test only declines
+to measure them.
+
+### Re-running the baseline, and why it moved
+
+Re-run 2026-07-30 with the composed-verdict column added. **The material
+changed, not the solver** — nothing in `solve`, `compose`, `counterpart` or the
+fingerprinting was touched by the work that prompted the re-run.
+
+| Series | Comparisons | Loss | Disagreement | Inverse loss |
+| ------ | ----------- | ---- | ------------ | ------------ |
+| Go-Toubun | 2,448 (was 2,316) | 2.12% (was 1.90%) | **0.00%** | 0.00% |
+| Kaguya | 2,583 (was 2,499) | 1.78% (was 1.56%) | 0.39% (was 0.16%) | 0.70% (was 0.32%) |
+
+The comparison count is exactly 3 × (sum of spoke page counts), which pins the
+editions:
+
+- Go-Toubun: 2,316 = 3 × (195 + 187 + 199 + **191**); today 3 × (195 + 187 + 199 + **235**).
+- Kaguya: 2,499 = 3 × (214 + 211 + 210 + **198**); today 3 × (214 + 211 + 210 + **226**).
+
+Every edition matches its old page count except `en-fan`, which has gained 44
+pages in Go-Toubun and 28 in Kaguya. Both are the multi-file fan translations —
+seven chapter archives and twelve respectively — so the corpus grew them at some
+point between the two runs. **Record the spoke page counts with any future
+run**, since the comparison total is the only thing that caught this.
+
+Go-Toubun's disagreement is still exactly 0.00%, which is the number the
+topology decision rests on. Kaguya's rise to 0.39% falls under the criterion set
+out above: it implicates the solver rather than the topology, on the pairing
+already the weakest in the corpus by every other measure.
+
+### `trust` keeps taking the worse leg, and now that is measured
+
+Composition can *merge* runs: two fragmented stretches of one leg can land
+contiguously through the other and compress into a single clean run. So judging
+the composed runs is not the same operation as taking the worse of the two legs,
+and it could in principle report `sound` where the worse leg says `fragmented`.
+
+`topology` now reports both and counts the disagreements. **Zero of twelve pairs
+on both series.** `Sidecar::trust` keeps taking the worse leg; the alternative
+would have made no difference on any material measured, and the worse leg is the
+conservative reading.
+
+One caveat on that column: `topology` does not split spreads, and the
+fragmentation metric is unusable without spread handling — Go-Toubun reads
+`FRAGMENTED` on all twelve pairs for that reason alone. What the column measures
+is the *agreement* between two ways of judging, not the verdict's absolute
+value.
+
 ## CLI artifacts
 
 Three outputs:
@@ -487,6 +595,17 @@ archives, and worth nothing today.
 *before* `c005.cbz`, so a naive glob orders the fan translation wrongly. Measured
 cost of the bug: 88.7% monotonic against 91.3% once fixed. Natural-order sorting
 is required, for entries within an archive and for archives within an edition.
+
+**The solver got that fix; the sidecar writer did not — found 2026-07-30.**
+`cached_edition` sorts naturally before fingerprinting, so the alignment is
+correct, but `describe_edition` writes `members` straight from the command line.
+A glob that is not already in natural order therefore produces a document whose
+member list disagrees with the page sequence its own runs address. Kaguya v01's
+fan translation reproduces it: `*.cbz` gives `c10.5, c10, c1, c2, …` and the
+solve used `c1, c2, … c10, c10.5`. Nothing in this repository reads member order
+— `Edition::slots` sums page counts and nothing else — so the bug is invisible
+until an external reader concatenates the members itself, which is precisely what
+the reader will do.
 
 **Blank pages match each other perfectly and lie about it.** Raw page 1 resolves
 to EN page 186 at similarity 1.000 — both are blank, so their hashes are

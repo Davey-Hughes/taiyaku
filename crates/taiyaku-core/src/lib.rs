@@ -8,13 +8,15 @@
 //! native-only. Solving does not: the dynamic programming runs over page
 //! hashes, so it is portable and lives here alongside the lookup.
 
+mod route;
 mod sidecar;
 mod slot;
 mod solve;
 
+pub use route::{Route, Via, invert, resolve, route};
 pub use sidecar::{
-    Alignment, Edition, Member, Quality, RunEntry, Sidecar, SlotSpan, SolverInfo, Source, VERSION,
-    Work, entries_from_runs, resolve,
+    Alignment, Anchor, Edition, Member, Merged, Quality, RunEntry, Sidecar, SlotSpan, SolverInfo,
+    Source, VERSION, Work, entries_from_runs,
 };
 pub use slot::{Direction, Half, Slot, expand, is_spread, spread_flags};
 pub use solve::{

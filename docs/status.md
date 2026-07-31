@@ -18,7 +18,9 @@ started.
 
 ## What is built
 
-Two crates, 47 tests, no dependencies beyond `image`, `zip`, `rayon` and `serde`.
+Two crates, 75 tests, no dependencies beyond `image`, `zip`, `rayon` and `serde`.
+One of the 74 is a standing check gated on `TAIYAKU_CORPUS`, which skips when the
+archives are absent so CI stays green without them.
 
 `taiyaku-core` is the portable half — no I/O, so it compiles to WebAssembly:
 
@@ -26,7 +28,8 @@ Two crates, 47 tests, no dependencies beyond `image`, `zip`, `rayon` and `serde`
 | ------ | ----- |
 | `solve` | similarity, per-pair floor calibration, Needleman-Wunsch, run compression, confidence, verdict |
 | `slot` | spread detection, slot expansion, reading direction |
-| `sidecar` | the `taiyaku.json` format — parse, emit, resolve a page through an alignment |
+| `sidecar` | the `taiyaku.json` format — parse, emit, judge, merge an edition in |
+| `route` | which path a lookup walks between two editions, and the page it lands on |
 
 `taiyaku-cli` is everything that touches the disk: archive and directory reading,
 decoding, fingerprinting, the content-addressed cache, the HTML report.
@@ -34,16 +37,21 @@ decoding, fingerprinting, the content-addressed cache, the HTML report.
 Four commands:
 
 ```
-taiyaku align  <a-member>... -- <b-member>...   [--write FILE] [--split-spreads] [--ltr] [--stats]
+taiyaku align  <a-member>... -- <b-member>...   [--write FILE] [--split-spreads] [--ltr] [--stats] [--direct]
 taiyaku verify <a-member>... -- <b-member>...   [--out FILE] [--sidecar FILE]
 taiyaku topology <hub>... -- <spoke>... -- <spoke>...
 taiyaku lookup <taiyaku.json> <from> <to> <page>...
 ```
 
 `align` takes several members on either side, which is how one volume aligns
-against seven chapter files, or two tankōbon against one deluxe volume. `verify`
-writes a contact sheet for looking at what the aligner decided. `lookup` resolves a
-page through a written sidecar, which is the operation a reader performs.
+against seven chapter files, or two tankōbon against one deluxe volume. `--write`
+**merges** into an existing sidecar rather than overwriting it, which is how a work
+gets a third edition; on a merge the a-side is the document's hub, so `--name-a` is
+optional and an error if it names anything else. `--direct` overrides that for a
+pair that has earned a direct edge. `verify` writes a contact sheet for looking at
+what the aligner decided. `lookup` resolves a page through a written sidecar, which
+is the operation a reader performs — through the hub where no direct edge exists,
+saying on every call which path it walked.
 `--stats` prints what calibration measured and what shape came out — noise,
 signal, separation, margin, run count, average run length and the verdict — one
 line each, in a fixed field order so a survey can collect them into a table.
@@ -76,7 +84,12 @@ alternative that lost.
 - **Reading direction is an input.** Monotonicity forbids reversing a pair, so it
   cannot be discovered.
 - **Hub-and-spoke topology**, raw as hub, validated against all-pairs at ~0%
-  disagreement and ~1.7% loss.
+  disagreement, and **resolvable** — a lookup with no direct edge composes
+  through the hub. Measured on the path a reader actually walks: 0.91% loss and
+  0.00% disagreement over 2,427 comparisons on Go-Toubun v01.
+- **One stored edge per spoke, reversed when needed.** The solver is symmetric on
+  the pairing relation, measured across five pairs in two series, so N−1 edges
+  carry every ordered pair rather than 2(N−1).
 - **JSON for the sidecar**, with span notation (`7`, `4R`, `2-5`, `45R-46L`).
 - **A content-addressed fingerprint cache** keyed on member SHA-256. 3.4 s → 189 ms.
 
@@ -133,10 +146,42 @@ margin threshold plus a crop-tolerant hash. Not the DP.
 **No correction UI.** The design calls this part of the core, and it does not exist.
 `verify` shows what the aligner decided; nothing lets you fix it.
 
-**No reader.** Nothing consumes a sidecar except `lookup`.
+**No reader.** Nothing consumes a sidecar except `lookup`. What changed is that
+`lookup` can now answer the question a reader with more than two editions asks —
+that was the blocker, and it is gone.
 
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
+
+**`align` records members in the order given, but solves them in natural order.**
+`describe_edition` writes `members` straight from the command line while
+`cached_edition` sorts naturally first, so a glob that is not already in natural
+order produces a document whose member list is in a different order than the page
+sequence its runs address. Reproduced on Kaguya's fan translation, where
+`*.cbz` yields `c10.5, c10, c1, c2, …` and the solve used `c1, c2, … c10, c10.5`:
+
+```
+taiyaku align raw-mono -- en-fan/*.cbz --split-spreads --write t.json
+# t.json lists c10.5 first; the alignment starts at c1
+```
+
+Nothing shipped reads member order — `Edition::slots` only sums the page counts,
+so `resolve` and `lookup` are unaffected — but a reader that reconstructs the
+sequence by concatenating `members` in document order would show the wrong page
+for every lookup. **This bites the reader, and the reader is next.** The fix is
+to sort both sides naturally in `align` before describing or fingerprinting them;
+`notes.md` already requires natural order "for entries within an archive and for
+archives within an edition", and the writer is the half that never got it.
+
+**Blank pages are still anchored on.** A blank page's dhash is exactly zero, so
+every blank in every edition is identical to every other and the solver places
+them arbitrarily. The corpus check declines to measure them rather than pretending
+they agree; refusing to anchor on low-variance pages is unbuilt. See
+`notes.md`, "Blank pages match each other perfectly and lie about it".
+
+**Hub choice is declared, not measured.** `notes.md` argues the best hub is the one
+minimising total loss across spokes, and that every input to that decision is
+something an alignment already reports. A merge keeps whatever hub the file names.
 
 ## What comes next
 
@@ -186,6 +231,14 @@ with 2 mislabelled files flagged rather than silently ranked.
 
 A PWA consuming the sidecar, with the correction UI as part of it rather than
 after it. This is the multi-week piece and the point of everything above.
+
+**Its blocker is cleared.** Until 2026-07-30 there was no way to produce a
+sidecar with three editions and no way to resolve through one, so on any work
+with more than two editions — which the primary development corpus is, at five —
+the reader could not have answered "show me this page in edition C". `align
+--write` now merges and `resolve` now composes. What the reader still needs from
+this side is a swap UX for five editions, which `notes.md` leaves undecided:
+cycling works for two or three and past that wants a picker.
 
 ### Later
 
