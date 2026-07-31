@@ -22,12 +22,20 @@ point the offending dependency is load-bearing.
 
 A registered `forgejo-runner` with:
 
-- a label matching `runs-on: ubuntu-latest`
+- a label matching `runs-on: docker`
 - Docker support, since every job specifies a `container:`
 
-If the runner advertises a different label — `docker` is the other common
-default — change `runs-on:` in `ci.yml` to match. Check the instance's
-registered runners under repository settings if unsure.
+The label was `ubuntu-latest` until it was measured. git.daveynet.xyz's runner
+advertises `docker`, so every job asked for a label nothing provided and sat in
+`waiting` until a later push superseded and cancelled it — sixteen runs, none
+of which ever recorded a start. Nothing in the workflow reports this: a job
+matching no runner is queued, not failed.
+
+If the runner advertises a different label, change `runs-on:` in `ci.yml` to
+match. Check the instance's registered runners under repository settings if
+unsure; note that an instance-wide runner shows in neither the repository's nor
+the user's `actions/runners` API listing, so an empty list there is not evidence
+that no runner exists.
 
 ## Why `uses:` carries full URLs
 

@@ -15,7 +15,7 @@ env:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: docker
     container:
       image: rust:1-bookworm
     steps:
@@ -27,7 +27,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: docker
     container:
       image: rust:1-bookworm
     steps:
@@ -42,7 +42,7 @@ jobs:
   # breakage is invisible until you try to ship the reader. Hence a CI gate from
   # day one rather than a discovery six months in.
   wasm:
-    runs-on: ubuntu-latest
+    runs-on: docker
     container:
       image: rust:1-bookworm
     steps:
