@@ -111,6 +111,33 @@ the core, not a nice-to-have.
 **Your library is not modified.** Archives are read, never rewritten. Alignment lives
 beside them and can be deleted without loss.
 
+## Contributing
+
+`main` is **linear** — no merge commits — and every commit on it is an **atomic unit**: it builds
+and passes the gate on its own. Work happens on a feature branch, which lands as **one squashed
+commit**.
+
+    scripts/check-all.sh          # the local mirror of CI — fmt, clippy, tests, wasm build
+    scripts/land.sh               # land the current branch (opens an editor for the subject)
+    scripts/land.sh -- --no-wasm  # same, skipping the wasm build
+
+`land.sh` refuses a dirty tree, a `main` that differs from `origin/main`, and a branch that is
+behind `main`. It then squash-merges, runs `scripts/check-all.sh` **on the merged tree before the
+commit exists**, and commits only if that passes — which is what makes "every commit on `main`
+passes CI" a property rather than a hope. The branch is deleted once its tree matches `main`.
+
+A plain `git merge --squash` discards every commit message on the branch, so `land.sh` prefills the
+message with all of them under a `--- Squashed from N commits ---` marker. Delete what you do not
+want; what is left is kept verbatim. Losing the reasoning is not the price of a tidy graph.
+
+Once per clone, so a non-fast-forward merge fails rather than quietly creating a merge commit:
+
+    git config merge.ff only && git config pull.ff only
+
+That is convenience — `.git/config` is untracked and binds nobody. The remote is the real
+constraint: it allows only squash and fast-forward merges, so a PR merged in the web UI cannot
+produce a merge commit either.
+
 ## Licence
 
 GPLv3. See [LICENSE](LICENSE).
