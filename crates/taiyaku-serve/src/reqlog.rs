@@ -11,6 +11,7 @@
 //! transitions, zoom and spread handling are invisible here and want a person
 //! writing down what the app gets right. That is a later task.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -19,6 +20,34 @@ use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+
+/// The request headers a line records, and the only ones it records.
+///
+/// An allowlist rather than everything a client sends. Everything would grow
+/// each line without bound and would put a `Cookie` or an `Authorization`
+/// into a file that gets read by scripts and pasted into issues; these five
+/// are the ones that answer questions this log exists to ask:
+///
+/// - `if-none-match` and `if-modified-since` — whether a client would use a
+///   cache header at all, which is the whole of O1. An `ETag` is a line of
+///   code; whether it buys anything is the part that needs a real session
+///   with a real client to answer.
+/// - `range` — whether a client fetches pages in pieces, which matters on a
+///   corpus with 430 MB pages.
+/// - `accept` — what a client will take, and so whether serving anything
+///   other than the stored bytes could help.
+/// - `user-agent` — which client produced the session, since a log is worth
+///   little if you cannot tell whose behaviour it recorded.
+///
+/// Lower-case, because HTTP header names are case-insensitive and `HeaderMap`
+/// stores them lower-cased; a lookup for `If-None-Match` finds nothing.
+pub const LOGGED_HEADERS: [&str; 5] = [
+    "if-none-match",
+    "if-modified-since",
+    "range",
+    "accept",
+    "user-agent",
+];
 
 /// One request, as a line.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -50,6 +79,12 @@ pub struct Entry {
     /// equals the peak exactly — nothing needs to be tracked separately to
     /// recover it.
     pub in_flight: u64,
+    /// Those of `LOGGED_HEADERS` the request actually carried.
+    ///
+    /// Always emitted, empty object and all, so every line has the same
+    /// shape and a `jq` expression does not have to guard on the key's
+    /// existence as well as the header's.
+    pub headers: BTreeMap<String, String>,
 }
 
 impl Entry {
@@ -80,6 +115,11 @@ pub struct InFlight {
     started_at: u64,
     in_flight: u64,
     counter: Arc<AtomicU64>,
+    /// Carried from arrival rather than collected at `finish`, because a
+    /// request's headers are an arrival-time fact exactly like `started_at`
+    /// and `in_flight` — and by the time the response comes back, the
+    /// request they came from is gone.
+    headers: BTreeMap<String, String>,
 }
 
 impl Drop for InFlight {
@@ -88,54 +128,67 @@ impl Drop for InFlight {
     }
 }
 
-/// Where request lines accumulate.
+/// Where request lines are written.
+///
+/// O7: lines go to the file and nowhere else. Every entry used to be kept in
+/// a `Vec` behind a mutex as well, for the life of the process — a server that
+/// stays up for a reading session, on a log that exists precisely to be left
+/// running. Nothing in production ever read it back: `entries()` was called
+/// only from tests, and `scripts/request-summary.sh`, the actual consumer,
+/// reads the JSONL on disk. So the growth was real and bought nothing. The
+/// tests that read it now read the file, which has the second benefit of
+/// meaning every test here exercises the branch a person's measurement
+/// actually depends on.
 #[derive(Debug)]
 pub struct Log {
-    entries: Mutex<Vec<Entry>>,
     in_flight: Arc<AtomicU64>,
     /// Opened once, at construction, rather than reopened on every write: a
     /// destination that cannot be opened is a startup failure the caller can
     /// act on, not a silently empty file discovered after an hour of reading
     /// on an iPad.
-    file: Option<Mutex<File>>,
+    file: Mutex<File>,
     /// Set after the first failed write, so a struggling disk earns one
     /// message on stderr rather than one per request.
     write_failed: AtomicBool,
 }
 
 impl Log {
-    /// `path` is where lines are appended, or `None` to keep them in memory
-    /// only. Opens (or creates) the file immediately, so a bad path is a
-    /// startup error the caller can act on rather than an hour of silently
-    /// lost measurement.
-    pub fn new(path: Option<PathBuf>) -> Result<Self, String> {
-        let file = match &path {
-            Some(path) => Some(Mutex::new(
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .map_err(|e| format!("--log-requests {}: {e}", path.display()))?,
-            )),
-            None => None,
-        };
+    /// `path` is where lines are appended. Opens (or creates) the file
+    /// immediately, so a bad path is a startup error the caller can act on
+    /// rather than an hour of silently lost measurement.
+    ///
+    /// Not optional: a `Log` with nowhere to write would now record nothing
+    /// anywhere, and `serve` already expresses "not logging" as no `Log` at
+    /// all rather than an inert one.
+    pub fn new(path: PathBuf) -> Result<Self, String> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("--log-requests {}: {e}", path.display()))?;
         Ok(Self {
-            entries: Mutex::new(Vec::new()),
             in_flight: Arc::new(AtomicU64::new(0)),
-            file,
+            file: Mutex::new(file),
             write_failed: AtomicBool::new(false),
         })
     }
 
     /// A request arrived. The returned `InFlight` carries the count at this
-    /// instant, including itself.
-    pub fn begin(&self) -> InFlight {
+    /// instant, including itself, and the headers it came with.
+    ///
+    /// `headers` is already filtered to `LOGGED_HEADERS` by the caller: this
+    /// module takes `&str` for the method and the path rather than `http`
+    /// types, and takes an extracted map here for the same reason — what a
+    /// line contains is decided in one place, and it is not this one's job to
+    /// know what an `http::HeaderMap` is.
+    pub fn begin(&self, headers: BTreeMap<String, String>) -> InFlight {
         let in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         InFlight {
             started: Instant::now(),
             started_at: now_micros(),
             in_flight,
             counter: Arc::clone(&self.in_flight),
+            headers,
         }
     }
 
@@ -156,27 +209,15 @@ impl Log {
             micros: request.started.elapsed().as_micros() as u64,
             started_at: request.started_at,
             in_flight: request.in_flight,
+            headers: request.headers.clone(),
         };
-        if let Some(file) = &self.file {
-            let line = entry.to_json_line();
-            let mut guard = file.lock().unwrap_or_else(|e| e.into_inner());
-            if let Err(e) = guard.write_all(line.as_bytes())
-                && !self.write_failed.swap(true, Ordering::SeqCst)
-            {
-                eprintln!("taiyaku: request log write failed: {e}");
-            }
+        let line = entry.to_json_line();
+        let mut guard = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = guard.write_all(line.as_bytes())
+            && !self.write_failed.swap(true, Ordering::SeqCst)
+        {
+            eprintln!("taiyaku: request log write failed: {e}");
         }
-        self.entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(entry);
-    }
-
-    pub fn entries(&self) -> Vec<Entry> {
-        self.entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
     }
 }
 
@@ -201,23 +242,24 @@ mod tests {
     /// fake this — the two entries must differ.
     #[test]
     fn a_log_records_what_was_in_flight_alongside_it() {
-        let log = Log::new(None).unwrap();
+        let (log, path) = crate::test_support::log("taiyaku-test-reqlog-in-flight");
 
-        let first = log.begin();
-        let second = log.begin();
+        let first = log.begin(BTreeMap::new());
+        let second = log.begin(BTreeMap::new());
         log.finish(second, "GET", "/b", 200, 20);
         log.finish(first, "GET", "/a", 200, 10);
 
-        let entries = log.entries();
+        let entries = crate::test_support::logged_lines(&path);
+        let _ = std::fs::remove_file(&path);
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].path, "/b");
+        assert_eq!(entries[0]["path"], "/b");
         assert_eq!(
-            entries[0].in_flight, 2,
+            entries[0]["in_flight"], 2,
             "arrived while one other request was already in flight"
         );
-        assert_eq!(entries[1].path, "/a");
-        assert_eq!(entries[1].in_flight, 1, "arrived alone");
-        assert_eq!(entries[1].bytes, 10);
+        assert_eq!(entries[1]["path"], "/a");
+        assert_eq!(entries[1]["in_flight"], 1, "arrived alone");
+        assert_eq!(entries[1]["bytes"], 10);
     }
 
     /// Written as JSON lines so a summary script is `jq`, not a parser.
@@ -235,6 +277,7 @@ mod tests {
             micros: 4200,
             started_at: 1_753_900_000_000_000,
             in_flight: 3,
+            headers: BTreeMap::from([("if-none-match".to_string(), "\"abc123\"".to_string())]),
         };
 
         let line = entry.to_json_line();
@@ -254,6 +297,7 @@ mod tests {
         assert_eq!(value["micros"], 4200);
         assert_eq!(value["started_at"], 1_753_900_000_000_000_i64);
         assert_eq!(value["in_flight"], 3);
+        assert_eq!(value["headers"]["if-none-match"], "\"abc123\"");
     }
 
     /// A quote is not the only character a hand-built JSON line has to
@@ -271,6 +315,7 @@ mod tests {
             micros: 1,
             started_at: 1,
             in_flight: 1,
+            headers: BTreeMap::new(),
         };
 
         let line = entry.to_json_line();
@@ -294,27 +339,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&missing_dir);
         let path = missing_dir.join("nested").join("req.jsonl");
 
-        let err = Log::new(Some(path)).unwrap_err();
+        let err = Log::new(path).unwrap_err();
 
         assert!(!err.is_empty(), "the failure has to say something");
     }
 
-    /// The only artefact `scripts/request-summary.sh` actually consumes is
-    /// the file `Log` writes — every other test here uses `Log::new(None)`,
-    /// so deleting the whole file-writing branch would leave the suite
-    /// green. Writes to a real path under `std::env::temp_dir()` (this
-    /// crate's established pattern for on-disk tests; no socket, no sleep)
-    /// and reads the file back, checking each line is valid JSON carrying
-    /// every key the summary script reads.
+    /// The file `Log` writes is the only artefact anything outside this crate
+    /// consumes, and `scripts/request-summary.sh` reads it with `jq` — so this
+    /// pins that every key that script names is present on every line.
+    ///
+    /// It used to carry a second job: every other test read `Log::entries()`
+    /// instead, so deleting the whole file-writing branch would have left the
+    /// suite green and this was the only thing standing in the way. O7 removed
+    /// the in-memory copy, so that job is now shared by every test here, and
+    /// what is left is the narrower and more useful claim about the keys.
     #[test]
     fn entries_written_to_disk_are_valid_json_lines_with_the_expected_keys() {
         let path = std::env::temp_dir().join("taiyaku-test-reqlog-disk.jsonl");
         let _ = std::fs::remove_file(&path);
-        let log = Log::new(Some(path.clone())).unwrap();
+        let log = Log::new(path.clone()).unwrap();
 
-        let a = log.begin();
+        let a = log.begin(BTreeMap::new());
         log.finish(a, "GET", "/api/works/t/raw/pages/2", 200, 1234);
-        let b = log.begin();
+        let b = log.begin(BTreeMap::new());
         log.finish(b, "GET", "/api/works/t/raw/pages/3?width=1536", 200, 4321);
 
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -333,6 +380,7 @@ mod tests {
                 "micros",
                 "started_at",
                 "in_flight",
+                "headers",
             ] {
                 assert!(value.get(key).is_some(), "missing key `{key}` in {line}");
             }
@@ -347,21 +395,23 @@ mod tests {
     /// response.
     #[test]
     fn dropping_an_in_flight_request_without_finishing_it_decrements_but_records_nothing() {
-        let log = Log::new(None).unwrap();
+        let (log, path) = crate::test_support::log("taiyaku-test-reqlog-cancelled");
 
-        let cancelled = log.begin();
+        let cancelled = log.begin(BTreeMap::new());
         assert_eq!(cancelled.in_flight, 1);
         drop(cancelled);
 
-        let after = log.begin();
+        let after = log.begin(BTreeMap::new());
         assert_eq!(
             after.in_flight, 1,
             "the cancelled request must not still be counted as in flight"
         );
         log.finish(after, "GET", "/a", 200, 1);
 
+        let entries = crate::test_support::logged_lines(&path);
+        let _ = std::fs::remove_file(&path);
         assert_eq!(
-            log.entries().len(),
+            entries.len(),
             1,
             "the cancelled request must not have produced an entry"
         );

@@ -14,3 +14,28 @@ pub use pages::{
     Page, member_digest, member_page, member_page_names, member_pages, read_edition,
     read_members_in_order,
 };
+
+/// How much a single image decode may allocate.
+///
+/// O10: here, rather than in either consumer. `taiyaku-cli`'s fingerprinting
+/// and `taiyaku-serve`'s cover generation each carried their own copy, across
+/// a crate boundary with no dependency edge between the two, each with a
+/// comment asking whoever changed one to keep the other in step. That is the
+/// arrangement that drifts. Both already depend on this crate — it is the one
+/// they share — and both decode pages *this* crate handed them, so the
+/// ceiling on that decode belongs alongside the bytes.
+///
+/// Not `taiyaku-core`: that crate compiles to WebAssembly and describes the
+/// format. A native decoder's memory ceiling is neither.
+///
+/// The `image` default is 512 MB, which rejects this corpus's largest pages
+/// outright — the Color Walk art books run 430 MB at 10200×14039, and the
+/// buffer plus the decoder's working space crosses it. Raised rather than
+/// removed, because the limit is what turns a malformed header claiming
+/// enormous dimensions into an error instead of an out-of-memory kill.
+///
+/// This bounds how large one decode may get, not how many run at once. A
+/// cover request is more exposed than the aligner on the second count — it
+/// runs inline in a request handler rather than a batch job — which is why
+/// `taiyaku-serve` bounds its concurrency separately.
+pub const MAX_DECODE_ALLOC: u64 = 3 * 1024 * 1024 * 1024;

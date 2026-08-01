@@ -33,5 +33,28 @@ jq -s -r '
   | group_by(.) | map({q: .[0], n: length}) | sort_by(-.n) | .[] | "  \(.n)  \(.q)"
 ' "$log"
 echo
+# The measurement O1 turns on. An ETag is a line of code; whether it buys
+# anything depends entirely on whether a client would ever send the request
+# that an ETag answers. `.headers` is null on logs written before request
+# headers were recorded, and jq indexes null happily, so an old log reports
+# zero rather than failing.
+echo "conditional requests (what an ETag would be answering):"
+jq -s -r '
+  (map(select((.headers["if-none-match"] // .headers["if-modified-since"]) != null)) | length) as $conditional
+  | "  \($conditional) of \(length) requests carried If-None-Match or If-Modified-Since"
+' "$log"
+echo
+echo "range requests (partial fetches of a page):"
+jq -s -r '
+  (map(select(.headers["range"] != null)) | length) as $ranged
+  | "  \($ranged) of \(length) requests carried Range"
+' "$log"
+echo
+echo "clients seen:"
+jq -s -r '
+  [.[] | .headers["user-agent"] // "(not recorded)"]
+  | group_by(.) | map({ua: .[0], n: length}) | sort_by(-.n) | .[] | "  \(.n)  \(.ua)"
+' "$log"
+echo
 echo "slowest five:"
 jq -s 'sort_by(-.micros) | .[:5] | .[] | "  \(.micros/1000 | floor)ms  \(.status)  \(.path)"' -r "$log"

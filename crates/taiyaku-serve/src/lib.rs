@@ -116,18 +116,35 @@ pub async fn serve(
     addr: &str,
     stump: Option<StumpConfig>,
     log_requests: Option<std::path::PathBuf>,
+    refresh_stump: bool,
 ) -> Result<(), String> {
     // Opened before anything else so a bad `--log-requests` path is a
     // startup failure that can be acted on, rather than an hour of reading
     // on an iPad producing a silently empty file.
     let log = match log_requests {
-        Some(path) => Some(Arc::new(reqlog::Log::new(Some(path))?)),
+        Some(path) => Some(Arc::new(reqlog::Log::new(path)?)),
         None => None,
     };
 
     let source: Arc<dyn PageSource> = match stump {
-        None => Arc::new(CompositeSource::new(LocalLibrary, None)),
+        None => {
+            // Not silent. A flag that quietly does nothing is worse than one
+            // that refuses: the person who typed it goes on believing the
+            // stale answers were thrown away.
+            if refresh_stump {
+                eprintln!(
+                    "taiyaku: --refresh-stump has no effect without --stump-url; nothing was \
+                     forgotten"
+                );
+            }
+            Arc::new(CompositeSource::new(LocalLibrary, None))
+        }
         Some(config) => {
+            // O11: before resolution, not after, so the run that follows is
+            // the one that re-asks.
+            if refresh_stump {
+                forget_all_works(&works);
+            }
             let transport: Arc<dyn stump::http::Transport> = Arc::new(
                 stump::http::UreqTransport::new(config.base.clone(), config.key),
             );
@@ -165,6 +182,29 @@ pub async fn serve(
         .map_err(|e| format!("{addr}: {e}"))
 }
 
+/// Throw away every work's remembered Stump resolutions — `--refresh-stump`.
+///
+/// **A work whose file cannot be removed is reported and does not stop the
+/// others.** The same reasoning `resolve_work` applies to a cache it cannot
+/// write: these are derived answers, and refusing to serve a whole library
+/// because one directory is read-only would trade a stale answer for no
+/// answer at all. A work with nothing recorded is not a failure at all — see
+/// `cache::forget`.
+///
+/// Separate from `serve` for the reason `resolve_all_works` is: `serve` binds
+/// a socket and so is not something a test drives, and the loop is where the
+/// behaviour worth pinning lives.
+fn forget_all_works(works: &[Work]) {
+    for work in works {
+        if let Err(why) = stump::cache::forget(work) {
+            eprintln!(
+                "taiyaku: could not forget stump resolutions for {}: {why}",
+                work.id
+            );
+        }
+    }
+}
+
 /// Resolve every work against Stump, in order, stopping as soon as one work
 /// reports a transport-level failure.
 ///
@@ -187,7 +227,19 @@ fn resolve_all_works(
 ) -> stump::cache::Resolutions {
     let mut resolutions = stump::cache::Resolutions::new();
     for (index, work) in works.iter().enumerate() {
-        let resolved = stump::resolve::resolve_work(transport, work, base);
+        // O8: this runs before the listener binds, so it is time the server
+        // spends unable to answer anything. It used to print one line per
+        // work, *after* that work finished — so a work with many unresolved
+        // members was silent for its whole duration and a slow resolution
+        // was indistinguishable from a hung one. Members answered from the
+        // cache print nothing, so a warm start is as quiet as it was.
+        let mut report = |member: &str, nth: usize, total: usize| {
+            eprintln!(
+                "{}: resolving {member} against stump ({nth} of {total})",
+                work.id
+            );
+        };
+        let resolved = stump::resolve::resolve_work(transport, work, base, &mut report);
         let known = resolved
             .resolutions
             .values()
@@ -309,6 +361,39 @@ pub(crate) mod test_support {
         let root = std::env::temp_dir().join(dir);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// A request log writing to its own path under the temp dir.
+    ///
+    /// Named per test the way `work` is, so tests running in parallel cannot
+    /// read each other's lines.
+    pub(crate) fn log(name: &str) -> (std::sync::Arc<crate::Log>, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("{name}.jsonl"));
+        let _ = std::fs::remove_file(&path);
+        let log = std::sync::Arc::new(crate::Log::new(path.clone()).unwrap());
+        (log, path)
+    }
+
+    /// The lines a log wrote, parsed.
+    ///
+    /// Tests read the *file* rather than an in-memory copy, because the file
+    /// is the only artefact anything outside this crate consumes —
+    /// `scripts/request-summary.sh` reads it and nothing reads the other. A
+    /// test that passes here therefore says something about what a person can
+    /// actually measure after a reading session.
+    ///
+    /// Parsed as `Value` rather than back into `Entry` so the test is checking
+    /// the wire format a `jq` script sees, not a round trip through the same
+    /// struct definition that wrote it.
+    pub(crate) fn logged_lines(path: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                serde_json::from_str(line)
+                    .unwrap_or_else(|e| panic!("log line must parse as JSON: {e}: {line}"))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -370,6 +455,91 @@ mod tests {
             path,
             sidecar: taiyaku_core::Sidecar::from_json(&json).unwrap(),
         }
+    }
+
+    /// `--refresh-stump` applies to every work it was handed, not just the
+    /// first, and a work with nothing recorded is not a failure — the flag is
+    /// typed once and most works in a library will have no cache file, so one
+    /// refusing would be the worse answer.
+    #[test]
+    fn refreshing_forgets_every_work_and_tolerates_one_with_nothing_recorded() {
+        let recorded = distinct_work("taiyaku-test-lib-forget-recorded", "recorded");
+        let untouched = distinct_work("taiyaku-test-lib-forget-untouched", "untouched");
+        let mut resolutions = crate::stump::cache::Resolutions::new();
+        resolutions.insert("hash".into(), Some("book-1".into()));
+        crate::stump::cache::store(&recorded, "http://nas:10801", &resolutions).unwrap();
+
+        super::forget_all_works(&[recorded.clone(), untouched.clone()]);
+
+        let gone = !crate::stump::cache::path_for(&recorded).exists();
+        let still_absent = !crate::stump::cache::path_for(&untouched).exists();
+        crate::test_support::cleanup("taiyaku-test-lib-forget-recorded");
+        crate::test_support::cleanup("taiyaku-test-lib-forget-untouched");
+        assert!(gone, "the recorded work's cache file must be removed");
+        assert!(still_absent, "and the one that never had one is untouched");
+    }
+
+    /// The claim the loop makes in its own doc comment, which was correct by
+    /// inspection only: one work whose file cannot be removed must not stop
+    /// the works after it. A library is served from several sidecars and one
+    /// read-only directory among them must not silently leave every later
+    /// work still believing a stale resolution.
+    ///
+    /// Staged by taking write permission off one work's *directory*, since on
+    /// Unix that is what governs deleting a file within it. Under root, or a
+    /// filesystem ignoring the mode bits, that does not hold and the test
+    /// would pass without measuring anything — so it says so and skips.
+    #[test]
+    fn one_work_that_cannot_be_forgotten_does_not_stop_the_others() {
+        let stuck = distinct_work("taiyaku-test-lib-forget-stuck", "stuck");
+        let after = distinct_work("taiyaku-test-lib-forget-after", "after");
+        let mut resolutions = crate::stump::cache::Resolutions::new();
+        resolutions.insert("hash".into(), Some("book-1".into()));
+        for work in [&stuck, &after] {
+            crate::stump::cache::store(work, "http://nas:10801", &resolutions).unwrap();
+        }
+
+        let stuck_dir = stuck.path.parent().unwrap().to_path_buf();
+        let mut locked = std::fs::metadata(&stuck_dir).unwrap().permissions();
+        locked.set_readonly(true);
+        std::fs::set_permissions(&stuck_dir, locked).unwrap();
+        let deletable_anyway = std::fs::remove_file(crate::stump::cache::path_for(&stuck)).is_ok();
+
+        if deletable_anyway {
+            let mut open = std::fs::metadata(&stuck_dir).unwrap().permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            open.set_readonly(false);
+            let _ = std::fs::set_permissions(&stuck_dir, open);
+            crate::test_support::cleanup("taiyaku-test-lib-forget-stuck");
+            crate::test_support::cleanup("taiyaku-test-lib-forget-after");
+            eprintln!(
+                "NOT MEASURED: one_work_that_cannot_be_forgotten_does_not_stop_the_others \
+                 (a read-only directory still allows deletion here)"
+            );
+            return;
+        }
+
+        super::forget_all_works(&[stuck.clone(), after.clone()]);
+
+        let stuck_remains = crate::stump::cache::path_for(&stuck).exists();
+        let later_forgotten = !crate::stump::cache::path_for(&after).exists();
+        // Restore before cleanup: `remove_dir_all` needs to unlink the files
+        // inside, which the locked directory forbids.
+        let mut open = std::fs::metadata(&stuck_dir).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        open.set_readonly(false);
+        let _ = std::fs::set_permissions(&stuck_dir, open);
+        crate::test_support::cleanup("taiyaku-test-lib-forget-stuck");
+        crate::test_support::cleanup("taiyaku-test-lib-forget-after");
+
+        assert!(
+            stuck_remains,
+            "the precondition: this work's file genuinely could not be removed"
+        );
+        assert!(
+            later_forgotten,
+            "a work after the failure must still be forgotten"
+        );
     }
 
     /// Important 3 (whole-branch review): the circuit breaker must span

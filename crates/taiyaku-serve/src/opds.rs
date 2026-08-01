@@ -235,8 +235,16 @@ async fn work_feed(State(state): State<Arc<ServeState>>, AxPath(id): AxPath<Stri
 
 async fn stream_page(
     State(state): State<Arc<ServeState>>,
-    AxPath((id, edition, number)): AxPath<(String, String, u32)>,
+    // `String` rather than `u32` — see `routes::page_index`. A malformed
+    // number on the PSE stream is refused in this server's own words, and in
+    // the same words the `/api/…` route uses, rather than by axum's `Path`
+    // rejection.
+    AxPath((id, edition, number)): AxPath<(String, String, String)>,
 ) -> Response {
+    let number = match crate::routes::page_index(&number, &edition) {
+        Ok(number) => number,
+        Err(refusal) => return refusal.into_response(),
+    };
     // **PSE counts from 0**, so this is taiyaku's own index unchanged. There
     // is no conversion here and there must not be one.
     //
@@ -521,6 +529,43 @@ mod tests {
             past_end,
             StatusCode::NOT_FOUND,
             "pse:count is 4, so page 4 is one past the end"
+        );
+    }
+
+    /// O5, on the other route addressed by page number. The `/api/…` route
+    /// and this one are two spellings of one operation, so they must refuse a
+    /// malformed index identically — that is the whole reason `page_index` is
+    /// shared rather than written twice, and a shared helper nothing pins from
+    /// both ends drifts the moment one caller is edited.
+    ///
+    /// Panels reaches pages through *this* route, not the `/api/…` one, so if
+    /// only one of the two were fixed it would be the wrong one.
+    #[tokio::test]
+    async fn a_pse_page_number_that_is_not_a_number_is_refused_the_same_way() {
+        let state = Arc::new(crate::test_support::state("taiyaku-test-opds-page-nan"));
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::get("/opds/v1.2/works/t/raw/pages/abc")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = body_of(response).await;
+
+        crate::test_support::cleanup("taiyaku-test-opds-page-nan");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("abc"), "must quote what was sent: {body}");
+        assert!(
+            body.contains("raw"),
+            "must name the edition it was sent to: {body}"
+        );
+        assert!(
+            !body.contains("u32"),
+            "must not be phrased in terms of a Rust type: {body}"
         );
     }
 

@@ -2861,6 +2861,65 @@ number, since 1.43 ms leaves nothing to beat. It is that a page turn at this
 library's page sizes moves about 247 KB, and that a reader can sustain a
 40 ms turn rate without the server becoming the limit.
 
+### An ETag would have saved nothing, and the obvious way to check that is wrong
+
+O1 asks whether page responses should carry cache headers. The plan recorded
+against it was to run a Panels session and see whether the client sends
+`If-None-Match`. **That measurement cannot work, and understanding why is most
+of the finding.**
+
+`If-None-Match` carries an entity tag the client obtained from an earlier
+response. This server sends no `ETag` and no `Last-Modified`, so Panels has
+nothing to send back — the count is zero by construction, on any session, no
+matter how the client behaves. `scripts/request-summary.sh` reports it as
+`0 of 179`, and that line is a fact about the server, not about Panels. Asking
+the question this way would have produced a confident answer to nothing.
+
+**The question that can be asked without a validator** is the one an ETag would
+be answering anyway: does Panels ever fetch a page it already has? A 304 saves
+bytes only on a second request for the same resource, so if there is no second
+request there is nothing to save, and that is visible in a log that carries no
+headers at all.
+
+| | Session 1 (2026-07-31, one-based bug) | Session 2 (after the fix) |
+| --- | --- | --- |
+| Page requests | 65 | 177 |
+| Distinct pages | 46 | 177 |
+| Paths requested more than once | 3 | **0** |
+| Statuses | 51 × 200, 22 × 404 | 179 × 200 |
+
+Session 2 re-requested nothing across 177 pages and 115 seconds, spanning three
+editions. Session 1's three repeated paths are `raw-mono/pages/0`,
+`en-mono/pages/0` and `en-fan/pages/0`, requested 7, 6 and 9 times — and **every
+one of those 22 requests was a 404 of 45 bytes**, the retry loop the off-by-one
+produced. They are not a client re-fetching a page it has; they are a client
+failing to get one at all.
+
+The two sessions overlap in exactly those same three paths and nothing else. So
+across both logs, **the number of successful page fetches for a page already
+successfully fetched is zero.** An ETag would have produced no 304s and saved
+none of the 43.7 MB.
+
+**What this does not say.** It is a statement about Panels, not about caching.
+The browser reader refetches pages by construction — swapping editions is a
+refetch of the page you are looking at, in a different edition, and going back
+is a refetch of the one you left — so the same measurement against it should be
+expected to come out the other way. That is where O1's value is, and it was
+already the suspicion; this attaches a number to it rather than leaving it a
+guess.
+
+**And the order to do it in, next time.** Ship the validator first, then measure
+the 304s. The client-side question is unanswerable while the server offers
+nothing to answer it with, so "measure, then decide whether to ship" inverts on
+this one item: the cheap thing is the header, and the evidence only exists
+downstream of it.
+
+Two smaller things these logs cannot say, because they were written before the
+request log recorded any headers: what `Accept` Panels sends — which would say
+whether serving anything other than the stored bytes could help — and whether it
+ever sends `Range`. Both are captured now, and the summary reports
+`(not recorded)` for the old logs rather than pretending.
+
 ### The one qualitative note
 
 The owner's assessment after the fix, which no log can capture: performance

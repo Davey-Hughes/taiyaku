@@ -27,6 +27,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 
+use taiyaku_read::MAX_DECODE_ALLOC;
+
 /// The long edge of a generated cover, in pixels.
 ///
 /// Large enough for a grid on a tablet, small enough that generating one is
@@ -39,19 +41,6 @@ const LONG_EDGE: u32 = 512;
 /// parameter most likely to move on its own (a higher-DPI target screen);
 /// this covers everything else about how a cover is produced.
 const FORMAT_VERSION: u32 = 1;
-
-/// How much a single decode may allocate.
-///
-/// Mirrors `taiyaku-cli/src/fingerprint.rs`'s `MAX_DECODE_ALLOC` — keep the
-/// two in step if either changes. The `image` default of 512 MB rejects this
-/// corpus's largest pages outright: the Color Walk artbooks run 430 MB at
-/// 10200x14039, and the buffer plus the decoder's working space crosses the
-/// default. Raised rather than removed, because the limit is what turns a
-/// malformed header claiming enormous dimensions into an error instead of an
-/// out-of-memory kill. A cover request is if anything more exposed than the
-/// aligner: it runs inline in a request handler rather than a batch job, so a
-/// rejected decode is a reader-visible failure rather than a slow log line.
-const MAX_DECODE_ALLOC: u64 = 3 * 1024 * 1024 * 1024;
 
 /// Where a cover for this member is cached.
 ///

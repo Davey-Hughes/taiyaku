@@ -99,7 +99,19 @@ impl From<api::StumpError> for ResolveError {
 /// retried, only how much of one run is spent finding out — and, before this
 /// fix, a single semantic refusal anywhere in a work silently degraded that
 /// entire work to local-only, forever, on every start.
-pub fn resolve_work(transport: &dyn Transport, work: &Work, base: &str) -> Resolved {
+///
+/// `report` is called once per member that actually has to be asked about,
+/// with its path, its position among those members and how many there are —
+/// O8. Members answered from the cache are not reported, because a run that
+/// asks nothing should say nothing: a cached start is the common case and a
+/// line per member on every one of them is noise that trains a reader to
+/// ignore the lines that matter.
+pub fn resolve_work(
+    transport: &dyn Transport,
+    work: &Work,
+    base: &str,
+    report: &mut dyn FnMut(&str, usize, usize),
+) -> Resolved {
     let mut resolutions = cache::load(work, base);
     let root = work
         .path
@@ -108,11 +120,29 @@ pub fn resolve_work(transport: &dyn Transport, work: &Work, base: &str) -> Resol
     let mut learned = false;
     let mut aborted_by_transport = false;
 
+    // Counted before the walk, so the first line can say how many there are
+    // rather than only how many have gone by. Deduplicated on `sha256` for
+    // the same reason the cache is keyed on it: two members with the same
+    // hash are one file and are asked about once, so counting them twice
+    // would promise a total the walk never reaches.
+    let outstanding: std::collections::HashSet<&str> = work
+        .sidecar
+        .editions
+        .values()
+        .flat_map(|edition| &edition.members)
+        .filter(|member| !resolutions.contains_key(&member.sha256))
+        .map(|member| member.sha256.as_str())
+        .collect();
+    let outstanding = outstanding.len();
+    let mut asked = 0;
+
     'lookups: for edition in work.sidecar.editions.values() {
         for member in &edition.members {
             if resolutions.contains_key(&member.sha256) {
                 continue;
             }
+            asked += 1;
+            report(&member.path, asked, outstanding);
             match resolve_member(transport, root, member) {
                 // An answer, cached: either Stump has this member or it
                 // genuinely does not, and neither changes on the next run.
@@ -263,7 +293,8 @@ mod tests {
             .on_post("/api/graphql", &reply_with(size, 2))
             .on_get("/api/v2/media/book-1/page/1", "image/jpeg", b"a1.jpg");
 
-        let resolved = resolve_work(&fake, &work, "http://nas:10801").resolutions;
+        let resolved =
+            resolve_work(&fake, &work, "http://nas:10801", &mut |_, _, _| {}).resolutions;
 
         let first = work.sidecar.editions["raw"].members[0].sha256.clone();
         let second_sha = work.sidecar.editions["raw"].members[1].sha256.clone();
@@ -300,7 +331,8 @@ mod tests {
                 b"a-different-page",
             );
 
-        let resolved = resolve_work(&fake, &work, "http://nas:10801").resolutions;
+        let resolved =
+            resolve_work(&fake, &work, "http://nas:10801", &mut |_, _, _| {}).resolutions;
 
         let first = work.sidecar.editions["raw"].members[0].sha256.clone();
         let second_sha = work.sidecar.editions["raw"].members[1].sha256.clone();
@@ -362,10 +394,11 @@ mod tests {
             )
             .on_get("/api/v2/media/book-1/page/1", "image/jpeg", b"a1.jpg")
             .on_get("/api/v2/media/book-2/page/1", "image/jpeg", b"b1.jpg");
-        resolve_work(&fake, &work, "http://nas:10801");
+        resolve_work(&fake, &work, "http://nas:10801", &mut |_, _, _| {});
 
         let second = FakeTransport::new();
-        let resolved = resolve_work(&second, &work, "http://nas:10801").resolutions;
+        let resolved =
+            resolve_work(&second, &work, "http://nas:10801", &mut |_, _, _| {}).resolutions;
 
         let first = work.sidecar.editions["raw"].members[0].sha256.clone();
         let second_sha = work.sidecar.editions["raw"].members[1].sha256.clone();
@@ -396,7 +429,7 @@ mod tests {
         let first = work.sidecar.editions["raw"].members[0].sha256.clone();
 
         let unreachable = FakeTransport::new();
-        let first_pass = resolve_work(&unreachable, &work, "http://nas:10801");
+        let first_pass = resolve_work(&unreachable, &work, "http://nas:10801", &mut |_, _, _| {});
         assert!(
             first_pass.aborted_by_transport,
             "an unreachable instance must be reported as a transport-level abort"
@@ -410,7 +443,7 @@ mod tests {
         let reachable = FakeTransport::new()
             .on_post("/api/graphql", &reply_with(size, 2))
             .on_get("/api/v2/media/book-1/page/1", "image/jpeg", b"a1.jpg");
-        let second_pass = resolve_work(&reachable, &work, "http://nas:10801");
+        let second_pass = resolve_work(&reachable, &work, "http://nas:10801", &mut |_, _, _| {});
 
         crate::test_support::cleanup("taiyaku-test-resolve-transport-failure");
         assert!(
@@ -451,7 +484,7 @@ mod tests {
             )
             .on_get("/api/v2/media/book-2/page/1", "image/jpeg", b"b1.jpg");
 
-        let resolved = resolve_work(&fake, &work, "http://nas:10801");
+        let resolved = resolve_work(&fake, &work, "http://nas:10801", &mut |_, _, _| {});
 
         let second_sha = work.sidecar.editions["raw"].members[1].sha256.clone();
         crate::test_support::cleanup("taiyaku-test-resolve-semantic-refusal");
@@ -478,7 +511,7 @@ mod tests {
         let work = crate::test_support::work("taiyaku-test-resolve-circuit-breaker");
         let unreachable = FakeTransport::new();
 
-        let resolved = resolve_work(&unreachable, &work, "http://nas:10801");
+        let resolved = resolve_work(&unreachable, &work, "http://nas:10801", &mut |_, _, _| {});
 
         let requests = unreachable.requests();
         crate::test_support::cleanup("taiyaku-test-resolve-circuit-breaker");
@@ -496,6 +529,62 @@ mod tests {
             1,
             "only the first (failing) member's lookup should be attempted, \
              not one per unresolved member: {requests:?}"
+        );
+    }
+
+    /// O8: resolution runs before the listener binds, so a work whose members
+    /// all have to be asked about is time the server spends unable to answer
+    /// anything. It printed one summary line per work, *after* that work
+    /// finished, so a large work was silent for its whole duration and there
+    /// was no way to tell a slow resolution from a hung one.
+    ///
+    /// The other half matters as much: a run that asks about nothing must say
+    /// nothing. A cached start is the common case — it is the whole point of
+    /// the cache — and a progress line per member on every start would be
+    /// noise that trains you to ignore it.
+    #[test]
+    fn resolution_reports_each_member_it_asks_about_and_says_nothing_when_it_asks_nothing() {
+        let work = crate::test_support::work("taiyaku-test-resolve-progress");
+        let root = work.path.parent().unwrap();
+        let size1 = std::fs::metadata(root.join("c1.cbz")).unwrap().len();
+        let size2 = std::fs::metadata(root.join("c2.cbz")).unwrap().len();
+
+        let fake = FakeTransport::new()
+            .on_post_sequence(
+                "/api/graphql",
+                &[
+                    &reply_for("book-1", "c1", size1, 2),
+                    &reply_for("book-2", "c2", size2, 2),
+                ],
+            )
+            .on_get("/api/v2/media/book-1/page/1", "image/jpeg", b"a1.jpg")
+            .on_get("/api/v2/media/book-2/page/1", "image/jpeg", b"b1.jpg");
+
+        let mut cold: Vec<(String, usize, usize)> = Vec::new();
+        resolve_work(
+            &fake,
+            &work,
+            "http://nas:10801",
+            &mut |member, nth, total| cold.push((member.to_string(), nth, total)),
+        );
+
+        let mut warm: Vec<(String, usize, usize)> = Vec::new();
+        resolve_work(
+            &FakeTransport::new(),
+            &work,
+            "http://nas:10801",
+            &mut |member, nth, total| warm.push((member.to_string(), nth, total)),
+        );
+
+        crate::test_support::cleanup("taiyaku-test-resolve-progress");
+        assert_eq!(
+            cold,
+            vec![("c1.cbz".to_string(), 1, 2), ("c2.cbz".to_string(), 2, 2),],
+            "a cold run names each member as it asks, and how many it is asking about"
+        );
+        assert!(
+            warm.is_empty(),
+            "a run that asks nothing must report nothing: {warm:?}"
         );
     }
 
@@ -564,7 +653,7 @@ mod tests {
         let work = two_edition_work("taiyaku-test-resolve-circuit-breaker-editions");
         let unreachable = FakeTransport::new();
 
-        let resolved = resolve_work(&unreachable, &work, "http://nas:10801");
+        let resolved = resolve_work(&unreachable, &work, "http://nas:10801", &mut |_, _, _| {});
 
         let requests = unreachable.requests();
         crate::test_support::cleanup("taiyaku-test-resolve-circuit-breaker-editions");

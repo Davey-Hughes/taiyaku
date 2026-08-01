@@ -81,12 +81,85 @@ pub fn store(work: &Work, base: &str, members: &Resolutions) -> Result<(), Strin
     std::fs::rename(&temporary, &final_path).map_err(|e| format!("{}: {e}", final_path.display()))
 }
 
+/// Throw away what this work resolved to, so the next start asks again.
+///
+/// O11's escape hatch. Nothing watches for the library changing on Stump's
+/// side — a deliberate tradeoff, recorded as Risk 5 in the design, because a
+/// remembered miss costs one query once instead of one per page turn — so a
+/// book added to Stump after a work first resolved stays invisible until this
+/// file goes away. That tradeoff stands. What did not stand is that acting on
+/// it required knowing from the source that a file called `taiyaku.stump.json`
+/// exists and may be deleted.
+///
+/// Destructive in exactly the way deleting it by hand is, and for the same
+/// reason it is safe: these are derived answers, rebuildable in one query per
+/// member.
+///
+/// A work with nothing recorded is not an error. `--refresh-stump` is typed
+/// once and applies to every work the server was handed, most of which will
+/// have no cache file; refusing to start because there was nothing to delete
+/// would be the worse answer.
+pub fn forget(work: &Work) -> Result<(), String> {
+    let path = path_for(work);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn work(dir: &str) -> Work {
         crate::test_support::work(dir)
+    }
+
+    /// O11: nothing watches for the library changing on Stump's side, so a
+    /// book added there after a work's first resolution stays invisible until
+    /// this file goes away. That was true before and stays true — it is the
+    /// deliberate tradeoff the design records as Risk 5, and the reason for it
+    /// (a miss costing one query once rather than one per page turn) has not
+    /// changed. What was wrong is that the only way to act on it was to know,
+    /// from reading the source, that a file called `taiyaku.stump.json` exists
+    /// and can be deleted.
+    ///
+    /// So this is the manual workaround made into an operation. Deliberately
+    /// destructive in exactly the way deleting the file by hand is: the
+    /// answers are derived data, rebuildable in one query per member, and the
+    /// whole point is to stop believing them.
+    #[test]
+    fn forgetting_a_work_makes_the_next_run_ask_stump_again() {
+        let work = work("taiyaku-test-stump-cache-forget");
+        let mut resolutions = Resolutions::new();
+        resolutions.insert("hash-of-en-mono".into(), Some("a8ed51d8".into()));
+        store(&work, "http://nas:10801", &resolutions).unwrap();
+
+        let before = load(&work, "http://nas:10801");
+        forget(&work).unwrap();
+        let after = load(&work, "http://nas:10801");
+        let gone = !path_for(&work).exists();
+
+        crate::test_support::cleanup("taiyaku-test-stump-cache-forget");
+        assert_eq!(before.len(), 1, "the resolution was there to forget");
+        assert!(after.is_empty(), "and is not there afterwards: {after:?}");
+        assert!(gone, "the file itself is removed, not emptied");
+    }
+
+    /// Forgetting a work that never resolved anything is not an error. The
+    /// flag is a thing a person types before starting a server, across every
+    /// work it was handed, and most of them will not have a cache file — one
+    /// refusing to start the server because there was nothing to delete would
+    /// be a worse answer than doing nothing.
+    #[test]
+    fn forgetting_a_work_with_nothing_recorded_is_not_an_error() {
+        let work = work("taiyaku-test-stump-cache-forget-absent");
+
+        let forgotten = forget(&work);
+
+        crate::test_support::cleanup("taiyaku-test-stump-cache-forget-absent");
+        assert!(forgotten.is_ok(), "{forgotten:?}");
     }
 
     /// A resolution survives a restart, including a recorded absence — which

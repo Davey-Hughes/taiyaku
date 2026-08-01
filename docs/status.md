@@ -1,6 +1,6 @@
 # Status
 
-Where the project is, what is settled, and what comes next. Updated 2026-07-31.
+Where the project is, what is settled, and what comes next. Updated 2026-08-01.
 
 The detailed evidence for everything asserted here is in [`notes.md`](notes.md),
 which is a working log rather than a summary — every claim below traces to a
@@ -22,9 +22,9 @@ piece, and none of *that* has started.
 
 ## What is built
 
-Four crates, 175 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
+Four crates, 189 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
 `base64` and `serde`, plus `axum`, `tokio`, `tower` and `ureq` in the server.
-Three of the 175
+Three of the 189
 are standing checks gated on `TAIYAKU_CORPUS`, of which the third also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it needs
 is absent, so CI stays green without the corpus or a reachable Stump. One measures
@@ -68,7 +68,7 @@ taiyaku align  <a-member>... -- <b-member>...   [--write FILE] [--split-spreads]
 taiyaku verify <a-member>... -- <b-member>...   [--out FILE] [--sidecar FILE]
 taiyaku topology <hub>... -- <spoke>... -- <spoke>...
 taiyaku lookup <taiyaku.json> <from> <to> <page>...
-taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT] [--stump-url URL] [--stump-key KEY] [--log-requests FILE]
+taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT] [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump]
 ```
 
 `align` takes several members on either side, which is how one volume aligns
@@ -201,55 +201,131 @@ still `lookup`.
 Twelve, each found by a whole-branch review or carried as a deferral, and each
 judged not worth blocking on at the time. They are tracked here rather than left
 in a scratch file so that closing one is a visible act rather than a thing
-someone remembers. The evidence for each is in the detail below; the table is
-what a reader scans.
+someone remembers. **Seven are now closed — O2, O3, O4, O5, O7, O10 and O12 —
+leaving five.**
+Closed rows stay in the table rather than being deleted, because a list that
+only ever grows says nothing about whether anything gets fixed. The evidence for
+each is in the detail below; the table is what a reader scans.
 
 | ID | Open | What | Where | Opened by |
 | --- | :---: | ---- | ----- | --------- |
-| O1 | [ ] | Page responses carry no cache headers | `routes.rs::get_page` | M2 review |
-| O2 | [ ] | Progress is written non-atomically | `progress.rs::store` | M2 review |
-| O3 | [ ] | `PUT /progress` does not range-check the slot | `routes.rs::put_progress` | M2 review |
-| O4 | [ ] | Two sidecars claiming one work id is untested | `works.rs::load_works` | M2 review |
-| O5 | [ ] | A non-numeric page index answers axum's default 400 | `routes.rs` | M2 review |
+| O1 | [ ] | Page responses carry no cache headers — *measured: nothing to cache yet* | `routes.rs::get_page` | M2 review |
+| O2 | [x] | Progress is written non-atomically | `progress.rs::store` | M2 review |
+| O3 | [x] | `PUT /progress` does not range-check the slot | `routes.rs::put_progress` | M2 review |
+| O4 | [x] | Two sidecars claiming one work id is untested | `works.rs::load_works` | M2 review |
+| O5 | [x] | A non-numeric page index answers axum's default 400 | `routes.rs` | M2 review |
 | O6 | [ ] | A cover from page 0 can be a 430 MB decode | `cover.rs` | M3 review |
-| O7 | [ ] | The request log grows in memory for nothing | `reqlog.rs::Log::entries` | M3 review |
-| O8 | [ ] | Stump resolution blocks the listener, silently | `lib.rs::resolve_all_works` | M3 review |
+| O7 | [x] | The request log grows in memory for nothing | `reqlog.rs::Log` | M3 review |
+| O8 | [ ] | Stump resolution blocks the listener — *no longer silently* | `lib.rs::resolve_all_works` | M3 review |
 | O9 | [ ] | No single-flight guard on the request path | `composite.rs::StumpSide` | M3 review |
-| O10 | [ ] | `MAX_DECODE_ALLOC` is duplicated across crates | `cover.rs`, `taiyaku-cli/src/fingerprint.rs` | M3 review |
-| O11 | [ ] | Neither on-disk cache notices a change on the far side | `stump/cache.rs`, `cover.rs` | M3 review |
-| O12 | [ ] | `spawn_blocking` covers three of five blocking handlers | `routes.rs::get_progress`, `::put_progress` | M1/M2 deferral |
+| O10 | [x] | `MAX_DECODE_ALLOC` is duplicated across crates | `cover.rs`, `taiyaku-cli/src/fingerprint.rs` | M3 review |
+| O11 | [ ] | Neither on-disk cache notices a change on the far side — *escape hatch added* | `stump/cache.rs`, `cover.rs` | M3 review |
+| O12 | [x] | `spawn_blocking` covers three of five blocking handlers | `routes.rs::get_progress`, `::put_progress` | M1/M2 deferral |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
 
-**`serve` is a first cut, and five things about it are known thin** — O1 to O5.
-Each was found by the whole-branch review:
+**`serve` was a first cut, and five things about it were known thin** — O1 to
+O5, each found by the whole-branch review. Four of the five are closed. Only O1
+remains, and it remains on a measurement rather than a plan: an ETag would have
+saved nothing against the sessions actually recorded. O5 was nearly deferred
+alongside it on the strength of a wrong estimate — "a custom rejection handler
+touches routing for every route" — which was checked rather than repeated and
+turned out to be two handlers and a local parse:
 
-- **O1 — Page responses carry no cache headers.** The bytes for a given work,
-  edition and index never change, and the sidecar already records a `sha256`
-  per member, so an `ETag` is a line of code. The design's "one fetch, one
-  cache entry" argument for serving whole spreads assumes the client caches;
-  nothing yet helps it.
-- **O2 — Progress is written non-atomically.** `fs::write` truncates first, so a
-  crash mid-write leaves a short file and the next read answers 500 rather than
-  "nothing recorded". Write-and-rename fixes it — and the pattern is already in
-  the tree: the Stump resolution cache (`taiyaku.stump.json`) writes atomically,
-  temp file plus rename. Progress just does not use it yet.
-- **O3 — `PUT /progress` does not check the slot is in range.** It validates the
-  edition, so a position can name a real edition and a page past its end.
-- **O4 — Three error paths were named here; two are now fully covered, one
-  remains untested.** `PageSource` narrowed to one member during M3, so the edition
+- **O1 — Page responses carry no cache headers. Open, but no longer
+  unmeasurable.** The bytes for a given work, edition and index never change,
+  and the sidecar already records a `sha256` per member, so an `ETag` is a line
+  of code. The design's "one fetch, one cache entry" argument for serving whole
+  spreads assumes the client caches; nothing yet helps it.
+  **What blocked this was not the header but the evidence.** The request log
+  recorded no request headers at all, so "does a client ever send
+  `If-None-Match`?" — the question that decides whether an `ETag` buys anything
+  — could not be answered from a session that had already been run. It now
+  records five, on an allowlist: `if-none-match`, `if-modified-since`, `range`,
+  `accept` and `user-agent`. An allowlist rather than everything, because
+  everything grows each line without bound and puts a `Cookie` or an
+  `Authorization` into a file that gets read by scripts and pasted into issues.
+  `scripts/request-summary.sh` reports the conditional-request count, the range
+  count and which clients were seen; on a log written before this it reports
+  zero and "(not recorded)" rather than failing.
+  **And then the measurement came out against shipping it — see `notes.md`,
+  "An ETag would have saved nothing, and the obvious way to check that is
+  wrong".** The planned check was itself unsound: `If-None-Match` carries a
+  validator the client got earlier, this server sends none, so that count is
+  zero by construction and says nothing about any client. What can be measured
+  without a validator is whether Panels ever fetches a page it already has, and
+  across both recorded sessions it does so **zero** times — 177 page requests
+  and 177 distinct pages in the flick session; the only repeats anywhere are
+  session 1's three `pages/0` paths, all 404s from the off-by-one. An `ETag`
+  would have produced no 304s and saved none of the 43.7 MB.
+  So O1 stays open and stays deferred, now on evidence rather than suspicion.
+  The browser reader refetches by construction — swapping editions refetches
+  the page you are on — so the same measurement against it should come out the
+  other way. **The order inverts for that one:** ship the validator first and
+  measure the 304s, because the client-side question cannot be answered while
+  the server offers nothing to answer it with.
+- **O2 — Progress is written non-atomically. Closed.** `fs::write` truncated
+  first, so a crash mid-write left a short file and the next read answered 500
+  rather than "nothing recorded" — the worse of the two wrong answers, since it
+  tells the reader the server is broken rather than that it has no position to
+  restore. `store` now writes a temp file and renames, the pattern the Stump
+  resolution cache (`taiyaku.stump.json`) already used beside the same sidecar.
+  The temp name is **unique per attempt** rather than fixed, which the cache's
+  is not: progress is the one file here a person writes from two devices at
+  once, and two writers sharing one temp name can interleave into publishing
+  the empty file the change exists to prevent. Same reasoning and same shape as
+  `cover::unique_temp_path`; the two are not shared yet. A crash cannot be
+  staged in a test, so the test pins the mechanism instead — the destination is
+  replaced by a rename, never opened for truncation, made observable by taking
+  write permission off the existing file, and skipping with a printed line
+  where that precondition does not hold (root, or a filesystem ignoring the
+  mode bits) rather than reporting a green that measured nothing.
+- **O3 — `PUT /progress` does not check the slot is in range. Closed.** It
+  validated the edition, so a position could name a real edition and a page
+  past its end. It now range-checks too, and **in slots rather than pages**:
+  a position is a slot — that is why `progress.rs` records one — and an edition
+  that joins spreads has more slots than pages, so checking against
+  `total_pages()` would have refused the last slot of every such edition, One
+  Piece v092 being spreads throughout. A test holds that distinction: 4 pages
+  with page 0 a spread is 5 slots, and slot 4 must be accepted. The refusal is
+  404 with the same wording shape as the edition check above it, naming the
+  edition and how many slots it has.
+- **O4 — Three error paths were named here; all three are now covered.**
+  `PageSource` narrowed to one member during M3, so the edition
   walk that used to live in `LocalLibrary` now lives in `ServeState`. An
   unknown edition is tested there, both directly and end to end over HTTP (a
   404 for an edition a work does not have). An out-of-range page index is
   tested at the `ServeState` level and dispatched through the router on both
-  the `/api/…` page route and the OPDS stream route. Two sidecars claiming
-  one work id remains untested, and is correct by inspection only.
-- **O5 — A non-numeric page index answers axum's default 400** rather than the named
-  failure every other path gives. Comprehensible, but inconsistent with the rule
-  that a failure says what was missing.
+  the `/api/…` page route and the OPDS stream route. **Two sidecars claiming
+  one work id is now tested too** — the code refused it from M2 and nothing
+  exercised it, so it was correct by inspection only. The test asserts the
+  message names *both* paths, since the point of refusing is that the person
+  running the server cannot otherwise tell which two files collided; a second
+  test loads two differently-named sidecars side by side, so the refusal
+  cannot be spelled "refuse everything".
+- **O5 — A non-numeric page index answered axum's default 400. Closed.** It was
+  the only message this server sent that this server had not written:
+  `Invalid URL: Cannot parse value at index 2 with value `abc` to a `u32``,
+  which names a Rust type and a position in a path tuple, neither of which
+  means anything to a client. Both routes addressed by page index — the
+  `/api/…` one and the OPDS stream — now take the segment as a `String` and
+  run it through one shared `page_index`, which answers ``\`abc\` is not a page
+  number; pages of `raw` are numbered from 0``.
+  **The status stays 400 rather than becoming 404**, deliberately: `pages/4`
+  names a page an edition does not have and `pages/abc` does not name a page at
+  all, and a client is entitled to tell those apart. What they now share is
+  that both come from here.
+  Shared rather than written twice, and pinned from both ends — Panels reaches
+  pages through the OPDS route, not the `/api/…` one, so fixing only one would
+  have fixed the one nothing uses. The refusal is carried by a named
+  `NotAPageIndex` rather than a bare `Response`, the pattern `NoSuchWork`
+  already established in the same file for the same reason: a `Response` is 128
+  bytes and `Result<u32, Response>` trips `clippy::result_large_err`.
 
-**M3 found six more, the same way** — O6 to O11, its own review, not blocking:
+**M3 found six more, the same way** — O6 to O11, its own review, not blocking.
+Two are closed; the four that remain each want a decision before they want
+code, which is why they are not simply "next":
 
 - **O6 — A cover is generated from page 0, which on an art-book edition is
   a 430 MB decode.** The corpus's Color Walk material is TIFF at that size, so
@@ -257,25 +333,50 @@ Each was found by the whole-branch review:
   it. The decode limit is raised to 3 GB, mirroring
   `taiyaku-cli/src/fingerprint.rs`, so the request succeeds — but succeeding is
   not the same as being fast.
-- **O7 — The request log accumulates in memory as well as on disk, unbounded.**
-  `Log::entries()` exists and every entry logged to disk is also kept in a
-  `Vec` behind a mutex for the life of the process — but nothing in
-  production reads it back; `Log::entries()` is called only from tests, and
-  `scripts/request-summary.sh` (the actual consumer) reads the JSONL file on
-  disk instead. So the growth is real and, currently, serves no purpose: an
-  in-memory copy nothing in production consumes, for a server that stays up.
+- **O7 — The request log accumulated in memory as well as on disk, unbounded.
+  Closed.** Every entry logged to disk was also kept in a `Vec` behind a mutex
+  for the life of the process, and nothing in production ever read it back:
+  `Log::entries()` was called only from tests, while
+  `scripts/request-summary.sh` — the actual consumer — reads the JSONL on disk.
+  So the growth was real and bought nothing, on a log that exists precisely to
+  be left running through a reading session. The `Vec` and `entries()` are
+  gone, and `Log::new` no longer takes an `Option<PathBuf>`: a log with nowhere
+  to write would now record nothing anywhere, and `serve` already expresses
+  "not logging" as no `Log` at all.
+  The four tests that read `entries()` read the file instead, **converted
+  first and run green before the in-memory copy was removed**, so the disk
+  artefact was shown to carry every fact the `Vec` did rather than assumed to.
+  That also closes a weakness the old suite had and named in a doc comment:
+  every other test used `Log::new(None)`, so deleting the whole file-writing
+  branch would have left the suite green on the strength of one test. Every
+  test here now goes through the file a person actually measures from.
 - **O8 — Stump resolution happens at startup, for every member of every work,
-  before the listener binds.** A summary line prints once a work finishes
-  resolving, but nothing reports progress while a large work's members are being
-  resolved, so a library of many works pays the cost in silence before it serves
-  anything.
+  before the listener binds. Still true; the silence is not.** A summary line
+  printed once a work *finished* resolving, so a work with many unresolved
+  members was silent for its whole duration and a slow resolution was
+  indistinguishable from a hung one. `resolve_work` now reports each member as
+  it asks about it — its path, its position and how many there are — and
+  `resolve_all_works` prints that. A member answered from the cache reports
+  nothing, so a warm start is exactly as quiet as before: a line per member on
+  every start would be noise that trains a reader to ignore it, and a test
+  pins both halves. **What remains is the blocking itself**, which wants the
+  listener to bind first and resolution to run behind it, serving from disk
+  until it lands — a real change to how `StumpSide` holds its resolutions, and
+  not one to make on a corpus small enough that nobody has felt the wait.
 - **O9 — There is no single-flight guard on the request path.** Several requests
   arriving during one Stump timeout all wait it out independently rather than
   sharing the one outcome.
-- **O10 — `MAX_DECODE_ALLOC` is duplicated** between
+- **O10 — `MAX_DECODE_ALLOC` was duplicated. Closed.** Between
   `taiyaku-cli/src/fingerprint.rs` and `taiyaku-serve/src/cover.rs`, across a
-  crate boundary with no dependency edge between them. Each copy says so in a
-  comment, but nothing stops the two from drifting.
+  crate boundary with no dependency edge between them. Each copy said so in a
+  comment, and a comment asking whoever changes one to keep the other in step
+  is the arrangement that drifts. It now lives in `taiyaku-read`, which both
+  already depend on — it is the crate they share — and whose pages are the
+  bytes both of them decode, so the ceiling on that decode sits alongside them.
+  Not `taiyaku-core`, which compiles to WebAssembly and describes the format; a
+  native decoder's memory ceiling is neither. No new test: the duplication is
+  removed rather than checked, so the compiler holds what a test would have
+  had to assert, and the existing decode tests on both sides cover the move.
 - **O11 — Two on-disk caches never notice a change on the far side, and this
   was documented nowhere until now.** `taiyaku.stump.json`, written beside each
   work's sidecar (same directory, same stem), records the Stump book each
@@ -285,21 +386,47 @@ Each was found by the whole-branch review:
   nothing watches for the library changing on Stump's side, so a book added to
   Stump after a work's first resolution stays invisible to taiyaku until
   someone knows to delete `taiyaku.stump.json`, which forces every member of
-  that work to be re-resolved on the next start. The generated-cover cache has
+  that work to be re-resolved on the next start. **That last sentence is now a
+  flag rather than a piece of folklore:** `taiyaku serve --refresh-stump`
+  forgets every handed work's resolutions before resolving them again, which is
+  precisely what deleting the file by hand did, and it says so rather than
+  doing nothing when no `--stump-url` was given. The tradeoff itself stands —
+  a remembered miss still costs one query once instead of one per page turn,
+  and nothing watches Stump for changes — but acting on it no longer requires
+  having read this paragraph. The generated-cover cache has
   the same shape without the excuse of a design tradeoff behind it: covers
   live under `.taiyaku-cache/covers`, relative to the server's working
   directory, and are unbounded and never pruned — an archive that is replaced
   gets a new cover under its new hash, but the old file is never reclaimed.
 
-**One deferral is carried rather than found** — O12, named while planning M1 and
-M2 and still open:
+**One deferral was carried rather than found** — O12, named while planning M1
+and M2, and now closed:
 
-- **O12 — `spawn_blocking` covers three of the five handlers that do blocking
-  I/O.** `get_page`, and the OPDS `stream_page` and `cover`, hand their work to
-  a blocking pool; `get_progress` and `put_progress` still read and write files
-  directly on the async worker. The other deferral recorded alongside it is
-  closed: the index → (member, offset) walk now lives in
-  `taiyaku_core::Edition` rather than in `LocalLibrary`.
+- **O12 — `spawn_blocking` covered three of the five handlers that do blocking
+  I/O. Closed.** `get_page`, and the OPDS `stream_page` and `cover`, handed
+  their work to a blocking pool; `get_progress` and `put_progress` read and
+  wrote files directly on the async worker. All five do now, so the only
+  handler left on the worker is `get_sidecar`, which serves the parsed
+  document from memory and touches no disk at all.
+  `put_progress`'s validation moved inside the boundary with its write rather
+  than staying outside it: it blocks on nothing, but splitting the handler
+  across the boundary would mean looking the work up twice, since a borrow
+  cannot cross into the closure. A small type, `NoProgress`, carries the
+  distinction `spawn_blocking` would otherwise flatten — a work, edition or
+  slot that does not exist is a 404 and the client's mistake; a position file
+  that will not read or write is a 500 and this server's. `get_page` needs no
+  such type because both of its failures are 404s.
+  **Measured, not asserted.** A FIFO at the progress path blocks a real read on
+  the real code path, and on a deliberately `current_thread` runtime a read
+  that runs on the worker stops the runtime dead — so a canary task never gets
+  scheduled and a watchdog thread has to rescue the request, which it records.
+  Before the change the test fails in 0.56 s; after it, it passes in about
+  60 ms. The write path gets the same treatment and is **not** measured that
+  way: `store` writes through a temp file whose name is unique per attempt, so
+  there is no path a test can pre-create as a FIFO.
+  The other deferral recorded alongside it was already closed: the index →
+  (member, offset) walk now lives in `taiyaku_core::Edition` rather than in
+  `LocalLibrary`.
 
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
@@ -439,9 +566,9 @@ response. At 1.43 ms no request was ever still open when the next arrived, so a
 blocking client and a UI-paced one are indistinguishable in this log. Measuring
 it would need a deliberately slowed response, which is not worth building.
 
-What remains: the browser reader itself, the correction UI, and the twelve open
-items tabled above — of which O12, the `spawn_blocking` gap at the router, is
-the one M3 carried rather than found.
+What remains: the browser reader itself, the correction UI, and the five open
+items tabled above — all of them found by a whole-branch review, now that O12,
+the one M3 carried rather than found, is closed.
 
 ### 4. Skipping scanlation credit pages
 

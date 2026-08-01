@@ -6,7 +6,7 @@ use image::GrayImage;
 use rayon::prelude::*;
 use taiyaku_core::PageHash;
 
-use taiyaku_read::Page;
+use taiyaku_read::{MAX_DECODE_ALLOC, Page};
 
 /// Hash grid edge. 16 gives the 256 bits `PageHash` carries.
 const GRID: u32 = 16;
@@ -19,14 +19,6 @@ const GRID: u32 = 16;
 /// is ten gigabytes, so page size has to bound concurrency. Ordinary manga pages
 /// run from 100 KB to 3 MB and stay fully parallel.
 pub const LARGE_PAGE_BYTES: usize = 32 * 1024 * 1024;
-
-/// How much a single decode may allocate.
-///
-/// The `image` default is 512 MB, which rejects a 430 MB page outright — the
-/// buffer plus the decoder's working space crosses it. Raised rather than
-/// removed, because the limit is what turns a malformed header claiming enormous
-/// dimensions into an error instead of an out-of-memory kill.
-const MAX_DECODE_ALLOC: u64 = 3 * 1024 * 1024 * 1024;
 
 /// Decode an encoded page to greyscale.
 pub fn decode_luma(bytes: &[u8]) -> Result<GrayImage, String> {

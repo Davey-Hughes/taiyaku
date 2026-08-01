@@ -115,7 +115,10 @@ fn stump_and_local_serve_the_same_bytes_for_the_same_member() {
     let work = &works[0];
     let dir = sidecar.parent().unwrap();
     let transport = crate::stump::http::UreqTransport::new(base.clone(), key);
-    let resolved = crate::stump::resolve::resolve_work(&transport, work, &base);
+    let resolved =
+        crate::stump::resolve::resolve_work(&transport, work, &base, &mut |member, nth, total| {
+            eprintln!("  resolving {member} against stump ({nth} of {total})");
+        });
     assert!(
         !resolved.aborted_by_transport,
         "resolution against the instance was abandoned by a transport failure partway through, \

@@ -55,7 +55,7 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("       taiyaku lookup <taiyaku.json> <from> <to> <page>...");
             println!(
                 "       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT] [--stump-url URL] \
-                 [--stump-key KEY] [--log-requests FILE]"
+                 [--stump-key KEY] [--log-requests FILE] [--refresh-stump]"
             );
             println!();
             println!("align options: --split-spreads --ltr --stats --write FILE --title NAME");
@@ -700,6 +700,10 @@ fn serve(args: &[String]) -> Result<(), String> {
         (None, None) => None,
     };
     let log = option_value(args, "--log-requests").map(PathBuf::from);
+    // Throws away every work's remembered Stump resolutions before this start
+    // resolves them again. The escape hatch for a book added to Stump after a
+    // work first resolved, which nothing here notices on its own.
+    let refresh_stump = args.iter().any(|a| a == "--refresh-stump");
 
     let works = taiyaku_serve::load_works(&paths)?;
     for work in &works {
@@ -712,7 +716,7 @@ fn serve(args: &[String]) -> Result<(), String> {
     }
     tokio::runtime::Runtime::new()
         .map_err(|e| format!("{e}"))?
-        .block_on(taiyaku_serve::serve(works, addr, stump, log))
+        .block_on(taiyaku_serve::serve(works, addr, stump, log, refresh_stump))
 }
 
 /// Fingerprint an edition through the cache, splitting joined spreads.
