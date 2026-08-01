@@ -53,7 +53,10 @@ fn run(args: &[String]) -> Result<(), String> {
             );
             println!("       taiyaku topology <hub>... -- <spoke>... -- <spoke>...");
             println!("       taiyaku lookup <taiyaku.json> <from> <to> <page>...");
-            println!("       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT]");
+            println!(
+                "       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT] [--stump-url URL] \
+                 [--stump-key KEY] [--log-requests FILE]"
+            );
             println!();
             println!("align options: --split-spreads --ltr --stats --write FILE --title NAME");
             println!("               --name-a KEY --name-b KEY --direct");
@@ -101,9 +104,77 @@ fn option_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     args.get(at + 1).map(String::as_str)
 }
 
+/// Reject an edition key that is not URL-safe, before it reaches a sidecar.
+///
+/// A key is addressed in two URLs — `/api/works/{work}/{edition}/pages/{n}`
+/// and the OPDS stream route — so it has to survive both. `--name-a` and
+/// `--name-b` hand this function whatever the caller typed, unlike the
+/// auto-derived path in `slug`, which already produces only this alphabet.
+/// URL-safe is defined as that same alphabet: ASCII alphanumerics and `-`.
+/// Anything else is both awkward in a URL and awkward to type by hand into a
+/// correction later, which is the whole reason these are slugs and not
+/// titles.
+///
+/// Called by `align` before any archive is opened, so a typo is a fast
+/// failure rather than one that surfaces after fingerprinting has run.
+fn validate_key(key: &str) -> Result<(), String> {
+    // Before the character scan, because scanning an empty key finds no
+    // offending character and would pass it as safe — and an empty key is not
+    // a usable path segment, so it is exactly the failure the scan exists to
+    // catch, arriving by the one route the scan cannot see.
+    if key.is_empty() {
+        return Err(
+            "edition key is empty; a key names an edition in a URL and in a correction, \
+             so it needs at least one character"
+                .to_string(),
+        );
+    }
+    let Some((position, offender)) = key
+        .chars()
+        .enumerate()
+        .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '-'))
+    else {
+        return Ok(());
+    };
+    let named = match offender {
+        ' ' => "space".to_string(),
+        other => format!("`{other}`"),
+    };
+    let suggestion = url_safe_suggestion(key);
+    Err(format!(
+        "edition key `{key}` is not URL-safe ({named} at position {position}); try `{suggestion}`"
+    ))
+}
+
+/// The fix `validate_key`'s message points to: every character outside the
+/// safe alphabet flattened to `-`, then trimmed the same way the auto-derived
+/// slug is.
+fn url_safe_suggestion(key: &str) -> String {
+    let slug: String = key
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = slug.trim_matches('-').to_string();
+    match trimmed.is_empty() {
+        true => "edition".to_string(),
+        false => trimmed,
+    }
+}
+
 /// A short identifier for an edition, derived from its first member unless the
 /// caller names one. Sidecar keys are referenced by hand in corrections, so
 /// `raw-mono` beats `a`.
+///
+/// A caller-given `given` is trusted verbatim here because `align` validates
+/// it with `validate_key` before this is ever reached — this function only
+/// has to shape the auto-derived path, which already produces the same safe
+/// alphabet by construction.
 fn slug(members: &[PathBuf], given: Option<&str>) -> String {
     if let Some(name) = given {
         return name.to_string();
@@ -609,6 +680,27 @@ fn serve(args: &[String]) -> Result<(), String> {
         return Err("needs at least one taiyaku.json to serve".into());
     }
     let addr = option_value(args, "--addr").unwrap_or("127.0.0.1:8484");
+
+    // A key on the command line is visible in `ps`, so the environment is the
+    // documented way and the flag is the override.
+    let key = option_value(args, "--stump-key")
+        .map(str::to_string)
+        .or_else(|| std::env::var("TAIYAKU_STUMP_KEY").ok());
+    let base = option_value(args, "--stump-url")
+        .map(str::to_string)
+        .or_else(|| std::env::var("TAIYAKU_STUMP_URL").ok());
+    let stump = match (base, key) {
+        (Some(base), Some(key)) => Some(taiyaku_serve::StumpConfig::new(base, key)),
+        (Some(_), None) => {
+            return Err("--stump-url needs a key: --stump-key, or TAIYAKU_STUMP_KEY".into());
+        }
+        (None, Some(_)) => {
+            return Err("a stump key was given with no --stump-url or TAIYAKU_STUMP_URL".into());
+        }
+        (None, None) => None,
+    };
+    let log = option_value(args, "--log-requests").map(PathBuf::from);
+
     let works = taiyaku_serve::load_works(&paths)?;
     for work in &works {
         eprintln!(
@@ -620,7 +712,7 @@ fn serve(args: &[String]) -> Result<(), String> {
     }
     tokio::runtime::Runtime::new()
         .map_err(|e| format!("{e}"))?
-        .block_on(taiyaku_serve::serve(works, addr))
+        .block_on(taiyaku_serve::serve(works, addr, stump, log))
 }
 
 /// Fingerprint an edition through the cache, splitting joined spreads.
@@ -674,6 +766,18 @@ fn align(args: &[String]) -> Result<(), String> {
     let (a_members, b_members) = split_editions(args)?;
     let split_spreads = args.iter().any(|a| a == "--split-spreads");
     let show_stats = args.iter().any(|a| a == "--stats");
+
+    // Checked before either edition is read, not merely before the sidecar
+    // is written: a bad key is a typo, not a reason to spend seconds
+    // fingerprinting pages before saying so. Both flags are only ever used
+    // below in the `--write` path, but validating them here means neither
+    // match arm that consumes `given` verbatim has to trust it.
+    if let Some(name) = option_value(args, "--name-a") {
+        validate_key(name)?;
+    }
+    if let Some(name) = option_value(args, "--name-b") {
+        validate_key(name)?;
+    }
 
     if !split_spreads {
         let a_pages = taiyaku_read::read_edition(&a_members)?;
@@ -1115,5 +1219,106 @@ mod tests {
     #[test]
     fn sidecar_dir_is_the_parent_of_a_pathed_filename() {
         assert_eq!(sidecar_dir(Path::new("out/taiyaku.json")), Path::new("out"));
+    }
+
+    /// Important 1a: an edition key reaches two URLs —
+    /// `/api/works/{work}/{edition}/pages/{n}` and the OPDS stream route —
+    /// verbatim. `--name-a`/`--name-b` used to hand `slug` a caller's string
+    /// unexamined, so `taiyaku align --name-a "raw color"` wrote a key
+    /// containing a space, breaking both `href`s it went into. Pinned to the
+    /// exact wording the review asked for: the key, the offending character,
+    /// its position, and a suggestion.
+    #[test]
+    fn validate_key_names_the_character_position_and_a_suggestion() {
+        let err = validate_key("raw color").unwrap_err();
+        assert_eq!(
+            err,
+            "edition key `raw color` is not URL-safe (space at position 3); try `raw-color`"
+        );
+    }
+
+    /// A `/` is worse than a space: it inserts a path segment the registered
+    /// route cannot parse back at all, rather than merely mangling one.
+    #[test]
+    fn validate_key_names_a_non_space_offender_in_backticks() {
+        let err = validate_key("raw/mono").unwrap_err();
+        assert_eq!(
+            err,
+            "edition key `raw/mono` is not URL-safe (`/` at position 3); try `raw-mono`"
+        );
+    }
+
+    /// The alphabet the auto-derived slug already produces — ASCII
+    /// alphanumerics and `-` — has to be accepted, or a caller cannot ever
+    /// pass `--name-a`/`--name-b` at all.
+    #[test]
+    fn validate_key_accepts_ascii_alphanumerics_and_hyphens() {
+        assert!(validate_key("raw-mono-2").is_ok());
+    }
+
+    /// The one bad key the character scan cannot see, because it scans no
+    /// characters and so finds nothing to object to. An empty key is not a
+    /// usable path segment, which is the property this whole function is
+    /// about, so it has to be refused by its own branch rather than falling
+    /// through the loop as safe.
+    #[test]
+    fn validate_key_refuses_an_empty_key() {
+        let err = validate_key("").unwrap_err();
+        assert!(
+            err.contains("empty"),
+            "must say what is wrong with it: {err}"
+        );
+        assert!(
+            !err.contains("position"),
+            "there is no offending position to name: {err}"
+        );
+    }
+
+    /// The end-to-end path: `align` itself refuses the bad key, and does so
+    /// before either edition is read — these member paths do not exist on
+    /// disk, and a version of this check that ran after fingerprinting would
+    /// fail on a file-not-found instead of ever reaching the validation.
+    #[test]
+    fn align_refuses_a_name_a_key_that_is_not_url_safe_before_touching_any_archive() {
+        let args: Vec<String> = [
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--name-a",
+            "raw color",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let err = align(&args).unwrap_err();
+
+        assert_eq!(
+            err,
+            "edition key `raw color` is not URL-safe (space at position 3); try `raw-color`"
+        );
+    }
+
+    /// The same check on the other flag, so a bad `--name-b` cannot slip
+    /// through because only `--name-a` was checked.
+    #[test]
+    fn align_refuses_a_name_b_key_that_is_not_url_safe_before_touching_any_archive() {
+        let args: Vec<String> = [
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--name-b",
+            "en/fan",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let err = align(&args).unwrap_err();
+
+        assert_eq!(
+            err,
+            "edition key `en/fan` is not URL-safe (`/` at position 2); try `en-fan`"
+        );
     }
 }

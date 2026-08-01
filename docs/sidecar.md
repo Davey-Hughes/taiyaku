@@ -67,6 +67,11 @@ against 189 ms warm for one volume pair. The cache stores page dimensions and
 hashes, including both halves of every landscape page, so the spread rule can
 change without invalidating anything.
 
+`.taiyaku-cache/` is not the fingerprint cache alone. `taiyaku serve` keeps a
+second cache beside it, at `.taiyaku-cache/covers`, holding one generated JPEG
+per edition for the OPDS feed — see `status.md`'s note on the two on-disk
+caches for what it does and does not do (unbounded, never pruned).
+
 `lookup` exists to prove the format carries what was solved: it reads the
 document with no archives present and no solving, and its answers match what
 `align` printed. On Go-Toubun volume 1, raw page 47 resolves to the right half

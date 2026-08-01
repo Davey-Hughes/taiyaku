@@ -150,13 +150,41 @@ pub struct Edition {
 }
 
 impl Edition {
+    /// How many pages this edition presents, from its members' recorded counts.
+    ///
+    /// Derived here rather than by each consumer because it is normative —
+    /// `docs/sidecar.md` rule 1 — and a server that sums it differently
+    /// disagrees with the aligner about where every member after the first
+    /// begins, while still matching every `sha256` in the file.
+    pub fn total_pages(&self) -> u32 {
+        self.members.iter().map(|m| m.pages).sum()
+    }
+
+    /// Which member holds page `index`, and how far into it that page is.
+    ///
+    /// `None` past the end, rather than wrapping or clamping: a reader asking
+    /// for a page that does not exist wants to be told so.
+    ///
+    /// Members recorded with zero pages are stepped over, so a hand-edited
+    /// sidecar cannot make one of them absorb an index.
+    pub fn locate(&self, index: u32) -> Option<(usize, u32)> {
+        let mut offset = 0u32;
+        for (position, member) in self.members.iter().enumerate() {
+            if index < offset + member.pages {
+                return Some((position, index - offset));
+            }
+            offset += member.pages;
+        }
+        None
+    }
+
     /// The slot sequence this edition presents to an alignment.
     ///
     /// Reconstructed from the page count and the spread list rather than
     /// stored, because storing it would be a second source of truth that could
     /// disagree with the first.
     pub fn slots(&self, reading: Direction) -> Vec<Slot> {
-        let pages: u32 = self.members.iter().map(|m| m.pages).sum();
+        let pages = self.total_pages();
         let wide: Vec<bool> = (0..pages).map(|p| self.spreads.contains(&p)).collect();
         crate::expand(&wide, reading)
     }
@@ -1236,5 +1264,89 @@ mod tests {
             "error should name both spans: {err}"
         );
         assert_eq!(sidecar.quality_of("a", "b"), None);
+    }
+
+    fn two_member_edition() -> Edition {
+        Edition {
+            label: "Raw".into(),
+            members: vec![
+                Member {
+                    path: "c1.cbz".into(),
+                    sha256: "x".into(),
+                    pages: 2,
+                },
+                Member {
+                    path: "c2.cbz".into(),
+                    sha256: "y".into(),
+                    pages: 3,
+                },
+            ],
+            spreads: vec![],
+        }
+    }
+
+    /// An edition is its members concatenated in array order — `sidecar.md`
+    /// rule 1. Getting this wrong shows the wrong page for everything after
+    /// the first member while every hash and count in the file still matches,
+    /// which is why the arithmetic belongs in one place rather than in each
+    /// consumer.
+    #[test]
+    fn a_page_index_locates_the_member_that_holds_it() {
+        let edition = two_member_edition();
+
+        assert_eq!(edition.total_pages(), 5);
+        assert_eq!(edition.locate(0), Some((0, 0)));
+        assert_eq!(edition.locate(1), Some((0, 1)));
+        assert_eq!(edition.locate(2), Some((1, 0)), "the boundary");
+        assert_eq!(edition.locate(4), Some((1, 2)), "the last page");
+        assert_eq!(edition.locate(5), None, "past the end must not wrap");
+        assert_eq!(edition.locate(u32::MAX), None);
+    }
+
+    /// An edition with no members has no pages and locates nothing, rather
+    /// than panicking or reporting member 0.
+    #[test]
+    fn an_edition_with_no_members_locates_nothing() {
+        let empty = Edition {
+            label: "E".into(),
+            members: vec![],
+            spreads: vec![],
+        };
+
+        assert_eq!(empty.total_pages(), 0);
+        assert_eq!(empty.locate(0), None);
+    }
+
+    /// A member recorded with zero pages is skipped rather than swallowing an
+    /// index. `align` cannot currently write one, but a hand-edited sidecar
+    /// can, and returning `(1, 0)` here would serve the wrong member's first
+    /// page for the rest of the edition.
+    #[test]
+    fn a_zero_page_member_is_skipped_rather_than_matched() {
+        let edition = Edition {
+            label: "E".into(),
+            members: vec![
+                Member {
+                    path: "a.cbz".into(),
+                    sha256: "x".into(),
+                    pages: 0,
+                },
+                Member {
+                    path: "b.cbz".into(),
+                    sha256: "y".into(),
+                    pages: 2,
+                },
+            ],
+            spreads: vec![],
+        };
+
+        assert_eq!(edition.total_pages(), 2);
+        assert_eq!(
+            edition.locate(0),
+            Some((1, 0)),
+            "must skip the empty member"
+        );
+        assert_eq!(edition.locate(1), Some((1, 1)));
+        assert_eq!(edition.locate(2), None);
     }
 }

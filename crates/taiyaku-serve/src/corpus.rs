@@ -9,8 +9,9 @@
 //! and page count in the sidecar still matches.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use crate::{LocalLibrary, PageSource, load_works};
+use crate::{LocalLibrary, PageSource, ServeState, load_works};
 
 fn corpus_root() -> Option<PathBuf> {
     std::env::var("TAIYAKU_CORPUS").ok().map(PathBuf::from)
@@ -32,8 +33,14 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
     }
 
     let works = load_works(std::slice::from_ref(&sidecar)).expect("sidecar loads");
-    let work = &works[0];
     let dir = sidecar.parent().unwrap();
+    let state = ServeState {
+        works: works.clone(),
+        source: Arc::new(LocalLibrary),
+        cache_dir: std::env::temp_dir().join("taiyaku-corpus-covers"),
+        log: None,
+    };
+    let work = &state.works[0];
 
     let mut compared = 0usize;
     for (key, edition) in &work.sidecar.editions {
@@ -46,7 +53,7 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
         let sequenced = taiyaku_read::read_members_in_order(&members).expect("aligner sequences");
 
         for (index, page) in sequenced.iter().enumerate() {
-            let served = LocalLibrary
+            let served = state
                 .page(work, key, index as u32)
                 .unwrap_or_else(|e| panic!("{key} page {index}: {e}"));
             assert_eq!(
@@ -62,4 +69,112 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
         work.sidecar.editions.len()
     );
     assert!(compared > 0, "the corpus sidecar has no pages to compare");
+}
+
+/// The third of the four seam tests the reader design names.
+///
+/// `LocalLibrary` and the composite's Stump-backed path (`stump::api` and
+/// `stump::resolve`; there is no standalone `StumpLibrary` — see
+/// `source.rs`) must return the same bytes for the same member and offset.
+/// If they ever disagree, a swap shows a different page depending on where
+/// the server happened to get it, and nothing else notices.
+///
+/// Byte-for-byte rather than by `dhash`: five pages were measured identical on
+/// 2026-07-31, so Stump does not transcode. If it ever starts, this is the
+/// test that says so.
+///
+/// Gated on `TAIYAKU_CORPUS` **and** a reachable instance, because it is the
+/// only test in the suite that talks to one.
+#[test]
+fn stump_and_local_serve_the_same_bytes_for_the_same_member() {
+    let Some(root) = corpus_root() else {
+        eprintln!("TAIYAKU_CORPUS unset — skipping");
+        return;
+    };
+    // Named separately rather than as one message, so a half-configured run
+    // says which half. Guessing between two variables is a small annoyance
+    // every time and a free fix once.
+    let (Ok(base), Ok(key)) = (
+        std::env::var("TAIYAKU_STUMP_URL"),
+        std::env::var("TAIYAKU_STUMP_KEY"),
+    ) else {
+        let missing: Vec<&str> = ["TAIYAKU_STUMP_URL", "TAIYAKU_STUMP_KEY"]
+            .into_iter()
+            .filter(|name| std::env::var(name).is_err())
+            .collect();
+        eprintln!("{} unset — skipping", missing.join(" and "));
+        return;
+    };
+    let sidecar = root.join("gotoubun-v01/taiyaku.json");
+    if !sidecar.exists() {
+        eprintln!("{} absent — skipping", sidecar.display());
+        return;
+    }
+
+    let works = load_works(std::slice::from_ref(&sidecar)).expect("sidecar loads");
+    let work = &works[0];
+    let dir = sidecar.parent().unwrap();
+    let transport = crate::stump::http::UreqTransport::new(base.clone(), key);
+    let resolved = crate::stump::resolve::resolve_work(&transport, work, &base);
+    assert!(
+        !resolved.aborted_by_transport,
+        "resolution against the instance was abandoned by a transport failure partway through, \
+         so this comparison would be incomplete"
+    );
+    let resolutions = resolved.resolutions;
+
+    let mut compared = 0usize;
+    let mut skipped = 0usize;
+    for edition in work.sidecar.editions.values() {
+        for member in &edition.members {
+            // Three states, and only two of them are acceptable here.
+            //
+            // `Some(None)` is Stump answering that it has not got this member,
+            // which is expected and is the finding that shaped this milestone:
+            // Stump indexes the English releases and not the raws taiyaku
+            // aligns them against.
+            //
+            // A **missing key** is not that. `resolve_work` inserts an entry
+            // for every member it gets an answer about, and abandons the rest
+            // of the run on the first transport failure — so an absent key
+            // means this member was never asked about. Counting it as absence
+            // would let a network blip shrink the comparison while the test
+            // still printed a plausible total and passed, which is exactly the
+            // "quietly covers less than it claims" failure this check exists
+            // to prevent one level down.
+            let id = match resolutions.get(&member.sha256) {
+                Some(Some(id)) => id,
+                Some(None) => {
+                    skipped += 1;
+                    continue;
+                }
+                None => panic!(
+                    "{} was never resolved against stump, so this comparison would be \
+                     incomplete — resolution was abandoned partway, which means a transport \
+                     failure rather than an answer",
+                    member.path
+                ),
+            };
+            for within in 0..member.pages {
+                let ours = LocalLibrary
+                    .page(dir, member, within)
+                    .unwrap_or_else(|e| panic!("{} page {within}: {e}", member.path));
+                let theirs = crate::stump::api::page_bytes(&transport, id, within)
+                    .map_err(|e| e.message)
+                    .unwrap_or_else(|e| panic!("{} stump page {within}: {e}", member.path));
+                assert_eq!(
+                    ours.bytes, theirs.bytes,
+                    "{} page {within} differs between disk and stump",
+                    member.path
+                );
+                compared += 1;
+            }
+        }
+    }
+
+    eprintln!("{compared} pages compared against stump; {skipped} members stump does not hold");
+    assert!(
+        compared > 0,
+        "no member of this work resolved against stump, so nothing was compared"
+    );
 }

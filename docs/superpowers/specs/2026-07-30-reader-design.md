@@ -1,9 +1,15 @@
 # The reader — design
 
-**Status: design, nothing built.** Settled in brainstorming on 2026-07-30. Every
-decision below records why it was taken and what it cost, in the same style as
-`notes.md`; where a figure is asserted it is a measurement already recorded
-there, and where something is a guess it says so.
+**Status: M1 and M2 built; M3 refined by a later spec.** Settled in brainstorming
+on 2026-07-30. Every decision below records why it was taken and what it cost, in
+the same style as `notes.md`; where a figure is asserted it is a measurement
+already recorded there, and where something is a guess it says so.
+
+**M3 was measured against the live Stump instance on 2026-07-31 and four of this
+document's guesses about it were wrong.** They are corrected in place below, each
+pointing at
+[`2026-07-31-m3-stump-opds-design.md`](2026-07-31-m3-stump-opds-design.md), which
+supersedes this document for M3 only.
 
 The reader is the multi-week piece the rest of the project has been unblocking.
 `docs/status.md` has called it "next" since the aligner worked; its two stated
@@ -161,11 +167,22 @@ trait PageSource {
 | Implementation | Pages from | What it buys |
 | -------------- | ---------- | ------------ |
 | `LocalLibrary` | filesystem, via `taiyaku-read` | standalone; the replacement path |
-| `StumpLibrary` | Stump's REST API, reusing its auth | Stump keeps scanning, metadata and users; taiyaku adds only alignment |
+| `StumpLibrary` | Stump's GraphQL API, plus REST for page bytes | Stump keeps scanning, metadata and users; taiyaku adds only alignment |
 
-Nothing above the trait knows the difference. This is `notes.md`'s Tier 2 —
-*"alignment endpoint: serve the sidecar, resolve lookups"* — reached without
-patching Stump, and it makes the replace-or-not decision permanently reversible.
+**Built as two implementations, not two of this shape.** `StumpLibrary` was not
+built and should not be: turning a member into a Stump book id needs the
+resolution map, so a Stump-only source could only ever be called by the one
+caller that already owned its state. What shipped is `CompositeSource`, routing
+**per member** — Stump where it holds the file, disk where it does not — with
+the Stump branch inline. The full reasoning, and the condition that would make
+the third implementation worth building, is recorded in
+[`2026-07-31-m3-stump-opds-design.md`](2026-07-31-m3-stump-opds-design.md).
+
+Nothing above the trait knows the difference — which is the property this table
+exists for, and it survived the change; the whole-branch review verified it.
+This is `notes.md`'s Tier 2 — *"alignment endpoint: serve the sidecar, resolve
+lookups"* — reached without patching Stump, and it makes the replace-or-not
+decision permanently reversible.
 
 **The named risk.** A sidecar member is a `path` and a `sha256`; Stump addresses
 books by ID. `StumpLibrary` must reconcile them, most plausibly by indexing
@@ -174,6 +191,16 @@ do not reconcile, `sha256` is the fallback. **If Stump exposes neither usably,
 `StumpLibrary` does not ship** — and that is the one thing in this design that
 could fail outright rather than merely cost more than expected. It is checked
 first in M3, not last.
+
+**Checked on 2026-07-31, and it ships.** Three details of the paragraph above are
+wrong. `Query.mediaByPath` is a direct lookup, so no path index is needed.
+`Media.hash` is null on every book measured and is not a SHA-256 in any case, so
+there is no hash fallback — matching is by name and size, **confirmed by comparing
+the SHA-256 of one page** fetched through each source. And the real difficulty is
+not reconciliation but coverage: Stump indexes the English editions and not the
+raws taiyaku aligns them against, so `StumpLibrary` cannot replace `LocalLibrary`
+for any work in this library. A composite source resolving **per member** is what
+M3 builds instead. See the M3 spec.
 
 ### The serve API
 
@@ -381,7 +408,7 @@ Per layer:
 | --- | --- | --- | --- |
 | **M1** | `taiyaku-read` extraction | half a day | nothing new; tests prove nothing broke |
 | **M2** | `taiyaku-serve` + `PageSource` + `LocalLibrary` + progress | ~3 days | pages over HTTP from disk |
-| **M3** | `StumpLibrary` + OPDS-PSE | ~1 week | **Panels reads the library; taiyaku runs beside Stump** |
+| **M3** | `StumpLibrary` + `CompositeSource` + OPDS-PSE | ~1 week | **one work's editions read as one work; taiyaku runs beside Stump** |
 | **M4** | `Route::resolve_slot`, `taiyaku-wasm` + agreement test | ~2 days | resolve a slot from JS |
 | **M5** | Reading PWA: modes, swap, gaps, parity, filmstrip | ~2 weeks | **the swap works** |
 | **M6** | Correction UI | ~1–2 weeks | fix a wrong pairing and keep it |
@@ -392,6 +419,16 @@ untested guess, and the second implementation arriving promptly is what stops
 
 M3 earning something real before any React exists is also deliberate. If the PWA
 stalls, the work still produced a server the owner's preferred iOS app can read.
+
+**M3's stated end state was wrong, though the milestone is not.** "Panels reads
+the library" is already true without taiyaku: this Stump serves OPDS-PSE today.
+What taiyaku's feed adds is the thing neither Stump nor Komga can express —
+**several editions grouped under one work**. Measured on the instance,
+`Go-Toubun no Hanayome` and `Go-Toubun no Hanayome - Full Color Edition` are two
+unrelated series of 14 books each; add the raws and the fan chapters and one work
+occupies four. The shortcoming extends to ebooks, where translations and revised
+editions have the same problem — though taiyaku's page-based correspondence does
+not transfer to reflowable EPUB, so only the grouping generalises.
 
 **Sizes are estimates, not measurements.** Every session on this project so far
 has found something the previous estimate did not anticipate.
@@ -413,6 +450,13 @@ reveal its cache policy, and how it walks a feed while browsing.
 log**, written into `notes.md`. That turns "as good as Panels" from an impression
 into numbers, in the same style as the rest of the project, and gives a later
 Swift reader something to beat.
+
+**The log measures only half of what Panels is good at.** The other half is the
+reading interaction — gestures, page transitions, zoom behaviour, how a spread is
+handled, what happens at a chapter boundary — and none of it is visible in what a
+client asks for. Capturing that needs someone using Panels and writing down what
+it gets right. **It is a later task, not part of M3**, and it feeds M5's PWA as
+much as any future Swift reader.
 
 ## Designed for a native iOS reader, not building one
 
@@ -512,13 +556,24 @@ Recorded rather than resolved. The first is answered; the rest are open.
   titles are neither unique across a library nor stable across an edit; a
   filename is both, and a person reading a URL can tell which file it came from.
   Two sidecars resolving to one id is an error rather than a silent shadowing.
-- **How does the client authenticate to Stump** under `StumpLibrary` — pass
-  through the user's session, or hold a service credential.
+- ~~**How does the client authenticate to Stump**~~ **Answered in M3:** a service
+  credential. Stump issues scoped API keys, and taiyaku holds one read-scoped key
+  sent as a bearer token. Session passthrough loses on two counts — `serve`
+  resolves members when it loads a sidecar, before any reader has authenticated,
+  and the raws never involve Stump at all, so a reader's Stump session cannot be
+  what authorises reading a work.
 - **Thumbnail caching.** The filmstrip wants a thumbnail per page of the current
   edition. Generating them per request is likely too slow for a 195-page volume;
-  where they are cached is unspecified.
+  where they are cached is unspecified. **Answered for covers in M3** — one per
+  edition, generated from page 0 and cached on disk — and deliberately left open
+  for the filmstrip until M5 knows its access pattern. One cover per edition and
+  195 thumbnails per volume are different problems.
 - **Whether corrections need an undo.** `by: "hand"` is recorded but nothing
   reverts a correction short of editing the JSON.
 - **Whose progress is it under `StumpLibrary`?** Stump tracks progress per user
   already. Two systems recording where you were is a conflict waiting to happen,
-  and which one wins is unspecified.
+  and which one wins is unspecified. **Still open after M3, but now concrete:**
+  Stump records `ResumeReadingCursor { page, percentageCompleted, epubcfi, … }`
+  per user and mutates it with `updateMediaProgress`, against taiyaku's
+  `(work, edition, slot)`. Reading through taiyaku moves taiyaku's and not
+  Stump's. Not blocking, because nothing in M3 writes to Stump.

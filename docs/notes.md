@@ -2588,3 +2588,282 @@ for cbz in Path('corpus').rglob('*.cbz'):
 print(total, 'page entries;', bad)
 PY
 ```
+
+## Scanlation credit pages are already visible in the alignment
+
+Measured 2026-07-31 on `corpus/gotoubun-v01`, while planning M3. The question was
+whether a reader could skip a scanlation group's donation and credits pages
+without anyone hand-tagging them. **The alignment already knows where they are.**
+
+A credits page exists in the fan edition and in no other, so it pairs with
+nothing. Reading the `raw-mono → en-fan` alignment and asking which of the fan
+edition's 235 slots no run ever mentions gives 50 slots in five groups:
+
+| Fan pages | Count | Member | Local | What it is |
+| --------- | ----- | ------ | ----- | ---------- |
+| 1–42 | 42 | `c000` | 1–42 | the prototype one-shot; the raw volume has no such chapter |
+| 95 | 1 | `c001` | 51 of 52 | **donation plea** |
+| 168 | 1 | `c003` | 31 of 32 | **donation plea** |
+| 198 | 1 | `c004` | 29 of 30 | **donation plea** |
+| 225–229 | 5 | `c005`, `c005.5` | 26, 0–3 | chapter end plus a bonus chapter |
+
+Three of the five groups are a **single unpaired page sitting at its member's
+final index**, and all three were extracted and looked at: the same
+`WE NEED DONATIONS! … lhtranslation.com` card, verbatim. The two long groups are
+genuine content the raw volume does not contain — `c000` page 20 was extracted as
+a negative control and is ordinary manga.
+
+**So the separating rule is shape, not content:** an isolated unpaired page at a
+member boundary is a credits page; an unpaired run spanning most of a member is
+material the other edition lacks. Both fall out of `alignments`, which every
+sidecar already carries.
+
+**The three cards are visually identical and byte-different** — 175,385, 174,117
+and 170,889 bytes, three different SHA-256s, because each chapter re-encoded it.
+Exact-hash deduplication finds none of them. **dhash does**, and taiyaku already
+has dhash-16 with a corpus behind it — the same property that makes it work
+across editions makes it work across a re-encode. `notes.md` already records
+distance-zero lookup finding duplicate pages inside one edition; this is that,
+put to a use.
+
+**Two independent signals, then**, which is what makes this worth building rather
+than guessing at:
+
+1. unpaired against the hub, and isolated at a member boundary
+2. near-duplicate of a page in a *sibling member* of the same edition, by dhash
+
+Signal 2 needs no alignment at all, so it also works on an edition with no
+counterpart — which matters, because a fan edition is often the only one a
+library has.
+
+**Not yet measured, and stated as unknown:** whether the rule holds on other
+scanlation groups in the corpus, what happens to groups that put credits on the
+*first* page rather than the last, and the false-positive rate against colour
+inserts and author afterwords, which are also single unpaired pages near a
+boundary. The Go-Toubun fan edition is one group's habits, not the population.
+
+## M3: what the Stump instance actually offers, measured 2026-07-31
+
+Everything below is what `2026-07-31-m3-stump-opds-design.md` rests on, and every
+claim `status.md` makes about Stump support, the composite source and the OPDS
+feed traces to a line here.
+
+### The instance
+
+`stump.daveynet.xyz`, **Stump 0.1.4 nightly**, rev `c496517b`, compiled
+2026-06-21, behind Cloudflare. Eight libraries, all rooted at `/data`. Two
+protocols, split by what Stump actually offers rather than by what the reader
+design guessed:
+
+| Surface | Where | Notes |
+| ------- | ----- | ----- |
+| Whole API | `POST /api/graphql` | 401 JSON unauthenticated |
+| Page bytes | `GET /api/v2/media/:id/page/:n` | **1-based**; `image/jpeg`; no `ETag`; 404 past the end |
+| OPDS | `/opds/v1.2/*` | Basic auth; **already declares `xmlns:pse`** |
+
+There is no `/api/v1` — those paths fall through to the SPA, which is what makes
+a stale REST assumption look like a working server returning HTML rather than an
+error.
+
+### `Media.hash` and `koreaderHash` are null, and neither is a SHA-256 anyway
+
+Checked across every book measured, epub and cbz alike: both fields are null on
+every one. Neither is the right quantity even when present — `koreaderHash` is
+KOReader's partial MD5, not a whole-file digest. Stump resolution therefore
+confirms a candidate with a **page** hash — `sha256` of `page/1`, compared
+against the local member's first page — never a file hash. Worth stating flatly
+because a field called `hash` sitting beside a sidecar field called `sha256` is
+exactly the kind of thing a later implementer reaches for without checking.
+
+### `Media.name` is the file stem, not the basename
+
+`Go-Toubun no Hanayome - v01 (2018)`, not `… .cbz`. Matching Stump's `name`
+filter against a full basename returns nothing, every time — the extension has
+to be stripped before the query goes out.
+
+### Coverage: of one work's three editions, Stump holds one
+
+Measured against every edition directory of the primary development volume,
+`corpus/gotoubun-v01`, by exact file size:
+
+| Edition | In the sidecar | Pages | In Stump |
+| ------- | -------------- | ----- | -------- |
+| `en-mono` | yes | 187 | yes |
+| `raw-mono` | yes | 195 | no |
+| `en-fan` (7 files) | yes | 235 total | no |
+| `en-color` | no — on disk, not a sidecar member | 199 | yes |
+| `raw-color` | no — on disk, not a sidecar member | — | no |
+
+Of the three editions the work actually has, Stump serves exactly one. A
+whole-work `PageSource` backed only by Stump would 404 on two thirds of every
+work in this library — the reason the composite source exists rather than a
+standalone Stump-backed `PageSource` implementation.
+
+### Page agreement: five pages checked byte for byte before building the test
+
+Stump book `a8ed51d8-c4c8-4efa-b427-2ba5327f477b` against
+`corpus/gotoubun-v01/en-mono/Go-Toubun no Hanayome - v01 (2018).cbz`:
+
+| Stump | taiyaku | Bytes | SHA-256 (truncated) |
+| ----- | ------- | ----- | -------------------- |
+| `page/1` | index 0 | 1,180,617 | `9183af35f1b47e7fbb9994aca642b8de` |
+| `page/2` | index 1 | 1,343,956 | `98d412bdf8cb371d11f611418e7fc4cd` |
+| `page/3` | index 2 | 339,050 | `91fd1f798337093345ad04944de9d25c` |
+| `page/100` | index 99 | 1,884,398 | `acaf0c241e0826aafe4843b2a9214765` |
+| `page/187` | index 186 | 978 | `eb60ee8901f45efecc62db4176fb685d` |
+
+Page 187 is the one `.png` `en-mono` carries among 186 `.jpg` entries — see "The
+extension lies about a page's format too" above. Stump serves it as
+`image/png`, so it sniffs content the same way `taiyaku-serve` does rather than
+trusting the extension, and it derives the same page sequence taiyaku does,
+including where that one file sorts. **This is agreement, not a guarantee**:
+nothing in Stump's contract binds it to taiyaku's natural-order rule, which is
+normative in `sidecar.md` and merely conventional in Stump. The equivalence
+check below is what stands guard; this table is what justified writing it.
+
+### The live equivalence check, 2026-07-31
+
+`crates/taiyaku-serve/src/corpus.rs::stump_and_local_serve_the_same_bytes_for_the_same_member`,
+gated on `TAIYAKU_CORPUS` and a reachable Stump, run for real against the
+instance above:
+
+```
+187 pages compared against stump; 8 members stump does not hold
+```
+
+Zero disagreements. The 187 are every page of `en-mono`, the one member that
+exists in both sources; the 8 absent are `raw-mono` plus all seven `en-fan`
+chapter files, matching the coverage table exactly — each recorded as absent
+rather than retried per page, and distinguished from a member the circuit
+breaker simply never got to (`Some(None)` versus a missing key; see Task 9 in
+`progress.md`). This is the third of the four seam tests the reader design
+names, and the first end-to-end proof that the composite's Stump-backed path
+reads the same bytes `LocalLibrary` does over a live network round trip, not
+merely against a recorded fixture.
+
+The companion check in the same run, comparing every page the server serves
+against the page the aligner sequenced with no Stump involved:
+
+```
+617 pages compared across 3 editions
+```
+
+no disagreement — the M2 seam test, re-verified rather than assumed still
+green.
+
+### Two series for one work, and what taiyaku's feed actually answers
+
+```
+/data/Manga/Go-Toubun no Hanayome                        14 books
+/data/Manga/Go-Toubun no Hanayome - Full Color Edition   14 books
+```
+
+Neither Stump nor Komga has a concept that relates these, and Stump already
+serves OPDS-PSE on its own — Panels can read this library today without
+taiyaku. So M3's stated end state, "Panels reads the library", was already true
+before this milestone. What taiyaku's feed adds is the grouping above, which is
+the one thing neither server can express. See "Stump and Komga cannot express
+multiple editions of one work" in the design doc for the fuller argument;
+recorded here because it is the finding `status.md`'s account of M3 rests on.
+
+### The Panels performance measurement is still outstanding
+
+The request-log middleware and `scripts/request-summary.sh` exist and were
+exercised against a real concurrent burst — in-flight snapshots of 1, 1, 2, 3,
+4, 5 recovered the burst's depth exactly, `?width=`/`?height=` were captured,
+and every emitted line parsed as JSON — but no iPad has run Panels against this
+server yet. The performance targets the design names are not filled in here
+because they have not been measured; writing in a plausible-looking number
+before the run happened is exactly the kind of claim this document exists to
+avoid making.
+
+## Panels, measured: the feed was one-based and should not have been
+
+First real session against `taiyaku serve`, 2026-07-31, Panels on an iPad over
+the LAN. 73 requests, one work, three editions. The log is the instrument the
+reader design argued for, and it earned itself immediately.
+
+### The defect it found
+
+**OPDS-PSE counts pages from 0, and taiyaku's feed counted from 1.**
+
+Panels opens a book by requesting `pages/0`. Against the 1-based version that
+was a 404, so it showed an error screen with a `!`; tapping advanced it to
+`pages/1`, which taiyaku answered with index 0 — **the first page, under the
+number Panels uses for the second**. Every page after it was shifted, and the
+true first page of every edition was unreachable. Panels retried page 0 up to
+nine times per edition: **22 of the session's 73 requests, 30%, were that 404.**
+
+**Stump settles the convention**, and is better evidence than re-reading the
+spec because Panels already works against it. Its REST API is 1-based:
+`/api/v2/media/:id/page/1`. Its OPDS-PSE template is not:
+
+```
+href="/opds/v1.2/books/<id>/pages/{pageNumber}?zero_based=true"
+     rel="http://vaemendis.net/opds-pse/stream" pse:count="190"
+```
+
+It converts *for* PSE. So there is one conversion boundary in taiyaku, not two:
+`+1` to Stump's REST API, and nothing at all for PSE.
+
+**Why no test caught it.** Both conversion sites had tests and both asserted
+taiyaku's own convention rather than the protocol's, so the 1-based test passed
+against 1-based code and proved only self-consistency. A test cannot find a
+disagreement with a client it never talks to. This is the same shape as the
+member-order bug: a rule held in one place and assumed in another — except the
+other place was a third-party application, so only a third-party application
+could show it.
+
+### What the log says about how Panels fetches
+
+Two sessions after the fix: a short read (26 requests) and a deliberate
+fast-flick run (179 requests, 177 of them pages, 115 seconds, every one a 200).
+
+| Measure | Value |
+| ------- | ----- |
+| Page requests, flick session | 177, all distinct, none re-requested |
+| Transferred | 43.7 MB total, 247 KB mean, 2.0 MB largest |
+| Server processing, median | **1.43 ms** |
+| Server processing, worst | 15.6 ms |
+| Tightest gap between arrivals | **40 ms** |
+| Gaps, 10th percentile / median | 44 ms / 114 ms |
+| Concurrent page requests | **none observed, in any session** |
+| Dimension parameters requested | **none, in any session** |
+
+**The server is not the constraint, by a wide margin.** Median processing is
+1.43 ms against a tightest client request rate of 40 ms — roughly twenty-eight
+times faster than the client asks. Everything a reader waits for is transfer and
+client-side decode of a quarter-megabyte scan, not taiyaku.
+
+**Panels issues no concurrent page requests.** Zero overlaps across 177
+requests, and the arrival floor holds at 40 ms even when flicking as fast as the
+UI allows. This is a statement about *arrivals*, which is why the server's speed
+does not undermine it: a client prefetching a batch would emit those requests
+within a millisecond or two of each other whatever the server did, and none ever
+arrived bunched.
+
+**What this log cannot say, and should not be read as saying.** It cannot
+distinguish "Panels waits for each response before sending the next" from
+"Panels is simply paced by its own UI" — the server finishes in 1.43 ms, so no
+request was ever still open when the next arrived, and a blocking client and a
+timer-driven one are indistinguishable at that speed. Measuring that needs
+either a deliberately slowed response or client-side instrumentation, and
+neither is worth building for it.
+
+**No reduced size was ever requested**, across every session. Panels takes
+whatever resolution the server holds. Komga and Stump both accept a width
+parameter on the PSE stream and taiyaku offers none, so this log cannot say
+whether Panels would use one if advertised — only that it does not ask
+unprompted.
+
+**As a target for a later Swift reader**, the useful figure is not a server
+number, since 1.43 ms leaves nothing to beat. It is that a page turn at this
+library's page sizes moves about 247 KB, and that a reader can sustain a
+40 ms turn rate without the server becoming the limit.
+
+### The one qualitative note
+
+The owner's assessment after the fix, which no log can capture: performance
+"seems similar or equivalent to using Stump/Komga with Panels". That is the bar
+the reader design set, met on the first attempt — but it is an impression, and
+the numbers above are what a later Swift reader should actually be held to.

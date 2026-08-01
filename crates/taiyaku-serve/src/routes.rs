@@ -38,14 +38,12 @@ impl IntoResponse for NoSuchWork {
 
 /// The work a route names, or the refusal to send instead.
 ///
-/// Every route below is addressed by work, and M3 adds more — a thumbnail, a
-/// correction, an OPDS tree — that will be too. One place decides what a
-/// request for a work that does not exist gets back, so four routes cannot
-/// drift into four different answers to the same question.
+/// Every route below is addressed by work, and M3 added more — a thumbnail, a
+/// stream, a work feed. `ServeState::work_or_missing` is the one place that
+/// decides the wording; this just wraps it in the `Response`-carrying type
+/// this module's non-`spawn_blocking` handlers want.
 fn work<'a>(state: &'a ServeState, id: &str) -> Result<&'a Work, NoSuchWork> {
-    state
-        .work(id)
-        .ok_or_else(|| NoSuchWork(format!("no work `{id}`")))
+    state.work_or_missing(id).map_err(NoSuchWork)
 }
 
 async fn list_works(State(state): State<Arc<ServeState>>) -> Response {
@@ -72,16 +70,27 @@ async fn get_page(
     State(state): State<Arc<ServeState>>,
     AxPath((id, edition, index)): AxPath<(String, String, u32)>,
 ) -> Response {
-    let found = match work(&state, &id) {
-        Ok(found) => found,
-        Err(missing) => return missing.into_response(),
-    };
-    match state.source.page(found, &edition, index) {
-        // The type the source reported, not a guess: an `<img>` would sniff
-        // octet-stream happily, but a direct navigation downloads it and an
-        // OPDS client refuses it.
-        Ok(page) => ([(header::CONTENT_TYPE, page.content_type)], page.bytes).into_response(),
-        Err(e) => not_found(e),
+    // Reading a page blocks: a zip decompression from disk, or an HTTP round
+    // trip to Stump. On a tokio worker that stalls the whole worker, and this
+    // corpus holds pages of 430 MB — with the prefetching the filmstrip and
+    // swap both need, one reader would occupy several of them.
+    //
+    // `PageSource` stays synchronous deliberately. The boundary belongs here,
+    // where there is exactly one of it, rather than in each implementation.
+    let fetched = tokio::task::spawn_blocking(move || {
+        let found = state.work_or_missing(&id)?;
+        state.page(found, &edition, index)
+    })
+    .await;
+
+    match fetched {
+        Ok(Ok(page)) => ([(header::CONTENT_TYPE, page.content_type)], page.bytes).into_response(),
+        Ok(Err(e)) => not_found(e),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("page read panicked: {e}"),
+        )
+            .into_response(),
     }
 }
 
@@ -123,6 +132,7 @@ async fn put_progress(
 /// Build the router. Separate from `serve` so tests can drive it with
 /// `oneshot` and never open a socket.
 pub fn build_router(state: Arc<ServeState>) -> Router {
+    let log = state.log.clone();
     Router::new()
         .route("/api/works", get(list_works))
         .route("/api/works/{work}", get(get_sidecar))
@@ -131,6 +141,43 @@ pub fn build_router(state: Arc<ServeState>) -> Router {
             "/api/works/{work}/progress",
             get(get_progress).put(put_progress),
         )
+        .merge(crate::opds::routes())
+        .layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let log = log.clone();
+                async move {
+                    let Some(log) = log else {
+                        return next.run(request).await;
+                    };
+                    let method = request.method().to_string();
+                    // Path *and* query string: a client asking for
+                    // `?width=1536` is invisible if only `path()` is
+                    // logged, and this server's total absence of resize
+                    // support makes that more important to catch, not less.
+                    let path = request
+                        .uri()
+                        .path_and_query()
+                        .map(|pq| pq.as_str())
+                        .unwrap_or_else(|| request.uri().path())
+                        .to_string();
+                    let started = log.begin();
+                    let response = next.run(request).await;
+                    let status = response.status().as_u16();
+                    // The body's own known length, not the Content-Length
+                    // header: axum sets that header when it serialises the
+                    // response, which is after this middleware has already
+                    // run — so reading the header here reports 0 for every
+                    // request, and bytes-per-page is one of the numbers this
+                    // log exists to produce.
+                    let bytes = {
+                        use axum::body::HttpBody;
+                        response.body().size_hint().exact().unwrap_or(0)
+                    };
+                    log.finish(started, &method, &path, status, bytes);
+                    response
+                }
+            },
+        ))
         .with_state(state)
 }
 
@@ -196,6 +243,42 @@ mod tests {
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 
         crate::test_support::cleanup("taiyaku-test-routes");
+    }
+
+    /// `status.md` previously claimed no test dispatched an out-of-range
+    /// page index through the router — true of the `/api/…` route
+    /// specifically (the OPDS stream route had its own such test since Task
+    /// 6), but the sentence did not say so and so overclaimed. This closes
+    /// the actual gap: the fixture edition has 4 pages, so index 4 is one
+    /// past the end.
+    #[tokio::test]
+    async fn an_out_of_range_page_index_dispatched_through_the_router_names_the_length() {
+        let state = Arc::new(crate::test_support::state(
+            "taiyaku-test-routes-page-past-end",
+        ));
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::get("/api/works/t/raw/pages/4")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let message = String::from_utf8_lossy(&body).to_string();
+
+        crate::test_support::cleanup("taiyaku-test-routes-page-past-end");
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(message.contains("raw"), "must name the edition: {message}");
+        assert!(
+            message.contains('4'),
+            "must say how many pages it has: {message}"
+        );
     }
 
     /// A reader reopening a work asks one question and gets one answer, so a
@@ -289,5 +372,83 @@ mod tests {
         crate::test_support::cleanup("taiyaku-test-progress-edition");
         assert!(message.contains("nope"), "must name the edition: {message}");
         assert_eq!(after.status(), StatusCode::NO_CONTENT);
+    }
+
+    /// A real request, through the real router, has to produce a real log
+    /// line — and that line's `bytes` has to be non-zero.
+    ///
+    /// This is the case the `CONTENT_LENGTH` mistake would pass silently: a
+    /// unit test on `Log` alone never sends a response through axum, so it
+    /// cannot see that the header is not yet set when the middleware reads
+    /// it. Only driving the middleware through a page fetch — a body with
+    /// real bytes in it — proves the log records what a client actually
+    /// received rather than 0 for every request.
+    #[tokio::test]
+    async fn a_page_fetch_through_the_router_logs_a_line_with_real_byte_count() {
+        let mut state = crate::test_support::state("taiyaku-test-routes-reqlog");
+        let log = Arc::new(crate::Log::new(None).unwrap());
+        state.log = Some(log.clone());
+        let app = build_router(Arc::new(state));
+
+        let page = app
+            .oneshot(
+                Request::get("/api/works/t/raw/pages/2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(page.into_body(), 1 << 20)
+            .await
+            .unwrap();
+
+        crate::test_support::cleanup("taiyaku-test-routes-reqlog");
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1, "exactly one request went through");
+        let entry = &entries[0];
+        assert_eq!(entry.method, "GET");
+        assert_eq!(entry.path, "/api/works/t/raw/pages/2");
+        assert_eq!(entry.status, 200);
+        assert_eq!(
+            entry.bytes,
+            bytes.len() as u64,
+            "the logged size must match the bytes the client actually received"
+        );
+        assert!(entry.bytes > 0, "a page is never a zero-byte response");
+        assert_eq!(entry.in_flight, 1, "a lone request arrived alone");
+    }
+
+    /// A client asking for `?width=1536` has to be visible in the log: this
+    /// server serves no resized images at all, which makes it *more*
+    /// important to see the parameter, not less — logging `path()` alone
+    /// would make it look like no client ever asks for one, when the truth
+    /// is only that nothing here answers it yet.
+    #[tokio::test]
+    async fn a_request_with_a_query_string_is_logged_with_it() {
+        let mut state = crate::test_support::state("taiyaku-test-routes-reqlog-query");
+        let log = Arc::new(crate::Log::new(None).unwrap());
+        state.log = Some(log.clone());
+        let app = build_router(Arc::new(state));
+
+        let page = app
+            .oneshot(
+                Request::get("/api/works/t/raw/pages/2?width=1536")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+
+        crate::test_support::cleanup("taiyaku-test-routes-reqlog-query");
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].path, "/api/works/t/raw/pages/2?width=1536",
+            "the query string must survive into the logged path"
+        );
     }
 }

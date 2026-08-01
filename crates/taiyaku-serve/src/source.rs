@@ -1,21 +1,29 @@
 //! Where page images come from.
 //!
 //! One trait, so that running beside Stump and replacing Stump are the same
-//! code above this line. `LocalLibrary` reads the filesystem; `StumpLibrary`
-//! (M3) proxies Stump's REST API.
+//! code above this line. **Two implementations, not three.** `LocalLibrary`
+//! (below) reads the filesystem. There is no standalone `StumpLibrary`: the
+//! design's third implementation was never built, because it could not have
+//! answered anything on its own — resolving a member to a Stump book needs
+//! the resolution map, which only the composite holds. What ships instead is
+//! `CompositeSource` (`composite.rs`), whose Stump-backed branch speaks
+//! Stump's GraphQL and REST APIs inline and falls back to `LocalLibrary` for
+//! every member Stump does not have. Whole-branch review, M3: the design and
+//! seven places in the docs and code still named the unbuilt type; this is
+//! the correction.
 
 use std::path::Path;
 
-use crate::works::Work;
+use taiyaku_core::Member;
 
 /// One page, with the content type a client needs to render it.
 ///
 /// The type travels with the bytes because it is exactly what varies by
-/// source: locally it comes from the entry's extension, and a remote library
-/// (M3) will take it from that server's response header. A trait returning
-/// bare bytes cannot express either, so the route was left guessing — and
-/// `application/octet-stream` is a guess an `<img>` forgives and nothing else
-/// does.
+/// source: locally it comes from sniffing the bytes, falling back to the
+/// entry's extension when they do not sniff as anything recognised
+/// (`content_type`, below). A trait returning bare bytes cannot express this,
+/// so the route was left guessing — and `application/octet-stream` is a
+/// guess an `<img>` forgives and nothing else does.
 #[derive(Debug, Clone)]
 pub struct ServedPage {
     pub content_type: String,
@@ -23,11 +31,18 @@ pub struct ServedPage {
 }
 
 /// Where a reader's page images come from.
+///
+/// One member at a time, deliberately. Which member holds page N of an
+/// edition is `taiyaku_core::Edition::locate`, and it is the same answer for
+/// every source — so a source that computed it would be a second derivation of
+/// a normative rule. What genuinely varies below this line is only where one
+/// member's bytes live, which is why that is all this trait asks for.
 pub trait PageSource: Send + Sync + std::fmt::Debug {
-    /// One page, by its index in the edition's flat sequence.
-    fn page(&self, work: &Work, edition: &str, index: u32) -> Result<ServedPage, String>;
-    /// How many pages the edition holds.
-    fn page_count(&self, work: &Work, edition: &str) -> Result<u32, String>;
+    /// One page of one member, by its offset within that member.
+    ///
+    /// `root` is the directory the sidecar sits in; a member's `path` is
+    /// relative to it — `docs/sidecar.md`.
+    fn page(&self, root: &Path, member: &Member, within: u32) -> Result<ServedPage, String>;
 }
 
 /// What to serve a page as, from the name of the entry it came out of.
@@ -62,7 +77,7 @@ fn type_from_extension(name: &str) -> &'static str {
 /// `<img>` re-sniffs and would not care; the OPDS client M3 is for is entitled
 /// to believe the header, and a header that is wrong 1.3% of the time is worse
 /// than one that says nothing.
-fn sniffed_type(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn sniffed_type(bytes: &[u8]) -> Option<&'static str> {
     let starts = |magic: &[u8]| bytes.starts_with(magic);
     if starts(b"\xff\xd8\xff") {
         Some("image/jpeg")
@@ -98,49 +113,18 @@ fn content_type(name: &str, bytes: &[u8]) -> &'static str {
 pub struct LocalLibrary;
 
 impl PageSource for LocalLibrary {
-    fn page(&self, work: &Work, edition: &str, index: u32) -> Result<ServedPage, String> {
-        let ed = work
-            .sidecar
-            .editions
-            .get(edition)
-            .ok_or_else(|| format!("no edition `{edition}` in {}", work.path.display()))?;
-        let root = work.path.parent().unwrap_or(Path::new("."));
-
-        // Offsets come from the recorded page counts rather than from reading
-        // each member, so skipping to the right member costs no I/O. The read
-        // below is what catches a member that no longer holds what the sidecar
-        // says it does.
-        let mut offset = 0u32;
-        for member in &ed.members {
-            if index < offset + member.pages {
-                let path = root.join(&member.path);
-                let within = index - offset;
-                let page = taiyaku_read::member_page(&path, within).map_err(|e| {
-                    format!(
-                        "{e} — {} records {} pages for this member; it may have been replaced",
-                        work.path.display(),
-                        member.pages
-                    )
-                })?;
-                return Ok(ServedPage {
-                    content_type: content_type(&page.name, &page.bytes).to_string(),
-                    bytes: page.bytes,
-                });
-            }
-            offset += member.pages;
-        }
-        Err(format!(
-            "{edition} has {offset} pages; there is no page {index}"
-        ))
-    }
-
-    fn page_count(&self, work: &Work, edition: &str) -> Result<u32, String> {
-        let ed = work
-            .sidecar
-            .editions
-            .get(edition)
-            .ok_or_else(|| format!("no edition `{edition}` in {}", work.path.display()))?;
-        Ok(ed.members.iter().map(|m| m.pages).sum())
+    fn page(&self, root: &Path, member: &Member, within: u32) -> Result<ServedPage, String> {
+        let path = root.join(&member.path);
+        let page = taiyaku_read::member_page(&path, within).map_err(|e| {
+            format!(
+                "{e} — the sidecar records {} pages for this member; it may have been replaced",
+                member.pages
+            )
+        })?;
+        Ok(ServedPage {
+            content_type: content_type(&page.name, &page.bytes).to_string(),
+            bytes: page.bytes,
+        })
     }
 }
 
@@ -148,32 +132,68 @@ impl PageSource for LocalLibrary {
 mod tests {
     use super::*;
 
-    /// An edition is its members concatenated in array order, so page 2 is the
-    /// first page of the second member. Getting the offset wrong shows the
-    /// wrong page for everything after the first member, which is exactly the
-    /// bug member ordering was fixed to prevent one level up.
+    /// The source is handed one member and an offset inside it; deciding
+    /// which member that is belongs to `taiyaku_core::Edition`. This test
+    /// pins the narrowed contract: no edition key, no flat index, no
+    /// arithmetic below this line.
     #[test]
-    fn a_page_index_walks_across_member_boundaries() {
+    fn a_source_serves_one_member_at_an_offset_within_it() {
         let work = crate::test_support::work("taiyaku-test-source");
+        let root = work.path.parent().unwrap().to_path_buf();
+        let edition = work.sidecar.editions.get("raw").unwrap();
 
-        let count = LocalLibrary.page_count(&work, "raw").unwrap();
-        let first = LocalLibrary.page(&work, "raw", 0).unwrap();
-        let across = LocalLibrary.page(&work, "raw", 2).unwrap();
-        let last = LocalLibrary.page(&work, "raw", 3).unwrap();
-        let past_end = LocalLibrary.page(&work, "raw", 4);
+        let first = LocalLibrary.page(&root, &edition.members[0], 0).unwrap();
+        let second_member = LocalLibrary.page(&root, &edition.members[1], 0).unwrap();
+        let past_end = LocalLibrary.page(&root, &edition.members[1], 9);
 
         crate::test_support::cleanup("taiyaku-test-source");
+        assert_eq!(first.bytes, b"a1.jpg");
+        assert_eq!(
+            second_member.bytes, b"b1.jpg",
+            "the second member's own first page, not the edition's"
+        );
+        assert!(past_end.is_err(), "past a member's end must not wrap");
+        assert_eq!(
+            first.content_type, "image/jpeg",
+            "a page carries what it is, not what the route guesses"
+        );
+    }
+
+    /// The arithmetic the source no longer does still has to happen, and it
+    /// has to give the same answers: page 2 of this two-member edition is the
+    /// second member's first page. This is the same property the old test
+    /// asserted, now checked one level up.
+    #[test]
+    fn state_walks_a_flat_index_across_member_boundaries() {
+        let state = crate::test_support::state("taiyaku-test-state-page");
+        let work = state.works[0].clone();
+
+        let count = work.sidecar.editions.get("raw").unwrap().total_pages();
+        let first = state.page(&work, "raw", 0).unwrap();
+        let across = state.page(&work, "raw", 2).unwrap();
+        let last = state.page(&work, "raw", 3).unwrap();
+        let past_end = state.page(&work, "raw", 4);
+        let no_edition = state.page(&work, "nope", 0);
+
+        crate::test_support::cleanup("taiyaku-test-state-page");
         assert_eq!(count, 4);
         assert_eq!(first.bytes, b"a1.jpg");
         assert_eq!(
             across.bytes, b"b1.jpg",
-            "page 2 is the second member's first page"
+            "page 2 is the second member's first"
         );
         assert_eq!(last.bytes, b"b2.jpg");
-        assert!(past_end.is_err(), "past the end must not silently wrap");
-        assert_eq!(
-            first.content_type, "image/jpeg",
-            "a page carries what it is, not what the route guesses"
+
+        let past_end = past_end.expect_err("past the end must not silently wrap");
+        assert!(
+            past_end.contains('4'),
+            "must say how many pages there are: {past_end}"
+        );
+
+        let no_edition = no_edition.expect_err("an unknown edition is an error");
+        assert!(
+            no_edition.contains("nope"),
+            "must name the edition: {no_edition}"
         );
     }
 

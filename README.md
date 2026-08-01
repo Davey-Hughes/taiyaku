@@ -78,6 +78,14 @@ taiyaku lookup taiyaku.json en en-fan 45
 
 # hand a reader the sidecar, its pages, and where you were, over HTTP
 taiyaku serve taiyaku.json --addr 127.0.0.1:8484
+
+# beside Stump: English editions come from the instance, raws from disk,
+# resolved once at startup and cached beside the sidecar
+TAIYAKU_STUMP_URL=https://stump.example TAIYAKU_STUMP_KEY=… \
+  taiyaku serve corpus/gotoubun-v01/taiyaku.json --addr 0.0.0.0:8484
+
+# point an OPDS reader at
+#   http://<host>:8484/opds/v1.2/catalog
 ```
 
 Members may be `.cbz`, `.zip`, any other zip-based archive whatever it is named,

@@ -13,18 +13,30 @@ measurement recorded there. The format is specified in
 sidecar. It has been measured against eleven series and holds up on every case the
 design anticipated, plus several it did not.
 
-**The reader has a back end and no front end.** Milestones 1 and 2 shipped:
-page reading is a crate of its own, and `taiyaku serve` hands an HTTP client the
-sidecar, any page by index, and where you were. Nothing renders any of it yet —
-the browser reader is the next piece, and none of *that* has started.
+**The reader has a back end and no front end.** Milestones 1 through 3 shipped:
+page reading is a crate of its own, `taiyaku serve` hands an HTTP client the
+sidecar, any page by index, and where you were, and it can now read those pages
+from a Stump instance as well as local disk and publish an OPDS feed grouping a
+work's editions. Nothing renders any of it yet — the browser reader is the next
+piece, and none of *that* has started.
 
 ## What is built
 
-Four crates, 97 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon` and
-`serde`, plus `axum`, `tokio` and `tower` in the server. Two of the 97 are
-standing checks gated on `TAIYAKU_CORPUS`, which skip when the archives are
-absent so CI stays green without them: one measures composition against a direct
-solve, the other that the server and the aligner agree about what page N is.
+Four crates, 175 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
+`base64` and `serde`, plus `axum`, `tokio`, `tower` and `ureq` in the server.
+Three of the 175
+are standing checks gated on `TAIYAKU_CORPUS`, of which the third also needs
+`TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it needs
+is absent, so CI stays green without the corpus or a reachable Stump. One measures
+composition against a direct solve — 2,427 page comparisons, 0.91% loss, 0.00%
+disagreement. One measures that the server and the aligner agree about what page N
+is — 617 pages across 3 editions, no disagreement. One measures that the server
+and Stump serve the same bytes for a member both hold — 187 pages compared
+byte-for-byte, no disagreement, and 8 members this Stump instance does not hold
+recorded as absent rather than silently skipped. `check-all.sh` runs all three
+with `--nocapture` against an absolute, canonicalised `TAIYAKU_CORPUS`, so a green
+gate shows what each one measured, or says plainly that it did not run them at
+all.
 
 `taiyaku-core` is the portable half — no I/O, so it compiles to WebAssembly:
 
@@ -40,7 +52,7 @@ The other three touch the disk or the network:
 | Crate | Holds |
 | ----- | ----- |
 | `taiyaku-read` | how a member becomes pages — archives, directories, natural order, page counts, content hashes, one page by index |
-| `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, all behind a `PageSource` trait |
+| `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below) |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing |
 
 `taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
@@ -56,7 +68,7 @@ taiyaku align  <a-member>... -- <b-member>...   [--write FILE] [--split-spreads]
 taiyaku verify <a-member>... -- <b-member>...   [--out FILE] [--sidecar FILE]
 taiyaku topology <hub>... -- <spoke>... -- <spoke>...
 taiyaku lookup <taiyaku.json> <from> <to> <page>...
-taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT]
+taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT] [--stump-url URL] [--stump-key KEY] [--log-requests FILE]
 ```
 
 `align` takes several members on either side, which is how one volume aligns
@@ -71,7 +83,12 @@ saying on every call which path it walked. `serve` is handed sidecar paths the
 same way `align` is handed members, because deciding which files constitute a
 library is a different job; it serves `/api/works`, the sidecar verbatim, a page
 by index, and a reading position, and 404s with a message naming what was missing
-rather than returning a blank page.
+rather than returning a blank page. `--stump-url`/`--stump-key` (or their
+`TAIYAKU_STUMP_URL`/`TAIYAKU_STUMP_KEY` env fallbacks) point it at a Stump
+instance; pages come from whichever source — Stump or local disk — actually holds
+the member, resolved once at startup and cached beside the sidecar. An OPDS 1.2 +
+PSE feed at `/opds/v1.2/catalog` groups a work's editions under one entry, which
+is what Stump and Komga cannot express on their own.
 `--stats` prints what calibration measured and what shape came out — noise,
 signal, separation, margin, run count, average run length and the verdict — one
 line each, in a fixed field order so a survey can collect them into a table.
@@ -190,21 +207,63 @@ here rather than left in a scratch file:
   helps it.
 - **Progress is written non-atomically.** `fs::write` truncates first, so a
   crash mid-write leaves a short file and the next read answers 500 rather than
-  "nothing recorded". Write-and-rename fixes it.
+  "nothing recorded". Write-and-rename fixes it — and the pattern is already in
+  the tree: the Stump resolution cache (`taiyaku.stump.json`) writes atomically,
+  temp file plus rename. Progress just does not use it yet.
 - **`PUT /progress` does not check the slot is in range.** It validates the
   edition, so a position can name a real edition and a page past its end.
-- **Three error paths have no test**: an unknown edition through `LocalLibrary`,
-  two sidecars claiming one work id, and an out-of-range page index over HTTP.
-  All three are correct by inspection and none is silently wrong.
+- **Three error paths were named here; two are now fully covered, one remains
+  untested.** `PageSource` narrowed to one member during M3, so the edition
+  walk that used to live in `LocalLibrary` now lives in `ServeState`. An
+  unknown edition is tested there, both directly and end to end over HTTP (a
+  404 for an edition a work does not have). An out-of-range page index is
+  tested at the `ServeState` level and dispatched through the router on both
+  the `/api/…` page route and the OPDS stream route. Two sidecars claiming
+  one work id remains untested, and is correct by inspection only.
 - **A non-numeric page index answers axum's default 400** rather than the named
   failure every other path gives. Comprehensible, but inconsistent with the rule
   that a failure says what was missing.
 
-**A corpus check that skipped and one that ran look identical.** Both gates —
-`taiyaku-cli` and `taiyaku-serve` — print their skip reason to stderr, which
-`cargo test` captures for passing tests, and `check-all.sh` does not pass
-`--nocapture`. So a green gate does not tell you whether the standing checks
-measured anything. The fix belongs in the gate rather than in either test.
+**M3 found six more, the same way — its own review, not blocking, written down
+rather than left in a scratch file:**
+
+- **A cover is generated from page 0, which on an art-book edition is a 430 MB
+  decode.** The corpus's Color Walk material is TIFF at that size, so the first
+  request for such a cover is slow and nothing warns before or during it. The
+  decode limit is raised to 3 GB, mirroring `taiyaku-cli/src/fingerprint.rs`, so
+  the request succeeds — but succeeding is not the same as being fast.
+- **The request log accumulates in memory as well as on disk, unbounded.**
+  `Log::entries()` exists and every entry logged to disk is also kept in a
+  `Vec` behind a mutex for the life of the process — but nothing in
+  production reads it back; `Log::entries()` is called only from tests, and
+  `scripts/request-summary.sh` (the actual consumer) reads the JSONL file on
+  disk instead. So the growth is real and, currently, serves no purpose: an
+  in-memory copy nothing in production consumes, for a server that stays up.
+- **Stump resolution happens at startup, for every member of every work, before
+  the listener binds.** A summary line prints once a work finishes resolving, but
+  nothing reports progress while a large work's members are being resolved, so a
+  library of many works pays the cost in silence before it serves anything.
+- **There is no single-flight guard on the request path.** Several requests
+  arriving during one Stump timeout all wait it out independently rather than
+  sharing the one outcome.
+- **`MAX_DECODE_ALLOC` is duplicated** between `taiyaku-cli/src/fingerprint.rs`
+  and `taiyaku-serve/src/cover.rs`, across a crate boundary with no dependency
+  edge between them. Each copy says so in a comment, but nothing stops the two
+  from drifting.
+- **Two on-disk caches never notice a change on the far side, and this was
+  documented nowhere until now.** `taiyaku.stump.json`, written beside each
+  work's sidecar (same directory, same stem), records the Stump book each
+  member resolved to — and, deliberately, records the members Stump does not
+  have too, so a miss costs one query once rather than one per page turn. That
+  is also its weakness, named as Risk 5 in the design and left unaddressed:
+  nothing watches for the library changing on Stump's side, so a book added to
+  Stump after a work's first resolution stays invisible to taiyaku until
+  someone knows to delete `taiyaku.stump.json`, which forces every member of
+  that work to be re-resolved on the next start. The generated-cover cache has
+  the same shape without the excuse of a design tradeoff behind it: covers
+  live under `.taiyaku-cache/covers`, relative to the server's working
+  directory, and are unbounded and never pruned — an archive that is replaced
+  gets a new cover under its new hash, but the old file is never reclaimed.
 
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
@@ -276,7 +335,7 @@ the reader could not have answered "show me this page in edition C". `align
 this side is a swap UX for five editions, which `notes.md` leaves undecided:
 cycling works for two or three and past that wants a picker.
 
-**M1 and M2 have landed.** M1 moved page reading into `taiyaku-read`, so the
+**M1, M2 and M3 have landed.** M1 moved page reading into `taiyaku-read`, so the
 aligner and anything serving pages derive the normative sequence from one place,
 and added addressing a single page by index — serving page 47 of a 195-page
 volume costs one page rather than the volume. M2 added `taiyaku-serve` and the
@@ -287,13 +346,105 @@ above that line. A gated corpus check compares every page the server serves
 against the page the aligner sequenced — 617 of them on Go-Toubun v01, no
 disagreement.
 
-What remains: the browser reader itself, the correction UI, an OPDS feed so a
-third-party iOS reader can consume a library, and the `PageSource` that proxies
-Stump. Two known deferrals are recorded rather than forgotten — the index →
-(member, offset) walk belongs in `taiyaku_core::Edition` rather than in
-`LocalLibrary`, and the handlers' blocking filesystem reads want
-`spawn_blocking`. Both were left until the second `PageSource` exists, because it
-reshapes the first and does not make the second any dearer.
+M3 added Stump support and an OPDS 1.2 + PSE feed. **Say what shipped, not what
+the design sketched:** the design named a third `PageSource` implementation,
+`StumpLibrary`, alongside `LocalLibrary` and a composite. It was never built,
+because it could not have answered anything on its own — resolving a member to
+a Stump book needs the resolution map, which only the composite holds, so a
+standalone Stump-only source would have been unusable by construction. What
+shipped is `CompositeSource`, which resolves each member to whichever source
+holds it, with the Stump-backed branch (GraphQL to resolve, REST to fetch
+bytes) living inline inside it. `PageSource` has **two** implementations, not
+three.
+
+**What would make the third one worth building**, recorded so the decision can
+be revisited on evidence rather than re-argued: a work whose members live only
+in Stump and never locally. That is not reachable today for a reason deeper
+than the trait — `resolve_member` needs the member's *local* file, for its size
+and for the page-hash confirmation that makes a match trustworthy, so a member
+taiyaku does not hold can never resolve at all. M3 therefore offloads page
+reads for files you already have; it does not let taiyaku serve a work it does
+not have. Serving one would need a different way to match a member to a book,
+which is its own design question and wants its own pass — at which point a
+standalone Stump source stops being nomenclature and starts being load-bearing. **Say what the feed actually earns, not what the milestone originally
+claimed:** M3's stated end state was "Panels reads the library", but that was
+already true without taiyaku — this Stump instance serves OPDS-PSE itself, and
+a third-party reader could point at it today. What taiyaku's feed adds is
+grouping several editions under one work, which neither Stump nor Komga can
+express: on this instance `Go-Toubun no Hanayome` and its Full Color Edition
+are two unrelated 14-book series, with no link between them and no way to make
+one inside either server. The gated `PageSource` equivalence check measured
+this for real against the live instance: 187 pages of `en-mono` agree
+byte-for-byte between `LocalLibrary` and the composite's Stump-backed path,
+and 8 members — the raw and all seven fan chapters — are absent from Stump and
+correctly recorded absent rather than retried per page. See `notes.md` for the
+coverage table and what the instance exposes.
+
+**The Panels measurement has started, and found a defect before it found a
+number.** Panels read from this server over the LAN on 2026-07-31 — see
+`notes.md`, "Panels, measured: the feed was one-based and should not have been".
+
+The first session's finding was not a performance figure but a correctness bug:
+**OPDS-PSE counts pages from 0 and taiyaku's feed counted from 1**, so Panels
+met a 404 on opening every book, and every page it then displayed was the one
+before the page it believed it was on. Thirty per cent of the session's requests
+were that 404. Fixed, and the test that used to assert the wrong convention now
+asserts the right one at both ends of the range.
+
+**The targets are now measured**, over a deliberate fast-flick session of 177
+page requests. The server is not the constraint by a wide margin: median
+processing 1.43 ms against a tightest client request rate of 40 ms. Panels
+issues no concurrent page requests — zero overlaps, and the arrival floor holds
+at 40 ms even flicking as fast as the UI allows — and never asks for a reduced
+size, so it takes whatever resolution the server holds, 247 KB a page here.
+
+One thing is deliberately **not** claimed: whether Panels *blocks* on each
+response. At 1.43 ms no request was ever still open when the next arrived, so a
+blocking client and a UI-paced one are indistinguishable in this log. Measuring
+it would need a deliberately slowed response, which is not worth building.
+
+One deferral carried into M3 is done: the index → (member, offset) walk now
+lives in `taiyaku_core::Edition` rather than in `LocalLibrary`. The other,
+`spawn_blocking` at the router, is done for three of the five handlers that do
+blocking I/O — `get_page`, and the OPDS `stream_page` and `cover` — but
+`get_progress` and `put_progress` still read and write files directly on the
+async worker. What remains: the browser reader itself, the correction UI, and
+closing that `spawn_blocking` gap.
+
+### 4. Skipping scanlation credit pages
+
+A reader setting that keeps donation pleas, credits cards and recruitment ads out
+of the reading flow, and puts them in a section of their own that can be opened
+deliberately. Not deleted and not hidden — a scanlation group's credit is the
+thing it asked for in exchange for the work, and a reader that silently discarded
+it would be taking a side. It is simply not part of reading the chapter.
+
+**The evidence says taiyaku can already find them**, which is why this is on the
+roadmap rather than in the "if it is worth it" pile. Measured on the primary
+volume — see `notes.md`, "Scanlation credit pages are already visible in the
+alignment" — three of the fan edition's seven chapter files each contribute
+exactly one page that pairs with nothing and sits at the member's final index,
+and all three are the same donation card. Long unpaired runs, by contrast, are
+genuine content the other edition lacks. **Shape separates them, and every
+sidecar already carries the alignment that shows it.**
+
+A second signal needs no alignment at all: the cards recur across sibling members
+of one edition, so a near-duplicate by dhash finds them even in an edition with no
+counterpart, which is the common case for a fan release. They are byte-different
+per chapter, so exact hashing does not.
+
+**Unsettled, and wanting a brainstorm before any code.** Whether the classification
+belongs in `taiyaku.json` as a per-edition list — the way `spreads` is, since both
+are derived facts about a page sequence — or stays client-side the way parity
+breaks do. Whether it is `taiyaku align`'s job to record or a separate command's to
+propose. What the toggle does to page numbering, which is the same authority
+question swapping already raised. And the false-positive rate against colour
+inserts and author afterwords, which have the same shape and must not be swept up.
+None of that is decided, and the measurement above is one group's habits rather
+than the population.
+
+**Sequencing:** after the reader can display pages at all, since the feature is a
+reading-flow setting and there is nothing to toggle before M5.
 
 ### Later
 

@@ -1,6 +1,6 @@
 [package]
 name = "taiyaku-serve"
-description = "HTTP server handing a reader the sidecar, pages, and progress"
+description = "HTTP server handing a reader the sidecar, pages, and progress, over its own API and an OPDS 1.2 + PSE feed, proxying Stump for pages it holds"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,11 +10,14 @@ authors.workspace = true
 
 [dependencies]
 axum = "0.8"
+image = "0.25.9"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+sha2 = "0.11.0"
 taiyaku-core = { path = "../taiyaku-core" }
 taiyaku-read = { path = "../taiyaku-read" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+ureq = "3.3.0"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
