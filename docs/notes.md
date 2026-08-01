@@ -3172,3 +3172,154 @@ The owner's assessment after the fix, which no log can capture: performance
 "seems similar or equivalent to using Stump/Komga with Panels". That is the bar
 the reader design set, met on the first attempt — but it is an impression, and
 the numbers above are what a later Swift reader should actually be held to.
+
+## The only concurrent requests Panels ever issued were covers
+
+Three open items — O6, O9 and O11 — were carried out of the M3 review as
+things that wanted a decision rather than code. All three turned out to be
+answerable from artefacts already on this machine: the two Panels logs, and the
+cache directory the server has been writing to since M3. Nothing new was run.
+None of the three closes; each now sits on a measurement and names what would
+reopen it, which is the shape O1 established.
+
+### `in_flight` peaks at 3, and every one of them is a cover
+
+The table under "What the log says about how Panels fetches" records
+**Concurrent page requests: none observed, in any session**. That is exact, and
+the qualifier is load-bearing — it has already been read too broadly once, while
+scoping O9 in this session, as "Panels issues no concurrent requests". Re-read
+on the `in_flight` field the middleware records against every line:
+
+| | Session 1 | Session 2 |
+| --- | --- | --- |
+| Requests logged | 73 | 179 |
+| Of those, page requests | 65 | 177 |
+| Max `in_flight` across **page** requests | **1** | **1** |
+| Max `in_flight` across **all** requests | **3** | 1 |
+
+Across 242 page requests in two sessions, no page request was ever in flight
+alongside another. The claim as written holds exactly.
+
+What it does not say is that nothing overlaps. Session 1's three cover requests
+are the whole of the concurrency in either log:
+
+```
+in_flight  path                                          status   time      bytes
+    2      /opds/v1.2/works/taiyaku/en-mono/cover          200    95.9 ms   60,064
+    3      /opds/v1.2/works/taiyaku/raw-mono/cover         200   109.0 ms   54,543
+    1      /opds/v1.2/works/taiyaku/en-fan/cover           200   221.4 ms   54,199
+```
+
+Panels opens a work by fetching its editions' covers together, and a work with
+three editions therefore produces a three-deep burst on a cold cache. Session 2
+shows none of this because the covers were already cached by then — which is
+also why the burst is a *cold-start* property and not something a second reading
+session would ever reveal.
+
+### O9: the one measured burst is one single-flight cannot merge
+
+O9 asks for a single-flight guard on the request path, so that several requests
+arriving during one Stump timeout share a single outcome instead of each waiting
+it out. The cover burst above is the only concurrency ever observed here, and
+covers reach Stump by exactly the same path pages do — `ServeState::page` into
+`CompositeSource::page` — so this is not an academic case. It is the case.
+
+**It is still not a case single-flight answers.** A single-flight guard
+deduplicates concurrent requests *for the same key*. The burst is one request
+per edition — `en-mono`, `raw-mono`, `en-fan` — which are three different
+members resolving to three different Stump books. There is nothing to coalesce.
+A guard would add a map, a lock and a wait, and merge zero of the three requests
+that have ever actually overlapped on this server.
+
+The case single-flight *would* answer is two concurrent requests for the same
+page of the same edition. Neither log contains one, and the client that
+generates the burst above cannot produce one: Panels never re-requests a page it
+already holds (see the ETag section above), so its own two request patterns are
+each single-flight-proof for different reasons.
+
+**What already covers the repeat case** is the cooldown latch in
+`composite.rs` — after the first transport failure returns, every later request
+skips the network entirely for `DOWN_COOLDOWN`. So the unguarded window is not
+"forever", it is "requests already in flight when the first failure returns",
+which `note_failure`'s own doc comment states and which this log now bounds at
+three, all of them distinct keys.
+
+**What would reopen it:** a client that issues concurrent requests for the same
+key. M5's browser reader is the candidate — a filmstrip resolving per tile, or
+prefetch-ahead colliding with a reader jumping to the page being prefetched. O14
+records the same filmstrip as the trigger for its own fix, which is the second
+reason to expect that measurement to come out differently from this one.
+
+### O6: a cover costs 96 to 221 ms, and the 430 MB case needs a sidecar nothing writes
+
+O6 records that a cover is generated from page 0, which on an art-book edition
+is a 430 MB decode. The three cover generations above are the only ones ever
+measured against a real client, and they are the ordinary case: **95.9, 109.0
+and 221.4 ms**, producing 54 to 60 KB of JPEG.
+
+The 430 MB figure is real — Color Walk 10 is 151 pages at 10200×14039 — and so
+is the slowness it implies. "Art books cannot be aligned, and the solver does
+not say so" measures four of those pages fingerprinting in 8.6 s at a 3.0 GB
+peak, so a single decode is on the order of 2 s: roughly twenty times the
+worst cover measured here, paid once per edition and then cached forever.
+
+**What stops it happening is upstream of this crate.** A cover is generated for
+an edition named in a sidecar, and the same section measures that art books
+cannot be aligned at all — four pages, four pairings, every margin at or below
+zero and two of them negative. An art book has no business in a `taiyaku.json`,
+so the material that would make this decode expensive is material nothing
+should be writing a sidecar for. The corpus bears that out: the one sidecar
+that exists, `corpus/gotoubun-v01/taiyaku.json`, names three ordinary manga
+editions, and Color Walk sits in `incoming/` as a negative control.
+
+This is a statement about reachability, not about impossibility. `align` will
+happily pair an art book against a volume and `--write` the result; nothing
+refuses it. So the premise is one bad invocation away rather than architecturally
+excluded, and that is the honest version of the claim.
+
+**What the burst does settle** is the other half of O6, which was never in
+doubt but had never been observed: `MAX_CONCURRENT_GENERATIONS = 2` was chosen
+against a guess that "a cold OPDS grid view issues one cover request per edition
+at once". It does. Three at once, on the only cold grid ever logged. The two
+that overlapped took 95.9 and 109.0 ms and so never queued behind the permit
+limit; a fourth edition would have. The guess was right and is now a
+measurement.
+
+**What would reopen it:** art-book linking shipping, which is the "Later" item
+that would give an art book a legitimate reason to appear in a sidecar. Failing
+that, any edition whose first page is large enough that one decode is felt on a
+cover grid — the number to beat is the 221 ms above.
+
+### O11: the cover cache is 165 KB after every session ever run
+
+O11's second half records that generated covers "are unbounded and never
+pruned — an archive that is replaced gets a new cover under its new hash, but
+the old file is never reclaimed". True, and the size of the problem is:
+
+```
+.taiyaku-cache/covers/   3 files   164.9 KB
+```
+
+Three covers, one per edition of the one work that has ever been served, at
+54,199 to 60,064 bytes each. Growth needs an *archive* to be replaced, not a
+page to be read: the key is the member's `sha256`, so re-reading a work forever
+produces no new files at all. A library of a hundred works at three editions
+apiece, every one of them replaced once, reaches about 33 MB.
+
+**Two different caches share that directory tree**, which is worth knowing
+before anyone clears "the cache": `.taiyaku-cache/covers/` is the server's, and
+the 55 `<sha256>.json` files beside it — about 1.2 MB — are the CLI's
+fingerprint cache, the one `--cache` names and the one measured at 3.4 s → 189 ms.
+Deleting the parent directory throws away both, and only one of them is cheap
+to rebuild.
+
+**What would reopen it:** a library where archives are replaced routinely
+enough for 55 KB apiece to accumulate, or a second cache consumer — the
+filmstrip's thumbnail-per-page route, which `cover.rs` explicitly defers to M5,
+would be 195 files per volume rather than one and changes this arithmetic
+entirely.
+
+**The first half of O11 is not affected by any of this.** Nothing watches Stump
+for a book added after a work first resolved; that remains a deliberate
+tradeoff, recorded as Risk 5 in the design, and `--refresh-stump` remains the
+way to act on it.

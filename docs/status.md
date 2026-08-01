@@ -246,12 +246,12 @@ each is in the detail below; the table is what a reader scans.
 | O3 | [x] | `PUT /progress` does not range-check the slot | `routes.rs::put_progress` | M2 review |
 | O4 | [x] | Two sidecars claiming one work id is untested | `works.rs::load_works` | M2 review |
 | O5 | [x] | A non-numeric page index answers axum's default 400 | `routes.rs` | M2 review |
-| O6 | [ ] | A cover from page 0 can be a 430 MB decode | `cover.rs` | M3 review |
+| O6 | [ ] | A cover from page 0 can be a 430 MB decode — *measured: 96–221 ms on real material* | `cover.rs` | M3 review |
 | O7 | [x] | The request log grows in memory for nothing | `reqlog.rs::Log` | M3 review |
 | O8 | [ ] | Stump resolution blocks the listener — *no longer silently* | `lib.rs::resolve_all_works` | M3 review |
-| O9 | [ ] | No single-flight guard on the request path | `composite.rs::StumpSide` | M3 review |
+| O9 | [ ] | No single-flight guard on the request path — *measured: nothing to coalesce* | `composite.rs::StumpSide` | M3 review |
 | O10 | [x] | `MAX_DECODE_ALLOC` is duplicated across crates | `cover.rs`, `taiyaku-cli/src/fingerprint.rs` | M3 review |
-| O11 | [ ] | Neither on-disk cache notices a change on the far side — *escape hatch added* | `stump/cache.rs`, `cover.rs` | M3 review |
+| O11 | [ ] | Neither on-disk cache notices a change on the far side — *escape hatch added; covers measured at 165 KB* | `stump/cache.rs`, `cover.rs` | M3 review |
 | O12 | [x] | `spawn_blocking` covers three of five blocking handlers | `routes.rs::get_progress`, `::put_progress` | M1/M2 deferral |
 | O13 | [ ] | A hand-corrected run does not survive a re-solve | `sidecar.rs::merge_spoke` | M4 planning |
 | O14 | [ ] | The binding rebuilds the route on every resolve | `binding.rs::Binding::resolve` | M4 whole-branch review |
@@ -366,15 +366,42 @@ turned out to be two handlers and a local parse:
   bytes and `Result<u32, Response>` trips `clippy::result_large_err`.
 
 **M3 found six more, the same way** — O6 to O11, its own review, not blocking.
-Two are closed; the four that remain each want a decision before they want
-code, which is why they are not simply "next":
+Two are closed. The four that remain each wanted a decision before they wanted
+code, which is why they were never simply "next" — and three of those decisions
+have now been taken, on evidence, without any of the three closing. **O6, O9 and
+O11 each sit on a measurement and name what would reopen them**, the pattern O1
+established; the artefacts were already on disk, so nothing new had to be run.
+See `notes.md`, "The only concurrent requests Panels ever issued were covers".
+O8 is the one still waiting on a number rather than carrying one:
 
 - **O6 — A cover is generated from page 0, which on an art-book edition is
-  a 430 MB decode.** The corpus's Color Walk material is TIFF at that size, so
-  the first request for such a cover is slow and nothing warns before or during
-  it. The decode limit is raised to 3 GB, mirroring
-  `taiyaku-cli/src/fingerprint.rs`, so the request succeeds — but succeeding is
-  not the same as being fast.
+  a 430 MB decode. Open, and now bounded at both ends.** The corpus's Color
+  Walk material is TIFF at that size, so the first request for such a cover is
+  slow and nothing warns before or during it. The decode limit is raised to
+  3 GB, mirroring `taiyaku-cli/src/fingerprint.rs`, so the request succeeds —
+  but succeeding is not the same as being fast.
+  **The ordinary case is now measured rather than assumed**, from the one cold
+  cover grid a real client has ever produced: 95.9, 109.0 and 221.4 ms, for 54
+  to 60 KB of JPEG apiece. The art-book case is about twenty times that — four
+  Color Walk pages fingerprint in 8.6 s — paid once per edition and then cached
+  forever.
+  **What keeps it hypothetical is upstream of this crate.** A cover is
+  generated for an edition named in a sidecar, and art books cannot be aligned
+  at all: four pages, four pairings, every margin at or below zero and two of
+  them negative. So the material that would make this decode expensive is
+  material nothing should be writing a sidecar for. That is reachability, not
+  impossibility — `align --write` will pair an art book against a volume and
+  refuse nothing — so the premise stays one bad invocation away rather than
+  excluded.
+  **The same measurement settles the half of O6 that was a guess.**
+  `MAX_CONCURRENT_GENERATIONS = 2` was chosen against the assumption that "a
+  cold OPDS grid view issues one cover request per edition at once". It does —
+  three at once, `in_flight` reaching 3, on the only cold grid ever logged. The
+  guess was right and is now a number.
+  **What would reopen it:** art-book linking shipping, which is the "Later"
+  item that would give an art book a legitimate reason to be in a sidecar; or
+  any edition whose first page is slow enough to be felt on a grid, where the
+  figure to beat is 221 ms.
 - **O7 — The request log accumulated in memory as well as on disk, unbounded.
   Closed.** Every entry logged to disk was also kept in a `Vec` behind a mutex
   for the life of the process, and nothing in production ever read it back:
@@ -405,9 +432,32 @@ code, which is why they are not simply "next":
   listener to bind first and resolution to run behind it, serving from disk
   until it lands — a real change to how `StumpSide` holds its resolutions, and
   not one to make on a corpus small enough that nobody has felt the wait.
-- **O9 — There is no single-flight guard on the request path.** Several requests
-  arriving during one Stump timeout all wait it out independently rather than
-  sharing the one outcome.
+- **O9 — There is no single-flight guard on the request path. Open, and
+  measured against.** Several requests arriving during one Stump timeout all
+  wait it out independently rather than sharing the one outcome.
+  **The concurrency exists; it is the wrong kind.** `notes.md` records
+  "concurrent page requests: none observed, in any session", and the qualifier
+  turns out to be doing real work — that claim was read here as "Panels issues
+  no concurrent requests" while this item was being scoped, and it does not say
+  that. Across 242 page requests in two sessions no page request was ever in
+  flight beside another, but `in_flight` reaches 3, and every overlapping
+  request is a **cover**. Panels fetches a work's covers together, so a
+  three-edition work produces a three-deep burst on a cold cache — down the
+  same `ServeState::page` → `CompositeSource::page` path pages take, and so
+  squarely inside what O9 describes.
+  **It is still not a burst single-flight can merge.** A guard deduplicates
+  concurrent requests *for the same key*; this burst is one request per
+  edition, three different members resolving to three different Stump books.
+  There is nothing to coalesce, so the guard would add a map, a lock and a wait
+  and merge none of the only requests that have ever overlapped here. The
+  repeat case is already covered by the cooldown latch, which sends every
+  request after the first failure straight to disk; what stays unguarded is
+  requests already in flight when that first failure returns, and this log
+  bounds that at three, all distinct.
+  **What would reopen it:** a client issuing concurrent requests for one key.
+  The browser reader is the candidate — a filmstrip resolving per tile, or
+  prefetch colliding with a reader jumping onto the page being prefetched — and
+  O14 names the same filmstrip as the trigger for its own fix.
 - **O10 — `MAX_DECODE_ALLOC` was duplicated. Closed.** Between
   `taiyaku-cli/src/fingerprint.rs` and `taiyaku-serve/src/cover.rs`, across a
   crate boundary with no dependency edge between them. Each copy said so in a
@@ -440,6 +490,23 @@ code, which is why they are not simply "next":
   live under `.taiyaku-cache/covers`, relative to the server's working
   directory, and are unbounded and never pruned — an archive that is replaced
   gets a new cover under its new hash, but the old file is never reclaimed.
+  **That second half now has a size, and it is 165 KB.** Three files, one per
+  edition of the one work ever served, at 54 to 60 KB each. Growth needs an
+  archive to be *replaced*, not a page to be read — the key is the member's
+  `sha256`, so reading a work forever adds no files at all — which puts a
+  hundred works at three editions apiece, every one replaced once, at about
+  33 MB. Unbounded in form, negligible in size, and stated here so that the
+  next person to read "never pruned" knows what it has actually cost.
+  **One thing worth knowing before anyone clears "the cache":** two different
+  caches share that tree. `.taiyaku-cache/covers/` is the server's; the 55
+  `<sha256>.json` files beside it, about 1.2 MB, are the CLI's fingerprint
+  cache — the one `--cache` names and the one measured at 3.4 s → 189 ms.
+  Deleting the parent throws away both, and only one is cheap to rebuild.
+  **What would reopen it:** archives replaced routinely enough for 55 KB
+  apiece to accumulate, or a second consumer of that directory — the
+  filmstrip's thumbnail-per-page route, deferred to M5 in `cover.rs`, would
+  write 195 files per volume rather than one and changes the arithmetic
+  entirely.
 
 **One deferral was carried rather than found** — O12, named while planning M1
 and M2, and now closed:
