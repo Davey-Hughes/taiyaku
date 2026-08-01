@@ -196,62 +196,88 @@ reading position, and nothing draws them. There is no page view, no swap, and no
 correction UI, so the thing a person can actually do with a sidecar today is
 still `lookup`.
 
-**`serve` is a first cut, and five things about it are known thin.** Each was
-found by the whole-branch review, judged not worth blocking on, and is written
-here rather than left in a scratch file:
+### Open items
 
-- **Page responses carry no cache headers.** The bytes for a given work, edition
-  and index never change, and the sidecar already records a `sha256` per member,
-  so an `ETag` is a line of code. The design's "one fetch, one cache entry"
-  argument for serving whole spreads assumes the client caches; nothing yet
-  helps it.
-- **Progress is written non-atomically.** `fs::write` truncates first, so a
+Twelve, each found by a whole-branch review or carried as a deferral, and each
+judged not worth blocking on at the time. They are tracked here rather than left
+in a scratch file so that closing one is a visible act rather than a thing
+someone remembers. The evidence for each is in the detail below; the table is
+what a reader scans.
+
+| ID | Open | What | Where | Opened by |
+| --- | :---: | ---- | ----- | --------- |
+| O1 | [ ] | Page responses carry no cache headers | `routes.rs::get_page` | M2 review |
+| O2 | [ ] | Progress is written non-atomically | `progress.rs::store` | M2 review |
+| O3 | [ ] | `PUT /progress` does not range-check the slot | `routes.rs::put_progress` | M2 review |
+| O4 | [ ] | Two sidecars claiming one work id is untested | `works.rs::load_works` | M2 review |
+| O5 | [ ] | A non-numeric page index answers axum's default 400 | `routes.rs` | M2 review |
+| O6 | [ ] | A cover from page 0 can be a 430 MB decode | `cover.rs` | M3 review |
+| O7 | [ ] | The request log grows in memory for nothing | `reqlog.rs::Log::entries` | M3 review |
+| O8 | [ ] | Stump resolution blocks the listener, silently | `lib.rs::resolve_all_works` | M3 review |
+| O9 | [ ] | No single-flight guard on the request path | `composite.rs::StumpSide` | M3 review |
+| O10 | [ ] | `MAX_DECODE_ALLOC` is duplicated across crates | `cover.rs`, `taiyaku-cli/src/fingerprint.rs` | M3 review |
+| O11 | [ ] | Neither on-disk cache notices a change on the far side | `stump/cache.rs`, `cover.rs` | M3 review |
+| O12 | [ ] | `spawn_blocking` covers three of five blocking handlers | `routes.rs::get_progress`, `::put_progress` | M1/M2 deferral |
+
+Sites are named by symbol rather than line, because a line number in a document
+is wrong the first time someone edits the file above it.
+
+**`serve` is a first cut, and five things about it are known thin** — O1 to O5.
+Each was found by the whole-branch review:
+
+- **O1 — Page responses carry no cache headers.** The bytes for a given work,
+  edition and index never change, and the sidecar already records a `sha256`
+  per member, so an `ETag` is a line of code. The design's "one fetch, one
+  cache entry" argument for serving whole spreads assumes the client caches;
+  nothing yet helps it.
+- **O2 — Progress is written non-atomically.** `fs::write` truncates first, so a
   crash mid-write leaves a short file and the next read answers 500 rather than
   "nothing recorded". Write-and-rename fixes it — and the pattern is already in
   the tree: the Stump resolution cache (`taiyaku.stump.json`) writes atomically,
   temp file plus rename. Progress just does not use it yet.
-- **`PUT /progress` does not check the slot is in range.** It validates the
+- **O3 — `PUT /progress` does not check the slot is in range.** It validates the
   edition, so a position can name a real edition and a page past its end.
-- **Three error paths were named here; two are now fully covered, one remains
-  untested.** `PageSource` narrowed to one member during M3, so the edition
+- **O4 — Three error paths were named here; two are now fully covered, one
+  remains untested.** `PageSource` narrowed to one member during M3, so the edition
   walk that used to live in `LocalLibrary` now lives in `ServeState`. An
   unknown edition is tested there, both directly and end to end over HTTP (a
   404 for an edition a work does not have). An out-of-range page index is
   tested at the `ServeState` level and dispatched through the router on both
   the `/api/…` page route and the OPDS stream route. Two sidecars claiming
   one work id remains untested, and is correct by inspection only.
-- **A non-numeric page index answers axum's default 400** rather than the named
+- **O5 — A non-numeric page index answers axum's default 400** rather than the named
   failure every other path gives. Comprehensible, but inconsistent with the rule
   that a failure says what was missing.
 
-**M3 found six more, the same way — its own review, not blocking, written down
-rather than left in a scratch file:**
+**M3 found six more, the same way** — O6 to O11, its own review, not blocking:
 
-- **A cover is generated from page 0, which on an art-book edition is a 430 MB
-  decode.** The corpus's Color Walk material is TIFF at that size, so the first
-  request for such a cover is slow and nothing warns before or during it. The
-  decode limit is raised to 3 GB, mirroring `taiyaku-cli/src/fingerprint.rs`, so
-  the request succeeds — but succeeding is not the same as being fast.
-- **The request log accumulates in memory as well as on disk, unbounded.**
+- **O6 — A cover is generated from page 0, which on an art-book edition is
+  a 430 MB decode.** The corpus's Color Walk material is TIFF at that size, so
+  the first request for such a cover is slow and nothing warns before or during
+  it. The decode limit is raised to 3 GB, mirroring
+  `taiyaku-cli/src/fingerprint.rs`, so the request succeeds — but succeeding is
+  not the same as being fast.
+- **O7 — The request log accumulates in memory as well as on disk, unbounded.**
   `Log::entries()` exists and every entry logged to disk is also kept in a
   `Vec` behind a mutex for the life of the process — but nothing in
   production reads it back; `Log::entries()` is called only from tests, and
   `scripts/request-summary.sh` (the actual consumer) reads the JSONL file on
   disk instead. So the growth is real and, currently, serves no purpose: an
   in-memory copy nothing in production consumes, for a server that stays up.
-- **Stump resolution happens at startup, for every member of every work, before
-  the listener binds.** A summary line prints once a work finishes resolving, but
-  nothing reports progress while a large work's members are being resolved, so a
-  library of many works pays the cost in silence before it serves anything.
-- **There is no single-flight guard on the request path.** Several requests
+- **O8 — Stump resolution happens at startup, for every member of every work,
+  before the listener binds.** A summary line prints once a work finishes
+  resolving, but nothing reports progress while a large work's members are being
+  resolved, so a library of many works pays the cost in silence before it serves
+  anything.
+- **O9 — There is no single-flight guard on the request path.** Several requests
   arriving during one Stump timeout all wait it out independently rather than
   sharing the one outcome.
-- **`MAX_DECODE_ALLOC` is duplicated** between `taiyaku-cli/src/fingerprint.rs`
-  and `taiyaku-serve/src/cover.rs`, across a crate boundary with no dependency
-  edge between them. Each copy says so in a comment, but nothing stops the two
-  from drifting.
-- **Two on-disk caches never notice a change on the far side, and this was
-  documented nowhere until now.** `taiyaku.stump.json`, written beside each
+- **O10 — `MAX_DECODE_ALLOC` is duplicated** between
+  `taiyaku-cli/src/fingerprint.rs` and `taiyaku-serve/src/cover.rs`, across a
+  crate boundary with no dependency edge between them. Each copy says so in a
+  comment, but nothing stops the two from drifting.
+- **O11 — Two on-disk caches never notice a change on the far side, and this
+  was documented nowhere until now.** `taiyaku.stump.json`, written beside each
   work's sidecar (same directory, same stem), records the Stump book each
   member resolved to — and, deliberately, records the members Stump does not
   have too, so a miss costs one query once rather than one per page turn. That
@@ -264,6 +290,16 @@ rather than left in a scratch file:**
   live under `.taiyaku-cache/covers`, relative to the server's working
   directory, and are unbounded and never pruned — an archive that is replaced
   gets a new cover under its new hash, but the old file is never reclaimed.
+
+**One deferral is carried rather than found** — O12, named while planning M1 and
+M2 and still open:
+
+- **O12 — `spawn_blocking` covers three of the five handlers that do blocking
+  I/O.** `get_page`, and the OPDS `stream_page` and `cover`, hand their work to
+  a blocking pool; `get_progress` and `put_progress` still read and write files
+  directly on the async worker. The other deferral recorded alongside it is
+  closed: the index → (member, offset) walk now lives in
+  `taiyaku_core::Edition` rather than in `LocalLibrary`.
 
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
@@ -403,13 +439,9 @@ response. At 1.43 ms no request was ever still open when the next arrived, so a
 blocking client and a UI-paced one are indistinguishable in this log. Measuring
 it would need a deliberately slowed response, which is not worth building.
 
-One deferral carried into M3 is done: the index → (member, offset) walk now
-lives in `taiyaku_core::Edition` rather than in `LocalLibrary`. The other,
-`spawn_blocking` at the router, is done for three of the five handlers that do
-blocking I/O — `get_page`, and the OPDS `stream_page` and `cover` — but
-`get_progress` and `put_progress` still read and write files directly on the
-async worker. What remains: the browser reader itself, the correction UI, and
-closing that `spawn_blocking` gap.
+What remains: the browser reader itself, the correction UI, and the twelve open
+items tabled above — of which O12, the `spawn_blocking` gap at the router, is
+the one M3 carried rather than found.
 
 ### 4. Skipping scanlation credit pages
 
