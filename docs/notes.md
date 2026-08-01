@@ -3323,3 +3323,144 @@ entirely.
 for a book added after a work first resolved; that remains a deliberate
 tradeoff, recorded as Risk 5 in the design, and `--refresh-stump` remains the
 way to act on it.
+
+## O8, measured three ways: the third one is why it was worth fixing
+
+O8 — Stump resolution running to completion before the listener binds — had
+been deferred twice on the same sentence: "not one to make on a corpus small
+enough that nobody has felt the wait." That is a claim about a duration nobody
+had timed. Timing it took three runs against `corpus/gotoubun-v01`, which is
+one work, three editions, nine members.
+
+The instrument is the gap between process start and the `taiyaku serve
+listening on …` line, which is exactly the window in which the server exists
+and cannot answer anything.
+
+| Start | Before | After |
+| ----- | -----: | ----: |
+| Warm cache, Stump reachable | 0.10 s | 0.10 s |
+| Cold cache, Stump reachable | 3.15 s | 0.10 s |
+| Cold cache, Stump unreachable | **30.09 s** | **0.10 s** |
+
+**Two of the three rows vindicate the deferral.** A warm start makes no queries
+at all — `taiyaku.stump.json` answers for all nine members and the transport is
+never touched, which the absence of any `resolving …` line confirms rather than
+merely implies. A cold start against a reachable instance is 3.15 s for nine
+members, about 350 ms each, and that is not only network: `resolve_member`
+needs the member's *local* file for its size and for the page-hash confirmation
+that makes a match trustworthy, so part of every one of those 350 ms is reading
+and hashing an archive on this machine.
+
+**The third row is a different animal, and it is the one the deferral never
+weighed.** 30.09 s is the GraphQL POST's 30-second global timeout, paid once —
+the circuit breaker introduced in the M3 review spans works, so twenty works
+cost one timeout rather than twenty. What the breaker does not do is make the
+cost occur once *in time*. It recurs on every start for as long as the instance
+is down, and it buys nothing whatsoever: every page of every member in this
+corpus is on local disk, and `CompositeSource` would have fallen back to disk
+for all of them the moment it was asked. The server spent 30 seconds refusing
+to offer what it already had.
+
+**That this is not hypothetical was demonstrated accidentally.** Between the
+"before" and "after" runs of this very measurement the instance went down —
+Cloudflare returning 502 and then 521 (origin unreachable) to a query that had
+answered in 50 ms twenty minutes earlier. The unreachable case is not a
+thought experiment about a NAS reboot; it happened twice inside one session of
+measuring it.
+
+### What changed
+
+Resolution now runs behind the bound listener, on `spawn_blocking` — a network
+round trip and a local page hash per member, neither of which belongs on an
+async worker, the same boundary O12 established for `get_page`. `StumpSide`
+holds its resolutions behind an `RwLock` rather than owning a finished
+`HashMap`; the map starts empty and fills as each work completes.
+
+The safety argument is that **a member not yet resolved and a member Stump does
+not have are the same thing to `book_for`** — both are `None`, and both already
+meant "read it off disk". So the window during which resolution has not landed
+is not a degraded mode; it is the mode this server has had since M2, which is
+also why the change needed no new fallback path.
+
+**Reporting is per work rather than one aggregate at the end**, which is the
+half that is easy to miss and was worth a test of its own. Handing back every
+work's answers together would have moved the wait behind the listener instead
+of removing it: a twenty-work library would serve all twenty from disk until
+the twentieth had been asked about, which is the original defect wearing a
+different hat.
+
+### What the "after" column actually measures
+
+Not just a fast bind — a *useful* one. Against a deliberately unroutable
+address, so that resolution hangs on the full 30-second timeout rather than
+failing fast:
+
+```
+bind at 0.00 s; three pages served by 0.02 s
+  page 0: http=200 bytes=1,180,617 time=0.0040s
+  page 1: http=200 bytes=1,343,956 time=0.0036s
+  page 2: http=200 bytes=339,050  time=0.0015s
+```
+
+Three real pages of `en-mono`, 2.8 MB between them, served in about 4 ms each
+while the resolution behind them was still waiting on a socket that will never
+answer. Before this change the first of those requests could not have been made
+for another 30 seconds.
+
+The stderr order is part of the fix rather than incidental to it:
+
+```
+taiyaku serve listening on http://127.0.0.1:18099
+taiyaku: resolving en-fan/… - c000.cbz against stump (1 of 9)
+```
+
+"listening" now precedes the resolution chatter, which is how a person watching
+a cold start can see that the wait is no longer theirs. It precedes it on a
+*warm* start too, where resolution costs nothing — the ordering is structural,
+not a race that happens to come out this way when there is work to do.
+
+**Every cell of that table is measured, including the ones that looked obvious.**
+The "after" column for the two reachable rows was initially inferred from the
+unreachable one — the bind no longer waits on resolution at all, so it plainly
+could not matter whether the instance answered — and inferring it was the wrong
+instinct in a document whose whole premise is that plausible things get
+measured. Run properly: warm 0.10 s, cold 0.10 s, both after the change.
+
+### The instance moved underneath the measurement, which is itself the argument
+
+The "before" cold-reachable figure is 3.15 s. Re-resolving the same nine members
+about half an hour later — after the machine hosting Stump had been restarted —
+the background resolution completed in **0.82 s**, roughly a quarter of it, for
+identical work producing an identical cache.
+
+Nothing about taiyaku changed between those two numbers. What changed was how
+quickly something else answered. That is the case for the fix stated more
+sharply than the 30 s row states it: the pre-bind wait was never taiyaku's
+duration to predict, it was an unbounded dependency on a remote service's mood,
+and the only reliable way to stop paying it at startup is to not pay it at
+startup.
+
+### The equivalence check ran against the changed code
+
+`stump_and_local_serve_the_same_bytes_for_the_same_member` skipped during the
+branch's own gate, `TAIYAKU_STUMP_URL` being unset. Run once the instance was
+back: **187 pages of `en-mono` compared byte-for-byte between `LocalLibrary`
+and the composite's Stump-backed path, and the same 8 members recorded absent**
+— unchanged from M3's figures, against a `CompositeSource` whose resolutions
+now arrive after construction rather than before it. The one check that could
+have noticed the map going stale or arriving empty says it did not.
+
+### What is not claimed
+
+**The ordering inside `serve` is not under test.** `serve` binds a socket and
+no test in this crate opens one — that is deliberate and predates this change.
+What the two tests hold is the mechanism the ordering depends on: that a
+`CompositeSource` built with nothing resolved serves from disk and switches to
+Stump once resolutions land, and that `resolve_all_works` reports each work as
+it finishes. The four lines of ordering in `serve` are verified by reading them
+and by the stderr transcript above.
+
+Both tests were checked by sabotage rather than by having once failed to
+compile, which is a weaker red than it looks: making `learn` a no-op makes the
+first test serve `a1.jpg` where the Stump bytes were required, and accumulating
+instead of reporting per work collapses the second's two batches into one.

@@ -11,7 +11,7 @@
 //! requiring it.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use taiyaku_core::Member;
@@ -35,7 +35,18 @@ use crate::{LocalLibrary, PageSource, ServedPage};
 #[derive(Debug, Clone)]
 pub struct StumpSide {
     pub transport: Arc<dyn Transport>,
-    pub resolutions: Resolutions,
+    /// What has been resolved so far.
+    ///
+    /// **Shared and mutable because of O8.** Resolution used to finish before
+    /// the listener bound, so this map was complete by the time any request
+    /// could see it and a plain `HashMap` was enough. It now runs behind the
+    /// bound listener: the map starts empty, the server answers from disk
+    /// immediately, and each work's answers arrive here as that work finishes
+    /// being asked about. A member not yet resolved is indistinguishable from
+    /// one Stump does not have — both are `None` from `book_for`, and both
+    /// mean "read it off disk" — which is why the window is safe rather than
+    /// merely short.
+    resolutions: Arc<RwLock<Resolutions>>,
     /// How long a transport failure suppresses further attempts.
     pub cooldown: Duration,
     /// When the suppression lifts, if it is in force.
@@ -61,10 +72,24 @@ impl StumpSide {
     ) -> Self {
         Self {
             transport,
-            resolutions,
+            resolutions: Arc::new(RwLock::new(resolutions)),
             cooldown,
             down_until: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Take on what a work has just resolved to.
+    ///
+    /// Extends rather than replaces, because resolution reports per work and a
+    /// library is several: replacing would make each work's answers discard
+    /// the one before it. Called from the background task `serve` spawns; a
+    /// request arriving mid-update either sees a member or does not, and
+    /// "does not" is already the disk path.
+    pub fn learn(&self, resolutions: Resolutions) {
+        self.resolutions
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(resolutions);
     }
 
     /// Whether a prior transport failure is still suppressing attempts.
@@ -115,13 +140,23 @@ impl CompositeSource {
         Self { local, stump }
     }
 
-    /// The Stump book this member is, if it is one.
-    fn book_for(&self, member: &Member) -> Option<&str> {
+    /// The Stump book this member is, if it is one *and* it has been resolved
+    /// yet.
+    ///
+    /// Returns an owned id rather than a borrow: the map now sits behind a
+    /// lock (see `StumpSide::resolutions`), and holding a read guard across
+    /// the network fetch below would block every resolution the background
+    /// task is trying to record. One `String` per page request, against a
+    /// measured floor of 40 ms between requests, is not a cost worth a
+    /// borrow.
+    fn book_for(&self, member: &Member) -> Option<String> {
         self.stump
             .as_ref()?
             .resolutions
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
             .get(&member.sha256)?
-            .as_deref()
+            .clone()
     }
 }
 
@@ -137,7 +172,7 @@ impl PageSource for CompositeSource {
             }
             // `within` stays 0-based here. `page_bytes` owns the conversion to
             // Stump's 1-based numbering, so this call site cannot get it wrong.
-            match api::page_bytes(side.transport.as_ref(), id, within) {
+            match api::page_bytes(side.transport.as_ref(), &id, within) {
                 // **The declared `Content-Type` is not trusted here.**
                 // `source.rs` sniffs local page bytes because a declared
                 // type is frequently wrong — measured, 114 of this corpus's
@@ -184,7 +219,7 @@ impl PageSource for CompositeSource {
                     // latching on it would demote the whole instance for one
                     // member the library genuinely does not have there.
                     if err.transport {
-                        side.note_failure(id, &err.message);
+                        side.note_failure(&id, &err.message);
                     }
                 }
             }
@@ -246,6 +281,52 @@ mod tests {
         assert_eq!(
             from_disk.bytes, b"b1.jpg",
             "the unresolved member came off disk"
+        );
+    }
+
+    /// O8: resolution now runs *behind* the bound listener, so a
+    /// `CompositeSource` exists and answers requests before anything has been
+    /// resolved at all. A member that will eventually come from Stump must be
+    /// served from **disk** during that window rather than waiting for it, and
+    /// must switch to Stump once the resolution lands.
+    ///
+    /// This is the property that makes binding first safe, and it is the half
+    /// a test can hold. **What it does not claim is the ordering inside
+    /// `serve`** — that binds a socket, which nothing here drives; the
+    /// ordering there is a handful of lines and is visible by reading them.
+    #[test]
+    fn a_member_is_served_from_disk_until_its_resolution_lands() {
+        let work = crate::test_support::work("taiyaku-test-composite-late-resolution");
+        let root = work.path.parent().unwrap().to_path_buf();
+        let edition = work.sidecar.editions["raw"].clone();
+
+        let fake = FakeTransport::new().on_get(
+            "/api/v2/media/book-1/page/1",
+            "image/png",
+            &png_bytes(b"from-stump"),
+        );
+        // Constructed with nothing resolved, which is exactly the state
+        // `serve` now binds the listener in.
+        let side = StumpSide::new(Arc::new(fake), Resolutions::new(), Duration::from_secs(30));
+        let composite = CompositeSource::new(LocalLibrary, Some(side.clone()));
+
+        let before = composite.page(&root, &edition.members[0], 0).unwrap();
+
+        let mut resolved = Resolutions::new();
+        resolved.insert(edition.members[0].sha256.clone(), Some("book-1".into()));
+        side.learn(resolved);
+
+        let after = composite.page(&root, &edition.members[0], 0).unwrap();
+
+        crate::test_support::cleanup("taiyaku-test-composite-late-resolution");
+        assert_eq!(
+            before.bytes, b"a1.jpg",
+            "disk must answer while resolution is still running"
+        );
+        assert_eq!(
+            after.bytes,
+            png_bytes(b"from-stump"),
+            "and stump must answer once the resolution lands"
         );
     }
 

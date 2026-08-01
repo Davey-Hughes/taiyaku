@@ -22,9 +22,9 @@ piece, and none of *that* has started.
 
 ## What is built
 
-Five crates, 290 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
+Five crates, 292 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
 `base64` and `serde`, plus `axum`, `tokio`, `tower` and `ureq` in the server and
-`wasm-bindgen` in the binding. Nine of the 290 are standing checks gated on
+`wasm-bindgen` in the binding. Nine of the 292 are standing checks gated on
 `TAIYAKU_CORPUS`, one of which also needs `TAIYAKU_STUMP_URL` and
 `TAIYAKU_STUMP_KEY`; each skips cleanly when what it needs is absent, so CI
 stays green without the corpus or a reachable Stump. One measures composition
@@ -232,9 +232,9 @@ up by reading a design against the code, turned up by running a command against
 its own usage text, or turned up by reviewing what the fix before it left
 behind, and each judged not worth blocking on at the time. They are
 tracked here rather than left in a scratch file so that closing one is a visible
-act rather than a thing someone remembers. **Fifteen are now closed — O2, O3,
-O4, O5, O7, O10, O12, O15, O16, O17, O18, O19, O20, O21 and O22 — leaving
-seven.**
+act rather than a thing someone remembers. **Sixteen are now closed — O2, O3,
+O4, O5, O7, O8, O10, O12, O15, O16, O17, O18, O19, O20, O21 and O22 — leaving
+six.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -248,7 +248,7 @@ each is in the detail below; the table is what a reader scans.
 | O5 | [x] | A non-numeric page index answers axum's default 400 | `routes.rs` | M2 review |
 | O6 | [ ] | A cover from page 0 can be a 430 MB decode — *measured: 96–221 ms on real material* | `cover.rs` | M3 review |
 | O7 | [x] | The request log grows in memory for nothing | `reqlog.rs::Log` | M3 review |
-| O8 | [ ] | Stump resolution blocks the listener — *no longer silently* | `lib.rs::resolve_all_works` | M3 review |
+| O8 | [x] | Stump resolution blocks the listener | `lib.rs::serve` | M3 review |
 | O9 | [ ] | No single-flight guard on the request path — *measured: nothing to coalesce* | `composite.rs::StumpSide` | M3 review |
 | O10 | [x] | `MAX_DECODE_ALLOC` is duplicated across crates | `cover.rs`, `taiyaku-cli/src/fingerprint.rs` | M3 review |
 | O11 | [ ] | Neither on-disk cache notices a change on the far side — *escape hatch added; covers measured at 165 KB* | `stump/cache.rs`, `cover.rs` | M3 review |
@@ -366,13 +366,16 @@ turned out to be two handlers and a local parse:
   bytes and `Result<u32, Response>` trips `clippy::result_large_err`.
 
 **M3 found six more, the same way** — O6 to O11, its own review, not blocking.
-Two are closed. The four that remain each wanted a decision before they wanted
-code, which is why they were never simply "next" — and three of those decisions
-have now been taken, on evidence, without any of the three closing. **O6, O9 and
-O11 each sit on a measurement and name what would reopen them**, the pattern O1
-established; the artefacts were already on disk, so nothing new had to be run.
-See `notes.md`, "The only concurrent requests Panels ever issued were covers".
-O8 is the one still waiting on a number rather than carrying one:
+Three are closed. The four that remained each wanted a decision before they
+wanted code, which is why they were never simply "next", and all four decisions
+have now been taken by measuring rather than by arguing. **O6, O9 and O11 each
+sit on a measurement and name what would reopen them** — the pattern O1
+established — without any of the three closing; the artefacts were already on
+disk, so nothing new had to be run. See `notes.md`, "The only concurrent
+requests Panels ever issued were covers". **O8 went the other way**: the same
+discipline applied to it produced a number that argued for shipping, so it is
+closed. See `notes.md`, "O8, measured three ways: the third one is why it was
+worth fixing".
 
 - **O6 — A cover is generated from page 0, which on an art-book edition is
   a 430 MB decode. Open, and now bounded at both ends.** The corpus's Color
@@ -419,19 +422,53 @@ O8 is the one still waiting on a number rather than carrying one:
   every other test used `Log::new(None)`, so deleting the whole file-writing
   branch would have left the suite green on the strength of one test. Every
   test here now goes through the file a person actually measures from.
-- **O8 — Stump resolution happens at startup, for every member of every work,
-  before the listener binds. Still true; the silence is not.** A summary line
-  printed once a work *finished* resolving, so a work with many unresolved
-  members was silent for its whole duration and a slow resolution was
-  indistinguishable from a hung one. `resolve_work` now reports each member as
-  it asks about it — its path, its position and how many there are — and
-  `resolve_all_works` prints that. A member answered from the cache reports
+- **O8 — Stump resolution happened at startup, for every member of every work,
+  before the listener bound. Closed.** A summary line printed once a work
+  *finished* resolving, so a work with many unresolved members was silent for
+  its whole duration and a slow resolution was indistinguishable from a hung
+  one. `resolve_work` now reports each member as it asks about it — its path,
+  its position and how many there are. A member answered from the cache reports
   nothing, so a warm start is exactly as quiet as before: a line per member on
-  every start would be noise that trains a reader to ignore it, and a test
-  pins both halves. **What remains is the blocking itself**, which wants the
-  listener to bind first and resolution to run behind it, serving from disk
-  until it lands — a real change to how `StumpSide` holds its resolutions, and
-  not one to make on a corpus small enough that nobody has felt the wait.
+  every start would be noise that trains a reader to ignore it, and a test pins
+  both halves.
+  **The blocking itself is now gone too, and it was measured before it was
+  fixed** — this item had been deferred twice on "a corpus small enough that
+  nobody has felt the wait", which turned out to be right about two cases out
+  of three:
+
+  | Start | Before | After |
+  | ----- | -----: | ----: |
+  | Warm cache, Stump reachable | 0.10 s | 0.10 s |
+  | Cold cache, Stump reachable | 3.15 s | 0.10 s |
+  | Cold cache, **Stump unreachable** | **30.09 s** | **0.10 s** |
+
+  The first two rows are why deferring was defensible: a warm start made no
+  queries at all, and one nine-member work resolves in about 350 ms a member.
+  **The third row is the one that changed the case.** A downed instance cost a
+  full 30 s POST timeout before the listener existed — on *every* start, not
+  once — to reach pages that were sitting on local disk the whole time. The
+  breaker bounded it to one timeout for the whole library rather than one per
+  work, so it was 30 s and not ten minutes; it was still 30 s of a server that
+  could have answered everything and refused to start.
+  **The fix is that resolution now runs behind the bound listener**, on a
+  blocking task, with `StumpSide` holding its resolutions behind an `RwLock`
+  instead of owning a finished `HashMap`. The map starts empty and fills as
+  each work finishes. A member not yet resolved is indistinguishable from one
+  Stump does not have — both say "read it off disk" — so the window is safe by
+  construction rather than merely short.
+  **Reporting is per work, not one aggregate at the end**, which is the half
+  that would have been easy to miss: handing back every work's answers together
+  would have moved the wait behind the listener rather than removing it, and a
+  twenty-work library would still have served all twenty from disk until the
+  twentieth was asked about.
+  Measured after: against a deliberately unroutable address, the listener binds
+  in 0.10 s and three real pages — 1.18 MB, 1.34 MB and 339 KB — are served in
+  about 4 ms each **while the resolution is still hanging on its 30 s timeout**.
+  Two tests, each checked by sabotage rather than by having once failed to
+  compile: neutering `learn` makes the first serve disk bytes where Stump bytes
+  were required, and aggregating instead of reporting per work collapses the
+  second's two batches into one. What is **not** claimed is the ordering inside
+  `serve` itself — that binds a socket, which no test here drives.
 - **O9 — There is no single-flight guard on the request path. Open, and
   measured against.** Several requests arriving during one Stump timeout all
   wait it out independently rather than sharing the one outcome.
@@ -1046,8 +1083,8 @@ response. At 1.43 ms no request was ever still open when the next arrived, so a
 blocking client and a UI-paced one are indistinguishable in this log. Measuring
 it would need a deliberately slowed response, which is not worth building.
 
-What remains: the browser reader itself, the correction UI, and the seven open
-items tabled above — six of them found by a whole-branch review, now that O12,
+What remains: the browser reader itself, the correction UI, and the six open
+items tabled above — five of them found by a whole-branch review, now that O12,
 the one M3 carried rather than found, is closed, and O13 turned up by reading
 the reader design against the code rather than by reviewing a branch.
 

@@ -126,6 +126,10 @@ pub async fn serve(
         None => None,
     };
 
+    // What the background resolution will need, kept aside so it can be
+    // started *after* the bind below rather than before it.
+    let mut pending: Option<(Arc<dyn stump::http::Transport>, StumpSide, String)> = None;
+
     let source: Arc<dyn PageSource> = match stump {
         None => {
             // Not silent. A flag that quietly does nothing is worse than one
@@ -148,18 +152,20 @@ pub async fn serve(
             let transport: Arc<dyn stump::http::Transport> = Arc::new(
                 stump::http::UreqTransport::new(config.base.clone(), config.key),
             );
-            // Resolution happens once, at load, so no page turn costs a
-            // GraphQL round trip. It is also where a misconfigured instance
-            // announces itself, rather than on the first page a reader opens.
-            let resolutions = resolve_all_works(transport.as_ref(), &works, &config.base);
-            Arc::new(CompositeSource::new(
-                LocalLibrary,
-                Some(StumpSide::new(
-                    transport,
-                    resolutions,
-                    composite::DOWN_COOLDOWN,
-                )),
-            ))
+            // O8: constructed with **nothing resolved**. Resolution used to
+            // run here, before the bind, so a cold start against a reachable
+            // instance cost one GraphQL round trip per member — measured at
+            // 3.15 s for one nine-member work — and a start against an
+            // unreachable one cost a full 30 s POST timeout before the
+            // listener existed, on every start, to reach pages that were
+            // sitting on local disk the whole time.
+            let side = StumpSide::new(
+                transport.clone(),
+                stump::cache::Resolutions::new(),
+                composite::DOWN_COOLDOWN,
+            );
+            pending = Some((transport, side.clone(), config.base.clone()));
+            Arc::new(CompositeSource::new(LocalLibrary, Some(side)))
         }
     };
 
@@ -173,6 +179,27 @@ pub async fn serve(
         .await
         .map_err(|e| format!("{addr}: {e}"))?;
     eprintln!("taiyaku serve listening on http://{addr}");
+
+    // O8: after the bind, deliberately — including the order of these two
+    // lines on stderr, since "listening" arriving before the resolution
+    // chatter is how a person watching a cold start can see that the wait is
+    // no longer theirs. `spawn_blocking` because resolution is a network
+    // round trip *and* a local page hash per member, neither of which belongs
+    // on an async worker; `get_page` and the OPDS handlers already keep to
+    // that boundary for the same reason (O12).
+    if let Some((transport, side, base)) = pending {
+        let resolving = Arc::clone(&state);
+        tokio::task::spawn_blocking(move || {
+            resolve_all_works(
+                transport.as_ref(),
+                &resolving.works,
+                &base,
+                &mut |learned| {
+                    side.learn(learned);
+                },
+            );
+        });
+    }
     // Named the same way the bind failure is. Both are reported by a process
     // that may be serving several addresses over its life and prints nothing
     // else about them; "Address already in use" without one is a message that
@@ -224,8 +251,8 @@ fn resolve_all_works(
     transport: &dyn stump::http::Transport,
     works: &[Work],
     base: &str,
-) -> stump::cache::Resolutions {
-    let mut resolutions = stump::cache::Resolutions::new();
+    learned: &mut dyn FnMut(stump::cache::Resolutions),
+) {
     for (index, work) in works.iter().enumerate() {
         // O8: this runs before the listener binds, so it is time the server
         // spends unable to answer anything. It used to print one line per
@@ -259,7 +286,11 @@ fn resolve_all_works(
             .sum();
         eprintln!("{}: {known} of {total} members from stump", work.id);
         let aborted = resolved.aborted_by_transport;
-        resolutions.extend(resolved.resolutions);
+        // O8: handed over as this work finishes rather than accumulated and
+        // returned at the end, so the works already resolved are usable while
+        // the rest are still being asked about. Reported even on an abort,
+        // since a run that gave up partway still learned whatever it got to.
+        learned(resolved.resolutions);
         if aborted {
             let remaining = works.len() - index - 1;
             if remaining > 0 {
@@ -272,7 +303,6 @@ fn resolve_all_works(
             break;
         }
     }
-    resolutions
 }
 
 #[cfg(test)]
@@ -542,11 +572,58 @@ mod tests {
         );
     }
 
+    /// O8: resolution reports each work as it finishes rather than handing
+    /// back one aggregate at the end.
+    ///
+    /// Binding the listener first is only half the fix. If every work's
+    /// answers arrived together, a twenty-work library would still serve all
+    /// twenty from disk until the twentieth had been asked about — the wait
+    /// moved behind the listener rather than removed. Reporting per work makes
+    /// the first work usable while the last is still being resolved.
+    #[test]
+    fn each_work_is_learned_as_it_finishes_rather_than_all_at_the_end() {
+        use crate::stump::http::test_support::FakeTransport;
+
+        let first = distinct_work("taiyaku-test-lib-progressive-first", "alpha");
+        let second = distinct_work("taiyaku-test-lib-progressive-second", "bravo");
+        // Stump answers, and what it answers is "no such book" — an answer
+        // rather than an outage, so the breaker does not fire and both works
+        // are asked about.
+        let fake =
+            FakeTransport::new().on_post("/api/graphql", r#"{"data":{"media":{"nodes":[]}}}"#);
+
+        let mut batches: Vec<Vec<String>> = Vec::new();
+        super::resolve_all_works(
+            &fake,
+            &[first, second],
+            "http://nas:10801",
+            &mut |learned| {
+                let mut keys: Vec<String> = learned.keys().cloned().collect();
+                keys.sort();
+                batches.push(keys);
+            },
+        );
+
+        crate::test_support::cleanup("taiyaku-test-lib-progressive-first");
+        crate::test_support::cleanup("taiyaku-test-lib-progressive-second");
+        assert_eq!(
+            batches.len(),
+            2,
+            "one report per work, not one at the end: {batches:?}"
+        );
+        assert_eq!(
+            batches[0],
+            vec!["alpha-sha".to_string()],
+            "the first work's answers must arrive before the second is asked about"
+        );
+        assert_eq!(batches[1], vec!["bravo-sha".to_string()]);
+    }
+
     /// Important 3 (whole-branch review): the circuit breaker must span
     /// works, not stop at the boundary of the first one. Against an
     /// unreachable instance, the second work's member must never be asked
     /// about at all — proven by asserting on the fake's recorded requests,
-    /// not merely on the returned map.
+    /// not merely on what was learned.
     #[test]
     fn resolve_all_works_stops_asking_after_the_first_transport_failure() {
         use crate::stump::http::test_support::FakeTransport;
@@ -558,8 +635,13 @@ mod tests {
         // other test in this crate uses.
         let unreachable = FakeTransport::new();
 
-        let resolutions =
-            super::resolve_all_works(&unreachable, &[first, second], "http://nas:10801");
+        let mut resolutions = crate::stump::cache::Resolutions::new();
+        super::resolve_all_works(
+            &unreachable,
+            &[first, second],
+            "http://nas:10801",
+            &mut |learned| resolutions.extend(learned),
+        );
 
         let requests = unreachable.requests();
         crate::test_support::cleanup("taiyaku-test-lib-resolve-all-first");
