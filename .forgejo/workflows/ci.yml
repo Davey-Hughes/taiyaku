@@ -95,3 +95,5 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
       - name: Build core for wasm
         run: cargo build -p taiyaku-core --target wasm32-unknown-unknown --all-features
+      - name: Build the binding for wasm
+        run: cargo build -p taiyaku-wasm --target wasm32-unknown-unknown --all-features

@@ -22,19 +22,19 @@ piece, and none of *that* has started.
 
 ## What is built
 
-Four crates, 189 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
-`base64` and `serde`, plus `axum`, `tokio`, `tower` and `ureq` in the server.
-Three of the 189
-are standing checks gated on `TAIYAKU_CORPUS`, of which the third also needs
-`TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it needs
-is absent, so CI stays green without the corpus or a reachable Stump. One measures
-composition against a direct solve — 2,427 page comparisons, 0.91% loss, 0.00%
-disagreement. One measures that the server and the aligner agree about what page N
-is — 617 pages across 3 editions, no disagreement. One measures that the server
-and Stump serve the same bytes for a member both hold — 187 pages compared
-byte-for-byte, no disagreement, and 8 members this Stump instance does not hold
-recorded as absent rather than silently skipped. `check-all.sh` runs all three
-with `--nocapture` against an absolute, canonicalised `TAIYAKU_CORPUS`, so a green
+Five crates, 201 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
+`base64` and `serde`, plus `axum`, `tokio`, `tower` and `ureq` in the server and
+`wasm-bindgen` in the binding. Three of the 201 are standing checks gated on
+`TAIYAKU_CORPUS`, of which the third also needs `TAIYAKU_STUMP_URL` and
+`TAIYAKU_STUMP_KEY`; each skips cleanly when what it needs is absent, so CI
+stays green without the corpus or a reachable Stump. One measures composition
+against a direct solve — 2,427 page comparisons, 0.91% loss, 0.00% disagreement.
+One measures that the server and the aligner agree about what page N is — 617
+pages across 3 editions, no disagreement. One measures that the server and Stump
+serve the same bytes for a member both hold — 187 pages compared byte-for-byte,
+no disagreement, and 8 members this Stump instance does not hold recorded as
+absent rather than silently skipped. `check-all.sh` runs all three with
+`--nocapture` against an absolute, canonicalised `TAIYAKU_CORPUS`, so a green
 gate shows what each one measured, or says plainly that it did not run them at
 all.
 
@@ -47,12 +47,15 @@ all.
 | `sidecar` | the `taiyaku.json` format — parse, emit, judge, merge an edition in |
 | `route` | which path a lookup walks between two editions, and the page it lands on |
 
-The other three touch the disk or the network:
+Three of the other four touch the disk or the network. `taiyaku-wasm` touches
+neither — it is portable like the core, and separate from it so the core's API
+is not shaped by what can cross the JavaScript boundary.
 
 | Crate | Holds |
 | ----- | ----- |
 | `taiyaku-read` | how a member becomes pages — archives, directories, natural order, page counts, content hashes, one page by index |
 | `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below) |
+| `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing |
 
 `taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
@@ -198,11 +201,11 @@ still `lookup`.
 
 ### Open items
 
-Twelve, each found by a whole-branch review or carried as a deferral, and each
-judged not worth blocking on at the time. They are tracked here rather than left
-in a scratch file so that closing one is a visible act rather than a thing
-someone remembers. **Seven are now closed — O2, O3, O4, O5, O7, O10 and O12 —
-leaving five.**
+Fourteen, each found by a whole-branch review, carried as a deferral, or turned
+up by reading a design against the code, and each judged not worth blocking on at
+the time. They are tracked here rather than left in a scratch file so that
+closing one is a visible act rather than a thing someone remembers. **Seven are
+now closed — O2, O3, O4, O5, O7, O10 and O12 — leaving seven.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -221,6 +224,8 @@ each is in the detail below; the table is what a reader scans.
 | O10 | [x] | `MAX_DECODE_ALLOC` is duplicated across crates | `cover.rs`, `taiyaku-cli/src/fingerprint.rs` | M3 review |
 | O11 | [ ] | Neither on-disk cache notices a change on the far side — *escape hatch added* | `stump/cache.rs`, `cover.rs` | M3 review |
 | O12 | [x] | `spawn_blocking` covers three of five blocking handlers | `routes.rs::get_progress`, `::put_progress` | M1/M2 deferral |
+| O13 | [ ] | A hand-corrected run does not survive a re-solve | `sidecar.rs::merge_spoke` | M4 planning |
+| O14 | [ ] | The binding rebuilds the route on every resolve | `binding.rs::Binding::resolve` | M4 whole-branch review |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -428,6 +433,52 @@ and M2, and now closed:
   (member, offset) walk now lives in `taiyaku_core::Edition` rather than in
   `LocalLibrary`.
 
+**One came from reading a design against the code** — O13, turned up on
+2026-08-01 while planning M4, and not blocking because nothing writes a
+hand-corrected run until the correction UI exists:
+
+- **O13 — `sidecar.md` promises a hand correction survives a re-solve, and
+  `merge_spoke` does not keep one. Open.** The format doc is explicit: `by` is
+  `"solver"` or `"hand"`, and "a hand-corrected run must survive a re-solve;
+  this is the field that makes the correction UI more than a viewer." What
+  `merge_spoke` does is drop the stored edge in both directions and push the
+  newly solved alignment in its place, so every run on that edge is replaced
+  wholesale — a hand correction included. Nothing has noticed because
+  **`Source::Hand` is constructed nowhere in the workspace**: the variant is
+  defined, serde round-trips it, and no code path writes one. The promise has
+  never been exercised, which is how a documented guarantee rots without any
+  test going red.
+  **Half of it is guarded, and the half that is not decides the shape of the
+  fix.** `merge_spoke` refuses when a stored member's `sha256` differs from the
+  one just aligned — "re-solve the work rather than merging into it" — but that
+  comparison is against the *`from`* side, the hub the alignment was solved
+  against. The spoke is inserted wholesale, and
+  `re_aligning_a_spoke_replaces_it_rather_than_duplicating` pins that as
+  deliberate: re-solving a spoke after fixing its archive is ordinary, so the
+  test swaps the spoke's `sha256` and expects the merge to succeed. A merge can
+  therefore legitimately replace the very edition a hand correction addressed,
+  and carrying hand runs across *that* would resurrect runs pointing into slots
+  of an edition that no longer exists — the failure the from-side guard exists
+  to prevent, let back in through the other door. **So the fix divides.** Where
+  the spoke is unchanged, carrying hand runs across and reporting how many were
+  carried is enough. Where the merge replaces the spoke, it is not, and what
+  should become of a correction addressing bytes that are gone is a real
+  question rather than a detail. Deferred rather than done because the
+  correction UI is what makes any of it load-bearing: building preservation
+  before anything can produce a hand run would be pinning a mechanism against
+  material that does not exist.
+- **O14 — `taiyaku-wasm` rebuilds the path between two editions on every
+  resolve. Open.** `Binding::resolve` calls `route` per invocation, which
+  rebuilds both slot tables and, where the answer composes through the hub,
+  recomposes the run lists. `taiyaku_core::Route` exists precisely so a caller
+  can pay that once — `route.rs` says so, and puts a number on it: a reader
+  paging a 195-page volume would otherwise pay it 195 times. One swap per
+  keypress does not notice. A filmstrip resolving per tile would, and that is
+  M5's, which is why this is recorded now rather than discovered then. Not
+  fixed here because the shape of the fix depends on what the reader asks for
+  — memoising the last pair costs nothing and helps a swap; a filmstrip may
+  want the `Route` held across a whole strip.
+
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
 
@@ -543,6 +594,20 @@ and 8 members — the raw and all seven fan chapters — are absent from Stump a
 correctly recorded absent rather than retried per page. See `notes.md` for the
 coverage table and what the instance exposes.
 
+**M4 has landed, and it is the smallest of them.** `Route::resolve_slot` makes
+the slot rather than the page the thing a reader resolves, which matters exactly
+where a run ends mid-spread: in the primary sidecar, `en-mono`'s page 4 is a
+joined spread whose right half pairs with raw 5 and whose left half pairs with
+nothing, so a reader resolving the page instead of the half would show one and
+call it the other. `taiyaku-wasm` puts that in the browser's reach without
+`taiyaku-core` taking a `wasm-bindgen` dependency, and the gate now builds both
+for `wasm32-unknown-unknown` — the binding for a second reason, since a
+signature that cannot cross the JS boundary compiles natively and fails only
+there. What is **not** claimed: nothing has executed the module under a wasm
+runtime. The agreement check compares the binding against the core on every slot
+of every ordered pair of a two-edition fixture, which catches conversion drift
+and not codegen.
+
 **The Panels measurement has started, and found a defect before it found a
 number.** Panels read from this server over the LAN on 2026-07-31 — see
 `notes.md`, "Panels, measured: the feed was one-based and should not have been".
@@ -566,9 +631,10 @@ response. At 1.43 ms no request was ever still open when the next arrived, so a
 blocking client and a UI-paced one are indistinguishable in this log. Measuring
 it would need a deliberately slowed response, which is not worth building.
 
-What remains: the browser reader itself, the correction UI, and the five open
-items tabled above — all of them found by a whole-branch review, now that O12,
-the one M3 carried rather than found, is closed.
+What remains: the browser reader itself, the correction UI, and the seven open
+items tabled above — six of them found by a whole-branch review, now that O12,
+the one M3 carried rather than found, is closed, and O13 turned up by reading the
+reader design against the code rather than by reviewing a branch.
 
 ### 4. Skipping scanlation credit pages
 

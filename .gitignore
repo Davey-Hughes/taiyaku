@@ -136,3 +136,7 @@ scratch/
 # Request logs from a reader session. The measurement belongs in docs/notes.md;
 # the raw log is one session's working data and grows every run.
 *.jsonl
+
+# Visual brainstorming companion mockups, subagent review packages, and the
+# progress ledger. Session working files.
+.superpowers/

@@ -59,6 +59,8 @@ fi
 # --- the `wasm` job ---
 # taiyaku-core is built for wasm32 in CI, so a change that compiles natively but not for wasm (a
 # stray std-only dependency, most often) fails there and not here. Reproduced rather than trusted.
+# taiyaku-wasm is built too, and for a second reason: a `wasm_bindgen` signature that cannot cross
+# the boundary compiles natively and fails only for this target.
 if [ "$no_wasm" -eq 1 ]; then
   echo; echo "==> SKIPPED: wasm build (--no-wasm)"
 else
@@ -66,6 +68,7 @@ else
     run rustup target add wasm32-unknown-unknown
   fi
   run cargo build -p taiyaku-core --target wasm32-unknown-unknown --all-features
+  run cargo build -p taiyaku-wasm --target wasm32-unknown-unknown --all-features
 fi
 
 echo

@@ -11,6 +11,17 @@ pointing at
 [`2026-07-31-m3-stump-opds-design.md`](2026-07-31-m3-stump-opds-design.md), which
 supersedes this document for M3 only.
 
+**Read against the code on 2026-08-01 while planning M4, and five things are
+added in place below.** A promise `sidecar.md` makes that `merge_spoke` does not
+keep — now O13 in `status.md`. A lost-update hole in the correction write path.
+The reopening of the swap gesture, whose rejected alternative was rejected on an
+argument that quietly assumes a keyboard. A milestone note tying three deferred
+open items to M5. And an open-questions bullet on desktop-first versus
+tablet-first, the question the swap gesture's reopening turns on — **settled the
+same day in favour of desktop, with the tablet deferred to a native iOS reader
+rather than absorbed into this one.** Both the gesture and the open question
+carry that answer below; nothing about the swap changed in the end.
+
 The reader is the multi-week piece the rest of the project has been unblocking.
 `docs/status.md` has called it "next" since the aligner worked; its two stated
 blockers — no way to write a sidecar with three editions, no way to resolve
@@ -91,6 +102,18 @@ dependency beyond `serde`, and the crate's manifest carries a standing warning
 about dependencies that must keep the wasm target building. `wasm-bindgen` is
 wasm-native, so it is the safe kind, but the warning is there for a reason.
 
+**Wrong on both counts, and M4 built it the other way.** `taiyaku-core` does not
+take `wasm-bindgen`; `taiyaku-wasm` does, exactly as the repo layout below says
+and this paragraph does not. The reason given here is also not the reason: the
+core's standing warning is about dependencies "needing native libraries or
+threads", which `wasm-bindgen` is not — adding it would not have broken the
+wasm32 build at all. **The real constraint is the one the layout implies** —
+the core's public API must not be shaped by what can cross the JavaScript
+boundary, and M4 showed the pressure is real: `Option<Half>` became
+`Option<String>` and `Via` became a `String` to make the crossing. Keeping that
+in its own crate leaves the core usable from the CLI, the server and any future
+native shell without acquiring `wasm-bindgen` at all.
+
 ### React 19 + Vite + TypeScript, not Leptos
 
 The owner's other web projects are `cargo leptos`, and full-Rust would be faster
@@ -119,6 +142,26 @@ but costs the one-key promise on every swap.
 
 The toggle is the alt-tab model: the common back-and-forth stays one key, and the
 gesture does not change as editions are added.
+
+**Reopened 2026-08-01.** The case against a hold-to-open picker is "it costs the
+one-key promise", which is a desk argument — there is no key to promise on a
+tablet. A later brainstorm chose exactly that picker, showing the current page as
+each edition renders it, before this document was found. Neither gesture is
+wrong; they answer to different devices. **So the live question is the decision
+above this one — *desktop browser first* — and the gesture follows from it rather
+than being settled on its own.** See "Open questions".
+
+**Settled the same day, and the toggle stands.** Desktop first was confirmed,
+so the keyboard is real and the one-key promise is worth keeping. The picker
+does not die — it moves. The tablet answer is a **native iOS reader**, where a
+sheet is the right gesture because there is no key, and where the ergonomics can
+be designed once rather than compromised into a responsive layout that serves
+neither. The mockups from the 2026-08-01 brainstorm — a summoned crosshair
+overlay, editions on the vertical axis and pages on the horizontal, a fixed
+order with the current edition pinned and thumbnails shrinking to a floor before
+the column scrolls — belong to that pass, not to M5. They are kept in
+`.superpowers/brainstorm/` on the author's machine and are not committed; the
+paragraph above is the record.
 
 ### All three reading modes, with regroup in two-page mode
 
@@ -372,6 +415,22 @@ demonstrably loses", and a hand correction is exactly that demonstration. Both
 The cost: that pair leaves the star and no longer inherits transitivity by
 construction. The format already sanctions this trade.
 
+**The write needs `If-Match`, which this section missed.** Two devices correcting
+one work is the same shape as two devices writing progress, and O2 settled the
+atomic-write pattern for that — but atomicity only prevents a torn file, not a
+lost update. Last-write-wins over a whole `taiyaku.json` silently discards the
+other device's correction, which is the failure a correction UI can least afford:
+you would have to notice a fix had vanished to know anything happened. The write
+carries the `ETag` the client read and is refused on mismatch. That is the same
+validator O1 wants on page responses, so the two land together.
+
+**And a correction has to survive a re-solve, which nothing yet makes it do.**
+`sidecar.md` states the guarantee — "a hand-corrected run must survive a
+re-solve; this is the field that makes the correction UI more than a viewer" —
+and `merge_spoke` drops the stored edge wholesale before pushing the new
+alignment. Tracked as O13. This section's `by: "hand"` write is correct and
+insufficient on its own.
+
 ## Testing
 
 Ordinary unit testing throughout, plus four tests that exist because they guard
@@ -432,6 +491,17 @@ not transfer to reflowable EPUB, so only the grouping generalises.
 
 **Sizes are estimates, not measurements.** Every session on this project so far
 has found something the previous estimate did not anticipate.
+
+**M5 is also the instrument for three deferred open items**, which is a reason to
+prefer it over other work rather than a change to what it builds. O1 stays
+deferred on a measurement — Panels refetched a page it already held zero times in
+177 requests — but the reader refetches on every swap by construction, so the
+same measurement should come out the other way; **the order inverts there**, and
+the validator ships before the count means anything. O6 and O9 are simply not
+measurable today: nothing has ever asked this server for a cover grid, and Panels
+issued zero concurrent requests across both sessions, so both the 430 MB decode
+and the missing single-flight guard are suspicions with no client capable of
+testing them. A cover grid produces both.
 
 ## Measuring against Panels, without automating it
 
@@ -577,3 +647,18 @@ Recorded rather than resolved. The first is answered; the rest are open.
   per user and mutates it with `updateMediaProgress`, against taiyaku's
   `(work, edition, slot)`. Reading through taiyaku moves taiyaku's and not
   Stump's. Not blocking, because nothing in M3 writes to Stump.
+- ~~**Desktop-first or tablet-first.**~~ **Answered 2026-08-01: desktop first,
+  unchanged.** It was reopened because the case against a picker — that it costs
+  the one-key promise — is a desk argument, and the only real reading anyone has
+  done against this server was on an iPad through Panels, twice, on 2026-07-31.
+  That turned out to be evidence about what was available to read with rather
+  than about what the reader should be. **The tablet is not this reader's
+  problem to solve**: the plan is a native iOS reader later, which is where a
+  sheet, a picker and touch ergonomics get designed properly instead of being
+  retrofitted onto a keyboard-first layout. So the swap gesture stays the toggle
+  key plus number keys, the layout arithmetic stays a desk's, and React stays
+  chosen on the adoption argument, which never depended on the device.
+  **What this defers rather than settles:** "Designed for a native iOS reader,
+  not building one" below lists the constraints that keep that door open. A
+  redesign pass is expected when it is built, and the picker mockups are its
+  starting point.

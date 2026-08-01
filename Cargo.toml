@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/taiyaku-core", "crates/taiyaku-read", "crates/taiyaku-serve", "crates/taiyaku-cli"]
+members = ["crates/taiyaku-core", "crates/taiyaku-read", "crates/taiyaku-serve", "crates/taiyaku-cli", "crates/taiyaku-wasm"]
 # Throwaway experiments live outside the workspace so their dependencies and
 # lint failures cannot affect the real crates or CI. Delete `spike/` once its
 # findings have landed in docs/notes.md.

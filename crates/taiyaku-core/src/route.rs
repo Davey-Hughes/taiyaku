@@ -63,6 +63,20 @@ pub struct Route {
 }
 
 impl Route {
+    /// Where a slot of the `from` edition lands.
+    ///
+    /// A reader stopped on the left half of a joined spread has to swap to the
+    /// counterpart of *that half*. Resolving its page instead names the first
+    /// half, which is a different slot and, where a run ends mid-spread, a
+    /// different answer — so a reader doing that moves a page without being
+    /// asked to. `notes.md`, "swapping must not round-trip through the
+    /// alignment", is the same failure reached by a different route.
+    pub fn resolve_slot(&self, slot: Slot) -> Option<Slot> {
+        let here = crate::sidecar::slot_index(&self.from_slots, slot)? as u32;
+        let there = counterpart(&self.runs, here)?;
+        self.to_slots.get(there as usize).copied()
+    }
+
     /// Where a page of the `from` edition lands.
     ///
     /// A page reference with no half names the first slot of that page, which
@@ -70,9 +84,7 @@ impl Route {
     /// spread. The answer carries a half because that is what a reader has to
     /// display — possibly one side of a joined spread.
     pub fn resolve(&self, page: u32) -> Option<Slot> {
-        let here = crate::sidecar::slot_index(&self.from_slots, Slot { page, half: None })? as u32;
-        let there = counterpart(&self.runs, here)?;
-        self.to_slots.get(there as usize).copied()
+        self.resolve_slot(Slot { page, half: None })
     }
 
     /// The runs this route walks, in slot indices.
@@ -177,6 +189,92 @@ pub fn resolve(sidecar: &Sidecar, from: &str, to: &str, page: u32) -> Option<Slo
 mod tests {
     use super::*;
     use crate::{Half, PageRange};
+
+    /// A slot with no half names the *first* half of its page in reading
+    /// order. That is the rule which makes `resolve` correct as a call to
+    /// `resolve_slot`, and it is a real choice rather than a formality: under
+    /// `rtl` the right half is the earlier page, so en-mono's spread at page 4
+    /// must answer for `4R`, and `4R` and `4L` do not agree here.
+    #[test]
+    fn a_slot_with_no_half_names_the_first_half_in_reading_order() {
+        let s = Sidecar::from_json(crate::sidecar::REAL).expect("parses");
+        let r = route(&s, "en-mono", "raw-mono").expect("a route exists");
+
+        let whole = r.resolve_slot(Slot {
+            page: 4,
+            half: None,
+        });
+        let right = r.resolve_slot(Slot {
+            page: 4,
+            half: Some(Half::Right),
+        });
+        let left = r.resolve_slot(Slot {
+            page: 4,
+            half: Some(Half::Left),
+        });
+
+        assert_eq!(
+            whole, right,
+            "rtl makes the right half the earlier page, so it is the one a \
+             bare page reference names"
+        );
+        assert_ne!(
+            whole, left,
+            "and the halves disagree here, which is what stops this asserting \
+             a formality"
+        );
+    }
+
+    /// The reason `resolve_slot` exists. `en-mono` page 4 is a joined spread,
+    /// and the stored run `"a": "2-5", "b": "1-4R"` ends on its *right* half —
+    /// so read backwards, `4R` has a counterpart and `4L` falls between two
+    /// runs and has none. A reader stopped on the left half that swapped to
+    /// "page 4" would be shown the right half's counterpart and silently move.
+    #[test]
+    fn the_halves_of_a_spread_resolve_separately() {
+        let s = Sidecar::from_json(crate::sidecar::REAL).expect("parses");
+        let r = route(&s, "en-mono", "raw-mono").expect("a route exists");
+
+        assert_eq!(
+            r.resolve_slot(Slot {
+                page: 4,
+                half: Some(Half::Right)
+            }),
+            Some(Slot {
+                page: 5,
+                half: None
+            }),
+            "the right half ends run `1-4R`, so it pairs with raw 5"
+        );
+        assert_eq!(
+            r.resolve_slot(Slot {
+                page: 4,
+                half: Some(Half::Left)
+            }),
+            None,
+            "the left half sits between two runs and pairs with nothing"
+        );
+    }
+
+    /// A slot naming a page the edition does not have is `None`, not a clamp
+    /// and not a panic — the same choice `Edition::locate` makes.
+    #[test]
+    fn a_slot_past_the_end_resolves_to_nothing() {
+        let s = Sidecar::from_json(crate::sidecar::REAL).expect("parses");
+        let r = route(&s, "raw-mono", "en-mono").expect("a route exists");
+        let past = s
+            .editions
+            .get("raw-mono")
+            .expect("the fixture's hub")
+            .total_pages();
+        assert_eq!(
+            r.resolve_slot(Slot {
+                page: past,
+                half: None
+            }),
+            None
+        );
+    }
 
     /// The reader's whole job, done from the stored document with no archives
     /// and no solving. These expectations come from the aligner's own output on
