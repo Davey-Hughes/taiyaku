@@ -23,7 +23,7 @@ GOOD=0
 # One row per pair: group, label, then the two sides as shell words.
 row() {
     group=$1; label=$2; shift 2
-    line=$("$TAIYAKU" align "$@" --split-spreads --stats 2>&1 | grep -E '^(stats|shape):' | tr '\n' ' ')
+    line=$("$TAIYAKU" align "$@" --stats 2>&1 | grep -E '^(stats|shape):' | tr '\n' ' ')
     # An align that fails prints no stats line, and grep's non-zero exit is
     # swallowed by the pipe into tr, where `set -e` cannot see it. Left
     # unchecked the row prints blank and reads as a measurement rather than as

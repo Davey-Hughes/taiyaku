@@ -15,9 +15,9 @@ L2 fields it does not understand.
 ## Producing and consuming one
 
 ```
-taiyaku align  <a>... -- <b>... --split-spreads --write taiyaku.json \
+taiyaku align  <a>... -- <b>... --write taiyaku.json \
                --title NAME --name-a raw-mono --name-b en-mono
-taiyaku align  <a>... -- <c>... --split-spreads --write taiyaku.json --name-b en-fan
+taiyaku align  <a>... -- <c>... --write taiyaku.json --name-b en-fan
 taiyaku lookup taiyaku.json raw-mono en-mono 47 48
 taiyaku verify <a>... -- <b>... --sidecar taiyaku.json --out report.html
 ```

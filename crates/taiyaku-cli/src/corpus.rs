@@ -96,7 +96,6 @@ fn composing_through_the_hub_agrees_with_a_direct_solve() {
         args.push("--".into());
         args.extend(members(&volume.join(spoke)));
         args.extend([
-            "--split-spreads".into(),
             "--write".into(),
             out.to_string_lossy().to_string(),
             "--cache".into(),

@@ -67,14 +67,15 @@ fn run(args: &[String]) -> Result<(), String> {
             );
             println!("       taiyaku inventory <root> [--min-pages N] [--pattern SPEC]");
             println!();
-            println!("align options: --split-spreads --ltr --stats --write FILE --title NAME");
-            println!("               --name-a KEY --name-b KEY --direct");
+            println!("align options: --ltr --stats --cache DIR --write FILE --title NAME");
+            println!("               --name-a KEY --name-b KEY --direct --no-split-spreads");
             println!();
-            println!("--write needs --split-spreads: a sidecar records which pages are joined");
-            println!("spreads, and only that path detects them. Without it, align reports and");
-            println!("writes nothing. --title, --name-a, --name-b and --direct describe a");
-            println!("sidecar and so need --write; --cache and --ltr need --split-spreads.");
-            println!("Each is refused rather than ignored where it cannot take effect.");
+            println!("align splits joined spreads by default. --no-split-spreads gives the");
+            println!("page-level diagnostic instead, which cannot write a sidecar: a sidecar");
+            println!("records which pages are joined spreads, and that path does not detect");
+            println!("them. So --write, --cache and --ltr are refused alongside it, and");
+            println!("--title, --name-a, --name-b and --direct describe a sidecar and so need");
+            println!("--write. Each is refused rather than ignored where it cannot take effect.");
             println!();
             println!("--write merges into an existing FILE rather than overwriting it. On a");
             println!("merge the a-side is the document's hub, so --name-a is optional;");
@@ -911,6 +912,21 @@ fn cached_edition(
 }
 
 fn align(args: &[String]) -> Result<(), String> {
+    // Before `reject_unknown_flags`, which would otherwise call it a
+    // misspelling. A flag that was documented yesterday is not a typo, and the
+    // two failures want different answers: a typo wants the alphabet, a
+    // retirement wants to know what replaced it. Accepting it as a no-op was
+    // the other option and is the one this group has spent five items arguing
+    // against — a flag that cannot change what a run does is refused, not
+    // ignored.
+    if args.iter().any(|a| a == "--split-spreads") {
+        return Err(
+            "--split-spreads is retired: splitting joined spreads is now what \
+                    align does by default, so the flag had nothing left to turn on; \
+                    pass --no-split-spreads for the page-level diagnostic"
+                .into(),
+        );
+    }
     reject_unknown_flags(
         "align",
         args,
@@ -920,14 +936,22 @@ fn align(args: &[String]) -> Result<(), String> {
             "--ltr",
             "--name-a",
             "--name-b",
-            "--split-spreads",
+            "--no-split-spreads",
             "--stats",
             "--title",
             "--write",
         ],
     )?;
     let (a_members, b_members) = split_editions(args)?;
-    let split_spreads = args.iter().any(|a| a == "--split-spreads");
+    // Splitting joined spreads is the default. `corpus/README.md` has said to
+    // pass it "essentially always" since before there was a second caller —
+    // unhandled spreads make a correct alignment look broken, which cost
+    // several hours once — so the flag spent its whole life being the answer
+    // to a question nobody wanted asked. O19 and O20 then made the default
+    // path the one that can do almost nothing: it cannot write a sidecar, and
+    // it refuses six of the nine flags. A default nobody should choose is the
+    // same silence this group has been closing, one level up.
+    let split_spreads = !args.iter().any(|a| a == "--no-split-spreads");
     let show_stats = args.iter().any(|a| a == "--stats");
     let direct = args.iter().any(|a| a == "--direct");
 
@@ -969,8 +993,8 @@ fn align(args: &[String]) -> Result<(), String> {
     // alternative writes an unverified claim into the normative format.
     if write.is_some() && !split_spreads {
         return Err(
-            "--write needs --split-spreads: a sidecar records which pages are \
-                    joined spreads, and only that path detects them"
+            "--write cannot be used with --no-split-spreads: a sidecar records \
+                    which pages are joined spreads, and that path does not detect them"
                 .into(),
         );
     }
@@ -1000,21 +1024,20 @@ fn align(args: &[String]) -> Result<(), String> {
             }
         }
     }
-    // The other two are live on the split path and inert here, so they name
-    // that flag rather than `--write`. Each says what the plain path does
-    // instead, because "needs --split-spreads" on its own reads as arbitrary.
+    // The other two are live on the default path and inert on the page-level
+    // one, so they name `--no-split-spreads` rather than `--write`. Each says
+    // what that path does instead, because naming the flag alone reads as
+    // arbitrary.
     if !split_spreads {
         if args.iter().any(|a| a == "--cache") {
-            return Err(
-                "--cache needs --split-spreads: without it align fingerprints \
-                        directly and caches nothing"
-                    .into(),
-            );
+            return Err("--cache cannot be used with --no-split-spreads: that path \
+                        fingerprints directly and reads nothing through the cache"
+                .into());
         }
         if args.iter().any(|a| a == "--ltr") {
             return Err(
-                "--ltr needs --split-spreads: without it align pairs pages rather \
-                        than slots, and a page pairing has no direction to read"
+                "--ltr cannot be used with --no-split-spreads: that path pairs pages \
+                        rather than slots, and a page pairing has no direction to read"
                     .into(),
             );
         }
@@ -1562,6 +1585,105 @@ mod tests {
         args.iter().map(|s| s.to_string()).collect()
     }
 
+    /// Splitting joined spreads is what the corpus README has said to do
+    /// "essentially always" since before the flag had a second user, so it is
+    /// the default. The observable consequence at this level: `--write` alone
+    /// no longer trips O19's refusal, because the run it names now detects
+    /// spreads.
+    #[test]
+    fn writing_a_sidecar_no_longer_needs_a_flag_to_enable_it() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--write",
+            "taiyaku.json",
+        ]);
+
+        let err = align(&args).unwrap_err();
+
+        assert!(
+            !err.contains("needs"),
+            "should have got past argument handling, but refused: {err}"
+        );
+    }
+
+    /// O19's rule survives the inversion — it now keys off the flag that asks
+    /// for the page-level path rather than off the absence of the one that
+    /// asked for the slot-level path. The reason is unchanged: that path
+    /// cannot describe an edition's spreads, so it cannot write a sidecar.
+    #[test]
+    fn align_refuses_write_with_no_split_spreads() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--no-split-spreads",
+            "--write",
+            "taiyaku.json",
+        ]);
+
+        assert_eq!(
+            align(&args).unwrap_err(),
+            "--write cannot be used with --no-split-spreads: a sidecar records \
+             which pages are joined spreads, and that path does not detect them"
+        );
+    }
+
+    /// The retired flag explains itself rather than being accepted as a no-op
+    /// or reported as a typo. Accepting it would break the rule O19 and O20
+    /// established — a flag that cannot change what a run does is refused —
+    /// and `reject_unknown_flags` alone would call yesterday's documented flag
+    /// a misspelling.
+    #[test]
+    fn the_retired_split_spreads_flag_says_what_replaced_it() {
+        let args = argv(&["a.cbz", "--", "b.cbz", "--split-spreads"]);
+
+        assert_eq!(
+            align(&args).unwrap_err(),
+            "--split-spreads is retired: splitting joined spreads is now what \
+             align does by default, so the flag had nothing left to turn on; \
+             pass --no-split-spreads for the page-level diagnostic"
+        );
+    }
+
+    /// O20's two split-path flags follow the same inversion.
+    #[test]
+    fn align_refuses_ltr_with_no_split_spreads() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--no-split-spreads",
+            "--ltr",
+        ]);
+
+        assert_eq!(
+            align(&args).unwrap_err(),
+            "--ltr cannot be used with --no-split-spreads: that path pairs pages \
+             rather than slots, and a page pairing has no direction to read"
+        );
+    }
+
+    /// The plain diagnostic is still reachable, and still takes `--stats`.
+    #[test]
+    fn the_page_level_diagnostic_is_still_reachable() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--no-split-spreads",
+            "--stats",
+        ]);
+
+        let err = align(&args).unwrap_err();
+
+        assert!(
+            !err.contains("cannot be used") && !err.contains("no flag"),
+            "the diagnostic path was refused: {err}"
+        );
+    }
+
     /// O21. O15, O19 and O20 all key off a flag's *name*, so none of them can
     /// see a name that was typed wrong — and a misspelling reproduces exactly
     /// the failure O19 closed: `--writ` is not `--write`, so the run reports a
@@ -1579,7 +1701,7 @@ mod tests {
         assert_eq!(
             align(&args).unwrap_err(),
             "align has no flag `--writ`; its flags are --cache, --direct, --ltr, \
-             --name-a, --name-b, --split-spreads, --stats, --title, --write"
+             --name-a, --name-b, --no-split-spreads, --stats, --title, --write"
         );
     }
 
@@ -1771,7 +1893,6 @@ mod tests {
             "does-not-exist-a.cbz",
             "--",
             "does-not-exist-b.cbz",
-            "--split-spreads",
             "--write",
         ]);
 
@@ -1781,60 +1902,16 @@ mod tests {
         );
     }
 
-    /// O19: `--write` used to be read only inside the split-spreads branch, so
-    /// the plain path ran the whole alignment, wrote nothing, said nothing
-    /// about writing nothing, and exited 0.
-    #[test]
-    fn align_refuses_write_without_split_spreads() {
-        let args = argv(&[
-            "does-not-exist-a.cbz",
-            "--",
-            "does-not-exist-b.cbz",
-            "--write",
-            "taiyaku.json",
-        ]);
-
-        assert_eq!(
-            align(&args).unwrap_err(),
-            "--write needs --split-spreads: a sidecar records which pages are \
-             joined spreads, and only that path detects them"
-        );
-    }
-
-    /// The other half of the same rule: the refusal fires on the combination,
-    /// not on `--write`. With `--split-spreads` present the run gets past
-    /// argument handling entirely and fails on the archives instead — which
-    /// these paths, deliberately absent from disk, are what proves.
-    #[test]
-    fn align_allows_write_when_split_spreads_is_given() {
-        let args = argv(&[
-            "does-not-exist-a.cbz",
-            "--",
-            "does-not-exist-b.cbz",
-            "--split-spreads",
-            "--write",
-            "taiyaku.json",
-        ]);
-
-        let err = align(&args).unwrap_err();
-
-        assert!(
-            !err.contains("--split-spreads"),
-            "should have got past argument handling, but refused: {err}"
-        );
-    }
-
     /// O20, the four flags that describe a sidecar. Dead on *both* paths when
-    /// nothing is written, not merely on the plain one — `--split-spreads`
-    /// without `--write` skips the block that reads them just as the plain
-    /// path does.
+    /// nothing is written, not merely on the page-level one — the default
+    /// path without `--write` skips the block that reads them just as
+    /// `--no-split-spreads` does.
     #[test]
     fn align_refuses_a_title_when_no_sidecar_is_written() {
         let args = argv(&[
             "does-not-exist-a.cbz",
             "--",
             "does-not-exist-b.cbz",
-            "--split-spreads",
             "--title",
             "Some Work",
         ]);
@@ -1862,43 +1939,24 @@ mod tests {
         );
     }
 
-    /// O20's other half: two flags that are live on the split path and inert
-    /// on the plain one. `--cache` writes the fingerprint cache there and
+    /// O20's other half: two flags that are live on the default path and inert
+    /// on the page-level one. `--cache` writes the fingerprint cache there and
     /// nothing at all here, measured — the directory is never created.
     #[test]
-    fn align_refuses_a_cache_the_plain_path_would_never_write() {
+    fn align_refuses_a_cache_the_page_level_path_would_never_write() {
         let args = argv(&[
             "does-not-exist-a.cbz",
             "--",
             "does-not-exist-b.cbz",
+            "--no-split-spreads",
             "--cache",
             "somewhere",
         ]);
 
         assert_eq!(
             align(&args).unwrap_err(),
-            "--cache needs --split-spreads: without it align fingerprints \
-             directly and caches nothing"
-        );
-    }
-
-    /// `--ltr` is the one case where the ignored flag could not have changed
-    /// the answer rather than merely not having: the plain path pairs pages,
-    /// `solve` takes no direction, and only slot expansion reads one. Refused
-    /// anyway, because "typed and ignored" is the defect.
-    #[test]
-    fn align_refuses_ltr_on_the_path_that_has_no_direction_to_read() {
-        let args = argv(&[
-            "does-not-exist-a.cbz",
-            "--",
-            "does-not-exist-b.cbz",
-            "--ltr",
-        ]);
-
-        assert_eq!(
-            align(&args).unwrap_err(),
-            "--ltr needs --split-spreads: without it align pairs pages rather \
-             than slots, and a page pairing has no direction to read"
+            "--cache cannot be used with --no-split-spreads: that path \
+             fingerprints directly and reads nothing through the cache"
         );
     }
 
@@ -1911,7 +1969,6 @@ mod tests {
             "does-not-exist-a.cbz",
             "--",
             "does-not-exist-b.cbz",
-            "--split-spreads",
             "--write",
             "taiyaku.json",
             "--title",

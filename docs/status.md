@@ -22,9 +22,9 @@ piece, and none of *that* has started.
 
 ## What is built
 
-Five crates, 288 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
+Five crates, 290 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
 `base64` and `serde`, plus `axum`, `tokio`, `tower` and `ureq` in the server and
-`wasm-bindgen` in the binding. Nine of the 288 are standing checks gated on
+`wasm-bindgen` in the binding. Nine of the 290 are standing checks gated on
 `TAIYAKU_CORPUS`, one of which also needs `TAIYAKU_STUMP_URL` and
 `TAIYAKU_STUMP_KEY`; each skips cleanly when what it needs is absent, so CI
 stays green without the corpus or a reachable Stump. One measures composition
@@ -68,7 +68,7 @@ paths.
 Seven commands:
 
 ```
-taiyaku align  <a-member>... -- <b-member>...   [--split-spreads [--ltr] [--cache DIR] [--write FILE [--title NAME] [--name-a KEY] [--name-b KEY] [--direct]]] [--stats]
+taiyaku align  <a-member>... -- <b-member>...   [--ltr] [--cache DIR] [--stats] [--write FILE [--title NAME] [--name-a KEY] [--name-b KEY] [--direct]] | --no-split-spreads [--stats]
 taiyaku verify <a-member>... -- <b-member>...   [--out FILE] [--sidecar FILE [--cache DIR] [--ltr]]
 taiyaku topology <hub>... -- <spoke>... -- <spoke>...
 taiyaku lookup <taiyaku.json> <from> <to> <page>...
@@ -746,10 +746,36 @@ here now: a flag that cannot change what a run does is refused, not ignored.
   `reading` order that indexes the runs, as the comment at that site already
   said; the flag reaches only `cached_edition`'s spread expansion.
 
-**What is deliberately not done across O19 to O22:** `--split-spreads` is still
-opt-in rather than the default the corpus README describes. That is a change to
-what the command does by default rather than a defect fix, and it is not
-load-bearing while the documented way to run the tool passes the flag.
+**And then the thing four of them deferred was done: `--split-spreads` is
+retired and splitting is the default.** O19 to O22 each ended by recording that
+the flag was still opt-in rather than the default `corpus/README.md` describes,
+and each declined it as a surface change rather than a defect fix. What changed
+the case was those four items themselves. `corpus/README.md` had said to pass it
+"essentially always" since before there was a second caller — unhandled spreads
+make a correct alignment look broken, which is how several hours went once — and
+O19 and O20 then made the default path the one that can do almost nothing: it
+cannot write a sidecar, and it refuses six of `align`'s nine flags. **A default
+nobody should choose is the same silence this group had been closing, one level
+up.**
+
+The flag is **retired rather than accepted as a no-op**, which is the one part
+of this that was a choice. Keeping it would have broken the rule the four items
+before it established — a flag that cannot change what a run does is refused,
+not ignored — and letting `reject_unknown_flags` handle it would have called
+yesterday's documented flag a misspelling. So it has its own message, naming
+what replaced it. `--no-split-spreads` gives the page-level diagnostic, which
+still takes `--stats` and still cannot write a sidecar, for O19's reason
+unchanged. The three refusals O19 and O20 introduced now key off
+`--no-split-spreads` rather than off the absence of `--split-spreads`; the
+reasoning behind each is the same sentence it always was.
+`corpus/README.md`, `docs/sidecar.md` and `scripts/margin-survey.sh` no longer
+pass it, and the survey was re-run against the corpus to confirm it still
+measures — 195 slots on Go-Toubun v01, the split-spread count.
+
+**Everything above about O19 to O22 is left as it was written**, naming
+`--split-spreads` in the present tense, because each describes what was true
+when it was closed. Only the synopsis at the top of this document and the tool's
+own usage text describe the command as it is now.
 
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
