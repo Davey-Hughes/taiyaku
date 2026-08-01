@@ -18,8 +18,11 @@
 mod cache;
 #[cfg(test)]
 mod corpus;
+mod duplicates;
 mod fingerprint;
+mod inventory;
 mod report;
+mod signature;
 mod stats;
 
 use std::path::{Path, PathBuf};
@@ -44,6 +47,8 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("topology") => topology(&args[1..]),
         Some("lookup") => lookup(&args[1..]),
         Some("serve") => serve(&args[1..]),
+        Some("duplicates") => duplicates::command(&args[1..]),
+        Some("inventory") => inventory::command(&args[1..]),
         Some(other) => Err(format!("unknown command `{other}`")),
         None => {
             println!("taiyaku {}", env!("CARGO_PKG_VERSION"));
@@ -57,6 +62,10 @@ fn run(args: &[String]) -> Result<(), String> {
                 "       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT] [--stump-url URL] \
                  [--stump-key KEY] [--log-requests FILE] [--refresh-stump]"
             );
+            println!(
+                "       taiyaku duplicates <copy>... -- <copy>... [--against <member>...] [--ltr]"
+            );
+            println!("       taiyaku inventory <root> [--min-pages N] [--pattern SPEC]");
             println!();
             println!("align options: --split-spreads --ltr --stats --write FILE --title NAME");
             println!("               --name-a KEY --name-b KEY --direct");
@@ -99,7 +108,7 @@ fn split_editions(args: &[String]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), Strin
     Ok((a_members, b_members))
 }
 
-fn option_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+pub(crate) fn option_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     let at = args.iter().position(|a| a == flag)?;
     args.get(at + 1).map(String::as_str)
 }

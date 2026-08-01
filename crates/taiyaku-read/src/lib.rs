@@ -11,8 +11,8 @@ mod pages;
 
 pub use naming::natural_cmp;
 pub use pages::{
-    Page, member_digest, member_page, member_page_names, member_pages, read_edition,
-    read_members_in_order,
+    Page, is_page_name, member_digest, member_page, member_page_names, member_page_sizes,
+    member_pages, read_edition, read_members_in_order,
 };
 
 /// How much a single image decode may allocate.

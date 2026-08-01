@@ -25,7 +25,13 @@ impl std::fmt::Debug for Page {
     }
 }
 
-fn is_image(name: &str) -> bool {
+/// Whether an entry name is a page.
+///
+/// Public because the duplicate inventory counts pages without reading them and
+/// must not carry its own copy of this list — which entries are pages is
+/// normative (`docs/sidecar.md`, "How a member becomes pages"), and a second
+/// list is the duplication O10 was closed to remove.
+pub fn is_page_name(name: &str) -> bool {
     Path::new(name)
         .extension()
         .and_then(|e| e.to_str())
@@ -128,7 +134,7 @@ fn directory_page_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
             }
             if path.is_dir() {
                 pending.push(path);
-            } else if is_image(&base) {
+            } else if is_page_name(&base) {
                 found.push(path);
             }
         }
@@ -198,7 +204,7 @@ fn page_names_from(zip: &mut zip::ZipArchive<File>) -> Vec<String> {
             if name.starts_with("__MACOSX") || name.rsplit('/').next()?.starts_with('.') {
                 return None;
             }
-            is_image(&name).then_some(name)
+            is_page_name(&name).then_some(name)
         })
         .collect();
     // Central-directory order is not guaranteed to be page order.
@@ -350,6 +356,40 @@ pub fn member_pages(path: &Path) -> Result<u32, String> {
         read_member(path)?;
     }
     Ok(names.len() as u32)
+}
+
+/// The uncompressed byte size of each of a member's pages, in reading order,
+/// without reading any of them.
+///
+/// Directory pages are sized from their metadata and archive entries from the
+/// zip central directory, which records the uncompressed size. Uncompressed on
+/// both sides deliberately: a directory of loose images and a `.cbz` of the
+/// same scan then produce the same list, and seeing through packaging is the
+/// whole job of the signature this feeds.
+///
+/// A listing, not a read — the property that lets an inventory run over a NAS
+/// and decide what is worth copying.
+pub fn member_page_sizes(path: &Path) -> Result<Vec<u64>, String> {
+    if path.is_dir() {
+        return directory_page_paths(path)?
+            .iter()
+            .map(|page| {
+                std::fs::metadata(page)
+                    .map(|meta| meta.len())
+                    .map_err(|e| format!("{}: {e}", page.display()))
+            })
+            .collect();
+    }
+    let mut zip = open_archive(path)?;
+    let names = page_names_from(&mut zip);
+    names
+        .iter()
+        .map(|name| {
+            zip.by_name(name)
+                .map(|entry| entry.size())
+                .map_err(|e| format!("{}: {name}: {e}", path.display()))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -617,5 +657,51 @@ mod tests {
             whole.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
             "names must agree with what read_member sequences"
         );
+    }
+
+    /// The signature a duplicate set is settled by is a list of page sizes, so
+    /// this has to agree with `read_edition` on *which* entries are pages, on
+    /// what order they come in, and on how big each one is. Uncompressed, not
+    /// as stored: an archive and a directory holding one scan must produce the
+    /// same list, which is the whole point of signing pages rather than files.
+    #[test]
+    fn page_sizes_are_uncompressed_in_reading_order_and_skip_non_pages() {
+        let path = cbz(
+            "taiyaku-test-sizes.cbz",
+            &["p10.jpg", "ComicInfo.xml", "p2.jpg", "p1.jpg"],
+        );
+
+        let pages = read_member(&path).unwrap();
+        let sizes = member_page_sizes(&path).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        let expected: Vec<u64> = pages.iter().map(|p| p.bytes.len() as u64).collect();
+        assert_eq!(sizes, expected, "sizes must match the bytes actually read");
+        assert_eq!(sizes.len(), 3, "ComicInfo.xml is not a page");
+    }
+
+    /// The property the duplicate signature rests on: repackaging a scan from
+    /// loose images into a cbz must not change what it signs as.
+    #[test]
+    fn a_directory_and_an_archive_of_the_same_pages_size_identically() {
+        let dir = std::env::temp_dir().join("taiyaku-test-sizes-dir");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for entry in ["p1.jpg", "p2.jpg", "p10.jpg"] {
+            std::fs::write(dir.join(entry), entry.as_bytes()).unwrap();
+        }
+        // Stored in a different order, as a repacker would.
+        let archive = cbz(
+            "taiyaku-test-sizes-arc.cbz",
+            &["p10.jpg", "p2.jpg", "p1.jpg"],
+        );
+
+        let from_dir = member_page_sizes(&dir).unwrap();
+        let from_archive = member_page_sizes(&archive).unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&archive);
+        assert_eq!(from_dir, from_archive);
+        assert_eq!(from_dir, vec![6, 6, 7], "p1.jpg, p2.jpg, p10.jpg by length");
     }
 }

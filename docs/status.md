@@ -22,10 +22,10 @@ piece, and none of *that* has started.
 
 ## What is built
 
-Five crates, 201 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
+Five crates, 266 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
 `base64` and `serde`, plus `axum`, `tokio`, `tower` and `ureq` in the server and
-`wasm-bindgen` in the binding. Three of the 201 are standing checks gated on
-`TAIYAKU_CORPUS`, of which the third also needs `TAIYAKU_STUMP_URL` and
+`wasm-bindgen` in the binding. Nine of the 266 are standing checks gated on
+`TAIYAKU_CORPUS`, one of which also needs `TAIYAKU_STUMP_URL` and
 `TAIYAKU_STUMP_KEY`; each skips cleanly when what it needs is absent, so CI
 stays green without the corpus or a reachable Stump. One measures composition
 against a direct solve — 2,427 page comparisons, 0.91% loss, 0.00% disagreement.
@@ -33,10 +33,11 @@ One measures that the server and the aligner agree about what page N is — 617
 pages across 3 editions, no disagreement. One measures that the server and Stump
 serve the same bytes for a member both hold — 187 pages compared byte-for-byte,
 no disagreement, and 8 members this Stump instance does not hold recorded as
-absent rather than silently skipped. `check-all.sh` runs all three with
-`--nocapture` against an absolute, canonicalised `TAIYAKU_CORPUS`, so a green
-gate shows what each one measured, or says plainly that it did not run them at
-all.
+absent rather than silently skipped. The remaining six run duplicate resolution
+over real duplicate sets and are listed in §2 below with what each one measured.
+`check-all.sh` runs all nine with `--nocapture` against an absolute,
+canonicalised `TAIYAKU_CORPUS`, so a green gate shows what each one measured, or
+says plainly that it did not run them at all.
 
 `taiyaku-core` is the portable half — no I/O, so it compiles to WebAssembly:
 
@@ -56,7 +57,7 @@ is not shaped by what can cross the JavaScript boundary.
 | `taiyaku-read` | how a member becomes pages — archives, directories, natural order, page counts, content hashes, one page by index |
 | `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
-| `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing |
+| `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
 
 `taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
 a member becomes pages" — so two consumers deriving it separately is a defect the
@@ -64,7 +65,7 @@ format cannot detect. The aligner and the server now derive it in one place, and
 a gated corpus check compares all 617 pages of the primary volume across the two
 paths.
 
-Five commands:
+Seven commands:
 
 ```
 taiyaku align  <a-member>... -- <b-member>...   [--write FILE] [--split-spreads] [--ltr] [--stats] [--direct]
@@ -72,6 +73,8 @@ taiyaku verify <a-member>... -- <b-member>...   [--out FILE] [--sidecar FILE]
 taiyaku topology <hub>... -- <spoke>... -- <spoke>...
 taiyaku lookup <taiyaku.json> <from> <to> <page>...
 taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT] [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump]
+taiyaku inventory <root>                        [--min-pages N] [--pattern SPEC]
+taiyaku duplicates <copy>... -- <copy>...       [--against <member>...] [--ltr]
 ```
 
 `align` takes several members on either side, which is how one volume aligns
@@ -96,6 +99,29 @@ is what Stump and Komga cannot express on their own.
 signal, separation, margin, run count, average run length and the verdict — one
 line each, in a fixed field order so a survey can collect them into a table.
 `scripts/margin-survey.sh` is that survey.
+
+`inventory` and `duplicates` are the two halves of deciding which of several
+copies of one volume to keep, and **neither of them moves, renames or deletes
+anything**: they print what they found and leave the acting to a person.
+`inventory` walks a release directory and takes as one candidate copy the
+deepest directory that still holds a whole edition, so a volume whose chapters
+sit in subdirectories counts once rather than seven times; it groups the
+candidates by the volume number in the name — `v077`, `第077巻`, or a
+`--pattern` where that fails — and prints every group with more than one copy,
+together with what a content signature already settles about it. A group whose
+name it could not parse is printed whether or not it is duplicated, because a
+candidate that reached the page threshold and then vanished from the output is
+the silence this whole project is written against. `duplicates` takes those
+copies as `--`-separated groups, exactly as `align` takes members, and runs the
+protocol over one set: signature and content hash first, then every unordered
+pair solved once, then a clustering on identity, a flag on anything that refused
+against every other copy, and a ranking of what is genuinely distinct. **Where
+`--against` names a reference edition the reference does the flagging instead**,
+because a copy that pairs with the reference is this volume however the set
+treated it, and that is the only thing that can tell two copies refusing each
+other apart. It prints
+a table per set for a person and one fixed-field `set:` line for a survey, the
+discipline `--stats` established; `scripts/duplicate-survey.sh` is that survey.
 
 ## What is settled
 
@@ -154,7 +180,7 @@ Everything here is a measurement against the library, not a synthetic test.
 | **2 tankōbon → 1 deluxe volume** (Monster) | 427 of 444 slots, 13 runs |
 | **4 volumes → 1 deluxe volume** (Nausicaä) | 553 of 600 slots, 20 runs |
 | **Letterboxed spreads** (Tongari v09) | 176 of 180 slots once trimmed symmetrically |
-| **All-spread edition ↔ ordinary** (One Piece v092) | 200 of 200 slots, 1 run |
+| **All-spread edition ↔ ordinary** (One Piece v092) | 1 run, all 200 slots of the ordinary copy — which lies wholly *within* the all-spread copy's 202 |
 | Unrelated volumes | refused |
 | **A mislabelled file** (Bocchi *Gaiden* filed as v01) | refused, and its real counterpart found |
 | Art book ↔ manga | pairs everything and should not — see below |
@@ -201,11 +227,11 @@ still `lookup`.
 
 ### Open items
 
-Fourteen, each found by a whole-branch review, carried as a deferral, or turned
+Eighteen, each found by a whole-branch review, carried as a deferral, or turned
 up by reading a design against the code, and each judged not worth blocking on at
 the time. They are tracked here rather than left in a scratch file so that
-closing one is a visible act rather than a thing someone remembers. **Seven are
-now closed — O2, O3, O4, O5, O7, O10 and O12 — leaving seven.**
+closing one is a visible act rather than a thing someone remembers. **Ten are
+now closed — O2, O3, O4, O5, O7, O10, O12, O16, O17 and O18 — leaving eight.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -226,6 +252,10 @@ each is in the detail below; the table is what a reader scans.
 | O12 | [x] | `spawn_blocking` covers three of five blocking handlers | `routes.rs::get_progress`, `::put_progress` | M1/M2 deferral |
 | O13 | [ ] | A hand-corrected run does not survive a re-solve | `sidecar.rs::merge_spoke` | M4 planning |
 | O14 | [ ] | The binding rebuilds the route on every resolve | `binding.rs::Binding::resolve` | M4 whole-branch review |
+| O15 | [ ] | A flag typed with no usable value is taken as absent, in silence | `main.rs::option_value` | duplicate-resolution review |
+| O16 | [x] | A symlink cycle truncates the inventory walk — *silently, not by crashing* | `inventory.rs::totals` | duplicate-resolution review |
+| O17 | [x] | The content-hash confirmation re-reads a copy once per candidate | `duplicates.rs::representatives` | duplicate-resolution review |
+| O18 | [x] | The `--against` flagging rule had no corpus witness | `duplicates.rs::resolve_with` | duplicate-resolution review |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -479,6 +509,88 @@ hand-corrected run until the correction UI exists:
   — memoising the last pair costs nothing and helps a swap; a filmstrip may
   want the `Route` held across a whole strip.
 
+**The `duplicate-resolution` whole-branch review found four more** — O15 to
+O18 — and unlike every group above it, most of them did not outlive the branch
+that found them: three were closed on it. The fourth is the one whose fix is
+larger than the branch, and it is recorded here rather than fixed in passing for
+exactly that reason:
+
+- **O15 — A flag typed with no usable value is taken as absent, in silence.
+  Open.** `option_value` finds the flag and returns whatever argument happens to
+  follow it, without asking whether anything does. Both ways that can go wrong
+  are quiet. A flag last on the line has nothing after it, so
+  `taiyaku inventory releases --min-pages` reads as no flag at all and walks
+  with the default threshold of 60. A flag followed by another flag takes that
+  flag as its value, so `taiyaku align a -- b --write --ltr` writes the sidecar
+  to a file named `--ltr` — the direction is still applied, since `--ltr` is
+  matched separately, so nothing anywhere reports a problem.
+  **This branch fixed the instance and left the class.** `against_members` was
+  changed during the review to *refuse* a valueless `--against` rather than
+  fall through to no reference at all, on the argument that a flag typed and
+  then ignored is worse than one refused — dropping the reference edition
+  changes `decided=` and the rank order, so the silence costs a wrong answer
+  rather than a default. None of that argument is about `--against`.
+  Thirteen other valued flags, across nineteen call sites in `align`, `verify`,
+  `serve`, `inventory` and `duplicates`, still do the ignoring. Deferred because
+  the fix is a pass over all of them — each wants its own message naming what it
+  expected — and that is its own commit rather than a tail-end one on a branch
+  about duplicates.
+- **O16 — A symlink cycle truncates the inventory walk, and this item was
+  opened under the wrong framing. Closed.** It was opened as "a symlink cycle is
+  a stack overflow", which is worth saying here rather than correcting quietly,
+  because the wrong framing would have aimed the fix at the wrong failure.
+  `Path::is_dir()` follows symlinks, so a link back to an ancestor does recurse
+  — but Linux caps symlink resolution at 40 hops and returns `ELOOP`, and
+  `is_dir()` swallows that into `false`. Measured on this platform rather than
+  assumed: past roughly forty levels an unguarded walk does not crash, it
+  returns `Ok` with the cyclic subtree reported as childless. That is **silent
+  truncation**, the worse of the two failures and the one this project's whole
+  idea of a gate that says what it measured exists against. Closed with a depth
+  ceiling of 32, deliberately **below** the kernel's 40 so the named error fires
+  before the OS masks the condition — a ceiling above it would never have been
+  reached. A limit rather than a real cycle check because a cycle check needs a
+  `canonicalize` per directory, a syscall apiece on a walk that is 579
+  directories on the One Piece collection, to guard against something this rare.
+  Two tests hold it: a genuine self-referential symlink under `#[cfg(unix)]`,
+  and plain nesting past the ceiling on every platform.
+- **O17 — The content-hash confirmation re-read a copy once per candidate it
+  was compared against. Closed.** The closure `representatives` uses to confirm
+  that two copies with matching signatures really do hold the same page bytes
+  hashed both sides from scratch on every call, so a copy compared as the
+  earlier half of several pairs paid for its own full read once per comparison:
+  O(n²) full reads where O(n), one hash per copy, answers the same question.
+  Harmless at the two or three copies a duplicate set usually holds, which is
+  every set in this corpus; the bad shape is many copies whose page-size
+  multisets collide while their bytes differ, so nothing ever confirms and every
+  earlier copy is tried against every later one. Closed by memoising per copy,
+  filled **lazily** rather than up front, so a copy whose signature never
+  matches anything is still never hashed — the property
+  `copies_with_different_signatures_are_never_hashed` already pinned, and the
+  one a prefilled table would have broken while every existing assertion stayed
+  green. `a_copy_is_hashed_once_however_many_candidates_compare_it` pins the
+  other half: five colliding signatures, ten comparisons, one hash apiece.
+- **O18 — The rule that a reference edition decides which copy is the impostor
+  had no corpus witness, and the witness was already in the corpus. Closed.**
+  `--against` moves the decision outside the set: a copy that pairs with the
+  reference is this volume however the set treated it, which is the only thing
+  that can tell two copies refusing each other apart. That rule was held by unit
+  tests while these documents described it as though it had been measured — no
+  set in the corpus had both a two-copy refusal and a reference edition to hand,
+  so nothing had ever run it over real material. **The witness was there and had
+  not been recognised as one.** `incoming/bocchi/` holds three directories named
+  as volume 1 of *Bocchi the Rock*, and the third is the *Gaiden* spinoff, a
+  different work by a different artist, filed under the main series' name — and
+  the same directory holds `en-gaiden-v01.cbz`, the English edition of what that
+  file actually is. Resolved twice over the same three copies: with no reference
+  the *Gaiden* file is the copy flagged as not this volume, and `hamaji` ranks
+  best at 125 slots; against `en-gaiden-v01.cbz` the flagging **inverts** —
+  `hamaji` and `krc` pair nothing with the reference and are the flagged ones,
+  and the *Gaiden* file is the only copy ranked, at 185 slots. The same three
+  files and the opposite answer, decided entirely by what they were judged
+  against. That is the argument for `--against` existing, and it is now a gated
+  check rather than a claim. See `notes.md`, "What the six gated checks
+  measured".
+
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
 
@@ -494,7 +606,10 @@ something an alignment already reports. A merge keeps whatever hub the file name
 
 ## What comes next
 
-Roughly in order. The first two are small and unblock things; the third is the large
+Roughly in order. The first two are settled — one closed by a measurement that
+came out against shipping it, one shipped as two commands — and stay here rather
+than being deleted, for the reason the open-items table gives: a list that only
+ever grows says nothing about whether anything lands. The third is the large
 piece.
 
 ### 1. Refuse on margins, not just counts — measured, and margin does not fit
@@ -520,21 +635,68 @@ remains open is narrower and belongs to the reader rather than the solver —
 sidecar has to look at the verdict rather than assume acceptance means
 correspondence.
 
-### 2. Duplicate resolution as a command
+### 2. Duplicate resolution as a command — shipped, and one word in the protocol was wrong
 
-The protocol is worked out and was run by hand across 109 volumes. It wants to be a
-command:
+The protocol was worked out by hand across 109 volumes and is now two commands.
+`inventory` finds the sets in a release directory; `duplicates` resolves one set
+into a decision. On the One Piece collection the hand run took 19 duplicate sets
+down to 13 real choices, with 2 mislabelled files flagged rather than silently
+ranked, and the commands run the same three steps:
 
-1. **Signature** — file count, total bytes, sorted size list. Settles exact
-   duplicates without decoding anything.
-2. **All-pairs alignment within the set** — not everything against the first copy,
-   which hides clusters. Identity collapses copies differing only in packaging,
-   including across different image counts.
-3. **Rank what remains** by content first (slots, then pairings), then by how
-   cleanly it aligns.
+1. **Signature** — file count, total bytes, sorted size list, confirmed by a
+   content hash over page bytes wherever it matches. Settles exact duplicates
+   without decoding a page, and a copy it settles is never fingerprinted at all.
+2. **All-pairs alignment within the set** — not everything against the first
+   copy, which hides clusters. Spreads always split, with no flag to turn that
+   off, because the headline case in this collection is 200 images against 101.
+3. **Cluster on identity, flag what is not this volume, and rank the rest** by
+   content first — slots, then pairings against an `--against` reference — and
+   only then by how cleanly it aligns. What is not this volume is whatever
+   refused against every other copy; with a reference edition it is whatever
+   pairs nothing with the reference, which is the only thing that can answer a
+   two-copy set where each refuses the other.
 
-On the One Piece collection that took 19 duplicate sets down to 13 real choices,
-with 2 mislabelled files flagged rather than silently ranked.
+**Say what shipped, not what the design sketched.** `notes.md` used *identity*
+two ways, and the command uses only the stricter one. `align` reports unmatched
+slots for the **A side alone**, so a pair that covers all of A prints as
+"nothing unmatched" whether or not B carries slots of its own that nothing
+reaches; read that way, containment looks like identity. The command asks both
+sides and reports five relations — identity, `within`, `contains`, distinct,
+refused. Of the five pairs in the corpus that come within two slots of covering
+each other, **three are containment and two are identity**: One Piece v092 is
+200 slots wholly within 202, Bocchi's two real scans are 124 within 125, and
+Chainsaw Man's `src-a` is 198 within `src-b`'s 199, while Chainsaw Man's two
+198-slot scans and One Piece v077's c1 and c2 do cover each other on both sides.
+`notes.md` called four of the five identity. Clustering merges on identity
+alone, because a container holds content the other copy lacks and collapsing the
+two would discard the very difference the choice is about — the ranking already
+prefers the container, on slot count.
+
+**Six gated corpus checks measure this, and all six pass.** v077 resolves to
+clusters `{0}` and `{1, 2}`, the identity pair at 1 run and 234 of 234 against
+104 and 100 fragmented runs for either copy against c0. v092 comes out
+containment, two clusters, c1 first on 202 slots. Bocchi's *Gaiden* file refuses
+against both real scans, is flagged, and is excluded from the ranking. A sixth
+runs those same three Bocchi copies a second time, against the *Gaiden* file's
+own English edition, and measures the flagging inverting — the two real scans
+flagged and the *Gaiden* file the only one ranked, at 185 slots against the 125
+it ranked behind with no reference. Four Chainsaw Man raws against the English
+release rank `src-b` first on 199 slots, with `src-a` and `src-c` collapsed into
+one identity cluster. `inventory` over `op-duplicates` finds 34 candidates
+across 16 volumes, every one of them duplicated. The full figures are in
+`notes.md`, "Duplicate resolution as a command, and half the identity claims
+above are containment".
+
+**What it does not do, stated with the example rather than as an abstraction.**
+The ranking prefers whichever copy holds more material, including material that
+may not belong: on v077 the command names copy 0 the best, on 236 slots against
+234 — and copy 0 is the different-crop outlier that fragments against both of
+the others. The pairs table above the ranking shows that plainly and `--against`
+a reference edition settles it, but a ranking read on its own picks the outlier
+here. `inventory` has the matching caveat: it groups on the deepest directory
+that holds a whole edition, which is not always the copy directory a person
+would name, and `--pattern` matches against that directory's name rather than
+the copy's.
 
 ### 3. The reader
 
@@ -631,8 +793,8 @@ response. At 1.43 ms no request was ever still open when the next arrived, so a
 blocking client and a UI-paced one are indistinguishable in this log. Measuring
 it would need a deliberately slowed response, which is not worth building.
 
-What remains: the browser reader itself, the correction UI, and the seven open
-items tabled above — six of them found by a whole-branch review, now that O12,
+What remains: the browser reader itself, the correction UI, and the eight open
+items tabled above — seven of them found by a whole-branch review, now that O12,
 the one M3 carried rather than found, is closed, and O13 turned up by reading the
 reader design against the code rather than by reviewing a branch.
 

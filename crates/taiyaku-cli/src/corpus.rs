@@ -207,3 +207,383 @@ fn composing_through_the_hub_agrees_with_a_direct_solve() {
         "loss {loss_rate:.4} exceeds {MAX_LOSS}"
     );
 }
+
+/// The cache the duplicate checks share with `align`, beside the corpus rather
+/// than in the working directory — which for `cargo test -p` is the crate
+/// directory. Same reasoning as the star check above.
+fn duplicate_cache(root: &Path) -> PathBuf {
+    root.parent()
+        .unwrap_or(Path::new("."))
+        .join(".taiyaku-cache")
+}
+
+fn copies(root: &Path, under: &str, names: &[&str]) -> Vec<Vec<PathBuf>> {
+    names
+        .iter()
+        .map(|name| vec![root.join("incoming").join(under).join(name)])
+        .collect()
+}
+
+/// One Piece volume 77: the case that argues for all pairs rather than every
+/// copy against the first.
+///
+/// c0 and c1 hold 234 images each and c2 holds 214 — and it is c1 and c2 that
+/// are one edition, the smaller being all-spread and expanding to the same 234
+/// slots. Anchoring on c0 reported three mutually unrelated files, and c0 is
+/// exactly the copy most likely to be the odd one out because the sort that
+/// produced it was by page count.
+///
+/// This check goes red if step 2 is ever rewritten as against-copy-0.
+#[test]
+fn duplicates_finds_the_identity_hidden_behind_the_first_copy() {
+    let Some(root) = corpus() else {
+        eprintln!("TAIYAKU_CORPUS unset; skipping");
+        return;
+    };
+    let set = copies(
+        &root,
+        "op-duplicates",
+        &["v077-mono-c0", "v077-mono-c1", "v077-mono-c2"],
+    );
+
+    let resolved = crate::duplicates::resolve(
+        &set,
+        None,
+        taiyaku_core::Direction::RightToLeft,
+        &duplicate_cache(&root),
+    )
+    .expect("v077 resolves");
+
+    eprintln!("v077: {}", crate::duplicates::set_line(&resolved));
+    eprintln!(
+        "v077 slots: {:?} | clusters {:?}",
+        resolved.copies.iter().map(|c| c.slots).collect::<Vec<_>>(),
+        resolved.clusters
+    );
+    let merged: Vec<&Vec<usize>> = resolved.clusters.iter().filter(|c| c.len() > 1).collect();
+    assert_eq!(
+        merged.len(),
+        1,
+        "exactly one identity cluster: {:?}",
+        resolved.clusters
+    );
+    // `cluster()`'s own doc comment guarantees members come back ascending, so
+    // the pair can be asserted directly rather than through length-and-contains,
+    // which would pass just as well for the wrong pair {0, 2} as for the right
+    // one {1, 2}.
+    assert_eq!(
+        merged[0],
+        &vec![1, 2],
+        "copy 1 and copy 2 are the identity pair, not copy 0: {:?}",
+        resolved.clusters
+    );
+    assert!(resolved.contradictions.is_empty());
+    assert!(resolved.flagged.is_empty(), "all three are volume 77");
+
+    let identity = resolved
+        .pairs
+        .iter()
+        .find(|p| p.relation == crate::duplicates::Relation::Identity)
+        .expect("an identity pair");
+    assert_eq!(
+        identity.runs, 1,
+        "full coverage on both sides is one run, or run compression is broken"
+    );
+}
+
+/// One Piece volume 92: 200 images against 101, the smaller being an
+/// all-spread edition.
+///
+/// Measured, not the identity the brief originally predicted: every one of
+/// c1's 101 images detects as a spread, so slot expansion doubles it to 202 —
+/// two more slots than c0's 200. The solve runs `s0=0-s199=199 ->
+/// s1=0L-s200=100R`, pairing all 200 of c0's slots but leaving c1's first and
+/// last half-slots unreached on the far side. That is coverage on one side
+/// only, which is `Within` by definition, not `Identity` — c0 is wholly
+/// contained in c1's larger packing, and the two stay two clusters with c1
+/// ranked first on its 202 slots.
+///
+/// `align`'s "N unmatched slots" counts the A side only, which is how
+/// `notes.md` came to read this pair as nothing unmatched. Goes red if slot
+/// expansion or the containment relation stops being load-bearing here.
+#[test]
+fn duplicates_sees_through_a_different_pagination() {
+    let Some(root) = corpus() else {
+        eprintln!("TAIYAKU_CORPUS unset; skipping");
+        return;
+    };
+    let set = copies(&root, "op-duplicates", &["v092-mono-c0", "v092-mono-c1"]);
+
+    let resolved = crate::duplicates::resolve(
+        &set,
+        None,
+        taiyaku_core::Direction::RightToLeft,
+        &duplicate_cache(&root),
+    )
+    .expect("v092 resolves");
+
+    eprintln!("v092: {}", crate::duplicates::set_line(&resolved));
+    eprintln!(
+        "v092 slots: {:?} | clusters {:?}",
+        resolved.copies.iter().map(|c| c.slots).collect::<Vec<_>>(),
+        resolved.clusters
+    );
+    assert_eq!(resolved.copies[0].slots, 200);
+    assert_eq!(resolved.copies[1].slots, 202);
+    assert_eq!(
+        resolved.clusters,
+        vec![vec![0], vec![1]],
+        "containment, not identity: two clusters"
+    );
+    assert_eq!(
+        resolved.pairs[0].relation,
+        crate::duplicates::Relation::Within
+    );
+    assert_eq!(resolved.pairs[0].paired, 200, "all of c0's slots pair");
+    assert_eq!(
+        resolved.ranked[0].cluster,
+        vec![1],
+        "c1 carries more slots and ranks first"
+    );
+}
+
+/// The Bocchi file named as main-series volume 1 that is the Gaiden spinoff.
+///
+/// What is asserted is the flagging: it refuses against both real scans, is kept
+/// out of the ranking, and the survivors rank by slots. Also asserted, now that
+/// it has run repeatedly and stably: the two real scans do not cluster as one.
+/// `hamaji` (125 slots) *contains* `krc` (124), 124 paired — containment, one
+/// slot apart, not identity — and containment does not merge, so the two stay
+/// separate clusters. `notes.md` once called this "the identity case again";
+/// that reading has since been measured wrong and corrected there too. Three
+/// clusters result: `hamaji`, `krc`, and the Gaiden file refusing against both.
+#[test]
+fn duplicates_flags_a_file_that_is_not_the_volume_it_claims() {
+    let Some(root) = corpus() else {
+        eprintln!("TAIYAKU_CORPUS unset; skipping");
+        return;
+    };
+    let set = copies(
+        &root,
+        "bocchi",
+        &[
+            "raw-v01-src-hamaji",
+            "raw-v01-src-krc",
+            "raw-v01-src-mangazip",
+        ],
+    );
+
+    let resolved = crate::duplicates::resolve(
+        &set,
+        None,
+        taiyaku_core::Direction::RightToLeft,
+        &duplicate_cache(&root),
+    )
+    .expect("bocchi resolves");
+
+    eprintln!("bocchi: {}", crate::duplicates::set_line(&resolved));
+    eprintln!(
+        "bocchi slots: {:?} | clusters {:?}",
+        resolved.copies.iter().map(|c| c.slots).collect::<Vec<_>>(),
+        resolved.clusters
+    );
+    assert_eq!(
+        resolved.clusters,
+        vec![vec![0], vec![1], vec![2]],
+        "three clusters: hamaji contains krc one slot apart, and the Gaiden file refuses both"
+    );
+    assert_eq!(resolved.flagged, vec![2], "the Gaiden file, and only it");
+    assert!(
+        resolved.ranked.iter().all(|r| !r.cluster.contains(&2)),
+        "a flagged copy must not be ranked"
+    );
+    let places: Vec<usize> = resolved.ranked.iter().map(|r| r.slots).collect();
+    assert!(
+        places.windows(2).all(|w| w[0] >= w[1]),
+        "ranked by slots descending: {places:?}"
+    );
+}
+
+/// The `--against` flagging rule's corpus witness: the same three Bocchi
+/// copies as the check above, judged twice over — once as a bare set, once
+/// against the one edition that can actually tell an impostor from a set of
+/// impostors.
+///
+/// Without a reference, `mangazip` is the copy flagged: it refuses both real
+/// scans and they refuse it right back, so the set alone reads it as not this
+/// volume. But `mangazip` is not an impostor of nothing — it is the *Gaiden*
+/// spinoff filed under the main series' name, and the corpus holds the real
+/// edition it belongs to: `en-gaiden-v01.cbz`. `docs/notes.md` records that
+/// pairing at 8 runs, 182 of 185 slots, and records the main-series raws
+/// refusing that same edition. Handing it to `--against` inverts the
+/// flagging: `mangazip` pairs with the reference and is ranked, while
+/// `hamaji` and `krc` — the two real scans of the volume the set is actually
+/// named for — pair nothing with it and are the ones flagged instead. A
+/// reference edition is the only thing in this protocol that can distinguish
+/// an impostor from a set of impostors, and this is the one case in the
+/// corpus where handing it one does not merely confirm the set's own
+/// reading but reverses it outright: the copy the set calls the odd one out
+/// is the only one that really is this volume, once judged against the
+/// edition it belongs to. Until this check, that consequence — not the
+/// pairing itself, which the check above and `notes.md` both already measure
+/// — was held by unit tests alone; `docs/status.md` says so rather than
+/// implying a measurement backs it.
+///
+/// `resolve` runs twice over the same three directories, once with no
+/// reference and once against the Gaiden edition, so the inversion is
+/// asserted rather than described and the check does not depend on reading
+/// the check above first.
+#[test]
+fn duplicates_against_the_gaiden_edition_inverts_which_copy_is_flagged() {
+    let Some(root) = corpus() else {
+        eprintln!("TAIYAKU_CORPUS unset; skipping");
+        return;
+    };
+    let set = copies(
+        &root,
+        "bocchi",
+        &[
+            "raw-v01-src-hamaji",
+            "raw-v01-src-krc",
+            "raw-v01-src-mangazip",
+        ],
+    );
+    let cache = duplicate_cache(&root);
+
+    let without_reference =
+        crate::duplicates::resolve(&set, None, taiyaku_core::Direction::RightToLeft, &cache)
+            .expect("bocchi resolves with no reference");
+    eprintln!(
+        "bocchi, no reference:          {}",
+        crate::duplicates::set_line(&without_reference)
+    );
+
+    let reference = vec![root.join("incoming/bocchi/en-gaiden-v01.cbz")];
+    let against_gaiden = crate::duplicates::resolve(
+        &set,
+        Some(&reference),
+        taiyaku_core::Direction::RightToLeft,
+        &cache,
+    )
+    .expect("bocchi resolves against the Gaiden edition");
+    eprintln!(
+        "bocchi, against en-gaiden-v01.cbz: {}",
+        crate::duplicates::set_line(&against_gaiden)
+    );
+
+    assert_eq!(
+        without_reference.flagged,
+        vec![2],
+        "without a reference, mangazip (the Gaiden file) is the one flagged"
+    );
+    assert_eq!(
+        against_gaiden.flagged,
+        vec![0, 1],
+        "against its real edition, hamaji and krc pair nothing with it and are flagged instead"
+    );
+    assert_eq!(
+        against_gaiden.ranked.len(),
+        1,
+        "only mangazip pairs with the reference: {:?}",
+        against_gaiden.ranked
+    );
+    assert_eq!(
+        against_gaiden.ranked[0].cluster,
+        vec![2],
+        "the copy the set alone flagged is the one ranked, once judged against its own edition"
+    );
+}
+
+/// Base selection against a reference edition: four Chainsaw Man raws against
+/// the English release. `src-b` holds 199 images to the others' 198 and wins on
+/// content.
+///
+/// Also asserted, now that it has run repeatedly and stably: the cluster shape.
+/// `src-a` and `src-c` are true identity at 198 slots each and merge into one
+/// cluster; `src-b` stands alone on its 199th slot; the colour edition stands
+/// alone too, matching neither. `notes.md` inferred the 198-image pair from
+/// page counts alone; this confirms it.
+#[test]
+fn duplicates_ranks_scans_against_a_reference_edition() {
+    let Some(root) = corpus() else {
+        eprintln!("TAIYAKU_CORPUS unset; skipping");
+        return;
+    };
+    let set = copies(
+        &root,
+        "chainsawman",
+        &[
+            "raw-v01-src-a",
+            "raw-v01-src-b",
+            "raw-v01-src-c",
+            "raw-v01-colour",
+        ],
+    );
+    let against = vec![root.join("incoming/chainsawman/en-v01.cbz")];
+
+    let resolved = crate::duplicates::resolve(
+        &set,
+        Some(&against),
+        taiyaku_core::Direction::RightToLeft,
+        &duplicate_cache(&root),
+    )
+    .expect("chainsawman resolves");
+
+    eprintln!("chainsawman: {}", crate::duplicates::set_line(&resolved));
+    eprintln!("chainsawman clusters: {:?}", resolved.clusters);
+    assert_eq!(
+        resolved.clusters,
+        vec![vec![0, 2], vec![1], vec![3]],
+        "src-a and src-c merge as identity; src-b and the colour edition stand alone"
+    );
+    let winner = &resolved.ranked[0];
+    assert!(
+        winner.cluster.contains(&1),
+        "the 199-image scan wins on content: {:?}",
+        resolved.ranked
+    );
+    assert!(
+        resolved.ranked.iter().all(|r| r.against.is_some()),
+        "a reference edition was given, so every row carries its figures: {:?}",
+        resolved.ranked
+    );
+}
+
+/// The inventory over the duplicate corpus: every set found, and the parse
+/// surviving real names.
+#[test]
+fn the_inventory_finds_every_duplicate_set() {
+    let Some(root) = corpus() else {
+        eprintln!("TAIYAKU_CORPUS unset; skipping");
+        return;
+    };
+    let under = root.join("incoming/op-duplicates");
+
+    let walked = crate::inventory::walk(&under, 60).expect("the corpus walks");
+
+    eprintln!(
+        "op-duplicates: {} candidates, excluded {:?}",
+        walked.candidates.len(),
+        walked.excluded
+    );
+    assert_eq!(walked.candidates.len(), 34, "34 copies");
+
+    let mut volumes: Vec<u32> = walked
+        .candidates
+        .iter()
+        .map(|c| {
+            let name = c
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            crate::inventory::volume_number(&name)
+                .unwrap_or_else(|| panic!("no volume number parsed from `{name}`"))
+        })
+        .collect();
+    volumes.sort_unstable();
+    volumes.dedup();
+    assert_eq!(volumes.len(), 16, "16 volumes: {volumes:?}");
+    assert!(volumes.contains(&95), "v095-colour-c0 parses to 95");
+}

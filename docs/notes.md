@@ -1964,8 +1964,8 @@ cleaner alignment of the pages that remain.
 
 Aligning the scans against **each other** is what makes the choice cheap:
 
-| Pair | runs | paired | unmatched |
-| ---- | ---- | ------ | --------- |
+| Pair | runs | paired | unmatched **on the `v01` side only** |
+| ---- | ---- | ------ | ----------------------------------- |
 | `v01` vs `v01-02/第01巻` | 1 | 198 of 198 | 0 |
 | `v01` vs `v01b` | 2 | 198 of 198 | 0 |
 | `v01` vs colour | 6 | 195 of 198 | 3 |
@@ -1980,6 +1980,15 @@ That is the shape of the base-selection tool: align the candidates against one
 another first, collapse the ones that come back as identity, and only then spend
 alignments on the distinct ones.
 
+**That last column is one-sided, which matters more than it looks.** `align`
+counts unmatched slots for the A side, so a zero there says the left-hand scan
+is wholly covered and says nothing about the right-hand one — and `v01b` carries
+a slot the other two do not, which is the whole reason it wins the table above.
+Run as a duplicate set, the corpus's three raws come out as one identity pair
+and one *containment* pair rather than two identity pairs; see "Duplicate
+resolution as a command, and half the identity claims above are
+containment" below.
+
 ### Bocchi volume 1, where one of the three was not the same work
 
 The same experiment on Bocchi looked like it was going the same way and then did not:
@@ -1990,9 +1999,24 @@ The same experiment on Bocchi looked like it was going the same way and then did
 | `v01-04/第01巻` | 125 | 7 runs, 123 paired |
 | `Manga-Zip.info_Bocchi the Rock v01` | 185 | **1 run, 0 paired — refused** |
 
-The first two are the identity case again: 1 run, 124 of 124, nothing unmatched.
-The third was refused against the English edition and against both other scans.
+The first two are **not** the identity case, though the page counts come within
+one of saying so. Run as a duplicate set they measure **2 runs, 124 of 125**:
+every slot of the 124-slot copy pairs, and the 125-slot copy carries one more
+that nothing on the other side reaches. That is containment — the larger copy
+holds everything the smaller one does and something besides — which is the
+distinction base selection turns on, and it is why the ranking puts the 125-slot
+copy first.
 
+**The paragraph above said "the identity case again: 1 run, 124 of 124, nothing
+unmatched" until the command was run over the same three directories**, and two
+things were wrong with that. `align` reports unmatched slots for the A side
+alone, so "nothing unmatched" was a claim about one copy read as a claim about
+both. And the Chainsaw Man section above keeps a 198-against-199 pair — the same
+shape — distinct and ranks the larger copy first, so this document was using
+*identity* two ways at once. The stricter reading is the one that makes base
+selection work, and it is the one the command implements.
+
+The third was refused against the English edition and against both other scans.
 It was refused because it is a different work. The cover reads ぼっち・ざ・ろっく！
 **外伝** 廣井きくりの深酒日記 — the *Gaiden* spinoff, drawn by くみちょう from
 はまじあき's original, following a different character. The file is named as if it
@@ -2105,23 +2129,34 @@ shape: c1–c2 is 3 runs at 99% where either against c0 is 8 or 9.
 **Duplicate resolution is a clustering problem, not a ranking problem.** Find which
 copies are the same first; only then choose between the ones that differ.
 
-### Identity survives a completely different pagination
+### A completely different pagination is seen through, and only one of these two is identity
 
 The best result in the set is the one that looks least likely on the file listing.
 
-| Volume | copies | result |
-| ------ | ------ | ------ |
-| v092 | 200 images vs **101 images** | **1 run, 200 of 200 slots, nothing unmatched** |
-| v077 | 234 images vs **214 images** | **1 run, 234 of 234 slots, nothing unmatched** |
+| Volume | copies | slots | measured |
+| ------ | ------ | ----- | -------- |
+| v092 | 200 images vs **101 images** | 200 vs **202** | 1 run, 200 paired — c0 lies wholly **within** c1 |
+| v077 | 234 images vs **214 images** | 234 vs 234 | 1 run, 234 of 234 on both sides — **identity** |
 
-Half the image count and a perfect identity, because the smaller copy is the
+Half the image count and the same work, because the smaller copy is the
 all-spread edition — two facing pages per image — and slot expansion puts them back
 on the same footing. A file listing says these are different; the alignment says
 they are the same content, and it is right.
 
-This is the strongest argument for slots being the unit the format addresses rather
-than pages. Page counts are a property of packaging. Slot counts are a property of
-the work.
+**v092 is containment rather than identity, and this section claimed identity
+until the command measured both sides.** Every one of c1's 101 images detects as
+a spread, so expansion gives it 202 slots against c0's 200. The run is
+`s0=0-s199=199 -> s1=0L-s200=100R`: it reaches all 200 of c0's slots and never
+reaches c1's first or last half-slot. `align`'s "N unmatched slots" is an A-side
+figure, so the original "nothing unmatched" was true of c0 and silently assumed
+of c1. The root cause is stated once, in full, under "Duplicate resolution as a
+command, and half the identity claims above are containment" below.
+
+The conclusion the pair was cited for survives the correction, and v077's c1
+against c2 carries it outright: **slots, not pages, are the unit the format
+should address.** Page counts are a property of packaging. Slot counts are a
+property of the work, and it takes both sides' slot counts to tell "the same
+work" from "all of this work and a little more".
 
 ### The full classification
 
@@ -2187,6 +2222,210 @@ On this collection that is 3 settled free, 2 more collapsed by identity, and 13
 genuine choices left — down from 19 sets to look at, with the two mislabelled ones
 flagged rather than silently ranked.
 
+## Duplicate resolution as a command, and half the identity claims above are containment
+
+The protocol above is now `taiyaku inventory` and `taiyaku duplicates`, and
+running the finished thing against the corpus overturned a claim this document
+made twice. Everything below is a figure from a run, not an estimate; the six
+checks are gated on `TAIYAKU_CORPUS` and print what they measured.
+
+### `align` counts unmatched slots on the A side only, which is how the error was made
+
+This is the root cause, and it is worth stating on its own because nothing about
+the output announces it. An alignment of A against B reports `N unmatched slots`
+where N counts **A's** slots that paired with nothing. B's unpaired slots are not
+in that number and are not printed anywhere else. So a solve that covers all of A
+prints "nothing unmatched" whether B is exactly A's length or carries slots at
+either end that nothing ever reaches.
+
+Read as "nothing unmatched *at all*", that turns containment into identity — and
+containment is the commoner shape. Every pair in the corpus that comes within
+two slots of covering both sides, measured from **both** sides this time:
+
+| Pair | slots | paired | what it actually is |
+| ---- | ----- | ------ | ------------------- |
+| One Piece v077 c1 / c2 | 234 / 234 | 234 | identity — both sides wholly covered |
+| Chainsaw Man src-a / src-c | 198 / 198 | 198 | identity |
+| One Piece v092 c0 / c1 | 200 / 202 | 200 | **containment** — c0 lies wholly within c1 |
+| Bocchi hamaji / krc | 125 / 124 | 124 | **containment** — hamaji contains krc |
+| Chainsaw Man src-a / src-b | 198 / 199 | 198 | **containment** — src-a within src-b |
+
+This document called four of these five identity — every one but
+`src-a`/`src-b`, which the Chainsaw Man section kept distinct and ranked the
+larger copy first, and which is the row that shows the document using the word
+two ways at once. **Two of those four are containment**, and containment is the
+majority shape overall: three pairs of the five.
+
+**So the command reports five relations, not three** — identity, `within`,
+`contains`, distinct, refused — and containment is named rather than swept into
+"distinct". The clustering merges on identity alone, because a container holds
+content the other copy lacks and collapsing the two would discard the difference
+the choice is about; the ranking already prefers the container, on slot count,
+so nothing is lost by keeping them apart. Where the difference genuinely is
+nothing — v077's c1 and c2, `src-a` and `src-c` — the merge still happens.
+
+### What the six gated checks measured
+
+```
+v077, three copies    0 = 236 slots, 1 = 234, 2 = 234
+                      0-1  104 runs  184 of 236  FRAGMENTED
+                      0-2  100 runs  186 of 236  FRAGMENTED
+                      1-2    1 run   234 of 234  sound, identity
+                      clusters {0} and {1, 2};  rank c0 then c1;  decided=yes
+
+v092, two copies      0-1    1 run   200 of 200  sound, 0 within 1 (202 slots)
+                      clusters {0} and {1};  c1 first on 202 slots
+
+bocchi, three copies  0-1    2 runs  124 of 125  sound, 1 within 0
+                      0-2    1 run     0 of 125  REFUSED
+                      1-2    1 run     0 of 124  REFUSED
+                      the Gaiden file flagged and excluded from the ranking
+
+chainsawman, four     0-1    2 runs  198 of 198  sound, 0 within 1 (199 slots)
+raws (a, b, c,        0-2    1 run   198 of 198  sound, identity
+colour) against       0-3    6 runs  195 of 198  sound
+the English release   1-2    3 runs  198 of 199  sound, 2 within 1
+                      1-3    4 runs  197 of 199  sound
+                      2-3    6 runs  195 of 198  sound
+                      clusters {0, 2}, {1}, {3};  src-b first, 199 slots,
+                      191 paired in 3 runs against src-a's 190 in 5 and the
+                      colour edition's 190 in 7
+
+inventory over op-duplicates
+                      dirs=36 candidates=34 volumes=16 duplicated=16 settled=0
+                      excluded=0 excluded-pages=-
+```
+
+Two of those were deliberately left unpredicted when the checks were written,
+and both came out on the side of the stricter reading. The Bocchi pair the
+earlier section called identity is containment. The Chainsaw Man identity
+cluster is `{src-a, src-c}` — the two 198-image scans, as the page counts
+suggested but nothing had confirmed.
+
+`settled=0` is worth reading: no set here is settled by signature alone, so
+every figure above cost a real alignment. That is consistent with what was
+extracted — the hand run settled 3 of its 19 sets on signatures before anything
+was transferred, and it is the 16 that needed real comparison which live in
+`op-duplicates`.
+
+**The sixth check runs the Bocchi set twice, and the two runs disagree.** The
+block above is the first of them. The second hands `duplicates` the edition the
+mislabelled file actually belongs to — `incoming/bocchi/en-gaiden-v01.cbz`,
+which the library already held under the right name, and which the section
+"Bocchi volume 1, where one of the three was not the same work" records the file
+pairing with at 8 runs and 182 of 185 slots. Same three directories, same
+reading direction, one flag different:
+
+```
+bocchi, no reference:               set: copies=3 signature=0 clusters=3 flagged=1 refused=2 fragmented=0 slots=125 decided=yes best=…/raw-v01-src-hamaji
+bocchi, against en-gaiden-v01.cbz:  set: copies=3 signature=0 clusters=3 flagged=2 refused=2 fragmented=0 slots=185 decided=yes best=…/raw-v01-src-mangazip
+```
+
+Nothing about the copies changed between those two lines, and the pairs did not
+move: `refused=2` is the same two refusals both ways, `mangazip` against each
+real scan. What changed is the question the flagging is allowed to ask. With no
+reference the set can only ask which copy disagrees with the others, and
+`mangazip` is that copy — it refuses both real scans and they refuse it back, so
+the majority settles it: `mangazip` is flagged and excluded, and the two
+agreeing copies rank with `hamaji` first on 125 slots. With a reference the set stops being the
+authority: every cluster representative is aligned against the reference, the
+flagged ones included, and the only copy that pairs anything with
+`en-gaiden-v01.cbz` is `mangazip`. `hamaji` and `krc` pair nothing with it — the
+main-series raws refuse the Gaiden edition, which the table in that earlier
+section already recorded — so they are what `flagged=2` now names, and
+`mangazip` is the only copy left to rank, at 185 slots against the 125 that won
+the first run.
+
+Both answers are correct about the question they were asked, and that is the
+whole of it. "Which of these is not this volume" has no answer inside a set that
+has no idea which volume it is; it only has one relative to something outside
+the set. The earlier section is about the mislabelled file being caught and
+identified. This is the step after: the identification now decides the ranking
+rather than merely explaining a refusal. Which line to act on depends on which
+volume is being sorted — the first if it is main-series volume 1, the second if
+it is the *Gaiden* — and that is a fact about the library, not about the three
+files, which is exactly why it has to be supplied from outside the set.
+
+### Two copies and a refusal between them flag both, and that is the designed answer
+
+The One Piece Starter Book copies filed as volumes 2 and 3 come out
+`flagged=2 refused=1 decided=no`, with nothing ranked at all:
+
+```
+set: copies=2 signature=0 clusters=2 flagged=2 refused=1 fragmented=0 slots=- decided=no best=-
+```
+
+Both copies are flagged because **nothing in the set says which one is the
+impostor.** With three copies the majority settles it — Bocchi's Gaiden file
+refuses against two scans that agree with each other, so it is the odd one out
+and the other two rank normally. With two, a refusal is symmetric and the honest
+report is that neither can be trusted. `--against` a reference edition is what
+resolves it, and the output says so rather than picking one.
+
+What `--against` does here is move the decision outside the set: every cluster
+representative is aligned against the reference, the flagged ones included, and
+whichever copy pairs with it is this volume however the set treated it. A copy
+that pairs nothing with the reference is not, whatever it did within the set.
+**On this exact set — a two-copy refusal with no reference to hand — that is
+still behaviour rather than a measurement**, because the Starter Book copies
+have no reference edition in the corpus. What is now measured is the rule
+itself, on the Bocchi set above: handing it the *Gaiden* edition inverts which
+copies come back flagged, so the reference overriding the set's own reading is a
+gated figure rather than a claim.
+
+### Ranking prefers whichever copy holds more, including what may not belong
+
+The weakness in content-first ranking now has a real example rather than a
+caveat. On v077 the command names **copy 0** best, on 236 slots against 234 —
+and copy 0 is precisely the different-crop outlier that fragments against both
+other copies, at 104 and 100 runs. Content-first is still the right rule, for
+the reason the Chainsaw Man section gives: a missing page cannot be recovered
+from a cleaner alignment of the pages that remain. But "more slots" and "more of
+this volume" are not the same claim, and on this set they disagree.
+
+Two things keep that from being a trap. The pairs table sits above the ranking
+in the same output, so the 104 runs are visible next to the copy the rank names
+first. And `--against` a reference edition adds pairings and run counts to every
+ranked row, which is what turns the ordering from a proxy into a measurement —
+the Chainsaw Man set is decided that way and v077 could be.
+
+### `--pattern` matches the deepest directory, not the copy directory
+
+`inventory` takes as one candidate the deepest directory that still holds a
+whole edition, which is what keeps a volume whose chapters sit in subdirectories
+from counting seven times. The consequence is that the name it groups on is that
+directory's, and one candidate in this corpus is nested:
+
+```
+corpus/incoming/op-duplicates/v095-colour-c1/DLRAW.TO_ワンピース カラー版 第095巻
+```
+
+The default marker scan reads `第095巻` and groups it with `v095-colour-c0`
+correctly. `--pattern 'v{}'` does not match that name at all, so the copy falls
+into the unparsed group and volume 95 is left with one copy:
+
+| Run | volumes | duplicated |
+| --- | ------- | ---------- |
+| `taiyaku inventory corpus/incoming/op-duplicates` | 16 | 16 |
+| `taiyaku inventory corpus/incoming/op-duplicates --pattern 'v{}'` | 17 | 15 |
+
+The unparsed group is printed whatever else is suppressed, which is why this is
+visible rather than a silently missing set. Reach for `--pattern` when the
+default parse is wrong, not by default.
+
+### Rebuilding the survey rather than remembering it
+
+`scripts/duplicate-survey.sh` collects one `set:` line per duplicate set over a
+release directory, the way `scripts/margin-survey.sh` collects `stats:` lines:
+
+```sh
+scripts/duplicate-survey.sh corpus/incoming/op-duplicates
+```
+
+It runs `taiyaku inventory` over the same root first and **fails** if its own
+shell grouping and inventory's parse disagree about how many duplicate sets
+exist, rather than printing a table with the wrong number of rows.
+
 ## The margin survey, and where the refusal threshold sits
 
 Run with `scripts/margin-survey.sh` against the whole corpus. Every figure is
@@ -2210,7 +2449,7 @@ Run with `scripts/margin-survey.sh` against the whole corpus. Every figure is
 | good | tongari-v09-letterbox | 180 | 177 | 0.504 | 0.656 | 0.152 | 0.047 | 44.0 | 3.9 | Sound |
 | good | monster-2to1 | 444 | 438 | 0.504 | 0.609 | 0.105 | 0.008 | 47.4 | 2.9 | Sound |
 | good | nausicaa-4to1 | 600 | 576 | 0.504 | 0.777 | 0.273 | 0.172 | 46.1 | 3.3 | Sound |
-| good | op-v092-identity | 200 | 202 | 0.504 | 0.809 | 0.305 | 0.211 | 200.0 | 0.5 | Sound |
+| good | op-v092-spread-repagination | 200 | 202 | 0.504 | 0.809 | 0.305 | 0.211 | 200.0 | 0.5 | Sound |
 | good | bocchi-gaiden-real | 185 | 185 | 0.500 | 0.660 | 0.160 | 0.062 | 36.4 | 4.3 | Sound |
 | bad | oshinoko-v01-badcopy | 223 | 229 | 0.504 | 0.609 | 0.105 | 0.012 | 4.8 | 27.4 | Fragmented |
 | bad | op-v077-c0-vs-c1 | 236 | 234 | 0.500 | 0.629 | 0.129 | 0.023 | 3.5 | 44.1 | Fragmented |
@@ -2288,14 +2527,17 @@ one measure" does not transfer automatically to another.)
 **What the survey says about average run length.** Say plainly what the table
 shows: **on this corpus both measures separate, once refusals are gated.**
 Every good pairing's average run length sits between 36.0 (Kobayashi v03) and
-200.0 (the One Piece v092 identity case, one run covering all 200 slots);
+200.0 (the One Piece v092 pair, one run covering all 200 of c0's slots — the
+row is labelled `op-v092-spread-repagination` rather than `identity`, since c0
+is *within* c1's 202 rather than identical to it, and the run count is
+unaffected);
 every bad, needle and subset pairing sits at 6.8 or below, and both unrelated
 pairs at 0.0. No overlap: the gap runs from 6.8 to 36.0. But runs per hundred
 pages separates too among the pairs that get that far — the good rows run 0.5
 to 4.9, and every bad, needle and subset row runs 21.2 to 100.0, a gap wider
 in ratio than the other measure's. The one place it fails is the two refused
 pairs, which read as 0.5 runs per hundred, better than every good pairing's own
-figure (2.4 to 4.9) bar the identity case's own 0.5 — the hole this document
+figure (2.4 to 4.9) bar the v092 pair's own 0.5 — the hole this document
 has already recorded once, a total refusal reading as excellent fragmentation.
 That failure is already neutralised: `verdict` checks coverage first and only
 consults fragmentation once something was paired, so a refusal never reaches
@@ -2516,8 +2758,12 @@ taiyaku align nausicaa/raw-v0{1,2,3,4} -- nausicaa/en-deluxe-v01.cbz --split-spr
 # the mislabelled file against its real counterpart — 8 runs, 182 of 185
 taiyaku align bocchi/raw-v01-src-mangazip -- bocchi/en-gaiden-v01.cbz --split-spreads
 
-# identity across different paginations — 1 run, 200 of 200
+# one pagination inside another — 1 run, 200 of c0's 200 slots. c0 is *within*
+# c1's 202, not identical to it; the unmatched count align prints is c0's alone.
 taiyaku align opdup/v092-mono-c0 -- opdup/v092-mono-c1 --split-spreads
+
+# and the same set as a duplicate decision, which reports both sides
+taiyaku duplicates opdup/v092-mono-c0 -- opdup/v092-mono-c1
 ```
 
 The duplicate survey is two steps: build an inventory of every volume directory with

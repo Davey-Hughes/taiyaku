@@ -719,7 +719,7 @@ row good  "tongari-v01"        corpus/incoming/tongari/raw-v01 -- corpus/incomin
 row good  "tongari-v09-letterbox" corpus/incoming/tongari/raw-v09 -- corpus/incoming/tongari/en-v09.cbz
 row good  "monster-2to1"       corpus/incoming/monster-pair/raw-v01 corpus/incoming/monster-pair/raw-v02 -- corpus/incoming/monster-pair/en-pe-v01.cbz
 row good  "nausicaa-4to1"      corpus/incoming/nausicaa/raw-v01 corpus/incoming/nausicaa/raw-v02 corpus/incoming/nausicaa/raw-v03 corpus/incoming/nausicaa/raw-v04 -- corpus/incoming/nausicaa/en-deluxe-v01.cbz
-row good  "op-v092-identity"   corpus/incoming/op-duplicates/v092-mono-c0 -- corpus/incoming/op-duplicates/v092-mono-c1
+row good  "op-v092-spread-repagination" corpus/incoming/op-duplicates/v092-mono-c0 -- corpus/incoming/op-duplicates/v092-mono-c1
 row good  "bocchi-gaiden-real" corpus/incoming/bocchi/raw-v01-src-mangazip -- corpus/incoming/bocchi/en-gaiden-v01.cbz
 
 # --- known bad: aligns, but wrongly
