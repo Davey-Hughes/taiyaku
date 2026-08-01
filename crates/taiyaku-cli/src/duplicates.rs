@@ -140,12 +140,15 @@ fn memoized_confirm(
 }
 
 pub fn command(args: &[String]) -> Result<(), String> {
+    crate::reject_unknown_flags("duplicates", args, &["--against", "--cache", "--ltr"])?;
     let copies = groups(args)?;
     let direction = match args.iter().any(|a| a == "--ltr") {
         true => Direction::LeftToRight,
         false => Direction::RightToLeft,
     };
-    let cache = PathBuf::from(crate::option_value(args, "--cache").unwrap_or(".taiyaku-cache"));
+    let cache = PathBuf::from(
+        crate::option_value(args, "--cache", "a directory")?.unwrap_or(".taiyaku-cache"),
+    );
     let against = against_members(args)?;
 
     let resolution = resolve(&copies, against.as_deref(), direction, &cache)?;

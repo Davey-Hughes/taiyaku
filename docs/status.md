@@ -22,9 +22,9 @@ piece, and none of *that* has started.
 
 ## What is built
 
-Five crates, 266 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
+Five crates, 288 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
 `base64` and `serde`, plus `axum`, `tokio`, `tower` and `ureq` in the server and
-`wasm-bindgen` in the binding. Nine of the 266 are standing checks gated on
+`wasm-bindgen` in the binding. Nine of the 288 are standing checks gated on
 `TAIYAKU_CORPUS`, one of which also needs `TAIYAKU_STUMP_URL` and
 `TAIYAKU_STUMP_KEY`; each skips cleanly when what it needs is absent, so CI
 stays green without the corpus or a reachable Stump. One measures composition
@@ -68,13 +68,13 @@ paths.
 Seven commands:
 
 ```
-taiyaku align  <a-member>... -- <b-member>...   [--write FILE] [--split-spreads] [--ltr] [--stats] [--direct]
-taiyaku verify <a-member>... -- <b-member>...   [--out FILE] [--sidecar FILE]
+taiyaku align  <a-member>... -- <b-member>...   [--split-spreads [--ltr] [--cache DIR] [--write FILE [--title NAME] [--name-a KEY] [--name-b KEY] [--direct]]] [--stats]
+taiyaku verify <a-member>... -- <b-member>...   [--out FILE] [--sidecar FILE [--cache DIR] [--ltr]]
 taiyaku topology <hub>... -- <spoke>... -- <spoke>...
 taiyaku lookup <taiyaku.json> <from> <to> <page>...
 taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT] [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump]
 taiyaku inventory <root>                        [--min-pages N] [--pattern SPEC]
-taiyaku duplicates <copy>... -- <copy>...       [--against <member>...] [--ltr]
+taiyaku duplicates <copy>... -- <copy>...       [--against <member>...] [--cache DIR] [--ltr]
 ```
 
 `align` takes several members on either side, which is how one volume aligns
@@ -227,11 +227,14 @@ still `lookup`.
 
 ### Open items
 
-Eighteen, each found by a whole-branch review, carried as a deferral, or turned
-up by reading a design against the code, and each judged not worth blocking on at
-the time. They are tracked here rather than left in a scratch file so that
-closing one is a visible act rather than a thing someone remembers. **Ten are
-now closed — O2, O3, O4, O5, O7, O10, O12, O16, O17 and O18 — leaving eight.**
+Twenty-two, each found by a whole-branch review, carried as a deferral, turned
+up by reading a design against the code, turned up by running a command against
+its own usage text, or turned up by reviewing what the fix before it left
+behind, and each judged not worth blocking on at the time. They are
+tracked here rather than left in a scratch file so that closing one is a visible
+act rather than a thing someone remembers. **Fifteen are now closed — O2, O3,
+O4, O5, O7, O10, O12, O15, O16, O17, O18, O19, O20, O21 and O22 — leaving
+seven.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -252,10 +255,14 @@ each is in the detail below; the table is what a reader scans.
 | O12 | [x] | `spawn_blocking` covers three of five blocking handlers | `routes.rs::get_progress`, `::put_progress` | M1/M2 deferral |
 | O13 | [ ] | A hand-corrected run does not survive a re-solve | `sidecar.rs::merge_spoke` | M4 planning |
 | O14 | [ ] | The binding rebuilds the route on every resolve | `binding.rs::Binding::resolve` | M4 whole-branch review |
-| O15 | [ ] | A flag typed with no usable value is taken as absent, in silence | `main.rs::option_value` | duplicate-resolution review |
+| O15 | [x] | A flag typed with no usable value was taken as absent, in silence | `main.rs::option_value` | duplicate-resolution review |
 | O16 | [x] | A symlink cycle truncates the inventory walk — *silently, not by crashing* | `inventory.rs::totals` | duplicate-resolution review |
 | O17 | [x] | The content-hash confirmation re-reads a copy once per candidate | `duplicates.rs::representatives` | duplicate-resolution review |
 | O18 | [x] | The `--against` flagging rule had no corpus witness | `duplicates.rs::resolve_with` | duplicate-resolution review |
+| O19 | [x] | `align` without `--split-spreads` ignored the whole sidecar-writing half of its flags | `main.rs::align` | O15 scoping |
+| O20 | [x] | Six more `align` flags were ignored where they could not take effect | `main.rs::align` | O19 fix |
+| O21 | [x] | A misspelled flag was accepted in silence by every command | `main.rs::reject_unknown_flags` | O20 review |
+| O22 | [x] | `verify` ignored `--cache` and `--ltr` with no `--sidecar` to apply them to | `main.rs::verify` | O20 review |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -510,31 +517,64 @@ hand-corrected run until the correction UI exists:
   want the `Route` held across a whole strip.
 
 **The `duplicate-resolution` whole-branch review found four more** — O15 to
-O18 — and unlike every group above it, most of them did not outlive the branch
-that found them: three were closed on it. The fourth is the one whose fix is
-larger than the branch, and it is recorded here rather than fixed in passing for
-exactly that reason:
+O18 — and unlike every group above it, none of them outlived the branch that
+found them by long: three were closed on it, and the fourth, whose fix was
+larger than the branch, on the commit it asked for:
 
-- **O15 — A flag typed with no usable value is taken as absent, in silence.
-  Open.** `option_value` finds the flag and returns whatever argument happens to
-  follow it, without asking whether anything does. Both ways that can go wrong
-  are quiet. A flag last on the line has nothing after it, so
-  `taiyaku inventory releases --min-pages` reads as no flag at all and walks
-  with the default threshold of 60. A flag followed by another flag takes that
-  flag as its value, so `taiyaku align a -- b --write --ltr` writes the sidecar
-  to a file named `--ltr` — the direction is still applied, since `--ltr` is
-  matched separately, so nothing anywhere reports a problem.
-  **This branch fixed the instance and left the class.** `against_members` was
-  changed during the review to *refuse* a valueless `--against` rather than
-  fall through to no reference at all, on the argument that a flag typed and
-  then ignored is worse than one refused — dropping the reference edition
-  changes `decided=` and the rank order, so the silence costs a wrong answer
-  rather than a default. None of that argument is about `--against`.
-  Thirteen other valued flags, across nineteen call sites in `align`, `verify`,
-  `serve`, `inventory` and `duplicates`, still do the ignoring. Deferred because
-  the fix is a pass over all of them — each wants its own message naming what it
-  expected — and that is its own commit rather than a tail-end one on a branch
-  about duplicates.
+- **O15 — A flag typed with no usable value was taken as absent, in silence.
+  Closed.** `option_value` found the flag and returned whatever argument
+  happened to follow it, without asking whether anything did. Both ways that
+  can go wrong were quiet. A flag last on the line has nothing after it, so
+  `taiyaku inventory releases --min-pages` read as no flag at all and walked
+  with the default threshold of 60. A flag followed by another flag took that
+  flag as its value, so `taiyaku align a -- b --write --ltr` wrote the sidecar
+  to a file named `--ltr` — the direction still applied, since `--ltr` is
+  matched separately, so nothing anywhere reported a problem.
+  The `duplicate-resolution` branch fixed the instance and left the class:
+  `against_members` was changed during the review to *refuse* a valueless
+  `--against` rather than fall through to no reference at all, on the argument
+  that a flag typed and then ignored is worse than one refused — dropping the
+  reference edition changes `decided=` and the rank order, so the silence cost
+  a wrong answer rather than a default. None of that argument was about
+  `--against`. Thirteen other valued flags, across nineteen call sites in
+  `align`, `verify`, `serve`, `inventory` and `duplicates`, still did the
+  ignoring, and the pass over all of them is this commit.
+  **The two modes did not split evenly, which the deferral had not noticed.**
+  Mode A — a flag last on the line — was silent for all thirteen, measured on
+  `inventory`: `--min-pages` alone walked with the default and reported two
+  candidates as zero, exit 0. Mode B — a flag eating the next flag — was
+  already caught by accident wherever the value was parsed for its own sake,
+  which is only the two `inventory` flags: `--min-pages --pattern` answered
+  "`--pattern` is not a number of pages" and `--pattern --min-pages` answered
+  "needs one `{}` where the volume number goes". Everywhere else it either
+  surfaced late and elsewhere as a failed read, bind or request, or did not
+  surface at all — `--out` would have written the contact sheet to a file named
+  after the next flag exactly as `--write` did. So a fix that only validated
+  values would have left mode A untouched everywhere and mode B untouched on
+  every flag whose value nothing inspects.
+  **`--name-a` is the case that decided the rule.** `validate_key` looks like
+  it should catch mode B and cannot: `-` is in its safe alphabet, so `--name-b`
+  is a well-formed edition key. Measured before the fix — `align … --name-a
+  --name-b` wrote a sidecar whose editions were `["--name-b", "ed-b"]`, a key
+  that then appears as a path segment in two URLs. So the refusal is **a value
+  beginning with `--` is a flag**, applied in `option_value` without asking
+  which flags exist, rather than per flag. That is the rule `split_editions`,
+  `serve`'s path list and `against_members` already apply to positional
+  arguments, so it is this command's existing convention rather than a new one.
+  The cost is that a file genuinely named `--something` cannot be named on the
+  command line.
+  Each flag names what it wanted, the shape `--against` set: `--write needs a
+  path, and `--ltr` is another flag`; `--min-pages needs a number of pages, and
+  nothing followed it`. **`align` and `verify` now resolve every valued flag
+  before either edition is read**, which the key checks already did on the
+  argument that a typo should not cost the seconds it takes to fingerprint two
+  editions — a refusal arriving after that is most of the cost of the mistake
+  anyway. That also removed the second lookup four flags each used to do —
+  `--name-a`, `--name-b` and `--title` in `align`, `--sidecar` in `verify`.
+  Six tests: four on `option_value` — including the two paths a refusal must
+  not break, an absent flag and a present value — and two end to end through
+  `align` with member paths that do not exist, so a version that resolved
+  options late would fail on a file-not-found instead of ever refusing.
 - **O16 — A symlink cycle truncates the inventory walk, and this item was
   opened under the wrong framing. Closed.** It was opened as "a symlink cycle is
   a stack overflow", which is worth saying here rather than correcting quietly,
@@ -590,6 +630,126 @@ exactly that reason:
   against. That is the argument for `--against` existing, and it is now a gated
   check rather than a claim. See `notes.md`, "What the six gated checks
   measured".
+
+**Two came from running a command against its own usage text** — O19, turned up
+on 2026-08-01 while scoping O15 and closed the same day once the question it was
+blocked on turned out to be answerable by reading the format, and O20, which came
+out of O19's own list of what it had left undone. Both were closed by refusing
+rather than by wiring something up, and the pair is why that reads as a rule
+here now: a flag that cannot change what a run does is refused, not ignored.
+
+- **O19 — `align` without `--split-spreads` ignored the whole sidecar-writing
+  half of its flags, silently. Closed.** `taiyaku align a -- b --write
+  out.json` printed the summary, wrote no file, said nothing about not writing
+  one, and exited 0. `--write` was read inside `align`'s split-spreads branch;
+  the plain branch returns after `report_summary` and never reached it.
+  `--title`, `--direct` and `--cache` are unreachable the same way, and
+  `--name-a` and `--name-b` are worse than unreachable — they are validated
+  *before* the branch and then discarded, so a run that could not have used a
+  good key still refuses a bad one.
+  **Both this document and the tool's own usage text said otherwise.** The
+  synopsis above listed `[--write FILE]` and `[--split-spreads]` as independent
+  options, and `--help` listed them on one flat line. Nothing anywhere stated
+  the dependency; `corpus/README.md` only says to pass `--split-spreads`
+  essentially always, which is why nobody had hit it.
+  **This was not O15, and the distinction decided the fix.** In O15 a flag has
+  no usable value; here the value is present and usable and the flag was
+  ignored anyway, so no amount of validating values catches it.
+  **It was opened as a decision — plain path grows a write path, or the
+  combination becomes an error — and the format settled it rather than a
+  preference.** The plain path has pages where a sidecar wants slots.
+  `describe_edition` derives an edition's `spreads` list from its slot table, a
+  page being a spread exactly when it appears there twice, and the plain path
+  never builds one. So the only sidecar it could write is one claiming
+  `"spreads": []`, having never looked — and that claim is not cosmetic:
+  `sidecar.md` makes the slot sequence *follow from* `spreads`, so an edition
+  that does join spreads would have every run after the first silently
+  re-indexed. That is the shape of two failures already recorded here —
+  `verify` reporting "192 of 187 pages paired, at 102.7%", and the −8 that was
+  "entirely an artifact of joined spreads having no representation". Growing a
+  write path would have written an unverified claim into the normative format,
+  so the alternative was not cheaper, it was the only sound one.
+  Closed by refusing the combination, before either edition is read, with a
+  message naming the flag it needs and why: ``--write needs --split-spreads: a
+  sidecar records which pages are joined spreads, and only that path detects
+  them``. Two tests hold it from both sides — the refusal, and a run with both
+  flags getting past argument handling entirely, so the rule cannot be spelled
+  "refuse `--write`". `--help` and the synopsis above now state the dependency
+  they used to deny.
+- **O20 — Six more `align` flags were ignored where they could not take
+  effect. Closed.** Opened out of O19's own "deliberately not done" paragraph,
+  which said five flags were dead *on the plain path*. Both numbers were wrong,
+  and checking rather than repeating them changed the fix. It is six, and four
+  of them are dead on **both** paths: `--title`, `--name-a`, `--name-b` and
+  `--direct` are read only inside the `--write` block, so `--split-spreads`
+  alone skips them exactly as the plain path does. Their rule is therefore
+  **needs `--write`**, not needs `--split-spreads` — a run with spreads split
+  and no sidecar written ignored a `--title` just as silently.
+  The remaining two divide the other way, which a measurement settled rather
+  than a reading: `--cache` is **live** on the split path even with nothing
+  written — the fingerprint cache directory is created and filled — and inert
+  on the plain path, which calls `fingerprint_edition` directly and caches
+  nothing. So `--cache` needs `--split-spreads`. `--ltr` is the same shape for
+  a different reason: `solve` takes no direction and only slot expansion reads
+  one, so on the plain path there is no direction to apply.
+  **`--ltr` is the one case where the flag could not have changed the answer**
+  rather than merely not having, since a page pairing is direction-free. It is
+  refused anyway, because the defect O19 named is "typed and ignored", and a
+  reader who passes `--ltr` and is told nothing has been told the tool agreed
+  with them. No documented invocation breaks: `corpus/README.md`,
+  `docs/sidecar.md` and `scripts/margin-survey.sh` all pass `--split-spreads`.
+  One message covers the four sidecar flags, because the reason is identical
+  and four wordings would imply four rules; the other two get their own, each
+  saying what the plain path does instead, since "needs `--split-spreads`" on
+  its own reads as arbitrary. `validate_key` still runs first, so a malformed
+  `--name-a` reports its own shape rather than this one — the value is wrong
+  whatever the run then does with it. Five tests, four refusals and one guard
+  that a full write invocation gets past argument handling untouched, so the
+  rule cannot be spelled "refuse these flags".
+- **O21 — A misspelled flag was accepted in silence by every command. Closed.**
+  O15, O19 and O20 each refuse a *known* flag used wrongly, and all three key
+  off the flag's name, so none of them could see a name typed wrong. That left
+  one door open, and it led back to the room O19 had just closed: `taiyaku
+  align a -- b --writ out.json` reported a plausible alignment, wrote nothing,
+  and exited 0 — the exact failure O19 fixed, reached by dropping a letter.
+  Worse is the near-miss that still runs: `--split-spread` for
+  `--split-spreads` does not fail, it returns a **different** answer, page-level
+  where the caller asked for slot-level, and nothing marks it as the wrong one.
+  **O15 is what made this checkable at all.** Once a flag's value can never
+  itself begin with `--`, every `--`-prefixed token in an argv is unambiguously
+  meant to be a flag, so an unrecognised one is a mistake rather than possibly
+  somebody's filename. Before that rule the scan would have had to know which
+  flags take values and step over them, which is most of an argument parser.
+  Each of the seven commands declares its own set rather than sharing a global
+  one — `--pattern` is real for `inventory` and a typo for `align`, and one
+  list would accept it in both. The message names the whole alphabet rather
+  than guessing a nearest match: a typo is usually one character off, but the
+  case this exists to catch is a flag the caller believed in, and a single
+  guess would be confidently wrong often enough to mislead. `topology` and
+  `lookup` take no flags at all and say that instead of trailing off into an
+  empty list.
+  **One thing fixed alongside it, because it is the same scan:** a flag typed
+  before the `--` separator lands in the a-side member list, and used to
+  surface as ``--stats: No such file or directory`` — a message naming a file
+  the caller never mentioned. It now says the flag is on the wrong side of the
+  separator. That one was never silent, only misleading, which is why it was
+  not worth an item of its own.
+- **O22 — `verify` ignored `--cache` and `--ltr` with no `--sidecar` to apply
+  them to. Closed.** O20's rule, in the command O20 did not reach. Both are
+  read only from the `--sidecar` arm: without one, `verify` solves the pair
+  directly, never calls `cached_edition`, and so consults neither the cache nor
+  a reading direction. Found by measurement rather than reading — `verify a --
+  b --cache DIR` did not create DIR. It is two flags rather than the one this
+  was opened as, which is the second time in this group that checking a count
+  rather than repeating it changed the fix.
+  `--ltr` is doubly inert here: even *with* a sidecar it is the document's own
+  `reading` order that indexes the runs, as the comment at that site already
+  said; the flag reaches only `cached_edition`'s spread expansion.
+
+**What is deliberately not done across O19 to O22:** `--split-spreads` is still
+opt-in rather than the default the corpus README describes. That is a change to
+what the command does by default rather than a defect fix, and it is not
+load-bearing while the documented way to run the tool passes the flag.
 
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
@@ -793,10 +953,10 @@ response. At 1.43 ms no request was ever still open when the next arrived, so a
 blocking client and a UI-paced one are indistinguishable in this log. Measuring
 it would need a deliberately slowed response, which is not worth building.
 
-What remains: the browser reader itself, the correction UI, and the eight open
-items tabled above — seven of them found by a whole-branch review, now that O12,
-the one M3 carried rather than found, is closed, and O13 turned up by reading the
-reader design against the code rather than by reviewing a branch.
+What remains: the browser reader itself, the correction UI, and the seven open
+items tabled above — six of them found by a whole-branch review, now that O12,
+the one M3 carried rather than found, is closed, and O13 turned up by reading
+the reader design against the code rather than by reviewing a branch.
 
 ### 4. Skipping scanlation credit pages
 

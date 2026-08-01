@@ -313,18 +313,19 @@ fn is_settled(copies: usize, largest: usize) -> bool {
 }
 
 pub fn command(args: &[String]) -> Result<(), String> {
+    crate::reject_unknown_flags("inventory", args, &["--min-pages", "--pattern"])?;
     let root = PathBuf::from(
         args.first()
             .filter(|a| !a.starts_with("--"))
             .ok_or("needs a directory to walk")?,
     );
-    let min_pages = match crate::option_value(args, "--min-pages") {
+    let min_pages = match crate::option_value(args, "--min-pages", "a number of pages")? {
         Some(given) => given
             .parse::<u32>()
             .map_err(|_| format!("--min-pages `{given}` is not a number of pages"))?,
         None => DEFAULT_MIN_PAGES,
     };
-    let pattern = match crate::option_value(args, "--pattern") {
+    let pattern = match crate::option_value(args, "--pattern", "a pattern")? {
         Some(spec) => Some(Pattern::parse(spec)?),
         None => None,
     };

@@ -70,6 +70,12 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("align options: --split-spreads --ltr --stats --write FILE --title NAME");
             println!("               --name-a KEY --name-b KEY --direct");
             println!();
+            println!("--write needs --split-spreads: a sidecar records which pages are joined");
+            println!("spreads, and only that path detects them. Without it, align reports and");
+            println!("writes nothing. --title, --name-a, --name-b and --direct describe a");
+            println!("sidecar and so need --write; --cache and --ltr need --split-spreads.");
+            println!("Each is refused rather than ignored where it cannot take effect.");
+            println!();
             println!("--write merges into an existing FILE rather than overwriting it. On a");
             println!("merge the a-side is the document's hub, so --name-a is optional;");
             println!("--direct records a spoke-to-spoke edge instead and requires it.");
@@ -93,6 +99,18 @@ fn split_editions(args: &[String]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), Strin
         .position(|a| a == "--")
         .ok_or("needs `--` between the two editions")?;
     let (left, rest) = args.split_at(split);
+    // A flag typed before the separator lands in the a-side member list and
+    // used to surface as `--stats: No such file or directory`, which names a
+    // file the caller never meant and hides the actual mistake. By the time
+    // this runs the flag is known to exist — `reject_unknown_flags` has
+    // already refused the ones that do not — so the only thing left to say is
+    // that it is in the wrong place.
+    if let Some(misplaced) = left.iter().find(|a| a.starts_with("--")) {
+        return Err(format!(
+            "`{misplaced}` is a flag, but it is before the `--` that separates \
+             the two editions, so it was read as a member; flags go after both"
+        ));
+    }
     let mut a_members: Vec<PathBuf> = left.iter().map(PathBuf::from).collect();
     let mut b_members: Vec<PathBuf> = rest[1..]
         .iter()
@@ -108,9 +126,84 @@ fn split_editions(args: &[String]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), Strin
     Ok((a_members, b_members))
 }
 
-pub(crate) fn option_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    let at = args.iter().position(|a| a == flag)?;
-    args.get(at + 1).map(String::as_str)
+/// The value typed after `flag`, or `None` where the flag was not typed at all.
+///
+/// `expects` names what the flag wanted — "a path", "a number of pages" — and
+/// is only ever read on the two ways this goes wrong, both of which used to be
+/// silent. A flag last on the line has nothing after it and used to read as no
+/// flag at all; a flag followed by another flag used to take that flag as its
+/// value, so `align a -- b --write --ltr` wrote the sidecar to a file named
+/// `--ltr` and applied the direction anyway. Neither is distinguishable from a
+/// correct run by anything the caller can see, which is why both are refused
+/// here rather than left to each caller to notice.
+///
+/// **A value beginning with `--` is a flag, not a value**, without asking which
+/// flags exist. That is the rule `split_editions`, `serve`'s path list and
+/// `duplicates::against_members` already apply to their positional arguments,
+/// so it is the command's existing convention rather than a new one. The cost
+/// is that a file genuinely named `--something` cannot be named on the command
+/// line; the benefit is that every valued flag refuses the same way, including
+/// the ones whose values are never otherwise inspected. `--name-a` needs this
+/// most: `-` is in `validate_key`'s safe alphabet, so `--name-b` passes as a
+/// well-formed edition key and lands in a sidecar as a URL path segment.
+pub(crate) fn option_value<'a>(
+    args: &'a [String],
+    flag: &str,
+    expects: &str,
+) -> Result<Option<&'a str>, String> {
+    let Some(at) = args.iter().position(|a| a == flag) else {
+        return Ok(None);
+    };
+    match args.get(at + 1) {
+        Some(next) if next.starts_with("--") => Err(format!(
+            "{flag} needs {expects}, and `{next}` is another flag"
+        )),
+        Some(value) => Ok(Some(value.as_str())),
+        None => Err(format!("{flag} needs {expects}, and nothing followed it")),
+    }
+}
+
+/// Refuse any `--`-prefixed argument this command does not have a flag for.
+///
+/// O15, O19 and O20 each refuse a *known* flag used wrongly, and all three key
+/// off the flag's name — so none of them can see a name that was typed wrong.
+/// A misspelling therefore reproduced the exact failure O19 closed, through
+/// the one door left open: `taiyaku align a -- b --writ out.json` reported a
+/// plausible alignment, wrote nothing, and exited 0. Worse, `--split-spread`
+/// for `--split-spreads` returns a *different but plausible* answer rather
+/// than an obviously broken one.
+///
+/// **O15 is what makes this checkable at all.** Once a flag's value can never
+/// itself begin with `--`, every `--`-prefixed token in an argv is
+/// unambiguously meant to be a flag, so an unrecognised one is a mistake
+/// rather than possibly somebody's filename. Before that rule this scan would
+/// have had to know which flags take values and skip past them.
+///
+/// `--` is the edition separator and not a flag, so it is excluded. Each
+/// command passes its own set rather than sharing a global one: `--pattern` is
+/// real for `inventory` and a typo for `align`, and a global list would accept
+/// it in both.
+fn reject_unknown_flags(command: &str, args: &[String], known: &[&str]) -> Result<(), String> {
+    let Some(unknown) = args
+        .iter()
+        .find(|a| a.starts_with("--") && a.as_str() != "--" && !known.contains(&a.as_str()))
+    else {
+        return Ok(());
+    };
+    // The alphabet is listed rather than a nearest-match suggested. A typo is
+    // usually one character off, but the failure this exists to catch is a
+    // flag the caller believed in, and the honest answer to that is what does
+    // exist — a single guess would be right often and confidently wrong the
+    // rest of the time.
+    match known.is_empty() {
+        true => Err(format!(
+            "{command} takes no flags, and `{unknown}` was given as one"
+        )),
+        false => Err(format!(
+            "{command} has no flag `{unknown}`; its flags are {}",
+            known.join(", ")
+        )),
+    }
 }
 
 /// Reject an edition key that is not URL-safe, before it reaches a sidecar.
@@ -217,8 +310,39 @@ fn label(members: &[PathBuf]) -> String {
 }
 
 fn verify(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags("verify", args, &["--cache", "--ltr", "--out", "--sidecar"])?;
     let (a_members, b_members) = split_editions(args)?;
-    let out = option_value(args, "--out").unwrap_or("taiyaku-verify.html");
+    // Every valued flag is resolved here, before an archive is opened, for the
+    // reason `align` gives at its own top: a flag typed wrong is a typo, and a
+    // typo should not cost the seconds it takes to read two editions before it
+    // is reported. `--sidecar` and `--cache` are each read once here rather
+    // than at each of the two places below that used to look them up.
+    let out = option_value(args, "--out", "a path")?.unwrap_or("taiyaku-verify.html");
+    let sidecar_path = option_value(args, "--sidecar", "a path")?;
+    let cache_root = std::path::PathBuf::from(
+        option_value(args, "--cache", "a directory")?.unwrap_or(".taiyaku-cache"),
+    );
+    // O22, O20's rule in the command O20 did not reach. Both of these are read
+    // only from the `--sidecar` arm below: without a sidecar `verify` solves
+    // the pair directly, never calls `cached_edition`, and so consults neither
+    // the cache nor a reading direction. Measured before the fix — `verify a
+    // -- b --cache DIR` did not create DIR.
+    if sidecar_path.is_none() {
+        if args.iter().any(|a| a == "--cache") {
+            return Err(
+                "--cache needs --sidecar: without one verify solves the pair \
+                        directly and reads nothing through the cache"
+                    .into(),
+            );
+        }
+        if args.iter().any(|a| a == "--ltr") {
+            return Err(
+                "--ltr needs --sidecar: without one verify pairs pages rather than \
+                        slots, and a page pairing has no direction to read"
+                    .into(),
+            );
+        }
+    }
 
     let a_pages = taiyaku_read::read_edition(&a_members)?;
     let b_pages = taiyaku_read::read_edition(&b_members)?;
@@ -239,7 +363,7 @@ fn verify(args: &[String]) -> Result<(), String> {
     // in. A solved run indexes pages; a run out of a sidecar indexes slots, and
     // an edition with seven spreads has seven more slots than pages — which is
     // how the same summary reported 192 of 187 pages paired, at 102.7%.
-    let (runs, a_units) = match option_value(args, "--sidecar") {
+    let (runs, a_units) = match sidecar_path {
         Some(path) => {
             let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
             let sidecar = Sidecar::from_json(&text)?;
@@ -318,10 +442,8 @@ fn verify(args: &[String]) -> Result<(), String> {
     // A solved run indexes pages; a run out of a sidecar indexes slots, and
     // scoring it against page hashes silently compares the wrong things — it
     // reported 189 doubtful pairings on an alignment that has two.
-    let scored = match option_value(args, "--sidecar") {
+    let scored = match sidecar_path {
         Some(_) => {
-            let cache_root =
-                std::path::PathBuf::from(option_value(args, "--cache").unwrap_or(".taiyaku-cache"));
             let (a_slot_hashes, a_slots, _) = cached_edition(&cache_root, &a_members, direction)?;
             let (b_slot_hashes, b_slots, _) = cached_edition(&cache_root, &b_members, direction)?;
             let slot_scores = confidence(&a_slot_hashes, &b_slot_hashes, &runs);
@@ -373,6 +495,7 @@ fn verify(args: &[String]) -> Result<(), String> {
 /// transitivity for free. The bet is testable because all-pairs is not a second
 /// system, only the same solver run more times.
 fn topology(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags("topology", args, &[])?;
     let groups: Vec<Vec<PathBuf>> = args
         .split(|a| a == "--")
         .filter(|g| !g.is_empty())
@@ -587,6 +710,7 @@ fn describe_edition(
 /// This exists to prove the format carries what the solver found: the answers
 /// here must match what `align` printed, from the file alone.
 fn lookup(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags("lookup", args, &[])?;
     let (path, from, to) = match args {
         [p, f, t, ..] => (p, f, t),
         _ => return Err("usage: taiyaku lookup <taiyaku.json> <from> <to> <page>...".into()),
@@ -680,6 +804,17 @@ fn lookup(args: &[String]) -> Result<(), String> {
 /// library is a different job, and doing it badly here would be worse than not
 /// doing it at all.
 fn serve(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags(
+        "serve",
+        args,
+        &[
+            "--addr",
+            "--log-requests",
+            "--refresh-stump",
+            "--stump-key",
+            "--stump-url",
+        ],
+    )?;
     let paths: Vec<PathBuf> = args
         .iter()
         .take_while(|a| !a.starts_with("--"))
@@ -688,14 +823,14 @@ fn serve(args: &[String]) -> Result<(), String> {
     if paths.is_empty() {
         return Err("needs at least one taiyaku.json to serve".into());
     }
-    let addr = option_value(args, "--addr").unwrap_or("127.0.0.1:8484");
+    let addr = option_value(args, "--addr", "a host:port")?.unwrap_or("127.0.0.1:8484");
 
     // A key on the command line is visible in `ps`, so the environment is the
     // documented way and the flag is the override.
-    let key = option_value(args, "--stump-key")
+    let key = option_value(args, "--stump-key", "an API key")?
         .map(str::to_string)
         .or_else(|| std::env::var("TAIYAKU_STUMP_KEY").ok());
-    let base = option_value(args, "--stump-url")
+    let base = option_value(args, "--stump-url", "a URL")?
         .map(str::to_string)
         .or_else(|| std::env::var("TAIYAKU_STUMP_URL").ok());
     let stump = match (base, key) {
@@ -708,7 +843,7 @@ fn serve(args: &[String]) -> Result<(), String> {
         }
         (None, None) => None,
     };
-    let log = option_value(args, "--log-requests").map(PathBuf::from);
+    let log = option_value(args, "--log-requests", "a path")?.map(PathBuf::from);
     // Throws away every work's remembered Stump resolutions before this start
     // resolves them again. The escape hatch for a book added to Stump after a
     // work first resolved, which nothing here notices on its own.
@@ -776,20 +911,113 @@ fn cached_edition(
 }
 
 fn align(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags(
+        "align",
+        args,
+        &[
+            "--cache",
+            "--direct",
+            "--ltr",
+            "--name-a",
+            "--name-b",
+            "--split-spreads",
+            "--stats",
+            "--title",
+            "--write",
+        ],
+    )?;
     let (a_members, b_members) = split_editions(args)?;
     let split_spreads = args.iter().any(|a| a == "--split-spreads");
     let show_stats = args.iter().any(|a| a == "--stats");
+    let direct = args.iter().any(|a| a == "--direct");
 
-    // Checked before either edition is read, not merely before the sidecar
-    // is written: a bad key is a typo, not a reason to spend seconds
-    // fingerprinting pages before saying so. Both flags are only ever used
-    // below in the `--write` path, but validating them here means neither
-    // match arm that consumes `given` verbatim has to trust it.
-    if let Some(name) = option_value(args, "--name-a") {
+    // Every valued flag is resolved here, before either edition is read, and
+    // not merely before the sidecar is written: a flag typed wrong is a typo,
+    // not a reason to spend seconds fingerprinting pages before saying so. The
+    // key checks were already here on that argument; the rest joined them when
+    // O15 made a missing value a refusal, because a refusal that arrives after
+    // the fingerprinting has run is most of the cost of the mistake anyway.
+    //
+    // Reading each of these once also removes the second lookup `--name-a`,
+    // `--name-b` and `--title` each used to do further down, where a flag
+    // could in principle have been resolved twice and answered differently.
+    let name_a = option_value(args, "--name-a", "an edition key")?;
+    let name_b = option_value(args, "--name-b", "an edition key")?;
+    let write = option_value(args, "--write", "a path")?;
+    let title = option_value(args, "--title", "a title")?;
+    let cache_root = std::path::PathBuf::from(
+        option_value(args, "--cache", "a directory")?.unwrap_or(".taiyaku-cache"),
+    );
+    if let Some(name) = name_a {
         validate_key(name)?;
     }
-    if let Some(name) = option_value(args, "--name-b") {
+    if let Some(name) = name_b {
         validate_key(name)?;
+    }
+    // O19. `--write` is only reachable from the split-spreads path below, and
+    // that is not an oversight to wire around: the plain path has pages where
+    // the sidecar wants slots. `describe_edition` derives an edition's
+    // `spreads` list from its slot table — a page is a spread exactly when it
+    // appears in that table twice — so a plain-path sidecar could only ever
+    // claim `"spreads": []`, having never looked. That claim is not cosmetic.
+    // `sidecar.md` makes the slot sequence follow from `spreads`, so an
+    // edition that does join spreads would have every run after the first one
+    // silently re-indexed, which is the shape of the two failures this
+    // repository already records: verify's "192 of 187 pages paired, at
+    // 102.7%", and "entirely an artifact of joined spreads having no
+    // representation". Refusing costs a documented option pairing; the
+    // alternative writes an unverified claim into the normative format.
+    if write.is_some() && !split_spreads {
+        return Err(
+            "--write needs --split-spreads: a sidecar records which pages are \
+                    joined spreads, and only that path detects them"
+                .into(),
+        );
+    }
+    // O20, the same rule as O19 applied to the flags it left behind: a flag
+    // that cannot change what this run does is refused rather than ignored.
+    //
+    // These four are read only inside the `--write` block, so they are dead on
+    // *both* paths when nothing is written — `--split-spreads` alone skips that
+    // block exactly as the plain path does, which is what the framing "dead on
+    // the plain path" got wrong. One message for all four, because the reason
+    // is identical and naming it four ways would suggest four rules.
+    //
+    // `validate_key` above still runs first, so a malformed `--name-a` reports
+    // its own shape rather than this: the value is wrong whatever the run then
+    // does with it, and that is the more specific complaint.
+    if write.is_none() {
+        for (flag, given) in [
+            ("--title", title.is_some()),
+            ("--name-a", name_a.is_some()),
+            ("--name-b", name_b.is_some()),
+            ("--direct", direct),
+        ] {
+            if given {
+                return Err(format!(
+                    "{flag} needs --write: it describes a sidecar, and this run writes none"
+                ));
+            }
+        }
+    }
+    // The other two are live on the split path and inert here, so they name
+    // that flag rather than `--write`. Each says what the plain path does
+    // instead, because "needs --split-spreads" on its own reads as arbitrary.
+    if !split_spreads {
+        if args.iter().any(|a| a == "--cache") {
+            return Err(
+                "--cache needs --split-spreads: without it align fingerprints \
+                        directly and caches nothing"
+                    .into(),
+            );
+        }
+        if args.iter().any(|a| a == "--ltr") {
+            return Err(
+                "--ltr needs --split-spreads: without it align pairs pages rather \
+                        than slots, and a page pairing has no direction to read"
+                    .into(),
+            );
+        }
     }
 
     if !split_spreads {
@@ -820,8 +1048,6 @@ fn align(args: &[String]) -> Result<(), String> {
     } else {
         Direction::RightToLeft
     };
-    let cache_root =
-        std::path::PathBuf::from(option_value(args, "--cache").unwrap_or(".taiyaku-cache"));
     let started = std::time::Instant::now();
     let (a_slots_hashes, a_slots, a_hits) = cached_edition(&cache_root, &a_members, direction)?;
     let (b, b_slots, b_hits) = cached_edition(&cache_root, &b_members, direction)?;
@@ -903,8 +1129,7 @@ fn align(args: &[String]) -> Result<(), String> {
     // result.
     eprintln!("{}", stats::verdict_sentence(&runs, a_slots.len()));
 
-    if let Some(out) = option_value(args, "--write") {
-        let direct = args.iter().any(|a| a == "--direct");
+    if let Some(out) = write {
         // Read before writing. `--write` used to be a bare `fs::write`, which
         // silently discarded a document that may hold four other editions.
         let existing = match std::fs::read_to_string(out) {
@@ -916,7 +1141,7 @@ fn align(args: &[String]) -> Result<(), String> {
         // On a merge the a-side is the edition the document already names, so
         // `--name-a` is optional and, given, must agree. `--direct` has no hub
         // to fall back on and so requires it.
-        let a_name = match (&existing, option_value(args, "--name-a")) {
+        let a_name = match (&existing, name_a) {
             (Some(_), None) if direct => {
                 return Err(
                     "--direct needs --name-a to say which edition the edge starts from".into(),
@@ -926,7 +1151,7 @@ fn align(args: &[String]) -> Result<(), String> {
             (Some(_), Some(given)) => given.to_string(),
             (None, given) => slug(&a_members, given),
         };
-        let b_name = slug(&b_members, option_value(args, "--name-b"));
+        let b_name = slug(&b_members, name_b);
         if a_name == b_name {
             return Err(format!(
                 "both editions would be named `{a_name}`; pass --name-a and --name-b"
@@ -987,7 +1212,7 @@ fn align(args: &[String]) -> Result<(), String> {
 
         let (sidecar, note) = match existing {
             Some(mut sidecar) => {
-                if let Some(title) = option_value(args, "--title")
+                if let Some(title) = title
                     && title != sidecar.work.title
                 {
                     return Err(format!(
@@ -1016,9 +1241,7 @@ fn align(args: &[String]) -> Result<(), String> {
                 Sidecar {
                     taiyaku: taiyaku_core::VERSION,
                     work: Work {
-                        title: option_value(args, "--title")
-                            .unwrap_or("Untitled work")
-                            .to_string(),
+                        title: title.unwrap_or("Untitled work").to_string(),
                         reading: direction,
                     },
                     editions: [(a_name.clone(), a_edition), (b_name.clone(), b_edition)]
@@ -1332,6 +1555,399 @@ mod tests {
         assert_eq!(
             err,
             "edition key `en/fan` is not URL-safe (`/` at position 2); try `en-fan`"
+        );
+    }
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// O21. O15, O19 and O20 all key off a flag's *name*, so none of them can
+    /// see a name that was typed wrong — and a misspelling reproduces exactly
+    /// the failure O19 closed: `--writ` is not `--write`, so the run reports a
+    /// plausible alignment and writes nothing, at exit 0.
+    #[test]
+    fn a_misspelled_flag_is_refused_rather_than_ignored() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--writ",
+            "taiyaku.json",
+        ]);
+
+        assert_eq!(
+            align(&args).unwrap_err(),
+            "align has no flag `--writ`; its flags are --cache, --direct, --ltr, \
+             --name-a, --name-b, --split-spreads, --stats, --title, --write"
+        );
+    }
+
+    /// The near-miss that motivates naming the alphabet in the message: this
+    /// one differs from a real flag by a single character and produces a
+    /// plausible-looking answer rather than an obvious failure.
+    #[test]
+    fn a_flag_missing_one_letter_is_refused() {
+        let args = argv(&["a.cbz", "--", "b.cbz", "--split-spread"]);
+
+        assert!(
+            align(&args)
+                .unwrap_err()
+                .starts_with("align has no flag `--split-spread`;"),
+            "expected an unknown-flag refusal naming the typo"
+        );
+    }
+
+    /// Each command validates against its own set rather than a global one,
+    /// so a flag that is real elsewhere is still refused here.
+    #[test]
+    fn a_flag_belonging_to_another_command_is_refused() {
+        let args = argv(&["some-root", "--split-spreads"]);
+
+        assert_eq!(
+            inventory::command(&args).unwrap_err(),
+            "inventory has no flag `--split-spreads`; its flags are --min-pages, --pattern"
+        );
+    }
+
+    /// O22, O20's rule in the command O20 did not touch. Measured before the
+    /// fix: `verify a -- b --cache DIR` never created DIR, because
+    /// `cached_edition` is reached only from the `--sidecar` arm — without one
+    /// `verify` solves the pair directly and the cache is never consulted.
+    #[test]
+    fn verify_refuses_a_cache_it_would_never_read() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--cache",
+            "somewhere",
+        ]);
+
+        assert_eq!(
+            verify(&args).unwrap_err(),
+            "--cache needs --sidecar: without one verify solves the pair \
+             directly and reads nothing through the cache"
+        );
+    }
+
+    /// The same arm carries `direction`, so `--ltr` is dead in `verify` for
+    /// the same reason it is dead on `align`'s plain path — and with a sidecar
+    /// it is the document's own reading order that indexes the runs anyway.
+    #[test]
+    fn verify_refuses_ltr_without_a_sidecar_to_apply_it_to() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--ltr",
+        ]);
+
+        assert_eq!(
+            verify(&args).unwrap_err(),
+            "--ltr needs --sidecar: without one verify pairs pages rather than \
+             slots, and a page pairing has no direction to read"
+        );
+    }
+
+    /// The over-refusal guard: with a sidecar named, both get past argument
+    /// handling and fail on the archives instead.
+    #[test]
+    fn verify_allows_cache_and_ltr_when_a_sidecar_is_named() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--sidecar",
+            "taiyaku.json",
+            "--cache",
+            "somewhere",
+            "--ltr",
+        ]);
+
+        let err = verify(&args).unwrap_err();
+
+        assert!(
+            !err.contains("needs"),
+            "should have got past argument handling, but refused: {err}"
+        );
+    }
+
+    /// Two commands take no flags at all, where "its flags are " would trail
+    /// off into nothing.
+    #[test]
+    fn a_command_with_no_flags_says_so_rather_than_listing_an_empty_set() {
+        let args = argv(&["taiyaku.json", "raw", "en", "--stats"]);
+
+        assert_eq!(
+            lookup(&args).unwrap_err(),
+            "lookup takes no flags, and `--stats` was given as one"
+        );
+    }
+
+    /// `--` is the edition separator, not a flag, and must survive a scan that
+    /// refuses everything beginning with `--`.
+    #[test]
+    fn the_edition_separator_is_not_treated_as_an_unknown_flag() {
+        let args = argv(&["does-not-exist-a.cbz", "--", "does-not-exist-b.cbz"]);
+
+        let err = align(&args).unwrap_err();
+
+        assert!(
+            !err.contains("no flag"),
+            "the separator was refused as a flag: {err}"
+        );
+    }
+
+    /// #3, folded in here because the fix is the same scan: a flag typed on
+    /// the a-side lands in the member list, and used to be reported as a file
+    /// that does not exist — which names the wrong problem entirely.
+    #[test]
+    fn a_flag_before_the_separator_says_so_rather_than_reporting_a_missing_file() {
+        let args = argv(&["a.cbz", "--stats", "--", "b.cbz"]);
+
+        assert_eq!(
+            align(&args).unwrap_err(),
+            "`--stats` is a flag, but it is before the `--` that separates the \
+             two editions, so it was read as a member; flags go after both"
+        );
+    }
+
+    /// The flag was not typed, so there is nothing to complain about and the
+    /// caller's default stands. This is the path every `unwrap_or` below
+    /// depends on, and the one a refusal must not break.
+    #[test]
+    fn an_absent_flag_is_absent_rather_than_an_error() {
+        let args = argv(&["a.cbz", "--", "b.cbz"]);
+
+        assert_eq!(option_value(&args, "--write", "a path"), Ok(None));
+    }
+
+    #[test]
+    fn a_flag_with_a_value_still_returns_it() {
+        let args = argv(&["a.cbz", "--", "b.cbz", "--write", "taiyaku.json"]);
+
+        assert_eq!(
+            option_value(&args, "--write", "a path"),
+            Ok(Some("taiyaku.json"))
+        );
+    }
+
+    /// The first of O15's two silences: a flag last on the line has nothing
+    /// after it, and `args.get(at + 1)` answering `None` is indistinguishable
+    /// from the flag never being typed. `taiyaku inventory releases
+    /// --min-pages` walked with the default threshold of 60 and said nothing.
+    #[test]
+    fn a_flag_with_nothing_after_it_is_refused_rather_than_read_as_absent() {
+        let args = argv(&["a.cbz", "--", "b.cbz", "--write"]);
+
+        assert_eq!(
+            option_value(&args, "--write", "a path"),
+            Err("--write needs a path, and nothing followed it".to_string())
+        );
+    }
+
+    /// The second: the argument after the flag is taken verbatim however it
+    /// reads, so `align a -- b --write --ltr` wrote the sidecar to a file
+    /// named `--ltr` — and applied the direction anyway, since `--ltr` is
+    /// matched separately, so nothing reported a problem.
+    #[test]
+    fn a_flag_followed_by_another_flag_is_refused_rather_than_taking_it_as_the_value() {
+        let args = argv(&["a.cbz", "--", "b.cbz", "--write", "--ltr"]);
+
+        assert_eq!(
+            option_value(&args, "--write", "a path"),
+            Err("--write needs a path, and `--ltr` is another flag".to_string())
+        );
+    }
+
+    /// The refusal is worth nothing if it arrives after fingerprinting, which
+    /// is the argument the `--name-a` check above already makes — these member
+    /// paths do not exist, so a version of this that resolved options late
+    /// would fail on a file-not-found instead.
+    #[test]
+    fn align_refuses_a_valueless_write_before_touching_any_archive() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--split-spreads",
+            "--write",
+        ]);
+
+        assert_eq!(
+            align(&args).unwrap_err(),
+            "--write needs a path, and nothing followed it"
+        );
+    }
+
+    /// O19: `--write` used to be read only inside the split-spreads branch, so
+    /// the plain path ran the whole alignment, wrote nothing, said nothing
+    /// about writing nothing, and exited 0.
+    #[test]
+    fn align_refuses_write_without_split_spreads() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--write",
+            "taiyaku.json",
+        ]);
+
+        assert_eq!(
+            align(&args).unwrap_err(),
+            "--write needs --split-spreads: a sidecar records which pages are \
+             joined spreads, and only that path detects them"
+        );
+    }
+
+    /// The other half of the same rule: the refusal fires on the combination,
+    /// not on `--write`. With `--split-spreads` present the run gets past
+    /// argument handling entirely and fails on the archives instead — which
+    /// these paths, deliberately absent from disk, are what proves.
+    #[test]
+    fn align_allows_write_when_split_spreads_is_given() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--split-spreads",
+            "--write",
+            "taiyaku.json",
+        ]);
+
+        let err = align(&args).unwrap_err();
+
+        assert!(
+            !err.contains("--split-spreads"),
+            "should have got past argument handling, but refused: {err}"
+        );
+    }
+
+    /// O20, the four flags that describe a sidecar. Dead on *both* paths when
+    /// nothing is written, not merely on the plain one — `--split-spreads`
+    /// without `--write` skips the block that reads them just as the plain
+    /// path does.
+    #[test]
+    fn align_refuses_a_title_when_no_sidecar_is_written() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--split-spreads",
+            "--title",
+            "Some Work",
+        ]);
+
+        assert_eq!(
+            align(&args).unwrap_err(),
+            "--title needs --write: it describes a sidecar, and this run writes none"
+        );
+    }
+
+    /// The same rule reached through a flag that carries no value, so the
+    /// check cannot be spelled "a resolved option was Some".
+    #[test]
+    fn align_refuses_direct_when_no_sidecar_is_written() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--direct",
+        ]);
+
+        assert_eq!(
+            align(&args).unwrap_err(),
+            "--direct needs --write: it describes a sidecar, and this run writes none"
+        );
+    }
+
+    /// O20's other half: two flags that are live on the split path and inert
+    /// on the plain one. `--cache` writes the fingerprint cache there and
+    /// nothing at all here, measured — the directory is never created.
+    #[test]
+    fn align_refuses_a_cache_the_plain_path_would_never_write() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--cache",
+            "somewhere",
+        ]);
+
+        assert_eq!(
+            align(&args).unwrap_err(),
+            "--cache needs --split-spreads: without it align fingerprints \
+             directly and caches nothing"
+        );
+    }
+
+    /// `--ltr` is the one case where the ignored flag could not have changed
+    /// the answer rather than merely not having: the plain path pairs pages,
+    /// `solve` takes no direction, and only slot expansion reads one. Refused
+    /// anyway, because "typed and ignored" is the defect.
+    #[test]
+    fn align_refuses_ltr_on_the_path_that_has_no_direction_to_read() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--ltr",
+        ]);
+
+        assert_eq!(
+            align(&args).unwrap_err(),
+            "--ltr needs --split-spreads: without it align pairs pages rather \
+             than slots, and a page pairing has no direction to read"
+        );
+    }
+
+    /// The guard against over-refusing: with a sidecar actually being written,
+    /// every one of these gets past argument handling and fails on the
+    /// archives instead.
+    #[test]
+    fn align_allows_the_sidecar_flags_when_one_is_written() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--split-spreads",
+            "--write",
+            "taiyaku.json",
+            "--title",
+            "Some Work",
+            "--name-a",
+            "raw",
+            "--ltr",
+            "--cache",
+            "somewhere",
+        ]);
+
+        let err = align(&args).unwrap_err();
+
+        assert!(
+            !err.contains("needs"),
+            "should have got past argument handling, but refused: {err}"
+        );
+    }
+
+    /// `validate_key` does not catch this one and cannot: `-` is in its safe
+    /// alphabet, so `--name-b` is a well-formed edition key. Before this,
+    /// `align … --name-a --name-b` wrote an edition keyed `--name-b` into the
+    /// sidecar, where it becomes a path segment in two URLs.
+    #[test]
+    fn align_refuses_a_name_a_that_swallowed_the_next_flag() {
+        let args = argv(&[
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--name-a",
+            "--name-b",
+        ]);
+
+        assert_eq!(
+            align(&args).unwrap_err(),
+            "--name-a needs an edition key, and `--name-b` is another flag"
         );
     }
 }
