@@ -25,6 +25,18 @@ pub struct WasmSlot {
     pub via: String,
 }
 
+/// Where a slot sits inside one edition: a page, and which half of it.
+///
+/// Distinct from `WasmSlot`, which additionally carries the `via` of a
+/// resolution. A position is not the answer to a resolution and should not
+/// claim a path it never walked.
+#[wasm_bindgen(getter_with_clone)]
+#[derive(Debug, Clone)]
+pub struct WasmPosition {
+    pub page: u32,
+    pub half: Option<String>,
+}
+
 #[wasm_bindgen]
 impl WasmSidecar {
     /// Parse a sidecar from its JSON text, throwing on malformed input.
@@ -60,9 +72,32 @@ impl WasmSidecar {
         let half = half_from_str(half.as_deref()).map_err(|e| JsError::new(&e))?;
         Ok(self.inner.resolve(from, to, page, half).map(|r| WasmSlot {
             page: r.page,
-            half: half_to_str(r.half),
+            half: half_to_str(r.half).map(str::to_string),
             via: r.via,
         }))
+    }
+
+    /// The page and half at a flat slot index, or `undefined`.
+    #[wasm_bindgen(js_name = slotAt)]
+    pub fn slot_at(&self, edition: &str, index: u32) -> Option<WasmPosition> {
+        self.inner.slot_at(edition, index).map(|slot| WasmPosition {
+            page: slot.page,
+            half: half_to_str(slot.half).map(str::to_string),
+        })
+    }
+
+    /// The flat slot index of a page and half, or `undefined`.
+    #[wasm_bindgen(js_name = indexOf)]
+    pub fn index_of(
+        &self,
+        edition: &str,
+        page: u32,
+        half: Option<String>,
+    ) -> Result<Option<u32>, JsError> {
+        let half = half_from_str(half.as_deref()).map_err(|e| JsError::new(&e))?;
+        Ok(self
+            .inner
+            .index_of(edition, taiyaku_core::Slot { page, half }))
     }
 }
 
@@ -80,12 +115,17 @@ fn half_from_str(half: Option<&str>) -> Result<Option<Half>, String> {
     }
 }
 
-/// A half, back into `"L"` / `"R"` / absent.
-fn half_to_str(half: Option<Half>) -> Option<String> {
-    half.map(|h| match h {
-        Half::Left => "L".to_string(),
-        Half::Right => "R".to_string(),
-    })
+/// The wire spelling of a half. `None` is a whole page.
+///
+/// Spelled out rather than derived from `Debug`, for the reason `via_word`
+/// gives: a `Debug` rendering is a formatting detail nothing promises to keep,
+/// and this one crosses a boundary.
+fn half_to_str(half: Option<Half>) -> Option<&'static str> {
+    match half {
+        Some(Half::Left) => Some("L"),
+        Some(Half::Right) => Some("R"),
+        None => None,
+    }
 }
 
 #[cfg(test)]
@@ -104,14 +144,8 @@ mod tests {
             half_from_str(Some("R")),
             Ok(Some(taiyaku_core::Half::Right))
         );
-        assert_eq!(
-            half_to_str(Some(taiyaku_core::Half::Left)),
-            Some("L".to_string())
-        );
-        assert_eq!(
-            half_to_str(Some(taiyaku_core::Half::Right)),
-            Some("R".to_string())
-        );
+        assert_eq!(half_to_str(Some(taiyaku_core::Half::Left)), Some("L"));
+        assert_eq!(half_to_str(Some(taiyaku_core::Half::Right)), Some("R"));
         assert_eq!(half_to_str(None), None);
         assert!(
             half_from_str(Some("middle")).is_err(),

@@ -172,6 +172,50 @@ async fn get_page(
     }
 }
 
+/// A filmstrip tile for one page.
+///
+/// Separate from `get_page` rather than a query parameter on it, because the
+/// two have different cache lifetimes and different content types: a page is
+/// whatever the archive holds, a tile is always JPEG.
+async fn get_thumb(
+    State(state): State<Arc<ServeState>>,
+    AxPath((id, edition, raw)): AxPath<(String, String, String)>,
+) -> Response {
+    let index = match page_index(&raw, &edition) {
+        Ok(index) => index,
+        Err(refusal) => return refusal.into_response(),
+    };
+    // Decoding blocks and can allocate up to `MAX_DECODE_ALLOC`; `get_page`'s
+    // reasoning applies unchanged.
+    let fetched = tokio::task::spawn_blocking(move || {
+        let found = state.work_or_missing(&id)?;
+        let ed = found
+            .sidecar
+            .editions
+            .get(&edition)
+            .ok_or_else(|| format!("no edition `{edition}` in work `{id}`"))?;
+        let (member, offset) = ed
+            .locate(index)
+            .ok_or_else(|| format!("`{edition}` has no page {index} in work `{id}`"))?;
+        let sha = ed.members[member].sha256.clone();
+        let dir = state.thumb_cache_dir();
+        crate::cover::cached_or_generated_thumb(&dir, &sha, offset, || {
+            state.page(found, &edition, index).map(|p| p.bytes)
+        })
+    })
+    .await;
+
+    match fetched {
+        Ok(Ok(bytes)) => ([(header::CONTENT_TYPE, "image/jpeg")], bytes).into_response(),
+        Ok(Err(e)) => not_found(e),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("thumbnail read panicked: {e}"),
+        )
+            .into_response(),
+    }
+}
+
 async fn get_progress(
     State(state): State<Arc<ServeState>>,
     AxPath(id): AxPath<String>,
@@ -252,6 +296,10 @@ pub fn build_router(state: Arc<ServeState>) -> Router {
         .route("/api/works", get(list_works))
         .route("/api/works/{work}", get(get_sidecar))
         .route("/api/works/{work}/{edition}/pages/{index}", get(get_page))
+        .route(
+            "/api/works/{work}/{edition}/pages/{index}/thumb",
+            get(get_thumb),
+        )
         .route(
             "/api/works/{work}/progress",
             get(get_progress).put(put_progress),
@@ -743,6 +791,36 @@ mod tests {
         crate::test_support::cleanup("taiyaku-test-progress-edition");
         assert!(message.contains("nope"), "must name the edition: {message}");
         assert_eq!(after.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn a_thumb_route_answers_a_jpeg_and_404s_a_page_that_does_not_exist() {
+        let state = crate::test_support::state_with_real_pages();
+        let app = build_router(state);
+
+        let ok = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/works/w/a/pages/0/thumb")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        assert_eq!(ok.headers()[header::CONTENT_TYPE], "image/jpeg");
+
+        let missing = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/works/w/a/pages/9999/thumb")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
     /// A real request, through the real router, has to produce a real log

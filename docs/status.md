@@ -1,6 +1,6 @@
 # Status
 
-Where the project is, what is settled, and what comes next. Updated 2026-08-01.
+Where the project is, what is settled, and what comes next. Updated 2026-08-03.
 
 The detailed evidence for everything asserted here is in [`notes.md`](notes.md),
 which is a working log rather than a summary — every claim below traces to a
@@ -13,18 +13,24 @@ measurement recorded there. The format is specified in
 sidecar. It has been measured against eleven series and holds up on every case the
 design anticipated, plus several it did not.
 
-**The reader has a back end and no front end.** Milestones 1 through 3 shipped:
-page reading is a crate of its own, `taiyaku serve` hands an HTTP client the
+**The reader now has a front end.** Milestones 1 through 3 shipped: page
+reading is a crate of its own, `taiyaku serve` hands an HTTP client the
 sidecar, any page by index, and where you were, and it can now read those pages
 from a Stump instance as well as local disk and publish an OPDS feed grouping a
-work's editions. Nothing renders any of it yet — the browser reader is the next
-piece, and none of *that* has started.
+work's editions. M5a shipped the browser reader that draws it: single-page,
+two-page spread and continuous-scroll modes, a swap between editions that
+never writes position, a gap state that names an unpaired slot rather than
+silently landing near it, and a floating chrome — filmstrip and slot readout —
+that never reflows the page underneath. No correction UI exists yet; that is
+M5d, and `verify`'s contact sheet is still the only way to see what the
+aligner decided.
 
 ## What is built
 
-Five crates, 292 tests, no dependencies beyond `image`, `zip`, `sha2`, `rayon`,
-`base64` and `serde`, plus `axum`, `tokio`, `tower` and `ureq` in the server and
-`wasm-bindgen` in the binding. Nine of the 292 are standing checks gated on
+Five crates, 299 tests, plus 84 in `web/`'s TypeScript, no dependencies beyond
+`image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
+`tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
+and `vite` in `web/`. Nine of the 299 are standing checks gated on
 `TAIYAKU_CORPUS`, one of which also needs `TAIYAKU_STUMP_URL` and
 `TAIYAKU_STUMP_KEY`; each skips cleanly when what it needs is absent, so CI
 stays green without the corpus or a reachable Stump. One measures composition
@@ -58,6 +64,7 @@ is not shaped by what can cross the JavaScript boundary.
 | `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
+| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and slot readout — behind the `Resolver` interface `taiyaku-wasm` implements |
 
 `taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
 a member becomes pages" — so two consumers deriving it separately is a defect the
@@ -220,10 +227,14 @@ margin threshold plus a crop-tolerant hash. Not the DP.
 **No correction UI.** The design calls this part of the core, and it does not exist.
 `verify` shows what the aligner decided; nothing lets you fix it.
 
-**No reader UI.** `taiyaku serve` will hand a client the sidecar, its pages and a
-reading position, and nothing draws them. There is no page view, no swap, and no
-correction UI, so the thing a person can actually do with a sidecar today is
-still `lookup`.
+**The reader has no correction UI.** M5a shipped the browser reader itself —
+page view, swap, three reading modes, gap handling — so a person can now read
+a sidecar rather than only `lookup` through it. What it still cannot do is fix
+what the aligner got wrong: `verify`'s contact sheet remains read-only, and
+the correction UI above is M5d, not built. Nor does it prefetch, double-buffer
+a page ahead of the one being read, or keep a reader's place while they
+scroll by hand — see "What M5a leaves open" below for what each of those costs
+a reader today.
 
 ### Open items
 
@@ -251,7 +262,7 @@ each is in the detail below; the table is what a reader scans.
 | O8 | [x] | Stump resolution blocks the listener | `lib.rs::serve` | M3 review |
 | O9 | [ ] | No single-flight guard on the request path — *measured: nothing to coalesce* | `composite.rs::StumpSide` | M3 review |
 | O10 | [x] | `MAX_DECODE_ALLOC` is duplicated across crates | `cover.rs`, `taiyaku-cli/src/fingerprint.rs` | M3 review |
-| O11 | [ ] | Neither on-disk cache notices a change on the far side — *escape hatch added; covers measured at 165 KB* | `stump/cache.rs`, `cover.rs` | M3 review |
+| O11 | [ ] | Neither on-disk cache notices a change on the far side — *escape hatch added; covers measured at 165 KB, filmstrip tiles at 1.12 MiB per 195-page edition* | `stump/cache.rs`, `cover.rs` | M3 review |
 | O12 | [x] | `spawn_blocking` covers three of five blocking handlers | `routes.rs::get_progress`, `::put_progress` | M1/M2 deferral |
 | O13 | [ ] | A hand-corrected run does not survive a re-solve | `sidecar.rs::merge_spoke` | M4 planning |
 | O14 | [ ] | The binding rebuilds the route on every resolve | `binding.rs::Binding::resolve` | M4 whole-branch review |
@@ -541,9 +552,19 @@ worth fixing".
   Deleting the parent throws away both, and only one is cheap to rebuild.
   **What would reopen it:** archives replaced routinely enough for 55 KB
   apiece to accumulate, or a second consumer of that directory — the
-  filmstrip's thumbnail-per-page route, deferred to M5 in `cover.rs`, would
-  write 195 files per volume rather than one and changes the arithmetic
-  entirely.
+  filmstrip's thumbnail-per-page route, deferred to M5 in `cover.rs`.
+  **That second consumer now exists (M5a Task 2) and has been measured, in
+  `.taiyaku-cache/thumbs`, a sibling of `.taiyaku-cache/covers` rather than the
+  same directory.** Fetching every tile of one 195-page edition
+  (`corpus/gotoubun-v01`'s `raw-mono`) produced 195 files totalling 1,177,982
+  bytes — about 1.12 MiB — individual tiles from 1,117 to 8,808 bytes. Roughly
+  seven times the covers' bytes for sixty-five times the file count, which is
+  proportionate to 195 tiles against one cover rather than the kind of blowup
+  "changes the arithmetic entirely" was written to warn about. See `notes.md`,
+  "M5a Task 2: the filmstrip's tile cache, measured against the real corpus".
+  **Still not closed:** the reopening condition stands, now at the tile
+  cache's larger constant factor, and a library with many editions' filmstrips
+  warmed at once is a case this one-edition run does not speak to.
 
 **One deferral was carried rather than found** — O12, named while planning M1
 and M2, and now closed:
@@ -614,11 +635,20 @@ hand-corrected run until the correction UI exists:
   recomposes the run lists. `taiyaku_core::Route` exists precisely so a caller
   can pay that once — `route.rs` says so, and puts a number on it: a reader
   paging a 195-page volume would otherwise pay it 195 times. One swap per
-  keypress does not notice. A filmstrip resolving per tile would, and that is
-  M5's, which is why this is recorded now rather than discovered then. Not
-  fixed here because the shape of the fix depends on what the reader asks for
-  — memoising the last pair costs nothing and helps a swap; a filmstrip may
-  want the `Route` held across a whole strip.
+  keypress does not notice.
+  **The trigger guessed here was wrong, and M5a found the real one.** This
+  item named "a filmstrip resolving per tile" as what would notice — but the
+  filmstrip resolves nothing; it consumes a slot table built once. What
+  actually rebuilds the route repeatedly is `web/src/nearest.ts`'s
+  `nearestPaired`, called while showing the gap state: it calls `display`
+  once per candidate slot on either side of a gap, and each cross-edition
+  `display` is one `Binding::resolve`. That is up to `slotCount` route
+  rebuilds, and because nothing in `web/src` memoises it, the same rebuilds
+  repeat on every render of the gap state rather than once per swap.
+  Not fixed here, for the same reason as before — the shape of the fix depends
+  on what the reader asks for — but the shape is no longer a guess: memoising
+  `nearestPaired`'s scan, or the `Route` it resolves against, is now a concrete
+  target rather than a hypothetical filmstrip.
 
 **The `duplicate-resolution` whole-branch review found four more** — O15 to
 O18 — and unlike every group above it, none of them outlived the branch that
@@ -997,9 +1027,20 @@ after it. This is the multi-week piece and the point of everything above.
 sidecar with three editions and no way to resolve through one, so on any work
 with more than two editions — which the primary development corpus is, at five —
 the reader could not have answered "show me this page in edition C". `align
---write` now merges and `resolve` now composes. What the reader still needs from
-this side is a swap UX for five editions, which `notes.md` leaves undecided:
-cycling works for two or three and past that wants a picker.
+--write` now merges and `resolve` now composes.
+
+**The swap UX is settled, not open — this line previously said `notes.md` left
+it undecided, which had stopped being true.** `Space` toggles between the
+current edition and the last one and `1`..`9` jump directly, settled on
+2026-07-30 and reopened and re-settled on 2026-08-01: the case against a
+hold-to-open picker was "it costs the one-key promise," which only holds on a
+device with a key, so a later brainstorm's picker did not lose the argument, it
+answered a different device. Desktop-first was confirmed the same day, which is
+what keeps the toggle for this reader; the picker moves rather than dying,
+reassigned to a future native iOS reader where a sheet is the right gesture for
+a device with no key to promise. See
+`docs/superpowers/specs/2026-07-30-reader-design.md`, "Swap is a toggle key
+plus number keys."
 
 **M1, M2 and M3 have landed.** M1 moved page reading into `taiyaku-read`, so the
 aligner and anything serving pages derive the normative sequence from one place,
@@ -1055,10 +1096,20 @@ call it the other. `taiyaku-wasm` puts that in the browser's reach without
 `taiyaku-core` taking a `wasm-bindgen` dependency, and the gate now builds both
 for `wasm32-unknown-unknown` — the binding for a second reason, since a
 signature that cannot cross the JS boundary compiles natively and fails only
-there. What is **not** claimed: nothing has executed the module under a wasm
-runtime. The agreement check compares the binding against the core on every slot
-of every ordered pair of a two-edition fixture, which catches conversion drift
-and not codegen.
+there. What was **not** claimed at the time: nothing had executed the module
+under a wasm runtime. The agreement check compares the binding against the
+core on every slot of every ordered pair of a two-edition fixture, which
+catches conversion drift and not codegen.
+**M5a closed that gap by running it.** `scripts/smoke-wasm.mjs` loads the
+compiled `.wasm`, parses the fixture and checks six properties against it —
+`editions`, both slot counts, a half-aware `slotAt`, `indexOf` and one
+`resolveSlot` — against the same values `binding.rs` already pins natively.
+All six passed, and the generated `.d.ts` matched what the plan had assumed
+about the binding's shape. See `notes.md`, "M5a, measured directly: the
+reader's own evidence, not the scratch ledger's". **What is still not
+claimed:** CI does not run this script — `docs/ci.md` records why — so a
+codegen break would still go green there; the discipline stays a local one,
+run after any change to `lib.rs`.
 
 **The Panels measurement has started, and found a defect before it found a
 number.** Panels read from this server over the LAN on 2026-07-31 — see
@@ -1083,9 +1134,55 @@ response. At 1.43 ms no request was ever still open when the next arrived, so a
 blocking client and a UI-paced one are indistinguishable in this log. Measuring
 it would need a deliberately slowed response, which is not worth building.
 
-What remains: the browser reader itself, the correction UI, and the six open
-items tabled above — five of them found by a whole-branch review, now that O12,
-the one M3 carried rather than found, is closed, and O13 turned up by reading
+**M5a has landed.** The swap works: `Space` toggles between the current
+edition and the last one, `1`..`9` jump directly, and a swap never writes
+position — round-tripping through any number of editions is lossless by
+construction, not by care. All three reading modes ship — single page,
+two-page spread (right-page-first under `rtl`), continuous scroll — with a
+joined spread drawn once, not as two halves, in every one of them. Landing on
+a slot with no counterpart in the edition just swapped to reports a gap rather
+than silently moving to the nearest slot, and offers the nearest paired slot
+either side as a move the reader takes deliberately rather than one that
+happens to it. A floating chrome shell — a filmstrip and a slot readout,
+brought in and taken away together by `Tab` — never reflows the page
+underneath it, and its tiles are served by a per-page thumbnail route measured
+against the real corpus (O11, below). Reading position is restored on load
+from the server and written back on `navigate` — debounced, so arrowing
+through a run of pages is one `PUT`, not one per keypress — and never on
+`swap`, which has nothing to record.
+
+**What M5a leaves open.** There is no prefetch and no double buffer: a fast
+flick between adjacent pages can still show a blank or half-decoded frame
+before the next one paints, closed in M5b behind two `<img>` elements and
+`img.decode()`. Continuous-scroll mode does not write reading position back
+either: entering the mode scrolls to where you were, but hand-scrolling never
+updates the stored slot, so a reader who reads by scrolling and closes the tab
+loses their place — an `IntersectionObserver` is the fix, and it belongs to a
+later milestone, same as prefetch.
+
+**The filmstrip's tiles do not reopen O9 — this paragraph previously said
+they could, and that was wrong.** Each tile resolves its own thumbnail, which
+on a cold strip is a burst of up to N requests for N *distinct* pages —
+structurally the same shape as the cover burst O9 already measured and
+declined to guard: one request per member, nothing to coalesce. O9's own
+reopening condition is concurrent requests **for one key**, which this is not.
+Nothing on this branch reopens O9; it stays open on the reasoning already
+recorded there. The mitigation this paragraph also claimed for the burst
+turned out weaker than stated: measured directly, the tiles' `loading="lazy"`
+does not defer thumbnail requests at all in the environment tested, so it
+bounds nothing about the size of a cold-strip burst. See `notes.md`, "M5a,
+measured directly: the reader's own evidence, not the scratch ledger's".
+
+**O14, not O9, is the item M5a actually gave a trigger to, and from a caller
+nobody had named.** `web/src/nearest.ts`'s `nearestPaired` calls `display`
+once per candidate slot either side of a gap, and each cross-edition `display`
+is one `Binding::resolve` — up to `slotCount` route rebuilds, unmemoised, on
+every render of the gap state. See O14's entry above.
+
+What remains: the module system, `annotations`, and the correction UI — M5b,
+M5c and M5d — and the six open items tabled above — five of them found by a
+whole-branch review, now that O12, the one M3 carried rather than found, is
+closed, and O13 turned up by reading
 the reader design against the code rather than by reviewing a branch.
 
 ### 4. Skipping scanlation credit pages

@@ -97,3 +97,36 @@ jobs:
         run: cargo build -p taiyaku-core --target wasm32-unknown-unknown --all-features
       - name: Build the binding for wasm
         run: cargo build -p taiyaku-wasm --target wasm32-unknown-unknown --all-features
+
+  # A node image, not a dual-toolchain one. Everything this job tests is pure
+  # TypeScript: reading.ts and pairing.ts sit behind the Resolver interface and
+  # import no WASM, so building the binding here would mean a dual-toolchain
+  # image plus a `cargo install wasm-pack` compile for a smoke test that is
+  # already a one-line local command. `typecheck` (`tsc -b`, no bundling) still
+  # walks resolver.ts to type-check reading.ts's imports from it; its own
+  # `taiyaku-wasm` import degrades to an ignored, unresolvable module in this
+  # job rather than failing the build — see docs/ci.md for what that leaves
+  # ungated.
+  web:
+    runs-on: docker
+    container:
+      image: node:22-bookworm
+    steps:
+      - name: Checkout
+        env:
+          TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          host="${FORGEJO_SERVER_URL#http://}"; host="${host#https://}"
+          scheme="${FORGEJO_SERVER_URL%%://*}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$FORGEJO_REF"
+          git checkout -q FETCH_HEAD
+      - name: Install
+        run: npm --prefix web ci
+      - name: Lint
+        run: npm --prefix web run lint
+      - name: Typecheck
+        run: npm --prefix web run typecheck
+      - name: Test
+        run: npm --prefix web run test

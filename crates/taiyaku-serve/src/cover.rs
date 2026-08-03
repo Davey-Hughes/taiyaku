@@ -1,19 +1,26 @@
-//! One cover per edition, for the OPDS entries.
+//! One cover per edition, for the OPDS entries — and, since M5a, one
+//! filmstrip tile per page.
 //!
-//! Scoped deliberately. Every OPDS entry needs a cover, so this ships now; the
-//! filmstrip's thumbnail-per-page route waits for M5, when its access pattern
-//! is known rather than guessed. One cover per edition and 195 thumbnails per
-//! volume are different problems and solving them together on a guess about
-//! the second would be the wrong order.
+//! Scoped deliberately at first: every OPDS entry needs a cover, so that
+//! shipped alone; the filmstrip's thumbnail-per-page route waited for M5a,
+//! when its access pattern — one member's cover against ~195 of its tiles —
+//! was known rather than guessed. One cover per edition and 195 thumbnails
+//! per volume are different problems, and solving them together on a guess
+//! about the second would have been the wrong order. Now that the pattern is
+//! known, both share one decoder (`thumbnail_at`) and one cache-publish path
+//! (`at_path`); only the cache key and the output size differ.
 //!
-//! Cached by the first member's `sha256` **and** by the parameters a cover was
-//! generated with — `LONG_EDGE` and a format version, both folded into the
-//! cache path. Both axes are content-addressed: the same archive under two
-//! sidecars generates one cover, an archive that is replaced generates a new
-//! one without anything having to notice, and raising `LONG_EDGE` for a
-//! higher-DPI screen — or changing the output format or resize algorithm —
-//! leaves every previously cached file sitting at its old path, never read
-//! again, rather than silently served at the wrong size.
+//! Cached by the member's `sha256` **and** by the parameters the image was
+//! generated with — the long edge (`LONG_EDGE` for a cover, `THUMB_LONG_EDGE`
+//! for a tile) and a format version, both folded into the cache path. A tile
+//! is additionally keyed by the page's offset within its member, because a
+//! member has one cover but many tiles. Every axis is content-addressed: the
+//! same archive under two sidecars generates one cover, an archive that is
+//! replaced generates a new one without anything having to notice, and
+//! raising a long edge for a higher-DPI screen — or changing the output
+//! format or resize algorithm — leaves every previously cached file sitting
+//! at its old path, never read again, rather than silently served at the
+//! wrong size.
 //!
 //! That guarantee rests on one thing this module does not check: the
 //! sidecar's recorded `sha256` being accurate for the member as it sits on
@@ -35,6 +42,14 @@ use taiyaku_read::MAX_DECODE_ALLOC;
 /// not the slow part of opening a feed.
 const LONG_EDGE: u32 = 512;
 
+/// The long edge of a filmstrip tile, in pixels.
+///
+/// A cover is 512 because it fills a grid cell; a tile sits in a strip along
+/// the bottom edge and there are ~195 of them per volume, so it is sized for
+/// the strip rather than for a grid. Folded into the cache path exactly as
+/// `LONG_EDGE` is, so changing it invalidates by construction.
+const THUMB_LONG_EDGE: u32 = 160;
+
 /// Bumped whenever a change to the output format or the resize algorithm
 /// would make an already-cached file the wrong output for the same input.
 /// `LONG_EDGE` is folded into the cache path separately, since it is the
@@ -50,6 +65,18 @@ const FORMAT_VERSION: u32 = 1;
 /// stale size or format.
 pub fn cache_path(dir: &Path, sha256: &str) -> PathBuf {
     keyed_path(dir, sha256, LONG_EDGE, FORMAT_VERSION)
+}
+
+/// Where a filmstrip tile for one page of one member is cached.
+///
+/// Keyed on the member's `sha256` *and the page's offset within it*, because
+/// a member has one cover and 195 tiles. The offset rather than the
+/// edition-flat index, so a tile survives the edition gaining a member ahead
+/// of this one.
+pub fn thumb_cache_path(dir: &Path, sha256: &str, offset: u32) -> PathBuf {
+    dir.join(format!(
+        "{sha256}-p{offset}-{THUMB_LONG_EDGE}v{FORMAT_VERSION}.jpg"
+    ))
 }
 
 /// `cache_path`'s logic, taking the generation parameters as arguments rather
@@ -157,6 +184,15 @@ static GENERATION_LIMIT: Semaphore = Semaphore::new(MAX_CONCURRENT_GENERATIONS);
 /// a client is entitled to believe it, so emitting whatever the page happened
 /// to be would make that declaration a guess.
 pub fn thumbnail(page: &[u8]) -> Result<Vec<u8>, String> {
+    thumbnail_at(page, LONG_EDGE)
+}
+
+/// `thumbnail`, with the long edge as an argument.
+///
+/// Split out for the filmstrip, which wants the same decode limits, the same
+/// always-JPEG rule and a different size. One decoder rather than two, so a
+/// change to the limits cannot reach covers and miss tiles.
+pub fn thumbnail_at(page: &[u8], long_edge: u32) -> Result<Vec<u8>, String> {
     // `image::load_from_memory` — the previous, simpler form of this — takes
     // no `Limits`, so it inherits the crate's 512 MB default and rejects this
     // corpus's largest pages outright. Building an `ImageReader` and setting
@@ -171,7 +207,7 @@ pub fn thumbnail(page: &[u8]) -> Result<Vec<u8>, String> {
     let decoded = reader
         .decode()
         .map_err(|e| format!("cover: undecodable page: {e}"))?;
-    let scaled = decoded.thumbnail(LONG_EDGE, LONG_EDGE);
+    let scaled = decoded.thumbnail(long_edge, long_edge);
     let mut out = std::io::Cursor::new(Vec::new());
     scaled
         .into_rgb8()
@@ -197,13 +233,48 @@ pub fn cached_or_generated(
     sha256: &str,
     page: impl FnOnce() -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {
-    let path = cache_path(dir, sha256);
+    at_path(cache_path(dir, sha256), dir, page, |bytes| {
+        thumbnail(&bytes)
+    })
+}
+
+/// Read a cached filmstrip tile, or make one and cache it.
+pub fn cached_or_generated_thumb(
+    dir: &Path,
+    sha256: &str,
+    offset: u32,
+    page: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    at_path(thumb_cache_path(dir, sha256, offset), dir, page, |bytes| {
+        thumbnail_at(&bytes, THUMB_LONG_EDGE)
+    })
+}
+
+/// The shared body: cache hit outside the permit, generation inside it,
+/// atomic publish via a per-attempt temp name.
+///
+/// Takes the decode-and-resize step as a closure — `thumbnail` for a cover,
+/// `thumbnail_at(_, THUMB_LONG_EDGE)` for a tile — rather than a bare
+/// `long_edge`, so each caller keeps calling the entry point named in its own
+/// doc comment instead of `at_path` re-deriving which one to use from a
+/// number.
+///
+/// Both callers get the same concurrency bound, which matters more for tiles
+/// than for covers: a cold filmstrip asks for every page of a volume, and
+/// unbounded decodes at `MAX_DECODE_ALLOC` each is what
+/// `MAX_CONCURRENT_GENERATIONS` exists to prevent.
+fn at_path(
+    path: PathBuf,
+    dir: &Path,
+    page: impl FnOnce() -> Result<Vec<u8>, String>,
+    generate: impl FnOnce(Vec<u8>) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
     if let Ok(found) = std::fs::read(&path) {
         return Ok(found);
     }
     let generated = {
         let _permit = GENERATION_LIMIT.acquire();
-        thumbnail(&page()?)?
+        generate(page()?)?
     };
     if std::fs::create_dir_all(dir).is_ok() {
         // Unique per attempt: see `unique_temp_path`. Two concurrent misses
@@ -459,6 +530,68 @@ mod tests {
             2,
             "two permits must be usable at the same time"
         );
+    }
+
+    /// A directory unique to this test, so tests sharing a name for their
+    /// cache key cannot see each other's files. No `tempfile` dependency:
+    /// the workspace's dependency set is deliberately short.
+    fn tempdir_for_test() -> std::path::PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("taiyaku-thumb-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A filmstrip tile is smaller than a cover, and the two never collide in
+    /// the cache even for page 0 of the same member — which is the one page
+    /// that is both.
+    #[test]
+    fn a_thumb_is_smaller_than_a_cover_and_keyed_apart() {
+        let dir = std::path::Path::new("/tmp/does-not-matter");
+        assert_ne!(cache_path(dir, "abc"), thumb_cache_path(dir, "abc", 0));
+
+        let page = real_page_bytes();
+        let cover = thumbnail(&page).unwrap();
+        let tile = thumbnail_at(&page, THUMB_LONG_EDGE).unwrap();
+        assert!(
+            tile.len() < cover.len(),
+            "tile {} should be smaller than cover {}",
+            tile.len(),
+            cover.len()
+        );
+    }
+
+    /// Two pages of one member are two tiles. Keying on the member alone —
+    /// which is what a cover does, because a member has one cover — would serve
+    /// page 0's tile for every page in the volume.
+    #[test]
+    fn each_page_of_a_member_gets_its_own_tile() {
+        let dir = std::path::Path::new("/tmp/does-not-matter");
+        assert_ne!(
+            thumb_cache_path(dir, "abc", 0),
+            thumb_cache_path(dir, "abc", 1)
+        );
+    }
+
+    /// A second request for the same tile reads the cache rather than decoding
+    /// again. Pinned by counting generations, not by timing.
+    #[test]
+    fn a_cached_tile_is_not_regenerated() {
+        let dir = tempdir_for_test();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let page = || {
+            calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(real_page_bytes())
+        };
+        let first = cached_or_generated_thumb(&dir, "abc", 7, page).unwrap();
+        let second = cached_or_generated_thumb(&dir, "abc", 7, || {
+            calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(real_page_bytes())
+        })
+        .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     /// Important 6: a third acquisition against a one-permit semaphore must

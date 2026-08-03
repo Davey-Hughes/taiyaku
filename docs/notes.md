@@ -3464,3 +3464,139 @@ Both tests were checked by sabotage rather than by having once failed to
 compile, which is a weaker red than it looks: making `learn` a no-op makes the
 first test serve `a1.jpg` where the Stump bytes were required, and accumulating
 instead of reporting per work collapses the second's two batches into one.
+
+## M5a Task 2: the filmstrip's tile cache, measured against the real corpus
+
+O11's "what would reopen it" named a second consumer of `.taiyaku-cache`: "the
+filmstrip's thumbnail-per-page route, deferred to M5 in `cover.rs`, would
+write 195 files per volume rather than one and changes the arithmetic
+entirely." That route now exists (`GET
+/api/works/{work}/{edition}/pages/{index}/thumb`), so the number it changes
+the arithmetic to is measurable rather than projected.
+
+Run against the real corpus, from the repo root so the cache lands beside the
+one the O6/O9/O11 measurements already used:
+
+```
+cargo build --release -p taiyaku-cli
+./target/release/taiyaku serve corpus/gotoubun-v01/taiyaku.json --addr 127.0.0.1:18099 &
+for i in $(seq 0 194); do curl -s -o /dev/null "http://127.0.0.1:18099/api/works/taiyaku/raw-mono/pages/$i/thumb"; done
+find .taiyaku-cache/thumbs -type f -name "*.jpg" | wc -l
+find .taiyaku-cache/thumbs -type f -name "*.jpg" -exec stat -c%s {} \; | \
+  awk '{sum+=$1; n++} END {print n, sum}'
+```
+
+The work id, `taiyaku`, came from `GET /api/works` rather than being assumed —
+the sidecar's filename stem (`taiyaku.json`) slugified, per
+`works.rs::work_id`. The edition fetched was `raw-mono`, the sidecar's hub: one
+member, 195 pages, no spreads, so `seq 0 194` is every page and each tile is
+keyed by a distinct offset (`p0` through `p194`) against that one member's
+`sha256`, confirmed by inspecting the resulting filenames.
+
+**195 files, 1,177,982 bytes — about 1.12 MiB, `du` rounds it to 1.6M against
+its 4 KiB block size.** Individual tiles ran from 1,117 to 8,808 bytes, mean
+6,041 — small enough that a cold filmstrip decoding all 195 at once, bounded by
+the same `MAX_CONCURRENT_GENERATIONS = 2` a cold OPDS grid uses, is not a
+capacity concern on disk even before caching amortises it to zero on every
+later visit.
+
+**Unremarkable, which is the answer O11 asked for.** The cover half of
+`.taiyaku-cache` is 165 KB across 3 files; one edition's tiles are roughly
+seven times that in bytes for sixty-five times the file count — proportionate
+to 195 tiles against 1 cover, not the kind of blowup that would make "the
+filmstrip's route changes the arithmetic entirely" true in practice. A hundred
+works, one edition's tiles apiece, reaches on the order of 115 MB — well short
+of anything that would make a size-based eviction policy urgent. The
+`.taiyaku-cache/covers` directory was untouched by this run — still the same
+3 files this run started with, 168,806 bytes exactly. `du -sh` reports 176 KB
+for that directory, not 165 KB: `du`'s default is block-rounded disk usage,
+not a byte sum, so each file rounds up to its filesystem's 4 KiB boundary
+(54,199 → 56 KiB, 60,064 → 60 KiB, 54,543 → 56 KiB, summing to 172 KiB) and
+the directory's own block adds a fourth 4 KiB, landing on 176 KiB. 165 KB is
+the exact byte sum, 168,806 bytes, rounded to the nearest KiB — the number
+`docs/status.md`'s O11 entry gives. Same three files, two honest ways of
+counting them, no growth. Tiles live in the sibling `.taiyaku-cache/thumbs`
+exactly as designed, so this measurement adds a new number rather than
+revising the old one.
+
+**What would reopen it, updated:** the same condition O11 already named for
+covers — archives replaced routinely enough for the per-file cost to
+accumulate — now applies at the tile count's larger constant factor, and a
+library holding many editions' worth of warm filmstrips at once is the case
+this single run cannot speak to, since only one edition was fetched here.
+
+## M5a, measured directly: the reader's own evidence, not the scratch ledger's
+
+M5a's other measurements were taken during the branch and recorded as they
+were made, in a working ledger under `.superpowers/`, which `.gitignore`
+excludes from every commit. That ledger does not merge with the branch, so it
+does not exist here to point at — the figures below are transcribed instead,
+the actual numbers recorded during the work, not new ones and not estimates.
+The filmstrip's tile cache, above, is the one M5a measurement that already had
+a section of its own; this one carries the rest.
+
+### A swap writes nothing; only navigation does
+
+Swapping between editions produces **zero** `PUT /progress` requests. Only
+`navigate` writes a position — a swap has nothing to record, so nothing
+changes on disk no matter how many editions a reader cycles through in one
+sitting. This is the round-trip-safety property the authority model exists
+for, measured rather than assumed.
+
+### The zero-based slot survived contact with the real edition
+
+`en-mono` has 187 pages and 194 slots. Writing progress at its last slot sends
+body `{"edition":"en-mono","slot":193}` — zero-based — and the server answers
+**204**. A 1-based leak anywhere on this path would have sent `194` and met a
+404, the same shape of bug the OPDS feed's own off-by-one cost a whole Panels
+session (see "Panels, measured: the feed was one-based and should not have
+been," above); it did not recur here.
+
+### One `PUT` for twenty keystrokes, and the page-hidden flush works
+
+A twenty-keypress navigation burst produces exactly **one** `PUT /progress` —
+the debounce coalesces the run rather than writing on every keystroke. A
+page-hidden event fired inside the debounce window flushes it immediately:
+one `PUT` with body `{"edition":"raw-mono","slot":2}`, answered 204, with no
+duplicate arriving 600 ms later when the debounce timer would otherwise have
+fired on its own.
+
+### Coalescing spreads takes the DOM from 194 to 187
+
+`en-mono` has 7 joined spreads across 194 slots. With every reading mode
+drawing a joined spread once rather than as two halves, the DOM holds exactly
+**187** `<img>` elements — 194 minus 7, confirmed rather than assumed to be
+drawn once.
+
+### The repagination the aligner exists to resolve, seen from the reader
+
+Swapping from `raw-mono` slot 20 (Japanese page 20) lands on `en-fan` page
+58 — the same panels, a different page number, which is exactly the
+repagination problem the aligner exists to solve rather than a defect in the
+reader. One `Space` press returns to page 20.
+
+### A genuine gap names itself, and the toggle back is byte-identical
+
+`raw-mono` slot 1 is genuinely unpaired in `en-mono` — a bare `{"a":"1"}` gap
+run in the sidecar, not an artefact of the reader. The reader names the gap
+rather than silently landing on the nearest slot, and offers the nearest
+paired slots either side as moves the reader takes deliberately. Toggling
+back from the gap returns byte-identically to `raw-mono/pages/1`.
+
+### The chrome overlays the page; it does not reflow it
+
+Showing or hiding the chrome (filmstrip and slot readout) leaves the page
+image's bounding rectangle identical before and after —
+`{x: 684.328125, y: 37.015625, width: 197.328125, height: 294.96875}` in both
+states — because the chrome is `position: absolute` and out of the layout
+flow. The page does not shift under the reader when `Tab` opens or closes the
+strip.
+
+### The compiled module ran, for the first time, under a JS runtime
+
+Every measurement above, and `taiyaku-wasm`'s own test suite, runs the
+binding natively. The first actual execution of the compiled WebAssembly
+module under any JS runtime happened during M5a, via
+`scripts/smoke-wasm.mjs`: six checks passed, and the generated `.d.ts` matched
+what the plan had assumed about the binding's shape. See `docs/status.md`'s
+M4 entry, updated to record it.

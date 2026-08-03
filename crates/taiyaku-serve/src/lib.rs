@@ -41,6 +41,16 @@ impl ServeState {
         self.works.iter().find(|w| w.id == id)
     }
 
+    /// Where generated filmstrip tiles are kept between runs.
+    ///
+    /// A sibling of `cache_dir` rather than the same directory: O11 records
+    /// that two caches already share `.taiyaku-cache` and only one of them —
+    /// the covers — is cheap to rebuild, and a third cache sharing that
+    /// directory would make "clear the cache" blunter still.
+    pub fn thumb_cache_dir(&self) -> std::path::PathBuf {
+        self.cache_dir.with_file_name("thumbs")
+    }
+
     /// The work a route names, or the message to send back when it does not
     /// exist.
     ///
@@ -368,6 +378,78 @@ pub(crate) mod test_support {
             cache_dir: std::env::temp_dir().join(dir).join("covers"),
             log: None,
         }
+    }
+
+    /// A small real, decodable page image — same recipe as
+    /// `cover::tests::real_page_bytes`, duplicated here rather than exposed
+    /// across the module boundary that keeps `cover`'s test helpers private
+    /// to `cover`.
+    fn real_page_bytes() -> Vec<u8> {
+        let page = image::RgbImage::from_fn(16, 16, |x, y| {
+            image::Rgb([(x * 16) as u8, (y * 16) as u8, 200])
+        });
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(page)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        encoded.into_inner()
+    }
+
+    /// A work whose one page is a real, decodable image rather than the
+    /// shared `work` fixture's ASCII bytes.
+    ///
+    /// `work`'s pages are deliberately undecodable (see
+    /// `cover.rs::bytes_that_are_not_an_image_fail_by_name`), which suits
+    /// every route except one that actually has to generate a thumbnail. Named
+    /// `w`/`a` — work id and edition key — to match the paths a thumb-route
+    /// test addresses.
+    pub(crate) fn state_with_real_pages() -> std::sync::Arc<ServeState> {
+        // A process id plus a monotonic per-process counter, not a fixed
+        // name — the same pattern `cover.rs`'s `tempdir_for_test` uses, and
+        // for the same reason. This helper used to open a single fixed
+        // path and start by `remove_dir_all`-ing it with no cleanup after;
+        // Rust runs tests in parallel threads, so the moment a second test
+        // called this helper, whichever ran second would delete the first's
+        // fixture out from under it mid-test.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "taiyaku-test-real-pages-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(root.join("a1.cbz")).unwrap());
+        zip.start_file("p1.png", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&real_page_bytes()).unwrap();
+        zip.finish().unwrap();
+
+        let json = r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "a": { "label": "A", "members": [
+              { "path": "a1.cbz", "sha256": "real", "pages": 1 }
+            ], "spreads": [] }
+          },
+          "hub": "a",
+          "alignments": []
+        }"#;
+        let path = root.join("taiyaku.json");
+        std::fs::write(&path, json).unwrap();
+
+        std::sync::Arc::new(ServeState {
+            works: vec![Work {
+                id: "w".into(),
+                path,
+                sidecar: taiyaku_core::Sidecar::from_json(json).unwrap(),
+            }],
+            source: std::sync::Arc::new(crate::LocalLibrary),
+            cache_dir: root.join("covers"),
+            log: None,
+        })
     }
 
     /// The fixture work, but with its `"raw"` edition renamed to a

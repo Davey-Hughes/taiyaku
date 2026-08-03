@@ -53,6 +53,42 @@ impl Binding {
         Some(self.sidecar.editions.get(edition)?.slots(reading).len() as u32)
     }
 
+    /// The `(page, half)` pair at a flat slot index, or `None` for an unknown
+    /// edition or an index past the end.
+    ///
+    /// A reader's position is a flat index — that is what `progress` stores —
+    /// and `resolve` takes a pair, so something has to convert. It lives here
+    /// rather than in TypeScript because the slot sequence is normative and a
+    /// second derivation of it is the defect `taiyaku-read` was extracted to
+    /// prevent, one language further out.
+    pub fn slot_at(&self, edition: &str, index: u32) -> Option<Slot> {
+        let reading = self.sidecar.work.reading;
+        self.sidecar
+            .editions
+            .get(edition)?
+            .slots(reading)
+            .get(index as usize)
+            .copied()
+    }
+
+    /// The flat index of a `(page, half)` pair, or `None` where this edition
+    /// presents no such slot.
+    ///
+    /// A linear scan: the longest edition measured is 202 slots (One Piece
+    /// v092's all-spread copy — `docs/status.md`'s "All-spread edition ↔
+    /// ordinary" entry), and a map would have to be built per call or cached
+    /// against a mutation this type does not have.
+    pub fn index_of(&self, edition: &str, slot: Slot) -> Option<u32> {
+        let reading = self.sidecar.work.reading;
+        self.sidecar
+            .editions
+            .get(edition)?
+            .slots(reading)
+            .iter()
+            .position(|candidate| *candidate == slot)
+            .map(|found| found as u32)
+    }
+
     /// Resolve one slot of `from` into `to`.
     ///
     /// `None` covers three different situations on purpose — no such edition,
@@ -264,6 +300,96 @@ mod tests {
         assert_eq!(
             got.page, 0,
             "the star's runs are identity, so the page holds"
+        );
+    }
+
+    /// `b`'s page 2 is a joined spread, so its slot sequence is
+    /// 0, 1, 2R, 2L, 3, 4, 5, 6, 7 under `rtl` — nine slots for eight pages.
+    /// Index 2 and index 3 are the two halves of one page, which is the whole
+    /// reason a flat index cannot be a page number.
+    #[test]
+    fn slot_at_walks_a_spread_as_two_slots() {
+        let b = Binding::from_json(FIXTURE).unwrap();
+        assert_eq!(
+            b.slot_at("b", 1),
+            Some(Slot {
+                page: 1,
+                half: None
+            })
+        );
+        assert_eq!(
+            b.slot_at("b", 2),
+            Some(Slot {
+                page: 2,
+                half: Some(Half::Right)
+            })
+        );
+        assert_eq!(
+            b.slot_at("b", 3),
+            Some(Slot {
+                page: 2,
+                half: Some(Half::Left)
+            })
+        );
+        assert_eq!(
+            b.slot_at("b", 4),
+            Some(Slot {
+                page: 3,
+                half: None
+            })
+        );
+    }
+
+    #[test]
+    fn slot_at_refuses_an_index_past_the_end_and_an_unknown_edition() {
+        let b = Binding::from_json(FIXTURE).unwrap();
+        assert_eq!(b.slot_count("b"), Some(9));
+        assert_eq!(b.slot_at("b", 9), None);
+        assert_eq!(b.slot_at("nope", 0), None);
+    }
+
+    /// The two are inverses over every slot of every edition. This is the
+    /// property the reader depends on: a swap converts index → pair → resolve →
+    /// pair → index, and a mismatch anywhere silently moves the reader.
+    #[test]
+    fn index_of_inverts_slot_at_over_every_slot() {
+        let b = Binding::from_json(FIXTURE).unwrap();
+        for edition in ["a", "b"] {
+            let count = b.slot_count(edition).unwrap();
+            for index in 0..count {
+                let slot = b.slot_at(edition, index).unwrap();
+                assert_eq!(
+                    b.index_of(edition, slot),
+                    Some(index),
+                    "{edition} slot {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn index_of_refuses_a_slot_the_edition_does_not_present() {
+        let b = Binding::from_json(FIXTURE).unwrap();
+        // `a` has no spreads, so it presents no halved slot at all.
+        assert_eq!(
+            b.index_of(
+                "a",
+                Slot {
+                    page: 0,
+                    half: Some(Half::Right)
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            b.index_of(
+                "b",
+                Slot {
+                    page: 99,
+                    half: None
+                }
+            ),
+            None
         );
     }
 }

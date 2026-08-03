@@ -9,7 +9,8 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 | --- | ---- |
 | `lint` | `cargo fmt --check`, `cargo clippy -D warnings` |
 | `test` | `cargo test --workspace` |
-| `wasm` | builds `taiyaku-core` for `wasm32-unknown-unknown` |
+| `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown` |
+| `web` | `npm ci`, `oxlint --deny-warnings`, `tsc -b` typecheck, `vitest run` in `web/` |
 
 The `wasm` job is the one worth keeping even when it feels redundant. The design
 depends on the core being shareable between the browser reader and a future
@@ -17,6 +18,62 @@ native shell, and that property is easy to destroy accidentally — a single
 dependency that assumes threads or links a native library will do it. Without a
 gate, the breakage stays invisible until the reader is being built, by which
 point the offending dependency is load-bearing.
+
+## The `web` job
+
+`web` runs on `node:22-bookworm`, not one of the dual-toolchain images below,
+and that is the point. Everything the job tests is pure TypeScript: the
+reading model sits behind a `Resolver` interface, and only `resolver.ts`
+imports `taiyaku-wasm` **as a value** — no test imports `resolver.ts` at all,
+so `vitest` never loads it. `reading.ts` and `fixtures.ts` import only
+`resolver.ts`'s *types* (`import type`), which is enough for `typecheck` to
+need the file but not enough to need the value it wraps. Building the binding
+in CI would mean a dual-toolchain image plus a `cargo install wasm-pack`
+compile, for a smoke test that is already a one-line local command (`node
+scripts/smoke-wasm.mjs`).
+
+**What that leaves ungated, stated rather than glossed:** CI never builds the
+wasm package and never runs `scripts/smoke-wasm.mjs`, so a change to
+`binding.rs` that breaks codegen goes green. `cargo test -p taiyaku-wasm` still
+catches conversion drift, which is the larger risk; the codegen risk is carried
+by running the smoke script locally after any change to `lib.rs`. The same gap
+now also covers `resolver.ts` itself: because its `taiyaku-wasm` import cannot
+resolve in this job (see below), `typecheck` checks that file against no real
+types at all, so a call in `wasmResolver` that no longer matches the generated
+`.d.ts` (a renamed method, a changed argument) goes green here too. That risk
+is carried by `npm run build` after `./scripts/build-wasm.sh` locally, the same
+discipline the codegen gap already depends on. Revisit if that discipline
+slips.
+
+**The `file:` dependency and a fresh clone.** `web/package.json` depends on
+`taiyaku-wasm` via `"file:../crates/taiyaku-wasm/pkg"`, and `pkg/` is
+gitignored — it does not exist in a clone that has only ever run `git fetch`.
+This was verified rather than assumed: cloning the repository fresh (so
+`crates/taiyaku-wasm/pkg/` is absent entirely) and running `npm ci` inside
+`web/` succeeds anyway. `npm ci` resolves a `file:` entry by creating a symlink
+at `node_modules/taiyaku-wasm` pointing at the target path — dangling, in this
+case — without reading or validating anything at the far end. `npm run build`,
+`npm run typecheck` and `npm run test` then all pass, because nothing
+reachable from any of them *requires* that symlink to resolve. No
+`optionalDependencies` fallback was needed.
+
+**`typecheck` walks into `resolver.ts` without needing it to resolve.**
+`tsc -b` type-checks every file `tsconfig.app.json` includes, and `resolver.ts`
+is one of them — `reading.ts`'s `import type` from it means `tsc` opens the
+file regardless of whether anything imports it as a value, so excluding
+`resolver.ts` from the project would not stop it being checked. The
+`taiyaku-wasm` import at its top is preceded by a single `@ts-ignore`, not a
+`@ts-expect-error`: in a fresh clone the module can't resolve and the ignore
+suppresses that one diagnostic, but after `./scripts/build-wasm.sh` has run
+locally the import resolves fine and there is no error to suppress — an
+`@ts-expect-error` would itself fail in that state, whereas `@ts-ignore` is
+silent either way. This was verified in both states, not assumed: with `pkg/`
+present, `tsc -b` still catches a real type error introduced elsewhere in
+`wasmResolver` (confirming the ignore does not blanket-suppress the file); with
+`pkg/` absent, `tsc -b` passes cleanly on the same source. This is the same
+fact the `file:` dependency section above rests on, extended one file further:
+`resolver.ts` degrades to typechecking against nothing, rather than failing
+the job, the day its one import can't be resolved.
 
 ## Runner requirements
 

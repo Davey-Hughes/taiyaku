@@ -1,0 +1,20 @@
+:root {
+  color-scheme: light dark;
+  font: 16px/1.5 system-ui, sans-serif;
+}
+
+/*
+ * `PageView`'s `height: 100%` chain (and the `<img>`'s `max-height: 100%`)
+ * only constrains anything if every ancestor up to the viewport has a
+ * definite height. Without this, `html`/`body`/`#root` are auto-height —
+ * sized to their content, i.e. to the image — so `max-height: 100%` resolves
+ * against an undefined height and is ignored: a tall page overflows the
+ * viewport instead of being downscaled to fit it.
+ */
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+}
