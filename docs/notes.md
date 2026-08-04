@@ -3600,3 +3600,445 @@ module under any JS runtime happened during M5a, via
 `scripts/smoke-wasm.mjs`: six checks passed, and the generated `.d.ts` matched
 what the plan had assumed about the binding's shape. See `docs/status.md`'s
 M4 entry, updated to record it.
+
+## M5b Task 5: `chapter_at`, walked over every slot of the real corpus
+
+`Sidecar::chapter_at` resolves a slot into whichever edition of a document
+is chapter-organised — the one assembled from the most members — and reports
+which member the resulting page falls in. `corpus/gotoubun-v01/taiyaku.json`
+has exactly one such edition, `en-fan` (seven members, `c000.cbz` through
+`c005.5.cbz`), so a throwaway test walked all 195 slots of `raw-mono` (the
+hub, no spreads, so slots and pages coincide) and called `chapter_at("raw-mono",
+slot)` for each, tallying where it landed. This is the finding, not a
+confirmation of anything decided beforehand:
+
+| Member | Path | Recorded pages | `raw-mono` slots landing here |
+| -----: | ---- | --------------: | -----------------------------: |
+| 0 | `c000.cbz` | 44 | 2 |
+| 1 | `c001.cbz` | 52 | 53 |
+| 2 | `c002.cbz` | 41 | 42 |
+| 3 | `c003.cbz` | 32 | 32 |
+| 4 | `c004.cbz` | 30 | 30 |
+| 5 | `c005.cbz` | 27 | 26 |
+| 6 | `c005.5.cbz` | 9 | 5 |
+| — | (no counterpart) | — | 5 |
+
+195 slots in total, 190 landing in a member and 5 landing nowhere — exactly
+the `raw-mono → en-fan` quality block's `paired: 190` of `slots: 195`. The
+table above shows all seven members reached, not only `c001`–`c005.5`:
+`chapter_at` computes membership, not a chapter count, and it does not stop
+at whichever file a volume-boundary guess would exclude.
+
+**What was surprising:** `c000.cbz` — the file whose name most directly
+invites reading it as chapter zero — is the member `raw-mono` lands in
+*least*, by a wide margin (2 slots against `c001.cbz`'s 53). Reading that as
+"volume 1 excludes c000" would be exactly the filename-arithmetic move this
+function exists to avoid; what it actually shows is only that `raw-mono`'s
+own page range mostly does not land there. `c000.cbz` is still reached
+(twice), and this function draws no boundary and names no chapter number —
+it reports membership for a slot, one call at a time.
+
+**This is the only chapter-organised edition in the corpus, and it is
+reached by a `fragmented` alignment.** `raw-mono → en-fan` carries
+`"verdict": "fragmented"` in the sidecar, average run 23.75 slots over 190 of
+195 paired slots — a different regime from `raw-mono → en-mono`'s `sound`
+(avg run 64.33). Every `ChapterAt` this corpus can produce today rides on
+that fragmented pairing, so it is no more certain than the pair it came
+from. A later readout (Task 7) must carry that verdict alongside the
+chapter it reports rather than presenting a chapter as settled fact — the
+same lesson the twenty-two needles taught: a number that looks clean on its
+own is not proof of anything without the measurement behind it stated too.
+
+## M5b Task 9: the flicker measured, and O1's two behaviours
+
+Both findings below were taken against `corpus/gotoubun-v01`, `raw-mono` and
+`en-fan`, via Playwright driving a real Chromium against `taiyaku serve
+--release` behind the Vite dev server — not a unit test, since the thing
+being measured (does the browser present a half-decoded frame; does the
+browser send a conditional request) only exists at that layer.
+
+### The flicker, before and after: a screenshot cannot catch it, `img.complete` can
+
+A blank or half-painted frame is a gap smaller than the time between two
+Playwright screenshots, so a screenshot is the wrong instrument regardless of
+how many are taken. What can catch it is polling the one on-screen `<img>`'s
+own `complete`/`naturalWidth` on every animation frame while the reader
+flicks, and counting how many samples land mid-load — a
+`requestAnimationFrame` loop pushing `{complete, naturalWidth, src}` once per
+frame, run alongside twenty synthetic `ArrowRight` keydowns dispatched 40ms
+apart (the module's own toggle, `taiyaku.prefs.prefetch`'s `enabled`, is what
+makes disabled/enabled a comparison rather than a memory — see `App.tsx`).
+
+**Module disabled** (`PageView` reverted to a single `<img src>` with no
+decode gate): slots 0→20, 79 animation-frame samples, **3 landed mid-load**
+— `complete: false, naturalWidth: 0` while the visible `src` had already
+become `pages/1`, `pages/3` and `pages/19` respectively, meaning the browser
+had already swapped the attribute and painted nothing yet.
+
+**Module enabled** (defaults — `ahead: 2, behind: 1, maxConcurrent: 3`):
+slots 20→40, 83 samples, **0 landed mid-load**.
+
+This is a local dev server proxying to `taiyaku serve` on the same machine —
+each page fetch settles in 3–5ms (see the resource-timing entries in the O1
+section below), far faster than any deployed network would be. That
+understates the defect being measured, not overstates it: on a slower
+connection the window a naive same-element `<img src>` swap leaves blank is
+proportionally larger, so 3 of 79 here is closer to a floor than a ceiling on
+what the pre-M5b code would show in the field. The fix does not depend on the
+fetch being fast either way — `presentWhenDecoded` (`decode.ts`) never
+touches the visible `<img>`'s `src` until `image.decode()` has resolved on an
+off-screen probe, so there is no window at all for the browser to have
+nothing decoded to paint, at any network speed.
+
+**The decode cap held under a harder stress than the flicker test needed.**
+`HTMLImageElement.prototype.decode` was patched to count concurrent calls,
+then twenty `ArrowRight`s were dispatched 8ms apart — faster than the ~4ms a
+local decode takes to settle, specifically to try to force overlap. 80
+`decode()` calls fired in total (one per swap plus up to three per prefetch
+window recompute, since both draw from one shared `DecodeQueue` — see
+`App.tsx`'s `decodeQueue` doc); **peak concurrency was 3**, exactly
+`prefetchModule.defaults.maxConcurrent`, never higher across the run.
+
+### The two-page fix, measured separately: the single-page number above never exercised it
+
+The flicker figures above (3 of 79, 0 of 83) were taken in single-page mode,
+which is exactly the mode `7c3b821`'s review finding did not touch — single
+mode always renders a bare `PageView` at its one group position, in every
+mode and every group shape, so the element *type* React sees there never
+changes and the remount defect that commit fixed could not have fired.
+Two-page mode used to differ: an ordinary pair rendered a `<div>` wrapping
+two `PageView`s, but a joined spread or an unpaired solo slot rendered a bare
+`PageView` directly at the same tree position, so a turn crossing into or
+out of a spread flipped the element type React saw there. React remounts
+rather than updates props across a type change, and a freshly-mounted
+`PageView`'s `useState(src)` initialises to the incoming, undecoded source —
+the exact defect the decode gate exists to close, reachable in two-page mode
+on every turn onto or off a joined spread, regardless of what the single-page
+number above says. `pairing.ts`'s `cellsFor` closes it by giving `App.tsx`
+two fixed cells, always both present, so the same wrapping `<div>` and the
+same two child `PageView`s render on every turn and only their `src`/layout
+props change.
+
+**Measured by reverting the fix at its one call site, not by editing
+`cellsFor` itself.** `cellsFor` is a pure formatter with its own direct
+tests (`pairing.test.ts`); the defect lived entirely in `App.tsx`'s
+`renderGroup` choosing what to render from a group's shape, so `renderGroup`'s
+two-page branch was replaced with its pre-`7c3b821` form — a bare `PageView`
+for `group.spread || group.slots.length === 1`, a `<div>` wrapping two
+`PageView`s otherwise, both still wired through the current `swapQueue` (the
+queue split is a separate fix from this one and was left alone) — run live,
+then replaced back with the committed version and confirmed against `git
+diff` that the file matched `HEAD` exactly before continuing. `cellsFor`'s
+import went unused for the span of the revert; `vite`'s dev server does not
+type-check on save, so this did not block driving the browser, and no
+`tsc`/`oxlint` run happened while the revert was in place.
+
+**First attempt undersampled the opportunity, not the defect — corrected
+before treating the null as a result.** The same instrument as the
+single-page test (a `requestAnimationFrame` loop reading `complete`/
+`naturalWidth` off every on-screen, non-collapsed `<img>`) run against a
+20-slot flick from `en-mono` slot 0 — the same span the single-page test
+used — crosses a group-shape boundary only twice (entering the page-4 spread,
+then leaving it), against single mode's twenty opportunities (every turn is
+one). Both the reverted and the fixed code read 0 incomplete samples on that
+span (129 and 132 total on-screen image samples respectively) — not evidence
+the defect was absent, only that two chances is too few to expect a ~3–5ms
+window to land inside a ~16ms animation frame. The protocol was widened
+instead of stopping at that null: a 60-`ArrowRight` flick from slot 0, still
+40ms apart, crossing six group-shape boundaries — into and out of the page-4
+spread, then the adjacent page-45/page-46 spreads, then the page-49 spread,
+confirmed by watching the on-screen image count change from 2 to 1 and back
+at presses 3, 5, 45, 49, 51, 53, identical in both runs.
+
+**Reverted (bug reproduced): 294 total on-screen image samples across the
+60-press run, 1 landed mid-load** — `complete: false, naturalWidth: 0` on
+`.../en-mono/pages/49`, the page-49 spread itself, one of the seven spread
+pages `en-mono` is known to have and immediately downstream of the shape
+crossing at press 51 above. **Fixed (`HEAD`, committed): 306 total
+on-screen image samples across the identical press sequence and the same six
+crossings, 0 landed mid-load.** Both runs otherwise walked the identical
+script — same slot path, same timing, same corpus, same fresh page load with
+`localStorage` cleared and no stored progress — so the only variable between
+them is the one call site under test. One incomplete sample against six real
+crossing opportunities (roughly the single-page test's own per-sample rate
+of a few percent, applied to a much smaller number of trials) is consistent
+with the same fast-local-server floor the single-page section above already
+names: 3–5ms is a lower bound on the window a slower connection would widen,
+so a real deployment crossing a spread is not expected to show this defect
+less often than this measurement did.
+
+### O1, counted: two different real behaviours, and only one is about the ETag
+
+The literal scenario the brief specified — swap editions repeatedly on one
+slot — was run first, exactly as asked: 24 `Space` presses, 100ms apart, one
+fixed slot, from a fresh page load. A `PerformanceObserver` watching
+`resource` entries live (not a query taken after the fact — see below for why
+that distinction turned out to matter) recorded **four** `/pages/` requests
+across the whole run, all prefetch neighbours, **none for either of the two
+centre URLs being toggled between**, despite each being redisplayed twelve
+times. That is genuinely zero requests, not zero `304`s — the exact case this
+task was warned to watch for: "if you observe no requests at all on a
+re-swap, the 304 count is zero for a reason that has nothing to do with O1."
+It has nothing to do with O1 here either. A live `MutationObserver` confirmed
+the DOM `src` attribute really did change on every single press (ten
+presses, ten distinct attribute mutations, correctly alternating) — so this
+is not React skipping an unchanged prop. What is happening is one level
+below React and below HTTP: a source the browser decoded a moment ago and is
+asked to redisplay is repainted from its own short-lived in-memory image
+cache, which never reaches the network layer at all, not even to revalidate.
+That is a *cheaper* outcome than a `304`, not a failure of the `ETag` — but
+counting it as a `304` would have been wrong, and counting it as evidence
+against the `ETag` would have been just as wrong; it is a third thing, an
+even shorter circuit than the one this task shipped.
+
+**Buffered querying (`performance.getEntriesByType('resource')` called once,
+after the run, rather than a live `PerformanceObserver`) gave a materially
+different count for the identical sequence** — it is what first surfaced
+this finding, before the live observer confirmed it was real rather than an
+instrumentation artefact: a single buffered query after 20 rapid presses
+reported only 3 entries where a live observer over the same kind of run
+reported the true count. Both undercounted the same way relative to a naive
+"one request per press" expectation, for the reason above, but the buffered
+query is the less trustworthy of the two — a live observer is what every
+number in this section is actually built on.
+
+**A session with real separation between visits tells the other half of the
+story — and, on review, turned out to be telling two different stories at
+once.** Ten slots read forward from `raw-mono` 120 (`Space` to `en-fan` and
+back at each one before moving on), then the same ten slots read backward
+with the same swap at each, produced 39 `/pages/` requests.
+`PerformanceResourceTiming.transferSize` sorts them cleanly: a full page in
+this corpus runs 150–850 KB, a headers-only revalidation runs almost exactly
+300 — a different thing from the literal scenario above's zero-byte,
+zero-request repaint, and `transferSize` is what tells the two apart. **22
+were full `200`s, 17 were `304`-sized.**
+That forward-then-backward shape is a revisit generator, not reading: nobody
+re-reads the ten pages they just read, backwards, immediately after reading
+them forward. All twelve requests from the backward pass were 304-sized —
+every slot revisited after moving away came back as a revalidation, none as
+a silent zero-request repaint — and those twelve are the genuine number:
+real revisits, of pages the reader had actually left and come back to.
+**The other five 304s are not reader traffic.** The forward pass alone
+produced 22 full `200`s and 5 of its own 304s, and those five are
+self-inflicted: the prefetch window warms a neighbouring slot by building a
+throwaway `Image()` — the same default builder `decode.ts` documents,
+`() => new Image()`, garbage once its `decode()` promise settles — and
+requesting it before the reader arrives. When the reader's own swap reaches
+that slot moments later, `PageView`'s decode gate builds a *second*,
+on-screen `Image()` for the same URL and requests it again; the browser
+answers that second request with a 304 because the first one already put the
+`ETag` in its cache. Neither request would exist without this task's own
+prefetch module running, so against a no-prefetch baseline the validator
+saved nothing on these five — it neutralised traffic this milestone
+introduced, not traffic a reader brought to the server. **The honest split
+of the seventeen is twelve genuine reader revisits and five self-inflicted
+duplicates.** This is also one scripted session — one browser, one corpus,
+one machine, no repetition — against the real recorded session that already
+exists for a different client: Panels, 177 requests, answering the
+equivalent question at zero. Nothing here is evidence of what a real reading
+session does with the browser reader, only of what a script built
+specifically to force revisits does.
+
+**The 304 was cross-checked against the wire once, because `transferSize`
+and `PerformanceResourceTiming.responseStatus` disagreed and only one of
+them can be right — and that check covers one response, not seventeen.**
+`responseStatus` reported `200` for a response `transferSize` said carried
+no body — Resource Timing's own field normalises a validated cache hit to
+the status the *page* effectively got, not the status the *wire* carried,
+which is why `responseStatus` was tried first and abandoned as a classifier
+here, a genuinely useful trap to have on record. The CDP-level network log
+(`taiyaku serve` itself, via Playwright) reported the literal wire text for
+that response: `304 Not Modified`. **That check was run as an isolated
+repeat — a different request, in a different run, from the 39-request
+session above** — not one of the seventeen `304`s counted there. Sixteen of
+the seventeen — everything but that one indirect check — rest on
+`transferSize` alone, never confirmed against the wire.
+
+**Also verified directly, not assumed:** the brief's expectation was that a
+`200` carries neither `Cache-Control` nor `Last-Modified`, so heuristic
+freshness is zero and a reuse must revalidate rather than serve silently.
+`fetch('/api/works/taiyaku/raw-mono/pages/5', { cache: 'no-store' })` against
+a page never requested before returned exactly `{connection, content-length,
+content-type, date, etag, vary}` — confirmed, not assumed, and it is the
+reason the 300-byte responses above are read as revalidations rather than
+some other kind of small reply.
+**Neither header has landed since**, so this still holds for all seventeen,
+genuine and self-inflicted alike: heuristic freshness is zero, and every
+reuse still has to ask the network before it can serve anything — never
+silently stale, but never free of the round trip either. The validator turns
+a 150–850 KB response into about 300 bytes; it does not turn a round trip
+into no round trip. Prefetch exists to hide that round trip before the
+reader notices it, and a request that still has to go out and come back,
+just smaller, is a request the reader still waits on — on a slow connection
+this design saves body bytes and no latency.
+
+**`loading="lazy"` still does not defer, confirmed again on `PageView`
+itself rather than only on `Filmstrip`'s tiles.** Entering scroll mode
+mounted all 195 of `raw-mono`'s `<img loading="lazy">` elements at once;
+500ms later every one of the 195 had `complete: true, naturalWidth > 0`.
+`App.tsx` does not lean on the attribute to bound anything it controls —
+`buffered` is false in scroll mode specifically so the decode gate does not
+force-eager what `loading="lazy"` was meant to (and, per this and the
+earlier `Filmstrip` measurement, does not) defer — but the attribute itself
+still does nothing observable in this environment.
+
+## M5b Task 11: the settings panel, generated, and all five modules measured switching off
+
+`Settings.tsx` is generated from `settingsPanel.ts`'s pure `fieldsOf`
+(runtime type of a `defaults` value → `boolean`/`number`/`string`/`object`)
+and `withFieldValue` (coerce a control's raw change back into the right
+type, or refuse). Neither function names a module id anywhere — confirmed
+by reading, not just by design intent, since that is the property the whole
+task turns on. `modules/settings.ts` adds a sixth registry entry —
+`settingsModule`, `defaults: {}`, one key (`s`) — so the registry `App.tsx`
+builds has six entries, but `fieldsOf({})` returns no fields, and
+`Settings.tsx` skips a section with zero fields rather than rendering an
+empty one. Opened in a real browser: five sections render — Reading
+direction, Motion, Regroup pages, Readouts, Prefetch — not six, confirmed by
+counting `<h3>` elements in the panel.
+
+### Every module measured switching off, tuning, and persisting — none left a remnant
+
+Driven with Playwright against `corpus/gotoubun-v01` (`raw-mono`, 195
+slots), `localStorage` cleared before each module's sequence, console
+checked per navigation rather than cumulatively (the persistent-profile trap
+this milestone's brief names twice). Each row is switch off → confirm the
+behaviour stops, tune → confirm it takes effect, reload → confirm it
+persisted, all three checked live rather than inferred from the stored
+JSON alone:
+
+| Module | Switch off | Tune | Persists | Remnant after off? |
+| --- | --- | --- | --- | --- |
+| `direction` | Reset clears `override` to `{}`; two-page order reverted `[pages/0,pages/1]` → `[pages/1,pages/0]` in the same render, no reload needed | `d` set `raw-mono` to `ltr`; pair order flipped `[pages/1,pages/0]` → `[pages/0,pages/1]` | `taiyaku.prefs.direction` read back `{"override":{"raw-mono":"ltr"}}` after a full reload, order still flipped | None |
+| `regroup` | Reset clears `breaks` to `{}`; pairing at slot 3 reverted `(3,4)` → `(2,3)` immediately | `b` at slot 3 (0-based) split `(2,3)`/`(4,5)` into `(2)`/`(3,4)`; stored `{"breaks":{"raw-mono":[3]}}` | Pairing still `(3,4)` after reload | None |
+| `readouts` | Unchecking `position` dropped the `slot N / M · p. N · P%` segment from the row on the next render, others unaffected | Same checkbox is the tune — no separate case | Row still missing the position segment after reload | None |
+| `motion` | Unchecking `animate` removed `transition` **and** `opacity` from the readout row's inline style entirely — confirmed by reading `style` off the DOM, not just visually — matching `transitionStyle`'s "empty object, not `transition: none`" contract even when reached through the panel | `ms` set to `500` via the panel changed the style to `transition: opacity 500ms` | Style still carried no `transition` after reload with `animate` off | None |
+| `prefetch` | Unchecking `enabled`, then navigating to a new slot, produced exactly one `/pages/` request (the slot itself) where the default window produces four; the `<img>`'s `loading` attribute reverted to `"lazy"`, its pre-M5b value | `ahead` set to `4` widened the request set at slot 5 from `{4,6}` to `{4,6,7,8,9}` (`window`'s own nearest-first order, confirmed against the network log) | Both `enabled=false→true` and `ahead=4` reproduced the same widened window, all `304`s, after reload | None |
+
+Two things worth recording beyond the table:
+
+**`maxConcurrent` needed a real code change to be live-tunable, not just a
+panel.** Before this task, `App.tsx` built `swapQueue`/`prefetchQueue` once,
+via a lazy `useRef`, sized from `prefetchPrefs.maxConcurrent` read at that
+one moment — exactly the "load-once until a settings panel exists" every
+prefetch field's old comment said. A panel that could change the number
+without the number doing anything would be a broken control of the kind the
+brief warns against, so the two queues are now `useState` rebuilt in a
+`useEffect` keyed on `maxConcurrent`. Measured live: set to `1` mid-session,
+then three `ArrowRight` presses in a row — no console error, no stuck frame,
+the displayed page tracked the slot on every press. Not measured: the exact
+serialisation a cap of `1` should impose on decode timing: the check here is
+that the new value took effect and nothing broke, not a timing trace.
+
+**Prefetch's decode cap does not bound the filmstrip's tile burst, and the
+`loading="lazy"` finding above still stands unqualified.** `Filmstrip.tsx`
+renders its thumbnails as plain `<img loading="lazy">`, imports nothing from
+`decode.ts`, and receives no `DecodeQueue` — `swapQueue`/`prefetchQueue` are
+only ever passed to `PageView`. So a cold filmstrip's thumbnail burst (one
+request per distinct page, up to `groups.length`) is exactly as unbounded
+after this task as before it; `maxConcurrent` governs page decodes, not
+thumbnail requests, and nothing in this task changed that. This is a
+code-reading fact (`Filmstrip.tsx` has no queue prop to plumb one into), not
+a new timing measurement, and it means M5a's finding stands: `loading="lazy"`
+still does nothing observable in this environment, and nothing in M5b
+addresses the tile burst it was meant to bound.
+
+### The nested per-edition preference shapes
+
+`direction.override` and `regroup.breaks` are both `Record<string, …>`,
+keyed by an edition string the panel has no independent way to know is
+"an edition" rather than any other string key — `settingsPanel.ts`'s
+`fieldKind` reports these as `'object'`, a fourth kind alongside
+boolean/number/string, and `Settings.tsx` renders a read-only entry count
+(`nestedSummary`, e.g. `"1 set"`) rather than a per-key editor. The
+section's existing Reset button already clears the whole slice, `override`
+and `breaks` included, so a reader who wants the nested value gone has an
+affordance; a reader who wants to edit one entry without clearing the rest
+still needs the module's own key (`d`, `b`), same as before this task. A
+per-edition editor was considered and rejected: it would need the panel to
+know what "edition" means for a specific module's `Record`, which is exactly
+the per-module knowledge the generated panel exists not to carry — the
+brief's own warning against "a branch per module id" applies as much to a
+branch keyed on a field's *name* as to one keyed on a module's id.
+
+## Whole-branch review before merge: making "generated" true of the wiring, not only the panel
+
+A review of the whole `reader-m5b` branch, done once every task's own work
+was in, found that Task 11's "generated rather than hand-written per module"
+framing — repeated in the plan, in `Settings.tsx`'s own doc, and in
+`status.md`'s closing paragraph above — was accurate about `Settings.tsx`
+and false about the system a module's preferences actually travel through.
+`Settings.tsx`'s doc comment ("a seventh module needs no edit to this file")
+checked out on inspection: `settingsPanel.ts`'s `fieldsOf`/`withFieldValue`
+never branch on a module id or key name, confirmed by reading both files.
+`App.tsx`, though, still hand-declared one `useState`+`loadPrefs` pair and
+one `useEffect`+`savePrefs` pair per module, and hand-wrote a case per
+module in each of `handleSettingChange`'s and `handleSettingReset`'s
+switches — five near-identical blocks and two five-armed switches for the
+five real modules. A seventh module (`fit`, `filters`, both still deferred)
+would have rendered a normal-looking, generated control that changed
+nothing until someone also copied all four of those by hand — the exact
+"generated but broken input" failure this same milestone already found and
+fixed once, for `prefetch.maxConcurrent`, moved one layer up into code
+`App.tsx`'s permanent Vitest-unreachability (it value-imports `resolver.ts`)
+means only a manual browser pass could ever have caught.
+
+**Fix chosen: make the claim true, not narrower.** `App.tsx`'s preference
+state is now one map, `Record<string, object>` keyed by module id, built
+once from `registry.all()` via `loadPrefs` and persisted by one effect that
+saves every registered module's slice on any change. `module.ts` gained
+`sliceFor(map, mod)`, which restores one module's own typed slice out of
+that map — the same fallback-to-`defaults` rule `Settings.tsx`'s own
+`modulePrefs` lookup already applied at the panel boundary, now applied at
+every other read site too. `handleSettingChange`/`handleSettingReset` are
+now a `registry.get(id)` lookup plus `withFieldValue`/a defaults-copy,
+generic over every module, not a switch. The registry itself — the
+`modules` array and the `buildRegistry` call — moved out of `App.tsx` into
+a new `web/src/modules/registry.ts`, so registering a module's *existence*
+no longer touches `App.tsx` either; the module's own key-bound behaviour
+(`direction`'s `d`, `regroup`'s `b`) and any bespoke wiring its behaviour
+needs (`prefetch`'s decode-queue rebuild) are the only things that still do,
+and those are behaviour, not tunability, so they were left alone.
+
+**Proved with a throwaway seventh module, not just argued.** A
+`throwawayModule` (`defaults: { enabled: true, level: 3 }`, no keys) was
+added to `modules/registry.ts`'s array and nowhere else. Driven with
+Playwright against `corpus/gotoubun-v01`, `localStorage` cleared first,
+console checked per navigation: opening the panel (`s`) showed a
+"Throwaway (proof)" section with `enabled`/`level` controls the moment the
+module was registered — no other file touched. Setting `level` to `9`
+through the panel wrote `{"enabled":true,"level":9}` to
+`taiyaku.prefs.throwaway` immediately; a full reload (fresh navigation, not
+HMR) showed `9` still in the panel's numeric input and still in storage.
+Console stayed clean (0 errors, 0 warnings) across both loads. The module
+and its registry entry were then deleted — this is not a shipped module,
+only the measurement that the claim holds.
+
+**All five real modules re-driven after the refactor, same method as Task
+11's own table above, same result.** `localStorage` cleared, console
+checked per navigation:
+
+| Module | Switch off / tune | Persisted after reload |
+| --- | --- | --- |
+| `direction` | `d` on `raw-mono` flipped the two-page order `[pages/1,pages/0]` → `[pages/0,pages/1]`; `taiyaku.prefs.direction` updated to `{"override":{"raw-mono":"ltr"}}` in the same tick | Order still `[pages/0,pages/1]` after reload |
+| `regroup` | `b` at slot 3 split `(2,3)` into `(2)`/`(3,4)`, live; `taiyaku.prefs.regroup` updated to `{"breaks":{"raw-mono":[3]}}` in the same tick | Grouping still `(3,4)` after reload |
+| `motion` | Unchecking `animate` in the panel wrote `{"animate":false,"ms":120}` immediately | Same value read back after reload |
+| `readouts` | Unchecking `position` wrote `{"position":false,...}` immediately; readout row read `1m read · no chapter edition` (no `slot N / M` segment) | Row still missing the segment, and storage still `position:false`, after reload |
+| `prefetch` | Unchecking `enabled` wrote `{"enabled":false,...}` immediately | After reload, the mounted `<img>`'s `loading` attribute read `"lazy"` — `prefetchPrefs.enabled` still gates `buffered` correctly through the new map — and storage still read `enabled:false` |
+
+No remnant, no console error, on any of the five or on the throwaway
+module, before or after the refactor. Full web suite: 242 → 248 (six new
+tests — three for `sliceFor`, one exercising the generic
+change/reset shape against a synthetic module, two for the moved
+registry), all passing; `oxlint --deny-warnings`, `tsc -b`, and `vite build`
+all clean.
+
+**The other stale claim this same review fixed:** `modules/prefetch.ts`'s
+doc comment still said, at the top, that no settings panel existed yet and
+that `enabled` was toggled "by hand-editing `taiyaku.prefs.prefetch` in
+storage" — true before Task 11 shipped the panel, false since, and never
+corrected because Task 11's own diff never touched this file's comment.
+`motion.ts` and `readouts.ts`, named in the same original sentence, carried
+no equivalent stale claim. The sentence was deleted; the paragraph's real
+content — why `enabled` is distinct from both `ahead`/`behind` being
+zero — is unchanged.

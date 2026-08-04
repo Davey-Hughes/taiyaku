@@ -18,13 +18,15 @@ export interface Alignment {
 }
 
 /**
- * Every intent but `chrome`. Showing or hiding the strip is UI state with no
- * bearing on `ReadingState` — `App.tsx`'s keydown handler branches on it
- * before `applyIntent` is ever called, and this excludes it at the type
- * level rather than leaving a dead `case` here for a variant this function
- * has no reason to touch.
+ * Every intent but `chrome` and `module`. Showing or hiding the strip is UI
+ * state with no bearing on `ReadingState`, and a module's own key (direction's
+ * `d`, currently) acts on that module's own preference slice, not on
+ * `ReadingState` either — `App.tsx`'s keydown handler branches on both before
+ * `applyIntent` is ever called, and this excludes them at the type level
+ * rather than leaving a dead `case` here for a variant this function has no
+ * reason to touch.
  */
-export type ReadingIntent = Exclude<Intent, { kind: 'chrome' }>
+export type ReadingIntent = Exclude<Intent, { kind: 'chrome' } | { kind: 'module'; intent: string }>
 
 /**
  * One keypress's worth of state change.
@@ -73,10 +75,15 @@ export function applyIntent(
  * `offered` is expressed in the authority edition's space — the same space
  * `nearestPaired` scanned it in, since it varies `state.slot` while holding
  * `state.authority`/`state.viewing` fixed. This resolves that authority-space
- * slot through to the viewed edition's slot and page, which is everything
- * both a caller committing to the move (`takeOffered`) and a view merely
- * displaying it (`Gap`'s page numbers) need — one resolution, shared, rather
- * than the gap view re-deriving it from `state` a second time.
+ * slot through to the viewed edition's slot and page, for `takeOffered` below
+ * to commit the move to.
+ *
+ * **Not what `Gap`'s page numbers use.** They used to: `App.tsx`'s gap branch
+ * called this on the same slot `nearestPaired` had just resolved while
+ * finding it, a second `Binding::resolve` for an answer already in hand —
+ * `docs/status.md`'s O14 entry has the measured cost. `nearestPaired` now
+ * returns that resolution directly (see `nearest.ts`'s `NearestOffer`), so
+ * this is only called once more, here, when a move is actually taken.
  *
  * `undefined` if `offered` does not actually resolve in the viewed edition —
  * defensive, since a caller is expected to only ever pass a value

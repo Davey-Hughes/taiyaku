@@ -25,6 +25,13 @@ export interface Landed extends Position {
   via: 'identity' | 'direct' | 'inverted' | 'hub'
 }
 
+/** Which chapter a slot falls in: `member`'s zero-based index among `of`. */
+export interface Chapter {
+  member: number
+  of: number
+  path: string
+}
+
 /**
  * Everything the reading model needs from a sidecar.
  *
@@ -46,6 +53,7 @@ export interface Resolver {
   slotAt(edition: string, index: number): Position | undefined
   indexOf(edition: string, at: Position): number | undefined
   resolve(from: string, to: string, at: Position): Landed | undefined
+  chapterAt(edition: string, index: number): Chapter | undefined
 }
 
 /**
@@ -116,6 +124,13 @@ export async function wasmResolver(json: string): Promise<Resolver> {
       }
       r.free()
       return landed
+    },
+    chapterAt: (edition, index) => {
+      const c = sc.chapterAt(edition, index)
+      if (c === undefined) return undefined
+      const chapter: Chapter = { member: c.member, of: c.of, path: c.path }
+      c.free()
+      return chapter
     },
   }
 }

@@ -3,20 +3,66 @@
 //! Kept apart from the `wasm_bindgen` shell in `lib.rs` so that `cargo test`
 //! exercises the code that ships rather than a native stand-in for it.
 
-use taiyaku_core::{Half, Sidecar, Slot, Via, route};
+use std::cell::RefCell;
+
+use taiyaku_core::{ChapterAt, Half, Route, Sidecar, Slot, Via, route};
 
 /// A parsed sidecar, held so a reader can ask it many questions without
 /// re-parsing the document.
 ///
-/// **It does not cache the path between two editions.** `resolve` builds a
-/// fresh `Route` per call, which rebuilds both slot tables and, where the
-/// answer composes through the hub, recomposes the run lists —
-/// `taiyaku_core::Route` exists precisely so a caller can pay that once. One
-/// swap per keypress does not notice; a filmstrip resolving per tile would.
-/// Tracked in `docs/status.md` rather than fixed here.
+/// **It memoises the last `(from, to)` pair's `Route`.** `resolve` used to
+/// build a fresh `Route` per call, which rebuilds both slot tables and, where
+/// the answer composes through the hub, recomposes the run lists —
+/// `taiyaku_core::Route` exists precisely so a caller can pay that once.
+/// `route_cache` holds exactly one pair rather than a map keyed on every pair
+/// ever asked about, because the caller this was measured against —
+/// `web/src/nearest.ts`'s `nearestPaired`, scanning either side of a gap —
+/// fixes `from`/`to` for the whole scan and varies only the slot. One swap
+/// per keypress does not notice either way; up to `slotCount` resolves during
+/// one gap scan does — see `docs/status.md`'s O14 entry for the measured
+/// counts.
+///
+/// **What this does not cover: a caller alternating between two pairs.** A
+/// different `(from, to)` replaces the memo outright — there is no second
+/// slot — so `a→b`, `b→a`, `a→b`, ... on successive calls rebuilds every
+/// time, the same as no cache at all. Nothing in this reader does that today:
+/// a swap changes what is *shown*, not what `resolve` is asked, and
+/// `nearestPaired`'s own scan holds `from`/`to` fixed throughout. A future
+/// caller that interleaves pairs would need a small map instead, not a
+/// bigger version of this field.
+///
+/// The cache needs interior mutability because `resolve` takes `&self`, not
+/// `&mut self` — a reader holds one `Binding` and asks it many unrelated
+/// questions through shared references (`slot_at`, `index_of`, `resolve`,
+/// ...), so there is no exclusive borrow to hang a plain field update off of.
+/// `RefCell` is enough, rather than something that would also survive shared
+/// access from multiple threads, because **`Binding` is single-threaded by
+/// construction on the JS side**: `wasm-bindgen` hands a `WasmSidecar` to
+/// exactly one JS thread, and nothing in this crate spawns another to race
+/// it. A `RefCell` would be the wrong tool the moment that stopped being
+/// true.
 #[derive(Debug, Clone)]
 pub struct Binding {
     sidecar: Sidecar,
+    route_cache: RefCell<Option<CachedRoute>>,
+    /// How many times `resolve` actually rebuilt a `Route` rather than
+    /// reusing the memo — a cache-miss counter, not anything a shipped
+    /// caller reads. It exists purely so a test can pin the memo's effect:
+    /// resolving many slots of one pair should build the route once, not
+    /// once per slot, and a counter is the only way to observe that from
+    /// outside without timing the call.
+    #[cfg(test)]
+    route_builds: std::cell::Cell<u32>,
+}
+
+/// One memoised `Route`, kept only for the `(from, to)` pair that produced
+/// it. See `Binding`'s doc comment for what replaces this and what does not
+/// benefit from it.
+#[derive(Debug, Clone)]
+struct CachedRoute {
+    from: String,
+    to: String,
+    route: Route,
 }
 
 /// Where a slot landed, and how the answer was found.
@@ -36,7 +82,46 @@ impl Binding {
     pub fn from_json(json: &str) -> Result<Self, String> {
         Ok(Self {
             sidecar: Sidecar::from_json(json)?,
+            route_cache: RefCell::new(None),
+            #[cfg(test)]
+            route_builds: std::cell::Cell::new(0),
         })
+    }
+
+    /// The `Route` between `from` and `to`, from the memo if it already holds
+    /// this pair, or built and stored there otherwise.
+    ///
+    /// Returns an owned `Route` rather than a borrow through the `RefCell`,
+    /// so a caller never has to juggle a `Ref` alongside a second, mutable
+    /// borrow taken to update the cache on a miss. Cloning a cache hit is not
+    /// the cost this exists to avoid — a `Route` is two slot tables and a run
+    /// list, plain data with no lookups left to redo — building one from
+    /// scratch is what reads the sidecar's editions, rebuilds both slot
+    /// tables from their spreads, and, through the hub, recomposes the run
+    /// list; see `Route`'s own doc comment in `route.rs`.
+    fn cached_route(&self, from: &str, to: &str) -> Option<Route> {
+        if let Some(cached) = self.route_cache.borrow().as_ref() {
+            if cached.from == from && cached.to == to {
+                return Some(cached.route.clone());
+            }
+        }
+        #[cfg(test)]
+        self.route_builds.set(self.route_builds.get() + 1);
+        let built = route(&self.sidecar, from, to)?;
+        *self.route_cache.borrow_mut() = Some(CachedRoute {
+            from: from.to_string(),
+            to: to.to_string(),
+            route: built.clone(),
+        });
+        Some(built)
+    }
+
+    /// How many times `resolve` has actually rebuilt a `Route` since this
+    /// `Binding` was created. Test-only — see the field's own doc comment for
+    /// why it exists.
+    #[cfg(test)]
+    pub(crate) fn route_builds(&self) -> u32 {
+        self.route_builds.get()
     }
 
     /// Every edition this document defines, unordered.
@@ -95,14 +180,28 @@ impl Binding {
     /// no path between them, and no counterpart for this slot. The shell in
     /// `lib.rs` passes that through as `undefined`; a reader distinguishing
     /// them would ask `slot_count` first.
+    ///
+    /// Routes through `cached_route` rather than calling `route` directly —
+    /// see `Binding`'s doc comment for what that buys and what it does not.
     pub fn resolve(&self, from: &str, to: &str, page: u32, half: Option<Half>) -> Option<Resolved> {
-        let r = route(&self.sidecar, from, to)?;
+        let r = self.cached_route(from, to)?;
         let landed = r.resolve_slot(Slot { page, half })?;
         Some(Resolved {
             page: landed.page,
             half: landed.half,
             via: via_word(&r.via).to_string(),
         })
+    }
+
+    /// Which chapter a flat slot index of `edition` falls in, or `None`.
+    ///
+    /// Takes an index rather than a `(page, half)` pair for the same reason
+    /// `slot_at` does: that is what a caller holds, and this converts
+    /// through it before asking the core. `member`/`of` stay `usize` here —
+    /// `lib.rs`'s shell is where they cross into `u32`.
+    pub fn chapter_at(&self, edition: &str, index: u32) -> Option<ChapterAt> {
+        let slot = self.slot_at(edition, index)?;
+        self.sidecar.chapter_at(edition, slot)
     }
 }
 
@@ -161,6 +260,74 @@ pub(crate) const STAR_FIXTURE: &str = r#"{
   "alignments": [
     { "from": "a", "to": "b", "by": "solver", "runs": [{ "a": "0-7", "b": "0-7" }] },
     { "from": "a", "to": "c", "by": "solver", "runs": [{ "a": "0-7", "b": "0-7" }] }
+  ]
+}"#;
+
+/// A two-edition document where `chapters` is assembled from three members
+/// and `volume` from one — the shape a chapter-organised edition has. The
+/// same document as `taiyaku_core::sidecar`'s `CHAPTERED`, so both crates'
+/// tests agree on what "chapter-organised" looks like.
+#[cfg(test)]
+pub(crate) const CHAPTERED_FIXTURE: &str = r#"{
+  "taiyaku": 1,
+  "work": { "title": "T", "reading": "rtl" },
+  "editions": {
+    "volume": { "label": "V", "members": [{ "path": "v01.cbz", "sha256": "00", "pages": 6 }] },
+    "chapters": { "label": "C", "members": [
+      { "path": "c001.cbz", "sha256": "01", "pages": 2 },
+      { "path": "c002.cbz", "sha256": "02", "pages": 2 },
+      { "path": "c003.cbz", "sha256": "03", "pages": 2 }
+    ] }
+  },
+  "hub": "volume",
+  "alignments": [
+    { "from": "volume", "to": "chapters", "by": "solver", "runs": [{ "a": "0-5", "b": "0-5" }] }
+  ]
+}"#;
+
+/// Go-Toubun no Hanayome volume 1, raw against English — the same document
+/// as `taiyaku_core::sidecar`'s `REAL`, duplicated rather than imported
+/// because that constant is `pub(crate)` to `taiyaku-core` and this crate
+/// sits on the far side of that boundary. It is real solver output, not a
+/// hand-built shape: `raw-mono` is 195 pages with no spreads, `en-mono` is
+/// 187 with seven, and the stored runs leave `raw-mono` slots 1 and 6 with no
+/// counterpart at all — the genuine gap `docs/status.md`'s O14 entry
+/// measures against, not a synthetic one.
+#[cfg(test)]
+pub(crate) const REAL_FIXTURE: &str = r#"{
+  "taiyaku": 1,
+  "work": { "title": "Go-Toubun no Hanayome", "reading": "rtl" },
+  "editions": {
+    "raw-mono": {
+      "label": "Raw, monochrome",
+      "members": [
+        { "path": "Go-Toubun no Hanayome - v01.cbz", "sha256": "3f9a", "pages": 195 }
+      ],
+      "spreads": []
+    },
+    "en-mono": {
+      "label": "English official, Kodansha",
+      "members": [
+        { "path": "Go-Toubun no Hanayome - v01 (2018).cbz", "sha256": "c104", "pages": 187 }
+      ],
+      "spreads": [4, 45, 46, 49, 90, 121, 152]
+    }
+  },
+  "hub": "raw-mono",
+  "alignments": [
+    {
+      "from": "raw-mono",
+      "to": "en-mono",
+      "by": "solver",
+      "solver": { "hash": "dhash-16", "floor": 0.68 },
+      "runs": [
+        { "a": "0", "b": "0", "margin": 0.09 },
+        { "a": "1" },
+        { "a": "2-5", "b": "1-4R", "margin": 0.15 },
+        { "a": "6" },
+        { "a": "7-194", "b": "5-186", "margin": 0.17 }
+      ]
+    }
   ]
 }"#;
 
@@ -367,6 +534,19 @@ mod tests {
         }
     }
 
+    /// The binding takes a flat index, not a `Slot` — `chapter_at` converts
+    /// through `slot_at` first, the same as `resolve` converts through
+    /// `route`.
+    #[test]
+    fn chapter_at_crosses_the_boundary_as_an_index_and_a_label() {
+        let b = Binding::from_json(CHAPTERED_FIXTURE).unwrap();
+        let at = b.chapter_at("volume", 0).unwrap();
+        assert_eq!((at.member, at.of), (0, 3));
+        assert_eq!(at.path, "c001.cbz");
+        assert_eq!(b.chapter_at("volume", 999), None);
+        assert_eq!(b.chapter_at("nope", 0), None);
+    }
+
     #[test]
     fn index_of_refuses_a_slot_the_edition_does_not_present() {
         let b = Binding::from_json(FIXTURE).unwrap();
@@ -390,6 +570,59 @@ mod tests {
                 }
             ),
             None
+        );
+    }
+
+    /// O14's own number, reproduced. `route.rs` says a reader paging a
+    /// 195-page volume would pay for a route rebuild 195 times without a
+    /// memo; this resolves every slot of `raw-mono` against `en-mono` — the
+    /// real 195-slot edition — and checks that `route_builds` stops counting
+    /// after the first. Before `resolve` routed through `cached_route`, this
+    /// assertion failed with `route_builds() == 195`; it is the test that
+    /// pinned the memo, not one added after the fact.
+    #[test]
+    fn resolving_every_slot_of_one_pair_builds_the_route_once() {
+        let b = Binding::from_json(REAL_FIXTURE).expect("parses");
+        let count = b.slot_count("raw-mono").expect("raw-mono exists");
+        assert_eq!(count, 195, "the fixture's own claim about its size");
+        for slot in 0..count {
+            b.resolve("raw-mono", "en-mono", slot, None);
+        }
+        assert_eq!(
+            b.route_builds(),
+            1,
+            "195 resolves of one pair must build the route once, not 195 times"
+        );
+    }
+
+    /// The realistic worst case, not a synthetic one: `raw-mono` slot 1 has
+    /// no counterpart in `en-mono` at all (the fixture's run `"a": "1"` with
+    /// no `b` side) — the same gap `docs/status.md`'s O14 entry cites. Its
+    /// neighbours, slots 0 and 2, do resolve, so `web/src/nearest.ts`'s
+    /// `nearestPaired` finds both in one step each way: two resolves for the
+    /// scan. Before `App.tsx`'s gap branch was changed to reuse what the scan
+    /// already found, it resolved both offers a second time through
+    /// `resolveOffered` — two more calls, same pair. All four are reproduced
+    /// here directly against `Binding`, since `nearest.ts`'s own tests use a
+    /// fake resolver and cannot observe a Rust-side rebuild.
+    #[test]
+    fn a_gap_scan_and_its_former_second_pass_build_the_route_once() {
+        let b = Binding::from_json(REAL_FIXTURE).expect("parses");
+
+        // The scan: nearestPaired checking slot 0 (before) and slot 2 (after)
+        // from the gap at slot 1.
+        assert!(b.resolve("raw-mono", "en-mono", 0, None).is_some());
+        assert!(b.resolve("raw-mono", "en-mono", 2, None).is_some());
+        // The second pass App.tsx no longer makes — kept here to show the
+        // memo would have absorbed it even if it still did.
+        assert!(b.resolve("raw-mono", "en-mono", 0, None).is_some());
+        assert!(b.resolve("raw-mono", "en-mono", 2, None).is_some());
+
+        assert_eq!(
+            b.route_builds(),
+            1,
+            "four resolves of one pair, from a scan and its former repeat, \
+             must build the route once"
         );
     }
 }

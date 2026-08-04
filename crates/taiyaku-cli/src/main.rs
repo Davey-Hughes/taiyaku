@@ -1422,8 +1422,8 @@ mod tests {
         assert!(ok, "{} should resolve to the member", recorded.display());
     }
 
-    /// Finding 1: a `let-else` pattern's bindings are not in scope inside its
-    /// `else` block, so `let (Ok(target), Ok(base)) = (...) else { return
+    /// A `let-else` pattern's bindings are not in scope inside its `else`
+    /// block, so `let (Ok(target), Ok(base)) = (...) else { return
     /// target... }` returns the *parameter*, not a canonicalised path. In this
     /// call chain that parameter is exactly the working-directory-relative
     /// path this function exists to stop writing into the sidecar — the

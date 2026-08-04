@@ -295,6 +295,25 @@ pub enum Merged {
     Replaced,
 }
 
+/// Where a slot falls in a chapter-organised edition.
+///
+/// `path` is the member's path as the sidecar records it, offered as a label.
+/// Nothing here parses it: a fan release's `c000.cbz` may or may not be
+/// chapter zero, and inferring a chapter number from a filename is precisely
+/// what this function exists to avoid — `notes.md` records two series where
+/// the declared names are wrong and the content-derived answer is right.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChapterAt {
+    /// Zero-based index of the member within the chapter-organised edition.
+    pub member: usize,
+    /// How many members that edition has.
+    pub of: usize,
+    /// The member's path exactly as the sidecar records it, offered as a
+    /// label. Nothing parses it: a fan group's `c000.cbz` may or may not be
+    /// chapter zero.
+    pub path: String,
+}
+
 impl Sidecar {
     pub fn from_json(text: &str) -> Result<Self, String> {
         serde_json::from_str(text).map_err(|e| format!("not a readable taiyaku.json: {e}"))
@@ -560,6 +579,41 @@ impl Sidecar {
         let second = self.quality_of(&self.hub, to)?.verdict;
         Some(first.min(second))
     }
+
+    /// Which chapter a slot of `from` falls in, or `None`.
+    ///
+    /// `None` covers three situations deliberately: this work has no
+    /// chapter-organised edition (the common case, and not an error); there
+    /// is no path from `from` to it; or this slot has no counterpart there.
+    ///
+    /// **Picking the chapter-organised edition is a heuristic, not a
+    /// definition — nothing in the format declares an edition to be one.**
+    /// This takes the edition assembled from the most members as a
+    /// stand-in, on the theory that a chapter list has many files and a
+    /// volume has one. A work with two multi-member editions is genuinely
+    /// ambiguous under that theory; the tie is broken by edition key only so
+    /// the answer is stable, not because a key ordering settles which
+    /// edition is really the chapter list. If that case arises in practice
+    /// it wants a real decision, not this guess.
+    pub fn chapter_at(&self, from: &str, slot: Slot) -> Option<ChapterAt> {
+        let (key, edition) = self
+            .editions
+            .iter()
+            .filter(|(_, e)| e.members.len() > 1)
+            .max_by(|a, b| a.1.members.len().cmp(&b.1.members.len()).then(b.0.cmp(a.0)))?;
+
+        let landed = if key == from {
+            slot
+        } else {
+            crate::route(self, from, key)?.resolve_slot(slot)?
+        };
+        let (member, _) = edition.locate(landed.page)?;
+        Some(ChapterAt {
+            member,
+            of: edition.members.len(),
+            path: edition.members[member].path.clone(),
+        })
+    }
 }
 
 // Spans live as strings in the document, which is what makes a run readable.
@@ -640,6 +694,70 @@ pub(crate) const REAL: &str = r#"{
         { "a": "7-194", "b": "5-186", "margin": 0.17 }
       ]
     }
+  ]
+}"#;
+
+/// A two-edition document where `chapters` is assembled from three members
+/// and `volume` from one — the shape a chapter-organised edition has.
+#[cfg(test)]
+const CHAPTERED: &str = r#"{
+  "taiyaku": 1,
+  "work": { "title": "T", "reading": "rtl" },
+  "editions": {
+    "volume": { "label": "V", "members": [{ "path": "v01.cbz", "sha256": "00", "pages": 6 }] },
+    "chapters": { "label": "C", "members": [
+      { "path": "c001.cbz", "sha256": "01", "pages": 2 },
+      { "path": "c002.cbz", "sha256": "02", "pages": 2 },
+      { "path": "c003.cbz", "sha256": "03", "pages": 2 }
+    ] }
+  },
+  "hub": "volume",
+  "alignments": [
+    { "from": "volume", "to": "chapters", "by": "solver", "runs": [{ "a": "0-5", "b": "0-5" }] }
+  ]
+}"#;
+
+/// A two-edition document where both editions are a single member, so
+/// nothing in it is chapter-organised — the case `chapter_at` must answer
+/// `None` for, without needing an alignment at all.
+#[cfg(test)]
+const FIXTURE_SINGLE_MEMBER_PAIR: &str = r#"{
+  "taiyaku": 1,
+  "work": { "title": "T", "reading": "rtl" },
+  "editions": {
+    "a": { "label": "A", "members": [{ "path": "a.cbz", "sha256": "00", "pages": 4 }] },
+    "b": { "label": "B", "members": [{ "path": "b.cbz", "sha256": "01", "pages": 4 }] }
+  },
+  "hub": "a",
+  "alignments": [
+    { "from": "a", "to": "b", "by": "solver", "runs": [{ "a": "0-3", "b": "0-3" }] }
+  ]
+}"#;
+
+/// Like `CHAPTERED`, but `volume` page 3 is a gap: a run with only an `a`
+/// side, the way the format's own examples record a page with no
+/// counterpart. Run sides stay equal in slots, not pages, though here there
+/// are no spreads so the two coincide: `chapters` presents 5 slots (3 + 2)
+/// to match the 5 paired `volume` slots, leaving the sixth `volume` slot —
+/// page 3 — the one with no counterpart at all.
+#[cfg(test)]
+const CHAPTERED_WITH_A_GAP: &str = r#"{
+  "taiyaku": 1,
+  "work": { "title": "T", "reading": "rtl" },
+  "editions": {
+    "volume": { "label": "V", "members": [{ "path": "v01.cbz", "sha256": "00", "pages": 6 }] },
+    "chapters": { "label": "C", "members": [
+      { "path": "c001.cbz", "sha256": "01", "pages": 3 },
+      { "path": "c002.cbz", "sha256": "02", "pages": 2 }
+    ] }
+  },
+  "hub": "volume",
+  "alignments": [
+    { "from": "volume", "to": "chapters", "by": "solver", "runs": [
+      { "a": "0-2", "b": "0-2" },
+      { "a": "3" },
+      { "a": "4-5", "b": "3-4" }
+    ] }
   ]
 }"#;
 
@@ -1348,5 +1466,94 @@ mod tests {
         );
         assert_eq!(edition.locate(1), Some((1, 1)));
         assert_eq!(edition.locate(2), None);
+    }
+
+    /// The ordinary case: a slot of the single-member edition resolves into
+    /// the chapter-organised one and lands in the member the alignment says
+    /// it does, not the one page arithmetic on the filename would suggest.
+    #[test]
+    fn chapter_at_names_the_member_a_slot_lands_in() {
+        let sc = Sidecar::from_json(CHAPTERED).unwrap();
+        let at = |page| sc.chapter_at("volume", Slot { page, half: None }).unwrap();
+        assert_eq!((at(0).member, at(0).of), (0, 3));
+        assert_eq!(at(0).path, "c001.cbz");
+        assert_eq!(at(2).member, 1);
+        assert_eq!(at(5).member, 2);
+        assert_eq!(at(5).path, "c003.cbz");
+    }
+
+    /// `None` is the common case: most works never have a chapter-organised
+    /// edition at all, and that must not be an error.
+    #[test]
+    fn chapter_at_is_none_where_no_edition_is_chapter_organised() {
+        // Both editions are one member each, so nothing here is a chapter list.
+        let sc = Sidecar::from_json(FIXTURE_SINGLE_MEMBER_PAIR).unwrap();
+        assert_eq!(
+            sc.chapter_at(
+                "a",
+                Slot {
+                    page: 0,
+                    half: None
+                }
+            ),
+            None
+        );
+    }
+
+    /// A slot that resolves into the chaptered edition's alignment but lands
+    /// in a gap has no member to report, and must not be confused with there
+    /// being no chapter-organised edition at all.
+    #[test]
+    fn chapter_at_is_none_for_a_slot_with_no_counterpart() {
+        let sc = Sidecar::from_json(CHAPTERED_WITH_A_GAP).unwrap();
+        assert_eq!(
+            sc.chapter_at(
+                "volume",
+                Slot {
+                    page: 3,
+                    half: None
+                }
+            ),
+            None
+        );
+    }
+
+    /// A sibling of the test above, against the same fixture: it asserts a
+    /// non-gap slot still resolves to `Some`, so the two tests together can
+    /// only pass if the gap is the actual cause of that `None`. Without this,
+    /// `route()` failing outright for the `volume` -> `chapters` pair — which
+    /// `runs_of` will do given a run whose two sides disagree in slot count —
+    /// would make every slot `None`, and the test above would still pass for
+    /// the wrong reason.
+    #[test]
+    fn chapter_at_still_resolves_a_neighbouring_slot_in_the_gap_fixture() {
+        let sc = Sidecar::from_json(CHAPTERED_WITH_A_GAP).unwrap();
+        assert!(
+            sc.chapter_at(
+                "volume",
+                Slot {
+                    page: 0,
+                    half: None
+                }
+            )
+            .is_some()
+        );
+    }
+
+    /// Asking from the chapter-organised edition itself needs no alignment —
+    /// `key == from` is identity, not a lookup that happens to succeed.
+    #[test]
+    fn chapter_at_from_the_chaptered_edition_itself_needs_no_alignment() {
+        let sc = Sidecar::from_json(CHAPTERED).unwrap();
+        let at = sc
+            .chapter_at(
+                "chapters",
+                Slot {
+                    page: 4,
+                    half: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(at.member, 2);
     }
 }

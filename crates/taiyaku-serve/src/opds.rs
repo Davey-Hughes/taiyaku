@@ -16,7 +16,7 @@ use std::sync::Arc;
 use axum::{
     Router,
     extract::{Path as AxPath, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -240,6 +240,7 @@ async fn stream_page(
     // the same words the `/api/…` route uses, rather than by axum's `Path`
     // rejection.
     AxPath((id, edition, number)): AxPath<(String, String, String)>,
+    headers: HeaderMap,
 ) -> Response {
     let number = match crate::routes::page_index(&number, &edition) {
         Ok(number) => number,
@@ -262,6 +263,26 @@ async fn stream_page(
     // server whose PSE stream is 1-based disagrees with both the client and
     // the other implementation of the same feed.
     let index = number;
+
+    // O1: the same validator the `/api/…` page route sends, checked the same
+    // way and for the same reason — Panels reaches pages through *this*
+    // route, not the `/api/…` one, and O5 already recorded once what fixing
+    // only the other route is worth. `crate::routes::locate_member` reads
+    // nothing but the in-memory sidecar, so a match is answered before the
+    // decompression or Stump round trip below ever runs.
+    let found = match state.work_or_missing(&id) {
+        Ok(found) => found,
+        Err(e) => return missing(e),
+    };
+    let (sha256, offset) = match crate::routes::locate_member(found, &edition, index) {
+        Ok(pair) => pair,
+        Err(e) => return missing(e),
+    };
+    let tag = crate::routes::page_etag(sha256, offset);
+    if crate::routes::if_none_match_hits(&headers, &tag) {
+        return crate::routes::not_modified(&tag);
+    }
+
     let fetched = tokio::task::spawn_blocking(move || {
         let found = state.work_or_missing(&id)?;
         state.page(found, &edition, index)
@@ -269,7 +290,14 @@ async fn stream_page(
     .await;
 
     match fetched {
-        Ok(Ok(page)) => ([(header::CONTENT_TYPE, page.content_type)], page.bytes).into_response(),
+        Ok(Ok(page)) => (
+            [
+                (header::CONTENT_TYPE, page.content_type),
+                (header::ETAG, tag),
+            ],
+            page.bytes,
+        )
+            .into_response(),
         Ok(Err(e)) => missing(e),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -569,6 +597,50 @@ mod tests {
         );
     }
 
+    /// O1, on the other route addressed by page number — the one Panels
+    /// actually reaches pages through. `routes.rs`'s tests pin the mechanism
+    /// on the `/api/…` route; this one exists so that fixing only that
+    /// route — the mistake O5 already recorded once, on this same pair of
+    /// routes — cannot happen again silently here.
+    #[tokio::test]
+    async fn the_pse_stream_also_carries_an_etag_and_answers_a_matching_request_304() {
+        let state = Arc::new(crate::test_support::state("taiyaku-test-opds-page-etag"));
+        let app = routes().with_state(state);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::get("/opds/v1.2/works/t/raw/pages/0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let tag = first.headers()[header::ETAG].clone();
+
+        let second = app
+            .oneshot(
+                Request::get("/opds/v1.2/works/t/raw/pages/0")
+                    .header(header::IF_NONE_MATCH, tag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = second.status();
+        let bytes = axum::body::to_bytes(second.into_body(), 1 << 16)
+            .await
+            .unwrap();
+
+        crate::test_support::cleanup("taiyaku-test-opds-page-etag");
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+        assert!(
+            bytes.is_empty(),
+            "a 304 must carry no body on this route either"
+        );
+    }
+
     /// A feed for a work this server does not hold says so, rather than
     /// returning an empty feed a client renders as an empty library.
     #[tokio::test]
@@ -684,13 +756,13 @@ mod tests {
         assert!(body.contains('4'), "must say how many pages it has: {body}");
     }
 
-    /// Finding 4 of Task 7's review: `stream_page` has three router-level
-    /// tests for what an unknown work or edition returns; `cover` — the only
-    /// other route that resolves a work and then an edition — had none. A
-    /// prior attempt at this test was written, run, watched pass, and then
-    /// deleted before committing to keep the test count at a predicted
-    /// number; that was a mistake regardless of the count, since a route
-    /// with no test protecting it can regress silently. This one stays.
+    /// `stream_page` has three router-level tests for what an unknown work
+    /// or edition returns; `cover` — the only other route that resolves a
+    /// work and then an edition — had none. A prior attempt at this test was
+    /// written, run, watched pass, and then deleted before committing to
+    /// keep the test count at a predicted number; that was a mistake
+    /// regardless of the count, since a route with no test protecting it can
+    /// regress silently. This one stays.
     #[tokio::test]
     async fn a_cover_for_an_unknown_work_or_edition_names_what_was_missing() {
         let state = Arc::new(crate::test_support::state(

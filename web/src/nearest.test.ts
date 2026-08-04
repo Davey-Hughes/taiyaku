@@ -8,20 +8,45 @@ const r = fakeResolver(
 )
 
 describe('nearestPaired', () => {
-  it('offers the paired slots either side of a gap', () => {
+  it('offers the paired slots either side of a gap, already resolved', () => {
     // `a` slot 4 is unpaired; 3 is the nearest paired before it and there is
-    // nothing paired after it.
+    // nothing paired after it. `b`'s slot 2 is `{ page: 2, half: 'R' }` — the
+    // resolved page travels with the offer so a caller does not have to
+    // resolve it again.
     expect(nearestPaired({ authority: 'a', slot: 4, viewing: 'b' }, r, 8))
-      .toEqual({ before: 3 })
+      .toEqual({ before: { slot: 3, page: 2 } })
   })
 
   it('offers only what exists at the start of a volume', () => {
     expect(nearestPaired({ authority: 'a', slot: 0, viewing: 'b' }, r, 8))
-      .toEqual({ after: 1 })
+      .toEqual({ after: { slot: 1, page: 0 } })
   })
 
   it('offers nothing where the whole edition is unpaired', () => {
     const none = fakeResolver({ a: whole(3), b: whole(3) }, {})
     expect(nearestPaired({ authority: 'a', slot: 1, viewing: 'b' }, none, 3)).toEqual({})
+  })
+
+  it('resolves each offer once, not once for the scan and again for the caller', () => {
+    // The double-resolve this fix removes lived in `App.tsx` (untestable
+    // here — see its own no-resolver-in-tests comment), not in
+    // `nearestPaired` itself. What this pins is the half `nearestPaired`
+    // owns: the scan calls `resolver.resolve` once per candidate slot it
+    // actually looks at, and the found offer already carries a resolved
+    // `page` — so a caller has nothing left to resolve.
+    let calls = 0
+    const counting: typeof r = {
+      ...r,
+      resolve: (from, to, at) => {
+        calls++
+        return r.resolve(from, to, at)
+      },
+    }
+    const found = nearestPaired({ authority: 'a', slot: 4, viewing: 'b' }, counting, 8)
+    // Slot 4 is the gap; the scan checks slot 3 (before, found immediately)
+    // and slots 5, 6, 7 (after, all past the end of `a`'s 8 slots — none
+    // resolve, so the scan exhausts `within` without an `after`).
+    expect(calls).toBe(4)
+    expect(found).toEqual({ before: { slot: 3, page: 2 } })
   })
 })

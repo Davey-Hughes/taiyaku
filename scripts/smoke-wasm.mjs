@@ -50,4 +50,39 @@ check('indexOf b (2,R)', sc.indexOf('b', 2, 'R'), 2)
 const landed = sc.resolveSlot('a', 'b', 1, undefined)
 check('resolveSlot a1 to b', { page: landed.page, half: landed.half }, { page: 0, half: undefined })
 
+// The same document as `binding.rs`'s CHAPTERED_FIXTURE: `chapters` is
+// assembled from three members and `volume` from one, the shape a
+// chapter-organised edition has. `chapterAt` is untested by anything except
+// this script and `cargo test -p taiyaku-wasm` — this is the only command
+// that runs it through the real, compiled WebAssembly.
+const CHAPTERED = JSON.stringify({
+  taiyaku: 1,
+  work: { title: 'T', reading: 'rtl' },
+  editions: {
+    volume: { label: 'V', members: [{ path: 'v01.cbz', sha256: '00', pages: 6 }] },
+    chapters: {
+      label: 'C',
+      members: [
+        { path: 'c001.cbz', sha256: '01', pages: 2 },
+        { path: 'c002.cbz', sha256: '02', pages: 2 },
+        { path: 'c003.cbz', sha256: '03', pages: 2 },
+      ],
+    },
+  },
+  hub: 'volume',
+  alignments: [
+    { from: 'volume', to: 'chapters', by: 'solver', runs: [{ a: '0-5', b: '0-5' }] },
+  ],
+})
+
+const chaptered = WasmSidecar.fromJson(CHAPTERED)
+const chapter = chaptered.chapterAt('volume', 0)
+check(
+  'chapterAt volume 0',
+  { member: chapter.member, of: chapter.of, path: chapter.path },
+  { member: 0, of: 3, path: 'c001.cbz' },
+)
+check('chapterAt volume 999', chaptered.chapterAt('volume', 999), undefined)
+check('chapterAt nope 0', chaptered.chapterAt('nope', 0), undefined)
+
 console.log('\nthe module runs.')

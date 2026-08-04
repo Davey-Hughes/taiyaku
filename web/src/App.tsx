@@ -1,13 +1,37 @@
 import { useEffect, useRef, useState } from 'react'
 import { getProgress, getSidecar, listWorks, pageUrl, putProgress } from './api'
 import { Chrome } from './Chrome'
+import { createDecodeQueue, decodeTo, type DecodeQueue } from './decode'
 import { debounce, type Debounced } from './debounce'
 import { Gap } from './Gap'
 import { intentOf, isInteractiveTarget } from './keys'
-import { nearestPaired } from './nearest'
+import { sliceFor } from './module'
+import { directionModule, effectiveDirection, setOverride, TOGGLE_INTENT, type Direction } from './modules/direction'
+import { motionModule } from './modules/motion'
+import { prefetchModule, window as prefetchWindow } from './modules/prefetch'
+import {
+  chapterReadout,
+  healthReadout,
+  nextTurns,
+  pagesPerMinute,
+  positionLine,
+  readoutsModule,
+  timeLine,
+} from './modules/readouts'
+import { registry } from './modules/registry'
+import {
+  regroupModule,
+  toggleEditionBreak,
+  TOGGLE_INTENT as REGROUP_TOGGLE_INTENT,
+} from './modules/regroup'
+import { TOGGLE_INTENT as SETTINGS_TOGGLE_INTENT } from './modules/settings'
+import { nearestPaired, type NearestOffer } from './nearest'
 import { PageView } from './PageView'
-import { groups, type Group, type Mode } from './pairing'
+import { cellsFor, groups, type Group, type Mode } from './pairing'
+import { loadPrefs, resetPrefs, savePrefs } from './prefs'
 import { display, navigate, restore, type ReadingState } from './reading'
+import { Settings } from './Settings'
+import { withFieldValue } from './settingsPanel'
 // This file must never become Vitest-reachable: `wasmResolver` imports
 // `resolver.ts` as a value, and that module's `taiyaku-wasm` import only
 // resolves once `./scripts/build-wasm.sh` has generated the gitignored
@@ -15,12 +39,11 @@ import { display, navigate, restore, type ReadingState } from './reading'
 // (after that script has run) and break CI or a fresh clone (where it
 // hasn't) — see docs/ci.md's `web` job notes and the global no-resolver-in-
 // tests constraint.
-import { wasmResolver, type Position, type Resolver } from './resolver'
+import { wasmResolver, type Chapter, type Position, type Resolver } from './resolver'
 import {
   applyIntent,
   initialPrevious,
   orderedEditions,
-  resolveOffered,
   takeOffered,
   verdictFor,
   type Alignment,
@@ -42,7 +65,7 @@ const PROGRESS_DEBOUNCE_MS = 400
  * rather than deriving them here a second time.
  */
 interface SidecarShape {
-  work: { reading: 'rtl' | 'ltr' }
+  work: { reading: Direction }
   editions: Record<string, unknown>
   hub: string
   alignments: Alignment[]
@@ -51,7 +74,8 @@ interface SidecarShape {
 interface Session {
   work: string
   resolver: Resolver
-  reading: 'rtl' | 'ltr'
+  /** The sidecar's fact about the work. `d` layers a per-edition override on top of this — see `effectiveDirection`. */
+  reading: Direction
   /** Digit keys index into this, in display order — see `orderedEditions`. */
   editions: string[]
   /** Read once at load, for `verdictFor` — see `SidecarShape`. */
@@ -90,6 +114,105 @@ function App() {
   // `Tab`'s target — not `session` state, since it names nothing about the
   // reading model, only whether the strip and readout row are on screen.
   const [chromeVisible, setChromeVisible] = useState(false)
+  // `s`'s target (`modules/settings.ts`) — same reasoning as `chromeVisible`
+  // above, and deliberately a separate flag rather than reusing it: the
+  // panel and the chrome are shown and hidden independently.
+  const [settingsVisible, setSettingsVisible] = useState(false)
+
+  // Every registered module's own preference slice, in one map keyed by
+  // `ReaderModule.id` rather than one hand-declared `useState` per module.
+  // Built once, from `registry.all()`, the same source `Settings.tsx` reads
+  // to generate the panel itself — a module that is registered is
+  // preferences-wired for free, the claim `Settings.tsx`'s own doc makes
+  // about the panel now also true of the state underneath it. Loaded once,
+  // like `directionPrefs` and `regroupPrefs` used to be individually: there
+  // is exactly one `work` for this component's lifetime (no work-switcher
+  // exists yet), so there is nothing to reload against.
+  const [prefsMap, setPrefsMap] = useState<Record<string, object>>(() =>
+    Object.fromEntries(registry.all().map((mod) => [mod.id, loadPrefs(mod.id, mod.defaults as object)])),
+  )
+  // Persisted via an effect rather than inline in `setPrefsMap`'s callers —
+  // several of them (the `d`/`b` handlers below) update this with a
+  // functional updater, and an updater must stay pure (React may invoke it
+  // more than once, e.g. under StrictMode), so the `savePrefs` side effect
+  // lives here instead, same reasoning `directionPrefs`'s effect used to
+  // carry alone. Writes every module's slice on any one module's change
+  // rather than diffing for the one that actually moved: `savePrefs` is a
+  // cheap `JSON.stringify` + `setItem` on a handful of small objects, so the
+  // simplicity of "persist the whole map, always" costs nothing measurable
+  // and cannot drift from which id actually changed the way a hand-maintained
+  // diff could.
+  useEffect(() => {
+    for (const mod of registry.all()) {
+      savePrefs(mod.id, prefsMap[mod.id] ?? (mod.defaults as object))
+    }
+  }, [prefsMap])
+
+  // Typed reads of each module's own slice — `sliceFor` (`module.ts`)
+  // restores the `P` a plain `Record<string, object>` can't carry, so every
+  // site below keeps the same typed shape `directionPrefs`/`motionPrefs`/etc.
+  // had as their own `useState` values. Derived on every render rather than
+  // memoised: each is a cheap property lookup with a fallback, not a
+  // computation worth caching.
+  const directionPrefs = sliceFor(prefsMap, directionModule)
+  const motionPrefs = sliceFor(prefsMap, motionModule)
+  const readoutsPrefs = sliceFor(prefsMap, readoutsModule)
+  const prefetchPrefs = sliceFor(prefsMap, prefetchModule)
+  const regroupPrefs = sliceFor(prefsMap, regroupModule)
+
+  // Two decode queues, not one — a review found that sharing a single queue
+  // between the live page turn and the prefetch window let stale prefetch
+  // work starve the decode the reader is actually waiting on: every slot
+  // change enqueues several prefetch jobs plus one swap job, and a FIFO
+  // queue with no cancellation runs them in the order they arrived, so a
+  // fast flick's *last* keypress — the slot the reader actually lands on —
+  // could queue behind a handful of prefetch jobs for slots already left
+  // behind. Each job holds a concurrency slot for a full round trip, so at
+  // any real network latency the reader could be staring at the page they
+  // started from well after they stopped pressing keys.
+  //
+  // The fix taken is separate queues rather than priority or cancellation:
+  // `swapQueue` is what every mounted `PageView` decodes through (passed as
+  // `decodeQueue` below), `prefetchQueue` is what the prefetch effect
+  // further down decodes through, and neither can ever hold a slot the
+  // other needs. Cancelling a stale prefetch job's underlying fetch was the
+  // alternative the review named, but `decode.ts` has no such hook —
+  // `<img>.decode()` cannot be aborted mid-flight without discarding the
+  // element and losing whatever bytes it already has, which trades one
+  // defect for a different one (re-fetching from zero on every supersede).
+  // Two independent, already-existing queues need no new capability at all.
+  //
+  // Both lazily created once via `useState`'s initializer, then *rebuilt*
+  // whenever `prefetchPrefs.maxConcurrent` changes — the settings panel can
+  // now tune it live, and a queue whose cap was baked in at mount would make
+  // that one field the exception to "change a setting, confirm it takes
+  // effect" every other prefetch setting already satisfies (`ahead`/
+  // `behind`/`enabled` are read fresh at render or effect time below, with
+  // nothing cached). Rebuilding drops nothing already in flight: a job
+  // queued against the old instance keeps running under its old cap, and
+  // this only changes which instance the *next* `run` call goes to.
+  const [swapQueue, setSwapQueue] = useState<DecodeQueue>(() => createDecodeQueue(prefetchPrefs.maxConcurrent))
+  useEffect(() => {
+    setSwapQueue(createDecodeQueue(prefetchPrefs.maxConcurrent))
+  }, [prefetchPrefs.maxConcurrent])
+
+  const [prefetchQueue, setPrefetchQueue] = useState<DecodeQueue>(() =>
+    createDecodeQueue(prefetchPrefs.maxConcurrent),
+  )
+  useEffect(() => {
+    setPrefetchQueue(createDecodeQueue(prefetchPrefs.maxConcurrent))
+  }, [prefetchPrefs.maxConcurrent])
+
+  // The keydown effect below subscribes once, after load (see its own comment),
+  // so its closure's `session` is frozen at that instant — reading a module
+  // key's action (currently just direction's `d`) needs the edition
+  // currently being viewed, which changes on every swap. This ref is kept
+  // current across every render instead, the same role `writeProgressRef`/
+  // `restored` play for other state the effect can't close over live.
+  const sessionRef = useRef<Session>(undefined)
+  useEffect(() => {
+    sessionRef.current = session
+  }, [session])
 
   useEffect(() => {
     let cancelled = false
@@ -145,7 +268,11 @@ function App() {
     if (!session) return
     const { resolver, editions } = session
     function onKeyDown(event: KeyboardEvent) {
-      const intent = intentOf(event, editions)
+      // One dispatch path: every key — built-in or module-declared — passes
+      // through `intentOf`, which applies the modifier guard once. A module's
+      // own key (currently just direction's `d`) comes back as `{ kind:
+      // 'module', intent }` rather than a second, hand-matched branch here.
+      const intent = intentOf(event, editions, registry.all())
       if (!intent) return
       if (intent.kind === 'chrome') {
         // `Tab`'s own default — focus movement — is left alone. Toggling the
@@ -154,6 +281,59 @@ function App() {
         // made every focusable control (mode buttons, all of the
         // filmstrip's tiles, `Gap`'s offered moves) mouse-only.
         setChromeVisible((visible) => !visible)
+        return
+      }
+      if (intent.kind === 'module') {
+        // Same interactive-target guard as the reader-intent branch below —
+        // a focused button's own keyboard activation should be the only
+        // thing that runs, whether the key belongs to the reader or a module.
+        if (isInteractiveTarget(event.target)) return
+        event.preventDefault()
+        // A small, explicit switch rather than a generic action table: three
+        // modules declare a key today, and each does something different
+        // enough with it (a per-edition flip, a per-edition break, a plain
+        // visibility toggle) that a table would need its own per-entry
+        // shape anyway. The next module to claim a key adds the next case.
+        switch (intent.intent) {
+          case TOGGLE_INTENT: {
+            const current = sessionRef.current
+            if (!current) return
+            const edition = current.state.viewing
+            const sidecarReading = current.reading
+            setPrefsMap((map) => {
+              const prefs = sliceFor(map, directionModule)
+              const flipped: Direction =
+                effectiveDirection(sidecarReading, prefs.override[edition]) === 'rtl' ? 'ltr' : 'rtl'
+              return { ...map, [directionModule.id]: setOverride(prefs, edition, flipped) }
+            })
+            break
+          }
+          case REGROUP_TOGGLE_INTENT: {
+            const current = sessionRef.current
+            if (!current) return
+            // Breaks are slots within the *viewed* edition's own space —
+            // the same space `groups` indexes into below — so this is
+            // `shown.slot`, not `state.slot`, which is authority-space and
+            // only equal to it when nothing has been swapped. A gap has no
+            // slot to break on, so the key is inert there.
+            const shown = display(current.state, current.resolver)
+            if (shown.kind !== 'at') return
+            setPrefsMap((map) => ({
+              ...map,
+              [regroupModule.id]: toggleEditionBreak(sliceFor(map, regroupModule), shown.edition, shown.slot),
+            }))
+            break
+          }
+          case SETTINGS_TOGGLE_INTENT: {
+            // Unlike the two cases above, this needs nothing from the
+            // current session — it only shows or hides the panel, the same
+            // shape `Tab`'s `{ kind: 'chrome' }` branch above has, just
+            // reached through the module contract instead of a second
+            // hard-coded `Intent` kind (see `modules/settings.ts`).
+            setSettingsVisible((visible) => !visible)
+            break
+          }
+        }
         return
       }
       // A reader key belongs to the page, not to whatever a previous `Tab`
@@ -250,6 +430,62 @@ function App() {
   }, [session?.work, session?.state.authority, session?.state.slot, writeProgress])
   // oxlint-enable react-hooks/exhaustive-deps
 
+  // The reading-time readout's raw material — `modules/readouts.ts`'s
+  // `nextTurns`/`timeLine`/`pagesPerMinute` do the actual arithmetic; this
+  // effect only decides *when* to call it. A separate effect from the
+  // progress-write one above, deliberately: that one's dependency array is
+  // load-bearing (must never gain `session`, must never fire on a swap)
+  // precisely because it has a side effect worth guarding, a network write;
+  // this one only appends to an in-memory ref, client-side only per the
+  // brief, so there is no redundant-write hazard to guard against.
+  //
+  // A `restored`-style skip on the *first* run is still needed here, though
+  // — measured live, not assumed: recording session-load itself as the first
+  // "turn" makes the interval between mount and the sidecar/wasm finishing
+  // to load look like a page turn, so the very first estimate this project
+  // renders was `~6m left` derived entirely from load latency, before a
+  // single arrow key had been pressed. `restoredTurn` tracks *whether* to
+  // skip; `nextTurns` — pure, and covered directly by `readouts.test.ts`,
+  // unlike this effect — is what actually skips.
+  //
+  // `session` deliberately does not join this array, the same as the
+  // progress-write effect's own array above and for a directly analogous
+  // reason: `session` changes identity on every swap too, and a swap is not
+  // a page turn — it does not even move `state.slot` (see `reading.ts`'s
+  // `swap`). Depending on the whole object would record one every time a
+  // reader merely peeked at another edition, inflating the pace with moves
+  // that were not reading at all.
+  const turnsRef = useRef<number[]>([])
+  const restoredTurn = useRef(false)
+  // oxlint-disable react-hooks/exhaustive-deps -- session changes on every swap too, and a swap is not a page turn; see above.
+  useEffect(() => {
+    if (!session) return
+    const skip = !restoredTurn.current
+    restoredTurn.current = true
+    turnsRef.current = nextTurns(turnsRef.current, Date.now(), skip)
+  }, [session?.state.authority, session?.state.slot])
+  // oxlint-enable react-hooks/exhaustive-deps
+
+  // `elapsedMs` (below, at render) is a plain subtraction against this, fixed
+  // once per page load — "session" means "since this reader opened the
+  // reader," not since the sidecar finished loading a moment later, so it is
+  // seeded eagerly rather than waiting on `session` to exist.
+  const sessionStartRef = useRef(Date.now())
+
+  // Nothing above re-renders on its own as time passes — `elapsedMs` and the
+  // remaining-time estimate are both computed fresh at render, from `Date.now()`
+  // against the refs above, but a ref changing never triggers a render. This
+  // is the heartbeat that makes the estimate actually tick rather than only
+  // updating on the next page turn. 30s rather than every second: the display
+  // itself is minute-granularity (`modules/readouts.ts`'s `timeLine` never
+  // shows seconds), so anything finer would re-render for a change nobody
+  // could see.
+  const [, tick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => tick((t) => t + 1), 30_000)
+    return () => clearInterval(id)
+  }, [])
+
   // Scroll mode mounts every group at once, so — unlike single/two mode,
   // where only the current group is ever rendered — nothing else puts the
   // reading position on screen. Without this, entering scroll mode at slot
@@ -264,16 +500,60 @@ function App() {
   //
   // Deliberately *not* the reverse: this does not write `state.slot` from
   // where the reader scrolls to by hand. That needs an `IntersectionObserver`
-  // watching every mounted group, which is real work left to the next
-  // milestone — see the report for what that leaves open.
+  // watching every mounted group, which is real work left to a later
+  // milestone — recorded in docs/status.md's "What M5a leaves open".
   const currentGroupRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (mode !== 'scroll') return
     currentGroupRef.current?.scrollIntoView({ block: 'start' })
   }, [mode, session?.state.authority, session?.state.slot, session?.state.viewing])
 
+  // Warms the browser's own cache for the slots `modules/prefetch.ts`'s
+  // `window` names either side of wherever the reader is looking, so an
+  // arrow key that lands there finds `PageView`'s own decode (`decodeTo`,
+  // via `swapQueue` below) already resolved against a cached response
+  // rather than starting a fetch from nothing. Runs through `prefetchQueue`,
+  // not `swapQueue` — see that ref's own doc above for why the two must
+  // stay separate. Skipped in scroll mode: every
+  // group is already mounted there (see `PageView.tsx`'s `buffered` doc), so
+  // "the slots around the current one" is not a meaningful subset to warm
+  // ahead of the rest — the rest are either already requested or deliberately
+  // deferred to `loading="lazy"`, and this would only fight that. Skipped
+  // while disabled (`prefetchPrefs.enabled`) or mid-gap (nothing paired to
+  // prefetch around).
+  //
+  // Declared here, ahead of the `if (!session) return null` below, for the
+  // same reason `currentGroupRef`'s effect just above is: hooks must run in
+  // the same order on every render, so this reads `sessionRef.current`
+  // (kept fresh by the effect near the top of this component) rather than
+  // the `session`/`shown`/`resolver` bindings this function only creates
+  // after that guard.
+  useEffect(() => {
+    const current = sessionRef.current
+    if (!current || mode === 'scroll' || !prefetchPrefs.enabled) return
+    const shownNow = display(current.state, current.resolver)
+    if (shownNow.kind !== 'at') return
+    const total = current.resolver.slotCount(shownNow.edition) ?? 0
+    const targets = prefetchWindow(shownNow.slot, total, prefetchPrefs.ahead, prefetchPrefs.behind)
+    for (const slot of targets) {
+      const position = current.resolver.slotAt(shownNow.edition, slot)
+      if (!position) continue
+      const url = pageUrl(current.work, shownNow.edition, position.page)
+      void prefetchQueue.run(() => decodeTo(new Image(), url))
+    }
+  }, [
+    mode,
+    session?.state.authority,
+    session?.state.slot,
+    session?.state.viewing,
+    prefetchPrefs.enabled,
+    prefetchPrefs.ahead,
+    prefetchPrefs.behind,
+    prefetchQueue,
+  ])
+
   if (!session) return null
-  const { work, resolver, reading, state, alignments } = session
+  const { work, resolver, reading, state, alignments, editions } = session
   const shown = display(state, resolver)
 
   // Takes one of `Gap`'s offered moves: `slot` is authority-space (what
@@ -290,24 +570,53 @@ function App() {
     setSession((prev) => (prev ? { ...prev, state: navigate(prev.state, slot) } : prev))
   }
 
+  // `Settings.tsx`'s two callbacks, generic over every registered module
+  // rather than a hand-written case per one — unlike the key-dispatch switch
+  // above, which stays a small explicit switch because each key does
+  // something behaviourally different (a per-edition flip, a per-edition
+  // break, a plain visibility toggle). A settings-panel change is the same
+  // shape for every module, always: look the id up in the registry, apply
+  // the change to that id's own slice of the map. `registry.get(id)` is the
+  // same lookup `Settings.tsx` itself does to find a module's `defaults`,
+  // and `settingsPanel.ts`'s `withFieldValue` is what actually applies a
+  // change — coercing the raw control value and refusing an unknown key, an
+  // unparseable number, or an object-typed field — so this needs no
+  // per-module knowledge of any of that. A module registered in
+  // `modules/registry.ts` with nothing but a `defaults` shape is fully wired
+  // through both callbacks the moment it is registered: no case to add here.
+  function handleSettingChange(id: string, key: string, raw: unknown) {
+    const mod = registry.get(id)
+    if (!mod) return
+    setPrefsMap((map) => ({ ...map, [id]: withFieldValue(map[id] ?? (mod.defaults as object), key, raw) }))
+  }
+
+  // Resets both halves: the stored slice (`resetPrefs`, so a reload does not
+  // resurrect the old value) and the in-memory state (so the panel reflects
+  // the defaults immediately, rather than only after the next load).
+  // `resetPrefs` alone would satisfy only the second `docs/notes.md`-style
+  // check ("reload, confirm it persisted") and silently fail the first
+  // ("change a setting, confirm it takes effect") for exactly one direction
+  // of change — a reset the reader could see do nothing until they reloaded.
+  // Generic for the same reason `handleSettingChange` above is.
+  function handleSettingReset(id: string) {
+    const mod = registry.get(id)
+    if (!mod) return
+    resetPrefs(id)
+    setPrefsMap((map) => ({ ...map, [id]: { ...(mod.defaults as object) } }))
+  }
+
   if (shown.kind === 'gap') {
     const within = resolver.slotCount(state.authority) ?? state.slot + 1
     const { before, after } = nearestPaired(state, resolver, within)
-    // `nearestPaired` returns authority-space slots; `Gap` wants to show the
-    // page each one lands on in the edition actually being looked at, so
-    // each offer is resolved via `session.ts`'s `resolveOffered` — the same
-    // resolution `takeOffered` uses to commit the move, not a second copy of
-    // it kept here.
-    // `resolveOffered` and `slotAt` both answer in the same zero-based space
-    // as everything else internal; `Gap`'s `page` props are display-only
-    // (see their doc there), so the +1 happens right here, at the boundary
-    // handing a value to something a person reads — the same convention
-    // `displaySlot` below follows, and `altAt` above.
-    const toMove = (slot: number | undefined) => {
-      if (slot === undefined) return undefined
-      const resolved = resolveOffered(state, slot, resolver)
-      return resolved && { slot, page: resolved.page + 1 }
-    }
+    // `nearestPaired` already resolved each offer against the edition being
+    // looked at while finding it (see `nearest.ts`'s `NearestOffer`), so this
+    // is only the display conversion — not a second `resolveOffered` call
+    // repeating a resolution the scan already did. `Gap`'s `page` props are
+    // display-only (see their doc there), so the +1 happens right here, at
+    // the boundary handing a value to something a person reads — the same
+    // convention `altAt` (below) follows.
+    const toMove = (offer: NearestOffer | undefined) =>
+      offer && { slot: offer.slot, page: offer.page + 1 }
     return (
       <Gap
         edition={shown.edition}
@@ -324,53 +633,143 @@ function App() {
   }
 
   const slots = allSlots(resolver, shown.edition)
-  const grouped = groups(slots, mode, reading)
+  // `shown.edition` — not `state.viewing` directly, though they're always
+  // equal (see `reading.ts`'s `Display`) — because this is the edition the
+  // page area is about to draw, which is what an override keyed by edition
+  // must line up with.
+  const effectiveReading = effectiveDirection(reading, directionPrefs.override[shown.edition])
+  // Same `shown.edition` reasoning as `effectiveReading` above: breaks are
+  // stored per edition, keyed by the edition whose slots `groups` is about
+  // to pair.
+  const grouped = groups(slots, mode, effectiveReading, regroupPrefs.breaks[shown.edition] ?? [])
   const currentIndex = Math.max(
     grouped.findIndex((g) => g.slots.includes(shown.slot)),
     0,
   )
   const current = grouped[currentIndex]
 
-  // The verdict travels with the swap: acceptance is a claim about
-  // calibration, only the verdict is a claim about the alignment, so a swap
-  // into a non-`sound` pair says so beside the page rather than presenting
-  // it as an unremarkable one. Silent while `viewing === authority` (nothing
-  // has been swapped into) and while the pair is `sound` (nothing to flag).
-  const verdict = state.viewing !== state.authority
-    ? verdictFor(alignments, state.authority, state.viewing)
-    : undefined
+  // `editions[0]` is the hub — `orderedEditions` (`session.ts`) always
+  // places it first, and `Session.editions` is built from exactly that.
+  const hub = editions[0]
+
+  // The four readout lines, computed here from `modules/readouts.ts`'s pure
+  // functions and handed to `Chrome` as plain strings — see that module for
+  // every branch below; this is wiring, not derivation. This supersedes the
+  // old toolbar badge that used to show `${verdict} alignment` only while
+  // `state.viewing !== state.authority`: that badge went silent the moment a
+  // reader navigated (not merely swapped) into a spoke edition, since
+  // `navigate` moves `authority` to match `viewing` — `healthReadout` below
+  // has no such blind spot, because it checks the edition on screen against
+  // the hub, not against wherever `authority` happens to have wandered.
+  const chapter: Chapter | undefined = resolver.chapterAt(shown.edition, shown.slot)
+  const positionText = positionLine({ slot: shown.slot, total: slots.length, page: slots[shown.slot].page + 1 })
+  const chapterText = chapterReadout(chapter, alignments, hub)
+  const healthText = healthReadout(alignments, hub, shown.edition)
+  const slotsLeft = Math.max(slots.length - (shown.slot + 1), 0)
+  const timeText = timeLine({
+    elapsedMs: Date.now() - sessionStartRef.current,
+    pagesPerMin: pagesPerMinute(turnsRef.current, Date.now()),
+    slotsLeft,
+  })
 
   // `pageUrl` takes a page index, not a slot index — they diverge from the
   // first joined spread onward, so every slot is converted through the
   // `Resolver`-derived `slots` array before it reaches a URL.
   const pageAt = (slot: number) => pageUrl(work, shown.edition, slots[slot].page)
-  // 1-based, like `Chrome`'s `displaySlot` — `alt` text is read by a person
-  // (directly, or by a screen reader), the same category `Gap`'s page
-  // numbers below fall into, so it gets the same conversion at the same kind
-  // of boundary: the internal, zero-based `page` is untouched, only what's
-  // handed to something a person reads is offset.
+  // 1-based — `alt` text is read by a person (directly, or by a screen
+  // reader), the same category `Gap`'s page numbers below fall into, so it
+  // gets the same conversion at the same kind of boundary: the internal,
+  // zero-based `page` is untouched, only what's handed to something a
+  // person reads is offset.
   const altAt = (slot: number) => {
     const { page, half } = slots[slot]
     const displayPage = page + 1
     return half ? `page ${displayPage} ${half}` : `page ${displayPage}`
   }
 
+  // Which mechanism governs a mounted `PageView`'s image — see that
+  // component's own `buffered` doc for the full reasoning. Scroll mode
+  // mounts every group at once and leans on `loading="lazy"` to bound that
+  // burst; decode-gating every one of them the instant it mounted would
+  // force them all to fetch regardless of that attribute, trading a
+  // (measured-ineffective, `docs/status.md`) mitigation for a guaranteed-
+  // eager one. Single and two-page mode mount only the current group, so
+  // there is nothing for `loading="lazy"` to defer there — see
+  // `PageView.tsx`'s original comment on that, unchanged — and decode-gating
+  // is what closes the flicker on the page turn itself. `prefetchPrefs.enabled`
+  // gates it too: disabling the module must revert `PageView` to exactly its
+  // pre-M5b behaviour, since that reversion is what makes the flicker
+  // measurement in `docs/notes.md` a comparison rather than a memory.
+  const buffered = mode !== 'scroll' && prefetchPrefs.enabled
+
   function renderGroup(group: Group, key: number) {
-    // A joined spread is one wide page occupying two slots — draw it once,
-    // not as two halves.
-    if (group.spread || group.slots.length === 1) {
+    if (mode !== 'two') {
+      // Single and scroll mode put one slot per group, or — for a joined
+      // spread — both halves in one group drawn as a single wide page; see
+      // `pairing.ts`'s `groups` doc. Always a bare `PageView` here, in every
+      // mode and every group shape, which is what already kept this
+      // position's element type stable across every turn — see the
+      // two-page branch below for the case where it wasn't.
       const [slot] = group.slots
-      return <PageView key={key} src={pageAt(slot)} alt={altAt(slot)} />
+      return (
+        <PageView key={key} src={pageAt(slot)} alt={altAt(slot)} buffered={buffered} decodeQueue={swapQueue} />
+      )
     }
-    const [a, b] = group.slots
-    const [left, right] = reading === 'rtl' ? [b, a] : [a, b]
+    // Two fixed cells, always both present, whether `group` is an ordinary
+    // pair, a joined spread, or a solo slot with no partner — see
+    // `pairing.ts`'s `cellsFor` doc for the full mechanism. This used to
+    // branch the same way the `mode !== 'two'` case above does — a bare
+    // `<PageView>` for a spread/solo group, a `<div>` wrapping two for a
+    // pair — which flipped the element *type* React saw at this position on
+    // exactly the turns that mattered (entering or leaving a joined
+    // spread), forcing a remount that threw away `decode.ts`'s whole gate:
+    // a freshly-mounted `PageView` has nothing decoded, gate or no gate.
+    // Rendering the same wrapping `<div>` and the same two child
+    // `<PageView>`s on every render, and only ever changing their
+    // `src`/layout props, lets React reconcile by position instead — see
+    // `docs/notes.md`'s two-page flicker measurement for the before and
+    // after this made.
+    const { wide, first, second } = cellsFor(group, effectiveReading)
     return (
       <div key={key} style={{ display: 'flex', width: '100%', height: '100%' }}>
         <div style={{ flex: 1, minWidth: 0, height: '100%' }}>
-          <PageView src={pageAt(left)} alt={altAt(left)} />
+          <PageView src={pageAt(first)} alt={altAt(first)} buffered={buffered} decodeQueue={swapQueue} />
         </div>
-        <div style={{ flex: 1, minWidth: 0, height: '100%' }}>
-          <PageView src={pageAt(right)} alt={altAt(right)} />
+        {/*
+          Collapsed to zero width and hidden, not unmounted, when `wide`: a
+          spread or solo group has only one real image to show, but keeping
+          this cell's `PageView` mounted — with `cellsFor`'s mirrored `src`,
+          the same URL `first` is already fetching, a harmless duplicate
+          request for a cell nothing paints — is what lets it stay
+          decode-gated too. The moment pairing resumes and this cell becomes
+          the visible second half of a real pair, its `src` prop changing is
+          a plain update on a surviving instance, the ordinary case
+          `decode.ts` already handles, not a fresh mount with nothing
+          decoded yet.
+
+          `PageView`'s decode gate is per instance: this cell and the one
+          beside it each run `presentWhenDecoded` independently, so an
+          ordinary pair's two halves can present at different times — one
+          new half beside one old half for as long as the slower of the two
+          takes to decode. Neither half is ever blank or half-painted on its
+          own; simultaneity across the pair is simply not something this
+          build guarantees. Left independent deliberately rather than gated
+          together: gating would mean the *faster* half always waits on the
+          *slower* one, adding latency to the common case for a mismatch
+          nothing has measured a reader noticing — particularly now that the
+          swap/prefetch queue split above keeps either half's decode from
+          being starved. A measurement showing otherwise is the reason to
+          revisit this, not a guess made ahead of one.
+        */}
+        <div
+          style={
+            wide
+              ? { flex: '0 0 0', width: 0, minWidth: 0, height: '100%', overflow: 'hidden' }
+              : { flex: 1, minWidth: 0, height: '100%' }
+          }
+          aria-hidden={wide || undefined}
+        >
+          <PageView src={pageAt(second)} alt={altAt(second)} buffered={buffered} decodeQueue={swapQueue} />
         </div>
       </div>
     )
@@ -388,11 +787,6 @@ function App() {
             {m}
           </button>
         ))}
-        {verdict && verdict !== 'sound' && (
-          <span role="status" style={{ marginLeft: 'auto', opacity: 0.8 }}>
-            {shown.edition}: {verdict} alignment
-          </span>
-        )}
       </div>
       <div
         style={{
@@ -415,14 +809,25 @@ function App() {
       </div>
       <Chrome
         visible={chromeVisible}
+        motion={motionPrefs}
+        readouts={readoutsPrefs}
+        position={positionText}
+        time={timeText}
+        chapter={chapterText}
+        health={healthText}
         work={work}
         edition={shown.edition}
         slots={slots}
         groups={grouped}
         currentIndex={currentIndex}
         onNavigate={goToSlot}
-        displaySlot={shown.slot + 1}
-        total={slots.length}
+      />
+      <Settings
+        visible={settingsVisible}
+        modules={registry.all()}
+        prefs={prefsMap}
+        onChange={handleSettingChange}
+        onReset={handleSettingReset}
       />
     </div>
   )

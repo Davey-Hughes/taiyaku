@@ -2,6 +2,23 @@ import { display, type ReadingState } from './reading'
 import type { Resolver } from './resolver'
 
 /**
+ * One offer either side of a gap, already resolved against `state.viewing`.
+ *
+ * Carrying `page` here — not just the authority-space `slot` a caller
+ * navigates to — is what lets a caller skip resolving the same slot a
+ * second time. `App.tsx` used to call `session.ts`'s `resolveOffered` on
+ * whichever slot this scan had just found resolving, which is one more
+ * `Binding::resolve` per offer for an answer this function already had.
+ * `docs/status.md`'s O14 entry has the measured cost of a redundant resolve.
+ */
+export interface NearestOffer {
+  /** Authority-space — what `onTake`/`takeOffered` expects. */
+  slot: number
+  /** Zero-based page in `state.viewing`. Display converts at its own boundary, same as `resolveOffered`'s. */
+  page: number
+}
+
+/**
  * The nearest slots either side of a gap that do resolve.
  *
  * Offered as explicit moves rather than jumped to. `notes.md` leans this way
@@ -17,14 +34,20 @@ export function nearestPaired(
   state: ReadingState,
   resolver: Resolver,
   within: number,
-): { before?: number; after?: number } {
-  const resolves = (slot: number) => display({ ...state, slot }, resolver).kind === 'at'
-  const found: { before?: number; after?: number } = {}
+): { before?: NearestOffer; after?: NearestOffer } {
+  const landingAt = (slot: number): NearestOffer | undefined => {
+    const landed = display({ ...state, slot }, resolver)
+    if (landed.kind !== 'at') return undefined
+    return { slot, page: resolver.slotAt(landed.edition, landed.slot)!.page }
+  }
+  const found: { before?: NearestOffer; after?: NearestOffer } = {}
   for (let slot = state.slot - 1; slot >= 0; slot--) {
-    if (resolves(slot)) { found.before = slot; break }
+    const offer = landingAt(slot)
+    if (offer) { found.before = offer; break }
   }
   for (let slot = state.slot + 1; slot < within; slot++) {
-    if (resolves(slot)) { found.after = slot; break }
+    const offer = landingAt(slot)
+    if (offer) { found.after = offer; break }
   }
   return found
 }

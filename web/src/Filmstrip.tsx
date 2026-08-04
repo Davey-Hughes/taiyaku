@@ -130,9 +130,10 @@ export function Filmstrip({ work, edition, slots, groups, currentIndex, onNaviga
               <img
                 key={slot}
                 src={thumbUrl(work, edition, page)}
-                // 1-based, like `Chrome`'s `displaySlot` — this is read by a
-                // person, and `page` itself (used for `thumbUrl` above)
-                // stays the zero-based value the server expects.
+                // 1-based — this is read by a person, and `page` itself
+                // (used for `thumbUrl` above) stays the zero-based value the
+                // server expects, the same boundary convention `App.tsx`'s
+                // `altAt` follows for its own `alt` text.
                 alt={`page ${page + 1}`}
                 loading="lazy"
                 style={tileImgStyle}

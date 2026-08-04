@@ -76,6 +76,15 @@ jobs:
   # one dependency pulling in threads or a native library does it — and the
   # breakage is invisible until you try to ship the reader. Hence a CI gate from
   # day one rather than a discovery six months in.
+  #
+  # The last three steps close a gap docs/ci.md used to document as permanent:
+  # nothing in CI ever executed the compiled module, so a codegen break in
+  # `binding.rs` (as against the conversion drift `cargo test -p taiyaku-wasm`
+  # already catches) went green. `node` is installed with `apt-get` rather than
+  # by switching to a dual-toolchain image, per the cost comparison recorded in
+  # docs/ci.md; `wasm-pack` is fetched as a prebuilt release binary rather than
+  # `cargo install`ed, since the latter is a multi-minute compile for a tool
+  # this job only runs, never links against.
   wasm:
     runs-on: docker
     container:
@@ -97,6 +106,21 @@ jobs:
         run: cargo build -p taiyaku-core --target wasm32-unknown-unknown --all-features
       - name: Build the binding for wasm
         run: cargo build -p taiyaku-wasm --target wasm32-unknown-unknown --all-features
+      - name: Install node
+        run: apt-get update && apt-get install -y --no-install-recommends nodejs
+      - name: Install wasm-pack
+        # A prebuilt release binary, fetched and verified to resolve rather
+        # than guessed at (see docs/ci.md). Bump the version here and in
+        # rust-toolchain.toml's neighbourly context together if either drifts.
+        run: |
+          curl -fsSL -o /tmp/wasm-pack.tar.gz \
+            https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz
+          tar -xzf /tmp/wasm-pack.tar.gz -C /tmp
+          install -m 0755 /tmp/wasm-pack-v0.15.0-x86_64-unknown-linux-musl/wasm-pack /usr/local/bin/wasm-pack
+      - name: Build the browser package
+        run: ./scripts/build-wasm.sh
+      - name: Run the compiled module
+        run: node scripts/smoke-wasm.mjs
 
   # A node image, not a dual-toolchain one. Everything this job tests is pure
   # TypeScript: reading.ts and pairing.ts sit behind the Resolver interface and

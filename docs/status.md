@@ -1,6 +1,6 @@
 # Status
 
-Where the project is, what is settled, and what comes next. Updated 2026-08-03.
+Where the project is, what is settled, and what comes next. Updated 2026-08-04.
 
 The detailed evidence for everything asserted here is in [`notes.md`](notes.md),
 which is a working log rather than a summary — every claim below traces to a
@@ -27,7 +27,7 @@ aligner decided.
 
 ## What is built
 
-Five crates, 299 tests, plus 84 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 313 tests, plus 242 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
 and `vite` in `web/`. Nine of the 299 are standing checks gated on
@@ -64,7 +64,7 @@ is not shaped by what can cross the JavaScript boundary.
 | `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
-| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and slot readout — behind the `Resolver` interface `taiyaku-wasm` implements |
+| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and four independently-switchable readouts (position, reading time, chapter, alignment health) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of five `ReaderModule`s against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the four lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame). A sixth registry entry, `settings`, claims no reading behaviour, only the panel's own key. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id — with a reset per section |
 
 `taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
 a member becomes pages" — so two consumers deriving it separately is a defect the
@@ -243,16 +243,16 @@ up by reading a design against the code, turned up by running a command against
 its own usage text, or turned up by reviewing what the fix before it left
 behind, and each judged not worth blocking on at the time. They are
 tracked here rather than left in a scratch file so that closing one is a visible
-act rather than a thing someone remembers. **Sixteen are now closed — O2, O3,
-O4, O5, O7, O8, O10, O12, O15, O16, O17, O18, O19, O20, O21 and O22 — leaving
-six.**
+act rather than a thing someone remembers. **Seventeen are now closed — O2, O3,
+O4, O5, O7, O8, O10, O12, O14, O15, O16, O17, O18, O19, O20, O21 and O22 —
+leaving five.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
 
 | ID | Open | What | Where | Opened by |
 | --- | :---: | ---- | ----- | --------- |
-| O1 | [ ] | Page responses carry no cache headers — *measured: nothing to cache yet* | `routes.rs::get_page` | M2 review |
+| O1 | [ ] | Page responses carry no cache headers — *measured: 17 of 39 in one scripted session, but only 12 were genuine reader revisits — no real-session evidence yet* | `routes.rs::get_page` | M2 review |
 | O2 | [x] | Progress is written non-atomically | `progress.rs::store` | M2 review |
 | O3 | [x] | `PUT /progress` does not range-check the slot | `routes.rs::put_progress` | M2 review |
 | O4 | [x] | Two sidecars claiming one work id is untested | `works.rs::load_works` | M2 review |
@@ -265,7 +265,7 @@ each is in the detail below; the table is what a reader scans.
 | O11 | [ ] | Neither on-disk cache notices a change on the far side — *escape hatch added; covers measured at 165 KB, filmstrip tiles at 1.12 MiB per 195-page edition* | `stump/cache.rs`, `cover.rs` | M3 review |
 | O12 | [x] | `spawn_blocking` covers three of five blocking handlers | `routes.rs::get_progress`, `::put_progress` | M1/M2 deferral |
 | O13 | [ ] | A hand-corrected run does not survive a re-solve | `sidecar.rs::merge_spoke` | M4 planning |
-| O14 | [ ] | The binding rebuilds the route on every resolve | `binding.rs::Binding::resolve` | M4 whole-branch review |
+| O14 | [x] | The binding rebuilds the route on every resolve | `binding.rs::Binding::resolve` | M4 whole-branch review |
 | O15 | [x] | A flag typed with no usable value was taken as absent, in silence | `main.rs::option_value` | duplicate-resolution review |
 | O16 | [x] | A symlink cycle truncates the inventory walk — *silently, not by crashing* | `inventory.rs::totals` | duplicate-resolution review |
 | O17 | [x] | The content-hash confirmation re-reads a copy once per candidate | `duplicates.rs::representatives` | duplicate-resolution review |
@@ -279,45 +279,108 @@ Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
 
 **`serve` was a first cut, and five things about it were known thin** — O1 to
-O5, each found by the whole-branch review. Four of the five are closed. Only O1
-remains, and it remains on a measurement rather than a plan: an ETag would have
-saved nothing against the sessions actually recorded. O5 was nearly deferred
-alongside it on the strength of a wrong estimate — "a custom rejection handler
-touches routing for every route" — which was checked rather than repeated and
+O5, each found by the whole-branch review. Four of the five are closed. O1
+closed once, on a browser-reader `304` count that looked like the second
+measurement the first one (against Panels) had been waiting for — and
+reopened on review, when the count turned out to be measuring this task's
+own traffic as much as a reader's. O5 was nearly deferred alongside it on
+the strength of a wrong estimate — "a custom rejection handler touches
+routing for every route" — which was checked rather than repeated and
 turned out to be two handlers and a local parse:
 
-- **O1 — Page responses carry no cache headers. Open, but no longer
-  unmeasurable.** The bytes for a given work, edition and index never change,
-  and the sidecar already records a `sha256` per member, so an `ETag` is a line
-  of code. The design's "one fetch, one cache entry" argument for serving whole
-  spreads assumes the client caches; nothing yet helps it.
-  **What blocked this was not the header but the evidence.** The request log
-  recorded no request headers at all, so "does a client ever send
-  `If-None-Match`?" — the question that decides whether an `ETag` buys anything
-  — could not be answered from a session that had already been run. It now
-  records five, on an allowlist: `if-none-match`, `if-modified-since`, `range`,
-  `accept` and `user-agent`. An allowlist rather than everything, because
-  everything grows each line without bound and puts a `Cookie` or an
-  `Authorization` into a file that gets read by scripts and pasted into issues.
-  `scripts/request-summary.sh` reports the conditional-request count, the range
-  count and which clients were seen; on a log written before this it reports
-  zero and "(not recorded)" rather than failing.
-  **And then the measurement came out against shipping it — see `notes.md`,
-  "An ETag would have saved nothing, and the obvious way to check that is
-  wrong".** The planned check was itself unsound: `If-None-Match` carries a
-  validator the client got earlier, this server sends none, so that count is
-  zero by construction and says nothing about any client. What can be measured
-  without a validator is whether Panels ever fetches a page it already has, and
-  across both recorded sessions it does so **zero** times — 177 page requests
-  and 177 distinct pages in the flick session; the only repeats anywhere are
-  session 1's three `pages/0` paths, all 404s from the off-by-one. An `ETag`
-  would have produced no 304s and saved none of the 43.7 MB.
-  So O1 stays open and stays deferred, now on evidence rather than suspicion.
-  The browser reader refetches by construction — swapping editions refetches
-  the page you are on — so the same measurement against it should come out the
-  other way. **The order inverts for that one:** ship the validator first and
-  measure the 304s, because the client-side question cannot be answered while
-  the server offers nothing to answer it with.
+- **O1 — Page responses carry no cache headers. Reopened.** The bytes for a
+  given work, edition and index never change, and the sidecar already
+  records a `sha256` per member, so an `ETag` (shipped the task before this
+  one — `routes.rs::locate_member`/`page_etag`) was a line of code once the
+  evidence question was fixed (see `notes.md`, "An ETag would have saved
+  nothing, and the obvious way to check that is wrong"). The validator
+  genuinely shipped and genuinely produces `304`s — each hit turns 150–850 KB
+  into roughly 300 bytes, and that saving is real and stays in the record.
+  What did not survive review was closing the item on the strength of it: the
+  measurement behind the close overstated what it had shown, and the owner
+  reopened O1, annotated with the number rather than hidden behind it.
+  **Two different real behaviours showed up in the literal scenario, and
+  only one of them is about the `ETag`.** Twenty-four `Space` presses fired
+  100ms apart against one fixed slot, from a fresh page load — the literal
+  scenario asked for — produced **zero** further `/pages/` network activity
+  for either edition's URL after each was first displayed: not a `304`,
+  nothing at all. A `PerformanceObserver` watching `resource` entries live
+  (not a buffered query taken after the fact, which undercounts) recorded
+  four requests across the whole run, all prefetch neighbours, none for the
+  two centre URLs. A source the browser decoded a moment ago and is asked to
+  redisplay does not go back to the network at all — its own short-lived
+  in-memory image cache repaints directly. That is cheaper than a `304`, not
+  a failure of one, but it does mean the exact swap-on-one-slot scenario
+  produces no `304`s to count, for a reason that has nothing to do with the
+  `ETag` — see `notes.md` for the full trace.
+  **The 17-of-39 figure is real; what it was evidence of was not.** Ten
+  slots read forward, swapping to the second edition and back at each one,
+  then *the same ten slots read backward*, with the same swap at each,
+  produced 39 `/pages/` requests: 22 full `200`s, 17 `304`-sized responses
+  (classified by `transferSize`: a full page runs 150–850 KB, a
+  headers-only revalidation about 300 bytes — a different thing from the
+  literal scenario's zero-byte, zero-request repaint above; `transferSize`
+  is what tells the two apart). That session is a revisit generator, not
+  reading — nobody re-reads the ten pages they just read, backwards,
+  immediately — and twelve of the seventeen `304`s are exactly that second
+  pass: all twelve backward-pass requests, every one of them a genuine
+  revisit of a slot the reader had left and come back to.
+  **The other five are not reader traffic at all.** The forward pass alone
+  produced 22 full `200`s and 5 of its own `304`s — self-inflicted, not
+  genuine. The prefetch window warms a neighbouring slot into a throwaway
+  `Image()` (the same default builder `decode.ts` documents,
+  `() => new Image()`, garbage once its `decode()` promise settles) and
+  requests it before the reader arrives; when the reader's own swap reaches
+  that slot moments later, the decode gate builds a *second* `Image()` for
+  the same URL and requests it again. The browser answers the second one
+  with a `304` because the first put the `ETag` in its cache — but neither
+  request would exist without this task's own prefetch running, so against
+  a no-prefetch baseline the validator saved nothing on those five: it
+  neutralised traffic the reader introduced, not traffic a reader brought to
+  it. **The honest split is twelve genuine reader revisits and five
+  self-inflicted duplicates**, out of one scripted session — one browser,
+  one corpus, one machine, no repetition — against which O1 had already been
+  deferred twice, most recently on 177 requests from a real recorded client
+  session (Panels). The close named its own reopening bar as "a real session
+  log … over genuine reading, the same standard Panels' own measurement was
+  held to" and then closed on a synthetic script that met neither half of
+  that standard — which is the finding this review turned up.
+  **The instrumentation the count rests on has not itself been checked,
+  beyond one indirect spot-check.** All seventeen were classified by
+  `transferSize` alone. The one comparison against the wire that exists
+  anywhere in this work was run as an isolated repeat — a different request,
+  in a different run, from the 39-request session above — where the
+  CDP-level network log confirmed the literal wire text `304 Not Modified`
+  for a response Resource Timing's own `responseStatus` field called `200`
+  (which normalises a validated hit to the status the *page* effectively
+  got, not the status the *wire* carried, and is why `responseStatus` was
+  abandoned as a classifier here — a genuinely useful trap to have on
+  record). Sixteen of the seventeen — everything but that one indirect
+  check — rest on `transferSize` and nothing else.
+  **Also verified directly, not assumed:** a `200` carries neither
+  `cache-control` nor `last-modified` — `fetch(url, {cache: 'no-store'})`
+  against a never-before-requested page returned exactly `{connection,
+  content-length, content-type, date, etag, vary}`. Both headers are still
+  absent, unchanged by this task, so heuristic freshness is still zero and
+  every reuse, genuine or self-inflicted, still asks the network before
+  anything is served — never silently from disk, but never for free either.
+  **That is the part that keeps O1 open on its own terms, not only on
+  sample size.** O1's rationale was that the design's "one fetch, one cache
+  entry" argument for serving whole spreads assumes the client caches, and
+  nothing yet helps it — a validator that only shrinks the response doesn't
+  change that. Prefetch exists to hide a round trip before the reader
+  notices it, and a round trip that still has to happen, just for fewer
+  bytes, is a round trip the reader still waits on: on a slow connection
+  this saves body bytes and no latency.
+  **What would close it:** a real session log, from genuine reading rather
+  than a script built to force revisits, showing conditional-request reuse
+  net of prefetch-induced duplicates — the same real-recorded-session
+  standard, not a synthetic one, that already answered the equivalent
+  question for Panels at zero. `scripts/request-summary.sh` already reports
+  the conditional-request count; what is missing is a log from an actual
+  reading session to feed it. Landing `Cache-Control`/`Last-Modified` so a
+  genuine repeat costs no round trip at all, rather than a cheaper one,
+  would close the item outright, independent of any session log.
 - **O2 — Progress is written non-atomically. Closed.** `fs::write` truncated
   first, so a crash mid-write left a short file and the next read answered 500
   rather than "nothing recorded" — the worse of the two wrong answers, since it
@@ -503,9 +566,13 @@ worth fixing".
   requests already in flight when that first failure returns, and this log
   bounds that at three, all distinct.
   **What would reopen it:** a client issuing concurrent requests for one key.
-  The browser reader is the candidate — a filmstrip resolving per tile, or
-  prefetch colliding with a reader jumping onto the page being prefetched — and
-  O14 names the same filmstrip as the trigger for its own fix.
+  The browser reader is the candidate — prefetch colliding with a reader
+  jumping onto the page being prefetched, say. Not the filmstrip: this
+  paragraph used to name it as the trigger for O14 too, and both guesses were
+  wrong the same way. The filmstrip resolves nothing (`nearestPaired` was
+  O14's real trigger, not the filmstrip — see its own entry) and its tile
+  requests were checked directly once it shipped and do not reopen this
+  either — see "The filmstrip's tiles do not reopen O9", below.
 - **O10 — `MAX_DECODE_ALLOC` was duplicated. Closed.** Between
   `taiyaku-cli/src/fingerprint.rs` and `taiyaku-serve/src/cover.rs`, across a
   crate boundary with no dependency edge between them. Each copy said so in a
@@ -629,26 +696,68 @@ hand-corrected run until the correction UI exists:
   correction UI is what makes any of it load-bearing: building preservation
   before anything can produce a hand run would be pinning a mechanism against
   material that does not exist.
-- **O14 — `taiyaku-wasm` rebuilds the path between two editions on every
-  resolve. Open.** `Binding::resolve` calls `route` per invocation, which
-  rebuilds both slot tables and, where the answer composes through the hub,
-  recomposes the run lists. `taiyaku_core::Route` exists precisely so a caller
+- **O14 — `taiyaku-wasm` rebuilt the path between two editions on every
+  resolve. Closed.** `Binding::resolve` called `route` per invocation, which
+  rebuilt both slot tables and, where the answer composed through the hub,
+  recomposed the run lists. `taiyaku_core::Route` exists precisely so a caller
   can pay that once — `route.rs` says so, and puts a number on it: a reader
   paging a 195-page volume would otherwise pay it 195 times. One swap per
-  keypress does not notice.
-  **The trigger guessed here was wrong, and M5a found the real one.** This
-  item named "a filmstrip resolving per tile" as what would notice — but the
-  filmstrip resolves nothing; it consumes a slot table built once. What
-  actually rebuilds the route repeatedly is `web/src/nearest.ts`'s
-  `nearestPaired`, called while showing the gap state: it calls `display`
-  once per candidate slot on either side of a gap, and each cross-edition
-  `display` is one `Binding::resolve`. That is up to `slotCount` route
-  rebuilds, and because nothing in `web/src` memoises it, the same rebuilds
-  repeat on every render of the gap state rather than once per swap.
-  Not fixed here, for the same reason as before — the shape of the fix depends
-  on what the reader asks for — but the shape is no longer a guess: memoising
-  `nearestPaired`'s scan, or the `Route` it resolves against, is now a concrete
-  target rather than a hypothetical filmstrip.
+  keypress did not notice.
+  **The trigger named here was wrong, and M5a found the real one before this
+  branch fixed anything.** This item named "a filmstrip resolving per tile" as
+  what would notice — but the filmstrip resolves nothing; it consumes a slot
+  table built once. What actually rebuilt the route repeatedly is
+  `web/src/nearest.ts`'s `nearestPaired`, called while showing the gap state:
+  it calls `display` once per candidate slot on either side of a gap, and
+  each cross-edition `display` is one `Binding::resolve`. That was up to
+  `slotCount` route rebuilds, and because nothing in `web/src` memoised it,
+  the same rebuilds repeated on every render of the gap state rather than
+  once per swap.
+  **`Binding` now memoises the last `(from, to)` pair's `Route`.** A
+  `RefCell<Option<CachedRoute>>` on `Binding` — interior mutability because
+  `resolve` takes `&self`, safe because a `Binding` is single-threaded by
+  construction on the JS side, both stated in `binding.rs`'s own doc comment
+  rather than left implied. A different pair replaces it outright rather than
+  growing into a map, because the caller this was measured against holds
+  `from`/`to` fixed for a whole scan and varies only the slot.
+  **`App.tsx` also stopped resolving each gap offer twice.** `nearestPaired`
+  called `display` to find the nearest paired slot either side of a gap, and
+  `App.tsx` then called `resolveOffered` on that same slot a second time to
+  get the page to show — a second `Binding::resolve` for an answer the scan
+  already had. `nearestPaired` now returns the resolved landing alongside the
+  offered slot (`nearest.ts`'s `NearestOffer`), so displaying an offer costs
+  no resolve at all. `resolveOffered` still runs, once, when a reader actually
+  takes an offer — `takeOffered` calls it to find where to commit authority —
+  which is a different call, made once per click rather than once per render.
+  **Measured against the real corpus, not asserted.** Go-Toubun v01's
+  `raw-mono` is 195 slots; resolving every one against `en-mono` built the
+  route 195 times before the memo and once after — the exact figure
+  `route.rs` predicted, reproduced rather than repeated. `raw-mono` slot 1 has
+  no counterpart in `en-mono` at all — a genuine gap, not a synthetic one:
+  the corpus's own stored run is `"a": "1"` with no `b` side. A scan finding
+  its paired neighbours (slots 0 and 2) plus the now-removed second pass
+  resolving them again cost four route rebuilds before this fix and one
+  after:
+
+  | Case                                                          | Before | After |
+  | -------------------------------------------------------------- | -----: | ----: |
+  | 195 resolves of one pair (paging all of `raw-mono`)             |    195 |     1 |
+  | The real gap at `raw-mono` slot 1: scan + former second pass    |      4 |     1 |
+
+  Two tests in `binding.rs` pin these against a `#[cfg(test)]` counter kept
+  only to make a cache hit observable from outside without timing the call —
+  `resolving_every_slot_of_one_pair_builds_the_route_once` and
+  `a_gap_scan_and_its_former_second_pass_build_the_route_once`. Both failed
+  with the pre-memo counts above before `resolve` was changed to route
+  through the cache, and pass now.
+  **What the memo does not cover: a caller alternating between two pairs.**
+  It holds exactly one — `a→b`, `b→a`, `a→b`, ... on successive calls rebuilds
+  every time, the same as no cache at all. Nothing in this reader does that
+  today: a swap changes what is *shown*, not what `resolve` is asked, and
+  `nearestPaired`'s own scan holds `from`/`to` fixed throughout — but a
+  caller that interleaved pairs (two gap scans on different edition pairs
+  racing, say) would thrash it exactly that way, which is what would reopen
+  this.
 
 **The `duplicate-resolution` whole-branch review found four more** — O15 to
 O18 — and unlike every group above it, none of them outlived the branch that
@@ -1160,6 +1269,24 @@ updates the stored slot, so a reader who reads by scrolling and closes the tab
 loses their place — an `IntersectionObserver` is the fix, and it belongs to a
 later milestone, same as prefetch.
 
+**What M5b's decode gate leaves open, in two-page mode.** The gate is per
+`PageView` instance, not per pair: an ordinary spread's two halves each run
+`presentWhenDecoded` independently, so a turn can present one freshly-decoded
+half beside one still-showing old half for as long as the slower of the two
+takes to decode. That is not the defect the gate exists to close — neither
+half is ever blank or half-painted on its own, which is the guarantee
+`decode.ts` actually makes — but simultaneity across a pair is not something
+this build guarantees, and no comment here should be read as claiming it is.
+Left independent deliberately rather than gated together: gating would make
+the faster half wait on the slower one on every ordinary turn, a real latency
+cost paid on every pair for a mismatch nothing has measured a reader
+noticing, particularly now that `App.tsx`'s separate swap and prefetch decode
+queues (`swapQueue`/`prefetchQueue`) keep either half's decode from being
+starved by prefetch traffic in the first place. A measurement showing the
+mismatch is large enough to matter is the reason to revisit this, not a
+guess made ahead of one — see `App.tsx`'s `renderGroup` for the same
+reasoning kept beside the code it describes.
+
 **The filmstrip's tiles do not reopen O9 — this paragraph previously said
 they could, and that was wrong.** Each tile resolves its own thumbnail, which
 on a cold strip is a burst of up to N requests for N *distinct* pages —
@@ -1179,11 +1306,101 @@ once per candidate slot either side of a gap, and each cross-edition `display`
 is one `Binding::resolve` — up to `slotCount` route rebuilds, unmemoised, on
 every render of the gap state. See O14's entry above.
 
-What remains: the module system, `annotations`, and the correction UI — M5b,
-M5c and M5d — and the six open items tabled above — five of them found by a
-whole-branch review, now that O12, the one M3 carried rather than found, is
-closed, and O13 turned up by reading
-the reader design against the code rather than by reviewing a branch.
+**M5b has landed.** Every reading behaviour M5a shipped as fixed code is now
+a `ReaderModule` against one declarative contract (`module.ts`): a `defaults`
+object, an optional set of claimed keys, checked for a keybinding collision
+or a duplicate id at import time rather than at runtime. Five modules exist
+against it — `direction` (a per-edition reading-direction override, `d`,
+layered over `work.reading` and never written back to it), `motion`
+(animation on/off and transition duration, an empty style object rather than
+an inline `transition: none` so a reader's own `prefers-reduced-motion` still
+governs when animation is off), `regroup` (parity breaks a reader inserts by
+hand, `b`, for the one case a joined spread cannot derive), `readouts` (the
+four lines above, each independently switchable, with an unknown alignment
+verdict reported as `verdict unknown` rather than silence that could be
+mistaken for `sound`), and `prefetch` (a tunable window ahead and behind the
+current slot, decoded off-screen through `decode.ts`'s double-buffered
+`<img>` pair and swapped in only once `img.decode()` resolves — the fast
+flick M5a left flickering). `Sidecar::chapter_at` in `taiyaku-core`, carried
+across the `wasm-bindgen` boundary and into `Resolver`, feeds the chapter
+readout; it names a member, not a chapter number, and the one chapter-
+organised edition in the primary corpus (`en-fan`, reached from the hub by a
+`fragmented` alignment) is marked `~` in the readout rather than shown as
+settled fact, for the reason the twenty-two needles already established.
+`routes.rs` now sends an `ETag` on every page response, keyed on a member's
+`sha256` and its offset within that member, which is what let O1 be measured
+rather than argued (below). `Binding` memoises its last-resolved route,
+closing O14 (above).
+
+**Task 11 closes the milestone: the settings panel, generated rather than
+hand-written per module, and every module verified switching off on real
+material.** `Settings.tsx` renders one section per registered module with a
+control inferred from each `defaults` key's runtime type — boolean → check-
+box, number → numeric input, string → text (a select is what the design
+calls for once a module declares one with options; none does yet, and the
+contract carries no field to declare options against, so that path is not
+built ahead of a case that exists only in the design) — never branching on
+which module or key it is looking at. A sixth registry entry, `settings`,
+claims one key (`s`) for the panel itself the same way any module claims a
+key, its own `defaults` empty, so the generated panel renders no section for
+it. Two of the five modules hold a preference keyed per edition
+(`direction`'s `override`, `regroup`'s `breaks`) rather than a flat value;
+the panel has no way to know "edition" is what a given `Record` is keyed by
+without being told per module, so these render a read-only entry count and
+are cleared by the section's own Reset rather than edited field by field —
+the module's own key (`d`, `b`) still edits one entry at a time, as before
+this task. All five modules were then driven in a real browser against
+`corpus/gotoubun-v01`: each one's behaviour stopped when switched off, took
+effect when tuned, and survived a reload, with no remnant left on screen
+when off. `prefetch`'s `maxConcurrent` needed the decode queues themselves
+to change from a value fixed at mount to one rebuilt when the setting
+changes — without that, tuning it in the panel would have been a control
+that did nothing until the next reload, the exact kind of generated-but-
+broken input this milestone was built to avoid. See `notes.md`, "M5b Task
+11: the settings panel, generated, and all five modules measured switching
+off", for the module-by-module table.
+
+**A whole-branch review before this branch merged found "generated rather
+than hand-written per module" true only of `Settings.tsx`, and fixed the gap
+rather than merely narrowing the sentence.** `App.tsx`'s own preference
+state — a `useState`/`loadPrefs` pair, a `savePrefs` effect, and a case in
+each of `handleSettingChange`'s and `handleSettingReset`'s switches, per
+module — was still hand-written as of the paragraph above, so a seventh
+module (`fit`, `filters`, both still deferred) would have gotten a
+normal-looking control in the generated panel that changed nothing until
+someone also hand-wired those four places: the same "generated but broken"
+failure already fixed once, above, for `prefetch.maxConcurrent`, moved one
+layer up into code only a manual browser pass could catch. Fixed by making
+that state one map built from `registry.all()`, keyed by module id
+(`module.ts`'s `sliceFor`), and by moving the registry itself out of
+`App.tsx` into `modules/registry.ts`, so registering a module no longer
+touches `App.tsx` at all. Proved with a throwaway seventh module registered
+only in `modules/registry.ts`: it appeared in the generated panel and its
+preference persisted across a reload with zero lines changed in `App.tsx`,
+then was removed. `modules/prefetch.ts`'s doc comment, which still described
+toggling `enabled` by hand-editing storage — true before Task 11's panel
+shipped, false since — was corrected too. All five real modules were
+re-driven in a real browser after the refactor and still switch off, tune
+live, and persist, matching the table above.
+
+**What M5b did not reach.** The filmstrip's tile burst is still exactly
+where M5a left it: `prefetch`'s decode cap governs `PageView`'s page
+decodes through `swapQueue`/`prefetchQueue`, and `Filmstrip.tsx` never
+receives either — it renders thumbnails as plain `<img loading="lazy">`, so
+a cold strip still fires one request per distinct tile, and the
+`loading="lazy"` finding above still stands, unaddressed, confirmed again
+rather than assumed carried over. Continuous-scroll mode **still** does not
+write reading position back — entering the mode restores where you were,
+but hand-scrolling never updates the stored slot, unchanged from M5a and
+needing the same `IntersectionObserver` that milestone already named. The
+`fit` and `filters` modules the design specifies are not built; the contract
+they would slot into is what M5b spent five modules proving out instead.
+
+What remains: `annotations` and the correction UI — M5c and M5d — and the
+five open items tabled above — four of them found by a whole-branch review,
+now that O12 (carried rather than found) and O14 (found by one, closed by
+this branch) are both out of the count, and O13 turned up by reading the
+reader design against the code rather than by reviewing a branch.
 
 ### 4. Skipping scanlation credit pages
 

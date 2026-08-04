@@ -28,8 +28,23 @@ export interface Group {
  * a pair is drawn on the right, which is the renderer's business, and the slot
  * sequence itself already accounts for direction — `Edition::slots` orders a
  * spread's halves by it.
+ *
+ * `breaks` is the `regroup` module's per-edition, client-side list of slots a
+ * reader has marked to restart pairing at — the case a sidecar's `spreads`
+ * cannot state, because it is one missing page throwing off parity rather
+ * than a fact about the work. Honoured only in `two` mode, where parity
+ * exists to break: `single` and `scroll` already put one slot per group, so a
+ * break has nothing to do there. The spread branch above still wins even
+ * when a break falls on one of a spread's own slots — a spread is one image
+ * and cannot be halved, so that break is absorbed rather than applied, and
+ * pairing simply resumes where the spread already forces it to.
  */
-export function groups(slots: Position[], mode: Mode, _reading: 'rtl' | 'ltr'): Group[] {
+export function groups(
+  slots: Position[],
+  mode: Mode,
+  _reading: 'rtl' | 'ltr',
+  breaks: number[] = [],
+): Group[] {
   const paired = mode === 'two'
 
   const out: Group[] = []
@@ -50,10 +65,13 @@ export function groups(slots: Position[], mode: Mode, _reading: 'rtl' | 'ltr'): 
     }
     // A spread starting at the *second* position of a would-be pair must not
     // be split across two groups, so the pair stops short and the spread
-    // opens the next group.
+    // opens the next group. A hand-inserted break at that same position does
+    // the same thing: the slot at `index + 1` must open a fresh group rather
+    // than close out this one.
     const nextIsSpreadStart =
       next?.half !== undefined && slots[index + 2]?.page === next.page
-    if (next === undefined || nextIsSpreadStart) {
+    const nextIsBreak = next !== undefined && breaks.includes(index + 1)
+    if (next === undefined || nextIsSpreadStart || nextIsBreak) {
       out.push({ slots: [index] })
       index += 1
       continue
@@ -62,4 +80,62 @@ export function groups(slots: Position[], mode: Mode, _reading: 'rtl' | 'ltr'): 
     index += 2
   }
   return out
+}
+
+/** Which two fixed screen positions a two-page group's slots render into — see `cellsFor`. */
+export interface Cells {
+  /** Whether `first` should render full width with `second` collapsed (a joined spread or a solo slot with no pairing partner) rather than the two rendering at equal, half width (an ordinary pair). */
+  wide: boolean
+  first: number
+  second: number
+}
+
+/**
+ * Two fixed positions, `first` and `second`, for `App.tsx`'s two-page layout
+ * to render `group`'s slots into — always both, regardless of whether
+ * `group` is a pair, a joined spread, or a solo slot with nothing to pair
+ * with.
+ *
+ * This exists so a turn that changes group *shape* — a spread interrupting
+ * or resuming ordinary pairing, a hand-inserted break doing the same — never
+ * changes the *element type* React sees at either position. `App.tsx` used
+ * to render a pair as a `<div>` wrapping two `<PageView>`s but a spread or
+ * solo group as a single `<PageView>` directly: the position's element type
+ * flipped between `div` and `PageView` on exactly the turns that mattered,
+ * which forces React to unmount the outgoing subtree and mount a fresh one
+ * rather than update props on what was already there. A freshly-mounted
+ * `PageView` has nothing decoded yet — `decode.ts`'s whole gate only ever
+ * applies to a `src` prop changing on an instance that survives, see
+ * `presentWhenDecoded`'s doc — so that remount was the actual mechanism
+ * behind a blank frame flashing on a two-page turn onto or off a spread,
+ * the defect `prefetch`/`decode.ts` exist to remove. Two fixed positions,
+ * always present, is what lets `App.tsx` render the *same* wrapping
+ * `<div>` and the *same* two child `<PageView>`s across the change, so
+ * React reconciles by position and only updates `src` props — exactly the
+ * case the decode gate already handles.
+ *
+ * `second` mirrors `first` (`group.slots[1] ?? group.slots[0]`) whenever
+ * `group` has no real second slot — every `wide` group, spread or solo
+ * alike. A spread's own two slots already share one URL (`groups`' own
+ * `joined` check requires `next.page === here.page`), so for a spread this
+ * is simply its real second half; a solo group has no second slot at all,
+ * so mirroring the first is a harmless, always-valid filler for a position
+ * `App.tsx` renders collapsed and hidden regardless of what it holds. The
+ * point either way is that the second cell's `PageView` always has a valid
+ * `src`, so it stays mounted with something already decoded through every
+ * `wide` group, ready to swap the moment pairing resumes and it becomes the
+ * visible second half of a real pair — a plain `src` prop change on an
+ * instance that never unmounted, not a fresh mount with nothing decoded.
+ *
+ * `reading` only reorders which physical slot lands in `first` vs. `second`
+ * for an ordinary pair; a `wide` group has no left/right to reorder — its
+ * one visible image is `first` regardless of reading direction, the same as
+ * `App.tsx`'s original spread rendering did.
+ */
+export function cellsFor(group: Group, reading: 'rtl' | 'ltr'): Cells {
+  const wide = group.spread === true || group.slots.length === 1
+  const [a, b = a] = group.slots
+  if (wide) return { wide: true, first: a, second: b }
+  const [first, second] = reading === 'rtl' ? [b, a] : [a, b]
+  return { wide: false, first, second }
 }

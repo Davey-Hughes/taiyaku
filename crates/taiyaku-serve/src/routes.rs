@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::{
     Router,
     extract::{Path as AxPath, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -65,6 +65,74 @@ impl IntoResponse for NotAPageIndex {
     fn into_response(self) -> Response {
         bad_request(self.0)
     }
+}
+
+/// The member `sha256` and within-member offset a page's `ETag` is derived
+/// from — found without reading a single byte, so a route can answer a
+/// matching `If-None-Match` before doing any of the work that would produce
+/// those bytes: a zip decompression from disk, or an HTTP round trip to
+/// Stump.
+///
+/// The same lookup and the same wording `ServeState::page` uses on its own
+/// way to the bytes (`lib.rs`), duplicated here rather than shared with it,
+/// because the two callers want different things back: this one needs only
+/// the location, `ServeState::page` needs only the bytes, and threading a
+/// location out through it would make every caller that has no use for an
+/// `ETag` pay to compute one. `get_thumb` already draws this same split, for
+/// the same reason — its own locate-then-generate call inside
+/// `spawn_blocking` is the same shape, one level further in.
+pub(crate) fn locate_member<'a>(
+    work: &'a Work,
+    edition: &str,
+    index: u32,
+) -> Result<(&'a str, u32), String> {
+    let found = work
+        .sidecar
+        .editions
+        .get(edition)
+        .ok_or_else(|| format!("no edition `{edition}` in {}", work.path.display()))?;
+    let (position, within) = found.locate(index).ok_or_else(|| {
+        format!(
+            "`{edition}` has {} pages; there is no page {index}",
+            found.total_pages()
+        )
+    })?;
+    Ok((found.members[position].sha256.as_str(), within))
+}
+
+/// A page's `ETag`: the member's `sha256` and the page's offset within it —
+/// the same key `cover::thumb_cache_path` derives a cache filename from, and
+/// for the same reason. A member holds one `sha256` and many pages; the
+/// offset is what tells them apart. Keying on the member hash alone would
+/// answer `304` for every page after the first one a client had fetched —
+/// the entire member would look unchanged.
+///
+/// Quoted, per RFC 9110 §8.8.3: an `ETag`'s value is a `quoted-string`, not
+/// a bare token.
+pub(crate) fn page_etag(sha256: &str, offset: u32) -> String {
+    format!("\"{sha256}-p{offset}\"")
+}
+
+/// Whether a request's `If-None-Match` already names `tag`.
+///
+/// A direct compare against the header's raw text, rather than a full parse
+/// of the comma-separated list or `*` the grammar allows for: this server
+/// mints every tag it is ever compared against and sends exactly one per
+/// response, so a client echoing one back sends exactly what it received.
+/// The extra generality would guard against a request shape nothing here has
+/// been seen to send.
+pub(crate) fn if_none_match_hits(headers: &HeaderMap, tag: &str) -> bool {
+    headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        == Some(tag)
+}
+
+/// The reply to a validator that already matches: the tag, and no body —
+/// sending the very bytes the header exists to avoid transferring would
+/// defeat the entire point of a `304`.
+pub(crate) fn not_modified(tag: &str) -> Response {
+    (StatusCode::NOT_MODIFIED, [(header::ETAG, tag.to_string())]).into_response()
 }
 
 /// A request naming a work this server does not hold.
@@ -143,11 +211,33 @@ async fn get_page(
     // `page_index` in this server's own words rather than by axum's `Path`
     // rejection in terms of a Rust type — O5.
     AxPath((id, edition, raw)): AxPath<(String, String, String)>,
+    headers: HeaderMap,
 ) -> Response {
     let index = match page_index(&raw, &edition) {
         Ok(index) => index,
         Err(refusal) => return refusal.into_response(),
     };
+
+    // O1: the validator comes from what the sidecar already holds in
+    // memory — the member's recorded `sha256` and this page's offset within
+    // it — so it can be checked here, on the async worker, before
+    // `spawn_blocking` below ever runs. A matching `If-None-Match` answers
+    // `304` without a zip decompression or an HTTP round trip to Stump ever
+    // happening — the whole point of sending a validator in the first
+    // place.
+    let found = match work(&state, &id) {
+        Ok(found) => found,
+        Err(missing) => return missing.into_response(),
+    };
+    let (sha256, offset) = match locate_member(found, &edition, index) {
+        Ok(pair) => pair,
+        Err(message) => return not_found(message),
+    };
+    let tag = page_etag(sha256, offset);
+    if if_none_match_hits(&headers, &tag) {
+        return not_modified(&tag);
+    }
+
     // Reading a page blocks: a zip decompression from disk, or an HTTP round
     // trip to Stump. On a tokio worker that stalls the whole worker, and this
     // corpus holds pages of 430 MB — with the prefetching the filmstrip and
@@ -162,7 +252,14 @@ async fn get_page(
     .await;
 
     match fetched {
-        Ok(Ok(page)) => ([(header::CONTENT_TYPE, page.content_type)], page.bytes).into_response(),
+        Ok(Ok(page)) => (
+            [
+                (header::CONTENT_TYPE, page.content_type),
+                (header::ETAG, tag),
+            ],
+            page.bytes,
+        )
+            .into_response(),
         Ok(Err(e)) => not_found(e),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -791,6 +888,137 @@ mod tests {
         crate::test_support::cleanup("taiyaku-test-progress-edition");
         assert!(message.contains("nope"), "must name the edition: {message}");
         assert_eq!(after.status(), StatusCode::NO_CONTENT);
+    }
+
+    /// O1, shipped: a page's `ETag` is checkable before anything expensive
+    /// runs, and a client that already holds the bytes gets told so with no
+    /// body at all — sending one would defeat the entire point of a `304`.
+    #[tokio::test]
+    async fn a_page_carries_an_etag_and_a_matching_request_is_answered_304() {
+        let state = crate::test_support::state_with_real_pages();
+        let app = build_router(state);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::get("/api/works/w/a/pages/0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let tag = first.headers()[header::ETAG].clone();
+
+        let second = app
+            .oneshot(
+                Request::get("/api/works/w/a/pages/0")
+                    .header(header::IF_NONE_MATCH, tag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+        let body = axum::body::to_bytes(second.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        assert!(
+            body.is_empty(),
+            "a 304 must carry no body — that is the entire point of sending one"
+        );
+    }
+
+    /// A validator naming a *different* page must not short-circuit this
+    /// one — `If-None-Match` says "I already have the page this tag names",
+    /// and a stale tag names something else entirely.
+    #[tokio::test]
+    async fn a_stale_validator_gets_the_page_rather_than_a_304() {
+        let state = Arc::new(crate::test_support::state("taiyaku-test-routes-etag-stale"));
+        let app = build_router(state);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::get("/api/works/t/raw/pages/0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let stale_tag = first.headers()[header::ETAG].clone();
+
+        let second = app
+            .oneshot(
+                Request::get("/api/works/t/raw/pages/2")
+                    .header(header::IF_NONE_MATCH, stale_tag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = second.status();
+        let bytes = axum::body::to_bytes(second.into_body(), 1 << 16)
+            .await
+            .unwrap();
+
+        crate::test_support::cleanup("taiyaku-test-routes-etag-stale");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a tag naming a different page must not answer 304"
+        );
+        assert_eq!(
+            &bytes[..],
+            b"b1.jpg",
+            "the actual page must still be served, not an empty 304 body"
+        );
+    }
+
+    /// A member has one `sha256` and, in this fixture, two pages. The third
+    /// test the brief calls for: this is the one that would catch keying an
+    /// `ETag` on the member hash alone, which would answer every page after
+    /// the first with the first page's own tag.
+    #[tokio::test]
+    async fn two_pages_of_one_member_have_different_etags() {
+        let state = Arc::new(crate::test_support::state(
+            "taiyaku-test-routes-etag-member",
+        ));
+        let app = build_router(state);
+
+        // Pages 0 and 1 of `raw` are both `c1.cbz`'s pages (see
+        // `test_support::work`) — one member, two offsets.
+        let page0 = app
+            .clone()
+            .oneshot(
+                Request::get("/api/works/t/raw/pages/0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page0.status(), StatusCode::OK);
+        let tag0 = page0.headers()[header::ETAG].clone();
+
+        let page1 = app
+            .oneshot(
+                Request::get("/api/works/t/raw/pages/1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page1.status(), StatusCode::OK);
+        let tag1 = page1.headers()[header::ETAG].clone();
+
+        crate::test_support::cleanup("taiyaku-test-routes-etag-member");
+        assert_ne!(
+            tag0, tag1,
+            "page 0 and page 1 share one member and its one sha256 — the \
+             offset is the only thing that can tell them apart, and a tag \
+             keyed on the member hash alone would make these equal"
+        );
     }
 
     #[tokio::test]

@@ -9,7 +9,7 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 | --- | ---- |
 | `lint` | `cargo fmt --check`, `cargo clippy -D warnings` |
 | `test` | `cargo test --workspace` |
-| `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown` |
+| `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown`, builds the browser package with `wasm-pack`, and runs `scripts/smoke-wasm.mjs` against the compiled module |
 | `web` | `npm ci`, `oxlint --deny-warnings`, `tsc -b` typecheck, `vitest run` in `web/` |
 
 The `wasm` job is the one worth keeping even when it feels redundant. The design
@@ -28,22 +28,76 @@ imports `taiyaku-wasm` **as a value** — no test imports `resolver.ts` at all,
 so `vitest` never loads it. `reading.ts` and `fixtures.ts` import only
 `resolver.ts`'s *types* (`import type`), which is enough for `typecheck` to
 need the file but not enough to need the value it wraps. Building the binding
-in CI would mean a dual-toolchain image plus a `cargo install wasm-pack`
-compile, for a smoke test that is already a one-line local command (`node
-scripts/smoke-wasm.mjs`).
+here would still mean adding a dual-toolchain image or a `cargo install
+wasm-pack` compile to a job that otherwise needs neither — the `wasm` job
+below does that work instead, once, in a container that already has Rust.
 
-**What that leaves ungated, stated rather than glossed:** CI never builds the
-wasm package and never runs `scripts/smoke-wasm.mjs`, so a change to
-`binding.rs` that breaks codegen goes green. `cargo test -p taiyaku-wasm` still
-catches conversion drift, which is the larger risk; the codegen risk is carried
-by running the smoke script locally after any change to `lib.rs`. The same gap
-now also covers `resolver.ts` itself: because its `taiyaku-wasm` import cannot
-resolve in this job (see below), `typecheck` checks that file against no real
-types at all, so a call in `wasmResolver` that no longer matches the generated
-`.d.ts` (a renamed method, a changed argument) goes green here too. That risk
-is carried by `npm run build` after `./scripts/build-wasm.sh` locally, the same
-discipline the codegen gap already depends on. Revisit if that discipline
-slips.
+**What that leaves ungated, stated rather than glossed:** because
+`resolver.ts`'s `taiyaku-wasm` import cannot resolve in this job (see below),
+`typecheck` checks that file against no real types at all here, so a call in
+`wasmResolver` that no longer matches the generated `.d.ts` (a renamed method,
+a changed argument) goes green in `web` regardless of what `wasm` catches.
+That risk is carried by `npm run build` after `./scripts/build-wasm.sh`
+locally — the one discipline this project still asks of a human rather than
+a gate. Revisit if that discipline slips.
+
+## Running the compiled module in CI
+
+Until M5b's close, nothing in CI ever executed the compiled `.wasm` module —
+`cargo test -p taiyaku-wasm` exercises `binding.rs` as plain Rust, which
+catches conversion drift (a transposed `from`/`to`, a dropped half) but not a
+codegen break, and `scripts/smoke-wasm.mjs` was a one-line command nobody but
+a human ran. The `wasm` job now closes that: after the two `cargo build`
+steps above (unchanged, and still the fast fail-fast check that the core and
+the binding compile for `wasm32-unknown-unknown` at all), three more steps
+install `node` via `apt-get`, fetch a prebuilt `wasm-pack` release binary,
+build the real npm package with `./scripts/build-wasm.sh`, and run
+`node scripts/smoke-wasm.mjs` against it — the same two commands a developer
+runs locally, unmodified for CI.
+
+**Why `apt-get`, not a dual-toolchain image.** Reusing the `wasm` job's
+existing `rust:1-bookworm` container and installing `node` into it is cheaper
+than switching to `cimg/rust:1.97-node` or `catthehacker/ubuntu:rust-latest`
+(see the image table below): those cost 200 MB–500 MB more and, per that
+table's own probe, five minutes of cold image pull, against `apt-get
+install`'s cost of roughly the same 20–30 seconds the caching section below
+already charges to the identical command.
+
+**Why a curl'd binary, not `cargo install wasm-pack`.** Measured directly:
+`cargo install wasm-pack --locked` is a multi-minute compile of a tool this
+job only *runs*, never links against. A prebuilt release binary is a better
+fit — `wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz` from the project's
+GitHub releases is 2.9 MB and was confirmed to resolve and extract to a
+working `wasm-pack --version` before being wired into the workflow, rather
+than guessed at. It is a static-PIE `musl` binary, so it runs on the
+`bookworm` (glibc) container without needing a matching libc. `wasm-pack
+build`'s default mode also downloads `wasm-bindgen-cli` (pinned to the
+version `Cargo.lock` names, `0.2.126`) and `wasm-opt` on first use if neither
+is already on `PATH`. The `wasm-bindgen-cli` fetch was tested locally with its
+tool cache cleared, forcing a real download rather than a cache hit, and it
+still built in under five seconds; the `wasm-opt` fetch was not, since this
+machine has a system `wasm-opt` that could not be removed without root to
+force it. Upstream (`wasm-pack`'s own source and documentation) confirms the
+same download-on-first-use behaviour applies to `wasm-opt`, but that half is
+inferred rather than measured.
+
+**What was measured versus inferred.** The `wasm-pack` download, and a full
+`./scripts/build-wasm.sh` run with that download's binary and a cleared
+`wasm-pack` tool cache, were both measured directly on this development
+machine — fast on its network (well under a second for the binary; a few
+seconds for the full build including a fresh `wasm-bindgen-cli` fetch) but
+not representative of the Forgejo runner's hardware or network, which this
+task could not reach to measure directly (no local `docker` access to
+replicate `rust:1-bookworm` here, and pushing a probe branch was out of
+scope). The `apt-get install nodejs` cost is carried over from this same
+document's existing, already-recorded figure for the identical command
+(below) rather than re-measured. Taking the dominant cost (`apt-get`, ~20–30s)
+plus the small ones measured here (binary fetches, low single-digit seconds;
+the smoke script itself, well under a second) puts the `wasm` job's total
+addition at roughly **30–60 seconds** — a real but modest fraction of a
+pipeline whose slowest job, before this change, was well under a minute.
+Confirm against an actual run once one exists; nothing here has watched this
+workflow execute on the real runner.
 
 **The `file:` dependency and a fresh clone.** `web/package.json` depends on
 `taiyaku-wasm` via `"file:../crates/taiyaku-wasm/pkg"`, and `pkg/` is

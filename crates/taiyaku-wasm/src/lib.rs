@@ -37,6 +37,24 @@ pub struct WasmPosition {
     pub half: Option<String>,
 }
 
+/// Which chapter a slot falls in: `member`'s zero-based index among `of`
+/// members, and the member's path as the sidecar records it.
+///
+/// `member` and `of` cross as `u32`. `taiyaku_core::ChapterAt` holds them as
+/// `usize`, which does not cross the JS boundary, so `chapter_at` below casts
+/// them deliberately rather than leaving the conversion to whatever wasm-
+/// bindgen would otherwise do with a `usize` field. The cast cannot lose
+/// information in practice: it is bounded by how many files a release group
+/// actually splits a volume into, the same "202 slots is the longest edition
+/// measured" scale `index_of`'s doc comment cites — nowhere near `u32::MAX`.
+#[wasm_bindgen(getter_with_clone)]
+#[derive(Debug, Clone)]
+pub struct WasmChapter {
+    pub member: u32,
+    pub of: u32,
+    pub path: String,
+}
+
 #[wasm_bindgen]
 impl WasmSidecar {
     /// Parse a sidecar from its JSON text, throwing on malformed input.
@@ -98,6 +116,16 @@ impl WasmSidecar {
         Ok(self
             .inner
             .index_of(edition, taiyaku_core::Slot { page, half }))
+    }
+
+    /// Which chapter a flat slot index falls in, or `undefined`.
+    #[wasm_bindgen(js_name = chapterAt)]
+    pub fn chapter_at(&self, edition: &str, index: u32) -> Option<WasmChapter> {
+        self.inner.chapter_at(edition, index).map(|at| WasmChapter {
+            member: at.member as u32,
+            of: at.of as u32,
+            path: at.path,
+        })
     }
 }
 
@@ -176,5 +204,27 @@ mod tests {
         assert_eq!(got.page, 2, "run `1-3` ends on b's page 2");
         assert_eq!(got.half, Some("R".to_string()), "and on its right half");
         assert_eq!(got.via, "direct", "a stored edge, walked as stored");
+    }
+
+    /// The one piece of judgement this shell adds for `chapterAt`: `usize`
+    /// does not cross the boundary, so `member` and `of` convert to `u32`.
+    /// `binding`'s own test pins the lookup; this pins the conversion, the
+    /// same division `a_half_crosses_the_boundary_as_l_or_r` draws for a half.
+    #[allow(clippy::ok_expect)]
+    #[test]
+    fn chapter_at_crosses_the_boundary_as_u32_fields() {
+        let s = WasmSidecar::from_json(crate::binding::CHAPTERED_FIXTURE)
+            .ok()
+            .expect("the fixture parses");
+        let at = s
+            .chapter_at("volume", 0)
+            .expect("volume slot 0 has a chapter");
+        assert_eq!(at.member, 0);
+        assert_eq!(at.of, 3);
+        assert_eq!(at.path, "c001.cbz");
+        assert!(
+            s.chapter_at("volume", 999).is_none(),
+            "past the end of the edition"
+        );
     }
 }

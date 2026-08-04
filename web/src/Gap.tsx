@@ -6,9 +6,9 @@ export interface GapMove {
   slot: number
   /**
    * The page this move lands on, in the edition currently shown. Display
-   * only, and 1-based like `Chrome`'s `displaySlot` — `App.tsx` converts at
-   * the point it builds this prop; every internal page/slot value stays
-   * zero-based.
+   * only, and 1-based — `App.tsx` converts at the point it builds this prop,
+   * the same boundary convention its own `altAt` follows; every internal
+   * page/slot value stays zero-based.
    */
   page: number
 }

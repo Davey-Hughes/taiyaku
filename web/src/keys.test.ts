@@ -1,13 +1,51 @@
 import { describe, expect, it } from 'vitest'
 import { intentOf, isInteractiveTarget } from './keys'
+import type { ReaderModule } from './module'
 
 const editions = ['raw', 'en-mono', 'en-colour']
 const press = (key: string, mods: Partial<KeyboardEvent> = {}) =>
   ({ key, ctrlKey: false, metaKey: false, altKey: false, ...mods }) as KeyboardEvent
 
+const mod = (id: string, keys: string[]): ReaderModule<{ on: boolean }> => ({
+  id,
+  label: id,
+  defaults: { on: true },
+  keys: keys.map((key) => ({ key, intent: `${id}:${key}` })),
+})
+
 describe('intentOf', () => {
   it('maps space to the toggle', () => {
     expect(intentOf(press(' '), editions)).toEqual({ kind: 'toggle' })
+  })
+
+  it('maps a module-declared key to its declared intent', () => {
+    const modules = [mod('direction', ['d'])]
+    expect(intentOf(press('d'), editions, modules)).toEqual({
+      kind: 'module',
+      intent: 'direction:d',
+    })
+  })
+
+  it('is silent on a key no module claims', () => {
+    const modules = [mod('direction', ['d'])]
+    expect(intentOf(press('z'), editions, modules)).toBeUndefined()
+  })
+
+  it('yields a module key to a modifier, same as every built-in', () => {
+    const modules = [mod('direction', ['d'])]
+    expect(intentOf(press('d', { ctrlKey: true }), editions, modules)).toBeUndefined()
+  })
+
+  it('lets a built-in win over a module claiming the same key', () => {
+    // Not a collision `buildRegistry` would catch — a module cannot declare
+    // Space, an arrow, Tab or a digit in the first place, since those are the
+    // reader's own reserved keys, not the registry's to arbitrate.
+    const modules = [mod('spacebar-module', [' '])]
+    expect(intentOf(press(' '), editions, modules)).toEqual({ kind: 'toggle' })
+  })
+
+  it('defaults to no modules, so existing callers need no change', () => {
+    expect(intentOf(press('d'), editions)).toBeUndefined()
   })
 
   it('maps a digit to the edition at that position, one-based', () => {

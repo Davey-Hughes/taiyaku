@@ -81,8 +81,8 @@ pub fn thumb_cache_path(dir: &Path, sha256: &str, offset: u32) -> PathBuf {
 
 /// `cache_path`'s logic, taking the generation parameters as arguments rather
 /// than reading the module constants directly, so a test can hold `sha256`
-/// fixed and vary only the parameters — the property finding 2 is about —
-/// without needing a second copy of `LONG_EDGE` to change.
+/// fixed and vary only the parameters without needing a second copy of
+/// `LONG_EDGE` to change.
 fn keyed_path(dir: &Path, sha256: &str, long_edge: u32, format_version: u32) -> PathBuf {
     dir.join(format!("{sha256}-{long_edge}v{format_version}.jpg"))
 }

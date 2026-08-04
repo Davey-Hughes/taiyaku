@@ -1,0 +1,14 @@
+import { describe, expect, it } from 'vitest'
+import { registry } from './registry'
+
+describe('registry', () => {
+  it('registers all six modules this build ships, in the order App.tsx declares them', () => {
+    expect(registry.ids).toEqual(['direction', 'motion', 'regroup', 'readouts', 'prefetch', 'settings'])
+  })
+
+  it('every module has a non-empty label, for the settings panel section heading', () => {
+    for (const mod of registry.all()) {
+      expect(mod.label.length).toBeGreaterThan(0)
+    }
+  })
+})

@@ -1,9 +1,13 @@
+import type { ReaderModule } from './module'
+
 /** What a keypress asked for. */
 export type Intent =
   | { kind: 'toggle' }
   | { kind: 'view'; edition: string }
   | { kind: 'step'; by: 1 | -1 }
   | { kind: 'chrome' }
+  /** A module's own declared key fired. `intent` is the string it registered — see `ReaderModule.keys`. */
+  | { kind: 'module'; intent: string }
 
 /**
  * A keypress, as an intent, or nothing.
@@ -15,8 +19,19 @@ export type Intent =
  *
  * A modifier yields the key entirely. A reader that swallowed ⌘1 would break
  * tab switching to save itself a branch.
+ *
+ * `modules` is the registered set's own list (`Registry.all()`), not a fixed
+ * import — this file names the `ReaderModule` type and nothing else, so a
+ * seventh module needs no edit here. The built-ins above are checked first:
+ * they are the reader's own reserved keys, and a module claiming one of them
+ * would never fire regardless, so the fixed checks staying first is not a
+ * priority choice so much as those keys not being a module's to claim.
  */
-export function intentOf(event: KeyboardEvent, editions: string[]): Intent | undefined {
+export function intentOf(
+  event: KeyboardEvent,
+  editions: string[],
+  modules: ReaderModule<unknown>[] = [],
+): Intent | undefined {
   if (event.ctrlKey || event.metaKey || event.altKey) return undefined
   if (event.key === ' ') return { kind: 'toggle' }
   if (event.key === 'ArrowRight') return { kind: 'step', by: 1 }
@@ -25,6 +40,10 @@ export function intentOf(event: KeyboardEvent, editions: string[]): Intent | und
   if (/^[1-9]$/.test(event.key)) {
     const edition = editions[Number(event.key) - 1]
     return edition === undefined ? undefined : { kind: 'view', edition }
+  }
+  for (const mod of modules) {
+    const binding = mod.keys?.find((k) => k.key === event.key)
+    if (binding) return { kind: 'module', intent: binding.intent }
   }
   return undefined
 }
