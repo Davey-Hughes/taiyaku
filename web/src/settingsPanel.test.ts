@@ -120,3 +120,28 @@ describe('humanize', () => {
     expect(humanize('animate')).toBe('animate')
   })
 })
+
+
+describe('fieldsOf with declared options', () => {
+  it('infers a select for a string the module declared values for', () => {
+    const fields = fieldsOf({ placement: 'auto', label: 'free text' }, { placement: ['auto', 'side'] })
+    expect(fields).toEqual([
+      { key: 'placement', kind: 'select', options: ['auto', 'side'] },
+      { key: 'label', kind: 'string' },
+    ])
+  })
+
+  // Options against a boolean or a number would be a module contradicting its
+  // own default's type; the value decides the kind, which is what keeps this
+  // panel from having to know which module it is looking at.
+  it('ignores options declared against something that is not a string', () => {
+    expect(fieldsOf({ on: true, depth: 2 }, { on: ['yes'], depth: ['1'] })).toEqual([
+      { key: 'on', kind: 'boolean' },
+      { key: 'depth', kind: 'number' },
+    ])
+  })
+
+  it('leaves a string with an empty option list as free text', () => {
+    expect(fieldsOf({ label: 'x' }, { label: [] })).toEqual([{ key: 'label', kind: 'string' }])
+  })
+})

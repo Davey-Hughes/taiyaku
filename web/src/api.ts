@@ -5,6 +5,8 @@
  * `<img src>`, so the browser's own cache and decoding handle them, and
  * fetching them into memory first would defeat both.
  */
+import type { NotesDoc } from './notes'
+
 const seg = (s: string) => encodeURIComponent(s)
 
 /**
@@ -87,6 +89,52 @@ export async function putProgress(work: string, progress: StoredProgress): Promi
     keepalive: true,
   })
   if (!res.ok) throw new Error(`writing progress: ${res.status} ${await res.text()}`)
+}
+
+/** The notes document and the validator a write has to be conditional on. */
+export interface FetchedNotes {
+  doc: NotesDoc
+  /** Absent only from a server older than the notes route. */
+  etag?: string
+}
+
+/**
+ * Every note on a work.
+ *
+ * A work nobody has annotated answers with an empty document rather than a
+ * 204, unlike `getProgress` above — writing notes requires `If-Match`, and a
+ * client that had never seen a document would have no validator to send for
+ * its first write. So there is no "nothing recorded" case to handle here:
+ * there is always a document and always a tag.
+ */
+export async function getNotes(work: string): Promise<FetchedNotes> {
+  const res = await fetch(`/api/works/${seg(work)}/notes`)
+  if (!res.ok) throw new Error(`reading notes: ${res.status} ${await res.text()}`)
+  return { doc: (await res.json()) as NotesDoc, etag: res.headers.get('etag') ?? undefined }
+}
+
+/**
+ * Replace a work's notes, conditionally.
+ *
+ * `If-Match` is required by the server rather than optional here, the same as
+ * `patchAlignment` below: two devices annotating one work is the same shape as
+ * two correcting it, and last-write-wins would discard a note with nothing
+ * anywhere saying so. The response body is the stored document, so a caller
+ * refreshes from this rather than making a second request that could already
+ * be out of date again.
+ *
+ * No `keepalive`, unlike `putProgress`: a note is a deliberate act the reader
+ * is watching the result of, not a background write that has to survive the
+ * tab going away.
+ */
+export async function putNotes(work: string, etag: string, doc: NotesDoc): Promise<FetchedNotes> {
+  const res = await fetch(`/api/works/${seg(work)}/notes`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'if-match': etag },
+    body: JSON.stringify(doc),
+  })
+  if (!res.ok) throw new Error(`writing notes: ${res.status} ${await res.text()}`)
+  return { doc: (await res.json()) as NotesDoc, etag: res.headers.get('etag') ?? undefined }
 }
 
 export interface CorrectionRequest {

@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  getNotes,
   getProgress,
   getSidecar,
   listWorks,
   pageUrl,
   patchAlignment,
+  putNotes,
   putProgress,
   thumbUrl,
 } from './api'
@@ -156,6 +158,72 @@ describe('network calls', () => {
       await expect(
         patchAlignment('w', '"old"', { from: 'raw', to: 'en', a: '3', b: '5' }),
       ).rejects.toThrow(/changed since you read it/)
+    })
+  })
+
+  describe('notes', () => {
+    // A work nobody has annotated answers with an empty document rather than a
+    // 204, unlike progress — so there is no "nothing recorded" case here, and
+    // the tag is always present for the first write to be conditional on.
+    it('reads the document and the validator a write has to carry', async () => {
+      const urls: string[] = []
+      vi.stubGlobal('fetch', (url: string) => {
+        urls.push(url)
+        return Promise.resolve(
+          new Response('{"work":"w","notes":[]}', { status: 200, headers: { etag: '"n1"' } }),
+        )
+      })
+
+      const fetched = await getNotes('w')
+
+      expect(urls[0]).toBe('/api/works/w/notes')
+      expect(fetched.etag).toBe('"n1"')
+      expect(fetched.doc).toEqual({ work: 'w', notes: [] })
+    })
+
+    it('writes conditionally, and sends the document verbatim', async () => {
+      const calls: RequestInit[] = []
+      vi.stubGlobal('fetch', (_url: string, init: RequestInit) => {
+        calls.push(init)
+        return Promise.resolve(
+          new Response('{"work":"w","notes":[]}', { status: 200, headers: { etag: '"n2"' } }),
+        )
+      })
+
+      const doc = {
+        work: 'w',
+        notes: [
+          {
+            id: '01J8',
+            edition: 'raw',
+            slot: 3,
+            body: 'why is this page here',
+            created: '2026-08-05T10:00:00Z',
+            updated: '2026-08-05T10:00:00Z',
+          },
+        ],
+      }
+      const fresh = await putNotes('w', '"n1"', doc)
+
+      expect(calls[0].method).toBe('PUT')
+      expect(new Headers(calls[0].headers).get('if-match')).toBe('"n1"')
+      // The server refuses an unknown field with a 400, so the wire shape has
+      // to be exact — the same reasoning `patchAlignment`'s test states.
+      expect(JSON.parse(calls[0].body as string)).toEqual(doc)
+      expect(fresh.etag).toBe('"n2"')
+    })
+
+    /** The lost-update answer, which the reader is told about rather than retried through. */
+    it('reports a stale validator by name', async () => {
+      vi.stubGlobal('fetch', () =>
+        Promise.resolve(
+          new Response('these notes have changed since you read them', { status: 412 }),
+        ),
+      )
+
+      await expect(putNotes('w', '"old"', { work: 'w', notes: [] })).rejects.toThrow(
+        /changed since you read them/,
+      )
     })
   })
 })

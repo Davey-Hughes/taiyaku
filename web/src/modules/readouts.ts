@@ -2,12 +2,14 @@ import type { Chapter } from '../resolver'
 import { verdictFor, type Alignment, type Verdict } from '../session'
 import type { ReaderModule } from '../module'
 
-/** Which of the four readout lines a reader has switched on. */
+/** Which readout lines a reader has switched on. */
 export interface ReadoutsPrefs {
   position: boolean
   time: boolean
   chapter: boolean
   health: boolean
+  /** The note count — `modules/annotations.ts`'s `noteCountLine`. */
+  notes: boolean
 }
 
 /**
@@ -21,7 +23,7 @@ export interface ReadoutsPrefs {
 export const readoutsModule: ReaderModule<ReadoutsPrefs> = {
   id: 'readouts',
   label: 'Readouts',
-  defaults: { position: true, time: true, chapter: true, health: true },
+  defaults: { position: true, time: true, chapter: true, health: true, notes: true },
 }
 
 /** `positionLine`'s inputs. `slot` and `total` are zero/whole-count as everywhere else internal; `page` is already display-ready (1-based) — the same boundary convention `App.tsx`'s `altAt` already applies before handing a page number to something a person reads. */
@@ -279,6 +281,8 @@ export interface RowLines {
   time?: string
   chapter?: string
   health?: string
+  /** Derived by `modules/annotations.ts`, laid out here. */
+  notes?: string
 }
 
 /**
@@ -312,7 +316,16 @@ export interface RowLines {
  * can most afford to lose to truncation: chapter is a convenience already
  * inferable from position, and the time estimate is explicitly a guess
  * (see `timeLine`).
+ *
+ * The note count is last of the five, and is the one segment whose derivation
+ * lives in another module (`annotations`) while its layout lives here — the
+ * same split every other line already has between `readouts`' own pure
+ * functions and `App.tsx`'s wiring. Last because it is the only readout a
+ * reader can also see on the page itself, as margin tabs, so losing it to a
+ * narrow row costs the least of anything here.
  */
 export function readoutRow(lines: RowLines): string {
-  return [lines.position, lines.health, lines.time, lines.chapter].filter(Boolean).join(' · ')
+  return [lines.position, lines.health, lines.time, lines.chapter, lines.notes]
+    .filter(Boolean)
+    .join(' · ')
 }

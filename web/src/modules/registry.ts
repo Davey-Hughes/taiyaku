@@ -1,4 +1,5 @@
 import { buildRegistry } from '../module'
+import { annotationsModule } from './annotations'
 import { directionModule } from './direction'
 import { motionModule } from './motion'
 import { prefetchModule } from './prefetch'
@@ -16,7 +17,11 @@ import { settingsModule } from './settings'
  * reason: both claim no keys — tuned in settings, not pressed mid-read.
  * `settingsModule` claims one key (`s`) for the panel and nothing else, so
  * `Settings.tsx`'s generated panel renders no section for it — see that
- * module's own doc.
+ * module's own doc. `annotationsModule` is the first to claim more than one
+ * key (`n`, `r`, `a`), which the contract already allowed and nothing here
+ * had exercised; `buildRegistry`'s collision check treats them as three
+ * separate claims, so a later module taking any one of them fails at import
+ * rather than fighting for it at runtime.
  *
  * Kept in this file rather than in `App.tsx`, and built at module scope
  * rather than inside a component, for two reasons at once. First, the
@@ -42,6 +47,14 @@ import { settingsModule } from './settings'
  * `d`) or bespoke behaviour (like `prefetch`'s decode-queue rebuild) needs
  * anything hand-written in `App.tsx`, and that is behaviour, not tunability.
  */
-const modules = [directionModule, motionModule, regroupModule, readoutsModule, prefetchModule, settingsModule]
+const modules = [
+  directionModule,
+  motionModule,
+  regroupModule,
+  readoutsModule,
+  prefetchModule,
+  annotationsModule,
+  settingsModule,
+]
 
 export const registry = buildRegistry(modules)

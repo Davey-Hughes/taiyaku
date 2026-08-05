@@ -52,9 +52,24 @@ export function intentOf(
 }
 
 /**
- * Whether a keydown's target is a focusable control rather than the page at
- * large — a `button`, an `a`, an `input`, or anything else carrying
- * `tabindex`.
+ * Whether a keydown's target is a control rather than the page at large — a
+ * `button`, an `a`, an `input`, a `textarea`, anything `contenteditable`, or
+ * anything else carrying `tabindex`.
+ *
+ * **`textarea` was missing until M5c, and the reader had no textarea to
+ * notice it with.** The note editor is the first surface here that takes
+ * typed text, and without this every module key fired mid-word: typing `s`
+ * opened the settings panel, `n` started another note, Space swapped edition,
+ * a digit jumped to one. Reported from a real browser. The tests that
+ * "covered" the editor had set its value with Playwright's `fill()`, which
+ * dispatches an input event rather than keystrokes, so not one of them ever
+ * sent a key through this function — which is why a defect this loud survived
+ * a browser pass.
+ *
+ * `contenteditable` is here for the same reason ahead of a caller rather than
+ * behind one: the rule is "is this target taking text", not "is it one of
+ * four tag names", and the next surface that takes text should not have to
+ * rediscover this.
  *
  * `App.tsx` used to `preventDefault()` every recognised key, `Tab` included,
  * reasoning that a later `Space` would
@@ -70,8 +85,20 @@ export function intentOf(
  * for `Tab` to collide with.
  */
 export function isInteractiveTarget(target: EventTarget | null): boolean {
-  const el = target as { tagName?: unknown; hasAttribute?: (name: string) => boolean } | null
+  const el = target as {
+    tagName?: unknown
+    isContentEditable?: unknown
+    hasAttribute?: (name: string) => boolean
+  } | null
   if (!el || typeof el.tagName !== 'string') return false
-  if (el.tagName === 'BUTTON' || el.tagName === 'A' || el.tagName === 'INPUT') return true
+  if (
+    el.tagName === 'BUTTON' ||
+    el.tagName === 'A' ||
+    el.tagName === 'INPUT' ||
+    el.tagName === 'TEXTAREA'
+  ) {
+    return true
+  }
+  if (el.isContentEditable === true) return true
   return typeof el.hasAttribute === 'function' && el.hasAttribute('tabindex')
 }

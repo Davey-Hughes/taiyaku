@@ -23,15 +23,7 @@ pub struct Progress {
 
 /// Where a work's progress file sits: beside its sidecar, same stem.
 pub fn progress_path(work: &Work) -> PathBuf {
-    let stem = work
-        .path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "taiyaku".to_string());
-    work.path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join(format!("{stem}.progress.json"))
+    work.sibling("progress.json")
 }
 
 /// What was recorded, or `None` when nothing ever was.

@@ -183,3 +183,78 @@ fn stump_and_local_serve_the_same_bytes_for_the_same_member() {
         "no member of this work resolved against stump, so nothing was compared"
     );
 }
+
+/// Note anchors are validated against the *real* editions, not a fixture.
+///
+/// The fixture `validate` is otherwise tested against is four pages with no
+/// spreads, where slots and pages are the same number — which is exactly the
+/// case that cannot tell a correct slot check from a page check. Go-Toubun
+/// v01's `en-mono` joins seven spreads, so it has seven more slots than pages,
+/// and the last seven slots of it are anchors that only a slot-counting check
+/// accepts.
+///
+/// This is the check `docs/status.md` promises for every other subsystem and
+/// notes did not have.
+#[test]
+fn a_note_can_be_anchored_to_every_slot_of_every_real_edition() {
+    let Some(root) = corpus_root() else {
+        eprintln!("TAIYAKU_CORPUS unset — skipping");
+        return;
+    };
+    let path = root.join("gotoubun-v01/taiyaku.json");
+    if !path.exists() {
+        eprintln!("{} absent — skipping", path.display());
+        return;
+    }
+
+    let works = load_works(std::slice::from_ref(&path)).expect("sidecar loads");
+    let work = &works[0];
+    let sidecar = work.sidecar();
+    let stored = crate::notes::empty(&work.id);
+
+    let note = |edition: &str, slot: u32| crate::notes::Notes {
+        work: work.id.clone(),
+        notes: vec![crate::notes::Note {
+            id: format!("01{edition}{slot}"),
+            edition: edition.to_string(),
+            slot,
+            region: None,
+            color: None,
+            body: "anchored".into(),
+            created: "2026-08-05T10:00:00Z".into(),
+            updated: "2026-08-05T10:00:00Z".into(),
+        }],
+    };
+
+    let mut checked = 0usize;
+    let mut spread_editions = 0usize;
+    for (key, edition) in &sidecar.editions {
+        let slots = edition.slots(sidecar.work.reading).len() as u32;
+        let pages = edition.total_pages();
+        if slots > pages {
+            spread_editions += 1;
+        }
+        for slot in 0..slots {
+            crate::notes::validate(&note(key, slot), work, &stored)
+                .unwrap_or_else(|e| panic!("{key} slot {slot} should anchor a note: {e:?}"));
+            checked += 1;
+        }
+        // And one past the end of each, which is the half that proves the
+        // check is not spelled "accept everything".
+        assert!(
+            crate::notes::validate(&note(key, slots), work, &stored).is_err(),
+            "{key} has {slots} slots; slot {slots} must not anchor a note"
+        );
+    }
+
+    println!(
+        "notes: {checked} anchors accepted across {} editions, {spread_editions} of which join \
+         spreads and so have more slots than pages",
+        sidecar.editions.len()
+    );
+    assert!(checked > 0, "the corpus sidecar defines no slots at all");
+    assert!(
+        spread_editions > 0,
+        "no edition here joins spreads, so this run could not tell a slot check from a page check"
+    );
+}

@@ -15,12 +15,14 @@
  */
 
 /** What kind of control a preference key's current value wants. */
-export type FieldKind = 'boolean' | 'number' | 'string' | 'object'
+export type FieldKind = 'boolean' | 'number' | 'string' | 'select' | 'object'
 
 /** One row the generated panel renders, before it is turned into a control. */
 export interface Field {
   key: string
   kind: FieldKind
+  /** The values a `'select'` field may take, in the order the module declared them. */
+  options?: string[]
 }
 
 /**
@@ -56,8 +58,19 @@ export function fieldKind(value: unknown): FieldKind {
  * `settingsModule`, today), which is what lets `Settings.tsx` skip a section
  * with nothing to show instead of rendering an empty one.
  */
-export function fieldsOf<P extends object>(defaults: P): Field[] {
-  return Object.entries(defaults).map(([key, value]) => ({ key, kind: fieldKind(value) }))
+export function fieldsOf<P extends object>(
+  defaults: P,
+  options: Record<string, string[]> = {},
+): Field[] {
+  return Object.entries(defaults).map(([key, value]) => {
+    const kind = fieldKind(value)
+    // A string with declared values is a choice, not free text. Only strings:
+    // options against a boolean or a number would be a module contradicting
+    // its own default's type, and inferring from the *value* is what keeps
+    // this panel from having to know which module it is looking at.
+    if (kind === 'string' && options[key]?.length) return { key, kind: 'select', options: options[key] }
+    return { key, kind }
+  })
 }
 
 /**
@@ -95,6 +108,11 @@ export function withFieldValue<P extends object>(prefs: P, key: string, raw: unk
     const parsed = typeof raw === 'number' ? raw : Number(raw)
     return Number.isFinite(parsed) ? { ...prefs, [key]: parsed } : prefs
   }
+  // A select hands back one of its own declared values, and a text box hands
+  // back whatever was typed; both are strings, and neither is checked against
+  // the module's options here. `noteColour`'s reasoning applies — a value this
+  // build does not recognise falls back at the point of *use*, where the
+  // consequence is a default rather than a preference that refuses to save.
   if (typeof current === 'string') return { ...prefs, [key]: String(raw) }
   return prefs
 }

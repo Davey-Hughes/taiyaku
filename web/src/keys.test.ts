@@ -98,6 +98,25 @@ describe('isInteractiveTarget', () => {
     expect(isInteractiveTarget(target('INPUT'))).toBe(true)
   })
 
+  // A reader typing a note is the case this missed until M5c put the first
+  // textarea in the reader: every module key fired mid-word, so typing `s`
+  // opened the settings panel, `n` started another note, Space swapped
+  // editions and a digit jumped to one. Reported from a real browser, where
+  // the tests that "covered" the editor had set the value with `fill()` and
+  // so never sent a keystroke through this at all.
+  it('is true for a textarea — a reader typing a note is not pressing reader keys', () => {
+    expect(isInteractiveTarget(target('TEXTAREA'))).toBe(true)
+  })
+
+  // The other way a page can be typed into. Nothing in this reader uses one
+  // today; it is here because the rule is "is the target taking text", not "is
+  // it one of three tag names", and the next surface that takes text should
+  // not have to rediscover this bug.
+  it('is true for a contenteditable element, whatever its tag', () => {
+    const editable = { tagName: 'DIV', isContentEditable: true, hasAttribute: () => false }
+    expect(isInteractiveTarget(editable as unknown as EventTarget)).toBe(true)
+  })
+
   it('is true for anything carrying tabindex, whatever its tag', () => {
     expect(isInteractiveTarget(target('DIV', '0'))).toBe(true)
     expect(isInteractiveTarget(target('DIV', '-1'))).toBe(true)

@@ -23,6 +23,19 @@ export interface ReaderModule<P> {
   defaults: P
   /** Keys this module claims while enabled. Checked for collisions at startup. */
   keys?: KeyBinding[]
+  /**
+   * The values a `string` preference is allowed to take, keyed by preference
+   * name — which turns its control from a free-text box into a choice.
+   *
+   * `settingsPanel.ts` has carried a note since M5b that this is "what the
+   * design calls for once a module declares one with options; none does yet,
+   * and the contract carries no field to declare options against, so that path
+   * is not built ahead of a case that exists only in the design". The case now
+   * exists: `annotations` has to let a reader place the note list beside the
+   * page or below it, and a text box for that is a control that invites a typo
+   * and answers with nothing.
+   */
+  options?: Record<string, string[]>
 }
 
 export interface Collision {

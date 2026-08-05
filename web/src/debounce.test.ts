@@ -125,3 +125,39 @@ describe('debounce', () => {
     })
   })
 })
+
+describe('cancel', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('drops a pending call rather than sending it', () => {
+    const sent: number[] = []
+    const d = debounce((n: number) => sent.push(n), 50)
+    d(1)
+    d.cancel()
+    vi.advanceTimersByTime(100)
+    expect(sent).toEqual([])
+  })
+
+  // Undo and delete both need this: each replaces the document outright, and a
+  // pending write from before would land on top a moment later and put back
+  // exactly what the reader just removed.
+  it('leaves later calls working', () => {
+    const sent: number[] = []
+    const d = debounce((n: number) => sent.push(n), 50)
+    d(1)
+    d.cancel()
+    d(2)
+    vi.advanceTimersByTime(100)
+    expect(sent).toEqual([2])
+  })
+
+  it('is harmless with nothing pending', () => {
+    const d = debounce(() => undefined, 50)
+    expect(() => d.cancel()).not.toThrow()
+  })
+})

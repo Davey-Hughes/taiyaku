@@ -154,6 +154,8 @@ export interface ChromeProps extends FilmstripProps {
   time?: string
   chapter: string
   health?: string
+  /** The note count — derived by `modules/annotations.ts`, absent where the work has none. */
+  notes?: string
 }
 
 /**
@@ -199,6 +201,7 @@ export function Chrome({
   time,
   chapter,
   health,
+  notes,
   ...filmstrip
 }: ChromeProps) {
   const animating = isAnimating(motion)
@@ -239,6 +242,7 @@ export function Chrome({
     time: readouts.time ? time : undefined,
     chapter: readouts.chapter ? chapter : undefined,
     health: readouts.health ? health : undefined,
+    notes: readouts.notes ? notes : undefined,
   })
   return (
     <>

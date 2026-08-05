@@ -9,6 +9,13 @@ mod composite;
 #[cfg(test)]
 mod corpus;
 mod cover;
+/// A work's notes, beside its sidecar.
+///
+/// Public where `progress` is private, and deliberately: `progress::load` and
+/// `progress::store` are reachable from the crate root as `Progress` plus two
+/// routes, but `load`/`store`/`to_json` re-exported there would be three names
+/// too vague to sit beside `load_works`. The module path says what they load.
+pub mod notes;
 mod opds;
 mod progress;
 mod reqlog;

@@ -78,6 +78,20 @@ function FieldControl({ field, value, onChange }: { field: Field; value: unknown
       </label>
     )
   }
+  if (field.kind === 'select') {
+    return (
+      <label style={rowStyle}>
+        <span>{label}</span>
+        <select value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)}>
+          {(field.options ?? []).map((option) => (
+            <option key={option} value={option}>
+              {humanize(option)}
+            </option>
+          ))}
+        </select>
+      </label>
+    )
+  }
   if (field.kind === 'string') {
     return (
       <label style={rowStyle}>
@@ -150,7 +164,7 @@ export function Settings({ visible, modules, prefs, onChange, onReset }: Setting
       <div style={panelStyle}>
         <h2 style={{ marginTop: 0, marginBottom: 0 }}>Settings</h2>
         {modules.map((mod) => {
-          const fields = fieldsOf(mod.defaults as object)
+          const fields = fieldsOf(mod.defaults as object, mod.options)
           if (fields.length === 0) return null
           const modulePrefs = (prefs[mod.id] ?? mod.defaults) as Record<string, unknown>
           return (

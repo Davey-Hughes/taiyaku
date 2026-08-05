@@ -1,6 +1,6 @@
 # Status
 
-Where the project is, what is settled, and what comes next. Updated 2026-08-04.
+Where the project is, what is settled, and what comes next. Updated 2026-08-05.
 
 The detailed evidence for everything asserted here is in [`notes.md`](notes.md),
 which is a working log rather than a summary — every claim below traces to a
@@ -25,21 +25,32 @@ that never reflows the page underneath. M5d shipped the correction UI: a
 reader can point at the right counterpart in the filmstrip and have the fix
 written into the sidecar as `by: "hand"`, surviving a re-solve. `verify`'s
 contact sheet remains read-only, but it is no longer the only way to see or
-change what the aligner decided.
+change what the aligner decided. A defect M5a had carried since it shipped
+closed just after: an arrow steps by what is *drawn* — a group — rather than
+by slot, so crossing a joined spread no longer takes two presses and a swap
+always answers from the half a reader can see. **M5c shipped annotations, and
+with them the one thing no other reader can offer: a note written on the raw
+is readable while reading the English**, resolved through the same call the
+swap makes, marked in the margin, and listed — including the notes that cannot
+be reached from where the reader is standing, which are marked rather than
+hidden.
 
 ## What is built
 
-Five crates, 345 tests, plus 258 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 373 tests, plus 377 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
-and `vite` in `web/`. Nine of the 345 are standing checks gated on
+and `vite` in `web/`. Ten of the 373 are standing checks gated on
 `TAIYAKU_CORPUS`, one of which also needs `TAIYAKU_STUMP_URL` and
 `TAIYAKU_STUMP_KEY`; each skips cleanly when what it needs is absent, so CI
 stays green without the corpus or a reachable Stump. One measures composition
 against a direct solve — 2,427 page comparisons, 0.91% loss, 0.00% disagreement.
 One measures that the server and the aligner agree about what page N is — 617
-pages across 3 editions, no disagreement. One measures that the server and Stump
-serve the same bytes for a member both hold — 187 pages compared byte-for-byte,
+pages across 3 editions, no disagreement. One measures that a note can be anchored to
+every slot of every real edition — 629 anchors across three, two of which join
+spreads and so have more slots than pages, which is the case a four-page
+fixture cannot tell apart from a page check. One measures that the server and
+Stump serve the same bytes for a member both hold — 187 pages compared byte-for-byte,
 no disagreement, and 8 members this Stump instance does not hold recorded as
 absent rather than silently skipped. The remaining six run duplicate resolution
 over real duplicate sets and are listed in §2 below with what each one measured.
@@ -63,10 +74,10 @@ is not shaped by what can cross the JavaScript boundary.
 | Crate | Holds |
 | ----- | ----- |
 | `taiyaku-read` | how a member becomes pages — archives, directories, natural order, page counts, content hashes, one page by index |
-| `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below) |
+| `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, notes (`<stem>.notes.json`, read and written whole under `If-Match`), an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
-| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and four independently-switchable readouts (position, reading time, chapter, alignment health) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of five `ReaderModule`s against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the four lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame). A sixth registry entry, `settings`, claims no reading behaviour, only the panel's own key. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id — with a reset per section |
+| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of six `ReaderModule`s against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint, with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the page it sits over rather than the box around it; a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself). A seventh registry entry, `settings`, claims no reading behaviour, only the panel's own key. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
 
 `taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
 a member becomes pages" — so two consumers deriving it separately is a defect the
@@ -230,7 +241,7 @@ margin threshold plus a crop-tolerant hash. Not the DP.
 
 ### Open items
 
-Twenty-four, each found by a whole-branch review, carried as a deferral,
+Twenty-five, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, or turned up by measuring what a new feature produced
@@ -238,7 +249,7 @@ against the corpus, and each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
 visible act rather than a thing someone remembers. **Eighteen are now closed
 — O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21 and O22 — leaving six.**
+O21 and O22 — leaving seven.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -269,6 +280,7 @@ each is in the detail below; the table is what a reader scans.
 | O22 | [x] | `verify` ignored `--cache` and `--ltr` with no `--sidecar` to apply them to | `main.rs::verify` | O20 review |
 | O23 | [ ] | Two hand corrections make a sound alignment report `fragmented` — *measured: avg run 64.33 → 32.00 → 21.22 on Go-Toubun v01, against a 27.0 threshold* | `sidecar.rs::rewrite`, `solve.rs::verdict` | M5d |
 | O24 | [ ] | A solver-written direct edge to a third edition survives that edition being replaced | `sidecar.rs::merge_spoke` | M5d whole-branch review |
+| O25 | [ ] | The settings panel and the whole chrome are unreachable while showing a gap | `App.tsx`, the `shown.kind === 'gap'` branch | M5c browser pass |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -1082,6 +1094,28 @@ blocking because nothing yet corrects a work more than once in real reading:
   `--direct` edge and a re-solve in the same document — which is also why this
   has never been felt.
 
+**One came from driving a new surface against the corpus** — O25, turned up on
+2026-08-05 during M5c's browser pass, and not blocking because the two panels
+it hides are both reachable one keypress earlier:
+
+- **O25 — The settings panel and the whole chrome are unreachable while
+  showing a gap. Open.** `App.tsx`'s `shown.kind === 'gap'` branch returns the
+  `Gap` view *instead of* the reader's own tree, so everything mounted below
+  it — `Chrome` (filmstrip and readouts), `Settings`, and until this branch the
+  note panel — is simply not rendered. The keys still fire and the state still
+  flips; nothing appears. Found by pressing `a` on a gap and getting silence.
+  **The note panel was fixed here** because a reader in a gap is precisely who
+  asks where their notes are, and every row in that list already carries the
+  "not reachable from here" marking for exactly this case. The other two were
+  left, deliberately: `Settings` is a genuine one-line fix, but the filmstrip
+  is not — a gap has no slot in the viewed edition, so what the strip should
+  show there (the authority edition's tiles? the viewed edition's, with
+  nothing marked?) is a design question, and `Gap`'s own offered moves already
+  exist to get out of one. Fixing half of it and calling the item closed would
+  be the kind of partial answer this table exists to prevent.
+  **What would close it:** deciding what the filmstrip shows in a gap, and
+  landing that together with the one-line `Settings` fix.
+
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
 
@@ -1097,11 +1131,12 @@ something an alignment already reports. A merge keeps whatever hub the file name
 
 ## What comes next
 
-Roughly in order. The first two are settled — one closed by a measurement that
-came out against shipping it, one shipped as two commands — and stay here rather
+Roughly in order. The first three are settled — one closed by a measurement
+that came out against shipping it, one shipped as two commands, and the third
+the large piece, shipped across four milestones — and they stay here rather
 than being deleted, for the reason the open-items table gives: a list that only
-ever grows says nothing about whether anything lands. The third is the large
-piece.
+ever grows says nothing about whether anything lands. **The next unbuilt thing
+is the fourth**, and it wants a brainstorm before any code.
 
 ### 1. Refuse on margins, not just counts — measured, and margin does not fit
 
@@ -1189,10 +1224,11 @@ that holds a whole edition, which is not always the copy directory a person
 would name, and `--pattern` matches against that directory's name rather than
 the copy's.
 
-### 3. The reader
+### 3. The reader — shipped
 
 A PWA consuming the sidecar, with the correction UI as part of it rather than
-after it. This is the multi-week piece and the point of everything above.
+after it. This was the multi-week piece and the point of everything above, and
+every stage it was split into — M5a, M5b, M5c, M5d — has now landed.
 
 **Its blocker is cleared.** Until 2026-07-30 there was no way to produce a
 sidecar with three editions and no way to resolve through one, so on any work
@@ -1489,11 +1525,97 @@ a stale figure. See `notes.md` for the full measurement. **The same pass
 found that two hand corrections are enough to take a sound alignment to
 `fragmented`**, opened as O23 above rather than answered on a guess.
 
-What remains: `annotations` — M5c — and the six open items tabled above —
-five of them found by a whole-branch review, now that O12 (carried rather
-than found) and O14 (found by one, closed by M5b) are both out of the count,
-and O23 the one exception, turned up by measuring what the correction UI
-produced against the corpus rather than by reviewing a branch.
+**A defect that manual pass reported was not M5d's, and shipped on its own
+commit after it: an arrow moved by slot where a group is what is drawn.** A
+joined spread is two slots and one wide image, so stepping by slot redrew what
+was already on screen and the press appeared to do nothing — *"I have to right
+arrow twice to go by it"* — and in `two` mode a press advanced the pair by one,
+redrawing half of it. `stepToGroup` (`web/src/pairing.ts`, pure, seven tests)
+steps by group instead, measured on `en-mono`, which has spreads at pages 45,
+46 and 49: pressing right from displayed slot 45 walks `45 → 46 → 47 → 49 →
+51`, one image per press, symmetric backwards. **Landing on the group's first
+slot fixes a second thing the report did not name** — both halves of a joined
+spread draw the same image but `resolve_slot` answers them *differently*, so a
+reader who could not see which half they stood on got one of two different
+answers on a swap from a screen that looked identical either way. **What it
+costs:** the second half of a joined spread is no longer reachable by arrow,
+nor is its own swap answer; it stays addressable where addressing it is the
+point — the correction filmstrip puts one tile per slot, and `two` mode draws
+the halves in separate cells. Confirmed acceptable during the same manual
+pass. The grouping reaches `applyIntent` as an optional parameter with the
+slot arithmetic kept as the fallback, because how the page is grouped right
+now — mode, direction override, hand-inserted parity breaks — is something
+nothing below the component tree knows.
+
+**M5c has landed, and with it the thing the sidecar was for.** A note written
+on `raw-mono` is readable while reading `en-mono` or `en-fan` — resolved
+through the same `Resolver.resolve` the swap makes, so no second
+implementation of travel exists to disagree with the first. Notes live in
+`<stem>.notes.json` beside the sidecar, the placement `progress` established,
+written whole under `If-Match` through the atomic writer O2 introduced; the
+`GET` synthesises an empty document where no file exists, so a client's *first*
+write is an ordinary conditional write rather than a second precondition
+spelling. A note is anchored to a **slot**, never a page, and its region — when
+it has one — is fractions of that slot, so a re-scan or a different served
+resolution cannot move a marker.
+
+**What it deliberately does not do, stated rather than discovered.** A
+region does **not** travel: transforming one between editions is L1 geometry,
+so a travelled note draws a margin tab and never a tint, because drawing the
+untransformed box would put it over the wrong panel. Two devices annotating
+one work do not *merge* — the second is refused with the current validator and
+re-applies, the same bargain `patch_alignments` makes, and merging would need
+this server to decide what two conflicting edits to one note mean. Export is the stored
+document rather than a rendering, so it can be put back.
+**Markers work in all three reading modes**, including continuous scroll,
+where each mounted group carries its own overlay and every slot's notes are
+resolved once for the whole edition rather than once per page.
+
+**Measured against the corpus rather than asserted.** Before any code, a
+throwaway test resolved every slot of one edition into another and back — 193
+of 193 on Go-Toubun v01 and 28 of 28 composed through a hub, with **no
+disagreement in either direction** — which is what licensed resolving once per
+edition rather than once per note, and so kept `Binding`'s route memo (O14)
+useful. In the browser, a note on `raw-mono` slot 88 drew its travelled tab on
+the page `taiyaku lookup` independently names, in both other editions; a
+dragged region round-tripped to within 1e-5; a note on `raw-mono` slot 1 — a
+real gap — was listed as unreachable rather than dropped; and a second writer
+racing the reader was refused, re-read, and lost nothing. See `notes.md`,
+"M5c: a note written on the raw, read on the English". **One defect turned up
+in that pass and it was older than the branch**, now O25: no panel below the
+gap branch was ever rendered, so the review list could not be opened from the
+one state it was written for. The list is fixed here; the settings panel and
+the chrome are not, and the item says why.
+
+**Two more came from the owner opening the reader, and both are worth stating
+because a nine-item browser pass had already passed over them.** Typing a note
+fired every reader key — `isInteractiveTarget` knew about a button, a link and
+an input, and nothing about a `textarea`, because until M5c the reader had
+none — so `s` opened the settings panel mid-word, Space swapped edition and a
+digit jumped to one. And drawing a region worked while showing nothing at all:
+the gesture recorded correctly, but no rectangle was drawn during the drag, and
+an unsaved draft is in no note list for `reveal` to tint. Both are fixed, and
+both were missed for the same reason — the pass produced state the shortest
+way (`fill()`, dispatched pointer events) rather than the way a person does, so
+it confirmed the arithmetic and never the gesture. A third followed: the
+overlay was positioned on the **page area** rather than on the page, so every
+marker was offset by the letterbox around a portrait page — the drag
+arithmetic had been right all along and the drawing wrong, which is why every
+check that read the stored fractions back agreed with itself. Markers are now
+placed by an overlay that measures the page it sits over, which also gave
+continuous-scroll mode the markers it had never had. **All four share one
+cause:** each was invisible to a check comparing this code's output to its own
+other output, and obvious to one comparing it to what a person meets — the
+pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
+"M5c, reported from a real browser" and "The annotation overlay was placed on
+the page area, not on the page".
+
+What remains: the seven open items tabled above — five of them found by a
+whole-branch review, now that O12 (carried rather than found) and O14 (found
+by one, closed by M5b) are both out of the count, with O23 and O25 the
+exceptions, turned up by measuring what a new surface produced against the
+corpus rather than by reviewing a branch. **Every milestone M5 named has now
+shipped.**
 
 ### 4. Skipping scanlation credit pages
 

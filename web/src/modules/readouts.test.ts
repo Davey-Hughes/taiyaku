@@ -163,6 +163,20 @@ describe('readoutRow', () => {
   it('is the empty string with nothing enabled', () => {
     expect(readoutRow({})).toBe('')
   })
+
+  // The note count is the fifth segment and sits last: it is the only one a
+  // reader can also see on the page itself, as margin tabs, so it is the
+  // cheapest thing for a narrow row to clip.
+  it('puts the note count last, behind every reading line', () => {
+    expect(
+      readoutRow({
+        position: 'slot 1 / 2 · p. 1 · 50%',
+        health: 'fragmented pair',
+        chapter: 'c002 · 3 of 7',
+        notes: '1 note here of 4',
+      }),
+    ).toBe('slot 1 / 2 · p. 1 · 50% · fragmented pair · c002 · 3 of 7 · 1 note here of 4')
+  })
 })
 
 describe('chapterReadout', () => {
@@ -209,7 +223,13 @@ describe('healthReadout', () => {
 
 describe('readoutsModule', () => {
   it('defaults every readout on — nothing is hidden until a reader hides it', () => {
-    expect(readoutsModule.defaults).toEqual({ position: true, time: true, chapter: true, health: true })
+    expect(readoutsModule.defaults).toEqual({
+      position: true,
+      time: true,
+      chapter: true,
+      health: true,
+      notes: true,
+    })
   })
 
   it('claims no keys — every readout is toggled in settings, not mid-read', () => {

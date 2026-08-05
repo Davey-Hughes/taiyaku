@@ -4336,3 +4336,761 @@ while the write was still going to land. Fixed (`372f6f7`) with a
 against the real corpus with the `PATCH` deliberately slowed: Confirm reads
 "Writing…" and is disabled, Cancel is disabled, `Escape` leaves the banner
 up, and exactly one correction lands.
+
+## M5c: a note written on the raw, read on the English
+
+Two measurements before any code, then the browser pass. All of it against
+`corpus/gotoubun-v01`, which holds three editions — `raw-mono` (195 slots),
+`en-mono` (194 slots, seven joined spreads) and `en-fan` (240 slots across
+seven chapter files).
+
+### A note's slot round-trips exactly, so travel needed no new arithmetic
+
+Written into `crates/taiyaku-core/src/route.rs` as a throwaway test, run, and
+reverted before the plan was written — the habit M5d's own plan established
+after five of M4's seven defects turned out to have originated in a plan that
+asserted rather than ran. Every slot of one edition resolved into another and
+straight back, over `sidecar.rs`'s `REAL` (Go-Toubun v01) and `route.rs`'s
+`STAR` (three editions, only the two hub edges stored):
+
+| Pair | Slots | Landed | Agreed | Disagreed |
+| ---- | ----: | -----: | -----: | --------: |
+| `raw-mono` → `en-mono` → back | 195 | 193 | 193 | **0** |
+| `en-mono` → `raw-mono` → back | 194 | 193 | 193 | **0** |
+| `b` → `c` → back (composed through hub `a`) | 30 | 28 | 28 | **0** |
+| `c` → `b` → back (composed) | 30 | 28 | 28 | **0** |
+| `a` → `c` → back | 30 | 28 | 28 | **0** |
+| `b` → `a` → back | 30 | 30 | 30 | **0** |
+
+The slots that do not land are genuine gaps — `raw-mono` 1 and 6 have no
+counterpart at all, and `STAR`'s `b` 0/1 reach a hub gap and stop — which is
+the "unreachable from here" case the review list has to show rather than
+swallow.
+
+**What this licensed:** `notesHere` resolves once per *edition that holds
+notes*, outward from the edition being read, rather than once per note. Both
+directions agree on every slot that lands, so the cheaper direction is not a
+different answer — and it holds `from` fixed across the scan, which is what
+`Binding`'s single-pair route memo is for. Resolving per note would alternate
+pairs and thrash it, the case O14's entry names as its reopening condition.
+`reviewList` does resolve per note, because "where does *this* note land" is
+the question it answers; that the two agree is checked exhaustively in
+`notes.test.ts` rather than assumed, and sabotaging `notesHere`'s direction
+fails that test and the round-trip and nothing else.
+
+**Nothing about a correction moves a note.** A note is anchored to a slot of
+its own edition, and `Sidecar::correct` changes pairings, never an edition's
+slot sequence. A correction can change which slot a travelled note appears
+*on* — which is correct, and the reason travel is computed at render rather
+than stored — and can never orphan the note itself.
+
+### The browser pass
+
+`taiyaku serve corpus/gotoubun-v01/taiyaku.json --addr 127.0.0.1:8080` behind
+the Vite dev server on 5173, because `App.tsx` is deliberately unreachable
+from Vitest and nothing else covers the wiring.
+
+1. **`n`, type, Save — and it is on disk beside the sidecar.** The editor
+   opened naming its anchor, `raw-mono slot 88 · whole page`, on displayed
+   page 89. `corpus/gotoubun-v01/taiyaku.notes.json` came back holding one
+   note with a ULID id and **no `region` key at all** — absent, not `null`,
+   which is the spelling `notes.rs`'s round-trip test pins.
+2. **It survives a reload**, because it is on the server rather than in the
+   browser profile.
+3. **A note written on the raw is readable on the English — the milestone's
+   whole end state — and it lands where the CLI says it does.** Verified
+   against an independent implementation rather than against itself:
+
+   | Reader | `taiyaku lookup` |
+   | ------ | ---------------- |
+   | swap to `en-fan` drew the tab on displayed page 127 | `raw-mono 88 -> en-fan 126` (0-based) |
+   | swap to `en-mono` drew it on displayed page 84 | `raw-mono 88 -> en-mono 83` (0-based) |
+
+   The review list states the same landing in slots rather than pages —
+   `en-mono slot 87` for a note on `raw-mono` slot 88 — which is page 83 plus
+   the four joined spreads that precede it. Two units, one answer.
+   The travelled tab reads `Note written on raw-mono: …` and is drawn hollow.
+4. **A region is stored as fractions of the slot, and the drag that made it
+   round-trips.** Dragged from (0.25, 0.30) to (0.60, 0.55) of the painted
+   image; stored as `x 0.24999`, `y 0.3`, `w 0.35001`, `h 0.25`.
+5. **`r` tints the region on the edition it was written on and nowhere
+   else.** On `raw-mono`: one tint, at `24.9995% / 30% / 35.0007% / 25%`,
+   matching the stored fractions. On `en-mono`, the same note travelled:
+   **zero tints**, tab still present. That is the design's honest half —
+   transforming a region between editions is L1 geometry, and drawing the
+   untransformed box would put it over the wrong panel.
+6. **The review list marks what it cannot reach.** Three notes; the two on
+   `raw-mono` 88 and 89 showed their `en-mono` landings, and the one on
+   `raw-mono` slot 1 — which `lookup` confirms has no counterpart — was
+   listed as `not reachable from en-mono` with its row disabled, rather than
+   quietly missing.
+7. **Export is the document, not a rendering.** The downloaded
+   `taiyaku.notes.json` parsed and compared **equal** to what `GET
+   /api/works/taiyaku/notes` returns.
+8. **Two devices, and neither note is lost.** A second writer wrote through
+   `curl` with the tag the browser was still holding. The browser's next Save
+   answered 412, the reader was told "These notes changed elsewhere and have
+   been re-read. Save again to keep yours.", **the draft survived untouched**,
+   and the second Save landed. Both notes are in the file.
+9. **The settings panel generated the module with no hand-wiring**, a seventh
+   module proving M5b's claim again: an `Annotations` section with `markers`,
+   `travel` and `reveal`. `markers` off took the tabs away (1 → 0) and back
+   on returned them. `travel` off hid the note while reading `en-mono` and
+   **left it visible on `raw-mono`, where it was written** — the precise
+   behaviour, not "hide everything". Both survived a reload.
+
+**One defect found, and it was not in the new code.** Pressing `a` while the
+reader was showing a **gap** opened nothing at all: `App.tsx` returns the
+`Gap` view instead of its own tree, so no panel below that branch is ever
+rendered. A reader standing on a slot the viewed edition has no counterpart
+for is exactly who wants to ask where their notes are, and every row in that
+list already carries the not-reachable-from-here marking for this case. Fixed
+on the branch — the list renders in the gap state too. **The settings panel
+and the whole chrome are still unreachable there in the same way**, which is
+older than this branch and is now O25 rather than fixed in passing.
+
+The test data written during this pass was removed from `corpus/` afterwards:
+that directory is gitignored, so nothing else would have.
+
+## M5c, reported from a real browser: two defects a synthetic pass could not see
+
+Both found by the owner within minutes of opening the reader, on the branch
+that had already passed a nine-item browser pass. Both trace to the same
+weakness in how that pass was driven: it reached for the shortest way to
+produce a state rather than the way a person produces it.
+
+**Typing a note fired every reader key.** `isInteractiveTarget` (`keys.ts`)
+stands the window keydown handler down for a `button`, an `a`, an `input` or
+anything carrying `tabindex` — and knew nothing about a `textarea`, because
+until M5c the reader had none. So typing into the note editor pressed reader
+keys at the same time: `s` opened the settings panel, `n` started another
+note, `a` opened the review list, `r` toggled the tint, Space swapped edition,
+a digit jumped to one. **Why the pass missed it:** every test that "covered"
+the editor set its value with Playwright's `fill()`, which dispatches an
+`input` event and never a keystroke, so not one of them sent a key through
+that function. Fixed, with `textarea` and `contenteditable` both added — the
+rule is "is this target taking text", not "is it one of four tag names" — and
+pinned by a test in `keys.test.ts`. Verified by typing `sandbars: 3 seals and
+a dog` one key at a time, a string chosen to contain every dangerous key:
+the textarea holds it exactly, no settings panel opened, and the anchor line
+still reads `raw-mono slot 4`, so nothing swapped or jumped.
+
+**Drawing a region worked and was invisible.** The gesture recorded correctly
+— a real mouse drag flips the editor's anchor line from `whole page` to
+`region`, confirmed before anything was changed — but nothing was ever drawn:
+no rectangle during the drag, and none after, because `Annotations` only tints
+regions when `reveal` is on *and* only for notes that already exist, which an
+unsaved draft does not. **Why the pass missed it:** the region was driven by
+dispatching `PointerEvent`s at the image and then reading the stored JSON, so
+it measured the arithmetic and never asked what a person sees. Fixed with a
+dashed rectangle drawn from the draft — live while the pointer moves, settled
+after release, and shown again when the note is reopened — deliberately
+independent of `reveal`, which answers a different question ("show me every
+stored region here") from the one a drag in progress asks.
+
+A `preventDefault` on `pointerdown` was added at the same time on the reasoning
+that a native `<img>` drag was swallowing the gesture. **That reasoning was
+wrong and is corrected here rather than quietly:** `PageView` has always set
+`draggable={false}`, so no ghost-image drag was ever starting, and the
+pre-change measurement above proves it — the drag recorded a region perfectly
+well, it simply drew nothing. The call is kept because a `pointerdown` that
+begins a region should not also begin a text selection, which is a real effect
+and one this reader does want suppressed; the claim about image dragging was
+not measured and should not have been written.
+
+Measured after, with a real drag rather than dispatched events:
+
+| Moment | Rectangle |
+| ------ | --------- |
+| before the drag | none |
+| mid-drag | `25% / 30%`, `20% × 12%` |
+| later in the drag | `25% / 30%`, `35% × 25%` |
+| after release | `25% / 30%`, `35% × 25%` |
+| reopened after saving | `25%`, `35%` wide |
+
+and the stored region is `x 0.25, y 0.3, w 0.35, h 0.25`.
+
+**The lesson worth keeping:** a browser pass that produces state through
+`fill()`, `dispatchEvent` or direct state manipulation is testing the code's
+arithmetic with the browser as a convenient host, not testing what a reader
+meets. Where a step exists to be performed by a person — typing, dragging,
+clicking — it has to be performed that way, or the pass will confirm
+everything except the part that is broken.
+
+
+## The annotation overlay was placed on the page area, not on the page
+
+Reported straight after the two defects above: "the corners should line up to
+where the mouse is but it's not really doing that."
+
+**The cause.** A region is fractions of the *slot*, and the overlay drawing it
+was `position: absolute; inset: 0` on the **page area** — which is larger than
+the page it draws. A portrait page in a landscape viewport leaves letterbox
+down both sides, and that letterbox is background rather than page, so every
+rectangle was offset by the left inset and scaled by the ratio between the two
+boxes. The drag arithmetic was right the whole time — it measures against the
+image, `paintedBox` and all — and the drawing was wrong, which is why the
+stored fractions looked correct in every check that read them back.
+
+**Why the earlier pass missed it, again.** The reveal check had confirmed the
+tint's *style* — `left: 24.9995%`, `width: 35.0007%` — against the stored
+region, which is a comparison between two numbers this code produced. It never
+asked the only question that matters: is the rectangle on the page? A check
+that had compared the tint's client rect to the image's client rect would have
+failed immediately.
+
+**The fix** is `PageAnnotations`, an overlay that finds the page it sits over
+and measures it, rather than assuming the box around it is the page. That also
+closed a second thing the same shape: continuous-scroll mode had no overlay at
+all, because a single measured box cannot describe a column of 195 pages.
+Each scroll group now gets its own overlay, and every slot's notes are resolved
+once for the whole edition (`notesBySlot` — one resolve per *note* rather than
+one per page) instead of scanning the note list once per mounted group.
+
+**A third defect fell out of testing the fix**, and it is the interesting one:
+switching modes left the `ResizeObserver` watching an image React had already
+removed. It fired once with a zero-sized rect and nothing ever found the
+replacement, so the overlay collapsed to a point in the top-left corner —
+single mode correct, two-page mode drawing its tint nowhere near a page.
+Fixed twice over: the component is keyed on the reading mode so the tree
+rebuild remounts it, and a zero-sized measurement is now ignored rather than
+taken, since an unlaid-out element is not a page of zero size.
+
+Measured after, with real mouse input and against the pointer's own
+coordinates rather than against computed numbers:
+
+| Check | Result |
+| ----- | ------ |
+| dragged rectangle's corners vs. the pointer | **0.0 px** at both corners |
+| tint's fraction of the page, `single` | `x .25  y .30  w .35  h .25` |
+| `two` | same, and on a page rather than beside one |
+| `scroll` | same |
+| back to `single`, `two`, `single` again | same each time |
+
+against a stored region of `x 0.25, y 0.3, w 0.35, h 0.25`.
+
+**The habit worth taking from all four defects:** every one was invisible to a
+check that compared this code's output to this code's other output, and
+obvious to a check that compared it to the thing a person actually sees — the
+pointer's coordinates, the image's rect, a real keystroke. Prefer the outside
+measurement even when the inside one is easier to write.
+
+
+## The drawing rectangle, and moving one
+
+Two requests after the overlay was placed correctly: the selection was hard to
+see while drawing, and a region could not be repositioned once drawn.
+
+**Darker while the pointer is down, light once it settles.** The two moments
+want opposite things and had been given one style. A manga page is mostly
+white, so a pale wash over it barely registers while a reader is aiming — a
+dark fill (`rgba(0, 0, 0, 0.42)`) reads at a glance against exactly that
+background. But the same fill on a *settled* region would obscure the artwork
+the note is about, which is the one thing a marker must not do, so the fill
+drops to the light tint the moment the drag ends. The outline is doubled — a
+dark line under the bright dashed one — so the edge holds against both a white
+page and a black panel border instead of picking one and vanishing into the
+other.
+
+**A drag inside the region moves it; a drag anywhere else draws a new one.**
+No mode, no handles: a reader who wants a different rectangle sweeps one out,
+and a reader who wants this one somewhere else pushes it there. The cursor
+says which is on offer — `crosshair` with no region yet, `move` once there is
+one — because otherwise that a region can be moved at all is invisible until
+someone happens to try it.
+
+`moveRegion` clamps the region **as a whole** rather than clamping `x` and `y`
+against `0..1` independently. Per-edge clamping would let a box dragged past
+the corner keep its origin while its far edge ran out of room, so it would
+quietly shrink as the reader pushed against the boundary — the sort of thing
+that reads as the tool fighting you. Moving the origin within `0 .. 1 - w`
+instead stops it at the edge at exactly the size it had.
+
+A single click inside a region is exempt from the too-small check that
+discards a stray click while drawing. Without that exemption, clicking once on
+your own region — a plausible way to check it is selected — would delete it.
+
+Measured with real mouse input:
+
+| Check | Result |
+| ----- | ------ |
+| fill while drawing | `rgba(0, 0, 0, 0.42)` |
+| fill once released | `rgba(255, 214, 102, 0.16)` |
+| move vs. the pointer's own shift | `137, 205` px against `137, 205` px |
+| size across a move | `206×256` before and after |
+| shoved past the bottom-right corner | size kept, flush to the page edge (1px, 0px) |
+| stored after that move | `x .7  y .75  w .3  h .25` — `x + w` and `y + h` both exactly `1` |
+
+
+## The note's words, inside the region it marks
+
+Asked for directly, and it is a **departure from the design**, so it is
+recorded rather than slipped in. `2026-08-02-reader-m5-design.md` chose margin
+tabs precisely so that "nothing is ever drawn over artwork", and left the body
+in the panel; a region drawn around a panel with no hint of what it says turns
+out to be a marker you have to go and interrogate, when the whole reason for
+anchoring a note to a region is that the two are read together.
+
+The design's concern is answered rather than overridden:
+
+- The backing sits behind **the text only**, not across the region, so the art
+  inside the box stays visible.
+- It appears only where a region is already being shown — revealed (`r`), or
+  being edited — never while simply reading.
+- It is clipped to its own box. A region is sized by what a reader drew around,
+  not by how much they wrote, so a long note shows its first lines there and
+  stays whole in the panel, the tab's tooltip and the review list.
+- It is hidden while the pointer is down. A label appearing under a rectangle
+  still being swept out would cover the very artwork the reader is drawing
+  around.
+
+Measured: revealed saved note draws its body inside its box; a draft draws the
+text as it is typed; and a body far longer than the box holds stays inside the
+box's bounds rather than spilling across the page.
+
+
+## Text behind its own switch, and the markers that went missing
+
+**Superseded within the hour — see "One switch, not two" below. What follows
+is why the words stopped riding along with `reveal`, which still stands; the
+part that did not stand is their having a switch of their own.**
+
+**The note's words became a fourth setting (`labels`, key `t`), off by
+default, rather than riding along with the region.** Folding them into
+`reveal` made them permanent once a reader had ever pressed `r`, since that
+preference persists — which is what "visible all the time" meant. The two draw
+different amounts over the artwork and are wanted at different moments: a tint
+says *where* a note is, cheap to leave on while reading; its text says *what*
+it is, and covers part of the panel it points at. A region has to exist for
+text to sit in, so `labels` draws the box too whether or not `reveal` is on,
+which is why `t` alone is a complete state rather than a modifier on `r`.
+
+**Fixing the region overlay had moved the margin tabs onto the page.** The
+overlay is anchored to the page — it must be, since a region is fractions of
+the page — and the tab was positioned `right: 2` within it, which had meant
+"two pixels from the right edge of the reader" while the overlay was the page
+area and silently became "two pixels inside the artwork" once it was not.
+Measured: the tab sat at x 1282–1292 against a page spanning 609–1294, a 10px
+translucent sliver on the page's own edge, with 609px of empty background
+beside it. Reported as not being able to see the markers, which was fair —
+they were hiding on the page. They now sit at `left: 100%` plus a small gap,
+in the margin the design puts them in, measured at x 1298 against a page
+ending at 1294.
+
+That rests on the design's own claim — fit-whole guarantees side margins on a
+portrait page — and the honest failure mode if a page ever fills its area is
+that the tab is clipped by the page area's `overflow: hidden`. No page in this
+corpus does. The fix then would be to measure the available margin, not to put
+the tab back on the artwork.
+
+| State | Tab | Region box | Text |
+| ----- | --- | ---------- | ---- |
+| reading | in the margin | — | — |
+| `r` reveal | in the margin | drawn | — |
+| `r` + `t` | in the margin | drawn | drawn |
+| `t` alone | in the margin | drawn | drawn |
+| back to reading | in the margin | — | — |
+
+
+## One note per page was all you could have
+
+Reported as "I can't do multiple annotations per page", and it was exactly
+that: `n` *reopened* the note already on the slot instead of making another,
+and nothing else creates one, so a page could hold one note and no more.
+
+**The reasoning for reopening protected against nothing.** It was written to
+stop `n` pressed twice from leaving duplicate empty notes — but a draft is not
+a note until Save, so a second press only ever replaced an unsaved draft.
+Nothing could have been duplicated. What it cost was the ordinary case: one
+note per panel, which is most of why a note has a region at all.
+
+`n` now always starts a new note, however many the slot holds. Reopening an
+existing one is what its margin tab is for, which is the affordance that was
+already there. The one guard kept is that `n` is ignored while the editor is
+already open, since starting fresh there would throw away typing nobody asked
+to discard.
+
+**A second defect was hiding behind the first.** A whole-slot note has no
+region to derive a tab position from, so every one of them anchors at the
+middle of the page — two such notes drew one tab exactly on top of another,
+which looks identical to not being able to make a second note. `spreadTabs`
+pushes only the colliding ones apart, so a tab whose neighbour is already
+clear stays exactly where its region put it and still means something. A run
+that reaches the bottom edge is shifted up as a group rather than sliding off,
+since a tab past the end of the page is no better than one hidden behind
+another.
+
+Measured: three notes written on one page — two whole-slot, one with a region
+— all three stored, three tabs drawn at 650, 719 and 963 px (gaps of 69 and
+244), and clicking the first reopened *that* note rather than making a fourth.
+
+
+## Colours, and the focus bug that came out from under them
+
+A note carries a **colour name** — `amber`, `rose`, `violet`, `sky`, `mint` —
+never pixels. `notes.rs` validates it as a name on the same alphabet an edition
+key is held to and holds no opinion about what any of them look like; which
+colours exist and what they are made of is `palette.ts`'s business, so a native
+shell or a printout can answer differently without touching a stored note.
+Absent means the default, so every note written before colours existed reads
+as it always did, and a name this build does not know **falls back rather than
+refusing** — the opposite of what this project does nearly everywhere, and
+right here, because the alternative is a note that does not draw at all.
+
+Five names rather than a colour picker. The point is telling one note from
+another at a glance, which needs colours that are distinguishable rather than
+arbitrary, and an arbitrary picker reliably produces a pale yellow on a white
+page.
+
+Travelled notes stay distinguishable by **fill** — solid is written here,
+hollow is written elsewhere — which is what leaves colour free to mean whatever
+the reader decided it means.
+
+### Two defects found while testing it
+
+**The running server was the stale binary.** `color` was added to the Rust
+`Note`, the tests passed, and `taiyaku serve` went on rejecting it: `400 these
+are not notes: unknown field 'color'`. `cargo test` does not rebuild the
+binary, which `docs/status.md` has recorded elsewhere and which cost half an
+hour here anyway. Every symptom below was downstream of it.
+
+**A refused save left the reader typing into the page.** With the write
+failing, the editor correctly stayed open holding the reader's text — and
+focus sat on `<body>`, so the next keystrokes went to the reader rather than
+the note: typing `sky note` opened the settings panel on the `s`. This is the
+same class as the `textarea` defect fixed earlier, reached through a different
+door, and neither `isInteractiveTarget` nor `autoFocus` could have caught it:
+one only stands down while focus is *in* a control, and the other applies on
+first mount, so a second note in one session was never focused at all.
+
+Fixed at both levels, because either alone leaves the other hole open:
+
+- The editor focuses itself whenever it opens on a note **and whenever a write
+  settles**, with the caret at the end — reopening a note to add to it is the
+  common case, and landing at the start puts a reader's first keystroke in
+  front of what they wrote last time.
+- **No key reaches the page at all while the editor is open.** It is a dialog
+  that takes text, so a keystroke means the note whatever the browser thinks is
+  focused. `Escape` still closes it; everything else belongs to the note until
+  it does.
+
+Measured after: three notes written in one session, each given a different
+colour, each saved without a dialog opening behind it. Five notes on one slot
+draw five boxes — `rgba(255, 138, 160, …)`, `rgba(120, 199, 255, …)`,
+`rgba(126, 231, 179, …)` and two amber for the notes that name no colour —
+each carrying its own text.
+
+
+## One switch, not two
+
+`reveal` (`r`) and `labels` (`t`) are one setting again, an hour after being
+split. The argument for splitting them was that a tint and a block of text
+draw different amounts over the artwork, so a reader might want one without
+the other. In use that turned out to be a distinction without a decision: the
+**margin tabs already say where the notes are**, without drawing on the page at
+all, so the tint alone answers a question nobody has — you can see there is a
+note there whether or not it is tinted. What is left is one question, and one
+key for it: show me what these say, or give me the page back.
+
+Recorded rather than quietly rewritten, because the reasoning in the split
+commit was sound and still wrong: it reasoned about what the two *draw*
+without noticing what the tabs already *told* the reader, which is the sort of
+thing only using it surfaces.
+
+`t` is free again. Measured: default reading draws a tab and no box; `r` draws
+the box with its text; `t` now does nothing; `r` again puts the page back; and
+the generated settings panel shows three annotation fields rather than four.
+
+
+## The editor is an edit mode, not a form for one note
+
+Asked for: pressing `n` should let you drag *any* box on the page around, not
+only the one you are typing into. It is the right model — while the editor is
+open the page is being edited, and a reader who has drawn three boxes reaches
+for whichever one is wrong.
+
+Three things had to change together:
+
+- **Every region on the page is grabbable.** A drag starting inside any box
+  moves that note and makes it the one the panel is showing; a drag starting
+  anywhere else draws a new one, as before. Boxes are searched innermost-first
+  — last drawn is on top — so a box inside another is the one you get.
+- **Every region is visible while the editor is open**, whatever `reveal` says.
+  A reader cannot grab what they cannot see, and an edit mode that hid the
+  things it lets you edit would be a puzzle. `reveal` governs again the moment
+  the editor closes.
+- **The session holds edits per note, not one draft.** Moving three boxes and
+  pressing Save once writes all three; a Save that wrote only the note the
+  reader last happened to click would silently drop the other two. The note on
+  show is derived from that map rather than stored beside it, so the shown note
+  and the saved one cannot disagree.
+
+**A defect the first version of this produced immediately.** Press `n`, then
+go and move somebody else's box, then Save — and the note `n` created was
+written too: empty body, no region, an invisible marker for a keystroke the
+reader had already moved on from. Notes are now dropped on save when they were
+invented this session *and* have neither words nor a region. Either half alone
+is a real note — a marked area with the words still to come, or a note about
+the whole page — and a note that *existed* and has been emptied is kept,
+because emptying one is an edit where deleting one is a button.
+
+Measured: two saved notes; `n` then dragging both of them then Save leaves
+**two** notes with both regions moved (`x .15 → .40`, `y .45 → .66`); the same
+flow with the new note actually written in leaves three.
+
+
+## A note can be a point, and its words have somewhere else to live
+
+Two additions, and they turn out to be one: a **point** anchor has no area to
+hold text, so the surface that shows a note's words away from its own box is
+what makes points usable at all.
+
+### Three anchors, one field
+
+`region` absent is the whole slot, zero-sized is a **point**, sized is an area.
+The degenerate rectangle rather than a second field, so nothing downstream
+grows a third code path and the server validates all three with one rule —
+`w >= 0` where it used to be `w > 0`, and the refusal now reads "zero-sized is
+a point, negative is nothing".
+
+A **click** on the page plants one, where it used to be discarded as a stray
+drag. That was the only thing a click could do before, which meant marking a
+panel required drawing a box around it.
+
+A point is drawn as a ring rather than a filled dot — a blob hides the detail
+the reader pointed at — and it needs slop to be grabbable, since an exact
+containment test on something with no area could only ever be satisfied by
+hitting one infinitely small spot. `regionContains` takes that slop from its
+caller, so what can be grabbed is what can be seen.
+
+### The list, and the popover
+
+Both, as asked. Every marker now carries a **number**, and the number is the
+row in the list — so a note read in the list can be found on the page without
+hunting, which is exactly what a point needs.
+
+- **The list** shows the notes on the slot being read, in marker order, in
+  their colours. Beside the page or below it, by `notesList`: `auto`, `side` or
+  `below`. `auto` answers by window width — beside the page where there is
+  margin to hold it, under it where there is not — and re-answers on resize
+  rather than at load, since "is there room" stops being true the moment
+  somebody drags the window narrower. Measured: at 1600px the list sits to the
+  right of the page; narrowing to 900px moves it underneath.
+- **The popover** replaces the browser's `title` on a tab, rather than joining
+  it. `title` appears after a delay a reader has usually given up on, cannot be
+  styled to say which edition a travelled note came from, and never appears at
+  all on a touch screen.
+
+### The module contract's first declared options
+
+`notesList` is a string with three legal values, and `settingsPanel.ts` has
+carried a note since M5b that a select is "what the design calls for once a
+module declares one with options; none does yet, and the contract carries no
+field to declare options against, so that path is not built ahead of a case
+that exists only in the design". The case arrived. `ReaderModule` gained
+`options?: Record<string, string[]>`, `fieldKind` answers `'select'` for a
+string that has them, and the generated panel renders a `<select>` — still
+without knowing which module it is looking at.
+
+### The same trap, twice in one day
+
+The point note would not save, and the reason was that `taiyaku serve` was
+still the binary built before `w >= 0`. `cargo test` does not rebuild it. That
+is recorded in `docs/status.md` already and it cost twenty minutes anyway,
+both times with a symptom pointing somewhere else entirely — a 400 the client
+reported as a stale-validator notice, and a note that simply never appeared.
+**After any change to a crate the running server serves, rebuild and restart
+it before believing anything the browser says.**
+
+Measured: an area note and a point note saved together, stored as
+`w .4 h .18` and `w 0 h 0`; two markers numbered 1 and 2; list rows reading
+`1 an area note` and `2 point · a point note`; one ring drawn for the point.
+
+
+## Three reports on the first real use of points and the list
+
+**A point could not be moved, and the grab test was not the reason.** It has
+slop for exactly this. What was missing is that a point *being edited* drew
+through the rectangle path — zero by zero, an outline around nothing — so
+there was nothing on screen to aim at. A saved point drew as a ring and an
+unsaved one drew as nothing at all, which is the whole difference. It now
+draws the same ring, dashed to say it is not written yet.
+
+Worth keeping: the fix for "cannot grab it" was in the drawing, not in the
+hit-testing, and the hit-testing was where the reasoning had all gone.
+
+**The hover text came out one letter per line.** The popover sat at
+`right: calc(100% + 8px)` — outside the layer — and an absolutely positioned
+box given only a `right` offset takes its width from the space to the left of
+that offset, which there was none of. So it shrank to the narrowest box that
+could hold a character and the words ran vertically. Now placed just inside
+the page's right edge with a fixed `width`: shrink-to-fit is what failed, so
+nothing is left to it.
+
+**The side list stretched the full height of the page whatever it held.**
+`top` and `bottom` both pinned, so two rows sat at the top of a column of empty
+background — a panel that looked like it had lost its contents. Height comes
+from the rows now, with `maxHeight` keeping a long list scrolling inside the
+page rather than past it. Measured: one row, 40px tall, in a page area of 1349.
+
+All three were invisible to every check run before them, and all three are
+about what the thing *looks* like rather than what it computes — which is the
+same lesson this milestone keeps teaching, now with a sharper edge: the
+arithmetic being right is not evidence that anything is on screen.
+
+
+## No Save button, and a way back instead
+
+Four changes, and the third and fourth are one idea.
+
+**A point no longer squeezes its words into itself.** The label rendered inside
+the pending marker, which for a point is twenty pixels across — a column one
+character wide, sitting on top of the very point being moved. A point's words
+live in the list beside the page and in the popover on its tab, which is what
+those surfaces were built for.
+
+**A new note takes the next colour nobody on the page is using.** Notes on one
+page come out visibly different without a reader choosing, and once every
+colour is in use it cycles by least-used rather than giving up and repeating
+the first. Counted over *this page* rather than the whole work, since telling
+one note from another only matters where they are drawn together.
+
+**Writes are automatic; the Save button is gone.** A reader writing a note has
+already decided to write it, and the button's only real job was to be the thing
+you did *not* press when you changed your mind. Debounced at 700 ms — longer
+than the reading position's 400, because a position is a number and a note is
+prose, so pausing mid-sentence should not cost a round trip — and flushed on
+`visibilitychange`/`pagehide` alongside the position, since a half-typed note
+is the one thing here that cannot be recomputed from anything.
+
+Closing the editor now **flushes** rather than discards, which is the opposite
+of what it used to mean. With no Save, closing is "I am done here", not
+"abandon this".
+
+**A stale validator no longer stops and asks.** With a button, a `412` could
+say "somebody else wrote; press Save again" — the reader was standing there
+with a finger on it. There is nobody to ask now, so the write re-reads the
+other device's document, lays this reader's own notes back over it *by id*, and
+writes that. Notes belonging to other ids survive untouched, which is the part
+that matters; two devices on the same note is still last-write-wins, as it
+always was. Retried once and once only: a second failure is not a race, and a
+loop would hammer the server while a reader watches nothing happen.
+
+**Which is why there is history.** The Save button *was* the undo, and removing
+it takes that away, so `history.ts` puts it back properly: whole-document
+snapshots, `z` back and `Z` forward, and the same two controls in the review
+list. Snapshots rather than an operation log, because a log needs an inverse
+for every verb the editor ever gains, where a notes document is a handful of
+small records and keeping the whole thing costs nothing measurable.
+
+`z`/`Z` rather than `ctrl+z`: `intentOf` yields any key carrying a modifier so
+a reader's own browser shortcuts always win, which means `ctrl+z` never reaches
+this reader — and leaves the textarea's own undo working while a note is being
+typed, which is the right answer for that key anyway.
+
+A step is *written*, not only shown: what is on the server is the document, so
+an undo that changed only the screen would be undone again by the next
+keystroke. `Debounced` gained `cancel` for this — undo and delete both replace
+the document outright, and a write scheduled before either would land a moment
+later carrying exactly what the reader had just removed.
+
+Measured: three notes written without a Save button existing at all (0 found on
+screen each time), coloured `amber`, `rose`, `violet` without anybody choosing;
+`z` twice took the server from 3 notes to 2 to 1, and `Z` put it back to 2. A
+point being edited draws a 24px ring with no label inside it, during the drag
+and after.
+
+
+## No Done button either
+
+Being finished is not an act a reader performs — it is what they have already
+done by looking somewhere else. So `Escape` or a press on the background
+around the page ends the note, and there is no button for either. What is left
+in the editor is `Delete`, which stays a button because it is destructive and
+wants aiming at.
+
+**`Escape` flushes rather than drops**, which is the second time this
+milestone has had to invert that word. It meant "abandon this" while a Save
+button decided what was kept; with writes landing on their own it means "I am
+finished here", and the last few hundred milliseconds of typing sitting in the
+debounce is a change the reader made. Undo is what abandons now.
+
+**Only the background closes it, not any non-page click.** In `two` mode the
+facing page is a page too, and reading "not this one" as "not any" would end
+the note because a reader touched the other half of a spread. The test is
+whether the press landed on an image at all.
+
+Measured: no `Done` button on screen; typing then clicking beside the page
+leaves the editor closed with the text saved (`closed by clicking away`);
+typing then `Escape` does the same inside the debounce window (`closed by
+escape`); and clicking the page *itself* leaves the editor open, because that
+is where drawing happens.
+
+
+## Closing the gaps before merge
+
+Asked for a list of what was still thin, and then for all of it. Four tests
+and one defect.
+
+### The defect: one stale note bricked a work's notes
+
+`validate` checked every note on every write, and the client sends the whole
+document back — so a single note left pointing at an edition a re-solve had
+renamed, or a slot an edition had shrunk past, refused **every future write on
+that work**, including the write that would have removed it. Measured against
+the running server before the fix:
+
+```
+stored notes:  [raw-mono-OLD]
+adding a NEW, valid note beside it:
+  404  note `01STALE` names the edition `raw-mono-OLD`, which work `taiyaku` does not have
+```
+
+Not exotic for this project: `align --write` merges and re-solves are ordinary,
+and O13 and O24 are about this hazard class already.
+
+Fixed by grandfathering: an anchor already stored **and unchanged** is not
+re-checked. A stale note survives as something a reader can see — the review
+list already marks a note it cannot reach from here — and delete. What is still
+refused is a new bad anchor, and moving an existing note onto one, which are
+the cases where this write is what makes the anchor wrong. Only the anchor is
+grandfathered: a colour and a region cannot be made stale by a re-solve, so
+both are checked on every note every time.
+
+That moved validation inside the write guard, since it now needs the stored
+document to compare against.
+
+### The tests
+
+**A corpus-gated check for notes**, which every other subsystem had and this
+one did not: 629 anchors accepted across three real editions, two of which
+join spreads and so have more slots than pages — the case the four-page
+fixture cannot tell apart from a page check — plus one past the end of each,
+so it cannot be spelled "accept everything".
+
+**The gesture rule, out of `App.tsx` and into `notes.ts`.** Grab-any-box,
+innermost-first, background-finishes, and the two guards that keep a press on
+the facing page of a spread from being read as either — the most-churned rule
+of this milestone, and it lived where nothing could test it. Now
+`gestureFor`, with eight tests, and `App.tsx` reads the DOM for it and carries
+out the answer.
+
+**`editsToWrite` and `mergeOver`**, likewise: the blank-note rule was
+duplicated in two places in `App.tsx` and tested in neither, and the
+stale-validator merge — lay this reader's notes over the other device's by id
+— was a line inside a `catch`.
+
+**The lost-update guard, raced properly.** The existing test sent one write
+then the other, which a build with no guard at all also passes. The new one
+races two writes in flight, and does it **twenty times**: measured by removing
+the guard and running a single-round version five times, two of those runs
+serialised by luck and passed. A test that can miss the defect it exists for
+is worse than none — it reports green for a reason it never checked. Twenty
+rounds fails the same sabotage 5 times out of 5.
+
+### One blemish left, deliberately
+
+A document over axum's 2 MB default answers `413 Failed to buffer the request
+body: length limit exceeded` — axum's wording, not this server's, which is the
+thing O5 was about. The limit is right and the message is not ours. Not worth
+holding a merge for.

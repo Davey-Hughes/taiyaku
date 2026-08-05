@@ -2,8 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { registry } from './registry'
 
 describe('registry', () => {
-  it('registers all six modules this build ships, in the order App.tsx declares them', () => {
-    expect(registry.ids).toEqual(['direction', 'motion', 'regroup', 'readouts', 'prefetch', 'settings'])
+  it('registers all seven modules this build ships, in the order they are declared', () => {
+    expect(registry.ids).toEqual([
+      'direction',
+      'motion',
+      'regroup',
+      'readouts',
+      'prefetch',
+      'annotations',
+      'settings',
+    ])
   })
 
   it('every module has a non-empty label, for the settings panel section heading', () => {

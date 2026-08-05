@@ -32,6 +32,8 @@ pub struct Work {
     pub id: String,
     pub path: PathBuf,
     sidecar: std::sync::RwLock<std::sync::Arc<Sidecar>>,
+    /// Serialises one work's notes read-modify-write. See `notes_guard`.
+    notes: std::sync::Mutex<()>,
 }
 
 impl Work {
@@ -40,6 +42,30 @@ impl Work {
             id,
             path,
             sidecar: std::sync::RwLock::new(std::sync::Arc::new(sidecar)),
+            notes: std::sync::Mutex::new(()),
+        }
+    }
+
+    /// Held across a notes read-compare-write, so `If-Match` means something.
+    ///
+    /// The sidecar gets this from `update` below, which can hold its own
+    /// `RwLock` across the change because the document is cached in memory.
+    /// Notes are not cached: they are read once per page load and written when
+    /// a reader types, so keeping a second document in memory for the life of
+    /// the process would buy nothing and add a second thing that can go stale.
+    /// What is still needed is the *exclusion* — two requests that both read
+    /// the same document, both find their validator current, and both write
+    /// would lose one reader's note with nothing anywhere saying so, which is
+    /// the whole failure the header exists to prevent.
+    ///
+    /// A poisoned lock is taken rather than propagated, the same call
+    /// `sidecar()` makes and for the same reason: the file behind it is still
+    /// whatever the last successful write left, and refusing every later
+    /// request because one handler panicked is the worse answer.
+    pub fn notes_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        match self.notes.lock() {
+            Ok(held) => held,
+            Err(poisoned) => poisoned.into_inner(),
         }
     }
 
@@ -55,6 +81,26 @@ impl Work {
             Ok(held) => held.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         }
+    }
+
+    /// A file beside this work's sidecar, sharing its stem.
+    ///
+    /// Three files now live to this rule — `taiyaku.progress.json`,
+    /// `taiyaku.stump.json` and `taiyaku.notes.json` — and the stem arithmetic
+    /// was written twice before the third arrived, which is where a comment
+    /// asking whoever changes one to keep the others in step stops being good
+    /// enough. A sidecar with no stem at all falls back to `taiyaku`, the
+    /// convention this project documents for the file itself.
+    pub fn sibling(&self, suffix: &str) -> PathBuf {
+        let stem = self
+            .path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "taiyaku".to_string());
+        self.path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("{stem}.{suffix}"))
     }
 
     /// Read, change and replace under one exclusive lock.

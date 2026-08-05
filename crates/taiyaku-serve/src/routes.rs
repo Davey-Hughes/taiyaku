@@ -152,6 +152,21 @@ pub(crate) fn sidecar_etag(sidecar: &taiyaku_core::Sidecar) -> String {
     format!("\"{hex}\"")
 }
 
+/// A notes document's `ETag`: a SHA-256 over exactly the bytes being sent.
+///
+/// Takes the serialised text rather than the document, unlike `sidecar_etag`
+/// above, because both callers already hold it — `notes::to_json` is the one
+/// serialisation of a notes document, and hashing a second one built here
+/// would be the drift this exists to rule out.
+pub(crate) fn notes_etag(json: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(json.as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("\"{hex}\"")
+}
+
 /// Whether a request's `If-Match` names `tag`.
 ///
 /// `None` where the header is absent, which is a different answer from `false`
@@ -352,6 +367,197 @@ async fn get_thumb(
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("thumbnail read panicked: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+/// Why a notes request could not be answered.
+///
+/// `NoProgress`'s split, for the same reason: a work this server does not
+/// hold is the client's mistake and a 404; a notes file that will not read or
+/// write is this server's and a 500. The write path adds a third: a
+/// precondition answer, which carries its own status because 428 ("you sent no
+/// validator") and 412 ("yours is stale") are genuinely different answers and
+/// a client retries differently for each — folding them into one status would
+/// send a client that has not entered a race looking for a conflict.
+#[derive(Debug)]
+enum NoNotes {
+    NotFound(String),
+    /// Malformed in itself — a duplicate id, a region outside its slot, a
+    /// document naming another work. Distinct from `NotFound`, which names
+    /// something this work does not have.
+    Refused(String),
+    Precondition(StatusCode, String),
+    Failed(String),
+}
+
+impl IntoResponse for NoNotes {
+    fn into_response(self) -> Response {
+        match self {
+            Self::NotFound(message) => not_found(message),
+            Self::Refused(message) => bad_request(message),
+            Self::Precondition(status, message) => (status, message).into_response(),
+            Self::Failed(message) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
+        }
+    }
+}
+
+/// Every note on a work.
+///
+/// **A work with no notes file answers an empty document rather than a 204**,
+/// which is where this deliberately parts company with `get_progress` beside
+/// it. Writing notes requires `If-Match`, and a client that had never seen a
+/// document would have no validator to send for its first write — so it would
+/// need either a second precondition spelling for creation, or an
+/// unconditional first write, which is exactly the lost-update hole the header
+/// exists to close, left open for the one request a second device is most
+/// likely to be racing. Synthesising the document here means the first write
+/// is an ordinary conditional write like every later one.
+///
+/// Absent and empty are collapsed here rather than in `notes::load`, which
+/// reports the file honestly: a reader with no notes and a reader who deleted
+/// their last note are in the same state, and nothing downstream benefits from
+/// telling them apart.
+async fn get_notes(
+    State(state): State<Arc<ServeState>>,
+    AxPath(id): AxPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    // A file read, on the same disk a page comes from and behind the same NFS
+    // mount — `get_page`'s reasoning about the async worker applies unchanged
+    // (O12).
+    let loaded = tokio::task::spawn_blocking(move || {
+        let found = state.work_or_missing(&id).map_err(NoNotes::NotFound)?;
+        let notes = crate::notes::load(found)
+            .map_err(NoNotes::Failed)?
+            .unwrap_or_else(|| crate::notes::empty(&found.id));
+        crate::notes::to_json(&notes).map_err(NoNotes::Failed)
+    })
+    .await;
+
+    match loaded {
+        Ok(Ok(json)) => {
+            let tag = notes_etag(&json);
+            if if_none_match_hits(&headers, &tag) {
+                return not_modified(&tag);
+            }
+            (
+                [
+                    (header::CONTENT_TYPE, "application/json"),
+                    (header::ETAG, tag.as_str()),
+                ],
+                json,
+            )
+                .into_response()
+        }
+        Ok(Err(refusal)) => refusal.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("notes read panicked: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+/// Replace a work's notes.
+///
+/// A whole-document `PUT` rather than a route per note, because the document is
+/// small, a reader edits it from one place at a time, and `If-Match` over the
+/// whole thing is one rule to hold rather than one per note. **The cost is
+/// stated rather than hidden:** two devices each adding a note at the same time
+/// means the second is refused and has to re-read and re-apply — this does not
+/// merge. That is the bargain `patch_alignments` already makes, and the
+/// alternative would need this server to decide what two conflicting edits to
+/// *one* note mean, a question nobody has had yet.
+///
+/// `#[allow(clippy::result_large_err)]` for the reason `patch_alignments`
+/// carries it: the closure below resolves a `Response`-carrying error and
+/// clippy checks each closure as its own item.
+#[allow(clippy::result_large_err)]
+async fn put_notes(
+    State(state): State<Arc<ServeState>>,
+    AxPath(id): AxPath<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    // Taken as `Bytes` and deserialised here rather than through `Json`, so a
+    // malformed body is refused in this server's own words — O5's rule, and
+    // the shape `patch_alignments` already follows.
+    let incoming: crate::notes::Notes = match serde_json::from_slice(&body) {
+        Ok(notes) => notes,
+        Err(why) => return bad_request(format!("these are not notes: {why}")),
+    };
+
+    // Serialising, hashing and writing all block, and the read-compare-write
+    // below holds an exclusive lock across a file write — `get_page`'s
+    // reasoning about the async worker applies unchanged.
+    let written = tokio::task::spawn_blocking(move || {
+        let found = state.work_or_missing(&id).map_err(NoNotes::NotFound)?;
+
+        // Held across read, compare and write. Two requests that both read the
+        // same document and both find their validator current would otherwise
+        // both write, and one reader's note would vanish with nothing saying
+        // so — see `Work::notes_guard`.
+        let _guard = found.notes_guard();
+
+        let current = crate::notes::load(found)
+            .map_err(NoNotes::Failed)?
+            .unwrap_or_else(|| crate::notes::empty(&found.id));
+        let tag = notes_etag(&crate::notes::to_json(&current).map_err(NoNotes::Failed)?);
+        match if_match_hits(&headers, &tag) {
+            None => {
+                return Err(NoNotes::Precondition(
+                    StatusCode::PRECONDITION_REQUIRED,
+                    "writing notes must carry `If-Match` with the notes' ETag, so two devices \
+                     annotating one work cannot silently overwrite each other"
+                        .to_string(),
+                ));
+            }
+            Some(false) => {
+                return Err(NoNotes::Precondition(
+                    StatusCode::PRECONDITION_FAILED,
+                    format!(
+                        "these notes have changed since you read them; their ETag is now {tag}. \
+                         Re-read the notes and write again."
+                    ),
+                ));
+            }
+            Some(true) => {}
+        }
+
+        // Validated against what is stored, and therefore inside the guard
+        // rather than ahead of it: an anchor that has not moved since the last
+        // write is not re-checked, which is what stops one note left pointing
+        // at an edition a re-solve renamed from refusing every write that
+        // follows it — including the one that would remove it. See
+        // `notes::validate`.
+        crate::notes::validate(&incoming, found, &current).map_err(|why| match why {
+            crate::notes::Invalid::Missing(message) => NoNotes::NotFound(message),
+            crate::notes::Invalid::Refused(message) => NoNotes::Refused(message),
+        })?;
+
+        crate::notes::store(found, &incoming).map_err(NoNotes::Failed)?;
+        crate::notes::to_json(&incoming).map_err(NoNotes::Failed)
+    })
+    .await;
+
+    match written {
+        Ok(Ok(json)) => {
+            let tag = notes_etag(&json);
+            (
+                [
+                    (header::CONTENT_TYPE, "application/json"),
+                    (header::ETAG, tag.as_str()),
+                ],
+                json,
+            )
+                .into_response()
+        }
+        Ok(Err(refusal)) => refusal.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("notes write panicked: {e}"),
         )
             .into_response(),
     }
@@ -671,6 +877,7 @@ pub fn build_router(state: Arc<ServeState>) -> Router {
             "/api/works/{work}/progress",
             get(get_progress).put(put_progress),
         )
+        .route("/api/works/{work}/notes", get(get_notes).put(put_notes))
         .route(
             "/api/works/{work}/alignments",
             axum::routing::patch(patch_alignments),
@@ -2014,5 +2221,389 @@ mod tests {
             "the refusal must name the span it would not take: {message}"
         );
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    /// A work nobody has annotated still answers with a document, not a 204.
+    ///
+    /// A `PUT` requires `If-Match`, so a client that has never seen a document
+    /// would have no validator to send and no way to write its first note
+    /// conditionally. Synthesising an empty one — with an `ETag` over exactly
+    /// the bytes sent — makes the first write an ordinary conditional write
+    /// like every later one.
+    #[tokio::test]
+    async fn a_work_with_no_notes_answers_an_empty_document_with_a_validator() {
+        let state = Arc::new(crate::test_support::state("taiyaku-test-notes-get"));
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::get("/api/works/t/notes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let tag = response
+            .headers()
+            .get(header::ETAG)
+            .expect("a document a client may write against carries a validator")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        crate::test_support::cleanup("taiyaku-test-notes-get");
+        assert_eq!(tag, notes_etag(&body), "the tag must be over what was sent");
+        let parsed: crate::notes::Notes = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed.work, "t");
+        assert!(parsed.notes.is_empty());
+    }
+
+    /// The same validator answers `304` on the next load, which is what keeps
+    /// a per-page-load read of a document that rarely changes off the wire.
+    #[tokio::test]
+    async fn a_matching_if_none_match_answers_304_for_notes() {
+        let state = Arc::new(crate::test_support::state("taiyaku-test-notes-304"));
+        let app = build_router(state);
+        let tag = etag_of(&app, "/api/works/t/notes").await;
+
+        let again = app
+            .oneshot(
+                Request::get("/api/works/t/notes")
+                    .header(header::IF_NONE_MATCH, &tag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        crate::test_support::cleanup("taiyaku-test-notes-304");
+        assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    /// A work this server does not hold says so, in the same words every other
+    /// route addressed by work uses.
+    #[tokio::test]
+    async fn notes_for_an_unknown_work_are_a_404_naming_it() {
+        let state = Arc::new(crate::test_support::state("taiyaku-test-notes-no-work"));
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::get("/api/works/nope/notes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        crate::test_support::cleanup("taiyaku-test-notes-no-work");
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.contains("nope"), "the refusal must name it: {body}");
+    }
+
+    /// The notes a work already holds are what it serves, and the validator
+    /// moves with them — a tag that did not change when the document did would
+    /// let a stale client write over a note it never saw.
+    #[tokio::test]
+    async fn stored_notes_are_served_and_change_the_validator() {
+        let state = crate::test_support::state("taiyaku-test-notes-stored");
+        crate::notes::store(
+            &state.works[0],
+            &crate::notes::Notes {
+                work: "t".into(),
+                notes: vec![crate::notes::Note {
+                    id: "01J8".into(),
+                    edition: "raw".into(),
+                    slot: 2,
+                    region: None,
+                    color: None,
+                    body: "kept".into(),
+                    created: "2026-08-05T10:00:00Z".into(),
+                    updated: "2026-08-05T10:00:00Z".into(),
+                }],
+            },
+        )
+        .unwrap();
+        let empty_tag = notes_etag(&crate::notes::to_json(&crate::notes::empty("t")).unwrap());
+        let app = build_router(Arc::new(state));
+
+        let response = app
+            .oneshot(
+                Request::get("/api/works/t/notes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let tag = response
+            .headers()
+            .get(header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let parsed: crate::notes::Notes = serde_json::from_slice(&bytes).unwrap();
+
+        crate::test_support::cleanup("taiyaku-test-notes-stored");
+        assert_eq!(parsed.notes.len(), 1);
+        assert_eq!(parsed.notes[0].body, "kept");
+        assert_ne!(
+            tag, empty_tag,
+            "a document with a note in it must not validate as an empty one"
+        );
+    }
+
+    /// One note, as a client sends it.
+    fn one_note(id: &str, body: &str) -> String {
+        format!(
+            r#"{{"work":"t","notes":[{{"id":"{id}","edition":"raw","slot":1,"body":"{body}",
+               "created":"2026-08-05T10:00:00Z","updated":"2026-08-05T10:00:00Z"}}]}}"#
+        )
+    }
+
+    async fn write_notes(
+        router: &axum::Router,
+        tag: Option<&str>,
+        body: String,
+    ) -> (StatusCode, String) {
+        let mut request =
+            Request::put("/api/works/t/notes").header(header::CONTENT_TYPE, "application/json");
+        if let Some(tag) = tag {
+            request = request.header(header::IF_MATCH, tag);
+        }
+        let response = router
+            .clone()
+            .oneshot(request.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    /// The three answers `If-Match` has, on the one route where getting them
+    /// wrong loses prose a person typed: no header at all is 428 (you have not
+    /// entered a race), a stale one is 412 (you lost it), a current one writes.
+    #[tokio::test]
+    async fn writing_notes_needs_a_current_if_match() {
+        let state = Arc::new(crate::test_support::state("taiyaku-test-notes-put"));
+        let app = build_router(state);
+
+        let (unconditional, _) = write_notes(&app, None, one_note("01J8", "first")).await;
+        assert_eq!(unconditional, StatusCode::PRECONDITION_REQUIRED);
+
+        let (stale, _) = write_notes(&app, Some("\"nonsense\""), one_note("01J8", "first")).await;
+        assert_eq!(stale, StatusCode::PRECONDITION_FAILED);
+
+        let tag = etag_of(&app, "/api/works/t/notes").await;
+        let (written, _) = write_notes(&app, Some(&tag), one_note("01J8", "first")).await;
+        assert_eq!(written, StatusCode::OK);
+
+        let fresh = etag_of(&app, "/api/works/t/notes").await;
+        let read_back = app
+            .oneshot(
+                Request::get("/api/works/t/notes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(read_back.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let parsed: crate::notes::Notes = serde_json::from_slice(&bytes).unwrap();
+
+        crate::test_support::cleanup("taiyaku-test-notes-put");
+        assert_ne!(fresh, tag, "the document changed, so the tag must have");
+        assert_eq!(parsed.notes.len(), 1);
+        assert_eq!(parsed.notes[0].body, "first");
+    }
+
+    /// The lost-update case itself, which is the reason any of this exists:
+    /// two devices read the same document, both write, and the second must be
+    /// told rather than quietly replacing the first reader's note.
+    #[tokio::test]
+    async fn a_second_writer_holding_the_same_tag_is_refused_rather_than_winning() {
+        let state = Arc::new(crate::test_support::state("taiyaku-test-notes-race"));
+        let app = build_router(state);
+        let shared = etag_of(&app, "/api/works/t/notes").await;
+
+        let (first, _) = write_notes(&app, Some(&shared), one_note("01J8A", "device one")).await;
+        assert_eq!(first, StatusCode::OK);
+
+        let (second, message) =
+            write_notes(&app, Some(&shared), one_note("01J8B", "device two")).await;
+
+        let survived = app
+            .oneshot(
+                Request::get("/api/works/t/notes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(survived.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let parsed: crate::notes::Notes = serde_json::from_slice(&bytes).unwrap();
+
+        crate::test_support::cleanup("taiyaku-test-notes-race");
+        assert_eq!(second, StatusCode::PRECONDITION_FAILED);
+        assert!(
+            message.contains("ETag is now"),
+            "a loser needs the current validator to retry against: {message}"
+        );
+        assert_eq!(parsed.notes[0].body, "device one", "the first write stands");
+    }
+
+    /// The validation is not merely unit-tested: a bad anchor dispatched
+    /// through the router comes back as a refusal a client can read, and with
+    /// the status that tells it apart from a malformed body. A guard nothing
+    /// calls is the shape O4 records — correct by inspection only.
+    #[tokio::test]
+    async fn a_note_on_a_slot_that_does_not_exist_is_refused_through_the_router() {
+        let state = Arc::new(crate::test_support::state("taiyaku-test-notes-bad-slot"));
+        let app = build_router(state);
+        let tag = etag_of(&app, "/api/works/t/notes").await;
+
+        let (status, message) = write_notes(
+            &app,
+            Some(&tag),
+            r#"{"work":"t","notes":[{"id":"01J8","edition":"raw","slot":99,
+               "body":"b","created":"c","updated":"u"}]}"#
+                .to_string(),
+        )
+        .await;
+
+        let (duplicate, dupe_message) = write_notes(
+            &app,
+            Some(&tag),
+            r#"{"work":"t","notes":[
+               {"id":"01J8","edition":"raw","slot":0,"body":"a","created":"c","updated":"u"},
+               {"id":"01J8","edition":"raw","slot":1,"body":"b","created":"c","updated":"u"}]}"#
+                .to_string(),
+        )
+        .await;
+
+        crate::test_support::cleanup("taiyaku-test-notes-bad-slot");
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            message.contains("99") && message.contains("slots"),
+            "the refusal must say what was wrong: {message}"
+        );
+        assert_eq!(
+            duplicate,
+            StatusCode::BAD_REQUEST,
+            "a malformed document is not a missing one"
+        );
+        assert!(dupe_message.contains("01J8"), "name the id: {dupe_message}");
+    }
+
+    /// The lost-update guard under a genuine race, not a sequence.
+    ///
+    /// `a_second_writer_holding_the_same_tag_is_refused_rather_than_winning`
+    /// sends one write and then the other, which is the case a `RwLock` would
+    /// also pass without holding anything across the read-modify-write.
+    /// `Work::notes_guard` exists for the interleaving that test cannot
+    /// produce: two writes *in flight together*, both having read the same
+    /// document and both finding their validator current.
+    ///
+    /// **Raced many times, deliberately.** A single race is not a reliable
+    /// detector: measured by removing the guard and running this five times,
+    /// two of those runs still happened to serialise and passed. One round is
+    /// therefore a test that can miss the very defect it exists for, which is
+    /// worse than no test — it reports green for a reason it never checked.
+    /// Twenty rounds put the chance of every one of them serialising at
+    /// roughly `0.4^20`, and the same sabotage now fails immediately.
+    ///
+    /// It cannot fail *falsely*, whatever the interleaving: exactly one of two
+    /// writes can be holding the current tag when it compares, so the
+    /// assertion is on the pair of outcomes rather than on which request won.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_writes_in_flight_together_leave_exactly_one_winner() {
+        let state = Arc::new(crate::test_support::state("taiyaku-test-notes-concurrent"));
+        let app = build_router(state);
+
+        for round in 0..20 {
+            let shared = etag_of(&app, "/api/works/t/notes").await;
+            let first = tokio::spawn({
+                let app = app.clone();
+                let tag = shared.clone();
+                let body = one_note(&format!("01RACEA{round}"), "device one");
+                async move { write_notes(&app, Some(&tag), body).await }
+            });
+            let second = tokio::spawn({
+                let app = app.clone();
+                let tag = shared.clone();
+                let body = one_note(&format!("01RACEB{round}"), "device two");
+                async move { write_notes(&app, Some(&tag), body).await }
+            });
+            let (a, b) = (first.await.unwrap(), second.await.unwrap());
+
+            let mut statuses = [a.0, b.0];
+            statuses.sort_by_key(|s| s.as_u16());
+            if statuses != [StatusCode::OK, StatusCode::PRECONDITION_FAILED] {
+                crate::test_support::cleanup("taiyaku-test-notes-concurrent");
+                panic!(
+                    "round {round}: {statuses:?} — one write must land and the other be told;                      two 200s is a lost note"
+                );
+            }
+        }
+
+        let survived = app
+            .oneshot(
+                Request::get("/api/works/t/notes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(survived.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let parsed: crate::notes::Notes = serde_json::from_slice(&bytes).unwrap();
+
+        crate::test_support::cleanup("taiyaku-test-notes-concurrent");
+        assert_eq!(
+            parsed.notes.len(),
+            1,
+            "each round replaces the document with one note, so the last winner's is what stands"
+        );
+    }
+
+    /// A body this server will not parse is answered in this server's own
+    /// words, not serde's — the same rule O5 established for a malformed page
+    /// index and `patch_alignments` already follows for a malformed
+    /// correction.
+    #[tokio::test]
+    async fn a_body_that_is_not_notes_is_refused_in_this_servers_own_words() {
+        let state = Arc::new(crate::test_support::state("taiyaku-test-notes-garbage"));
+        let app = build_router(state);
+        let tag = etag_of(&app, "/api/works/t/notes").await;
+
+        let (status, message) = write_notes(&app, Some(&tag), "{\"nope\":1}".to_string()).await;
+
+        crate::test_support::cleanup("taiyaku-test-notes-garbage");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            message.contains("these are not notes"),
+            "the refusal must be this server's own: {message}"
+        );
     }
 }

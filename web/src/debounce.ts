@@ -16,6 +16,16 @@ export interface Debounced<Args extends unknown[]> {
    * before calling `fn` guarantees.
    */
   flush(): void
+  /**
+   * Drop the pending call without sending it.
+   *
+   * The opposite of `flush`, and it exists for the two acts that replace the
+   * document outright rather than changing it: undo, and delete. Both write
+   * immediately, and a debounced write scheduled *before* them would land a
+   * moment later carrying the state they had just replaced — putting back
+   * exactly the note the reader removed, or the edit they stepped away from.
+   */
+  cancel(): void
 }
 
 /**
@@ -56,6 +66,11 @@ export function debounce<Args extends unknown[]>(
     const args = pending
     pending = undefined
     if (args !== undefined) fn(...args)
+  }
+  call.cancel = () => {
+    if (timer !== undefined) clearTimeout(timer)
+    timer = undefined
+    pending = undefined
   }
   return call
 }
