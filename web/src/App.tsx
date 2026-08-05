@@ -267,6 +267,13 @@ function App() {
     pendingRef.current = pending
   }, [pending])
 
+  // The grouping the page area is drawing right now, for the keydown effect —
+  // which subscribes once at load and so cannot see `grouped`, computed below
+  // at render from `mode`, the direction override and the reader's own parity
+  // breaks. An arrow steps by group rather than by slot (`pairing.ts`'s
+  // `stepToGroup`), and only this component knows what the groups are.
+  const groupedRef = useRef<Group[]>(undefined)
+
   useEffect(() => {
     let cancelled = false
     async function load() {
@@ -455,7 +462,13 @@ function App() {
       event.preventDefault()
       setSession((prev) => {
         if (!prev) return prev
-        const { state, previous } = applyIntent(intent, prev.state, prev.previous, resolver)
+        const { state, previous } = applyIntent(
+          intent,
+          prev.state,
+          prev.previous,
+          resolver,
+          groupedRef.current,
+        )
         return { ...prev, state, previous }
       })
     }
@@ -845,6 +858,13 @@ function App() {
   // stored per edition, keyed by the edition whose slots `groups` is about
   // to pair.
   const grouped = groups(slots, mode, effectiveReading, regroupPrefs.breaks[shown.edition] ?? [])
+  // Assigned during render rather than in an effect: the keydown handler must
+  // never step against a grouping older than what is on screen, and an effect
+  // would leave exactly one frame where it could. Writing a ref during render
+  // is safe here because it is derived state, not a subscription — the value
+  // is recomputed from props and state every render, so a discarded render
+  // simply writes the same thing the retained one will.
+  groupedRef.current = grouped
   const currentIndex = Math.max(
     grouped.findIndex((g) => g.slots.includes(shown.slot)),
     0,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cellsFor, correctionTiles, groups } from './pairing'
+import { cellsFor, correctionTiles, groups, stepToGroup } from './pairing'
 import { bSlots, odd, whole } from './fixtures'
 
 describe('single', () => {
@@ -209,5 +209,90 @@ describe('scroll', () => {
       { slots: [7] },
       { slots: [8] },
     ])
+  })
+})
+
+describe('stepToGroup', () => {
+  const rtl = 'rtl' as const
+
+  /** Slots 0..n-1, with `spreads` naming the pages that are joined. */
+  function slotsWith(pages: number, spreads: number[]) {
+    const out: { page: number; half?: 'L' | 'R' }[] = []
+    for (let page = 0; page < pages; page++) {
+      if (spreads.includes(page)) {
+        out.push({ page, half: 'R' }, { page, half: 'L' })
+      } else {
+        out.push({ page })
+      }
+    }
+    return out
+  }
+
+  /**
+   * The defect this exists for, reported from a manual pass: a joined spread
+   * is two slots drawn as one image, so stepping by slot showed the same
+   * picture twice and the reader pressed the arrow again wondering why
+   * nothing moved.
+   */
+  it('crosses a joined spread in one press', () => {
+    const slots = slotsWith(6, [2])
+    const g = groups(slots, 'single', rtl)
+    // Slot 2 is the spread's R half, slot 3 its L half, slot 4 is page 3.
+    expect(stepToGroup(g, 2, 1)).toBe(4)
+  })
+
+  /** And back the same way, rather than landing inside the spread. */
+  it('crosses it backwards in one press too', () => {
+    const slots = slotsWith(6, [2])
+    const g = groups(slots, 'single', rtl)
+    expect(stepToGroup(g, 4, -1)).toBe(2)
+  })
+
+  /**
+   * Landing on a group's *first* slot is what makes a swap predictable: both
+   * halves of a spread draw the same image but resolve differently, so a
+   * reader who cannot see which half they are on should always be on the one
+   * the group names.
+   */
+  it('lands on the first slot of the group it moves to', () => {
+    const slots = slotsWith(6, [2])
+    const g = groups(slots, 'single', rtl)
+    // From inside the spread's second half, forward is still the next group.
+    expect(stepToGroup(g, 3, 1)).toBe(4)
+  })
+
+  /** Ordinary pages still move one at a time. */
+  it('moves one page at a time where nothing is joined', () => {
+    const slots = slotsWith(5, [])
+    const g = groups(slots, 'single', rtl)
+    expect(stepToGroup(g, 1, 1)).toBe(2)
+    expect(stepToGroup(g, 3, -1)).toBe(2)
+  })
+
+  /**
+   * In `two` mode a group is a pair, so one press turns both pages — stepping
+   * by slot advanced the pair by one and redrew half of what was already on
+   * screen.
+   */
+  it('turns a whole pair in two-page mode', () => {
+    const slots = slotsWith(6, [])
+    const g = groups(slots, 'two', rtl)
+    expect(stepToGroup(g, 0, 1)).toBe(2)
+    expect(stepToGroup(g, 2, 1)).toBe(4)
+  })
+
+  /** Both ends clamp rather than wrapping or running off. */
+  it('clamps at both ends', () => {
+    const slots = slotsWith(4, [])
+    const g = groups(slots, 'single', rtl)
+    expect(stepToGroup(g, 0, -1)).toBe(0)
+    expect(stepToGroup(g, 3, 1)).toBe(3)
+  })
+
+  /** A slot no group claims cannot move — better than guessing at one. */
+  it('stays put when the slot belongs to no group', () => {
+    const slots = slotsWith(3, [])
+    const g = groups(slots, 'single', rtl)
+    expect(stepToGroup(g, 99, 1)).toBe(99)
   })
 })

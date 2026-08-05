@@ -167,3 +167,42 @@ export function cellsFor(group: Group, reading: 'rtl' | 'ltr'): Cells {
   const [first, second] = reading === 'rtl' ? [b, a] : [a, b]
   return { wide: false, first, second }
 }
+
+/**
+ * The slot one arrow press away, stepping by what is *drawn* rather than by
+ * slot.
+ *
+ * A group is one image on screen — that is the whole point of `groups` above
+ * — so a reader pressing an arrow expects the next group, not the next slot.
+ * Where the two differ, stepping by slot redraws what is already there and
+ * the press appears to do nothing: a joined spread is two slots and one wide
+ * image, so crossing one took two presses, and in `two` mode a press advanced
+ * the pair by one, redrawing half of what was on screen. Reported from a
+ * manual pass as "I have to right arrow twice to go by it".
+ *
+ * **It lands on the group's first slot, and that fixes a second thing.** Both
+ * halves of a joined spread draw the same image but resolve *differently* —
+ * `route.rs`'s `resolve_slot` exists for exactly that, and on the primary
+ * corpus one half of `en-mono`'s page 4 pairs with raw 5 while the other
+ * pairs with nothing. So a reader who could not see which half they were on
+ * got one of two different answers on a swap, from a screen that looked
+ * identical either way. Always standing on the group's first slot makes the
+ * swap predictable from what is visible.
+ *
+ * **What it costs:** the second half of a joined spread is no longer
+ * reachable with an arrow key, so neither is its own distinct swap answer.
+ * That half is still addressable where addressing it is the point — the
+ * correction filmstrip puts one tile per slot (`correctionTiles`), and `two`
+ * mode draws the halves in separate cells. What is given up is reaching it by
+ * arrow in a mode that cannot show you which one you are on.
+ *
+ * A slot no group claims stays put rather than guessing at a neighbour: the
+ * caller has a slot from somewhere this function does not model, and moving
+ * it somewhere plausible would be worse than not moving it.
+ */
+export function stepToGroup(all: Group[], slot: number, by: 1 | -1): number {
+  const here = all.findIndex((group) => group.slots.includes(slot))
+  if (here === -1) return slot
+  const next = Math.min(Math.max(here + by, 0), all.length - 1)
+  return all[next].slots[0]
+}

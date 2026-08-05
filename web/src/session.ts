@@ -1,4 +1,5 @@
 import type { Intent } from './keys'
+import { stepToGroup, type Group } from './pairing'
 import { display, navigate, swap, type ReadingState } from './reading'
 import type { Resolver } from './resolver'
 
@@ -56,6 +57,7 @@ export function applyIntent(
   state: ReadingState,
   previous: string,
   resolver: Resolver,
+  groups?: Group[],
 ): { state: ReadingState; previous: string } {
   switch (intent.kind) {
     case 'toggle': {
@@ -67,6 +69,14 @@ export function applyIntent(
     case 'step': {
       const shown = display(state, resolver)
       if (shown.kind !== 'at') return { state, previous }
+      // By group where the caller knows the grouping, by slot where it does
+      // not. A group is one image on screen, so an arrow moves to the next
+      // *image* — see `pairing.ts`'s `stepToGroup` for what that fixes and
+      // what it costs. The slot fallback is what keeps this function usable
+      // without a renderer: `groups` is a property of how the page is being
+      // drawn right now (mode, direction override, hand-inserted breaks),
+      // which nothing below the component tree knows.
+      if (groups) return { state: navigate(state, stepToGroup(groups, shown.slot, intent.by)), previous }
       const count = resolver.slotCount(shown.edition) ?? shown.slot + 1
       const slot = Math.min(Math.max(shown.slot + intent.by, 0), count - 1)
       return { state: navigate(state, slot), previous }
