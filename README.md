@@ -131,29 +131,38 @@ beside them and can be deleted without loss.
 ## Contributing
 
 `main` is **linear** — no merge commits — and every commit on it is an **atomic unit**: it builds
-and passes the gate on its own. Work happens on a feature branch, which lands as **one squashed
-commit**.
+and passes the gate on its own. Work happens on a feature branch and lands as **one squashed
+commit**, through a **pull request**. `main` is protected: it does not accept a direct push, so the
+PR is the only way in.
 
-    scripts/check-all.sh          # the local mirror of CI — fmt, clippy, tests, wasm build
-    scripts/land.sh               # land the current branch (opens an editor for the subject)
-    scripts/land.sh -- --no-wasm  # same, skipping the wasm build
+    git switch -c my-change
+    scripts/check-all.sh            # the local mirror of CI — fmt, clippy, tests, wasm build
+    scripts/check-all.sh --no-wasm  # same, skipping the wasm build
+    git push -u origin my-change
+    tea pr create                   # or open it in the web UI
 
-`land.sh` refuses a dirty tree, a `main` that differs from `origin/main`, and a branch that is
-behind `main`. It then squash-merges, runs `scripts/check-all.sh` **on the merged tree before the
-commit exists**, and commits only if that passes — which is what makes "every commit on `main`
-passes CI" a property rather than a hope. The branch is deleted once its tree matches `main`.
+Run `scripts/check-all.sh` before pushing anyway, even though CI runs the same four jobs on the PR.
+It is the same gate several minutes earlier, and it is the reason a red PR is unusual rather than
+routine.
 
-A plain `git merge --squash` discards every commit message on the branch, so `land.sh` prefills the
-message with all of them under a `--- Squashed from N commits ---` marker. Delete what you do not
-want; what is left is kept verbatim. Losing the reasoning is not the price of a tidy graph.
+The forge enforces the shape that used to be a local script's job: merges are squash-only, so a PR
+cannot produce a merge commit or a string of fixup commits on `main`, and the branch is deleted on
+merge. "Every commit on `main` passes CI" survives intact by a different route: a PR cannot merge
+while its branch is behind `main`, so the head that CI tested and the tree that lands are the same
+tree. Falling behind does not quietly weaken the gate — it blocks the merge until you rebase.
 
-Once per clone, so a non-fast-forward merge fails rather than quietly creating a merge commit:
+**The PR description is the commit message.** `.forgejo/default_merge_message/` overrides the
+default squash message, which would otherwise append a `Reviewed-on:` trailer pointing at the PR.
+The squashed commit is instead the PR title as its subject and the PR description as its body,
+verbatim — so write the description as the commit message you want on `main`, not as a note to the
+reviewer.
+
+Once per clone, so a non-fast-forward `git pull` fails rather than quietly creating a merge commit:
 
     git config merge.ff only && git config pull.ff only
 
-That is convenience — `.git/config` is untracked and binds nobody. The remote is the real
-constraint: it allows only squash and fast-forward merges, so a PR merged in the web UI cannot
-produce a merge commit either.
+That is convenience — `.git/config` is untracked and binds nobody. Branch protection on the forge
+is the real constraint.
 
 ## Licence
 
