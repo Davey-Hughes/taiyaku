@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { fakeResolver, whole, bSlots } from './fixtures'
 import type { ReadingState } from './reading'
 import {
+  alignmentsOf,
   applyIntent,
   initialPrevious,
   orderedEditions,
@@ -167,6 +168,34 @@ describe('a freshly-restored session, seeded via initialPrevious', () => {
 
       expect(toggled.viewing, `starting from ${authority}`).not.toBe(authority)
     }
+  })
+})
+
+// I3 (M5d review): `App.tsx` rebuilt the resolver from a correction's
+// response body but left `alignments` at whatever loaded at session start,
+// so `verdictFor` kept answering off a stale document. `alignmentsOf` is the
+// one-line fix threaded through both of `App.tsx`'s call sites (the success
+// path and the stale-`ETag` re-read).
+describe('alignmentsOf', () => {
+  it('reads the alignments straight off a sidecar document', () => {
+    const doc = {
+      work: { reading: 'rtl' },
+      editions: { a: {}, b: {} },
+      hub: 'a',
+      alignments: [{ from: 'a', to: 'b', quality: { verdict: 'sound' } }],
+    }
+    expect(alignmentsOf(JSON.stringify(doc))).toEqual([
+      { from: 'a', to: 'b', quality: { verdict: 'sound' } },
+    ])
+  })
+
+  // The whole point: a document a correction just rewrote reports its fresh
+  // verdict, not the one the session loaded with.
+  it('reflects a verdict a correction changed, not a stale one', () => {
+    const before = JSON.stringify({ alignments: [{ from: 'a', to: 'b', quality: { verdict: 'sound' } }] })
+    const after = JSON.stringify({ alignments: [{ from: 'a', to: 'b', quality: { verdict: 'fragmented' } }] })
+    expect(verdictFor(alignmentsOf(before), 'a', 'b')).toBe('sound')
+    expect(verdictFor(alignmentsOf(after), 'a', 'b')).toBe('fragmented')
   })
 })
 

@@ -293,6 +293,51 @@ pub enum Anchor {
 pub enum Merged {
     Added,
     Replaced,
+    /// The spoke's bytes were unchanged, so the corrections on the old edge
+    /// were carried onto the new one. The count is how many.
+    CarriedHandRuns(usize),
+}
+
+/// What a correction did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Corrected {
+    /// A stored edge was rewritten in place.
+    Edge,
+    /// The pair resolved through the hub, so a direct edge was written for it.
+    DirectEdgeAdded,
+    /// The document already said this. Nothing changed.
+    AlreadyTrue,
+}
+
+/// Why a correction was refused.
+///
+/// A typed refusal rather than a `String` because the only caller is an HTTP
+/// route that has to answer a different status for each of these, and
+/// string-matching a message to pick a status is the coupling that breaks the
+/// first time someone improves the wording.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotCorrected {
+    NoSuchEdition(String),
+    NoSuchSlot(String),
+    SameEdition(String),
+    NoPath(String),
+    /// A stored edge this document cannot read — a hand edit that made a span
+    /// name a slot that does not exist, say. The document's problem, not the
+    /// caller's.
+    Unreadable(String),
+}
+
+impl std::fmt::Display for NotCorrected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::NoSuchEdition(m)
+            | Self::NoSuchSlot(m)
+            | Self::SameEdition(m)
+            | Self::NoPath(m)
+            | Self::Unreadable(m) => m,
+        };
+        f.write_str(message)
+    }
 }
 
 /// Where a slot falls in a chapter-organised edition.
@@ -415,16 +460,406 @@ impl Sidecar {
             ));
         }
 
+        // O13. `docs/sidecar.md` promises a hand-corrected run survives a
+        // re-solve, and dropping the stored edge wholesale is what broke that
+        // promise for as long as nothing could produce one.
+        //
+        // The guard above compares the *from* side: it refuses when the
+        // document's copy of the hub is not the edition just aligned. The
+        // spoke is a different question, and the answer divides. Where the
+        // spoke's bytes are unchanged, a correction is a statement about those
+        // bytes and carries across. Where the spoke is being replaced, a
+        // correction addresses slots of an edition that is going away, and
+        // carrying it would resurrect runs pointing into bytes that no longer
+        // exist — the failure the from-side guard exists to prevent, let back
+        // in through the other door. What *should* become of such a correction
+        // is left open deliberately; refusing is what keeps it from being
+        // answered silently.
+        let stored_edge = self
+            .alignments
+            .iter()
+            .find(|e| (e.from == start && e.to == name) || (e.from == name && e.to == start));
+        // A hub edge is always stored `start` -> `name` — `merge_spoke` never
+        // writes it any other way — but a direct edge can be stored in
+        // whichever direction `Sidecar::correct` first created it in, and its
+        // hand runs' spans are addressed against *its own* `from`, not
+        // necessarily `start`. Carrying them in as though they were requires
+        // inverting first, which `carry_hand_runs` does not do; splicing them
+        // in unchanged would either misfile a hand run against the wrong
+        // edition's pages or panic on a slot lookup that only makes sense in
+        // the edge's own orientation. Refusing is what O13 exists to prefer
+        // over either.
+        if let Some(edge) = stored_edge
+            && edge.from != start
+            && edge.runs.iter().any(|r| r.by == Some(Source::Hand))
+        {
+            return Err(format!(
+                "the stored edge between `{start}` and `{name}` is recorded `{}` -> `{}`, not \
+                 `{start}` -> `{name}`, and holds hand-corrected run(s) addressed against \
+                 `{}`'s slots. Carrying them onto `{start}` -> `{name}` without inverting them \
+                 first would misfile them, so this refuses rather than doing that silently. \
+                 Re-solve as `{}` -> `{}` to match how the edge is stored, or remove the \
+                 `\"by\": \"hand\"` runs from `{}` -> `{}` deliberately.",
+                edge.from, edge.to, edge.from, edge.from, edge.to, edge.from, edge.to
+            ));
+        }
+        let hand: Vec<RunEntry> = stored_edge
+            .map(|e| {
+                e.runs
+                    .iter()
+                    .filter(|r| r.by == Some(Source::Hand))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Content, not paths — the same idiom as the from-side guard above,
+        // and for the same reason: a spoke archive that was moved or renamed
+        // with identical bytes is not a replacement, and comparing whole
+        // `Member` structs (which include `path`) would misclassify it as
+        // one, refusing a merge that holds hand runs or silently discarding
+        // ones that do not.
+        let spoke_replaced = self.editions.get(name).is_some_and(|held| {
+            held.members.len() != edition.members.len()
+                || held
+                    .members
+                    .iter()
+                    .zip(&edition.members)
+                    .any(|(here, there)| here.sha256 != there.sha256)
+        });
+        // C1: a hand-corrected run addresses `name`'s slots no matter which
+        // alignment stores it, and `start` <-> `name` is not the only one
+        // that can. `Sidecar::correct` writes a *direct* edge to whichever
+        // edition it is asked to pair `name` against when there is no stored
+        // edge to rewrite, and that edge's hand runs are just as much at risk
+        // as the ones on the edge being replaced here — so every alignment
+        // mentioning `name` is checked, not only `stored_edge`.
+        if spoke_replaced {
+            let at_risk: Vec<(&str, &str, usize)> = self
+                .alignments
+                .iter()
+                .filter(|a| a.from == name || a.to == name)
+                .filter_map(|a| {
+                    let hand = a.runs.iter().filter(|r| r.by == Some(Source::Hand)).count();
+                    (hand > 0).then_some((a.from.as_str(), a.to.as_str(), hand))
+                })
+                .collect();
+            if !at_risk.is_empty() {
+                let total: usize = at_risk.iter().map(|&(_, _, n)| n).sum();
+                let edges: Vec<String> = at_risk
+                    .iter()
+                    .map(|&(from, to, n)| format!("`{from}` -> `{to}` ({n})"))
+                    .collect();
+                return Err(format!(
+                    "`{name}` in this document holds {total} hand-corrected run(s), on {}, \
+                     and the edition being merged is not the one they were made against. A \
+                     correction addresses slots of the edition it was made on, so carrying it \
+                     onto different bytes would point it at pages that no longer exist. \
+                     Re-solve the work, or remove the `\"by\": \"hand\"` run(s) deliberately.",
+                    edges.join(", ")
+                ));
+            }
+        }
+
         let replaced = self.editions.insert(name.to_string(), edition).is_some();
-        // Edition and edge are replaced together. A surviving edge would
-        // address pages of an edition that is no longer there.
+        // Only the `start` <-> `name` edge is replaced here — the one edge
+        // this call is actually re-solving. It is not true that no surviving
+        // edge can address a `name` that is now gone: a solver-only direct
+        // edge to a third edition can still survive unchanged and stale,
+        // re-solving it being a separate step this function does not take.
+        // What the guard above does guarantee is narrower but load-bearing:
+        // no *hand-corrected* edge to a third edition survives with stale
+        // meaning, because `spoke_replaced` refused before this line runs.
         self.alignments
             .retain(|a| !(a.from == start && a.to == name) && !(a.from == name && a.to == start));
+        let mut alignment = alignment;
+        // Carried onto the freshly solved edge by *replacing* the solver's run
+        // wherever a hand run covers the same source slots, so the two cannot
+        // both claim one slot. The hand run wins: that is the whole point of
+        // the field.
+        let carried = hand.len();
+        if carried > 0 {
+            // Slot tables, not page numbers: see `carry_hand_runs` for why
+            // splitting needs them even though overlap detection alone would
+            // not. `start`'s content was checked against `from_side` above and
+            // `name`'s is unchanged in this branch (`spoke_replaced` is
+            // false whenever `hand` is non-empty and this line is reached),
+            // so both are the tables `hand` and the fresh solve were built
+            // against.
+            let a_slots = self.editions[&start].slots(reading);
+            let b_slots = self.editions[name].slots(reading);
+            alignment.runs = carry_hand_runs(&alignment.runs, &hand, &a_slots, &b_slots);
+        }
         self.alignments.push(alignment);
-        Ok(match replaced {
-            true => Merged::Replaced,
-            false => Merged::Added,
+        Ok(match (carried, replaced) {
+            (0, true) => Merged::Replaced,
+            (0, false) => Merged::Added,
+            _ => Merged::CarriedHandRuns(carried),
         })
+    }
+
+    /// Record by hand that slot `a` of `from` pairs with slot `b` of `to` — or,
+    /// where `b` is `None`, with nothing.
+    ///
+    /// This is the operation the correction UI performs, and it lives here
+    /// rather than in the server because it is format logic: any other reader
+    /// writing back would need exactly this, and `docs/sidecar.md`'s promise
+    /// that a hand-corrected run survives a re-solve is only meaningful if one
+    /// place decides what a hand-corrected run *is*.
+    ///
+    /// Three cases, and the middle one is the subtle one:
+    ///
+    /// - The edge is stored in the direction asked for: rewrite it.
+    /// - The edge is stored the other way round: **rewrite it in its own
+    ///   direction**, not inverted-corrected-inverted. The assertion is
+    ///   symmetric — "a pairs with b" and "b pairs with a" are one fact — and
+    ///   `invert` drops gaps by construction, so a round trip through it would
+    ///   discard every unpaired run the stored direction records.
+    /// - There is no edge, so the pair resolves through the hub: write a direct
+    ///   edge seeded from the composition with the fix applied. `sidecar.md`
+    ///   permits a direct edge "for pairs where composition demonstrably
+    ///   loses", and a hand correction is that demonstration. The cost is that
+    ///   the pair leaves the star and stops inheriting transitivity.
+    pub fn correct(
+        &mut self,
+        from: &str,
+        to: &str,
+        a: Slot,
+        b: Option<Slot>,
+        note: Option<String>,
+    ) -> Result<Corrected, NotCorrected> {
+        if from == to {
+            return Err(NotCorrected::SameEdition(format!(
+                "`{from}` is the edition being corrected against; an edition cannot be its own \
+                 counterpart"
+            )));
+        }
+        let reading = self.work.reading;
+        let slots_of = |name: &str| {
+            self.editions
+                .get(name)
+                .map(|e| e.slots(reading))
+                .ok_or_else(|| {
+                    NotCorrected::NoSuchEdition(format!(
+                        "this document defines no edition named `{name}`"
+                    ))
+                })
+        };
+        let from_slots = slots_of(from)?;
+        let to_slots = slots_of(to)?;
+        let a_index = slot_index(&from_slots, a).ok_or_else(|| {
+            NotCorrected::NoSuchSlot(format!("`{from}` has no slot `{}`", show_slot(a)))
+        })? as u32;
+        let b_index = match b {
+            Some(b) => Some(slot_index(&to_slots, b).ok_or_else(|| {
+                NotCorrected::NoSuchSlot(format!("`{to}` has no slot `{}`", show_slot(b)))
+            })? as u32),
+            None => None,
+        };
+
+        let (key, source, target) = match self.edge_between(from, to) {
+            Some(edge) if edge.from == from => {
+                ((from.to_string(), to.to_string()), a_index, b_index)
+            }
+            Some(edge) => {
+                let key = (edge.from.clone(), edge.to.clone());
+                let runs = self.runs_of(edge).map_err(NotCorrected::Unreadable)?;
+                match b_index {
+                    Some(b) => (key, b, Some(a_index)),
+                    // "this slot pairs with nothing", read in the stored
+                    // direction, is "whatever currently reaches it pairs with
+                    // nothing".
+                    None => match (0..to_slots.len() as u32)
+                        .find(|&s| crate::counterpart(&runs, s) == Some(a_index))
+                    {
+                        Some(owner) => (key, owner, None),
+                        None => return Ok(Corrected::AlreadyTrue),
+                    },
+                }
+            }
+            None => {
+                let composed = crate::route(self, from, to).ok_or_else(|| {
+                    NotCorrected::NoPath(format!(
+                        "no path from `{from}` to `{to}` in this document"
+                    ))
+                })?;
+                if crate::counterpart(composed.runs(), a_index) == b_index {
+                    return Ok(Corrected::AlreadyTrue);
+                }
+                let before = composed.runs().to_vec();
+                let fixed = crate::correct_runs(&before, a_index, b_index);
+                self.alignments.push(Alignment {
+                    from: from.to_string(),
+                    to: to.to_string(),
+                    by: Source::Hand,
+                    solver: None,
+                    quality: None,
+                    runs: Vec::new(),
+                });
+                self.rewrite(&(from.to_string(), to.to_string()), fixed, &before, note)?;
+                return Ok(Corrected::DirectEdgeAdded);
+            }
+        };
+
+        let edge = self
+            .alignments
+            .iter()
+            .find(|e| e.from == key.0 && e.to == key.1)
+            .expect("orientation was found by the same lookup");
+        let before = self.runs_of(edge).map_err(NotCorrected::Unreadable)?;
+        if crate::counterpart(&before, source) == target {
+            return Ok(Corrected::AlreadyTrue);
+        }
+        let fixed = crate::correct_runs(&before, source, target);
+        self.rewrite(&key, fixed, &before, note)?;
+        Ok(Corrected::Edge)
+    }
+
+    /// Replace one edge's runs, mark by hand exactly what changed, and
+    /// recompute the quality block beside them.
+    ///
+    /// `key` names the edge in its **stored** orientation, so everything here
+    /// is in that edge's own slot space.
+    fn rewrite(
+        &mut self,
+        key: &(String, String),
+        runs: Vec<crate::Run>,
+        before: &[crate::Run],
+        note: Option<String>,
+    ) -> Result<(), NotCorrected> {
+        let reading = self.work.reading;
+        let from_slots = self.editions[&key.0].slots(reading);
+        let to_slots = self.editions[&key.1].slots(reading);
+        let position = self
+            .alignments
+            .iter()
+            .position(|e| e.from == key.0 && e.to == key.1)
+            .expect("the edge was found before this was called");
+
+        // Exactly the slots *this* correction changed the answer for: the one
+        // asserted, and the one displaced from the target it held. Derived by
+        // diffing rather than tracked, so the two cannot drift apart.
+        let changed: Vec<u32> = (0..from_slots.len() as u32)
+            .filter(|&s| crate::counterpart(before, s) != crate::counterpart(&runs, s))
+            .collect();
+        // Every source slot an *earlier* hand decision already covers. Kept
+        // separate from `changed` because the note below belongs only to this
+        // correction: folding them together would let each correction
+        // overwrite the note every earlier one left behind.
+        let mut by_hand: Vec<u32> = changed.clone();
+        for entry in self.alignments[position]
+            .runs
+            .iter()
+            .filter(|e| e.by == Some(Source::Hand))
+        {
+            let start = slot_index(&from_slots, entry.a.start)
+                .expect("span was validated by runs_of") as u32;
+            let end =
+                slot_index(&from_slots, entry.a.end).expect("span was validated by runs_of") as u32;
+            by_hand.extend(start..=end);
+        }
+
+        let mut entries =
+            entries_from_runs(&runs, &from_slots, &to_slots).map_err(NotCorrected::Unreadable)?;
+        let previous = self.alignments[position].runs.clone();
+        // Every earlier note, with the slot range it was written for — in
+        // slot indices, not page notation, so overlap can be tested exactly
+        // (two different slots can share a page). Only entries that carry a
+        // note are worth keeping here; everything else contributes nothing
+        // below regardless of overlap.
+        let previous_notes: Vec<(u32, u32, &str)> = previous
+            .iter()
+            .filter_map(|e| {
+                let note = e.note.as_deref()?;
+                let start = slot_index(&from_slots, e.a.start)
+                    .expect("span was validated by runs_of") as u32;
+                let end =
+                    slot_index(&from_slots, e.a.end).expect("span was validated by runs_of") as u32;
+                Some((start, end, note))
+            })
+            .collect();
+        for entry in entries.iter_mut() {
+            let start = slot_index(&from_slots, entry.a.start)
+                .expect("span was validated by runs_of") as u32;
+            let end =
+                slot_index(&from_slots, entry.a.end).expect("span was validated by runs_of") as u32;
+
+            // Carry the margin of a run this correction did not touch.
+            //
+            // `entries_from_runs` writes `margin: None` for everything — it
+            // rebuilds entries from bare runs and has no confidence figure to
+            // hand them — so without this every correction silently stripped
+            // the margins off the *whole* edge, not just the runs it changed.
+            // Measured on the primary corpus volume before this was fixed: one
+            // correction against `raw-mono -> en-fan` took that edge from 8
+            // margins to 0, while the untouched `raw-mono -> en-mono` edge kept
+            // all of its. A margin is the weakest per-page figure inside its
+            // run, recoverable only by re-solving against the archives, and
+            // `docs/sidecar.md` has it there precisely so a reader need not
+            // open them.
+            //
+            // Matched on both spans being identical rather than on overlap: a
+            // margin describes exactly the run it was computed over, so a run
+            // that split, merged or moved has no figure that honestly applies
+            // to it any more, and inheriting one would overstate what was
+            // measured. Those come back as `None` — unknown, which is true —
+            // until the edge is re-solved.
+            entry.margin = previous
+                .iter()
+                .find(|e| e.a == entry.a && e.b == entry.b)
+                .and_then(|e| e.margin);
+
+            // Every slot of the run, not any of them. A correction that
+            // changes the answer always lands as its own single-slot run, so
+            // `all` marks exactly what a person decided. `any` would mark the
+            // whole run it sits inside — measured at 188 slots on the primary
+            // corpus volume — and Task 3's refusal would then fire on every
+            // later re-solve of an edge somebody once touched.
+            if !(start..=end).all(|s| by_hand.contains(&s)) {
+                continue;
+            }
+            entry.by = Some(Source::Hand);
+
+            // `compress` merges an index-adjacent run into this one with no
+            // awareness of `by` or `note`, so a single hand-marked run here
+            // can descend from more than one earlier correction — and this
+            // one besides, where it also decided a slot inside it. Choosing
+            // one note over the others would silently drop whichever
+            // correction's explanation did not win, which is exactly the
+            // silence this format is written against. So every distinct note
+            // whose slots survive into this run is kept: the earlier ones by
+            // span overlap (not span equality — a merged run's span matches
+            // none of them exactly), in span order, and this correction's own
+            // note last, where this run carries any slot it decided.
+            let mut notes: Vec<String> = previous_notes
+                .iter()
+                .filter(|&&(ps, pe, _)| ps <= end && pe >= start)
+                .map(|&(_, _, n)| n.to_string())
+                .collect();
+            if (start..=end).any(|s| changed.contains(&s)) {
+                if let Some(n) = &note {
+                    notes.push(n.clone());
+                }
+            }
+            let mut deduped: Vec<String> = Vec::new();
+            for n in notes {
+                if !deduped.contains(&n) {
+                    deduped.push(n);
+                }
+            }
+            entry.note = match deduped.is_empty() {
+                true => None,
+                false => Some(deduped.join("; ")),
+            };
+        }
+
+        self.alignments[position].runs = entries;
+        self.alignments[position].quality = Some(Quality {
+            verdict: crate::verdict(&runs, from_slots.len()),
+            slots: from_slots.len() as u32,
+            paired: crate::paired_slots(&runs),
+            avg_run: crate::average_run_length(&runs),
+        });
+        Ok(())
     }
 
     /// Rebuild solver runs from a stored alignment.
@@ -614,6 +1049,199 @@ impl Sidecar {
             path: edition.members[member].path.clone(),
         })
     }
+}
+
+/// Split `[start, end]` around every span in `cuts` that overlaps it, calling
+/// `push(from, to, cut)` once for each surviving piece, in order: `cut =
+/// false` for a stretch untouched by any cut, `cut = true` for a stretch
+/// inside one. `cuts` need not be sorted or already clipped to `[start,
+/// end]` — only the overlap is used.
+///
+/// Shared by `carry_hand_runs`'s two eviction passes, which differ only in
+/// what a `cut` piece means to the caller: on the `a` side, a hand run's own
+/// source span supplies that stretch itself, so the caller drops it; on the
+/// `b` side, a solved slot that loses the target a hand run just claimed does
+/// not stop existing, so the caller keeps it as a gap. Same shape, different
+/// cuts, different fate for the cut piece — which is exactly why `cut` is
+/// reported rather than decided here.
+fn split_around(start: u32, end: u32, cuts: &[(u32, u32)], mut push: impl FnMut(u32, u32, bool)) {
+    let mut sorted: Vec<(u32, u32)> = cuts
+        .iter()
+        .filter(|&&(cs, ce)| ce >= start && cs <= end)
+        .map(|&(cs, ce)| (cs.max(start), ce.min(end)))
+        .collect();
+    sorted.sort_unstable();
+
+    let mut cursor = start;
+    for (cs, ce) in sorted {
+        if cs > cursor {
+            push(cursor, cs - 1, false);
+        }
+        if ce >= cursor {
+            push(cs.max(cursor), ce, true);
+            cursor = ce + 1;
+        }
+    }
+    if cursor <= end {
+        push(cursor, end, false);
+    }
+}
+
+/// Splice hand-corrected runs into a freshly solved run list.
+///
+/// A hand run's source span is authoritative, so any solved run overlapping it
+/// gives up the overlapping slots — but only the slots the hand run actually
+/// covers, not the whole run it happens to sit inside.
+///
+/// **An earlier version of this function filtered out whole solved runs by
+/// page-range overlap instead of splitting them**, on the reasoning that the
+/// two lists are already in the document's own page notation and converting
+/// to slot indices and back would need both slot tables for no gain. That
+/// reasoning covers *detecting* overlap, which page order tracks exactly as
+/// well as slot order does — it does not cover *keeping what survives it*.
+/// The preservation test below measured the difference: two one-slot
+/// corrections at slots 5 and 9 inside a single 30-slot solved run left slots
+/// 0-4, 6-8 and 10-29 with no counterpart at all under the drop-the-run
+/// version, where `docs/sidecar.md` promises only the corrected slots move.
+/// So this does need the slot tables, to split each overlapping solved run
+/// around every hand run it contains rather than discard it, and converts
+/// back to page notation through them once the splitting is done.
+///
+/// **C2: splitting around the hand runs' source spans restores 1:1 on the `a`
+/// side only.** Nothing checked whether a surviving solved piece's *target*
+/// already landed on a slot a hand run claims — reachable once the fresh
+/// solve disagrees in shape with the run the hand corrections were made
+/// against, which the unchanged-spoke fixture this function was written
+/// against cannot exercise, because `correct` also hand-marks the slot it
+/// displaces and that mark carries across and neutralises the old owner. A
+/// second pass fixes it: after the `a`-side split, any surviving piece whose
+/// `b` overlaps a hand run's `b` gives up exactly the overlapping slots,
+/// becoming a gap there — the same rule `correct_runs` applies to a single
+/// correction (`lib.rs:126-134`), the hand run winning because that is the
+/// whole point of the field. This does not re-derive the merged edge through
+/// `correct_runs` itself: that pipeline's `Run` carries no `margin`, `by` or
+/// `note`, and re-deriving through `compress` can move a piece's boundary
+/// away from both the solved run and the hand run it came from, leaving
+/// nothing honest to reattach that metadata to. Splicing, then evicting what
+/// the splice missed, keeps every piece traceable to the run it inherits
+/// `margin` from and the hand run it deferred to.
+///
+/// Each surviving piece inherits its parent solved run's `margin` — except a
+/// piece the second pass evicts, which does not: that figure was a measure of
+/// confidence in the very pairing eviction just discarded, so carrying it
+/// forward would describe a `b` this piece no longer claims.
+///
+/// Requires `hand` to be expressed in the same `a`-side edition as `solved`.
+/// The caller (`merge_spoke`) guarantees this: a hub edge is always stored
+/// `start` -> `name`, and a direct edge stored the other way round is refused
+/// before this is called, rather than silently inverted or misfiled.
+fn carry_hand_runs(
+    solved: &[RunEntry],
+    hand: &[RunEntry],
+    a_slots: &[Slot],
+    b_slots: &[Slot],
+) -> Vec<RunEntry> {
+    let index = |slots: &[Slot], slot: Slot| -> u32 {
+        slot_index(slots, slot)
+            .expect("hand and solved runs are addressed in this edition's own slots") as u32
+    };
+
+    // Hand spans in slot indices, sorted by where they start, so a solved run
+    // overlapping more than one of them — as it does in the fixture above —
+    // is split around all of them in a single pass rather than one at a time.
+    let mut hand_spans: Vec<(u32, u32)> = hand
+        .iter()
+        .map(|h| (index(a_slots, h.a.start), index(a_slots, h.a.end)))
+        .collect();
+    hand_spans.sort_unstable();
+
+    // The hand runs' own targets, in slot indices. A surviving solved piece
+    // whose target overlaps one of these has to give up the overlap: see the
+    // C2 paragraph above.
+    let mut hand_b_spans: Vec<(u32, u32)> = hand
+        .iter()
+        .filter_map(|h| {
+            h.b.map(|b| (index(b_slots, b.start), index(b_slots, b.end)))
+        })
+        .collect();
+    hand_b_spans.sort_unstable();
+
+    // Build one output piece from a template entry (for `margin`/`by`/`note`)
+    // plus an `a`-range and the `b`-offset it was solved at. `forced_gap` is
+    // what the eviction pass uses to turn a piece into a gap without losing
+    // the `a`-range it still occupies.
+    let build =
+        |entry: &RunEntry, a_from: u32, a_to: u32, b_offset: Option<i64>, forced_gap: bool| {
+            RunEntry {
+                a: SlotSpan {
+                    start: a_slots[a_from as usize],
+                    end: a_slots[a_to as usize],
+                },
+                b: if forced_gap {
+                    None
+                } else {
+                    b_offset.map(|offset| SlotSpan {
+                        start: b_slots[(a_from as i64 + offset) as usize],
+                        end: b_slots[(a_to as i64 + offset) as usize],
+                    })
+                },
+                margin: if forced_gap { None } else { entry.margin },
+                by: entry.by,
+                note: entry.note.clone(),
+            }
+        };
+
+    // First pass: carve each solved run around the hand runs' own source
+    // spans. A `cut` piece here is dropped — the hand run itself supplies
+    // that stretch, appended once below.
+    let mut spliced = Vec::new();
+    for entry in solved {
+        let s_start = index(a_slots, entry.a.start);
+        let s_end = index(a_slots, entry.a.end);
+        // A paired run's two sides advance together one slot at a time, so
+        // the offset from an `a` index to its `b` index at the run's own
+        // start is the offset everywhere inside it.
+        let b_offset = entry
+            .b
+            .map(|b| index(b_slots, b.start) as i64 - s_start as i64);
+        split_around(s_start, s_end, &hand_spans, |from, to, cut| {
+            if !cut {
+                spliced.push(build(entry, from, to, b_offset, false));
+            }
+        });
+    }
+
+    // Second pass: evict whatever the first pass left holding a target one of
+    // the hand runs now claims. `hand_b_spans` is translated into each
+    // piece's own `a`-space through its own offset, since a piece's `b`
+    // slots and its `a` slots are not the same indices.
+    let mut evicted = Vec::new();
+    for piece in &spliced {
+        let a_start = index(a_slots, piece.a.start);
+        let a_end = index(a_slots, piece.a.end);
+        let Some(b) = piece.b else {
+            evicted.push(piece.clone());
+            continue;
+        };
+        let offset = index(b_slots, b.start) as i64 - a_start as i64;
+        let cuts: Vec<(u32, u32)> = hand_b_spans
+            .iter()
+            .filter_map(|&(hs, he)| {
+                let cs = hs as i64 - offset;
+                let ce = he as i64 - offset;
+                (ce >= a_start as i64 && cs <= a_end as i64)
+                    .then(|| (cs.max(a_start as i64) as u32, ce.min(a_end as i64) as u32))
+            })
+            .collect();
+        split_around(a_start, a_end, &cuts, |from, to, cut| {
+            evicted.push(build(piece, from, to, Some(offset), cut));
+        });
+    }
+
+    let mut out = evicted;
+    out.extend(hand.iter().cloned());
+    out.sort_by_key(|e| (e.a.start.page, e.a.start.half.is_some()));
+    out
 }
 
 // Spans live as strings in the document, which is what makes a run readable.
@@ -814,6 +1442,77 @@ mod tests {
         }
     }
 
+    fn edition_with_pages(path: &str, sha: &str, pages: u32) -> Edition {
+        Edition {
+            label: path.into(),
+            members: vec![Member {
+                path: path.into(),
+                sha256: sha.into(),
+                pages,
+            }],
+            spreads: Vec::new(),
+        }
+    }
+
+    /// The invariant `correct_runs` protects for one correction
+    /// (`lib.rs:126-134`), checked here against a *whole* merged run list:
+    /// no target slot may be claimed twice. C2 is `carry_hand_runs` breaking
+    /// exactly this while restoring the `a` side correctly, and nothing above
+    /// `correct_runs` asserted `claimed == distinct` on the `b` side before —
+    /// this is that assertion, shared so every merge test can run it.
+    fn assert_b_side_is_one_to_one(runs: &[RunEntry], a_slots: &[Slot], b_slots: &[Slot]) {
+        let mut owners: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for entry in runs {
+            let Some(b) = entry.b else { continue };
+            let b_start = slot_index(b_slots, b.start).expect("valid b span") as u32;
+            let b_end = slot_index(b_slots, b.end).expect("valid b span") as u32;
+            let a_start = slot_index(a_slots, entry.a.start).expect("valid a span") as u32;
+            for offset in 0..=(b_end - b_start) {
+                owners
+                    .entry(b_start + offset)
+                    .or_default()
+                    .push(a_start + offset);
+            }
+        }
+        let claimed: usize = owners.values().map(Vec::len).sum();
+        let distinct = owners.len();
+        let violations: Vec<String> = owners
+            .iter()
+            .filter(|(_, owners)| owners.len() > 1)
+            .map(|(slot, owners)| format!("b slot {slot} is claimed by a slots {owners:?}"))
+            .collect();
+        assert_eq!(
+            claimed,
+            distinct,
+            "the merged run list is not 1:1 on the b side: {}",
+            violations.join("; ")
+        );
+    }
+
+    /// A two-edition document like `two_edition`, but `b` carries one extra
+    /// page `a` does not — its own front cover, say — so the stored run is
+    /// `a "0-29"` against `b "1-30"`, a constant +1 offset. `two_edition`'s
+    /// identity mapping cannot tell `carry_hand_runs`'s `b`-side arithmetic
+    /// correct from off-by-one: every index a bug shifted by one there still
+    /// lands on the right page by accident. This fixture is what pins it.
+    fn two_edition_offset() -> Sidecar {
+        Sidecar::from_json(
+            r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "a": { "label": "A", "members": [{ "path": "a.cbz", "sha256": "00", "pages": 30 }] },
+            "b": { "label": "B", "members": [{ "path": "b.cbz", "sha256": "01", "pages": 31 }] }
+          },
+          "hub": "a",
+          "alignments": [
+            { "from": "a", "to": "b", "by": "solver", "runs": [{ "a": "0-29", "b": "1-30" }] }
+          ]
+        }"#,
+        )
+        .expect("parses")
+    }
+
     /// `verify` is handed archives, not edition names, and has to work out
     /// which pair of the document it is being asked about. Getting this wrong
     /// renders a confident report of the wrong alignment, which is the one
@@ -879,11 +1578,12 @@ mod tests {
         );
     }
 
-    /// Re-solving a spoke after fixing its archive is ordinary. Refusing it
-    /// would make the common case the annoying one, so it replaces — edition
-    /// and edge together, so neither can outlive the other.
+    /// Re-solving a spoke after fixing its archive is ordinary, so a changed
+    /// `sha256` on the spoke side still merges. Narrowed by O13: this is now
+    /// specifically the *no hand runs* case, which is what keeps that fix a
+    /// narrowing rather than a breaking change.
     #[test]
-    fn re_aligning_a_spoke_replaces_it_rather_than_duplicating() {
+    fn re_aligning_a_spoke_with_no_hand_runs_replaces_it_rather_than_duplicating() {
         let mut s = two_edition();
 
         let merged = s
@@ -901,6 +1601,637 @@ mod tests {
         assert_eq!(s.editions.len(), 2);
         assert_eq!(s.alignments.len(), 1, "the old edge must not survive");
         assert_eq!(s.editions["b"].members[0].sha256, "99");
+    }
+
+    /// A spoke whose bytes are unchanged is the ordinary re-solve: the solver
+    /// ran again over the same two editions, and a run somebody fixed by hand
+    /// is a statement about those bytes that the solver has no better claim
+    /// on. `docs/sidecar.md`: "a hand-corrected run must survive a re-solve;
+    /// this is the field that makes the correction UI more than a viewer."
+    ///
+    /// Two corrections land in the fixture's single 30-slot run — one at slot
+    /// 5, one at slot 9 — deliberately, so this pins more than "the corrected
+    /// slot still says what it said": it pins that the *rest* of the run,
+    /// including the slots strictly between the two corrections, is not
+    /// collateral damage. `carry_hand_runs`'s first cut dropped the whole
+    /// 30-slot solved run wherever any hand run overlapped it, which this
+    /// fixture's own shape — one long run — hid completely if only the
+    /// corrected slots themselves were checked.
+    #[test]
+    fn a_hand_run_survives_a_re_solve_of_an_unchanged_spoke() {
+        let mut s = two_edition();
+        s.correct(
+            "a",
+            "b",
+            Slot {
+                page: 5,
+                half: None,
+            },
+            Some(Slot {
+                page: 9,
+                half: None,
+            }),
+            None,
+        )
+        .expect("corrects");
+        let hand_before = s.alignments[0]
+            .runs
+            .iter()
+            .filter(|e| e.by == Some(Source::Hand))
+            .count();
+        assert!(hand_before > 0, "the fixture must actually hold a hand run");
+
+        let merged = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Hub,
+                &edition("a.cbz", "00"),
+                "b",
+                edition("b.cbz", "01"),
+                edge("a", "b"),
+            )
+            .expect("an unchanged spoke merges");
+
+        assert_eq!(merged, Merged::CarriedHandRuns(hand_before));
+        assert_eq!(
+            s.alignments[0]
+                .runs
+                .iter()
+                .filter(|e| e.by == Some(Source::Hand))
+                .count(),
+            hand_before,
+            "the corrections are still there after the solver's runs replaced the rest"
+        );
+        assert_b_side_is_one_to_one(
+            &s.alignments[0].runs,
+            &s.editions["a"].slots(Direction::RightToLeft),
+            &s.editions["b"].slots(Direction::RightToLeft),
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 5),
+            Some(Slot {
+                page: 9,
+                half: None
+            }),
+            "and they still say what they said"
+        );
+        // The slots either side of the carried corrections, pinned by
+        // measurement rather than assumed: a helper that drops the whole
+        // overlapping solved run instead of splitting it around the hand
+        // run's span would answer `None` for all three of these, since the
+        // fixture's entire 30-slot solved run overlaps both corrections.
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 4),
+            Some(Slot {
+                page: 4,
+                half: None
+            }),
+            "the slot just before the first correction must still resolve"
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 7),
+            Some(Slot {
+                page: 7,
+                half: None
+            }),
+            "a slot strictly between the two corrections must still resolve"
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 10),
+            Some(Slot {
+                page: 10,
+                half: None
+            }),
+            "the slot just after the second correction must still resolve"
+        );
+    }
+
+    /// The case the from-side guard never covered. Re-solving a spoke after
+    /// fixing its archive is ordinary and stays allowed — but a correction
+    /// addresses slots of the edition that is being replaced, so carrying it
+    /// across would resurrect runs pointing into bytes that are gone. What
+    /// should become of such a correction is a real question, deliberately
+    /// left open in `docs/status.md`; refusing is what stops it being answered
+    /// silently.
+    #[test]
+    fn replacing_a_spoke_that_holds_hand_runs_is_refused() {
+        let mut s = two_edition();
+        s.correct(
+            "a",
+            "b",
+            Slot {
+                page: 5,
+                half: None,
+            },
+            Some(Slot {
+                page: 9,
+                half: None,
+            }),
+            None,
+        )
+        .expect("corrects");
+
+        let refused = s.merge_spoke(
+            Direction::RightToLeft,
+            Anchor::Hub,
+            &edition("a.cbz", "00"),
+            "b",
+            edition("b2.cbz", "99"),
+            edge("a", "b"),
+        );
+
+        let message = refused.expect_err("a replaced spoke with corrections must not merge");
+        assert!(message.contains("`b`"), "must name the spoke: {message}");
+        assert!(
+            message.contains("hand"),
+            "must say what is at risk: {message}"
+        );
+        assert!(
+            message.chars().any(|c| c.is_ascii_digit()),
+            "must say how many: {message}"
+        );
+        assert_eq!(
+            s.editions["b"].members[0].sha256, "01",
+            "a refused merge must change nothing"
+        );
+    }
+
+    /// `spoke_replaced` must compare content, not paths — the same rule the
+    /// from-side guard already applies and the design table already states
+    /// ("Spoke `sha256` unchanged"). A spoke archive that was moved or
+    /// renamed with identical bytes is the ordinary unchanged-spoke case, not
+    /// a replacement: it must carry the hand run across, not refuse.
+    #[test]
+    fn re_solving_a_spoke_whose_archive_moved_carries_hand_runs_rather_than_refusing() {
+        let mut s = two_edition();
+        s.correct(
+            "a",
+            "b",
+            Slot {
+                page: 5,
+                half: None,
+            },
+            Some(Slot {
+                page: 9,
+                half: None,
+            }),
+            None,
+        )
+        .expect("corrects");
+        let hand_before = s.alignments[0]
+            .runs
+            .iter()
+            .filter(|e| e.by == Some(Source::Hand))
+            .count();
+        assert!(hand_before > 0, "the fixture must actually hold a hand run");
+
+        let merged = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Hub,
+                &edition("a.cbz", "00"),
+                "b",
+                // Same sha256 as the stored `b`, different path: a rename or
+                // a move, not a content change.
+                edition("b-moved.cbz", "01"),
+                edge("a", "b"),
+            )
+            .expect("a moved-but-unchanged spoke merges and carries");
+
+        assert_eq!(merged, Merged::CarriedHandRuns(hand_before));
+        assert_eq!(s.editions["b"].members[0].path, "b-moved.cbz");
+        assert_b_side_is_one_to_one(
+            &s.alignments[0].runs,
+            &s.editions["a"].slots(Direction::RightToLeft),
+            &s.editions["b"].slots(Direction::RightToLeft),
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 5),
+            Some(Slot {
+                page: 9,
+                half: None
+            }),
+            "the correction must survive a path-only change"
+        );
+    }
+
+    /// A hub edge is always stored `start` -> `name`, but a direct edge can
+    /// be stored in whichever direction `Sidecar::correct` first created it
+    /// in. Here `correct("c", "b", ...)` has no existing `b`/`c` edge to
+    /// rewrite, so it composes through the hub and writes a *new* direct edge
+    /// `c -> b` — and that edge's hand run is addressed against `c`'s slots.
+    /// Re-merging the same pair as `b -> c` must not splice that hand run in
+    /// as though it were addressed against `b`.
+    #[test]
+    fn a_direct_edge_stored_the_other_way_round_refuses_rather_than_misapplying_hand_runs() {
+        let mut s = two_edition();
+        s.editions.insert("c".into(), edition("c.cbz", "02"));
+        s.alignments.push(edge("a", "c"));
+        s.correct(
+            "c",
+            "b",
+            Slot {
+                page: 5,
+                half: None,
+            },
+            Some(Slot {
+                page: 9,
+                half: None,
+            }),
+            None,
+        )
+        .expect("corrects through the hub, creating a new c -> b direct edge");
+        assert_eq!(
+            (s.alignments[2].from.as_str(), s.alignments[2].to.as_str()),
+            ("c", "b"),
+            "the fixture must actually hold the edge the other way round"
+        );
+        assert!(
+            s.alignments[2]
+                .runs
+                .iter()
+                .any(|e| e.by == Some(Source::Hand)),
+            "the fixture must actually hold a hand run"
+        );
+
+        let refused = s.merge_spoke(
+            Direction::RightToLeft,
+            Anchor::Direct,
+            &edition("b.cbz", "01"),
+            "c",
+            edition("c.cbz", "02"),
+            Alignment {
+                from: "b".into(),
+                to: "c".into(),
+                by: Source::Solver,
+                solver: None,
+                quality: None,
+                runs: vec![RunEntry {
+                    a: SlotSpan::parse("0-29").unwrap(),
+                    b: Some(SlotSpan::parse("0-29").unwrap()),
+                    margin: None,
+                    by: None,
+                    note: None,
+                }],
+            },
+        );
+
+        let message =
+            refused.expect_err("an orientation-mismatched hand edge must not merge silently");
+        assert!(
+            message.contains("`b`") && message.contains("`c`"),
+            "must name both editions: {message}"
+        );
+        assert_eq!(
+            (s.alignments[2].from.as_str(), s.alignments[2].to.as_str()),
+            ("c", "b"),
+            "a refused merge must change nothing about the stored edge"
+        );
+    }
+
+    /// `two_edition`'s fixture pairs `a` and `b` 1:1, so `carry_hand_runs`'s
+    /// `b`-offset arithmetic is zero in every other test here — an off-by-one
+    /// in the cast from a slot index to `b_slots` would still pass the whole
+    /// suite. `two_edition_offset` gives `b` a constant +1 offset instead, so
+    /// this pins a split piece's `b` span on both sides of a carried hand
+    /// run, not just its `a` span.
+    #[test]
+    fn carried_split_pieces_keep_the_correct_b_offset() {
+        let mut s = two_edition_offset();
+        // a5 <-> b6 under the stored +1 offset; correct it to b20 instead.
+        // b20 was a19's counterpart, so a19 is displaced to a gap — the same
+        // "asserted slot plus displaced slot" shape every other correction
+        // test in this file relies on.
+        s.correct(
+            "a",
+            "b",
+            Slot {
+                page: 5,
+                half: None,
+            },
+            Some(Slot {
+                page: 20,
+                half: None,
+            }),
+            None,
+        )
+        .expect("corrects");
+        let hand_before = s.alignments[0]
+            .runs
+            .iter()
+            .filter(|e| e.by == Some(Source::Hand))
+            .count();
+        assert_eq!(hand_before, 2, "the asserted slot and the one it displaced");
+
+        let merged = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Hub,
+                &edition_with_pages("a.cbz", "00", 30),
+                "b",
+                edition_with_pages("b.cbz", "01", 31),
+                Alignment {
+                    from: "a".into(),
+                    to: "b".into(),
+                    by: Source::Solver,
+                    solver: None,
+                    quality: None,
+                    runs: vec![RunEntry {
+                        a: SlotSpan::parse("0-29").unwrap(),
+                        b: Some(SlotSpan::parse("1-30").unwrap()),
+                        margin: None,
+                        by: None,
+                        note: None,
+                    }],
+                },
+            )
+            .expect("an unchanged spoke merges");
+        assert_eq!(merged, Merged::CarriedHandRuns(2));
+        assert_b_side_is_one_to_one(
+            &s.alignments[0].runs,
+            &s.editions["a"].slots(Direction::RightToLeft),
+            &s.editions["b"].slots(Direction::RightToLeft),
+        );
+
+        // The corrected slot and the one it displaced.
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 5),
+            Some(Slot {
+                page: 20,
+                half: None
+            })
+        );
+        assert_eq!(crate::resolve(&s, "a", "b", 19), None, "displaced to a gap");
+        // The split piece to the left of the correction: the +1 offset holds
+        // both at its far end and right up against the hand run.
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 0),
+            Some(Slot {
+                page: 1,
+                half: None
+            })
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 4),
+            Some(Slot {
+                page: 5,
+                half: None
+            })
+        );
+        // The split piece to the right of the displaced gap: the offset
+        // survives the split rather than resetting to the run's own start.
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 20),
+            Some(Slot {
+                page: 21,
+                half: None
+            })
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 29),
+            Some(Slot {
+                page: 30,
+                half: None
+            })
+        );
+    }
+
+    /// C2. `carry_hand_runs` splits solved runs around a hand run's **source**
+    /// span, but did nothing about a solved piece's **target** landing on a
+    /// slot a hand run already claims. The unchanged-spoke fixture used
+    /// everywhere else in this file hides it, because `correct` also
+    /// hand-marks the slot it displaced, and that mark carries across and
+    /// neutralises the old owner — but only while the fresh solve agrees with
+    /// the old one about where everything goes. Re-solving with a genuinely
+    /// different run shape (as a newer solver or a different `floor` would)
+    /// does not agree, and the reviewer's reproduction is exactly this: a
+    /// fresh solve shifted by one slot from the run the hand corrections were
+    /// made against.
+    ///
+    /// Before the fix, slot `a` 10 keeps the counterpart (`b` 9) the fresh
+    /// solve's own offset gives it, even though the hand run at `a` 5 already
+    /// claims `b` 9 — the exact collision `correct_runs` exists to prevent.
+    /// `b` 9 then answers `a` 5 one way and `a` 10 the other, which is the
+    /// silent page move `notes.md`'s "swapping must not round-trip through
+    /// the alignment" is about.
+    #[test]
+    fn carrying_hand_runs_across_a_reshaped_solve_evicts_the_collision() {
+        let mut s = two_edition();
+        s.correct(
+            "a",
+            "b",
+            Slot {
+                page: 5,
+                half: None,
+            },
+            Some(Slot {
+                page: 9,
+                half: None,
+            }),
+            None,
+        )
+        .expect("corrects");
+        let hand_before = s.alignments[0]
+            .runs
+            .iter()
+            .filter(|e| e.by == Some(Source::Hand))
+            .count();
+        assert_eq!(hand_before, 2, "the asserted slot and the one it displaced");
+
+        // A fresh solve of the same pair, shaped differently from the run the
+        // hand corrections were made against: slot 4 is now a gap, and
+        // everything from slot 5 on is offset by -1 rather than lining up
+        // exactly. `SolverInfo { hash, floor }` exists to record that a
+        // re-solve can look like this.
+        let fresh = Alignment {
+            from: "a".into(),
+            to: "b".into(),
+            by: Source::Solver,
+            solver: None,
+            quality: None,
+            runs: vec![
+                RunEntry {
+                    a: SlotSpan::parse("0-3").unwrap(),
+                    b: Some(SlotSpan::parse("0-3").unwrap()),
+                    margin: None,
+                    by: None,
+                    note: None,
+                },
+                RunEntry {
+                    a: SlotSpan::parse("4").unwrap(),
+                    b: None,
+                    margin: None,
+                    by: None,
+                    note: None,
+                },
+                RunEntry {
+                    a: SlotSpan::parse("5-29").unwrap(),
+                    b: Some(SlotSpan::parse("4-28").unwrap()),
+                    margin: None,
+                    by: None,
+                    note: None,
+                },
+            ],
+        };
+
+        let merged = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Hub,
+                &edition("a.cbz", "00"),
+                "b",
+                edition("b.cbz", "01"),
+                fresh,
+            )
+            .expect("an unchanged spoke merges even when the fresh solve disagrees in shape");
+        assert_eq!(merged, Merged::CarriedHandRuns(2));
+
+        let a_slots = s.editions["a"].slots(Direction::RightToLeft);
+        let b_slots = s.editions["b"].slots(Direction::RightToLeft);
+        assert_b_side_is_one_to_one(&s.alignments[0].runs, &a_slots, &b_slots);
+
+        // The hand runs still say what they said.
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 5),
+            Some(Slot {
+                page: 9,
+                half: None
+            }),
+            "the corrected slot"
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 9),
+            None,
+            "the slot the correction displaced"
+        );
+        // Slot 10 is where the fresh solve's own -1 offset would also land on
+        // b9 — the collision. The hand run wins, so slot 10 gives up its
+        // target rather than silently sharing it.
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 10),
+            None,
+            "evicted: the fresh solve's own offset would have landed slot 10 on b9 too"
+        );
+        // Everything else the fresh solve said still stands.
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 4),
+            None,
+            "the fresh solve's own gap"
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 6),
+            Some(Slot {
+                page: 5,
+                half: None
+            })
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 8),
+            Some(Slot {
+                page: 7,
+                half: None
+            })
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 11),
+            Some(Slot {
+                page: 10,
+                half: None
+            }),
+            "the slot just after the evicted one keeps the fresh solve's own offset"
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 29),
+            Some(Slot {
+                page: 28,
+                half: None
+            })
+        );
+    }
+
+    /// C1. `merge_spoke` looked for hand runs only on the edge between the
+    /// two editions being merged (`start` <-> `name`), and `Sidecar::correct`
+    /// can now write a hand-corrected *direct* edge to a **third** edition —
+    /// `b -> c` here, while the spoke being re-solved is `a -> b`. That direct
+    /// edge is not the one being replaced, so it was never inspected, and a
+    /// spoke whose bytes changed merged silently while the stale `b -> c`
+    /// edge — hand runs and all — kept addressing the old `b`'s slots.
+    #[test]
+    fn replacing_a_spoke_whose_hand_corrected_edge_is_to_a_third_edition_is_refused() {
+        let mut s = two_edition();
+        s.editions.insert("c".into(), edition("c.cbz", "02"));
+        s.alignments.push(edge("a", "c"));
+
+        s.correct(
+            "b",
+            "c",
+            Slot {
+                page: 5,
+                half: None,
+            },
+            Some(Slot {
+                page: 9,
+                half: None,
+            }),
+            None,
+        )
+        .expect("corrects through the hub, creating a new b -> c direct edge");
+        assert_eq!(
+            (s.alignments[2].from.as_str(), s.alignments[2].to.as_str()),
+            ("b", "c"),
+            "the fixture must actually hold the edge the other way round from the spoke being re-solved"
+        );
+        let hand_on_bc = s.alignments[2]
+            .runs
+            .iter()
+            .filter(|e| e.by == Some(Source::Hand))
+            .count();
+        assert_eq!(hand_on_bc, 2, "the fixture must actually hold hand runs");
+
+        // Re-solve `b` against the hub, as an ordinary re-scan would — same
+        // page count, different bytes. This never touches the `a` <-> `b`
+        // edge's own hand runs (there are none), only the `b` -> `c` edge
+        // that addresses `b`'s slots from the other side.
+        let refused = s.merge_spoke(
+            Direction::RightToLeft,
+            Anchor::Hub,
+            &edition("a.cbz", "00"),
+            "b",
+            edition("b2.cbz", "99"),
+            edge("a", "b"),
+        );
+
+        let message = refused.expect_err(
+            "a spoke whose bytes changed must not merge while a hand-corrected edge to a \
+             third edition still addresses its old slots",
+        );
+        assert!(message.contains("`b`"), "must name the spoke: {message}");
+        assert!(
+            message.contains("hand"),
+            "must say what is at risk: {message}"
+        );
+        assert!(
+            message.chars().any(|c| c.is_ascii_digit()),
+            "must say how many: {message}"
+        );
+        assert_eq!(
+            s.editions["b"].members[0].sha256, "01",
+            "a refused merge must change nothing"
+        );
+        assert_eq!(
+            (s.alignments[2].from.as_str(), s.alignments[2].to.as_str()),
+            ("b", "c"),
+            "a refused merge must change nothing about the stored edge"
+        );
+        assert_eq!(
+            s.alignments[2]
+                .runs
+                .iter()
+                .filter(|e| e.by == Some(Source::Hand))
+                .count(),
+            2,
+            "a refused merge must change nothing about the hand runs either"
+        );
     }
 
     /// The answer to "what does a third edition align against". The star says
@@ -1555,5 +2886,386 @@ mod tests {
             )
             .unwrap();
         assert_eq!(at.member, 2);
+    }
+
+    const STAR_FOR_CORRECTION: &str = r#"{
+      "taiyaku": 1,
+      "work": { "title": "T", "reading": "rtl" },
+      "editions": {
+        "a": { "label": "A", "members": [{ "path": "a.cbz", "sha256": "00", "pages": 30 }] },
+        "b": { "label": "B", "members": [{ "path": "b.cbz", "sha256": "01", "pages": 30 }] },
+        "c": { "label": "C", "members": [{ "path": "c.cbz", "sha256": "02", "pages": 30 }] }
+      },
+      "hub": "a",
+      "alignments": [
+        { "from": "a", "to": "b", "by": "solver", "runs": [{ "a": "0-29", "b": "0-29" }] },
+        { "from": "a", "to": "c", "by": "solver", "runs": [{ "a": "2-29", "b": "0-27" }] }
+      ]
+    }"#;
+
+    fn at(page: u32) -> Slot {
+        Slot { page, half: None }
+    }
+
+    /// The ordinary case, on the real document: the edge is stored
+    /// `raw-mono -> en-mono` and the correction is asked for in that
+    /// direction. Slot 50 of the raw currently resolves to English page 49;
+    /// asserting page 40 instead must land, and must displace whoever held it.
+    #[test]
+    fn correcting_a_stored_edge_rewrites_it_in_place() {
+        let mut s = Sidecar::from_json(REAL).expect("parses");
+
+        let what = s
+            .correct("raw-mono", "en-mono", at(50), Some(at(40)), None)
+            .expect("corrects");
+
+        assert_eq!(what, Corrected::Edge);
+        assert_eq!(s.alignments.len(), 1, "no new edge for a pair that has one");
+        assert_eq!(
+            crate::resolve(&s, "raw-mono", "en-mono", 50),
+            Some(at(40)),
+            "the assertion is what the document now says"
+        );
+        let hands: Vec<String> = s.alignments[0]
+            .runs
+            .iter()
+            .filter(|e| e.by == Some(Source::Hand))
+            .map(|e| e.a.to_string())
+            .collect();
+        assert_eq!(
+            hands,
+            vec!["42".to_string(), "50".to_string()],
+            "exactly the slot asserted and the slot displaced — not the run they sat in"
+        );
+    }
+
+    /// The edge is stored one way and the reader is looking the other way.
+    /// Correcting through `invert` and back would silently drop every gap the
+    /// stored direction records, because `invert` drops gaps by construction.
+    #[test]
+    fn correcting_against_the_stored_direction_keeps_the_stored_gaps() {
+        let mut s = Sidecar::from_json(REAL).expect("parses");
+        let gaps_before = s.alignments[0]
+            .runs
+            .iter()
+            .filter(|e| e.b.is_none())
+            .count();
+
+        let what = s
+            .correct("en-mono", "raw-mono", at(10), Some(at(20)), None)
+            .expect("corrects");
+
+        assert_eq!(what, Corrected::Edge);
+        assert_eq!(s.alignments.len(), 1);
+        assert_eq!(
+            s.alignments[0].from, "raw-mono",
+            "the edge keeps its orientation"
+        );
+        assert_eq!(
+            s.alignments[0]
+                .runs
+                .iter()
+                .filter(|e| e.b.is_none())
+                .count(),
+            gaps_before + 1,
+            "the stored gaps survive, plus one for the displaced slot"
+        );
+        assert_eq!(crate::resolve(&s, "en-mono", "raw-mono", 10), Some(at(20)));
+    }
+
+    /// A pair with no stored edge resolves through the hub, so there is
+    /// nothing to edit. The correction writes a direct edge seeded from the
+    /// composition with the fix applied — which `sidecar.md` already sanctions
+    /// for a pair where composition demonstrably loses, and a hand correction
+    /// is that demonstration.
+    #[test]
+    fn correcting_a_composed_pair_writes_a_direct_edge() {
+        let mut s = Sidecar::from_json(STAR_FOR_CORRECTION).expect("parses");
+        assert_eq!(
+            route(&s, "b", "c").map(|r| r.via),
+            Some(Via::Hub("a".into()))
+        );
+
+        let what = s
+            .correct("b", "c", at(0), Some(at(0)), None)
+            .expect("corrects");
+
+        assert_eq!(what, Corrected::DirectEdgeAdded);
+        assert_eq!(s.alignments.len(), 3);
+        let added = s.alignments.last().expect("just pushed");
+        assert_eq!((added.from.as_str(), added.to.as_str()), ("b", "c"));
+        assert_eq!(added.by, Source::Hand);
+        assert_eq!(added.solver, None, "no floor was calibrated for this edge");
+        assert_eq!(route(&s, "b", "c").map(|r| r.via), Some(Via::Direct));
+        assert_eq!(
+            crate::resolve(&s, "b", "c", 0),
+            Some(at(0)),
+            "the composed gap at the head is what the reader was correcting"
+        );
+    }
+
+    /// A correction the document already agrees with must change nothing at
+    /// all — not the runs, not `by`, not `note`. Without this, "correcting" a
+    /// slot to where it already resolves stamps `hand` across the whole run it
+    /// sits in, which on the real fixture is 188 slots.
+    #[test]
+    fn a_correction_that_changes_nothing_rewrites_nothing() {
+        let mut s = Sidecar::from_json(REAL).expect("parses");
+        let before = s.clone();
+
+        let what = s
+            .correct(
+                "raw-mono",
+                "en-mono",
+                at(100),
+                Some(at(94)),
+                Some("noted".into()),
+            )
+            .expect("is accepted");
+
+        assert_eq!(what, Corrected::AlreadyTrue);
+        assert_eq!(s, before, "an already-true assertion is not an edit");
+    }
+
+    /// The quality block is recomputed from the runs that are now there, not
+    /// carried over. Measured on this fixture: two corrections take the
+    /// average run length from 64.33 to 21.22, past the 27.0 threshold — see
+    /// O23 in `docs/status.md`, which records that rather than hiding it.
+    #[test]
+    fn correcting_recomputes_the_quality_beside_the_runs() {
+        let mut s = Sidecar::from_json(REAL).expect("parses");
+
+        s.correct("raw-mono", "en-mono", at(50), Some(at(40)), None)
+            .unwrap();
+        let after_one = s.alignments[0].quality.expect("recomputed");
+        s.correct("raw-mono", "en-mono", at(150), Some(at(140)), None)
+            .unwrap();
+        let after_two = s.alignments[0].quality.expect("recomputed");
+
+        assert_eq!(after_one.verdict, Verdict::Sound);
+        assert!((after_one.avg_run - 32.0).abs() < 0.01, "{after_one:?}");
+        assert_eq!(
+            after_two.verdict,
+            Verdict::Fragmented,
+            "two corrections is where this volume crosses the threshold"
+        );
+        assert!((after_two.avg_run - 21.22).abs() < 0.01, "{after_two:?}");
+    }
+
+    /// A correction must not strip the confidence figures off the runs it did
+    /// not touch.
+    ///
+    /// `entries_from_runs` writes `margin: None` for every entry it builds, so
+    /// before this was guarded a single correction silently cleared the margins
+    /// across the whole edge. Found by driving the reader against the real
+    /// corpus, not by any test: one correction took `raw-mono -> en-fan` from
+    /// eight margins to zero while the untouched `raw-mono -> en-mono` edge
+    /// kept all of its. A margin is recoverable only by re-solving against the
+    /// archives, which is the work `docs/sidecar.md` says the document exists
+    /// to avoid.
+    ///
+    /// `REAL`'s stored edge carries a margin on three of its five runs, and the
+    /// correction below rewrites only the run holding slot 50 — so the runs at
+    /// either end must come through with their figures intact, and the ones the
+    /// correction actually reshaped must come through as `None` rather than
+    /// inheriting a figure measured over a different span.
+    #[test]
+    fn a_correction_keeps_the_margins_of_the_runs_it_did_not_touch() {
+        let mut s = Sidecar::from_json(REAL).expect("parses");
+        let before: Vec<Option<f32>> = s.alignments[0].runs.iter().map(|r| r.margin).collect();
+        assert_eq!(
+            before.iter().filter(|m| m.is_some()).count(),
+            3,
+            "the fixture must actually carry margins, or this test asserts nothing"
+        );
+
+        s.correct("raw-mono", "en-mono", at(50), Some(at(40)), None)
+            .expect("corrects");
+
+        let kept: Vec<(String, Option<f32>)> = s.alignments[0]
+            .runs
+            .iter()
+            .map(|r| (r.a.to_string(), r.margin))
+            .collect();
+        // The first run is untouched by a correction at slot 50 and keeps the
+        // figure `REAL` records for it.
+        assert_eq!(
+            kept.iter().find(|(a, _)| a == "0").map(|(_, m)| *m),
+            Some(Some(0.09)),
+            "an untouched run keeps its margin: {kept:?}"
+        );
+        assert_eq!(
+            kept.iter().find(|(a, _)| a == "2-5").map(|(_, m)| *m),
+            Some(Some(0.15)),
+            "and so does this one: {kept:?}"
+        );
+        // The long run that held slot 50 was split by the correction, so no
+        // stored figure describes any of its pieces any more.
+        assert!(
+            kept.iter()
+                .filter(|(a, _)| a != "0" && a != "2-5")
+                .all(|(_, m)| m.is_none()),
+            "a reshaped run must not inherit a margin measured over a different span: {kept:?}"
+        );
+    }
+
+    /// A hand correction has to survive the file being written and read back,
+    /// or nothing else in this milestone means anything.
+    #[test]
+    fn a_correction_round_trips_through_the_document() {
+        let mut s = Sidecar::from_json(REAL).expect("parses");
+        s.correct(
+            "raw-mono",
+            "en-mono",
+            at(50),
+            Some(at(40)),
+            Some("checked".into()),
+        )
+        .unwrap();
+
+        let reparsed = Sidecar::from_json(&s.to_json()).expect("round-trips");
+
+        assert_eq!(reparsed, s);
+        let noted = reparsed.alignments[0]
+            .runs
+            .iter()
+            .find(|e| e.note.is_some())
+            .expect("the note survives");
+        assert_eq!(noted.note.as_deref(), Some("checked"));
+        assert_eq!(noted.by, Some(Source::Hand));
+    }
+
+    /// A second correction must not rewrite the first one's explanation.
+    /// `note` is why *that* slot was changed, and the run list is rebuilt
+    /// wholesale on every correction, so carrying it is deliberate work
+    /// rather than something that happens by itself.
+    #[test]
+    fn a_later_correction_leaves_an_earlier_ones_note_alone() {
+        let mut s = Sidecar::from_json(REAL).expect("parses");
+        s.correct(
+            "raw-mono",
+            "en-mono",
+            at(50),
+            Some(at(40)),
+            Some("first".into()),
+        )
+        .unwrap();
+
+        s.correct(
+            "raw-mono",
+            "en-mono",
+            at(150),
+            Some(at(140)),
+            Some("second".into()),
+        )
+        .unwrap();
+
+        let notes: Vec<Option<&str>> = s.alignments[0]
+            .runs
+            .iter()
+            .filter(|e| e.by == Some(Source::Hand))
+            .map(|e| e.note.as_deref())
+            .collect();
+        assert!(notes.contains(&Some("first")), "{notes:?}");
+        assert!(notes.contains(&Some("second")), "{notes:?}");
+    }
+
+    /// Each refusal names what was missing, and none of them is a panic.
+    #[test]
+    fn a_correction_naming_something_absent_is_refused_by_name() {
+        let mut s = Sidecar::from_json(REAL).expect("parses");
+
+        let no_edition = s.correct("raw-mono", "nosuch", at(0), Some(at(0)), None);
+        let no_slot = s.correct("raw-mono", "en-mono", at(9999), Some(at(0)), None);
+        let itself = s.correct("raw-mono", "raw-mono", at(0), Some(at(0)), None);
+
+        assert!(
+            matches!(no_edition, Err(NotCorrected::NoSuchEdition(ref m)) if m.contains("`nosuch`")),
+            "{no_edition:?}"
+        );
+        assert!(
+            matches!(no_slot, Err(NotCorrected::NoSuchSlot(ref m)) if m.contains("9999")),
+            "{no_slot:?}"
+        );
+        assert!(
+            matches!(itself, Err(NotCorrected::SameEdition(_))),
+            "{itself:?}"
+        );
+    }
+
+    /// `correcting_a_stored_edge_rewrites_it_in_place` cannot pin `all` versus
+    /// `any` on its own: that correction only ever *splits* the run it lands
+    /// in, so the displaced and asserted slots never share a run with an
+    /// untouched slot for `any` to over-mark. This one *merges* instead. En
+    /// slot 4 (page 4's right half) is currently claimed by raw slot 5;
+    /// reassigning it to raw slot 100 displaces slot 5, which sits right next
+    /// to the pre-existing gap at slot 6, and `compress` folds the two into
+    /// one run, `"5-6"`. Only slot 5 was decided by this correction — slot 6
+    /// was already a gap before it — so `all` must leave `"5-6"` unmarked.
+    /// `any` would mark it hand because slot 5 alone satisfies it, and on a
+    /// run a correction merges into rather than splits, that generalises to
+    /// the whole run: measured at up to 188 of this fixture's 195 slots for a
+    /// differently shaped correction. Task 3's re-solve refusal keys off
+    /// which runs are hand-marked, so an over-broad mark here would make it
+    /// refuse forever.
+    #[test]
+    fn a_hand_mark_covers_only_the_slots_a_person_decided() {
+        let mut s = Sidecar::from_json(REAL).expect("parses");
+        let target = Slot {
+            page: 4,
+            half: Some(Half::Right),
+        };
+
+        s.correct("raw-mono", "en-mono", at(100), Some(target), None)
+            .expect("corrects");
+
+        assert!(
+            s.alignments[0]
+                .runs
+                .iter()
+                .any(|e| e.a.to_string() == "5-6"),
+            "the displaced slot must have merged with the existing gap, or this test proves nothing: {:?}",
+            s.alignments[0].runs
+        );
+        let hands: Vec<String> = s.alignments[0]
+            .runs
+            .iter()
+            .filter(|e| e.by == Some(Source::Hand))
+            .map(|e| e.a.to_string())
+            .collect();
+        assert_eq!(
+            hands,
+            vec!["100".to_string()],
+            "slot 6 was already a gap; merging into it must not mark it hand too"
+        );
+    }
+
+    /// Two corrections whose changed slots land index-adjacent merge into one
+    /// run — `compress` groups consecutive gaps by adjacency alone, with no
+    /// awareness of `by` or `note`. The old note-recovery looked up the
+    /// previous note by exact span equality, so once the merged run's span
+    /// (`"60-61"`) matched neither correction's original single-slot span
+    /// (`"60"`, `"61"`), the lookup missed and the *first* correction's note
+    /// vanished — even though the run stayed correctly `by: Hand`. Recovery
+    /// by overlap, joining rather than choosing, is what keeps both.
+    #[test]
+    fn two_merged_corrections_keep_both_notes() {
+        let mut s = Sidecar::from_json(REAL).expect("parses");
+        s.correct("raw-mono", "en-mono", at(60), None, Some("first".into()))
+            .expect("corrects");
+        s.correct("raw-mono", "en-mono", at(61), None, Some("second".into()))
+            .expect("corrects");
+
+        // Guard: the fixture must actually merge the two corrections into one
+        // run, or the rest of this test proves nothing about recovery across
+        // a merge.
+        let merged = s.alignments[0]
+            .runs
+            .iter()
+            .find(|e| e.a.to_string() == "60-61");
+        let merged = merged.expect("the two adjacent gaps must have merged into one run");
+
+        assert_eq!(merged.by, Some(Source::Hand));
+        assert_eq!(merged.note.as_deref(), Some("first; second"));
     }
 }

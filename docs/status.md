@@ -21,16 +21,18 @@ work's editions. M5a shipped the browser reader that draws it: single-page,
 two-page spread and continuous-scroll modes, a swap between editions that
 never writes position, a gap state that names an unpaired slot rather than
 silently landing near it, and a floating chrome — filmstrip and slot readout —
-that never reflows the page underneath. No correction UI exists yet; that is
-M5d, and `verify`'s contact sheet is still the only way to see what the
-aligner decided.
+that never reflows the page underneath. M5d shipped the correction UI: a
+reader can point at the right counterpart in the filmstrip and have the fix
+written into the sidecar as `by: "hand"`, surviving a re-solve. `verify`'s
+contact sheet remains read-only, but it is no longer the only way to see or
+change what the aligner decided.
 
 ## What is built
 
-Five crates, 313 tests, plus 242 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 345 tests, plus 258 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
-and `vite` in `web/`. Nine of the 299 are standing checks gated on
+and `vite` in `web/`. Nine of the 345 are standing checks gated on
 `TAIYAKU_CORPUS`, one of which also needs `TAIYAKU_STUMP_URL` and
 `TAIYAKU_STUMP_KEY`; each skips cleanly when what it needs is absent, so CI
 stays green without the corpus or a reachable Stump. One measures composition
@@ -95,8 +97,10 @@ is the operation a reader performs — through the hub where no direct edge exis
 saying on every call which path it walked. `serve` is handed sidecar paths the
 same way `align` is handed members, because deciding which files constitute a
 library is a different job; it serves `/api/works`, the sidecar verbatim, a page
-by index, and a reading position, and 404s with a message naming what was missing
-rather than returning a blank page. `--stump-url`/`--stump-key` (or their
+by index, and a reading position, now accepts a hand correction — `PATCH
+/api/works/{work}/alignments`, guarded by `If-Match` against an `ETag` on the
+sidecar — and 404s with a message naming what was missing rather than
+returning a blank page. `--stump-url`/`--stump-key` (or their
 `TAIYAKU_STUMP_URL`/`TAIYAKU_STUMP_KEY` env fallbacks) point it at a Stump
 instance; pages come from whichever source — Stump or local disk — actually holds
 the member, resolved once at startup and cached beside the sidecar. An OPDS 1.2 +
@@ -224,28 +228,17 @@ Linking their pages to the manga pages they came from is a different problem —
 sparse, unordered, cross-composition — and wants nearest-neighbour search with a
 margin threshold plus a crop-tolerant hash. Not the DP.
 
-**No correction UI.** The design calls this part of the core, and it does not exist.
-`verify` shows what the aligner decided; nothing lets you fix it.
-
-**The reader has no correction UI.** M5a shipped the browser reader itself —
-page view, swap, three reading modes, gap handling — so a person can now read
-a sidecar rather than only `lookup` through it. What it still cannot do is fix
-what the aligner got wrong: `verify`'s contact sheet remains read-only, and
-the correction UI above is M5d, not built. Nor does it prefetch, double-buffer
-a page ahead of the one being read, or keep a reader's place while they
-scroll by hand — see "What M5a leaves open" below for what each of those costs
-a reader today.
-
 ### Open items
 
-Twenty-two, each found by a whole-branch review, carried as a deferral, turned
-up by reading a design against the code, turned up by running a command against
-its own usage text, or turned up by reviewing what the fix before it left
-behind, and each judged not worth blocking on at the time. They are
-tracked here rather than left in a scratch file so that closing one is a visible
-act rather than a thing someone remembers. **Seventeen are now closed — O2, O3,
-O4, O5, O7, O8, O10, O12, O14, O15, O16, O17, O18, O19, O20, O21 and O22 —
-leaving five.**
+Twenty-four, each found by a whole-branch review, carried as a deferral,
+turned up by reading a design against the code, turned up by running a
+command against its own usage text, turned up by reviewing what the fix
+before it left behind, or turned up by measuring what a new feature produced
+against the corpus, and each judged not worth blocking on at the time. They
+are tracked here rather than left in a scratch file so that closing one is a
+visible act rather than a thing someone remembers. **Eighteen are now closed
+— O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
+O21 and O22 — leaving six.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -264,7 +257,7 @@ each is in the detail below; the table is what a reader scans.
 | O10 | [x] | `MAX_DECODE_ALLOC` is duplicated across crates | `cover.rs`, `taiyaku-cli/src/fingerprint.rs` | M3 review |
 | O11 | [ ] | Neither on-disk cache notices a change on the far side — *escape hatch added; covers measured at 165 KB, filmstrip tiles at 1.12 MiB per 195-page edition* | `stump/cache.rs`, `cover.rs` | M3 review |
 | O12 | [x] | `spawn_blocking` covers three of five blocking handlers | `routes.rs::get_progress`, `::put_progress` | M1/M2 deferral |
-| O13 | [ ] | A hand-corrected run does not survive a re-solve | `sidecar.rs::merge_spoke` | M4 planning |
+| O13 | [x] | A hand-corrected run does not survive a re-solve | `sidecar.rs::merge_spoke` | M4 planning |
 | O14 | [x] | The binding rebuilds the route on every resolve | `binding.rs::Binding::resolve` | M4 whole-branch review |
 | O15 | [x] | A flag typed with no usable value was taken as absent, in silence | `main.rs::option_value` | duplicate-resolution review |
 | O16 | [x] | A symlink cycle truncates the inventory walk — *silently, not by crashing* | `inventory.rs::totals` | duplicate-resolution review |
@@ -274,6 +267,8 @@ each is in the detail below; the table is what a reader scans.
 | O20 | [x] | Six more `align` flags were ignored where they could not take effect | `main.rs::align` | O19 fix |
 | O21 | [x] | A misspelled flag was accepted in silence by every command | `main.rs::reject_unknown_flags` | O20 review |
 | O22 | [x] | `verify` ignored `--cache` and `--ltr` with no `--sidecar` to apply them to | `main.rs::verify` | O20 review |
+| O23 | [ ] | Two hand corrections make a sound alignment report `fragmented` — *measured: avg run 64.33 → 32.00 → 21.22 on Go-Toubun v01, against a 27.0 threshold* | `sidecar.rs::rewrite`, `solve.rs::verdict` | M5d |
+| O24 | [ ] | A solver-written direct edge to a third edition survives that edition being replaced | `sidecar.rs::merge_spoke` | M5d whole-branch review |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -667,35 +662,53 @@ and M2, and now closed:
 hand-corrected run until the correction UI exists:
 
 - **O13 — `sidecar.md` promises a hand correction survives a re-solve, and
-  `merge_spoke` does not keep one. Open.** The format doc is explicit: `by` is
+  `merge_spoke` did not keep one. Closed.** The format doc is explicit: `by` is
   `"solver"` or `"hand"`, and "a hand-corrected run must survive a re-solve;
   this is the field that makes the correction UI more than a viewer." What
-  `merge_spoke` does is drop the stored edge in both directions and push the
-  newly solved alignment in its place, so every run on that edge is replaced
-  wholesale — a hand correction included. Nothing has noticed because
-  **`Source::Hand` is constructed nowhere in the workspace**: the variant is
-  defined, serde round-trips it, and no code path writes one. The promise has
+  `merge_spoke` did was drop the stored edge in both directions and push the
+  newly solved alignment in its place, so every run on that edge was replaced
+  wholesale — a hand correction included. Nothing had noticed because
+  **`Source::Hand` was constructed nowhere in the workspace**: the variant was
+  defined, serde round-tripped it, and no code path wrote one. The promise had
   never been exercised, which is how a documented guarantee rots without any
   test going red.
-  **Half of it is guarded, and the half that is not decides the shape of the
-  fix.** `merge_spoke` refuses when a stored member's `sha256` differs from the
-  one just aligned — "re-solve the work rather than merging into it" — but that
-  comparison is against the *`from`* side, the hub the alignment was solved
-  against. The spoke is inserted wholesale, and
-  `re_aligning_a_spoke_replaces_it_rather_than_duplicating` pins that as
+  **Half of it was guarded, and the half that was not decided the shape of the
+  fix.** `merge_spoke` refused when a stored member's `sha256` differed from
+  the one just aligned — "re-solve the work rather than merging into it" — but
+  that comparison was against the *`from`* side, the hub the alignment was
+  solved against. The spoke was inserted wholesale, and
+  `re_aligning_a_spoke_with_no_hand_runs_replaces_it_rather_than_duplicating` pinned that as
   deliberate: re-solving a spoke after fixing its archive is ordinary, so the
-  test swaps the spoke's `sha256` and expects the merge to succeed. A merge can
-  therefore legitimately replace the very edition a hand correction addressed,
-  and carrying hand runs across *that* would resurrect runs pointing into slots
-  of an edition that no longer exists — the failure the from-side guard exists
-  to prevent, let back in through the other door. **So the fix divides.** Where
-  the spoke is unchanged, carrying hand runs across and reporting how many were
-  carried is enough. Where the merge replaces the spoke, it is not, and what
-  should become of a correction addressing bytes that are gone is a real
-  question rather than a detail. Deferred rather than done because the
-  correction UI is what makes any of it load-bearing: building preservation
-  before anything can produce a hand run would be pinning a mechanism against
-  material that does not exist.
+  test swaps the spoke's `sha256` and expects the merge to succeed. A merge
+  could therefore legitimately replace the very edition a hand correction
+  addressed, and carrying hand runs across *that* would resurrect runs
+  pointing into slots of an edition that no longer exists — the failure the
+  from-side guard exists to prevent, let back in through the other door.
+  **The fix divides exactly that way.** Where the spoke's members are
+  unchanged, hand runs now carry across and the merge reports how many, as
+  `Merged::CarriedHandRuns(n)`. Where the merge would replace a spoke that
+  holds hand runs, it is refused instead, naming the spoke and how many
+  corrections are at risk. Where the spoke is replaced and holds none, the
+  merge proceeds exactly as before.
+  **Three things turned up while building it, each worth a sentence.** The
+  first `carry_hand_runs` dropped a solved run that merely *overlapped* a hand
+  run rather than splitting around it. On a real test it discarded 28 of a
+  30-slot run's slots — every slot but the two that were corrected — leaving
+  `resolve` to answer `None` for pages no correction had touched. It now
+  splits the solved run around each hand run's span instead. The spoke-changed
+  test compared whole `Member` structs rather than hashes, so a
+  renamed-but-identical archive read as "replaced"; it now compares the
+  ordered `sha256` sequence, the idiom the from-side guard's own comment
+  already states: "Content, not paths… only the hashes can be compared." And
+  the orientation assumption was reachable and silent — `--direct` plus
+  `Sidecar::correct`'s own direct-edge branch let a pair be re-merged with the
+  names swapped relative to the stored edge, and without a guard the merge
+  *succeeded*, reporting `CarriedHandRuns(2)` while misfiling the correction
+  against the wrong edition's slot table. Now refused by name.
+  **What remains open, deliberately:** what should become of a correction
+  addressing bytes that no longer exist. Refusing the merge is what stops that
+  being answered silently, not an answer to it. See `notes.md`, "O13 — closes
+  here".
 - **O14 — `taiyaku-wasm` rebuilt the path between two editions on every
   resolve. Closed.** `Binding::resolve` called `route` per invocation, which
   rebuilt both slot tables and, where the answer composed through the hub,
@@ -1019,6 +1032,55 @@ measures — 195 slots on Go-Toubun v01, the split-spread count.
 `--split-spreads` in the present tense, because each describes what was true
 when it was closed. Only the synopsis at the top of this document and the tool's
 own usage text describe the command as it is now.
+
+**One came from measuring what the correction UI produces** — O23, turned up
+on 2026-08-04 while measuring M5d's correction UI against the corpus, and not
+blocking because nothing yet corrects a work more than once in real reading:
+
+- **O23 — Two hand corrections make a sound alignment report `fragmented`.
+  Open.** Measured on the primary corpus volume, correcting `raw-mono`
+  against `en-mono`: zero corrections leaves Go-Toubun v01 at 193 paired
+  slots, 3 paired runs, average run 64.33, `sound`; one correction takes it to
+  192 slots, 6 runs, average run 32.00, still `sound`; two corrections take it
+  to 191 slots, 9 runs, average run 21.22, `fragmented`. Each correction adds
+  three paired runs and strands one slot, because the 1:1 rule means the
+  asserted slot takes its target from whoever held it, and that slot becomes
+  a gap: the run it sat in becomes the part before it, the corrected slot
+  alone, the part between it and the slot it displaced, and the part after —
+  four paired runs where there was one, plus the gap.
+  The threshold is 27.0, and it exists to separate needles (1.1–1.7 slots a
+  run, measured across twenty-two of them) from confirmed-good pairings
+  (36.0–200.0). A twice-corrected volume at 21.2 is neither, so the verdict
+  misleads in a way the threshold was never calibrated for.
+  **Nothing is changed here.** Altering the fragmentation policy on a guess is
+  what this project does not do — the same reasoning that kept O1 open on
+  evidence rather than shipping an `ETag` on plausibility.
+  **What would decide it:** a work corrected enough times in real reading to
+  say whether the verdict misleads a reader in practice, or a measurement
+  showing that hand runs and solver runs should be counted differently. See
+  `notes.md`, "O23 — opens here".
+- **O24 — A solver-written direct edge to a third edition survives that
+  edition being replaced. Open.** `merge_spoke` now refuses a merge that would
+  replace a spoke holding *hand-corrected* runs on any edge — that is O13's
+  fix, extended during this branch's whole-branch review when a direct edge to
+  a third edition turned out to escape the original check. What it still does
+  not cover is the same edge written by the solver rather than by hand:
+  `align --direct` records one, nothing marks it `by: "hand"`, and replacing
+  either endpoint leaves it addressing slots of an edition that is no longer
+  there. `route` then prefers that stale edge to the hub and reports the
+  answer as `Direct`, which is the strongest confidence this format has.
+  **Not introduced by the correction UI, and not widened by it.** A direct
+  edge has always required a deliberate `align --direct`; what M5d changed is
+  that a *hand* one can now be made by clicking a filmstrip tile, and that
+  case is the one now guarded. This item is the older half, found by looking
+  at the new guard and asking what it does not cover.
+  **What would close it:** deciding what a merge owes an edge it did not
+  solve. Refusing is the conservative answer and matches O13's stance;
+  dropping every direct edge that mentions the replaced edition is the other,
+  and is defensible precisely because a solver edge carries no human decision
+  to lose. Neither is obviously right, and no corpus work has yet had a
+  `--direct` edge and a re-solve in the same document — which is also why this
+  has never been felt.
 
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
@@ -1396,11 +1458,42 @@ needing the same `IntersectionObserver` that milestone already named. The
 `fit` and `filters` modules the design specifies are not built; the contract
 they would slot into is what M5b spent five modules proving out instead.
 
-What remains: `annotations` and the correction UI — M5c and M5d — and the
-five open items tabled above — four of them found by a whole-branch review,
-now that O12 (carried rather than found) and O14 (found by one, closed by
-this branch) are both out of the count, and O13 turned up by reading the
-reader design against the code rather than by reviewing a branch.
+**M5d has landed.** A reader can now point at the right counterpart in the
+filmstrip and have the fix written into `taiyaku.json` as `by: "hand"`,
+surviving a re-solve and a second device writing at the same time. The
+arithmetic is one pure function in `taiyaku-core` (`correct_runs`) and one
+document operation built on it (`Sidecar::correct`), so no second
+implementation of run-splitting exists to disagree with `compose`. The
+browser sends the *assertion* — slot `a` of `from` pairs with slot `b` of
+`to` — never a computed run list, so the split is applied once, server-side,
+against the authoritative document: a deliberate departure from the design's
+"the client computes a run split, `PATCH` to serve", made because a
+client-computed list would put the 1:1 eviction rule in a second
+implementation a future reader could get wrong, and would leave `If-Match` as
+the only thing standing between a stale client and a wholesale replacement of
+the edge. `taiyaku-serve` gained its first mutating route, `PATCH
+/api/works/{work}/alignments`, guarded by `If-Match` against an `ETag` on the
+sidecar, which forced the in-memory document to become replaceable
+(`RwLock<Arc<Sidecar>>`) rather than loaded once at startup; `GET
+/api/works/{work}` now carries an `ETag` too. O13 closes in the same branch
+(above), because the correction UI is what first constructs a `Source::Hand`.
+**Driving the UI against the real corpus found one defect the whole review
+chain had missed.** A correction silently stripped every `margin` on the edge
+it touched — `entries_from_runs` writes `margin: None` for every entry it
+builds, having no confidence figure to hand them, and the correction sent the
+whole edge through it. One correction took `raw-mono -> en-fan` from 8
+margins to 0 while the untouched `raw-mono -> en-mono` kept all 3. Fixed: a
+margin now carries forward only where both spans are identical, and the two
+runs a correction actually reshapes lose theirs honestly rather than keeping
+a stale figure. See `notes.md` for the full measurement. **The same pass
+found that two hand corrections are enough to take a sound alignment to
+`fragmented`**, opened as O23 above rather than answered on a guess.
+
+What remains: `annotations` — M5c — and the six open items tabled above —
+five of them found by a whole-branch review, now that O12 (carried rather
+than found) and O14 (found by one, closed by M5b) are both out of the count,
+and O23 the one exception, turned up by measuring what the correction UI
+produced against the corpus rather than by reviewing a branch.
 
 ### 4. Skipping scanlation credit pages
 

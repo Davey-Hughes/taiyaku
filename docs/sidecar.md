@@ -388,6 +388,25 @@ count lose under 0.5%.
 `by` is `"solver"` or `"hand"`. A hand-corrected run must survive a re-solve;
 this is the field that makes the correction UI more than a viewer.
 
+**What a merge does with a hand-corrected run.** Where a re-solved spoke's
+members are unchanged — same members, same ordered `sha256` sequence — every
+hand run on its edge carries across the merge unmodified, and the merge
+reports how many. Where the merge would replace a spoke that holds any hand
+runs, it is refused outright, naming the spoke and how many corrections are
+at risk, rather than silently discarding them: a hand correction addresses
+slots of a specific archive, and carrying it across a replacement would
+resurrect a run pointing into slots of an edition that no longer exists.
+Where the spoke is replaced and holds no hand runs, the merge proceeds
+exactly as it would have before hand runs existed. What should become of a
+correction addressing bytes that no longer exist — once a spoke a hand run
+addressed is legitimately replaced — is not answered by any of this;
+refusing is what stops it being answered silently.
+
+A correction is 1:1: asserting that slot `a` of one edition pairs with slot
+`b` of another takes `b`'s target from whichever slot held it before, so a
+single correction can leave a second slot unpaired — the slot that lost its
+target becomes a gap, exactly as if nothing had ever paired with it.
+
 `note` is free text on a run, for whoever corrected it to say why:
 
 ```json

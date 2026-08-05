@@ -82,6 +82,34 @@ export function groups(
   return out
 }
 
+/**
+ * One group per slot, always — ignoring `mode`, spreads, and breaks alike.
+ *
+ * `groups` above is deliberately mode- and format-aware: a joined spread is
+ * always a two-slot group in every mode, and `two` mode pairs ordinary slots
+ * two to a tile. Both are right for *reading* and wrong for *correcting* — a
+ * reader picking a counterpart has to be able to name any one slot,
+ * including one half of a joined spread or one slot of a two-page pair, and
+ * a tile standing for more than one slot has no way to say which was meant.
+ * The M5d review's I4 found this concretely: the filmstrip could only ever
+ * assert `group.slots[0]`, so half of every spread — and, in `two` mode,
+ * half of every ordinary pair — was simply unaddressable, and worse, if the
+ * alignment already resolved to the *other* half, the spread's one tile was
+ * the one marked "this is what it resolves to," so clicking it (the obvious
+ * "yes, this one" gesture) silently asserted the wrong half.
+ *
+ * `App.tsx` uses this in place of `groups` for exactly the filmstrip's
+ * `groups` prop while `correcting` is set, and only there — the page area
+ * itself keeps rendering through `groups` above regardless, since a
+ * correction never changes what is on screen until it is confirmed. One
+ * tile per slot is also the simpler thing to explain to a reader: "while
+ * correcting, every tile is one page" needs no caveat about spreads or the
+ * current mode, where "click the half of this tile you mean" would.
+ */
+export function correctionTiles(slots: Position[]): Group[] {
+  return slots.map((_, index) => ({ slots: [index] }))
+}
+
 /** Which two fixed screen positions a two-page group's slots render into — see `cellsFor`. */
 export interface Cells {
   /** Whether `first` should render full width with `second` collapsed (a joined spread or a solo slot with no pairing partner) rather than the two rendering at equal, half width (an ordinary pair). */

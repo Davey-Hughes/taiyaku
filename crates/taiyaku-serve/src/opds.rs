@@ -122,13 +122,14 @@ async fn catalog() -> Response {
 async fn works(State(state): State<Arc<ServeState>>) -> Response {
     let mut entries = String::new();
     for work in &state.works {
-        let title = escape(&work.sidecar.work.title);
+        let sidecar = work.sidecar();
+        let title = escape(&sidecar.work.title);
         let id = escape(&work.id);
         // `work.id` is slugified by construction (see `work_id`) and needs
         // no encoding, but encoding it anyway costs nothing and does not
         // depend on a guarantee made in another module.
         let href_id = escape(&percent_encode(&work.id));
-        let count = work.sidecar.editions.len();
+        let count = sidecar.editions.len();
         entries.push_str(&format!(
             r#"  <entry>
     <id>taiyaku:work:{id}</id>
@@ -177,10 +178,11 @@ async fn work_feed(State(state): State<Arc<ServeState>>, AxPath(id): AxPath<Stri
     // encoding this one too keeps the rule uniform rather than one route
     // relying on a guarantee made in another module.
     let work_href = escape(&percent_encode(&work.id));
-    let title = escape(&work.sidecar.work.title);
+    let sidecar = work.sidecar();
+    let title = escape(&sidecar.work.title);
 
     let mut entries = String::new();
-    for (key, edition) in &work.sidecar.editions {
+    for (key, edition) in &sidecar.editions {
         // Two layers, two variables: `key_x` is XML-escaped display text —
         // the atom `<id>` a reader never sees rendered as a link — and
         // `key_href` is percent-encoded for the `href`s below. An edition
@@ -278,7 +280,7 @@ async fn stream_page(
         Ok(pair) => pair,
         Err(e) => return missing(e),
     };
-    let tag = crate::routes::page_etag(sha256, offset);
+    let tag = crate::routes::page_etag(&sha256, offset);
     if crate::routes::if_none_match_hits(&headers, &tag) {
         return crate::routes::not_modified(&tag);
     }
@@ -313,8 +315,8 @@ async fn cover(
 ) -> Response {
     let fetched = tokio::task::spawn_blocking(move || {
         let work = state.work_or_missing(&id)?;
-        let found = work
-            .sidecar
+        let sidecar = work.sidecar();
+        let found = sidecar
             .editions
             .get(&edition)
             .ok_or_else(|| format!("no edition `{edition}` in work `{id}`"))?;
@@ -1130,10 +1132,10 @@ mod tests {
         let path = root.join("taiyaku.json");
         std::fs::write(&path, json).unwrap();
 
-        crate::Work {
-            id: "t".into(),
+        crate::Work::new(
+            "t".into(),
             path,
-            sidecar: taiyaku_core::Sidecar::from_json(json).unwrap(),
-        }
+            taiyaku_core::Sidecar::from_json(json).unwrap(),
+        )
     }
 }

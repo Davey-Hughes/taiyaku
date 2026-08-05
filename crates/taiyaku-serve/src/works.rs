@@ -14,12 +14,91 @@ use taiyaku_core::Sidecar;
 /// Not to be confused with `taiyaku_core::Work`, which is the `work` block
 /// inside a sidecar — a title and a reading direction. This one is a loaded
 /// document plus the identity a URL names it by, and reaches that one as
-/// `self.sidecar.work`.
-#[derive(Debug, Clone)]
+/// `self.sidecar().work`.
+///
+/// The document is held behind an `RwLock<Arc<_>>` rather than owned outright
+/// because `PATCH /api/works/{work}/alignments` replaces it while the server
+/// is running: readers clone an `Arc` and are never blocked by each other, and
+/// a writer swaps a whole new document in under one exclusive lock. The same
+/// shape `StumpSide` already uses for its resolution map, and for the same
+/// reason.
+///
+/// **Deliberately not `Clone`.** A cloned `Work` would carry an independent
+/// lock, so a correction applied to one copy would be invisible to the other —
+/// two documents claiming one work, which is the failure `load_works` already
+/// refuses at startup.
+#[derive(Debug)]
 pub struct Work {
     pub id: String,
     pub path: PathBuf,
-    pub sidecar: Sidecar,
+    sidecar: std::sync::RwLock<std::sync::Arc<Sidecar>>,
+}
+
+impl Work {
+    pub fn new(id: String, path: PathBuf, sidecar: Sidecar) -> Self {
+        Self {
+            id,
+            path,
+            sidecar: std::sync::RwLock::new(std::sync::Arc::new(sidecar)),
+        }
+    }
+
+    /// The document as it stands. An `Arc` clone, not a copy of the document.
+    ///
+    /// A poisoned lock is a panic in a handler that already ran, and the
+    /// document behind it is still the last one successfully written, so this
+    /// takes the value rather than propagating the poison — a work that
+    /// refused to serve every subsequent request because one unrelated handler
+    /// panicked would be the worse answer.
+    pub fn sidecar(&self) -> std::sync::Arc<Sidecar> {
+        match self.sidecar.read() {
+            Ok(held) => held.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Read, change and replace under one exclusive lock.
+    ///
+    /// The whole read-modify-write happens inside the guard, which is what
+    /// makes `If-Match` mean anything: two devices correcting one work would
+    /// otherwise both compare against the same validator, both pass, and the
+    /// second would replace the first's correction with a document that never
+    /// contained it.
+    ///
+    /// The closure returns the replacement document *and* whatever the caller
+    /// wants back, or a `Response` to refuse with. A refusal leaves the held
+    /// document untouched.
+    ///
+    /// `NotAPageIndex` and `NoSuchWork` (`routes.rs`) wrap `Response` for the
+    /// same `clippy::result_large_err` reason this triggers, but each of those
+    /// carries one fixed message a single route mints itself, so the wrapper
+    /// names something. This `Response` is minted by whichever caller passes
+    /// the closure — a 412 for a stale `If-Match`, a 400 for a malformed body,
+    /// and so on — so there is no one thing a wrapper here would be *called*.
+    ///
+    /// **`Box<Response>` would silence the lint**, and an earlier version of
+    /// this comment claimed otherwise; boxing moves the payload to the heap
+    /// and leaves a pointer, which is exactly the size clippy measures. It is
+    /// not taken because it buys nothing here: correcting a misidentified page
+    /// is a reader clicking a filmstrip tile, not a hot loop, so the 128 bytes
+    /// this allows are not worth an indirection at every call site and an
+    /// unwrap at every match. The lint is right about the size and wrong about
+    /// whether it matters, which is what an `allow` is for.
+    #[allow(clippy::result_large_err)]
+    pub fn update<T>(
+        &self,
+        f: impl FnOnce(
+            &std::sync::Arc<Sidecar>,
+        ) -> Result<(std::sync::Arc<Sidecar>, T), axum::response::Response>,
+    ) -> Result<T, axum::response::Response> {
+        let mut held = match self.sidecar.write() {
+            Ok(held) => held,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let (next, out) = f(&held)?;
+        *held = next;
+        Ok(out)
+    }
 }
 
 /// A URL-safe id for a work, from its sidecar's filename.
@@ -61,11 +140,7 @@ pub fn load_works(paths: &[PathBuf]) -> Result<Vec<Work>, String> {
                 path.display()
             ));
         }
-        works.push(Work {
-            id,
-            path: path.clone(),
-            sidecar,
-        });
+        works.push(Work::new(id, path.clone(), sidecar));
     }
     Ok(works)
 }
@@ -139,5 +214,30 @@ mod tests {
         let works = loaded.expect("distinct filenames are distinct works");
         let ids: Vec<&str> = works.iter().map(|w| w.id.as_str()).collect();
         assert_eq!(ids, ["taiyaku", "other-taiyaku"]);
+    }
+
+    /// The property the correction route rests on: what a later reader gets
+    /// back is what the last write put in, without a restart.
+    // `update`'s own `#[allow(clippy::result_large_err)]` does not reach a
+    // closure written at the call site — clippy checks each closure as its
+    // own item — so the explicit `Result<(), Response>` below needs the same
+    // allow, for the same reason.
+    #[allow(clippy::result_large_err)]
+    #[test]
+    fn a_replaced_sidecar_is_what_the_next_reader_sees() {
+        let work = crate::test_support::work("taiyaku-test-works-replace");
+        let before = work.sidecar();
+
+        let swapped: Result<(), axum::response::Response> = work.update(|current| {
+            let mut next = (**current).clone();
+            next.work.title = "Renamed".into();
+            Ok((std::sync::Arc::new(next), ()))
+        });
+
+        let after = work.sidecar();
+        crate::test_support::cleanup("taiyaku-test-works-replace");
+        swapped.expect("the update runs");
+        assert_eq!(before.work.title, "T");
+        assert_eq!(after.work.title, "Renamed");
     }
 }

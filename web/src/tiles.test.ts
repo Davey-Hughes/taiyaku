@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { bSlots, whole } from './fixtures'
-import { groups } from './pairing'
+import { correctionTiles, groups } from './pairing'
 import { tilePages } from './tiles'
 
 describe('tilePages', () => {
@@ -32,5 +32,27 @@ describe('tilePages', () => {
     const grouped = groups(bSlots, 'single', 'rtl')
     const lastGroup = grouped[grouped.length - 1]
     expect(tilePages(lastGroup, bSlots)).toEqual([{ slot: 8, page: 7 }])
+  })
+
+  // I4 (M5d review): while correcting, `App.tsx` builds the strip from
+  // `pairing.ts`'s `correctionTiles` instead of `groups`, so a joined
+  // spread's two halves arrive here as two separate one-slot groups rather
+  // than one `spread: true` group. Both share a page, so without `half` the
+  // two tiles would show the same thumbnail with the same "page N" alt text
+  // and a reader would have no way to tell which is which.
+  it('carries the half for a genuine singleton slot, so two tiles sharing a page can be told apart', () => {
+    // bSlots' slot 2 (R) and slot 3 (L) share page 2.
+    const [rTile, lTile] = correctionTiles(bSlots).slice(2, 4)
+    expect(tilePages(rTile, bSlots)).toEqual([{ slot: 2, page: 2, half: 'R' }])
+    expect(tilePages(lTile, bSlots)).toEqual([{ slot: 3, page: 2, half: 'L' }])
+  })
+
+  it('does not carry a half for the two-slot spread group groups() itself produces — it names both halves at once, not one', () => {
+    const spread = groups(bSlots, 'single', 'rtl').find((g) => g.spread)!
+    expect(tilePages(spread, bSlots)).toEqual([{ slot: 2, page: 2 }])
+  })
+
+  it('has no half for an ordinary singleton slot, which was never one', () => {
+    expect(tilePages({ slots: [1] }, whole(3))).toEqual([{ slot: 1, page: 1 }])
   })
 })

@@ -4,6 +4,7 @@
 //! is what lets taiyaku run beside Stump now and replace it later without a
 //! redesign. See `docs/superpowers/specs/2026-07-30-reader-design.md`.
 
+mod atomic;
 mod composite;
 #[cfg(test)]
 mod corpus;
@@ -73,8 +74,8 @@ impl ServeState {
     /// reader shown a blank page with no explanation is the failure this
     /// project exists to avoid.
     pub fn page(&self, work: &Work, edition: &str, index: u32) -> Result<ServedPage, String> {
-        let found = work
-            .sidecar
+        let sidecar = work.sidecar();
+        let found = sidecar
             .editions
             .get(edition)
             .ok_or_else(|| format!("no edition `{edition}` in {}", work.path.display()))?;
@@ -231,7 +232,7 @@ pub async fn serve(
 /// Separate from `serve` for the reason `resolve_all_works` is: `serve` binds
 /// a socket and so is not something a test drives, and the loop is where the
 /// behaviour worth pinning lives.
-fn forget_all_works(works: &[Work]) {
+fn forget_all_works<'a>(works: impl IntoIterator<Item = &'a Work>) {
     for work in works {
         if let Err(why) = stump::cache::forget(work) {
             eprintln!(
@@ -289,7 +290,7 @@ fn resolve_all_works(
         // stump", which reads as a work with no members rather than a run
         // that gave up.
         let total: usize = work
-            .sidecar
+            .sidecar()
             .editions
             .values()
             .map(|e| e.members.len())
@@ -363,11 +364,11 @@ pub(crate) mod test_support {
         let path = root.join("taiyaku.json");
         std::fs::write(&path, json).unwrap();
 
-        Work {
-            id: "t".into(),
+        Work::new(
+            "t".into(),
             path,
-            sidecar: taiyaku_core::Sidecar::from_json(json).unwrap(),
-        }
+            taiyaku_core::Sidecar::from_json(json).unwrap(),
+        )
     }
 
     /// The fixture work, wired to a `LocalLibrary`, ready for `build_router`.
@@ -378,6 +379,42 @@ pub(crate) mod test_support {
             cache_dir: std::env::temp_dir().join(dir).join("covers"),
             log: None,
         }
+    }
+
+    /// The shared fixture plus a second edition and a solved edge between
+    /// them, which is the minimum a correction needs to address.
+    ///
+    /// `raw` is four pages across two members, as `work` builds it; `en` is
+    /// the same two members under a second key, so no new archives are needed
+    /// and the pages a correction addresses really exist.
+    pub(crate) fn state_with_two_editions(dir: &str) -> ServeState {
+        let mut state = state(dir);
+        let path = state.works[0].path.clone();
+        let json = r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "raw": { "label": "Raw", "members": [
+              { "path": "c1.cbz", "sha256": "x", "pages": 2 },
+              { "path": "c2.cbz", "sha256": "y", "pages": 2 }
+            ], "spreads": [] },
+            "en": { "label": "En", "members": [
+              { "path": "c1.cbz", "sha256": "x", "pages": 2 },
+              { "path": "c2.cbz", "sha256": "y", "pages": 2 }
+            ], "spreads": [] }
+          },
+          "hub": "raw",
+          "alignments": [
+            { "from": "raw", "to": "en", "by": "solver", "runs": [{ "a": "0-3", "b": "0-3" }] }
+          ]
+        }"#;
+        std::fs::write(&path, json).unwrap();
+        state.works = vec![crate::Work::new(
+            "t".into(),
+            path,
+            taiyaku_core::Sidecar::from_json(json).unwrap(),
+        )];
+        state
     }
 
     /// A small real, decodable page image — same recipe as
@@ -441,11 +478,11 @@ pub(crate) mod test_support {
         std::fs::write(&path, json).unwrap();
 
         std::sync::Arc::new(ServeState {
-            works: vec![Work {
-                id: "w".into(),
+            works: vec![Work::new(
+                "w".into(),
                 path,
-                sidecar: taiyaku_core::Sidecar::from_json(json).unwrap(),
-            }],
+                taiyaku_core::Sidecar::from_json(json).unwrap(),
+            )],
             source: std::sync::Arc::new(crate::LocalLibrary),
             cache_dir: root.join("covers"),
             log: None,
@@ -458,15 +495,15 @@ pub(crate) mod test_support {
     /// unchanged; only the in-memory sidecar's edition map is renamed, which
     /// is all a router test reads.
     pub(crate) fn work_with_edition_key(dir: &str, key: &str) -> Work {
-        let mut renamed = work(dir);
-        let edition = renamed
-            .sidecar
+        let base = work(dir);
+        let mut sidecar = (*base.sidecar()).clone();
+        let edition = sidecar
             .editions
             .remove("raw")
             .expect("fixture defines the `raw` edition");
-        renamed.sidecar.editions.insert(key.to_string(), edition);
-        renamed.sidecar.hub = key.to_string();
-        renamed
+        sidecar.editions.insert(key.to_string(), edition);
+        sidecar.hub = key.to_string();
+        Work::new(base.id, base.path, sidecar)
     }
 
     pub(crate) fn cleanup(dir: &str) {
@@ -562,11 +599,11 @@ mod tests {
         let path = root.join("taiyaku.json");
         std::fs::write(&path, &json).unwrap();
 
-        crate::Work {
-            id: member_name.to_string(),
+        crate::Work::new(
+            member_name.to_string(),
             path,
-            sidecar: taiyaku_core::Sidecar::from_json(&json).unwrap(),
-        }
+            taiyaku_core::Sidecar::from_json(&json).unwrap(),
+        )
     }
 
     /// `--refresh-stump` applies to every work it was handed, not just the
@@ -581,7 +618,7 @@ mod tests {
         resolutions.insert("hash".into(), Some("book-1".into()));
         crate::stump::cache::store(&recorded, "http://nas:10801", &resolutions).unwrap();
 
-        super::forget_all_works(&[recorded.clone(), untouched.clone()]);
+        super::forget_all_works([&recorded, &untouched]);
 
         let gone = !crate::stump::cache::path_for(&recorded).exists();
         let still_absent = !crate::stump::cache::path_for(&untouched).exists();
@@ -631,7 +668,7 @@ mod tests {
             return;
         }
 
-        super::forget_all_works(&[stuck.clone(), after.clone()]);
+        super::forget_all_works([&stuck, &after]);
 
         let stuck_remains = crate::stump::cache::path_for(&stuck).exists();
         let later_forgotten = !crate::stump::cache::path_for(&after).exists();

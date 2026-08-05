@@ -248,7 +248,8 @@ mod tests {
     fn each_member_is_served_by_whichever_source_has_it() {
         let work = crate::test_support::work("taiyaku-test-composite");
         let root = work.path.parent().unwrap().to_path_buf();
-        let edition = work.sidecar.editions["raw"].clone();
+        let sidecar = work.sidecar();
+        let edition = sidecar.editions["raw"].clone();
 
         let fake = FakeTransport::new().on_get(
             "/api/v2/media/book-1/page/1",
@@ -298,7 +299,8 @@ mod tests {
     fn a_member_is_served_from_disk_until_its_resolution_lands() {
         let work = crate::test_support::work("taiyaku-test-composite-late-resolution");
         let root = work.path.parent().unwrap().to_path_buf();
-        let edition = work.sidecar.editions["raw"].clone();
+        let sidecar = work.sidecar();
+        let edition = sidecar.editions["raw"].clone();
 
         let fake = FakeTransport::new().on_get(
             "/api/v2/media/book-1/page/1",
@@ -336,7 +338,8 @@ mod tests {
     fn with_no_stump_every_member_is_local() {
         let work = crate::test_support::work("taiyaku-test-composite-local");
         let root = work.path.parent().unwrap().to_path_buf();
-        let edition = work.sidecar.editions["raw"].clone();
+        let sidecar = work.sidecar();
+        let edition = sidecar.editions["raw"].clone();
 
         let composite = CompositeSource::new(LocalLibrary, None);
         let page = composite.page(&root, &edition.members[0], 0).unwrap();
@@ -352,7 +355,8 @@ mod tests {
     fn a_stump_failure_falls_back_to_disk_rather_than_failing() {
         let work = crate::test_support::work("taiyaku-test-composite-fallback");
         let root = work.path.parent().unwrap().to_path_buf();
-        let edition = work.sidecar.editions["raw"].clone();
+        let sidecar = work.sidecar();
+        let edition = sidecar.editions["raw"].clone();
 
         // The fake has no reply registered, so every GET is an error.
         let mut resolutions = Resolutions::new();
@@ -380,7 +384,8 @@ mod tests {
     fn a_transport_failure_latches_the_cooldown_so_a_second_request_skips_the_network() {
         let work = crate::test_support::work("taiyaku-test-composite-cooldown-latch");
         let root = work.path.parent().unwrap().to_path_buf();
-        let edition = work.sidecar.editions["raw"].clone();
+        let sidecar = work.sidecar();
+        let edition = sidecar.editions["raw"].clone();
 
         // No handler registered, so every GET is a transport-level error.
         let fake = Arc::new(FakeTransport::new());
@@ -421,7 +426,8 @@ mod tests {
     fn a_zero_cooldown_expires_immediately_so_every_request_retries() {
         let work = crate::test_support::work("taiyaku-test-composite-cooldown-zero");
         let root = work.path.parent().unwrap().to_path_buf();
-        let edition = work.sidecar.editions["raw"].clone();
+        let sidecar = work.sidecar();
+        let edition = sidecar.editions["raw"].clone();
 
         let fake = Arc::new(FakeTransport::new());
         let mut resolutions = Resolutions::new();
@@ -452,7 +458,8 @@ mod tests {
     fn a_404_does_not_latch_the_cooldown() {
         let work = crate::test_support::work("taiyaku-test-composite-cooldown-404");
         let root = work.path.parent().unwrap().to_path_buf();
-        let edition = work.sidecar.editions["raw"].clone();
+        let sidecar = work.sidecar();
+        let edition = sidecar.editions["raw"].clone();
 
         let fake = Arc::new(FakeTransport::new().on_get_status("/api/v2/media/book-1/page/1", 404));
         let mut resolutions = Resolutions::new();
@@ -492,7 +499,8 @@ mod tests {
     fn a_response_that_does_not_sniff_as_an_image_falls_back_to_disk_rather_than_being_served() {
         let work = crate::test_support::work("taiyaku-test-composite-html-spa-fallback");
         let root = work.path.parent().unwrap().to_path_buf();
-        let edition = work.sidecar.editions["raw"].clone();
+        let sidecar = work.sidecar();
+        let edition = sidecar.editions["raw"].clone();
 
         let fake = FakeTransport::new().on_get(
             "/api/v2/media/book-1/page/1",
@@ -528,7 +536,8 @@ mod tests {
     fn a_response_that_does_not_sniff_as_an_image_does_not_latch_the_cooldown() {
         let work = crate::test_support::work("taiyaku-test-composite-html-spa-cooldown");
         let root = work.path.parent().unwrap().to_path_buf();
-        let edition = work.sidecar.editions["raw"].clone();
+        let sidecar = work.sidecar();
+        let edition = sidecar.editions["raw"].clone();
 
         let fake = Arc::new(FakeTransport::new().on_get(
             "/api/v2/media/book-1/page/1",
@@ -567,7 +576,8 @@ mod tests {
     fn a_recovered_stump_clears_the_latch_and_is_served_from_again() {
         let work = crate::test_support::work("taiyaku-test-composite-cooldown-recovery");
         let root = work.path.parent().unwrap().to_path_buf();
-        let edition = work.sidecar.editions["raw"].clone();
+        let sidecar = work.sidecar();
+        let edition = sidecar.editions["raw"].clone();
 
         // `book-x` has no handler, so the first member's request fails.
         // `book-1` does, so the second member's request succeeds.

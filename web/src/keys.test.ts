@@ -67,6 +67,15 @@ describe('intentOf', () => {
     expect(intentOf(press('Tab'), editions)).toEqual({ kind: 'chrome' })
   })
 
+  // Only the modifier guard: `intentOf` takes no event target, so standing
+  // down for a focused control is not something this function can be asked
+  // about — that guard lives in `App.tsx`'s keydown handler beside every
+  // other intent's. Named for what it actually checks.
+  it('c asks to correct, and yields to a modifier', () => {
+    expect(intentOf(press('c'), ['raw', 'en'], [])).toEqual({ kind: 'correct' })
+    expect(intentOf(press('c', { ctrlKey: true }), ['raw', 'en'], [])).toBeUndefined()
+  })
+
   it('yields every key to a modifier, so browser shortcuts still work', () => {
     expect(intentOf(press('1', { metaKey: true }), editions)).toBeUndefined()
     expect(intentOf(press(' ', { ctrlKey: true }), editions)).toBeUndefined()

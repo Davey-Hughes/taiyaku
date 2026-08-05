@@ -6,6 +6,8 @@ export type Intent =
   | { kind: 'view'; edition: string }
   | { kind: 'step'; by: 1 | -1 }
   | { kind: 'chrome' }
+  /** Open correction mode: the filmstrip switches to the counterpart edition. */
+  | { kind: 'correct' }
   /** A module's own declared key fired. `intent` is the string it registered — see `ReaderModule.keys`. */
   | { kind: 'module'; intent: string }
 
@@ -37,6 +39,7 @@ export function intentOf(
   if (event.key === 'ArrowRight') return { kind: 'step', by: 1 }
   if (event.key === 'ArrowLeft') return { kind: 'step', by: -1 }
   if (event.key === 'Tab') return { kind: 'chrome' }
+  if (event.key === 'c') return { kind: 'correct' }
   if (/^[1-9]$/.test(event.key)) {
     const edition = editions[Number(event.key) - 1]
     return edition === undefined ? undefined : { kind: 'view', edition }

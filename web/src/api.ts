@@ -26,11 +26,30 @@ export async function listWorks(): Promise<string[]> {
   return res.json()
 }
 
-/** The sidecar, verbatim, as text — `wasmResolver` parses it, not JSON.parse. */
-export async function getSidecar(work: string): Promise<string> {
+export interface FetchedSidecar {
+  json: string
+  /** Absent only from a server older than the correction route. */
+  etag?: string
+}
+
+/**
+ * The sidecar, and the validator a correction has to be written against.
+ *
+ * Separate from `getSidecar` rather than replacing it: a caller that only
+ * wants to read the document should not have to know a correction path exists,
+ * and the validator is meaningless to it. `getSidecar` below delegates here
+ * rather than repeating the fetch, so there is one implementation of "load
+ * the sidecar" and not two that have to be kept in step.
+ */
+export async function getSidecarWithEtag(work: string): Promise<FetchedSidecar> {
   const res = await fetch(`/api/works/${seg(work)}`)
   if (!res.ok) throw new Error(`loading ${work}: ${res.status} ${await res.text()}`)
-  return res.text()
+  return { json: await res.text(), etag: res.headers.get('etag') ?? undefined }
+}
+
+/** The sidecar, verbatim, as text — `wasmResolver` parses it, not JSON.parse. */
+export async function getSidecar(work: string): Promise<string> {
+  return (await getSidecarWithEtag(work)).json
 }
 
 export interface StoredProgress {
@@ -68,4 +87,48 @@ export async function putProgress(work: string, progress: StoredProgress): Promi
     keepalive: true,
   })
   if (!res.ok) throw new Error(`writing progress: ${res.status} ${await res.text()}`)
+}
+
+export interface CorrectionRequest {
+  from: string
+  to: string
+  /** A slot of `from`, in span notation — see `correction.ts`'s `spanOf`. */
+  a: string
+  /** A slot of `to`, or `null` to unpair `a`. */
+  b: string | null
+  note?: string
+}
+
+/**
+ * Write one hand correction, and get the document it produced.
+ *
+ * `If-Match` is required by the server, not optional here: two devices
+ * correcting one work is the same shape as two writing progress, and last
+ * write wins would discard the other one's correction with nothing anywhere
+ * saying so. The response body is the updated sidecar, so a caller refreshes
+ * its resolver from this rather than making a second request that could
+ * already be out of date again.
+ *
+ * No `keepalive` here, unlike `putProgress`: a correction is a deliberate act
+ * a reader is watching the result of, not a background write that has to
+ * survive the tab going away.
+ *
+ * The thrown message carries `res.status` ahead of the body, like every other
+ * failure in this file — a caller telling a stale-validator `412` apart from
+ * a malformed-body `400` or a missing-`If-Match` `428` needs the status, not
+ * just the server's prose. The body text still comes along too: on a `412`
+ * it names the fresh `ETag`, which is what a caller needs to retry.
+ */
+export async function patchAlignment(
+  work: string,
+  etag: string,
+  correction: CorrectionRequest,
+): Promise<FetchedSidecar> {
+  const res = await fetch(`/api/works/${seg(work)}/alignments`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'if-match': etag },
+    body: JSON.stringify(correction),
+  })
+  if (!res.ok) throw new Error(`correcting ${work}: ${res.status} ${await res.text()}`)
+  return { json: await res.text(), etag: res.headers.get('etag') ?? undefined }
 }

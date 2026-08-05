@@ -35,15 +35,16 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
     let works = load_works(std::slice::from_ref(&sidecar)).expect("sidecar loads");
     let dir = sidecar.parent().unwrap();
     let state = ServeState {
-        works: works.clone(),
+        works,
         source: Arc::new(LocalLibrary),
         cache_dir: std::env::temp_dir().join("taiyaku-corpus-covers"),
         log: None,
     };
     let work = &state.works[0];
+    let sidecar = work.sidecar();
 
     let mut compared = 0usize;
-    for (key, edition) in &work.sidecar.editions {
+    for (key, edition) in &sidecar.editions {
         let members: Vec<PathBuf> = edition.members.iter().map(|m| dir.join(&m.path)).collect();
         // In the order the array gives, not sorted — `docs/sidecar.md` rule 1.
         // `read_edition` sorts, which is right for the shell globs `align` is
@@ -66,7 +67,7 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
     }
     eprintln!(
         "{compared} pages compared across {} editions",
-        work.sidecar.editions.len()
+        sidecar.editions.len()
     );
     assert!(compared > 0, "the corpus sidecar has no pages to compare");
 }
@@ -128,7 +129,8 @@ fn stump_and_local_serve_the_same_bytes_for_the_same_member() {
 
     let mut compared = 0usize;
     let mut skipped = 0usize;
-    for edition in work.sidecar.editions.values() {
+    let sidecar = work.sidecar();
+    for edition in sidecar.editions.values() {
         for member in &edition.members {
             // Three states, and only two of them are acceptable here.
             //

@@ -54,6 +54,20 @@ export interface Resolver {
   indexOf(edition: string, at: Position): number | undefined
   resolve(from: string, to: string, at: Position): Landed | undefined
   chapterAt(edition: string, index: number): Chapter | undefined
+  /**
+   * Frees whatever native resource backs this resolver, if any. Optional —
+   * the hand-written fakes `reading.test.ts`/`session.test.ts`/etc. build
+   * (`fixtures.ts`'s `fakeResolver`) have nothing to free, and requiring
+   * every one of them to grow a no-op implementation would be pure ceremony
+   * for a distinction that only matters on the WASM side.
+   *
+   * A caller that replaces a resolver mid-session — `App.tsx` does, after a
+   * correction lands and after a stale-`ETag` re-read — must call the
+   * outgoing one's `dispose` before discarding it, or (for `wasmResolver`,
+   * below) its `WasmSidecar` is stranded until the tab closes. See
+   * `wasmResolver`'s own doc for why this exists.
+   */
+  dispose?(): void
 }
 
 /**
@@ -85,14 +99,19 @@ const ensureWasmInit = once(init)
  * from the module instance that memo settles on; only the module
  * initialisation is shared, not the parse.
  *
- * The returned `WasmSidecar` (`sc`) is not disposed anywhere in here. Exactly
- * one is created per page load, per the line above, and nothing in this
- * reader tears one down early — there is no navigation between works or
- * volumes that keeps the page alive, so the browser reclaims the whole WASM
- * linear memory, `sc` included, on unload. That stops being true the day this
- * becomes a single page that swaps volumes without a full reload: from then
- * on, each swap strands the previous `sc` until the tab closes, and
- * `Resolver` would need a real `dispose` to hand a caller a way to free it.
+ * The returned `WasmSidecar` (`sc`) is freed by the returned `dispose`, not
+ * implicitly. It used to be true that nothing in this reader tore one down
+ * early — there was no navigation between works or volumes that kept the
+ * page alive, so the browser reclaimed the whole WASM linear memory, `sc`
+ * included, on unload, and `dispose` would have been dead code. The
+ * correction UI reached the condition that doc predicted, by a different
+ * door than the one it named: not swapping volumes, but swapping *documents*
+ * — every correction that lands, and every stale-`ETag` re-read, calls
+ * `wasmResolver` again and replaces the resolver in state, which strands the
+ * previous call's `sc` (and, since it also caches a `Route`, more than just
+ * the base handle) for as long as the tab stays open. `App.tsx` now calls
+ * the outgoing resolver's `dispose?.()` at both of those call sites, before
+ * installing the new one.
  *
  * `slotAt` and `resolveSlot` each return a fresh `WasmPosition`/`WasmSlot` —
  * unlike `sc`, these are called once per resolution rather than once per
@@ -132,5 +151,6 @@ export async function wasmResolver(json: string): Promise<Resolver> {
       c.free()
       return chapter
     },
+    dispose: () => sc.free(),
   }
 }

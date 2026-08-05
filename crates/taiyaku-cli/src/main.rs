@@ -852,11 +852,12 @@ fn serve(args: &[String]) -> Result<(), String> {
 
     let works = taiyaku_serve::load_works(&paths)?;
     for work in &works {
+        let sidecar = work.sidecar();
         eprintln!(
             "{} | {} editions | {}",
             work.id,
-            work.sidecar.editions.len(),
-            work.sidecar.work.title
+            sidecar.editions.len(),
+            sidecar.work.title
         );
     }
     tokio::runtime::Runtime::new()
@@ -1250,8 +1251,9 @@ fn align(args: &[String]) -> Result<(), String> {
                 let merged = sidecar
                     .merge_spoke(direction, anchor, &a_edition, &b_name, b_edition, alignment)?;
                 let verb = match merged {
-                    Merged::Added => "added",
-                    Merged::Replaced => "replaced",
+                    Merged::Added => "added".to_string(),
+                    Merged::Replaced => "replaced".to_string(),
+                    Merged::CarriedHandRuns(n) => format!("replaced, carrying {n} hand run(s)"),
                 };
                 let note = format!(
                     "merged {out}: {verb} `{b_name}` | {} editions, {} alignments",

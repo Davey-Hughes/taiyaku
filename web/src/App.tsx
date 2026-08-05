@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { getProgress, getSidecar, listWorks, pageUrl, putProgress } from './api'
+import { getProgress, getSidecarWithEtag, listWorks, pageUrl, patchAlignment, putProgress } from './api'
 import { Chrome } from './Chrome'
+import { describePosition, displacedBy, spanOf, type Pending } from './correction'
 import { createDecodeQueue, decodeTo, type DecodeQueue } from './decode'
 import { debounce, type Debounced } from './debounce'
 import { Gap } from './Gap'
@@ -27,7 +28,7 @@ import {
 import { TOGGLE_INTENT as SETTINGS_TOGGLE_INTENT } from './modules/settings'
 import { nearestPaired, type NearestOffer } from './nearest'
 import { PageView } from './PageView'
-import { cellsFor, groups, type Group, type Mode } from './pairing'
+import { cellsFor, correctionTiles, groups, type Group, type Mode } from './pairing'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
 import { display, navigate, restore, type ReadingState } from './reading'
 import { Settings } from './Settings'
@@ -41,6 +42,7 @@ import { withFieldValue } from './settingsPanel'
 // tests constraint.
 import { wasmResolver, type Chapter, type Position, type Resolver } from './resolver'
 import {
+  alignmentsOf,
   applyIntent,
   initialPrevious,
   orderedEditions,
@@ -118,6 +120,49 @@ function App() {
   // above, and deliberately a separate flag rather than reusing it: the
   // panel and the chrome are shown and hidden independently.
   const [settingsVisible, setSettingsVisible] = useState(false)
+
+  // `c`'s target. Set to a `Pending` assertion the moment correction mode
+  // opens (`pending.b` still absent — meaning no counterpart has been picked
+  // yet, not that one pairs with nothing; see `correction.ts`'s `Pending`),
+  // grown a `b` once a tile is picked, and cleared only by `Escape` or a
+  // write actually landing — nothing else undoes a correction, so nothing
+  // else may drop this silently either.
+  const [pending, setPending] = useState<Pending>()
+  // Whether a correction is on the wire right now.
+  //
+  // A correction is irreversible, and the confirm banner is the one moment a
+  // reader is asked to trust that. Without this, three things went wrong while
+  // a `PATCH` was in flight: a second `Confirm` click started a second,
+  // concurrent write against the same `etag`; `Escape` and `Cancel` cleared
+  // `pending` and took the banner away, telling the reader nothing had
+  // happened while the write was still going to land; and the completion
+  // handler then navigated the reader — or, if they had pressed `c` again in
+  // the meantime, silently replaced the correction they had just started.
+  //
+  // Disabling all three exits for the duration closes every one of those by
+  // construction: there is no way to reach a second `pending` while the first
+  // is still settling, so the completion handler cannot be stale.
+  const [submitting, setSubmitting] = useState(false)
+  // The keydown effect subscribes once at load, so its closure cannot see
+  // this — same staleness `sessionRef` and `pendingRef` exist to route around.
+  const submittingRef = useRef(false)
+  useEffect(() => {
+    submittingRef.current = submitting
+  }, [submitting])
+  // The sidecar's `ETag`, as of the last successful read or write — what a
+  // correction's `If-Match` is checked against. Kept alongside `session`
+  // rather than inside it: `session.resolver` is rebuilt from a correction's
+  // response body, but the two are set together, not derived from one
+  // another, so there is nothing gained by nesting this under `Session`.
+  const [etag, setEtag] = useState<string>()
+  // Set only on the paths `patchAlignment` can actually fail on after a
+  // reader has already committed to a pick — a stale `ETag` (someone else's
+  // correction landed first) or any other rejected write. Shown beside the
+  // confirm/cancel controls rather than thrown away in a `console.error`:
+  // `api.ts`'s own doc on `patchAlignment` is explicit that a correction is a
+  // deliberate act the reader is watching the result of, not a background
+  // write like `putProgress`.
+  const [correctionNotice, setCorrectionNotice] = useState<string>()
 
   // Every registered module's own preference slice, in one map keyed by
   // `ReaderModule.id` rather than one hand-declared `useState` per module.
@@ -214,17 +259,25 @@ function App() {
     sessionRef.current = session
   }, [session])
 
+  // `Escape` has to read the *current* `pending` inside the same keydown
+  // effect that only resubscribes on load (see its own comment below) — the
+  // same staleness `sessionRef` exists to route around, for the same reason.
+  const pendingRef = useRef<Pending>(undefined)
+  useEffect(() => {
+    pendingRef.current = pending
+  }, [pending])
+
   useEffect(() => {
     let cancelled = false
     async function load() {
       const [work] = await listWorks()
       if (!work) throw new Error('no works available')
-      const json = await getSidecar(work)
-      const sidecar: SidecarShape = JSON.parse(json)
+      const fetched = await getSidecarWithEtag(work)
+      const sidecar: SidecarShape = JSON.parse(fetched.json)
       const editions = orderedEditions(sidecar.hub, Object.keys(sidecar.editions))
       const [hub] = editions
       if (!hub) throw new Error(`${work} defines no editions`)
-      const resolver = await wasmResolver(json)
+      const resolver = await wasmResolver(fetched.json)
       // Stored progress if there is any, slot 0 of the hub if there is none —
       // see `reading.ts`'s `restore`. Read after the resolver so a failure
       // resolving the sidecar surfaces before a second request is made, and
@@ -247,6 +300,7 @@ function App() {
           // first `2` would.
           previous: initialPrevious(editions, state.authority),
         })
+        setEtag(fetched.etag)
       }
     }
     load().catch((err: unknown) => {
@@ -268,6 +322,26 @@ function App() {
     if (!session) return
     const { resolver, editions } = session
     function onKeyDown(event: KeyboardEvent) {
+      // `Escape` is not one of `intentOf`'s intents — it has nothing to do
+      // with reading, only with backing out of a correction — so it is
+      // checked directly, ahead of the dispatch below, and only while there
+      // is actually a `pending` to abandon. Unlike every other branch here,
+      // this deliberately does *not* stand down for a focused control: the
+      // tile a reader just clicked (`onPickCounterpart`) is itself a button,
+      // and `Escape` cancelling out of that click is exactly the case this
+      // exists for — gating it on `isInteractiveTarget` would make it fire
+      // everywhere except the one moment it matters most.
+      if (event.key === 'Escape') {
+        if (!pendingRef.current) return
+        // Not while the write is on the wire: taking the banner away here
+        // would tell the reader the correction was abandoned when it is
+        // still going to land. See `submitting`'s own doc above.
+        if (submittingRef.current) return
+        event.preventDefault()
+        setPending(undefined)
+        setCorrectionNotice(undefined)
+        return
+      }
       // One dispatch path: every key — built-in or module-declared — passes
       // through `intentOf`, which applies the modifier guard once. A module's
       // own key (currently just direction's `d`) comes back as `{ kind:
@@ -281,6 +355,40 @@ function App() {
         // made every focusable control (mode buttons, all of the
         // filmstrip's tiles, `Gap`'s offered moves) mouse-only.
         setChromeVisible((visible) => !visible)
+        return
+      }
+      if (intent.kind === 'correct') {
+        // Same interactive-target guard as the module branch below — a
+        // focused button's own keyboard activation should be the only thing
+        // that runs. Reads `sessionRef.current`, not the `session` this
+        // effect closed over at subscribe time, for the same reason the
+        // module cases below do: that closure is frozen at load and never
+        // sees a later swap or navigation.
+        if (isInteractiveTarget(event.target)) return
+        // Not while a correction is already on the wire — see `submitting`'s
+        // own doc above. Without this, `disabled={submitting}` blurs the
+        // just-clicked `Confirm` button the instant the write starts, so
+        // `isInteractiveTarget` no longer stands this handler down, and a
+        // `c` press mid-write would silently replace the pending correction
+        // the completion handler in `confirmCorrection` is about to resolve.
+        if (submittingRef.current) return
+        event.preventDefault()
+        const current = sessionRef.current
+        if (!current) return
+        const shown = display(current.state, current.resolver)
+        // No slot to correct while showing a gap — there is nothing on
+        // screen to name as `a`.
+        if (shown.kind !== 'at') return
+        // The counterpart to correct against: `state.authority` when the
+        // reader has swapped away from it (that swap is what they are
+        // comparing against), otherwise `previous` — the edition a `Space`
+        // would return to, and so the most recent "other" edition in view.
+        const to = current.state.authority !== shown.edition ? current.state.authority : current.previous
+        if (to === shown.edition) return // nothing to correct against
+        const slots = allSlots(current.resolver, shown.edition)
+        setPending({ from: shown.edition, to, a: slots[shown.slot] })
+        setCorrectionNotice(undefined)
+        setChromeVisible(true) // the filmstrip is where a counterpart is picked
         return
       }
       if (intent.kind === 'module') {
@@ -570,6 +678,101 @@ function App() {
     setSession((prev) => (prev ? { ...prev, state: navigate(prev.state, slot) } : prev))
   }
 
+  // The filmstrip's click job while `pending` is set: `slot` is a slot of
+  // `pending.to` (the edition the strip is showing while correcting — see
+  // `correcting`'s doc on `FilmstripProps`), converted to a `Position` here
+  // because that is what `Pending.b`, `spanOf` and `displacedBy` all deal in.
+  // Not a write itself — see `confirmCorrection` below for that, and the
+  // task's own reasoning for why the two are not one step.
+  function pickCounterpart(slot: number) {
+    setPending((prev) => {
+      if (!prev) return prev
+      const b = resolver.slotAt(prev.to, slot)
+      return b ? { ...prev, b } : prev
+    })
+    setCorrectionNotice(undefined)
+  }
+
+  // Writes `pending` — only reachable once `pending.b` is set, i.e. after
+  // `pickCounterpart` above — and, on success, moves the reader onto the
+  // page they just picked: the design's "switches to the counterpart
+  // edition" is not only the filmstrip's tiles while choosing, it is also
+  // where the reader lands once the choice is confirmed.
+  //
+  // `previous` is updated to the edition being left, same as every other
+  // change to `viewing` in this file (`session.ts`'s own doc on `previous`
+  // is explicit that this must happen on *every* change, not only a
+  // `toggle`) — skipping it here would be exactly the drift that doc warns
+  // against, just reached through a correction instead of a keypress.
+  async function confirmCorrection() {
+    // `submitting` guards re-entry as well as the exits: a second `Confirm`
+    // click would otherwise start a concurrent write against the same `etag`,
+    // and the loser of that race gets a `412` for a correction the reader
+    // only asked for once.
+    if (!pending || pending.b === undefined || etag === undefined || submitting) return
+    const { from, to, a, b } = pending
+    setSubmitting(true)
+    try {
+      const fresh = await patchAlignment(work, etag, { from, to, a: spanOf(a), b: spanOf(b) })
+      const nextResolver = await wasmResolver(fresh.json)
+      const bSlot = nextResolver.indexOf(to, b)
+      // The outgoing resolver's `WasmSidecar` would otherwise be stranded —
+      // see `resolver.ts`'s `Resolver.dispose` doc. Freed only now that
+      // `nextResolver` exists to replace it, not before: a `wasmResolver`
+      // parse failure above must leave the reader with a working resolver,
+      // not none.
+      resolver.dispose?.()
+      setSession((prev) => {
+        if (!prev) return prev
+        const state = bSlot === undefined ? prev.state : navigate({ ...prev.state, viewing: to }, bSlot)
+        // `alignments` alongside the resolver swap — `Sidecar::rewrite`
+        // recomputes `quality` on every correction, so leaving this at
+        // whatever loaded at session start would show a verdict the
+        // document no longer states. See `session.ts`'s `alignmentsOf`.
+        return { ...prev, resolver: nextResolver, alignments: alignmentsOf(fresh.json), state, previous: prev.state.viewing }
+      })
+      setEtag(fresh.etag)
+      setPending(undefined)
+      setCorrectionNotice(undefined)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      // The server's own wording for a `412` (`routes.rs`'s `patch_alignments`)
+      // — matched by substring, not by re-parsing the status out of the
+      // thrown message, since `api.ts` only promises the status is somewhere
+      // in there. A stale validator means somebody else's correction is in
+      // the document now, and it may be the one this reader was about to
+      // make, so `pending` survives this catch untouched: re-fetching just
+      // gets the reader a current `ETag` and resolver to confirm again
+      // against, not a silently retried write.
+      if (message.includes('changed since you read it')) {
+        try {
+          const fresh = await getSidecarWithEtag(work)
+          const nextResolver = await wasmResolver(fresh.json)
+          // Same dispose-then-replace and alignments-refresh reasoning as
+          // the success path above — a 412 re-read swaps the resolver too,
+          // and the document it re-reads can have a fresher `quality` block
+          // than the one this session loaded with.
+          resolver.dispose?.()
+          setSession((prev) =>
+            prev ? { ...prev, resolver: nextResolver, alignments: alignmentsOf(fresh.json) } : prev,
+          )
+          setEtag(fresh.etag)
+        } catch (rereadErr) {
+          console.error(rereadErr)
+        }
+        setCorrectionNotice('This work changed since it was read — check the pairing below and confirm again.')
+      } else {
+        setCorrectionNotice(message)
+      }
+    } finally {
+      // In `finally`, not at the end of each arm: a throw from the success
+      // path itself — `wasmResolver` failing to parse the document the server
+      // just returned, say — would otherwise leave the banner disabled with
+      // no way out but a reload.
+      setSubmitting(false)
+    }
+  }
+
   // `Settings.tsx`'s two callbacks, generic over every registered module
   // rather than a hand-written case per one — unlike the key-dispatch switch
   // above, which stays a small explicit switch because each key does
@@ -647,6 +850,35 @@ function App() {
     0,
   )
   const current = grouped[currentIndex]
+
+  // While correcting, the filmstrip shows `pending.to`'s tiles rather than
+  // `shown.edition`'s — see `correcting`'s doc on `FilmstripProps`. The page
+  // area above keeps rendering `shown.edition` throughout: a correction
+  // never changes what is on screen until it is confirmed (`confirmCorrection`
+  // is what moves the reader, once it lands). `slots`/`grouped`/`currentIndex`
+  // above are untouched by any of this, on purpose — they stay exactly what
+  // the page area itself renders from.
+  const correctionSlots = pending && allSlots(resolver, pending.to)
+  // `correctionTiles`, not `groups(correctionSlots, mode, ...)` — see its own
+  // doc in `pairing.ts`. `groups` would fold a joined spread into one
+  // two-slot tile the reader can only ever assert `slots[0]` of (I4 in the
+  // M5d review), and in `two` mode would do the same to every ordinary pair.
+  // Correcting needs the opposite of reading's pairing: one tile per slot,
+  // so any slot — including one half of a spread — can be named on its own,
+  // and the dashed marker below (`pairedIndex`) always lands on a tile that
+  // names exactly the slot the alignment resolves to.
+  const correctionGroups = pending && correctionSlots ? correctionTiles(correctionSlots) : undefined
+  // Where the alignment currently resolves `pending.a` to, in `pending.to` —
+  // the tile a reader disagrees with when they open correction mode, so it
+  // has to be visible to disagree with it (see `Filmstrip`'s own doc on
+  // `correcting`). `undefined` when `pending.a` currently pairs with nothing
+  // in `to`, a real state `Resolver.resolve` can answer and this must not
+  // crash on rather than a bug.
+  const landedAtCounterpart = pending && resolver.resolve(pending.from, pending.to, pending.a)
+  const pairedIndex = landedAtCounterpart ? resolver.indexOf(pending.to, landedAtCounterpart) : undefined
+  // Named before the write, not after it: the 1:1 rule means this slot loses
+  // its counterpart, and nothing undoes a correction short of making another.
+  const displaced = pending && displacedBy(pending, resolver)
 
   // `editions[0]` is the hub — `orderedEditions` (`session.ts`) always
   // places it first, and `Session.editions` is built from exactly that.
@@ -816,12 +1048,90 @@ function App() {
         chapter={chapterText}
         health={healthText}
         work={work}
-        edition={shown.edition}
-        slots={slots}
-        groups={grouped}
-        currentIndex={currentIndex}
+        edition={pending ? pending.to : shown.edition}
+        slots={pending && correctionSlots ? correctionSlots : slots}
+        groups={pending && correctionGroups ? correctionGroups : grouped}
+        // No group of `pending.to`'s own is "current" while correcting — the
+        // reader is still looking at `pending.from`, not `to` — so nothing
+        // should draw the solid "where you are" border there. `pairedIndex`'s
+        // dashed one is the only marker while this is unset.
+        currentIndex={pending ? -1 : currentIndex}
         onNavigate={goToSlot}
+        correcting={pending ? { to: pending.to, pairedIndex } : undefined}
+        onPickCounterpart={pending ? pickCounterpart : undefined}
       />
+      {pending && (
+        <div
+          role="status"
+          style={{
+            position: 'absolute',
+            top: 16,
+            left: 16,
+            right: 16,
+            zIndex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 8,
+            padding: '10px 16px',
+            borderRadius: 8,
+            background: 'rgba(24, 24, 24, 0.92)',
+            color: 'rgba(255, 255, 255, 0.92)',
+            textAlign: 'center',
+          }}
+        >
+          {pending.b === undefined ? (
+            <p style={{ margin: 0 }}>
+              Pick the <strong>{pending.to}</strong> page that matches <strong>{pending.from}</strong>{' '}
+              {describePosition(pending.a)}. <em>Escape</em> cancels without writing anything.
+            </p>
+          ) : (
+            <>
+              {/* The assertion itself, restated at the moment of confirming.
+                  Without this the banner swapped the "pick a page" prompt for
+                  the consequence line alone, so the one screen a reader
+                  confirms an irreversible write from never said what was
+                  being asserted — found by driving this against the real
+                  corpus, where the strip has 235 tiles and the picked one
+                  scrolls out of view as easily as not. */}
+              <p style={{ margin: 0 }}>
+                Pair <strong>{pending.from}</strong> {describePosition(pending.a)} with{' '}
+                <strong>{pending.to}</strong> {describePosition(pending.b)}?
+              </p>
+              {/* Named before the write, not after it — see `displaced`'s own
+                  doc above. Shown even when `displaced` is undefined, so a
+                  reader sees the same confirmation shape either way rather
+                  than wondering whether the absence of a warning is itself
+                  the warning. */}
+              <p style={{ margin: 0 }}>
+                {displaced
+                  ? `${pending.from} ${describePosition(displaced)} will lose its ${pending.to} counterpart.`
+                  : `Nothing loses its counterpart — ${pending.to} ${describePosition(pending.b)} pairs with nothing today.`}
+              </p>
+              {correctionNotice && <p style={{ margin: 0, opacity: 0.85 }}>{correctionNotice}</p>}
+              {/* Both disabled while the write is on the wire — see
+                  `submitting`'s doc. Cancel especially: it is the control
+                  that most looks like it undoes the write, and it is the one
+                  that cannot. */}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" disabled={submitting} onClick={() => void confirmCorrection()}>
+                  {submitting ? 'Writing…' : 'Confirm'}
+                </button>
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => {
+                    setPending(undefined)
+                    setCorrectionNotice(undefined)
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
       <Settings
         visible={settingsVisible}
         modules={registry.all()}

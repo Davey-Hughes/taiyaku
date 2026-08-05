@@ -31,7 +31,6 @@
 //! directory is cleared by hand.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use taiyaku_read::MAX_DECODE_ALLOC;
@@ -85,26 +84,6 @@ pub fn thumb_cache_path(dir: &Path, sha256: &str, offset: u32) -> PathBuf {
 /// `LONG_EDGE` to change.
 fn keyed_path(dir: &Path, sha256: &str, long_edge: u32, format_version: u32) -> PathBuf {
     dir.join(format!("{sha256}-{long_edge}v{format_version}.jpg"))
-}
-
-/// A temp path unique to this write attempt, so two concurrent requests for
-/// the same uncached cover cannot write through the same filename and
-/// interleave.
-///
-/// The atomic rename in `cached_or_generated` protects a *reader* from ever
-/// seeing a partial file; it does nothing for two *writers* racing on one
-/// temp name — the loser's truncated or interleaved bytes can still win the
-/// rename and get published as the cover, permanently, since nothing
-/// regenerates it afterwards. A process id plus a monotonic per-process
-/// counter is enough to make that collision impossible without a new
-/// dependency. A leftover temp file — one whose rename failed — can never be
-/// mistaken for a cover, because the read path does an exact-name lookup for
-/// `cache_path`'s output and nothing else, not a prefix or glob match.
-fn unique_temp_path(path: &Path) -> PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    path.with_extension(format!("jpg.tmp.{pid}.{n}"))
 }
 
 /// How many cover generations — fetching a page and decoding it — may run at
@@ -277,21 +256,15 @@ fn at_path(
         generate(page()?)?
     };
     if std::fs::create_dir_all(dir).is_ok() {
-        // Unique per attempt: see `unique_temp_path`. Two concurrent misses
-        // for the same edition — exactly what a cold OPDS grid produces —
-        // each get their own file to write and rename, rather than racing on
-        // one shared name.
-        let temporary = unique_temp_path(&path);
-        if std::fs::write(&temporary, &generated).is_ok() {
-            let _ = std::fs::rename(&temporary, &path);
-        }
-        // Best-effort tidy-up: if the write failed, or the rename failed
-        // (another writer's rename could have already published `path` on
-        // some filesystems), nothing else will ever clean this attempt's
-        // temp file up. Its name never matches what the read path looks up,
-        // so a leftover one is inert either way — this just avoids
-        // accumulating one per collision under sustained concurrent load.
-        let _ = std::fs::remove_file(&temporary);
+        // A cache that cannot be written is not an error — the cover was
+        // already generated and the client gets it regardless — so the
+        // result of the write-and-rename is discarded rather than
+        // propagated. `crate::atomic::write` is unique per attempt, so two
+        // concurrent misses for the same edition — exactly what a cold OPDS
+        // grid produces — each get their own file to write and rename,
+        // rather than racing on one shared name, and it cleans up its own
+        // temp file on a failed rename.
+        let _ = crate::atomic::write(&path, &generated, "jpg");
     }
     Ok(generated)
 }
@@ -299,6 +272,7 @@ fn at_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// A real, small, decodable page. The shared `test_support::work`
     /// fixture's "pages" are ASCII strings and cannot be decoded — that is by
@@ -411,12 +385,16 @@ mod tests {
     /// checks the leftover-file safety property: a temp name must never
     /// collide with what `cache_path` itself would produce, so an unrenamed
     /// temp file can never be mistaken for a real cover by the read path.
+    ///
+    /// Exercises `crate::atomic::temp_path` directly, now that this module's
+    /// own `unique_temp_path` copy is gone — the property under test is
+    /// unchanged, only which function proves it.
     #[test]
     fn temp_paths_for_the_same_key_never_collide_or_look_like_a_cover() {
         let path = cache_path(Path::new("/tmp/covers"), "abc123");
 
-        let one = unique_temp_path(&path);
-        let two = unique_temp_path(&path);
+        let one = crate::atomic::temp_path(&path, "jpg");
+        let two = crate::atomic::temp_path(&path, "jpg");
 
         assert_ne!(one, two, "two attempts must not share a temp name");
         assert_ne!(one, path, "must not just be the canonical path");

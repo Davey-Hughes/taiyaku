@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cellsFor, groups } from './pairing'
+import { cellsFor, correctionTiles, groups } from './pairing'
 import { bSlots, odd, whole } from './fixtures'
 
 describe('single', () => {
@@ -152,6 +152,41 @@ describe('cellsFor', () => {
     const spread = cellsFor({ slots: [4, 5], spread: true }, 'ltr')
     expect(pair).toEqual({ wide: false, first: 2, second: 3 })
     expect(spread).toEqual({ wide: true, first: 4, second: 5 })
+  })
+})
+
+describe('correctionTiles', () => {
+  it('is one group per slot, ignoring pairing entirely', () => {
+    expect(correctionTiles(whole(3))).toEqual([{ slots: [0] }, { slots: [1] }, { slots: [2] }])
+  })
+
+  // bSlots: 0, 1, 2R, 2L, 3, 4, 5, 6, 7 — slots 2 and 3 are one page, joined
+  // into a single `spread: true` group by `groups`. `correctionTiles` is the
+  // fix for I4: a reader correcting has to be able to name either half on
+  // its own, so this keeps them apart rather than folding them into one
+  // unaddressable two-slot tile.
+  it('does not join a spread into one tile — each half is its own group', () => {
+    expect(correctionTiles(bSlots)).toEqual([
+      { slots: [0] },
+      { slots: [1] },
+      { slots: [2] },
+      { slots: [3] },
+      { slots: [4] },
+      { slots: [5] },
+      { slots: [6] },
+      { slots: [7] },
+      { slots: [8] },
+    ])
+  })
+
+  it('does not pair slots even though two-page mode would', () => {
+    // Contrast with groups(whole(4), 'two', 'rtl'), which pairs (0,1), (2,3).
+    expect(correctionTiles(whole(4))).toEqual([
+      { slots: [0] },
+      { slots: [1] },
+      { slots: [2] },
+      { slots: [3] },
+    ])
   })
 })
 

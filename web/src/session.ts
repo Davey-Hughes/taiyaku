@@ -18,15 +18,20 @@ export interface Alignment {
 }
 
 /**
- * Every intent but `chrome` and `module`. Showing or hiding the strip is UI
- * state with no bearing on `ReadingState`, and a module's own key (direction's
- * `d`, currently) acts on that module's own preference slice, not on
- * `ReadingState` either — `App.tsx`'s keydown handler branches on both before
- * `applyIntent` is ever called, and this excludes them at the type level
- * rather than leaving a dead `case` here for a variant this function has no
- * reason to touch.
+ * Every intent but `chrome`, `module` and `correct`. Showing or hiding the
+ * strip is UI state with no bearing on `ReadingState`, a module's own key
+ * (direction's `d`, currently) acts on that module's own preference slice,
+ * not on `ReadingState` either, and a correction is a write to the sidecar's
+ * alignment — it names a `Pending` assertion, not a change to where the
+ * reader is looking, so it has nothing to hand `applyIntent` either.
+ * `App.tsx`'s keydown handler branches on all three before `applyIntent` is
+ * ever called, and this excludes them at the type level rather than leaving a
+ * dead `case` here for a variant this function has no reason to touch.
  */
-export type ReadingIntent = Exclude<Intent, { kind: 'chrome' } | { kind: 'module'; intent: string }>
+export type ReadingIntent = Exclude<
+  Intent,
+  { kind: 'chrome' } | { kind: 'module'; intent: string } | { kind: 'correct' }
+>
 
 /**
  * One keypress's worth of state change.
@@ -158,6 +163,31 @@ export function verdictFor(alignments: Alignment[], from: string, to: string): V
  */
 export function orderedEditions(hub: string, editions: string[]): string[] {
   return [hub, ...editions.filter((edition) => edition !== hub).sort()]
+}
+
+/**
+ * Pulls `alignments` out of a freshly-fetched sidecar document, the same
+ * field `App.tsx`'s load effect reads at startup (`SidecarShape.alignments`
+ * there).
+ *
+ * `Sidecar::rewrite` recomputes the `quality` block — what `verdictFor`
+ * above actually reads — on every correction, and the composed branch can
+ * add an entirely new edge. Before this existed, `App.tsx` rebuilt
+ * `resolver` from a correction's response body (both on the success path and
+ * after a stale-`ETag` re-read) but left `alignments` at whatever loaded at
+ * session start, so the swap banner's verdict, `chapterReadout` and
+ * `healthReadout` could all go on describing a document the correction had
+ * already changed — the M5d review's I3, and the drift its own O23 entry
+ * measured directly (two corrections took a real fixture from `sound` to
+ * `fragmented` while the reader kept reading "sound").
+ *
+ * A one-line `JSON.parse` rather than reaching for `SidecarShape` itself:
+ * that interface lives in `App.tsx`, which this module cannot import (see
+ * its own no-resolver-in-tests doc), and `alignments` is the only field
+ * either call site needs out of the response.
+ */
+export function alignmentsOf(json: string): Alignment[] {
+  return (JSON.parse(json) as { alignments: Alignment[] }).alignments
 }
 
 /**

@@ -4042,3 +4042,297 @@ corrected because Task 11's own diff never touched this file's comment.
 no equivalent stale claim. The sentence was deleted; the paragraph's real
 content — why `enabled` is distinct from both `ahead`/`behind` being
 zero — is unchanged.
+
+## M5d: the correction arithmetic, measured before it was built
+
+`docs/superpowers/plans/2026-08-04-m5d-correction-ui.md`'s arithmetic was
+written into the tree, run against the real fixtures, and reverted before the
+plan itself was written — a discipline recorded there as "four things a plan
+asserting rather than running would have got wrong". All four were reproduced
+against `crates/taiyaku-core/src/sidecar.rs`'s `REAL` fixture (Go-Toubun v01:
+`raw-mono` 195 slots, `en-mono` 194 slots) and a three-edition star fixture
+built for the purpose, and the shipped tests pin the same invariants at
+smaller scale.
+
+### A point correction is not 1:1 unless the target's previous owner gives it up
+
+Correcting `raw` slot 100 from `en` slot 99 to `en` slot 98 left `en` slot 98
+claimed by *both* `raw` 99 and `raw` 100 — a run list `invert` would turn into
+two runs starting at the same slot, and `counterpart` would answer from
+whichever came first, silently. Measured on the `REAL` fixture: **193
+targets, 192 distinct.** With eviction — the previous owner of the target
+gives it up and becomes a gap — **192 targets, 192 distinct.** `correct_runs`
+(`taiyaku-core/src/lib.rs`) implements the eviction; the unit test
+`a_corrected_target_is_taken_from_whoever_held_it` pins the invariant at unit
+scale (a synthetic 10-slot run), and sabotaging the eviction into a no-op
+fails it with "no target slot may be claimed twice" (left: 10 claimed targets,
+right: 9 distinct).
+
+### Marking hand runs on any overlapping slot marks 188 of 195 slots — and why `all` is the rule
+
+`Sidecar::correct` has to decide which runs in the freshly-rewritten alignment
+count as `by: "hand"` once a correction lands. The candidate rule was "any
+slot of the run overlaps the correction"; on the primary corpus volume the
+solved run `7-194` is 188 slots wide, and one correction landing inside it
+would, under `any`, stamp all 188 `by: "hand"`. That would make O13's
+replace-refusal (below) fire on every later re-solve of an edge somebody had
+ever touched once, for 187 slots nobody corrected.
+The rule is instead **every slot of the run the correction produced**: a
+correction that changes the answer always lands as its own single-slot run
+once `correct_runs` splits around it, so `all` — every slot of that
+now-single-slot run overlaps the correction — marks exactly the slot asserted
+and the slot displaced by it. Measured with two corrections against the
+`REAL` fixture: the resulting hand runs are `["42", "50"]`, not `["7-41",
+"42", "43-49", "50", "51-194"]`.
+
+### A correction that changes nothing must not rewrite anything
+
+`raw` slot 100 already resolves to `en` page 94 in the `REAL` fixture.
+Without a no-op check, asserting that same pairing again still stamped `by:
+"hand"` and a `note` onto the 188-slot solver run it happened to sit inside —
+turning a no-op into damage. `Sidecar::correct` now answers
+`Corrected::AlreadyTrue` and changes nothing at all when the assertion
+already holds; `a_correction_that_changes_nothing_rewrites_nothing` pins it by
+cloning the document before the call and asserting equality after.
+
+## Correcting against the stored direction, without inverting
+
+A sidecar stores one edge per spoke, in one direction, and `invert` reverses
+it losslessly for *reading* — the topology work established that
+("The solver is symmetric on the pairing relation", above). Writing is
+different: correcting `en-mono` slot 10 against a document whose stored edge
+is `raw-mono -> en-mono` (the reverse direction) must not go through
+`invert`, apply the correction, then `invert` back, because `invert` drops
+one-sided gap runs by construction — a round trip through it would silently
+discard every gap the stored direction records.
+Measured on the `REAL` fixture, which stores 2 gap runs (slots 1 and 6): the
+`en-mono -> raw-mono` correction is applied **in the stored direction**,
+leaving `raw-mono -> en-mono` in place with its orientation unchanged, and its
+gap count goes from 2 to 3 — the original two gaps intact, plus one for the
+slot the correction displaced.
+`correcting_against_the_stored_direction_keeps_the_stored_gaps` pins the gap
+count and that the edge's `from` stays `raw-mono` after a correction issued
+against `en-mono`.
+
+## O13 — closes here
+
+`merge_spoke` dropped the stored edge wholesale on a re-solve, so a
+hand-corrected run could not survive one. Nothing had noticed because
+`Source::Hand` was constructed nowhere in the workspace — the variant was
+defined, serde round-tripped it, and no code path wrote one — until the
+correction UI became the first thing to construct one.
+
+The fix divides exactly as the design tabled it:
+
+| Merge case | Behaviour |
+| ---------- | --------- |
+| Spoke's members unchanged | hand runs carry across; the merge reports how many, as `Merged::CarriedHandRuns(n)` |
+| Spoke replaced, hand runs present | refused, naming the spoke and how many corrections are at risk |
+| Spoke replaced, no hand runs | proceeds exactly as before |
+
+Three things found while building it, each worth a sentence:
+
+1. **The first `carry_hand_runs` dropped a solved run that merely *overlapped*
+   a hand run rather than splitting around it.** It used to filter whole
+   solved runs by page-range overlap against the hand run's span. Run against
+   a real test — two one-slot corrections at slots 5 and 9 inside a single
+   30-slot solved run — it discarded 28 of the 30 slots: every slot but the
+   two corrected ones, which keep their counterpart through their own
+   hand-run entries. `carry_hand_runs`' own doc comment enumerates them as
+   slots 0-4, 6-8 and 10-29. `resolve` answered `None` for slots 4, 7 and
+   10, none of which any correction touched.
+   `sidecar.md` promises only the corrected slots move, so the fix needed the
+   slot tables, to split each overlapping solved run around every hand run it
+   contains rather than discard the whole run.
+2. **The spoke-changed test compared whole `Member` structs, not hashes**, so
+   a renamed-but-identical archive read as "replaced" and would have
+   discarded its hand runs on a merge that changed nothing about the content.
+   Now compares the ordered `sha256` sequence, the idiom the from-side
+   guard's own comment already states: "Content, not paths… only the hashes
+   can be compared."
+3. **The orientation assumption was reachable and silent.** `--direct` plus
+   `Sidecar::correct`'s own direct-edge branch lets a pair be re-merged with
+   the names swapped relative to the stored edge; without a guard the merge
+   *succeeded*, reporting `CarriedHandRuns(2)` while misfiling the correction
+   against the wrong edition's slot table.
+   `a_direct_edge_stored_the_other_way_round_refuses_rather_than_misapplying_hand_runs`
+   pins the refusal.
+
+Tests: `a_hand_run_survives_a_re_solve_of_an_unchanged_spoke`,
+`replacing_a_spoke_that_holds_hand_runs_is_refused`, and
+`re_solving_a_spoke_whose_archive_moved_carries_hand_runs_rather_than_refusing`
+(the sha256-not-struct case, finding 2 above) join the orientation-guard test
+(finding 3) in pinning the three merge cases in the table.
+
+What stays open, deliberately: what should become of a correction addressing
+bytes that no longer exist. `status.md` already leaves that open and this does
+not answer it — refusing is what stops it being answered silently.
+
+## O23 — opens here
+
+**Two hand corrections take Go-Toubun v01 from `sound` to `fragmented`.**
+
+Measured on the primary corpus volume, correcting `raw-mono` against
+`en-mono`:
+
+| Corrections | paired slots | paired runs | avg run | verdict |
+| ----------- | -----------: | ----------: | ------: | ------- |
+| 0 | 193 | 3 | 64.33 | `sound` |
+| 1 | 192 | 6 | 32.00 | `sound` |
+| 2 | 191 | 9 | 21.22 | **`fragmented`** |
+
+Each correction adds three paired runs and strands one slot, because the 1:1
+rule means the asserted slot takes its target from whoever held it and that
+slot becomes a gap. One paired run becomes four — the part before the
+corrected slot, the corrected slot alone, the part between it and the slot it
+displaced, and the part after — which is where the 3 → 6 → 9 in the table
+above comes from. `correcting_recomputes_the_quality_beside_the_runs` pins
+the two intermediate verdicts (`Sound`, `Sound`) and the final one
+(`Fragmented`) against these exact `avg_run` figures.
+
+The threshold is 27.0, and it exists to separate needles (1.1–1.7 slots a run,
+measured across twenty-two of them) from confirmed-good pairings (36.0–200.0).
+A twice-corrected volume at 21.2 is neither, so the verdict misleads in a way
+the threshold was never calibrated for.
+
+**Nothing is changed here.** Altering the fragmentation policy on a guess is
+what this project does not do — the same reasoning that kept O1 open on
+evidence rather than shipping an `ETag` on plausibility.
+
+**What would decide it:** a work corrected enough times in real reading to say
+whether the verdict misleads a reader in practice, or a measurement showing
+hand runs and solver runs should be counted differently.
+
+Site: `sidecar.rs::rewrite` (which recomputes the quality block) and
+`solve.rs::verdict` (which sets the threshold).
+
+
+## O24 — a solver-written direct edge outlives the edition it addresses
+
+Found by the M5d whole-branch review, and the half of it that got fixed is
+worth stating first, because the two are easy to confuse.
+
+`merge_spoke` refuses a merge that would replace a spoke holding hand-corrected
+runs. The original check looked only at the edge *between the two editions being
+merged*, which misses a direct edge from that spoke to a **third** edition. The
+review reproduced it: a star `a`(hub)/`b`/`c`, a reader corrects `b` against `c`
+— creating a direct `b -> c` edge with two hand runs, since the pair had no
+stored edge — and then `b` is re-solved after a re-scan. The merge answered
+`Ok(Replaced)`, said nothing about the `b -> c` corrections, and left them
+addressing the old edition's slots:
+
+```
+before: b5 -> c Some(9),  b20 -> c Some(20)
+merge : Ok(Replaced)
+after : b5 -> c Some(9),  b20 -> c Some(20)
+route b->c: Some(Direct)
+```
+
+`b20 -> a` is now `Some(22)`, so through the hub `b20` would reach `c18`. The
+reader is sent to page 21 instead of 19, and `route` labels the answer `Direct`
+— the strongest confidence this format has. With a *shorter* replacement the
+failure inverts: `runs_of` errors, `route(b, c)` answers `None`, and by design
+it does not fall through to the hub, so a working spoke-to-spoke lookup is
+destroyed outright.
+
+That case is fixed: the hand-run check now runs over every alignment mentioning
+the spoke, not just the one edge.
+
+**What is left open is the same edge written by the solver.** `align --direct`
+records one, nothing marks it `by: "hand"`, and replacing either endpoint leaves
+it stale in exactly the way above — with no hand runs to trigger the refusal.
+
+It is not a defect this branch introduced. A direct edge has always needed a
+deliberate `--direct`; what M5d changed is that a *hand* one can now be made by
+clicking a filmstrip tile. This item is the older half, found by looking at the
+new guard and asking what it does not cover — which is the same method that
+turned up O19 from O15's scoping, and O20 from O19's fix.
+
+**Why it has never been felt:** no document in the corpus has both a `--direct`
+edge and a re-solve. The measurements that argued for direct edges existing at
+all — editions furthest from the hub losing 3.5% to each other — were taken
+without one ever being written to a file that was later merged into.
+
+
+## A correction silently stripped every margin on the edge it touched
+
+Found only by driving the reader against the corpus, not by any unit test or
+review pass. `entries_from_runs` writes `margin: None` for every entry it
+builds — it rebuilds entries from bare runs and has no confidence figure to
+hand them — and `Sidecar::rewrite` sent the whole edge through it on every
+correction, not only the runs the correction touched.
+
+Measured on Go-Toubun v01: one correction took `raw-mono -> en-fan` from **8
+margins to 0**, while the untouched `raw-mono -> en-mono` kept all 3. A margin
+is the weakest per-page figure inside its run, recoverable only by re-solving
+against the archives — which is the work `sidecar.md` says the document
+exists to avoid.
+
+Fixed (`0242c0f`): a margin carries forward only where both spans are
+identical. Re-measured after the fix, on a stored edge: `raw-mono -> en-fan`
+keeps **6 of 8**, the two dropped being exactly the runs the correction
+reshaped (`0 -> 0` became `0 -> 70`; `8-57 -> 46-94` split around the
+displaced slot). A run that split, merged or moved has no stored figure that
+honestly applies to it any more; a run untouched by the correction keeps the
+figure a real solve produced for it, rather than losing it to a rewrite that
+never touched its slots.
+
+This was invisible to every unit test and to the whole review chain; it took
+driving the reader against real material to find it. Sabotage: reverting the
+carry fails the new test with every margin `None`.
+
+## M5d Task 8, step 5: the browser pass against corpus/gotoubun-v01
+
+Driven for real — `taiyaku serve corpus/gotoubun-v01/taiyaku.json --addr
+127.0.0.1:8080` behind the Vite dev server on 5173 — because `App.tsx` is
+deliberately unreachable from Vitest and nothing else covers the wiring. All
+seven items the brief asked for, confirmed:
+
+1. **`c` opens correction mode and the strip shows the counterpart edition.**
+   Banner: "Pick the en-fan page that matches raw-mono page 1." The strip
+   switched to en-fan's 235 tiles (240 slots minus 5 joined spreads). `to` is
+   `en-fan` because the sidecar holds three editions, so `orderedEditions`
+   gives `[raw-mono, en-fan, en-mono]` and `initialPrevious` seeds one step
+   ahead.
+2. **The tile the alignment currently resolves to is marked, and agrees with
+   the readout.** Exactly one dashed tile, and zero solid-white "current"
+   tiles — `currentIndex: -1` while correcting, as designed.
+3. **Picking a different tile names the slot that will be displaced.**
+   Picking en-fan page 60 gave "raw-mono page 22 will lose its en-fan
+   counterpart" — verified by hand against the stored runs: en-fan slot 59
+   sits in `raw 8-57 -> en 46-94`, so it pairs with raw slot 21, page 22
+   1-based. Picks at en-fan pages 5 and 20 correctly reported "pairs with
+   nothing today", confirmed against `taiyaku lookup`, which agrees both have
+   no counterpart.
+4. **Confirming writes.** A composed pair (`en-fan -> en-mono`, no stored
+   edge) wrote a new direct edge `by: "hand"` with runs `{a: "59", b: "80"}`
+   and the displaced `{a: "123"}` — matching the banner's pages 60/81/124
+   exactly. `route` then reported `Direct` where it had reported
+   `Hub("raw-mono")`. The reader landed on the picked page (readout "slot
+   85 / 194 · p. 81").
+5. **The correction survives a reload.** After a full page load the direct
+   edge and both hand runs were still there.
+6. **`Escape` writes nothing.** Banner cleared, `git diff` on the sidecar
+   stayed empty.
+7. **A conflicting write is reported, not silently won.** A `PATCH` carrying
+   a stale `If-Match` validator was refused `412`, naming the current `ETag`
+   in the body.
+
+Two defects the pass exposed, both fixed the same session: the margin defect
+above (`0242c0f`), and that the confirm step did not restate the assertion —
+the banner swapped the "pick a page" prompt for the consequence line alone,
+so the screen a reader confirms an irreversible write from never said what
+was being asserted, and with 235 tiles the picked tile itself scrolls out of
+view. Fixed (`54023fe`): the banner now reads "Pair en-fan page 60 with
+en-mono page 81?" above the consequence line.
+
+**A later pass measured a third thing the brief's seven items did not cover:
+what happens while the write is still on the wire.** Without an in-flight
+guard, a second Confirm click started a second concurrent write against the
+same `ETag` and the loser got a `412` for a correction the reader only asked
+for once, and `Escape`/Cancel could tell the reader nothing had happened
+while the write was still going to land. Fixed (`372f6f7`) with a
+`submitting` flag disabling all three exits for the duration. Measured
+against the real corpus with the `PATCH` deliberately slowed: Confirm reads
+"Writing…" and is disabled, Cancel is disabled, `Escape` leaves the banner
+up, and exactly one correction lands.

@@ -119,14 +119,14 @@ pub fn resolve_work(
         .unwrap_or_else(|| std::path::Path::new("."));
     let mut learned = false;
     let mut aborted_by_transport = false;
+    let sidecar = work.sidecar();
 
     // Counted before the walk, so the first line can say how many there are
     // rather than only how many have gone by. Deduplicated on `sha256` for
     // the same reason the cache is keyed on it: two members with the same
     // hash are one file and are asked about once, so counting them twice
     // would promise a total the walk never reaches.
-    let outstanding: std::collections::HashSet<&str> = work
-        .sidecar
+    let outstanding: std::collections::HashSet<&str> = sidecar
         .editions
         .values()
         .flat_map(|edition| &edition.members)
@@ -136,7 +136,7 @@ pub fn resolve_work(
     let outstanding = outstanding.len();
     let mut asked = 0;
 
-    'lookups: for edition in work.sidecar.editions.values() {
+    'lookups: for edition in sidecar.editions.values() {
         for member in &edition.members {
             if resolutions.contains_key(&member.sha256) {
                 continue;
@@ -296,8 +296,9 @@ mod tests {
         let resolved =
             resolve_work(&fake, &work, "http://nas:10801", &mut |_, _, _| {}).resolutions;
 
-        let first = work.sidecar.editions["raw"].members[0].sha256.clone();
-        let second_sha = work.sidecar.editions["raw"].members[1].sha256.clone();
+        let sidecar = work.sidecar();
+        let first = sidecar.editions["raw"].members[0].sha256.clone();
+        let second_sha = sidecar.editions["raw"].members[1].sha256.clone();
         crate::test_support::cleanup("taiyaku-test-resolve-ok");
         assert_eq!(resolved.get(&first), Some(&Some("book-1".to_string())));
         // The second member (`c2.cbz`) is asked about against the same
@@ -334,8 +335,9 @@ mod tests {
         let resolved =
             resolve_work(&fake, &work, "http://nas:10801", &mut |_, _, _| {}).resolutions;
 
-        let first = work.sidecar.editions["raw"].members[0].sha256.clone();
-        let second_sha = work.sidecar.editions["raw"].members[1].sha256.clone();
+        let sidecar = work.sidecar();
+        let first = sidecar.editions["raw"].members[0].sha256.clone();
+        let second_sha = sidecar.editions["raw"].members[1].sha256.clone();
         let requests = fake.requests();
         crate::test_support::cleanup("taiyaku-test-resolve-mismatch");
         // Pin the path taken, not just the outcome: deleting the `on_get`
@@ -400,8 +402,9 @@ mod tests {
         let resolved =
             resolve_work(&second, &work, "http://nas:10801", &mut |_, _, _| {}).resolutions;
 
-        let first = work.sidecar.editions["raw"].members[0].sha256.clone();
-        let second_sha = work.sidecar.editions["raw"].members[1].sha256.clone();
+        let sidecar = work.sidecar();
+        let first = sidecar.editions["raw"].members[0].sha256.clone();
+        let second_sha = sidecar.editions["raw"].members[1].sha256.clone();
         crate::test_support::cleanup("taiyaku-test-resolve-cached");
         assert!(
             second.requests().is_empty(),
@@ -426,7 +429,7 @@ mod tests {
         let work = crate::test_support::work("taiyaku-test-resolve-transport-failure");
         let root = work.path.parent().unwrap();
         let size = std::fs::metadata(root.join("c1.cbz")).unwrap().len();
-        let first = work.sidecar.editions["raw"].members[0].sha256.clone();
+        let first = work.sidecar().editions["raw"].members[0].sha256.clone();
 
         let unreachable = FakeTransport::new();
         let first_pass = resolve_work(&unreachable, &work, "http://nas:10801", &mut |_, _, _| {});
@@ -486,7 +489,7 @@ mod tests {
 
         let resolved = resolve_work(&fake, &work, "http://nas:10801", &mut |_, _, _| {});
 
-        let second_sha = work.sidecar.editions["raw"].members[1].sha256.clone();
+        let second_sha = work.sidecar().editions["raw"].members[1].sha256.clone();
         crate::test_support::cleanup("taiyaku-test-resolve-semantic-refusal");
         assert!(
             !resolved.aborted_by_transport,
@@ -635,11 +638,11 @@ mod tests {
         let path = root.join("taiyaku.json");
         std::fs::write(&path, json).unwrap();
 
-        Work {
-            id: "t".into(),
+        Work::new(
+            "t".into(),
             path,
-            sidecar: taiyaku_core::Sidecar::from_json(json).unwrap(),
-        }
+            taiyaku_core::Sidecar::from_json(json).unwrap(),
+        )
     }
 
     /// The property Minor 3 of the review asked for pinned directly: a

@@ -49,26 +49,6 @@ pub fn load(work: &Work) -> Result<Option<Progress>, String> {
     }
 }
 
-/// A temp path unique to this write attempt.
-///
-/// The rename below protects a *reader* from ever seeing a half-written
-/// position; it does nothing for two *writers* sharing one temp name. Progress
-/// is the one thing here a person can write from two devices at once — a phone
-/// and a tablet on the same work — and with a fixed name their two attempts
-/// interleave: one truncates the temp file the other has already written and
-/// is about to rename, and what gets published is the empty file this whole
-/// function exists to prevent. A process id plus a monotonic per-process
-/// counter rules that out without a new dependency.
-///
-/// The same reasoning, and the same shape, as `cover::unique_temp_path`. They
-/// are not shared yet.
-fn unique_temp_path(path: &std::path::Path) -> PathBuf {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let pid = std::process::id();
-    path.with_extension(format!("json.tmp.{pid}.{n}"))
-}
-
 /// Record where the reader got to, atomically.
 ///
 /// Write-and-rename rather than `fs::write`, which truncates first: a crash in
@@ -78,23 +58,13 @@ fn unique_temp_path(path: &std::path::Path) -> PathBuf {
 /// to restore. A page turn writes this file, so the window is entered often.
 ///
 /// The pattern is the one `stump::cache::store` already uses beside the same
-/// sidecar.
+/// sidecar, and now `crate::atomic::write` shared by both of them plus
+/// `cover.rs`'s writer.
 pub fn store(work: &Work, progress: &Progress) -> Result<(), String> {
     let path = progress_path(work);
     let text =
         serde_json::to_string_pretty(progress).map_err(|e| format!("{}: {e}", path.display()))?;
-    let temporary = unique_temp_path(&path);
-    std::fs::write(&temporary, text).map_err(|e| format!("{}: {e}", temporary.display()))?;
-    match std::fs::rename(&temporary, &path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            // Nothing else will ever collect this one: its name is unique to
-            // this attempt, so a leftover accumulates one file per failure in
-            // the reader's own library directory, beside the sidecar.
-            let _ = std::fs::remove_file(&temporary);
-            Err(format!("{}: {e}", path.display()))
-        }
-    }
+    crate::atomic::write(&path, text.as_bytes(), "json")
 }
 
 #[cfg(test)]

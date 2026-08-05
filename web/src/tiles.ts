@@ -6,6 +6,20 @@ export interface Tile {
   /** The slot each entry navigates to, in `groups`' order. */
   slot: number
   page: number
+  /**
+   * Which half of a joined spread's shared page this entry is, when it is
+   * one. Only ever set for a genuine one-slot group — never for the
+   * two-slot `spread: true` group `groups()` itself produces, which stands
+   * for *both* halves as a single wide tile and has no one half to name.
+   *
+   * This is what lets two singleton tiles that share a page — a joined
+   * spread's `R` and `L` slots, addressed individually via `pairing.ts`'s
+   * `correctionTiles` while correcting — read as anything other than two
+   * identical, unlabelled thumbnails: `Filmstrip` folds this into each
+   * tile's `alt` text, the same `page N half` convention `App.tsx`'s `altAt`
+   * uses for the page view itself.
+   */
+  half?: 'L' | 'R'
 }
 
 /**
@@ -32,9 +46,14 @@ export interface Tile {
  * module suits better than a component file.
  */
 export function tilePages(group: Group, slots: Position[]): Tile[] {
-  if (group.spread || group.slots.length === 1) {
+  if (group.spread) {
     const [slot] = group.slots
     return [{ slot, page: slots[slot].page }]
+  }
+  if (group.slots.length === 1) {
+    const [slot] = group.slots
+    const { page, half } = slots[slot]
+    return [{ slot, page, half }]
   }
   return group.slots.map((slot) => ({ slot, page: slots[slot].page }))
 }

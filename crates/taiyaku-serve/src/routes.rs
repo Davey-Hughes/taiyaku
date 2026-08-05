@@ -81,13 +81,13 @@ impl IntoResponse for NotAPageIndex {
 /// `ETag` pay to compute one. `get_thumb` already draws this same split, for
 /// the same reason — its own locate-then-generate call inside
 /// `spawn_blocking` is the same shape, one level further in.
-pub(crate) fn locate_member<'a>(
-    work: &'a Work,
+pub(crate) fn locate_member(
+    work: &Work,
     edition: &str,
     index: u32,
-) -> Result<(&'a str, u32), String> {
-    let found = work
-        .sidecar
+) -> Result<(String, u32), String> {
+    let sidecar = work.sidecar();
+    let found = sidecar
         .editions
         .get(edition)
         .ok_or_else(|| format!("no edition `{edition}` in {}", work.path.display()))?;
@@ -97,7 +97,7 @@ pub(crate) fn locate_member<'a>(
             found.total_pages()
         )
     })?;
-    Ok((found.members[position].sha256.as_str(), within))
+    Ok((found.members[position].sha256.clone(), within))
 }
 
 /// A page's `ETag`: the member's `sha256` and the page's offset within it —
@@ -133,6 +133,38 @@ pub(crate) fn if_none_match_hits(headers: &HeaderMap, tag: &str) -> bool {
 /// defeat the entire point of a `304`.
 pub(crate) fn not_modified(tag: &str) -> Response {
     (StatusCode::NOT_MODIFIED, [(header::ETAG, tag.to_string())]).into_response()
+}
+
+/// A sidecar's `ETag`: a SHA-256 over exactly the bytes this server would send.
+///
+/// Over the serialised document rather than a version counter, because the
+/// point is that two servers, or one server across a restart, agree about
+/// whether a client's copy is current — a counter would restart at zero and
+/// silently validate a stale copy. Computed on demand rather than cached: a
+/// sidecar is tens of kilobytes and this route is asked once per page load,
+/// against a `PATCH` path where being wrong costs a lost correction.
+pub(crate) fn sidecar_etag(sidecar: &taiyaku_core::Sidecar) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(sidecar.to_json().as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("\"{hex}\"")
+}
+
+/// Whether a request's `If-Match` names `tag`.
+///
+/// `None` where the header is absent, which is a different answer from `false`
+/// and gets a different status: a client that sent no validator has not lost a
+/// race, it has not entered one, and telling it "precondition failed" would
+/// send it looking for a conflict that does not exist.
+///
+/// Proven directly by `if_match_distinguishes_absent_from_matching_from_stale`
+/// below, as well as through `patch_alignments`, the one route that writes
+/// against it.
+pub(crate) fn if_match_hits(headers: &HeaderMap, tag: &str) -> Option<bool> {
+    let sent = headers.get(header::IF_MATCH)?.to_str().ok()?;
+    Some(sent == tag)
 }
 
 /// A request naming a work this server does not hold.
@@ -190,17 +222,29 @@ async fn list_works(State(state): State<Arc<ServeState>>) -> Response {
     axum::Json(ids).into_response()
 }
 
-async fn get_sidecar(State(state): State<Arc<ServeState>>, AxPath(id): AxPath<String>) -> Response {
+async fn get_sidecar(
+    State(state): State<Arc<ServeState>>,
+    AxPath(id): AxPath<String>,
+    headers: HeaderMap,
+) -> Response {
     let found = match work(&state, &id) {
         Ok(found) => found,
         Err(missing) => return missing.into_response(),
     };
+    let sidecar = found.sidecar();
+    let tag = sidecar_etag(&sidecar);
+    if if_none_match_hits(&headers, &tag) {
+        return not_modified(&tag);
+    }
     // Served verbatim from the parsed document rather than by re-reading the
     // file, so what the client resolves against is exactly what this server
-    // loaded.
+    // holds — and exactly what the `ETag` above was computed over.
     (
-        [(header::CONTENT_TYPE, "application/json")],
-        found.sidecar.to_json(),
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::ETAG, tag.as_str()),
+        ],
+        sidecar.to_json(),
     )
         .into_response()
 }
@@ -233,7 +277,7 @@ async fn get_page(
         Ok(pair) => pair,
         Err(message) => return not_found(message),
     };
-    let tag = page_etag(sha256, offset);
+    let tag = page_etag(&sha256, offset);
     if if_none_match_hits(&headers, &tag) {
         return not_modified(&tag);
     }
@@ -286,8 +330,8 @@ async fn get_thumb(
     // reasoning applies unchanged.
     let fetched = tokio::task::spawn_blocking(move || {
         let found = state.work_or_missing(&id)?;
-        let ed = found
-            .sidecar
+        let sidecar = found.sidecar();
+        let ed = sidecar
             .editions
             .get(&edition)
             .ok_or_else(|| format!("no edition `{edition}` in work `{id}`"))?;
@@ -351,19 +395,16 @@ async fn put_progress(
     // to validate and once inside the closure, which cannot borrow across it.
     let stored = tokio::task::spawn_blocking(move || {
         let found = state.work_or_missing(&id).map_err(NoProgress::NotFound)?;
-        let edition = found
-            .sidecar
-            .editions
-            .get(&progress.edition)
-            .ok_or_else(|| {
-                NoProgress::NotFound(format!("no edition `{}` in work `{id}`", progress.edition))
-            })?;
+        let sidecar = found.sidecar();
+        let edition = sidecar.editions.get(&progress.edition).ok_or_else(|| {
+            NoProgress::NotFound(format!("no edition `{}` in work `{id}`", progress.edition))
+        })?;
         // Counted in slots rather than pages, because that is what a position
         // is: `progress.rs` records slots so a spread cannot lose which half
         // was reached, and an edition that joins spreads has more slots than
         // pages. Checking against `total_pages()` would refuse the last slot
         // of every such edition — One Piece v092 is spreads throughout.
-        let slots = edition.slots(found.sidecar.work.reading).len() as u32;
+        let slots = edition.slots(sidecar.work.reading).len() as u32;
         if progress.slot >= slots {
             return Err(NoProgress::NotFound(format!(
                 "`{}` has {slots} slots in work `{id}`; there is no slot {}",
@@ -385,6 +426,235 @@ async fn put_progress(
     }
 }
 
+/// One hand correction, as a client asks for it.
+///
+/// Slots are the format's own span notation (`7`, `4R`, `45R`) rather than
+/// bare indices, so the wire, the document and the contact sheet all name a
+/// slot the same way — and a client that is off by a half says so visibly
+/// instead of resolving to a neighbouring index.
+///
+/// **Nothing destructive is spelled by an absence here**, and that shapes two
+/// of the attributes below.
+///
+/// `b` is nullable but **required**: `"b": null` unpairs `a`, and omitting the
+/// field is a `400` rather than an unpairing. `note` is genuinely optional,
+/// because its absence is inert — no note, nothing lost. That is the whole
+/// distinction: a field may default when the default changes nothing, and must
+/// not when the default edits the document.
+///
+/// Two guards, and they deliberately overlap. Requiring `b` closes the
+/// omission: a client assembling this body from a partial object, or one
+/// written before the field existed, would otherwise unpair a page and be told
+/// `200`. `deny_unknown_fields` closes a misspelled or version-skewed field
+/// name.
+///
+/// On `b` specifically the two now say the same thing — a typo'd `"bb"` leaves
+/// `b` absent, so requiring it refuses that request even with the attribute
+/// removed (measured: the sabotage answers `400`, just with the other
+/// message). The attribute still earns its place on the fields where nothing
+/// else would notice: a mistyped `note` is not destructive, but it would be
+/// silently discarded, and a reader who wrote down why they made a correction
+/// should not lose it to a typo in a key.
+///
+/// The cost is one key on the wire. This is not the OPDS surface — that is
+/// `/opds/v1.2/…`, Atom, and read-only, and it is what third-party readers
+/// use; this is taiyaku's own JSON API, and its only client today is `web/`,
+/// whose `CorrectionRequest` already types `b` as required-and-nullable.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Correction {
+    from: String,
+    to: String,
+    a: String,
+    /// `null` unpairs `a`; omitting the field is refused. See the type's own
+    /// doc for why absence must not spell an unpairing.
+    ///
+    /// **`Option<String>` alone would not do this.** serde treats an `Option`
+    /// field as optional whether or not `#[serde(default)]` is written, so a
+    /// missing `b` would deserialise to `None` — indistinguishable from an
+    /// explicit `null`, which is the exact confusion this field must not have.
+    /// Measured, not assumed: dropping `#[serde(default)]` and re-running the
+    /// status table left `{"from":…,"to":…,"a":"2"}` answering `200` and
+    /// unpairing the slot.
+    ///
+    /// The two `Option`s are what separate the cases: the outer one is
+    /// "present or not", filled by `#[serde(default)]` only when the key is
+    /// absent, and the inner one is "a slot or `null`". `present` is what
+    /// forces the wrapper past a plain `Option`'s null-absorbing
+    /// `Deserialize`.
+    #[serde(default, deserialize_with = "present")]
+    b: Option<Option<String>>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// Deserialize a value that may be `null` into `Some`, so a *missing* key stays
+/// distinguishable from one written as `null`.
+///
+/// Only meaningful together with `#[serde(default)]`, which supplies the `None`
+/// for the missing case; this function is never called then.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// One slot from a span, refusing a range.
+///
+/// `45R-46L` is legal notation and names two slots; a correction addresses
+/// one, and quietly taking the start of a range would correct something other
+/// than what was asked for.
+///
+/// A bare `Response` in the `Err` rather than a named type like
+/// `NotAPageIndex` above: this function has exactly one caller, so the extra
+/// type would buy nothing a comment does not already say, and the allow below
+/// is the same `clippy::result_large_err` every other `Response`-carrying
+/// `Result` in this file works around.
+#[allow(clippy::result_large_err)]
+fn one_slot(text: &str, side: &str) -> Result<taiyaku_core::Slot, Response> {
+    let span = taiyaku_core::SlotSpan::parse(text)
+        .map_err(|why| bad_request(format!("`{side}`: {why}")))?;
+    if span.start != span.end {
+        return Err(bad_request(format!(
+            "`{side}` is `{text}`, which names a range; a correction addresses one slot"
+        )));
+    }
+    Ok(span.start)
+}
+
+/// Write a hand correction into the work's sidecar.
+///
+/// The client sends the assertion, never a computed run list: the split is
+/// applied by `Sidecar::correct` against the document this server holds, so
+/// there is one implementation of the arithmetic and a stale client cannot
+/// replace an edge wholesale. `If-Match` is what makes "the document this
+/// server holds" and "the document the client was looking at" the same thing.
+///
+/// `#[allow(clippy::result_large_err)]` because everything under this
+/// handler — `one_slot`'s calls, the `spawn_blocking` closure and the
+/// `Work::update` closure nested inside it — resolves a `Response` as its
+/// error type, and clippy checks each closure as its own item (`works.rs`'s
+/// `a_replaced_sidecar_is_what_the_next_reader_sees` says the same thing at
+/// its own call site).
+#[allow(clippy::result_large_err)]
+async fn patch_alignments(
+    State(state): State<Arc<ServeState>>,
+    AxPath(id): AxPath<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let correction: Correction = match serde_json::from_slice(&body) {
+        Ok(correction) => correction,
+        Err(why) => return bad_request(format!("this is not a correction: {why}")),
+    };
+    let a = match one_slot(&correction.a, "a") {
+        Ok(slot) => slot,
+        Err(refusal) => return refusal,
+    };
+    // The outer `Option` is presence, the inner one is `null`. Absence is
+    // refused here rather than in the derive, so the message names the field
+    // and says what the two spellings mean — serde's own "missing field `b`"
+    // would not say that an unpairing has to be asked for explicitly.
+    let Some(b) = correction.b else {
+        return bad_request(
+            "a correction needs `b`: a slot of the target edition, or `null` to say this slot \
+             pairs with nothing. Leaving it out is refused, because an unpairing is an edit and \
+             has to be asked for."
+                .to_string(),
+        );
+    };
+    let b = match b.as_deref().map(|text| one_slot(text, "b")) {
+        Some(Ok(slot)) => Some(slot),
+        Some(Err(refusal)) => return refusal,
+        None => None,
+    };
+
+    // Serialising, hashing and writing all block, and the read-modify-write
+    // below holds an exclusive lock across the file write — `get_page`'s
+    // reasoning about the async worker applies to it unchanged.
+    let written = tokio::task::spawn_blocking(move || {
+        let found = state.work_or_missing(&id).map_err(not_found)?;
+        found.update(|current| {
+            let tag = sidecar_etag(current);
+            match if_match_hits(&headers, &tag) {
+                None => {
+                    return Err((
+                        StatusCode::PRECONDITION_REQUIRED,
+                        "a correction must carry `If-Match` with the sidecar's ETag, so two \
+                         devices correcting one work cannot silently overwrite each other"
+                            .to_string(),
+                    )
+                        .into_response());
+                }
+                Some(false) => {
+                    return Err((
+                        StatusCode::PRECONDITION_FAILED,
+                        format!(
+                            "this work has changed since you read it; its ETag is now {tag}. \
+                             Re-read the sidecar and correct again."
+                        ),
+                    )
+                        .into_response());
+                }
+                Some(true) => {}
+            }
+
+            let mut next = (**current).clone();
+            let what = next
+                .correct(
+                    &correction.from,
+                    &correction.to,
+                    a,
+                    b,
+                    correction.note.clone(),
+                )
+                .map_err(|why| {
+                    use taiyaku_core::NotCorrected::*;
+                    let status = match why {
+                        NoSuchEdition(_) | NoSuchSlot(_) | NoPath(_) => StatusCode::NOT_FOUND,
+                        SameEdition(_) => StatusCode::BAD_REQUEST,
+                        Unreadable(_) => StatusCode::CONFLICT,
+                    };
+                    (status, why.to_string()).into_response()
+                })?;
+
+            // The file first, then memory. A failed write leaves the served
+            // document exactly as it was, so a client that gets a 500 has lost
+            // its correction and nothing else — where swapping memory first
+            // would leave this server serving an alignment that is on no disk
+            // anywhere.
+            let json = next.to_json();
+            if what != taiyaku_core::Corrected::AlreadyTrue {
+                crate::atomic::write(&found.path, json.as_bytes(), "json")
+                    .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
+            }
+            let next = std::sync::Arc::new(next);
+            let tag = sidecar_etag(&next);
+            Ok((next, (json, tag)))
+        })
+    })
+    .await;
+
+    match written {
+        Ok(Ok((json, tag))) => (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::ETAG, tag.as_str()),
+            ],
+            json,
+        )
+            .into_response(),
+        Ok(Err(refusal)) => refusal,
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("correction panicked: {e}"),
+        )
+            .into_response(),
+    }
+}
+
 /// Build the router. Separate from `serve` so tests can drive it with
 /// `oneshot` and never open a socket.
 pub fn build_router(state: Arc<ServeState>) -> Router {
@@ -400,6 +670,10 @@ pub fn build_router(state: Arc<ServeState>) -> Router {
         .route(
             "/api/works/{work}/progress",
             get(get_progress).put(put_progress),
+        )
+        .route(
+            "/api/works/{work}/alignments",
+            axum::routing::patch(patch_alignments),
         )
         .merge(crate::opds::routes())
         .layer(axum::middleware::from_fn(
@@ -714,15 +988,23 @@ mod tests {
     /// Range-checking against `total_pages()` would pass every other test in
     /// this file and refuse the last slot of every spread-carrying edition in
     /// the corpus — including One Piece v092, which is spreads throughout.
+    // The fixture mutation below goes through `Work::update`, whose closure
+    // is checked by clippy as its own item — see the same allow on
+    // `works.rs`'s `a_replaced_sidecar_is_what_the_next_reader_sees`.
+    #[allow(clippy::result_large_err)]
     #[tokio::test]
     async fn the_last_slot_of_a_spread_carrying_edition_is_in_range() {
-        let mut state = crate::test_support::state("taiyaku-test-progress-spread-slot");
+        let state = crate::test_support::state("taiyaku-test-progress-spread-slot");
         state.works[0]
-            .sidecar
-            .editions
-            .get_mut("raw")
-            .expect("the fixture defines `raw`")
-            .spreads = vec![0];
+            .update(|current| {
+                let mut next = (**current).clone();
+                next.editions
+                    .get_mut("raw")
+                    .expect("the fixture defines `raw`")
+                    .spreads = vec![0];
+                Ok((std::sync::Arc::new(next), ()))
+            })
+            .expect("the fixture update always succeeds");
         let app = build_router(Arc::new(state));
 
         let put = app
@@ -766,9 +1048,9 @@ mod tests {
     ///
     /// **The write path gets the same treatment and is not measured here.**
     /// `store` writes through a temp file whose name is unique per attempt
-    /// (see `progress::unique_temp_path`), so there is no path a test can
-    /// pre-create as a FIFO. It is covered by inspection and by sharing this
-    /// one's shape.
+    /// (see `atomic::temp_path`), so there is no path a test can pre-create
+    /// as a FIFO. It is covered by inspection and by sharing this one's
+    /// shape.
     #[tokio::test(flavor = "current_thread")]
     async fn a_progress_read_does_not_stall_the_runtime() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -1180,5 +1462,557 @@ mod tests {
             entries[0]["path"], "/api/works/t/raw/pages/2?width=1536",
             "the query string must survive into the logged path"
         );
+    }
+
+    /// `if_match_hits`'s reason to exist: absent, matching and stale are
+    /// three different answers, not two. Task 6 turns `None` into a 428 and
+    /// `Some(false)` into a 412 — collapsing the first into the second would
+    /// tell a client that sent no validator it lost a race it never entered.
+    #[test]
+    fn if_match_distinguishes_absent_from_matching_from_stale() {
+        let none_sent = HeaderMap::new();
+        assert_eq!(
+            if_match_hits(&none_sent, "\"abc\""),
+            None,
+            "no header at all is not the same question as a stale one"
+        );
+
+        let mut matching = HeaderMap::new();
+        matching.insert(header::IF_MATCH, "\"abc\"".parse().unwrap());
+        assert_eq!(if_match_hits(&matching, "\"abc\""), Some(true));
+
+        let mut stale = HeaderMap::new();
+        stale.insert(header::IF_MATCH, "\"old\"".parse().unwrap());
+        assert_eq!(if_match_hits(&stale, "\"abc\""), Some(false));
+    }
+
+    /// The validator the correction path writes against. It must change when
+    /// the document does, or `If-Match` guards nothing.
+    // `update`'s own `#[allow(clippy::result_large_err)]` does not reach a
+    // closure written at the call site — clippy checks each closure as its
+    // own item — so the explicit closure here needs the same allow, for the
+    // same reason `works.rs`'s and this file's other `update` calls do.
+    #[allow(clippy::result_large_err)]
+    #[tokio::test]
+    async fn the_sidecar_carries_an_etag_that_tracks_its_content() {
+        let state = Arc::new(crate::test_support::state(
+            "taiyaku-test-routes-sidecar-etag",
+        ));
+        let router = build_router(state.clone());
+
+        let first = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/works/t")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let tag = first.headers().get(axum::http::header::ETAG).cloned();
+        state.works[0]
+            .update(|current| {
+                let mut next = (**current).clone();
+                next.work.title = "Different".into();
+                Ok((std::sync::Arc::new(next), ()))
+            })
+            .expect("updates");
+        let second = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/works/t")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        crate::test_support::cleanup("taiyaku-test-routes-sidecar-etag");
+        let tag = tag.expect("a sidecar response carries an ETag");
+        assert_ne!(
+            tag,
+            *second.headers().get(axum::http::header::ETAG).unwrap(),
+            "a changed document must not validate against the old tag"
+        );
+    }
+
+    async fn etag_of(router: &axum::Router, uri: &str) -> String {
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        response
+            .headers()
+            .get(axum::http::header::ETAG)
+            .expect("an ETag")
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    async fn correct(router: &axum::Router, tag: &str, body: &str) -> axum::http::StatusCode {
+        router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("PATCH")
+                    .uri("/api/works/t/alignments")
+                    .header("if-match", tag)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// The same request, keeping the body as well as the status.
+    ///
+    /// A refusal that names what was missing is a constraint this project
+    /// holds every route to, so the wording is worth asserting rather than
+    /// only the number — `correct` above stays for the cases where the status
+    /// is the whole claim.
+    async fn correct_with_body(
+        router: &axum::Router,
+        work: &str,
+        tag: &str,
+        body: &str,
+    ) -> (axum::http::StatusCode, String) {
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/works/{work}/alignments"))
+                    .header("if-match", tag)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// The milestone in one test: correct a pairing, and have the document say
+    /// so afterwards.
+    #[tokio::test]
+    async fn a_correction_is_written_and_read_back() {
+        let state = Arc::new(crate::test_support::state_with_two_editions(
+            "taiyaku-test-routes-correct",
+        ));
+        let router = build_router(state.clone());
+        let tag = etag_of(&router, "/api/works/t").await;
+
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("PATCH")
+                    .uri("/api/works/t/alignments")
+                    .header("if-match", &tag)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"from":"raw","to":"en","a":"2","b":"1","note":"checked"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let fresh = response.headers().get(axum::http::header::ETAG).cloned();
+        // The body is the point of answering 200 rather than 204: the client
+        // refreshes its resolver from this rather than making a second request
+        // that could already be out of date again. Without this assertion,
+        // replacing the whole response with a bare `StatusCode::OK` would
+        // delete the round-trip-refresh feature and leave every other check in
+        // this test green.
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let on_disk = std::fs::read_to_string(&state.works[0].path).unwrap();
+        crate::test_support::cleanup("taiyaku-test-routes-correct");
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_ne!(
+            fresh,
+            Some(tag.parse().unwrap()),
+            "the ETag moves with the write"
+        );
+        let returned = taiyaku_core::Sidecar::from_json(&String::from_utf8_lossy(&body))
+            .expect("the response body is the updated document");
+        assert_eq!(
+            returned
+                .alignments
+                .iter()
+                .flat_map(|a| &a.runs)
+                .filter(|r| r.by == Some(taiyaku_core::Source::Hand))
+                .count(),
+            2,
+            "the document handed back already carries the correction"
+        );
+        assert!(
+            on_disk.contains("\"hand\""),
+            "the file records who decided: {on_disk}"
+        );
+        assert_eq!(
+            state.works[0].sidecar().alignments[0]
+                .runs
+                .iter()
+                .filter(|r| r.by == Some(taiyaku_core::Source::Hand))
+                .count(),
+            2,
+            "the slot asserted and the slot displaced, in memory as well as on disk"
+        );
+    }
+
+    /// `Corrected::AlreadyTrue` — asserting a pairing the document already
+    /// holds — must not touch the file at all: `patch_alignments` only calls
+    /// `atomic::write` when `what != AlreadyTrue`. A write neither read nor
+    /// followed by a change is exactly the crash window `atomic::write`
+    /// exists to close, so skipping it here is not an optimisation, it is one
+    /// fewer moment a concurrent reader could see a temp-file rename that
+    /// says nothing new.
+    ///
+    /// Proven by inode identity rather than by content or mtime, for the
+    /// reason `atomic.rs`'s own
+    /// `the_destination_is_replaced_by_rename_not_truncation` gives: an
+    /// `AlreadyTrue` correction writes back byte-identical JSON, so content
+    /// alone cannot tell "skipped" from "wrote the same bytes again", and this
+    /// filesystem was measured to give two `atomic::write` calls microseconds
+    /// apart the identical mtime down to the nanosecond — so mtime cannot
+    /// either. A rename always replaces the destination with a fresh inode,
+    /// whether or not the bytes changed, so the inode is the one signal that
+    /// distinguishes "no write happened" from "a write happened that changed
+    /// nothing".
+    #[tokio::test]
+    async fn a_no_op_correction_does_not_touch_the_file() {
+        use std::os::unix::fs::MetadataExt;
+
+        let state = Arc::new(crate::test_support::state_with_two_editions(
+            "taiyaku-test-routes-correct-noop",
+        ));
+        let router = build_router(state.clone());
+        let first_tag = etag_of(&router, "/api/works/t").await;
+        let first_status = correct(
+            &router,
+            &first_tag,
+            r#"{"from":"raw","to":"en","a":"2","b":"1"}"#,
+        )
+        .await;
+        assert_eq!(
+            first_status,
+            axum::http::StatusCode::OK,
+            "the setup write lands"
+        );
+
+        let before_bytes = std::fs::read(&state.works[0].path).unwrap();
+        let before_ino = std::fs::metadata(&state.works[0].path).unwrap().ino();
+        let second_tag = etag_of(&router, "/api/works/t").await;
+
+        // The same assertion again: the document already says slot 2 pairs
+        // with slot 1, so this is `Corrected::AlreadyTrue`.
+        let second_status = correct(
+            &router,
+            &second_tag,
+            r#"{"from":"raw","to":"en","a":"2","b":"1"}"#,
+        )
+        .await;
+
+        let after_bytes = std::fs::read(&state.works[0].path).unwrap();
+        let after_ino = std::fs::metadata(&state.works[0].path).unwrap().ino();
+        crate::test_support::cleanup("taiyaku-test-routes-correct-noop");
+        assert_eq!(
+            second_status,
+            axum::http::StatusCode::OK,
+            "a no-op is still answered 200"
+        );
+        assert_eq!(
+            before_bytes, after_bytes,
+            "a no-op correction must leave the file's bytes exactly as they were"
+        );
+        assert_eq!(
+            before_ino, after_ino,
+            "identical bytes are not proof nothing was written — a rename always gives the \
+             destination a fresh inode, whether or not the bytes it carries changed, so the \
+             inode is what actually distinguishes a skipped write from a redundant one"
+        );
+    }
+
+    /// The lost-update hole the design names. Two devices read one document,
+    /// both correct it; the second must be told rather than silently winning.
+    #[tokio::test]
+    async fn a_correction_against_a_stale_validator_is_refused() {
+        let state = Arc::new(crate::test_support::state_with_two_editions(
+            "taiyaku-test-routes-correct-stale",
+        ));
+        let router = build_router(state.clone());
+        let stale = etag_of(&router, "/api/works/t").await;
+        correct(
+            &router,
+            &stale,
+            r#"{"from":"raw","to":"en","a":"2","b":"1"}"#,
+        )
+        .await;
+
+        let (second, message) = correct_with_body(
+            &router,
+            "t",
+            &stale,
+            r#"{"from":"raw","to":"en","a":"3","b":"0"}"#,
+        )
+        .await;
+
+        let after = state.works[0].sidecar();
+        let current = sidecar_etag(&after);
+        crate::test_support::cleanup("taiyaku-test-routes-correct-stale");
+        assert_eq!(second, axum::http::StatusCode::PRECONDITION_FAILED);
+        // Telling a client only that it lost is not enough to let it recover:
+        // the message carries the validator it should have sent, so the next
+        // attempt can be made without a second round trip to find out.
+        assert!(
+            message.contains(&current),
+            "the refusal must carry the ETag the client now needs, got: {message}"
+        );
+        // The first correction only reassigns slots 1 and 2 (the one asserted
+        // and the one it displaced); slot 3 is untouched by it. If the second,
+        // stale-validator correction had wrongly landed, slot 3 would resolve
+        // to `en`'s slot 0 instead — so slot 3 still holding the identity
+        // pairing from before either correction is exactly what proves the
+        // refused request never applied.
+        assert_eq!(
+            taiyaku_core::resolve(&after, "raw", "en", 3),
+            Some(taiyaku_core::Slot {
+                page: 3,
+                half: None
+            }),
+            "the refused correction must not have landed"
+        );
+    }
+
+    /// A client that sent no validator has not lost a race, it has not entered
+    /// one — and telling it 412 would send it looking for a conflict that does
+    /// not exist.
+    #[tokio::test]
+    async fn a_correction_with_no_validator_at_all_says_which_header_is_missing() {
+        let state = Arc::new(crate::test_support::state_with_two_editions(
+            "taiyaku-test-routes-correct-bare",
+        ));
+        let router = build_router(state);
+
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("PATCH")
+                    .uri("/api/works/t/alignments")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"from":"raw","to":"en","a":"2","b":"1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        crate::test_support::cleanup("taiyaku-test-routes-correct-bare");
+        assert_eq!(status, axum::http::StatusCode::PRECONDITION_REQUIRED);
+        assert!(
+            String::from_utf8_lossy(&body).contains("If-Match"),
+            "must name the header a client has to send"
+        );
+    }
+
+    /// Each row of this route's status table, pinned.
+    ///
+    /// The mapping from `NotCorrected` to a status is hand-written, and an
+    /// exhaustive `match` only protects against a *new variant* being dropped
+    /// — it says nothing about an existing one being given the wrong status.
+    /// Changing `SameEdition => BAD_REQUEST` to `NOT_FOUND` compiles, and
+    /// without this test the suite stays green. Task 2's own tests pin which
+    /// variant `Sidecar::correct` returns; which status it becomes is this
+    /// route's to answer, and so this route's to test.
+    ///
+    /// `Unreadable` (409) is deliberately absent: producing it needs a stored
+    /// edge whose spans do not resolve, which this fixture cannot express
+    /// without hand-writing a broken document, and contorting the fixture to
+    /// reach one status would cost more than it pins.
+    #[tokio::test]
+    async fn each_refusal_answers_the_status_its_kind_calls_for() {
+        let state = Arc::new(crate::test_support::state_with_two_editions(
+            "taiyaku-test-routes-correct-statuses",
+        ));
+        let router = build_router(state.clone());
+        let tag = etag_of(&router, "/api/works/t").await;
+
+        let cases = [
+            // An edition cannot be its own counterpart — the request is
+            // coherent JSON naming an incoherent operation.
+            (
+                r#"{"from":"raw","to":"raw","a":"2","b":"1"}"#,
+                axum::http::StatusCode::BAD_REQUEST,
+                "own counterpart",
+            ),
+            // Names an edition this document does not define.
+            (
+                r#"{"from":"raw","to":"nosuch","a":"2","b":"1"}"#,
+                axum::http::StatusCode::NOT_FOUND,
+                "nosuch",
+            ),
+            // Names a slot past the end of a four-page edition.
+            (
+                r#"{"from":"raw","to":"en","a":"99","b":"1"}"#,
+                axum::http::StatusCode::NOT_FOUND,
+                "99",
+            ),
+            // Not a correction at all.
+            (
+                r#"{"nonsense":true}"#,
+                axum::http::StatusCode::BAD_REQUEST,
+                "not a correction",
+            ),
+            // The field name is misspelled. Without `deny_unknown_fields` this
+            // would deserialise to `b: None`, unpair slot 2, and answer 200 —
+            // a destructive edit the client never asked for and is not told
+            // about. See `Correction`'s own doc comment.
+            (
+                r#"{"from":"raw","to":"en","a":"2","bb":"1"}"#,
+                axum::http::StatusCode::BAD_REQUEST,
+                "not a correction",
+            ),
+            // `b` omitted entirely. The other half of the same rule: absence
+            // must not spell "unpair", so this is refused rather than quietly
+            // taking a pairing away. The refusal names the field, because
+            // serde's own "missing field `b`" is the most useful thing a
+            // client could be told here.
+            (
+                r#"{"from":"raw","to":"en","a":"2"}"#,
+                axum::http::StatusCode::BAD_REQUEST,
+                "needs `b`",
+            ),
+        ];
+
+        let mut answered = Vec::new();
+        for (body, _, _) in &cases {
+            answered.push(correct_with_body(&router, "t", &tag, body).await);
+        }
+        // A work this server does not hold, which is refused before the body
+        // is ever looked at.
+        let missing = correct_with_body(
+            &router,
+            "nosuchwork",
+            &tag,
+            r#"{"from":"raw","to":"en","a":"2","b":"1"}"#,
+        )
+        .await;
+        let unchanged = state.works[0].sidecar().alignments[0].runs.len();
+
+        crate::test_support::cleanup("taiyaku-test-routes-correct-statuses");
+        for ((body, want, names), (got, message)) in cases.iter().zip(&answered) {
+            assert_eq!(got, want, "for {body}: {message}");
+            assert!(
+                message.to_lowercase().contains(&names.to_lowercase()),
+                "the refusal for {body} must name what was wrong, got: {message}"
+            );
+        }
+        assert_eq!(missing.0, axum::http::StatusCode::NOT_FOUND);
+        assert!(
+            missing.1.contains("nosuchwork"),
+            "must name the work: {}",
+            missing.1
+        );
+        assert_eq!(
+            unchanged, 1,
+            "not one of these refusals may have changed the document"
+        );
+    }
+
+    /// The unpair path, end to end.
+    ///
+    /// `"b": null` is the one thing an absent `b` used to mean, and it is the
+    /// reason `b` is nullable rather than simply a `String`. Nothing in `web/`
+    /// can send it yet — the reader has no "this page pairs with nothing"
+    /// gesture — so without this test the whole justification for keeping the
+    /// field nullable would rest on a path nothing exercises.
+    #[tokio::test]
+    async fn an_explicit_null_unpairs_the_slot() {
+        let state = Arc::new(crate::test_support::state_with_two_editions(
+            "taiyaku-test-routes-correct-unpair",
+        ));
+        let router = build_router(state.clone());
+        let tag = etag_of(&router, "/api/works/t").await;
+        let before = taiyaku_core::resolve(&state.works[0].sidecar(), "raw", "en", 2);
+
+        let (status, _) = correct_with_body(
+            &router,
+            "t",
+            &tag,
+            r#"{"from":"raw","to":"en","a":"2","b":null}"#,
+        )
+        .await;
+
+        let after = state.works[0].sidecar();
+        crate::test_support::cleanup("taiyaku-test-routes-correct-unpair");
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(
+            before.is_some(),
+            "slot 2 must start out paired, or this asserts nothing"
+        );
+        assert_eq!(
+            taiyaku_core::resolve(&after, "raw", "en", 2),
+            None,
+            "the slot now pairs with nothing"
+        );
+        assert_eq!(
+            after.alignments[0]
+                .runs
+                .iter()
+                .filter(|r| r.by == Some(taiyaku_core::Source::Hand))
+                .count(),
+            1,
+            "an unpairing displaces nobody, so it is the only hand run"
+        );
+    }
+
+    /// A span is the format's own notation and `45R-46L` is a legal one — but
+    /// a correction addresses one slot, and taking the start of a range would
+    /// silently correct something other than what was asked.
+    #[tokio::test]
+    async fn a_correction_naming_a_range_rather_than_a_slot_is_refused() {
+        let state = Arc::new(crate::test_support::state_with_two_editions(
+            "taiyaku-test-routes-correct-range",
+        ));
+        let router = build_router(state.clone());
+        let tag = etag_of(&router, "/api/works/t").await;
+
+        let (status, message) = correct_with_body(
+            &router,
+            "t",
+            &tag,
+            r#"{"from":"raw","to":"en","a":"2-3","b":"1"}"#,
+        )
+        .await;
+
+        crate::test_support::cleanup("taiyaku-test-routes-correct-range");
+        assert!(
+            message.contains("2-3") && message.contains("range"),
+            "the refusal must name the span it would not take: {message}"
+        );
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
     }
 }

@@ -140,7 +140,8 @@ mod tests {
     fn a_source_serves_one_member_at_an_offset_within_it() {
         let work = crate::test_support::work("taiyaku-test-source");
         let root = work.path.parent().unwrap().to_path_buf();
-        let edition = work.sidecar.editions.get("raw").unwrap();
+        let sidecar = work.sidecar();
+        let edition = sidecar.editions.get("raw").unwrap();
 
         let first = LocalLibrary.page(&root, &edition.members[0], 0).unwrap();
         let second_member = LocalLibrary.page(&root, &edition.members[1], 0).unwrap();
@@ -166,14 +167,14 @@ mod tests {
     #[test]
     fn state_walks_a_flat_index_across_member_boundaries() {
         let state = crate::test_support::state("taiyaku-test-state-page");
-        let work = state.works[0].clone();
+        let work = &state.works[0];
 
-        let count = work.sidecar.editions.get("raw").unwrap().total_pages();
-        let first = state.page(&work, "raw", 0).unwrap();
-        let across = state.page(&work, "raw", 2).unwrap();
-        let last = state.page(&work, "raw", 3).unwrap();
-        let past_end = state.page(&work, "raw", 4);
-        let no_edition = state.page(&work, "nope", 0);
+        let count = work.sidecar().editions.get("raw").unwrap().total_pages();
+        let first = state.page(work, "raw", 0).unwrap();
+        let across = state.page(work, "raw", 2).unwrap();
+        let last = state.page(work, "raw", 3).unwrap();
+        let past_end = state.page(work, "raw", 4);
+        let no_edition = state.page(work, "nope", 0);
 
         crate::test_support::cleanup("taiyaku-test-state-page");
         assert_eq!(count, 4);
