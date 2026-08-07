@@ -37,10 +37,10 @@ hidden.
 
 ## What is built
 
-Five crates, 411 tests, plus 414 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 414 tests, plus 414 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
-and `vite` in `web/`. Twelve of the 411 are standing checks gated on
+and `vite` in `web/`. Twelve of the 414 are standing checks gated on
 `TAIYAKU_CORPUS` — nine in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
@@ -269,7 +269,7 @@ margin threshold plus a crop-tolerant hash. Not the DP.
 
 ### Open items
 
-Twenty-nine, each found by a whole-branch review, carried as a deferral,
+Thirty, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -277,9 +277,9 @@ produced against the corpus, turned up by designing the fix for another one, or
 turned up by simulating the reader from every position it can hold, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Twenty-one are now closed
+visible act rather than a thing someone remembers. **Twenty-two are now closed
 — O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25, O26 and O27 — leaving eight.**
+O21, O22, O25, O26, O27 and O30 — leaving eight.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -315,6 +315,7 @@ each is in the detail below; the table is what a reader scans.
 | O27 | [x] | Two refs are held and read by nothing | `App.tsx::App`, the ref block above `viewportWidth` | O25 design |
 | O28 | [ ] | A forward arrow on the last group's second slot moves backward | `pairing.ts::stepToGroup` | credits-panel arrow simulation |
 | O29 | [ ] | A failed `--write` names a temp path the caller never typed | `atomic.rs::write` | O26's corpus drive |
+| O30 | [x] | A relative `TAIYAKU_CORPUS` skipped every standing check and reported `ok` | `corpus.rs::corpus`, `corpus.rs::corpus_root` | O26's corpus drive |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -1353,6 +1354,58 @@ making it wrong:
   cheap; it was two identical wrappers before, the shape `atomic.rs` exists to
   stop. Neither is a change to make on a branch whose one claim is that `align`
   writes atomically.
+
+**One came from the same corpus drive, one level up** — O30, turned up on
+2026-08-07 when O26's fix was checked against the corpus and the documented way
+of doing that turned out to run nothing. It closed the same day, beside O29:
+
+- **O30 — A relative `TAIYAKU_CORPUS` skipped every standing check and
+  reported `ok`. Closed.** `cargo test` gives each package's test binary that
+  package's own directory as its working directory, not the workspace root, so
+  the `TAIYAKU_CORPUS=corpus` that `crates/taiyaku-cli/src/corpus.rs` gave in
+  its own header resolved under `crates/taiyaku-cli/` and found nothing. Every
+  check then skipped, printed `TAIYAKU_CORPUS unset; skipping` — naming a cause
+  that was not the cause, since the variable was set — and libtest reported
+  `ok`. **A green run that measured nothing**, which is the one outcome a
+  standing check must not have. It is the same failure `atomic.rs`'s test
+  comment describes one level down, arriving through the gate rather than
+  through a filesystem.
+  **`scripts/check-all.sh` already knew.** It canonicalises the path and refuses
+  a non-directory, in a comment naming this trap exactly — "the checks then skip
+  while this gate says it ran them". So the gate was never wrong; the two module
+  headers carrying the trapping command were, and nothing else was checking.
+  **The two crates failed differently, and one hid better.** `taiyaku-cli`'s
+  root resolver tested `is_dir` and folded the result into the unset branch.
+  `taiyaku-serve`'s never looked at the path at all, so each of its checks
+  reported `<root>/gotoubun-v01/taiyaku.json absent — skipping` — a real path,
+  reading like a corpus missing one volume rather than a root that does not
+  exist.
+  **How it closed: O15's rule, applied to an environment variable.** A value
+  typed with nothing usable behind it is refused rather than read as absent.
+  Unset still skips, so CI stays green with no corpus; set-but-not-a-directory
+  now panics with the working directory named and the cause spelled out. Both
+  headers give a working invocation and point at `check-all.sh` — and **both
+  were run as written**, which is the whole lesson of this item: `taiyaku-cli`'s
+  measures 2,427 comparisons in 38.71 s, `taiyaku-serve`'s 617 pages and 629
+  anchors in 15.13 s. A documented command nobody executes is how this started.
+  `taiyaku-serve`'s header had no invocation at all until this item; the bullet
+  above claimed it did before that was checked.
+  **Pinned by three tests** in `corpus.rs`'s own `tests` module — the first
+  ungated tests that file has had, which is the point: they run in CI, where
+  every standing check beside them skips. They test the message rather than the
+  environment, because setting a variable inside a test is process-global and
+  races a parallel runner. What they assert is that the message names the
+  variable, the value, and the working-directory cause, and that it never says
+  `unset` about a value that is set.
+  **Driven, not only tested.** `TAIYAKU_CORPUS=corpus` now fails in both
+  crates, naming `/home/davey/projects/taiyaku/crates/taiyaku-cli` and
+  `…/crates/taiyaku-serve` respectively; unset still skips green; an absolute
+  path still runs all twelve. See `notes.md`, "O26: align --write, driven
+  against the corpus", which is where the trap was found.
+  **`taiyaku-serve` carries a second copy of the guard deliberately.** Both are
+  `#[cfg(test)]` modules in different crates, and exporting test scaffolding
+  across a crate boundary to save six lines costs more than it saves. The
+  message is pinned where nine of the twelve checks live.
 
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.

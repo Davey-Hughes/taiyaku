@@ -23,6 +23,28 @@ esac
 
 run() { echo; echo "==> $*"; "$@"; }
 
+# --- resolve TAIYAKU_CORPUS before anything runs ---
+# Absolute, deliberately. `cargo test` runs each package's tests with the
+# working directory set to that package's own directory rather than the
+# workspace root, so a relative `TAIYAKU_CORPUS=corpus` resolves to
+# `crates/taiyaku-serve/corpus` and finds nothing.
+#
+# Resolved *here*, at the top, and not beside the corpus run below — which is
+# where it used to be, and that was too late. The `test` job further down
+# inherits this variable too, so a relative path left it skipping every corpus
+# check in silence while the gate went green; only the second run, with the path
+# canonicalised, actually measured anything. O30 turned that skip into a failure,
+# which is what surfaced the ordering: the gate began failing its own first job
+# on an invocation it had always accepted.
+if [ -n "${TAIYAKU_CORPUS:-}" ]; then
+  if [ ! -d "${TAIYAKU_CORPUS}" ]; then
+    echo "error: TAIYAKU_CORPUS=${TAIYAKU_CORPUS} is not a directory" >&2
+    exit 1
+  fi
+  TAIYAKU_CORPUS="$(cd "${TAIYAKU_CORPUS}" && pwd -P)"
+  export TAIYAKU_CORPUS
+fi
+
 # --- the `lint` job ---
 run cargo fmt --all -- --check
 run cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -37,18 +59,7 @@ run cargo test --workspace --all-features
 # quietly covers less than it claims is the defect this repository exists to
 # avoid in the aligner; it should not ship in the gate itself.
 if [ -n "${TAIYAKU_CORPUS:-}" ]; then
-  # Absolute, deliberately. `cargo test` runs each package's tests with the
-  # working directory set to that package's own directory rather than the
-  # workspace root, so the `TAIYAKU_CORPUS=corpus` these checks document
-  # resolves to `crates/taiyaku-serve/corpus` and finds nothing. The checks
-  # then skip while this gate says it ran them — the same "covers less than
-  # it claims" failure the block exists to close, arriving by a second route.
-  if [ ! -d "${TAIYAKU_CORPUS}" ]; then
-    echo "error: TAIYAKU_CORPUS=${TAIYAKU_CORPUS} is not a directory" >&2
-    exit 1
-  fi
-  TAIYAKU_CORPUS="$(cd "${TAIYAKU_CORPUS}" && pwd -P)"
-  export TAIYAKU_CORPUS
+  # Already validated and made absolute at the top of this file.
   echo; echo "==> corpus: ${TAIYAKU_CORPUS}"
   run cargo test --workspace --all-features corpus:: -- --nocapture --test-threads=1
 else

@@ -5773,3 +5773,41 @@ reports `ok`. A green run that measured nothing, which is the exact failure
 already knows: it canonicalises to an absolute path and says why, in a comment
 that names this trap. Nothing else does, and the doc comment carrying the
 trapping command is not one of them.
+
+## O30: the gate's first job had never run the corpus checks
+
+Closing O30 — a relative `TAIYAKU_CORPUS` skipping every standing check while
+libtest reported `ok` — turned the skip into a panic, and the panic immediately
+failed `scripts/check-all.sh` on an invocation the gate had always accepted:
+
+```
+$ TAIYAKU_CORPUS=corpus ./scripts/check-all.sh
+==> cargo test --workspace --all-features
+test result: FAILED. 129 passed; 9 failed
+```
+
+The gate validated and canonicalised `TAIYAKU_CORPUS` *beside its second run*,
+the one that re-runs `corpus::` with `--nocapture`. The `test` job above it
+inherits the variable too, and inherited it raw. So the nine `taiyaku-cli`
+checks skipped in job one and measured in job two, and nobody could tell,
+because job one captures stderr for a passing test — which is the very reason
+the second run exists.
+
+Resolving the path at the top of the script instead fixes both. The evidence is
+wall-clock, in the *first* run's own line:
+
+```
+                       taiyaku-cli        taiyaku-serve
+before  (job one)      0.11 s             0.75 s
+after   (job one)      38.11 s            15.06 s
+```
+
+Nothing was added to job one. That is 38 seconds of corpus work that a green
+gate had been reporting as done for as long as anyone has run it with a relative
+path — which is the path the module headers documented, so it is the likely way
+it was run.
+
+**The order matters more than the check.** The gate's own comment already named
+this trap and closed it correctly for the run it sat beside; it was three lines
+too low in the file. A guard placed after the thing it guards is worth what it
+looks like it is worth right up until something measures it.

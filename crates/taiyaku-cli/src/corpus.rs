@@ -7,8 +7,21 @@
 //! it locally whenever the hasher or the solver changes.
 //!
 //! ```sh
-//! TAIYAKU_CORPUS=corpus cargo test -p taiyaku-cli corpus:: -- --nocapture
+//! scripts/check-all.sh                    # TAIYAKU_CORPUS=corpus works here
 //! ```
+//!
+//! **Absolute, if you run cargo directly.** This block said
+//! `TAIYAKU_CORPUS=corpus cargo test …` until O30, and that command runs
+//! nothing: cargo gives each package's test binary that package's own directory
+//! as its working directory, so `corpus` resolves under `crates/taiyaku-cli/`.
+//! `corpus` now panics rather than skipping in that case, so the command fails
+//! loudly instead of printing `ok`, but the working invocation is:
+//!
+//! ```sh
+//! TAIYAKU_CORPUS="$PWD/corpus" cargo test -p taiyaku-cli corpus:: -- --nocapture
+//! ```
+//!
+//! `check-all.sh` canonicalises the path itself and is the better habit.
 //!
 //! This measures the path a reader walks, which `topology` does not: `topology`
 //! composes two independently solved alignments over unsplit pages, while a
@@ -36,10 +49,45 @@ use crate::cached_edition;
 /// path addresses slots and recovers it.
 const MAX_LOSS: f64 = 0.010;
 
+/// Why `value` cannot be used as a corpus root, or `None` when it can.
+///
+/// Split out from `corpus` so the message can be tested. The message is the
+/// whole point of the guard, and the alternative — setting the environment
+/// variable inside a test — is process-global and racy under a parallel runner.
+fn unusable(value: &str, is_dir: bool) -> Option<String> {
+    if is_dir {
+        return None;
+    }
+    let cwd = std::env::current_dir()
+        .map(|d| d.display().to_string())
+        .unwrap_or_else(|_| "the working directory".to_string());
+    Some(format!(
+        "TAIYAKU_CORPUS={value} is not a directory from {cwd}.\n\
+         cargo runs each package's tests with that package's own directory as \
+         the working directory rather than the workspace root, so a relative \
+         path resolves under crates/<package>/ and finds nothing. Pass an \
+         absolute path, or run scripts/check-all.sh, which canonicalises it."
+    ))
+}
+
 /// The corpus root, or `None` when this machine does not have it.
+///
+/// **Unset is an absence and skips; set-but-unusable is a mistake and fails.**
+/// O30: the two used to be one branch, so `TAIYAKU_CORPUS=corpus` — the
+/// invocation this module's own header documented — skipped every check while
+/// printing `unset` and reporting `ok`. A green run that measured nothing is
+/// the one outcome a standing check must not have, and it is the same failure
+/// `atomic.rs`'s test comment describes one level down.
+///
+/// The panic is O15's rule applied to an environment variable: a value typed
+/// with nothing usable behind it is refused rather than read as absent.
 fn corpus() -> Option<PathBuf> {
-    let root = PathBuf::from(std::env::var("TAIYAKU_CORPUS").ok()?);
-    root.is_dir().then_some(root)
+    let value = std::env::var("TAIYAKU_CORPUS").ok()?;
+    let root = PathBuf::from(&value);
+    if let Some(why) = unusable(&value, root.is_dir()) {
+        panic!("{why}");
+    }
+    Some(root)
 }
 
 /// The members of one edition directory: its `.cbz` files, or the directory
@@ -699,4 +747,46 @@ fn kaguya_fan_edition_classifies_what_the_survey_measured() {
         "212 is a known false positive; if this goes red because 212 is no longer classified, \
          that is correct — update this expectation, not the rule"
     );
+}
+
+/// O30's guard, tested where the environment cannot be.
+///
+/// These do not need the corpus and are not gated on it — the whole point is
+/// that they run in CI, where `TAIYAKU_CORPUS` is unset and every check in this
+/// file skips.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_directory_is_usable_and_has_nothing_to_say() {
+        assert_eq!(unusable("/anywhere", true), None);
+    }
+
+    /// The message has to name the *cause*, which is never "unset" — `corpus`
+    /// only reaches this with a value in hand. The cause is almost always a
+    /// relative path meeting cargo's working directory.
+    #[test]
+    fn a_value_that_is_not_a_directory_names_the_working_directory_trap() {
+        let message = unusable("corpus", false).expect("a non-directory is unusable");
+        assert!(
+            message.contains("TAIYAKU_CORPUS") && message.contains("corpus"),
+            "the message must name the variable and the value it was given: {message}"
+        );
+        assert!(
+            !message.contains("unset"),
+            "the value is set; saying `unset` names the wrong cause: {message}"
+        );
+        assert!(
+            message.contains("working directory") && message.contains("relative"),
+            "the message must explain why a relative path misses: {message}"
+        );
+    }
+
+    /// An absolute path that is simply not there gets the same treatment. It is
+    /// still a value that cannot be used, and still not an absence.
+    #[test]
+    fn an_absolute_path_that_is_not_there_is_unusable_too() {
+        assert!(unusable("/no/such/corpus", false).is_some());
+    }
 }

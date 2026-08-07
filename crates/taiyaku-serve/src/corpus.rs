@@ -3,6 +3,22 @@
 //! Gated on `TAIYAKU_CORPUS` and skipped when the archives are absent, so CI
 //! stays green without them. Run locally whenever page reading changes.
 //!
+//! ```sh
+//! scripts/check-all.sh                    # TAIYAKU_CORPUS=corpus works here
+//! ```
+//!
+//! **Absolute, if you run cargo directly.** cargo gives each package's test
+//! binary that package's own directory as its working directory, not the
+//! workspace root, so a relative `corpus` resolves under `crates/taiyaku-serve/`
+//! and finds nothing. Since O30 that fails loudly rather than skipping, but the
+//! working invocation is:
+//!
+//! ```sh
+//! TAIYAKU_CORPUS="$PWD/corpus" cargo test -p taiyaku-serve corpus:: -- --nocapture
+//! ```
+//!
+//! `check-all.sh` canonicalises the path itself and is the better habit.
+//!
 //! This is the seam the spec names: the aligner sequences an edition with
 //! `read_members_in_order`, the server addresses one page with `member_page`,
 //! and if they ever disagree the reader shows the wrong page while every hash
@@ -13,8 +29,39 @@ use std::sync::Arc;
 
 use crate::{LocalLibrary, PageSource, ServeState, load_works};
 
+/// The corpus root, or `None` when this machine does not have it.
+///
+/// **Unset is an absence and skips; set-but-unusable is a mistake and fails.**
+/// O30. This one skipped differently from `taiyaku-cli`'s and so failed more
+/// quietly: it never looked at the path at all, and each check below then
+/// reported `<root>/gotoubun-v01/taiyaku.json absent — skipping`, which names a
+/// real path and reads like a corpus missing one volume. The cause was the
+/// working directory — cargo gives each package's test binary that package's
+/// own directory, so a relative `TAIYAKU_CORPUS=corpus` resolves under
+/// `crates/taiyaku-serve/`.
+///
+/// The `absent` skips below are kept: a corpus that genuinely lacks one volume
+/// is an absence, not a mistake. It is only the *root* that must be real.
+///
+/// Deliberately a second copy rather than shared with `taiyaku-cli`'s: both are
+/// `#[cfg(test)]` modules in different crates, and exporting test scaffolding
+/// across a crate boundary to save six lines costs more than it saves. The
+/// message is pinned by tests there, where nine of the twelve checks live.
 fn corpus_root() -> Option<PathBuf> {
-    std::env::var("TAIYAKU_CORPUS").ok().map(PathBuf::from)
+    let value = std::env::var("TAIYAKU_CORPUS").ok()?;
+    let root = PathBuf::from(&value);
+    assert!(
+        root.is_dir(),
+        "TAIYAKU_CORPUS={value} is not a directory from {}.\n\
+         cargo runs each package's tests with that package's own directory as \
+         the working directory rather than the workspace root, so a relative \
+         path resolves under crates/<package>/ and finds nothing. Pass an \
+         absolute path, or run scripts/check-all.sh, which canonicalises it.",
+        std::env::current_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|_| "the working directory".to_string())
+    );
+    Some(root)
 }
 
 /// Every page the server serves must be byte-identical to the page the aligner
