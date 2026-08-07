@@ -16,6 +16,18 @@ export interface NearestOffer {
   slot: number
   /** Zero-based page in `state.viewing`. Display converts at its own boundary, same as `resolveOffered`'s. */
   page: number
+  /**
+   * Zero-based *slot* in `state.viewing` — not the authority-space `slot`
+   * above, and not derivable from `page` where the edition holds joined
+   * spreads (one page, two slots).
+   *
+   * Carried for the same reason `page` is: `landingAt` below already has it
+   * as `landed.slot` and would otherwise discard it, leaving a caller to
+   * resolve the same offer a second time. `App.tsx` centres the filmstrip on
+   * this, since a gap has no slot of its own in the viewed edition and the
+   * nearest one that resolves is the closest thing to "where the reader is".
+   */
+  at: number
 }
 
 /**
@@ -38,7 +50,7 @@ export function nearestPaired(
   const landingAt = (slot: number): NearestOffer | undefined => {
     const landed = display({ ...state, slot }, resolver)
     if (landed.kind !== 'at') return undefined
-    return { slot, page: resolver.slotAt(landed.edition, landed.slot)!.page }
+    return { slot, page: resolver.slotAt(landed.edition, landed.slot)!.page, at: landed.slot }
   }
   const found: { before?: NearestOffer; after?: NearestOffer } = {}
   for (let slot = state.slot - 1; slot >= 0; slot--) {

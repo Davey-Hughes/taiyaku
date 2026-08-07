@@ -11,15 +11,15 @@ describe('nearestPaired', () => {
   it('offers the paired slots either side of a gap, already resolved', () => {
     // `a` slot 4 is unpaired; 3 is the nearest paired before it and there is
     // nothing paired after it. `b`'s slot 2 is `{ page: 2, half: 'R' }` — the
-    // resolved page travels with the offer so a caller does not have to
-    // resolve it again.
+    // resolved page and the slot holding it both travel with the offer, so a
+    // caller has neither to resolve again.
     expect(nearestPaired({ authority: 'a', slot: 4, viewing: 'b' }, r, 8))
-      .toEqual({ before: { slot: 3, page: 2 } })
+      .toEqual({ before: { slot: 3, page: 2, at: 2 } })
   })
 
   it('offers only what exists at the start of a volume', () => {
     expect(nearestPaired({ authority: 'a', slot: 0, viewing: 'b' }, r, 8))
-      .toEqual({ after: { slot: 1, page: 0 } })
+      .toEqual({ after: { slot: 1, page: 0, at: 0 } })
   })
 
   it('offers nothing where the whole edition is unpaired', () => {
@@ -47,6 +47,18 @@ describe('nearestPaired', () => {
     // and slots 5, 6, 7 (after, all past the end of `a`'s 8 slots — none
     // resolve, so the scan exhausts `within` without an `after`).
     expect(calls).toBe(4)
-    expect(found).toEqual({ before: { slot: 3, page: 2 } })
+    expect(found).toEqual({ before: { slot: 3, page: 2, at: 2 } })
+  })
+
+  it('reports `at` in the viewed edition, not in the authority', () => {
+    // `a` slot 3 pairs to `b` slot 2. The two numbers differ, so a
+    // confusion between the spaces would be visible here and nowhere in the
+    // tests above, where `slot` and `at` happen to be close together.
+    // `slot` is what `takeOffered` navigates by (authority-space); `at` is
+    // what the filmstrip centres on (a tile of `b`).
+    const found = nearestPaired({ authority: 'a', slot: 4, viewing: 'b' }, r, 8)
+    expect(found.before?.slot).toBe(3)
+    expect(found.before?.at).toBe(2)
+    expect(r.slotAt('b', found.before!.at)).toEqual({ page: 2, half: 'R' })
   })
 })

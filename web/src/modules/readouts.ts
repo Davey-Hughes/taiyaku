@@ -31,6 +31,21 @@ export interface PositionInput {
   slot: number
   total: number
   page: number
+  /**
+   * Whose position this is, prefixed to the line when set.
+   *
+   * Set by exactly one caller: `App.tsx` while showing a gap, where the line
+   * reports the *authority's* slot and the authority's slot count while the
+   * reader is looking at a different edition. The percentage below is
+   * already allowed to change on a swap — see this function's own doc for
+   * why hiding that would be the dishonest option — but changing the *scale*
+   * it is measured against with nothing on screen to say so is a different
+   * and worse claim, and this is what says so.
+   *
+   * Absent while reading, which is every other case: the edition is the one
+   * on screen, and naming it in every frame would be noise.
+   */
+  edition?: string
 }
 
 /**
@@ -44,9 +59,10 @@ export interface PositionInput {
  * hiding it would imply the two editions are the same length, which they
  * are not.
  */
-export function positionLine({ slot, total, page }: PositionInput): string {
+export function positionLine({ slot, total, page, edition }: PositionInput): string {
   const percent = Math.round(((slot + 1) / total) * 100)
-  return `slot ${slot + 1} / ${total} · p. ${page} · ${percent}%`
+  const line = `slot ${slot + 1} / ${total} · p. ${page} · ${percent}%`
+  return edition ? `${edition} ${line}` : line
 }
 
 /**
@@ -173,17 +189,59 @@ export function healthLine(verdict: Verdict | undefined, hasCounterpart: boolean
  * as `verdict unknown` — a false alarm for the most common state of all,
  * reading the hub unswapped.
  *
- * `hasCounterpart` is passed as `true` unconditionally. `App.tsx` only ever
- * reaches `Chrome` once `display()` has resolved `'at'` rather than `'gap'`
- * — a `'gap'` is exactly "no counterpart", and it is handled by `Gap.tsx`
- * before `Chrome` ever mounts — so whenever this is actually called from the
- * reader, a counterpart already exists at the position on screen. `healthLine`
- * still takes the flag explicitly rather than this function assuming it away,
- * so its own contract does not depend on this one caller's particular gating.
+ * `hasCounterpart` is passed as `true` unconditionally, and **what makes that
+ * safe is the call site's own `shown.kind === 'at'` guard, not anything about
+ * when `Chrome` mounts.** This paragraph used to say the latter — that a gap
+ * was handled by `Gap.tsx` before `Chrome` was ever rendered, so this could
+ * not be called from one. That was true until O25 closed, and O25's fix is
+ * exactly the removal of it: `Chrome` now mounts in a gap, and `App.tsx`
+ * chooses between this function and `gapHealth` on `shown.kind` instead.
+ *
+ * The distinction is load-bearing rather than pedantic. Anyone folding
+ * `gapHealth` back into this function — the hub-vs-authority question the
+ * design deliberately left open is the likely reason to try — would, on the
+ * old reasoning, believe a counterpart always exists here. It does not: a
+ * `sound` pairing with a gap at the slot on screen would then take
+ * `healthLine`'s one silent branch, and the readout row would go quiet
+ * directly beneath `Gap`'s own verdict sentence. That is the regression
+ * `gapHealth` exists to prevent, and no test would catch it — the row simply
+ * says less.
+ *
+ * `healthLine` still takes the flag explicitly rather than this function
+ * assuming it away, so its own contract does not depend on this one caller's
+ * particular gating.
  */
 export function healthReadout(alignments: Alignment[], hub: string, viewing: string): string | undefined {
   if (viewing === hub) return undefined
   return healthLine(verdictFor(alignments, hub, viewing), true)
+}
+
+/**
+ * `healthLine` for a gap — the pairing the gap is actually about, and the
+ * absence, together.
+ *
+ * **Deliberately not `healthReadout`, and the difference is the point.** That
+ * function reports the `hub`↔`viewing` pair and answers `undefined` while
+ * `viewing` is the hub itself; `Gap.tsx` reports the `from`↔`viewing` pair,
+ * where `from` is the authority the gap was found at. In a gap those disagree:
+ * a reader whose authority is a spoke and who swaps to the hub would see
+ * `Gap`'s verdict sentence with silence in the readout row directly beneath
+ * it. This reports the same pair `Gap` does, so the view and the row cannot
+ * contradict each other.
+ *
+ * `hasCounterpart` is `false` unconditionally, which is what a gap *is* — and
+ * it is why this returns `string` rather than `string | undefined`:
+ * `healthLine`'s only silent branch requires a counterpart, so with `false`
+ * there is always something to say. That is the intended behaviour, not an
+ * accident of the current implementation — silence here would let a reader
+ * take a gap for an ordinary page.
+ *
+ * Unlike `healthReadout` this takes the authority explicitly rather than
+ * closing over `hub`, because in a gap the authority is the edition the
+ * position is recorded against and the hub may be neither side of the pair.
+ */
+export function gapHealth(alignments: Alignment[], from: string, viewing: string): string {
+  return healthLine(verdictFor(alignments, from, viewing), false)!
 }
 
 /** `timeLine`'s inputs — see its own doc for where each comes from. */

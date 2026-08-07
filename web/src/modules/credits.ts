@@ -27,16 +27,23 @@ export interface CreditsPrefs {
  * settings section, generated from `defaults` like every other module's, and
  * its two toggles persist across a reload and govern nothing.
  *
- * **Why it is registered anyway.** The panel is blocked on O25 — `App.tsx`'s
- * `shown.kind === 'gap'` branch returns the `Gap` view *instead of* the
- * reader's tree, so anything mounted below it is not rendered, and a gap is
+ * **Why it is registered anyway.** The panel was blocked on O25 — `App.tsx`'s
+ * `shown.kind === 'gap'` branch returned the `Gap` view *instead of* the
+ * reader's tree, so anything mounted below it was not rendered, and a gap is
  * precisely the state a reader asks "what did I skip?" from. Mounting a third
- * panel that vanishes in that state would be the partial answer O25 exists to
- * prevent. Registration is kept because `modules/registry.ts`'s property —
- * adding a module to one array is the only hand-edit its existence needs — is
- * worth more than hiding an inert settings section, provided the docs are
- * honest about what the section currently does, which is what this paragraph
- * is for. Do not strip `keys` or `defaults` to quiet the section; fix O25.
+ * panel that vanished in that state would have been the partial answer O25
+ * existed to prevent. Registration is kept because `modules/registry.ts`'s
+ * property — adding a module to one array is the only hand-edit its existence
+ * needs — is worth more than hiding an inert settings section, provided the
+ * docs are honest about what the section currently does, which is what this
+ * paragraph is for. Do not strip `keys` or `defaults` to quiet the section.
+ *
+ * **O25 is closed and this is no longer blocked, only unwritten.** `App.tsx`
+ * now narrows `Display` once rather than returning early, so every panel has
+ * one mount site that a gap does not hide — mounting this one is an ordinary
+ * addition to it plus a `PANEL_INTENT` case in the module switch. What is
+ * still genuinely unfinished is `creditSlots` below, for the reason its own
+ * doc gives.
  *
  * **`C`, not `c`.** Lower-case `c` is `keys.ts`'s own reserved built-in for
  * correction mode, checked before any module's declared keys are — a module

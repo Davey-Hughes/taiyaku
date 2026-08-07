@@ -37,7 +37,7 @@ hidden.
 
 ## What is built
 
-Five crates, 410 tests, plus 390 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 410 tests, plus 397 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
 and `vite` in `web/`. Twelve of the 410 are standing checks gated on
@@ -82,7 +82,7 @@ is not shaped by what can cross the JavaScript boundary.
 | `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, notes (`<stem>.notes.json`, read and written whole under `If-Match`), an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
-| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of six `ReaderModule`s — of eight the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint, with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the page it sits over rather than the box around it; a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself). The other two registry entries claim no reading behaviour. `settings` claims only the panel's own key. `credits` (§4 below) declares the credit-page preferences and claims `C`, and **its panel is not mounted** — `App.tsx` renders none and its module switch has no case for the intent, so `C` is swallowed and the generated "Credit pages" section holds two toggles that persist and govern nothing; it waits on O25 and says so in its own doc comment. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
+| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of six `ReaderModule`s — of eight the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint, with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the page it sits over rather than the box around it; a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself). The other two registry entries claim no reading behaviour. `settings` claims only the panel's own key. `credits` (§4 below) declares the credit-page preferences and claims `C`, and **its panel is not mounted** — `App.tsx` renders none and its module switch has no case for the intent, so `C` is swallowed and the generated "Credit pages" section holds two toggles that persist and govern nothing; mounting it was blocked on O25 until that closed, and is now an ordinary addition to the one mount site the fix leaves. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
 
 `taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
 a member becomes pages" — so two consumers deriving it separately is a defect the
@@ -269,15 +269,16 @@ margin threshold plus a crop-tolerant hash. Not the DP.
 
 ### Open items
 
-Twenty-six, each found by a whole-branch review, carried as a deferral,
+Twenty-seven, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
-before it left behind, or turned up by measuring what a new feature produced
-against the corpus, and each judged not worth blocking on at the time. They
+before it left behind, turned up by measuring what a new feature produced
+against the corpus, or turned up by designing the fix for another one, and
+each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Eighteen are now closed
+visible act rather than a thing someone remembers. **Twenty are now closed
 — O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21 and O22 — leaving eight.**
+O21, O22, O25 and O27 — leaving seven.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -308,8 +309,9 @@ each is in the detail below; the table is what a reader scans.
 | O22 | [x] | `verify` ignored `--cache` and `--ltr` with no `--sidecar` to apply them to | `main.rs::verify` | O20 review |
 | O23 | [ ] | Two hand corrections make a sound alignment report `fragmented` — *measured: avg run 64.33 → 32.00 → 21.22 on Go-Toubun v01, against a 27.0 threshold* | `sidecar.rs::rewrite`, `solve.rs::verdict` | M5d |
 | O24 | [ ] | A solver-written direct edge to a third edition survives that edition being replaced | `sidecar.rs::merge_spoke` | M5d whole-branch review |
-| O25 | [ ] | The settings panel and the whole chrome are unreachable while showing a gap | `App.tsx`, the `shown.kind === 'gap'` branch | M5c browser pass |
+| O25 | [x] | The settings panel and the whole chrome are unreachable while showing a gap | `App.tsx::App`, the `at` narrowing | M5c browser pass |
 | O26 | [ ] | `align --write` truncates the sidecar before writing it | `main.rs::align` | credit-pages whole-branch review |
+| O27 | [x] | Two refs are held and read by nothing | `App.tsx::App`, the ref block above `viewportWidth` | O25 design |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -1128,32 +1130,49 @@ blocking because nothing yet corrects a work more than once in real reading:
 it hides are both reachable one keypress earlier:
 
 - **O25 — The settings panel and the whole chrome are unreachable while
-  showing a gap. Open.** `App.tsx`'s `shown.kind === 'gap'` branch returns the
-  `Gap` view *instead of* the reader's own tree, so everything mounted below
-  it — `Chrome` (filmstrip and readouts), `Settings`, and until this branch the
-  note panel — is simply not rendered. The keys still fire and the state still
-  flips; nothing appears. Found by pressing `a` on a gap and getting silence.
-  **The note panel was fixed here** because a reader in a gap is precisely who
-  asks where their notes are, and every row in that list already carries the
-  "not reachable from here" marking for exactly this case. The other two were
-  left, deliberately: `Settings` is a genuine one-line fix, but the filmstrip
-  is not — a gap has no slot in the viewed edition, so what the strip should
-  show there (the authority edition's tiles? the viewed edition's, with
-  nothing marked?) is a design question, and `Gap`'s own offered moves already
-  exist to get out of one. Fixing half of it and calling the item closed would
-  be the kind of partial answer this table exists to prevent.
-  **A third panel now waits on this.** The credits module (§4 below) is
-  registered, its preferences load and save, and its panel is deliberately not
-  mounted for exactly this reason — a reader in a gap is who asks what was
-  skipped, so a list that disappears there is the half-answer above. The cost
-  is visible in the shipped build: `C` is swallowed by `App.tsx`'s module
-  branch, which calls `preventDefault()` and then finds no matching case, and
-  the generated "Credit pages" settings section offers two toggles that persist
-  and govern nothing. `web/src/modules/credits.ts` and `modules/registry.ts`
-  both say so in their own doc comments rather than leaving the shipped build
-  to disagree with the documentation.
-  **What would close it:** deciding what the filmstrip shows in a gap, and
-  landing that together with the one-line `Settings` fix.
+  showing a gap. Closed.** `App.tsx`'s `shown.kind === 'gap'` branch returned
+  the `Gap` view *instead of* the reader's own tree, so everything mounted
+  below it — `Chrome` (filmstrip and readouts), `Settings`, the mode toolbar,
+  and until M5c the note panel — was simply not rendered. The keys fired and
+  the state flipped; nothing appeared. Found by pressing `a` on a gap and
+  getting silence.
+  **The early return is gone rather than added to.** `Display` is narrowed once
+  (`at`), five values gain a gap form, and the page area draws `Gap` in place of
+  a page — so there is now exactly one place in the component a panel can be
+  mounted, and a panel added later is reachable in a gap because there is
+  nowhere else to put it. Adding two mounts to the gap branch would have closed
+  the item as tabled and left the shape that let a third panel be forgotten.
+  **The design question this waited on settled smaller than it looked.**
+  `goToSlot` is `navigate(state, slot)` against the viewed edition, which is the
+  commit `takeOffered` already makes for `Gap`'s offered moves, so a tile click
+  in a gap needed no new semantics — only the marking and the scroll position
+  were open. The strip shows the viewed edition with **nothing marked**
+  (`currentIndex: -1`, correction mode's own convention) and centres on the
+  nearest slot that resolves, which is the page `Gap`'s own button offers. The
+  two neighbours are deliberately not given the dashed border: dashed means
+  "where the alignment says this lands", and in a gap it lands nowhere.
+  **Two things were already written and unreachable.** `healthLine`'s
+  `no counterpart here` string had no caller that could produce it —
+  `healthReadout` passes `hasCounterpart: true` unconditionally, and its own doc
+  says why: `Chrome` never mounted in a gap. `gapHealth` reaches it now, and
+  reports the authority↔viewed pair rather than hub↔viewed, so the row agrees
+  with the verdict sentence `Gap` prints directly above it instead of falling
+  silent under it. The readouts otherwise report from the authority — a real
+  position in the work, which only the viewed edition has no page for — with the
+  edition named, so the change of scale is never silent.
+  **Measured in a real browser against the corpus**, on two gaps chosen out of
+  the sidecar because the obvious one cannot fail: `raw-mono` slot 1 in
+  `en-mono` is a *sound* pairing, so `sound pair · no counterpart here` on
+  screen can only have come from `gapHealth`; and `raw-mono` slot 193 in
+  `en-fan` anchors at `en-fan` slot 239 — its *last* slot of 240, drawn as the
+  last of 235 tiles, since five joined spreads make the two counts differ —
+  where `scrollLeft` read 24260 of 25824 rather than 0. See `notes.md`, "O25: the chrome in a gap,
+  driven against the corpus", which records all ten checks — including the review
+  list's "not reachable from here" marking, run under a backup of the corpus's
+  JSON and restored to byte-identical afterwards.
+  **The panel that waited on this is unblocked, not shipped.** The credits
+  module (§4 below) is registered, its preferences load and save, and mounting
+  it is now an ordinary addition to the one mount site rather than a question.
 
 **One came from reviewing a branch that fixed the same hazard next door** —
 O26, turned up on 2026-08-07 by the credit-pages whole-branch review, and not
@@ -1190,6 +1209,55 @@ the exposure worse:
   `credits::tests::writing_a_credits_list_replaces_the_sidecar_rather_than_truncating_it`
   already establishes.
 
+**One came from designing another item's fix** — O27, turned up on 2026-08-07
+while tracing which render-assigned refs O25's restructure would newly reach,
+and not blocking because a write nobody reads changes nothing a reader can see.
+It closed the same day, on O25's own branch:
+
+- **O27 — Two refs are held and read by nothing. Closed.**
+  `App.tsx` declares `pageUrlRef` beside `pageAreaRef` under one comment
+  claiming both are "read by the layout effect below", and assigns
+  `pageUrlRef.current` further down. **Neither is read, and there is no layout
+  effect in the file at all** — every hook there is a `useEffect`. `pageUrlRef`
+  has no reader anywhere in `web/src`; `pageAreaRef` is attached to the page
+  area's own `ref=` and its `.current` is never read either. *This bullet
+  claimed on 2026-08-07 that `pageAreaRef` was read and that the region-drag
+  geometry came off it. It does not: `beginRegion` takes its rectangle off the
+  `<img>` via `draftImage`/`pointOn`, and geometry coming off the page area is
+  the exact bug M5c fixed — see `notes.md`, "The annotation overlay was placed
+  on the page area, not on the page". Corrected by this branch's own
+  whole-branch review, before anyone closed the item from a false premise.*
+  **It was never a leftover from a removed reader.** `git log -S` finds exactly
+  one commit touching either line, `bcafee5` (M5c), and it *adds* both. The ref
+  was born dead, most likely because M5c's overlay ended up measuring the image
+  it sits over — the fix recorded under "The annotation overlay was placed on
+  the page area, not on the page" — rather than working from a URL an effect
+  would have had to compare.
+  **What it costs, and what it costs to leave.** Nothing at runtime: one string
+  assignment per render. The cost is the comment, which tells the next reader
+  that a reader exists and sends them looking for it — the same staleness the
+  open-items table's symbol-not-line rule exists to avoid, one level down.
+  **It was tabled rather than fixed in passing, and then folded in anyway on
+  the owner's call.** The argument for a separate branch was the standing one:
+  O25 is a restructure of the same function, the remote squashes, and two
+  claims in one commit cannot be reverted separately. The owner chose to close
+  it on O25's branch instead, which is recorded here rather than deleted,
+  because the reasoning is still the reasoning — it was overruled, not wrong.
+  **How it closed.** Both refs deleted, along with `pageAreaRef`'s `ref=` on
+  the page-area div and the comment that promised a layout effect. They were
+  dead in different ways and the difference mattered to the edit: `pageUrlRef`
+  was declaration-plus-assignment and nothing else, while `pageAreaRef` was
+  attached to a live element, so removing it meant removing the attribute too.
+  **The one behaviour that could have depended on the page area's node was
+  driven, not reasoned about.** With the refs gone, a real pointer drag across
+  the page in a browser still swept out a region — the note's anchor went from
+  `whole page` to `raw-mono slot 193 · region`, and the rectangle drew during
+  the drag. That is the check worth running, because geometry taken off the
+  page area rather than the image is precisely the M5c bug named above. Run
+  under a copy of the corpus's JSON, restored to byte-identical afterwards. No
+  test covers this; nothing in the suite touches `App.tsx`, which stayed at
+  397 passing.
+
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
 
@@ -1211,8 +1279,9 @@ piece, shipped across four milestones, and the fourth shipped as an eighth
 command plus a field in the format — and they stay here rather than being
 deleted, for the reason the open-items table gives: a list that only ever grows
 says nothing about whether anything lands. **What is left of the fourth is the
-reader's half**: the module is registered and its panel is not mounted, which
-waits on O25. Everything still genuinely unbuilt is under "Later".
+reader's half**: the module is registered and its panel is not mounted. O25,
+which blocked it, is closed, so what is left is the mounting itself.
+Everything still genuinely unbuilt is under "Later".
 
 ### 1. Refuse on margins, not just counts — measured, and margin does not fit
 
@@ -1660,8 +1729,10 @@ racing the reader was refused, re-read, and lost nothing. See `notes.md`,
 "M5c: a note written on the raw, read on the English". **One defect turned up
 in that pass and it was older than the branch**, now O25: no panel below the
 gap branch was ever rendered, so the review list could not be opened from the
-one state it was written for. The list is fixed here; the settings panel and
-the chrome are not, and the item says why.
+one state it was written for. The list was fixed there; the settings panel and
+the chrome were not, and the item said why. *O25 has since closed — see its
+entry above. This paragraph describes the state at the end of M5c, which is
+what it is here to record.*
 
 **Two more came from the owner opening the reader, and both are worth stating
 because a nine-item browser pass had already passed over them.** Typing a note
@@ -1686,14 +1757,13 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the eight open items tabled above — six of them found by a
+What remains: the seven open items tabled above — six of them found by a
 whole-branch review, now that O12 (carried rather than found) and O14 (found
-by one, closed by M5b) are both out of the count, with O23 and O25 the
-exceptions, turned up by measuring what a new surface produced against the
-corpus rather than by reviewing a branch. **Every milestone M5 named has now
-shipped.**
+by one, closed by M5b) are both out of the count, with one exception: O23,
+turned up by measuring what a new surface produced against the corpus rather
+than by reviewing a branch. **Every milestone M5 named has now shipped.**
 
-### 4. Skipping scanlation credit pages — shipped to the sidecar, and the reader's half waits on O25
+### 4. Skipping scanlation credit pages — shipped to the sidecar, and the reader's half is unblocked
 
 A reader setting that keeps donation pleas, credits cards and recruitment ads out
 of the reading flow, and puts them in a section of their own that can be opened
@@ -1779,10 +1849,11 @@ credit page at all. Two volumes are not the population.
 registered like every other module and its preferences load, save and appear in
 the settings panel — and **the panel that would list the pages is not mounted**,
 so `C` does nothing and the "Credit pages" settings section holds two toggles
-that persist and govern nothing. That is deliberate rather than unfinished:
-mounting it waits on O25, since every panel below `App.tsx`'s
-`shown.kind === 'gap'` branch goes unrendered while a gap is showing, and a gap is
-the state a reader most wants this list from. `creditSlots` in the same file is
+that persist and govern nothing. That was deliberate rather than unfinished:
+mounting it waited on O25, since every panel below `App.tsx`'s
+`shown.kind === 'gap'` branch went unrendered while a gap was showing, and a gap
+is the state a reader most wants this list from. **O25 is now closed**, so the
+mount site exists and this is an ordinary addition to it. `creditSlots` in the same file is
 the other thing to finish, and its own doc comment says why it must be replaced
 rather than adopted: it re-derives slot expansion in TypeScript where
 `taiyaku_core::slot::expand` owns it, and its `Pagination` argument cannot be

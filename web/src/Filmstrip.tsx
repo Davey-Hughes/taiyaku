@@ -108,6 +108,22 @@ export interface FilmstripProps {
   groups: Group[]
   /** Index into `groups` of the group the reader is currently looking at. */
   currentIndex: number
+  /**
+   * A slot of `edition` to centre the rail on when nothing is current.
+   *
+   * Set only while showing a gap, where there is no current tile to centre on
+   * — a gap has no slot in the viewed edition at all — and the nearest slot
+   * that does resolve is the closest thing to "where the reader is".
+   * `App.tsx` passes `nearestPaired`'s `before?.at ?? after?.at`, which is the
+   * same page `Gap`'s own `←` button offers.
+   *
+   * Centring only. The anchor tile gets **no border**: the solid one means
+   * "where you are" and the dashed one means "where the alignment says this
+   * lands", and in a gap neither is true — it lands nowhere, which is what
+   * the gap is. Marking it either way would put a claim on screen in the one
+   * state that exists to say the claim cannot be made.
+   */
+  anchor?: number
   /** Real navigation — calls through to `reading.ts`'s `navigate`, never `swap`. */
   onNavigate: (slot: number) => void
   /**
@@ -175,10 +191,13 @@ export interface FilmstripProps {
  * thumbnail is lazy-loaded, not even requested. `currentRef` is attached to
  * whichever tile is current and centred into view whenever that changes or
  * the strip becomes visible. `pairedRef` plays the same role for the dashed
- * tile — `currentIndex` never matches anything while `correcting` is set (see
- * `App.tsx`), so at most one of the two refs is ever attached at a time, and
- * centring on "whichever is attached" is exactly the tile a reader needs on
- * screen to disagree with it.
+ * tile, and `anchorRef` for a gap's neighbourhood. At most one of the three
+ * is ever attached at a time — `App.tsx` sets `anchor` only in a gap, where
+ * `currentIndex` is `-1` and nothing is correcting, and `isAnchor` below
+ * re-tests that rather than assuming it — so centring on "whichever is
+ * attached" is exactly the tile a reader needs on screen for the state they
+ * are in: the one to disagree with while correcting, and the nearest page
+ * that exists while standing in a gap.
  */
 export function Filmstrip({
   work,
@@ -186,6 +205,7 @@ export function Filmstrip({
   slots,
   groups,
   currentIndex,
+  anchor,
   onNavigate,
   visible,
   correcting,
@@ -194,10 +214,20 @@ export function Filmstrip({
 }: FilmstripProps) {
   const currentRef = useRef<HTMLButtonElement>(null)
   const pairedRef = useRef<HTMLButtonElement>(null)
+  // Third and last in the chain below. At most one of the three is ever
+  // attached, and `isAnchor` further down is what enforces that here rather
+  // than trusting `App.tsx` to: an anchor is honoured only while
+  // `currentIndex` is `-1` and nothing is `correcting`, so a caller that set
+  // `anchor` alongside a real position would lose the anchor rather than
+  // attach two refs in one render. Centring on "whichever is attached"
+  // therefore always names the one tile a reader needs on screen for the
+  // state they are in.
+  const anchorRef = useRef<HTMLButtonElement>(null)
   const railRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const recenter = () =>
-      (currentRef.current ?? pairedRef.current)?.scrollIntoView({ inline: 'center', block: 'nearest' })
+      (currentRef.current ?? pairedRef.current ?? anchorRef.current)
+        ?.scrollIntoView({ inline: 'center', block: 'nearest' })
     recenter()
     // A tile has no explicit width or height, so a not-yet-loaded thumbnail
     // (`loading="lazy"`) lays out at close to zero width until it decodes —
@@ -214,17 +244,32 @@ export function Filmstrip({
     if (!rail) return
     rail.addEventListener('load', recenter, true)
     return () => rail.removeEventListener('load', recenter, true)
-  }, [currentIndex, visible, correcting?.pairedIndex])
+  }, [currentIndex, visible, correcting?.pairedIndex, anchor])
 
   return (
     <div ref={railRef} style={railStyle}>
       {groups.map((group, index) => {
         const isCurrent = index === currentIndex
         const isResolved = correcting?.pairedIndex !== undefined && group.slots.includes(correcting.pairedIndex)
+        // `currentIndex === -1 && !correcting`, not `!isCurrent &&
+        // !isResolved`. Those two are already false by the time the ternary
+        // below reaches this branch, so testing them again filters nothing —
+        // they would only stop *this* tile being claimed twice, which the
+        // ternary's own ordering already makes impossible. What has to be
+        // excluded is a *different* tile being current or resolved while this
+        // one matches `anchor`: two refs attached in one render, which is the
+        // case the doc above says cannot happen. Testing the caller's contract
+        // directly is what makes that claim true of this code rather than only
+        // of `App.tsx`.
+        const isAnchor =
+          anchor !== undefined &&
+          currentIndex === -1 &&
+          !correcting &&
+          group.slots.includes(anchor)
         return (
           <button
             key={group.slots[0]}
-            ref={isCurrent ? currentRef : isResolved ? pairedRef : undefined}
+            ref={isCurrent ? currentRef : isResolved ? pairedRef : isAnchor ? anchorRef : undefined}
             type="button"
             style={isCurrent ? currentTileStyle : isResolved ? resolvedTileStyle : tileStyle}
             aria-current={isCurrent ? 'true' : undefined}

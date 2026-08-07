@@ -5348,3 +5348,139 @@ A document over axum's 2 MB default answers `413 Failed to buffer the request
 body: length limit exceeded` — axum's wording, not this server's, which is the
 thing O5 was about. The limit is right and the message is not ours. Not worth
 holding a merge for.
+
+## O25: the chrome in a gap, driven against the corpus
+
+`App.tsx` returned early on `shown.kind === 'gap'`, handing back `Gap` instead
+of the reader's own tree, so `Chrome`, `Settings` and the mode toolbar were
+never rendered while a gap was showing. Driven in a real browser against
+`corpus/gotoubun-v01` (hub `raw-mono`, 195 slots; `en-mono` 187 pages; `en-fan`
+235 pages / 240 slots) with `taiyaku serve` behind Vite's proxy.
+
+**The two gaps were chosen out of the sidecar rather than hunted for**, because
+the obvious one cannot fail the check that matters. A run with no `b` is a gap:
+
+```
+raw-mono -> en-mono  (sound)       gap a=1        prev_b=0        next_b=1-4R
+raw-mono -> en-mono  (sound)       gap a=6        prev_b=1-4R     next_b=5-186
+raw-mono -> en-fan   (fragmented)  gap a=2-3      prev_b=43       next_b=44-45L
+raw-mono -> en-fan   (fragmented)  gap a=7        prev_b=44-45L   next_b=46-94
+raw-mono -> en-fan   (fragmented)  gap a=193-194  prev_b=230-234  next_b=None
+```
+
+**Gap A — `raw-mono` slot 1 in `en-mono`** is the one M5c already used, and its
+value here is its `sound` verdict. `healthReadout` is silent on a sound edge by
+design, so it cannot produce this string at all:
+
+```
+raw-mono slot 2 / 195 · p. 2 · 1% · sound pair · no counterpart here · 1m read · ~c000 · 1 of 7
+```
+
+`sound pair · no counterpart here` on screen therefore has exactly one possible
+source, `gapHealth`. The string had been written in `healthLine` since M5a and
+was unreachable from the reader for as long as O25 stood.
+
+**Gap A cannot test the filmstrip anchor**, which is why a second was needed:
+its neighbours are slots 0 and 2, so the rail sits near tile 0 whether the
+anchor works or not. Measured there, `scrollLeft` was 0 — consistent with the
+anchor and equally consistent with its absence.
+
+**Gap B — `raw-mono` slot 193 in `en-fan`** is the one that can fail. Its
+nearest paired neighbour lands on `en-fan` **page 234**, which is **slot 239**
+of 240 — the last one — drawn as the last of 235 tiles. *Both this paragraph
+and `status.md` first said "slot 234", naming a page index as a slot: `en-fan`
+carries five joined spreads below page 234, so the two spaces differ by five.
+`nearestPaired` returns `landed.slot`, and the run before the gap
+(`{"a": "188-192", "b": "230-234"}`) lands on page 234. The reader's own
+measured row `slot 102 / 240 · p. 100` is the cross-check — slot index 101 for
+page index 99, +2 for the spreads below it. Corrected after review; the
+measurement below is unaffected, since the rail is clamped at its maximum
+either way.*
+
+```
+scrollLeft 24260   scrollWidth 25824   clientWidth 1564
+```
+
+Scrolled to the far end, not to 0. Without the anchor this reads 0. The rail is
+at its maximum — `scrollIntoView({inline: 'center'})` clamps, since the anchor
+tile is closer to the end than half a viewport.
+
+The whole screen at Gap B, verbatim — the `Gap` view, its offered move, and the
+readout row beneath, read out of the DOM in one go:
+
+```
+No en-fan page for raw-mono page 194.
+This pairing is fragmented: matches are sparse across the whole volume, so gaps
+like this one are expected.
+[← en-fan page 235]
+
+raw-mono slot 194 / 195 · p. 194 · 99% · fragmented pair · no counterpart here
+  · 3m read · no chapter edition
+```
+
+`no chapter edition` rather than a chapter code, because `chapterAt` resolves
+through `en-fan` — where this slot is the gap — so there is nothing to name.
+Recorded in full because the design doc quotes this row and cited this section
+for it; two of its segments were only in the check table below, split apart.
+
+**Every check, and what each produced.**
+
+| check | result |
+| --- | --- |
+| `Tab` draws the strip, viewed edition's tiles | 187 tiles in `en-mono`, 235 in `en-fan` — both the viewed edition, never the authority |
+| no tile marked | `aria-current` absent on every tile; every computed `border-color` `rgba(0, 0, 0, 0)` |
+| rail centred on the neighbourhood | Gap B, `scrollLeft` 24260 of 25824 |
+| position line names the edition | `raw-mono slot 194 / 195 · p. 194 · 99%` while viewing `en-fan` |
+| health says the absence | `sound pair · no counterpart here` (A), `fragmented pair · no counterpart here` (B) |
+| row and view agree on the page | `p. 194` and "No en-fan page for raw-mono page 194" |
+| `s` draws the settings panel | eight sections, "Credit pages" among them |
+| `a` draws the review list | mounts beside `Gap` and `Settings` — three panels, one mount site |
+| arrows inert | `ArrowRight` left slot 194 and the gap unchanged |
+| a tile click leaves the gap | `slot 102 / 240 · p. 100 · 43% · fragmented pair · …`, one tile `aria-current`, solid white border |
+
+**The reading case was checked too, as the negative half.** On `raw-mono`
+unswapped the row reads `slot 2 / 195 · p. 2 · 1% · 2m read · ~c000 · 1 of 7`:
+no edition prefix, and no health segment at all, since `healthReadout` is
+`undefined` while viewing the hub. After leaving Gap B the row reads
+`fragmented pair` *without* `no counterpart here`. Both confirm the gap forms
+are reached only in a gap.
+
+**Two behaviour changes the design predicted, both confirmed.** The mode
+toolbar is now drawn beside the `Gap` view, where the early return had meant it
+was never rendered. And the gap branch's second `NotePanel`, whose handlers
+were stubbed to `() => undefined`, is gone; the one real panel serves both.
+
+**The tenth check, run separately, under a backup.** The review list's "not
+reachable from here" marking needs a note to exist and this work had none. It
+was first recorded as not-run — `reviewList` is untouched by this branch, and
+`corpus/` is gitignored, so a write there is not revertable by git. It was then
+run properly: the three `corpus/gotoubun-v01/*.json` files were copied aside
+first, and the reader's own `n` was used to type a note on `raw-mono` slot 193
+— the gap's authority slot, so the note is definitionally unreachable in
+`en-fan`. Typed a character at a time through the real keydown path rather than
+`fill()`, which is the M5c lesson two sections above.
+
+Swapping to `en-fan` and pressing `a` gave:
+
+```
+raw-mono slot 193 · not reachable from en-fan
+O25 check: this note is anchored to raw-mono slot 193, which en-fan has no page for.
+```
+
+**Two things this showed that no other check reached.** The entry's button is
+`disabled`, not merely labelled — `onGo`'s `if (entry.here === undefined)
+return` is visible in the control rather than being a click that silently does
+nothing. And the readout row ended `· no notes here of 1`, which is the note
+count's gap form: `here` is empty because a gap has no slot to hold notes, while
+the total still counts the whole work. That is the line the design predicted as
+"no notes here of 7" and nothing had yet produced.
+
+Afterwards the note file (`taiyaku.notes.json`, stem-prefixed like
+`taiyaku.progress.json` — *not* `notes.json` as `notes_path`'s doc reads at a
+glance) was removed and `taiyaku.progress.json` restored from the copy; all
+three files then diffed identical to the backup.
+
+**A defect in the plan, found by executing it.** The plan's first command was
+`cargo build --release -p taiyaku-serve`. `taiyaku-serve` is a library crate and
+the `taiyaku` binary belongs to `taiyaku-cli`, so that builds nothing runnable.
+Corrected before the pass.

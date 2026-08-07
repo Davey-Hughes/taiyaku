@@ -3,6 +3,7 @@ import type { Alignment } from '../session'
 import {
   chapterLine,
   chapterReadout,
+  gapHealth,
   healthLine,
   healthReadout,
   nextTurns,
@@ -27,6 +28,22 @@ describe('positionLine', () => {
     // the percentage is derived from the 1-based slot, matching the count
     // printed right next to it, not from the raw zero-based index.
     expect(positionLine({ slot: 0, total: 195, page: 1 })).toContain('1%')
+  })
+
+  it('names the edition when one is given, so a change of scale is never silent', () => {
+    // Only a gap sets this. The line then reports the authority's position
+    // while the reader is looking at another edition, and the percentage is
+    // against the authority's slot count — so the row has to say whose
+    // numbers these are.
+    expect(positionLine({ slot: 88, total: 193, page: 87, edition: 'raw-mono' }))
+      .toBe('raw-mono slot 89 / 193 · p. 87 · 46%')
+  })
+
+  it('is unchanged where no edition is given', () => {
+    // The reading case, which is every case but the gap. No prefix, no
+    // leading space.
+    expect(positionLine({ slot: 87, total: 195, page: 84, edition: undefined }))
+      .toBe('slot 88 / 195 · p. 84 · 45%')
   })
 })
 
@@ -218,6 +235,44 @@ describe('healthReadout', () => {
 
   it('reports unknown for a spoke-to-spoke pair with no stored edge', () => {
     expect(healthReadout(alignments, 'en-mono', 'en-fan')).toBe('verdict unknown')
+  })
+})
+
+describe('gapHealth', () => {
+  const alignments: Alignment[] = [
+    { from: 'raw-mono', to: 'en-mono', quality: { verdict: 'sound' } },
+    { from: 'raw-mono', to: 'en-fan', quality: { verdict: 'fragmented' } },
+  ]
+
+  it('says a sound pairing still has no counterpart here', () => {
+    // The case `healthReadout` cannot produce: it is silent on a sound edge,
+    // because a sound pairing with a counterpart has nothing to report. A
+    // gap is a slot-level absence inside an otherwise sound pairing, which
+    // is exactly what `Gap.tsx`'s own sentence for `sound` says in words.
+    expect(gapHealth(alignments, 'raw-mono', 'en-mono')).toBe('sound pair · no counterpart here')
+  })
+
+  it('names a fragmented pairing and the absence together', () => {
+    expect(gapHealth(alignments, 'raw-mono', 'en-fan')).toBe('fragmented pair · no counterpart here')
+  })
+
+  it('reports unknown rather than nothing where no edge is stored', () => {
+    // `healthLine`'s standing rule: silence must never be mistaken for
+    // `sound`. A spoke-to-spoke pair has no stored edge in a hub-and-spoke
+    // sidecar, and guessing at a composed verdict is the one thing
+    // `verdictFor` refuses to do.
+    expect(gapHealth(alignments, 'en-mono', 'en-fan')).toBe('verdict unknown')
+  })
+
+  it('speaks even where the viewed edition is the hub', () => {
+    // `healthReadout` returns `undefined` here by design — reading the hub
+    // unswapped has no cross-edition pairing to judge. But a gap reached
+    // *from* a spoke is a real pairing between two named editions, and
+    // `Gap.tsx` already prints a verdict sentence for it. Silence in the row
+    // directly beneath that sentence is the contradiction this exists to
+    // prevent.
+    expect(healthReadout(alignments, 'raw-mono', 'raw-mono')).toBeUndefined()
+    expect(gapHealth(alignments, 'en-fan', 'raw-mono')).toBe('fragmented pair · no counterpart here')
   })
 })
 

@@ -32,6 +32,7 @@ import { motionModule } from './modules/motion'
 import { prefetchModule, window as prefetchWindow } from './modules/prefetch'
 import {
   chapterReadout,
+  gapHealth,
   healthReadout,
   nextTurns,
   pagesPerMinute,
@@ -176,10 +177,11 @@ function allSlots(resolver: Resolver, edition: string): Position[] {
  * `navigate` (for `step`) — never both for one keypress. So `viewing` really
  * can diverge from `authority`, and `display` really can report `'gap'`:
  * landing, after a swap, on a slot with no counterpart in the edition just
- * swapped to. That state is drawn by `Gap`, below, rather than folded into
- * the page-rendering branch that follows it — a gap has no slot to draw and
- * no group to belong to, so keeping it a separate early return is what lets
- * the rest of this function go on assuming `shown.kind === 'at'` throughout.
+ * swapped to. That state is drawn by `Gap`, in place of the page area, rather
+ * than by an early return out of this whole function (that was O25) — a gap
+ * has no slot to draw and no group to belong to, but `Chrome`, `Settings` and
+ * the note panel below still mount, so `at` (below) is what the rest of this
+ * function narrows on wherever a slot is actually needed.
  */
 function App() {
   const [session, setSession] = useState<Session>()
@@ -409,11 +411,16 @@ function App() {
   // `stepToGroup`), and only this component knows what the groups are.
   const groupedRef = useRef<Group[]>(undefined)
 
-  // The page area, and the URL of the page currently drawn in it — both read
-  // by the layout effect below, which cannot see anything computed after the
-  // `if (!session) return null` guard.
-  const pageAreaRef = useRef<HTMLDivElement>(null)
-  const pageUrlRef = useRef<string>(undefined)
+  // `pageAreaRef` and `pageUrlRef` stood here, under a comment claiming both
+  // were "read by the layout effect below". Neither was read and there was no
+  // layout effect — every hook in this file is a `useEffect`. Both entered in
+  // `bcafee5` (M5c) and were born dead: the overlay ended up measuring the
+  // image it sits over rather than the page area, which is the fix recorded in
+  // `notes.md` under "The annotation overlay was placed on the page area, not
+  // on the page", and neither ref survived that change with a purpose. Removed
+  // as O27. The region drag reads its geometry off the `<img>` via
+  // `draftImage`/`pointOn`, which is where it has to come from — going back
+  // through the page area is the bug that fix exists to prevent.
 
   // The window's width, for `auto` note-list placement. A listener rather than
   // a one-off read, because "is there room beside the page" stops being true
@@ -1019,6 +1026,18 @@ function App() {
   const { work, resolver, reading, state, alignments, editions } = session
   const shown = display(state, resolver)
 
+  // The page-drawing half of `Display`, or `undefined` while showing a gap.
+  //
+  // Narrowed here rather than by a branch that returns early. The early return
+  // was O25: it handed back `Gap` *instead of* the reader's own tree, so
+  // `Chrome`, `Settings` and the mode toolbar were never rendered while a gap
+  // was showing — the keys fired, the state flipped, and nothing appeared. The
+  // note panel was mounted inside that branch during M5c as a second copy,
+  // which is the shape that let the credits panel be forgotten as well. After
+  // this there is one mount site, so a panel added later is reachable in a gap
+  // because there is nowhere else to put it.
+  const at = shown.kind === 'at' ? shown : undefined
+
   // Takes one of `Gap`'s offered moves: `slot` is authority-space (what
   // `nearestPaired` returned), and `takeOffered` is what resolves it into
   // the viewed edition and commits authority there.
@@ -1273,11 +1292,12 @@ function App() {
   stepForwardRef.current = stepForward
   closeEditorRef.current = closeEditor
 
-  // Above the gap branch, deliberately. A gap has no slot to draw notes on,
-  // but the work still has notes and a reader in a gap is exactly who wants to
-  // ask where they are — found by driving this against the real corpus, where
-  // pressing `a` on a gap opened nothing at all because this branch returns
-  // before the panel is ever rendered.
+  // The review list is built whatever `display` resolved to. A gap has no slot
+  // to draw notes on, but the work still has notes and a reader in a gap is
+  // exactly who asks where they are — found by driving this against the real
+  // corpus, where pressing `a` on a gap opened nothing at all. Every row in
+  // the list already carries its own "not reachable from here" marking, which
+  // is the marking this state exists for.
   const allNotes = notesDoc?.notes ?? []
   const entries: ReviewEntry[] =
     panelMode === 'review' ? reviewList(allNotes, shown.edition, resolver) : []
@@ -1289,74 +1309,6 @@ function App() {
   const notesPlacement = listPlacement(annotationsPrefs.notesList, viewportWidth)
   const overlayPrefs =
     panelMode === 'edit' ? { ...annotationsPrefs, reveal: true } : annotationsPrefs
-
-  if (shown.kind === 'gap') {
-    const within = resolver.slotCount(state.authority) ?? state.slot + 1
-    const { before, after } = nearestPaired(state, resolver, within)
-    // `nearestPaired` already resolved each offer against the edition being
-    // looked at while finding it (see `nearest.ts`'s `NearestOffer`), so this
-    // is only the display conversion — not a second `resolveOffered` call
-    // repeating a resolution the scan already did. `Gap`'s `page` props are
-    // display-only (see their doc there), so the +1 happens right here, at
-    // the boundary handing a value to something a person reads — the same
-    // convention `altAt` (below) follows.
-    const toMove = (offer: NearestOffer | undefined) =>
-      offer && { slot: offer.slot, page: offer.page + 1 }
-    return (
-      <>
-        <Gap
-          edition={shown.edition}
-          from={{
-            edition: shown.from.edition,
-            page: resolver.slotAt(shown.from.edition, shown.from.slot)!.page + 1,
-          }}
-          verdict={verdictFor(alignments, shown.from.edition, shown.edition)}
-          before={toMove(before)}
-          after={toMove(after)}
-          onTake={take}
-        />
-        {/*
-          The review list is reachable from a gap, where the page area is not.
-          A reader standing on a slot the viewed edition has no counterpart for
-          is the one most likely to ask where their notes went, and every note
-          in the list is already marked with whether it can be reached from
-          here — so this is the state the marking exists for.
-
-          Only the list: `n` is inert in a gap (there is no slot to anchor to)
-          and the editor has nothing to edit, so `panelMode` can only be
-          `'review'` by the time a reader gets here. Passing `draft` through
-          anyway rather than hard-coding `undefined`, so this cannot drift from
-          that if the key ever does something else in a gap.
-        */}
-        <NotePanel
-          mode={panelMode === 'review' ? 'review' : undefined}
-          draft={draft}
-          entries={entries}
-          doc={notesDoc ?? { work, notes: [] }}
-          work={work}
-          viewing={shown.edition}
-          busy={notesBusy}
-          notice={notesNotice}
-          onBody={() => undefined}
-          onColour={() => undefined}
-          onDelete={() => undefined}
-          onClose={() => {
-            setPanelMode(undefined)
-            setNotesNotice(undefined)
-          }}
-          canUndo={canUndo(notesHistory)}
-          canRedo={canRedo(notesHistory)}
-          onUndo={stepBack}
-          onRedo={stepForward}
-          onGo={(entry) => {
-            if (entry.here === undefined) return
-            goToSlot(entry.here)
-            setPanelMode(undefined)
-          }}
-        />
-      </>
-    )
-  }
 
   const slots = allSlots(resolver, shown.edition)
   // `shown.edition` — not `state.viewing` directly, though they're always
@@ -1375,11 +1327,13 @@ function App() {
   // is recomputed from props and state every render, so a discarded render
   // simply writes the same thing the retained one will.
   groupedRef.current = grouped
-  const currentIndex = Math.max(
-    grouped.findIndex((g) => g.slots.includes(shown.slot)),
-    0,
-  )
-  const current = grouped[currentIndex]
+  // `-1` in a gap: there is no group of the viewed edition the reader is
+  // standing on, and `-1` is already `Filmstrip`'s "mark nothing" — the same
+  // value correction mode passes, for the same reason.
+  const currentIndex = at
+    ? Math.max(grouped.findIndex((g) => g.slots.includes(at.slot)), 0)
+    : -1
+  const current = at ? grouped[currentIndex] : undefined
 
   // While correcting, the filmstrip shows `pending.to`'s tiles rather than
   // `shown.edition`'s — see `correcting`'s doc on `FilmstripProps`. The page
@@ -1441,7 +1395,10 @@ function App() {
   const notesForHere = annotationsPrefs.travel
     ? editedNotes
     : editedNotes.filter((n) => n.edition === shown.edition)
-  const here = notesHere(notesForHere, shown.edition, shown.slot, resolver)
+  // Empty in a gap rather than resolved against a slot that does not exist.
+  // The note *count* readout still reports the work's total beside it, so a
+  // reader sees "no notes here of 7" rather than the readout vanishing.
+  const here = at ? notesHere(notesForHere, at.edition, at.slot, resolver) : []
   // The note on show is drawn by `pending` — dashed, and following the pointer
   // mid-drag — so drawing it a second time as an ordinary region would leave
   // two boxes on one note, one of them a frame behind.
@@ -1450,8 +1407,15 @@ function App() {
   // Scroll mode draws every group, so it needs every slot's notes at once —
   // one resolve per note rather than one per page. Built only in that mode:
   // single and two-page draw one group and `here` above already answers it.
+  //
+  // And only on a page. The gap branch used to return before this line; now
+  // that it does not, `at` is what keeps a gap from paying one resolve per
+  // note on every render to build a map nothing consumes — the page area
+  // draws `Gap` there, and no group is mounted to read it.
   const scrolledNotes =
-    mode === 'scroll' ? notesBySlot(notesForHere, shown.edition, resolver) : new Map<number, NoteHere[]>()
+    at && mode === 'scroll'
+      ? notesBySlot(notesForHere, at.edition, resolver)
+      : new Map<number, NoteHere[]>()
 
   // Opening a note from its margin tab, shared by every mode's overlay.
   /**
@@ -1484,11 +1448,35 @@ function App() {
     setNotesNotice(undefined)
   }
 
-  const chapter: Chapter | undefined = resolver.chapterAt(shown.edition, shown.slot)
-  const positionText = positionLine({ slot: shown.slot, total: slots.length, page: slots[shown.slot].page + 1 })
+  // Where the readouts report from. In a gap that is the authority slot the
+  // gap was found at — a real position in the work, which only the *viewed*
+  // edition has no page for — and `name` is what puts the edition in front of
+  // the position line so the change of scale is never silent. `Gap.tsx` says
+  // the same thing in words directly above the row.
+  const reportFrom =
+    shown.kind === 'at'
+      ? { edition: shown.edition, slot: shown.slot, name: undefined }
+      : { edition: shown.from.edition, slot: shown.from.slot, name: shown.from.edition }
+  // Same `?? slot + 1` fallback the deleted gap branch used for
+  // `nearestPaired`'s bound: an edition the resolver cannot count still
+  // renders a line rather than `NaN%`.
+  const reportTotal = resolver.slotCount(reportFrom.edition) ?? reportFrom.slot + 1
+  const chapter: Chapter | undefined = resolver.chapterAt(reportFrom.edition, reportFrom.slot)
+  const positionText = positionLine({
+    slot: reportFrom.slot,
+    total: reportTotal,
+    page: resolver.slotAt(reportFrom.edition, reportFrom.slot)!.page + 1,
+    edition: reportFrom.name,
+  })
   const chapterText = chapterReadout(chapter, alignments, hub)
-  const healthText = healthReadout(alignments, hub, shown.edition)
-  const slotsLeft = Math.max(slots.length - (shown.slot + 1), 0)
+  // `gapHealth` rather than `healthReadout` in a gap: it reports the pair
+  // `Gap.tsx` already prints a verdict sentence for, so the view and the row
+  // beneath it cannot contradict each other. See `gapHealth`'s own doc.
+  const healthText =
+    shown.kind === 'at'
+      ? healthReadout(alignments, hub, shown.edition)
+      : gapHealth(alignments, shown.from.edition, shown.edition)
+  const slotsLeft = Math.max(reportTotal - (reportFrom.slot + 1), 0)
   const timeText = timeLine({
     elapsedMs: Date.now() - sessionStartRef.current,
     pagesPerMin: pagesPerMinute(turnsRef.current, Date.now()),
@@ -1504,10 +1492,6 @@ function App() {
   // first joined spread onward, so every slot is converted through the
   // `Resolver`-derived `slots` array before it reaches a URL.
   const pageAt = (slot: number) => pageUrl(work, shown.edition, slots[slot].page)
-  // Assigned during render, the same way `groupedRef` is and for the same
-  // reason: the layout effect below runs after this and needs the URL of the
-  // page now on screen, which nothing above the guard can compute.
-  pageUrlRef.current = pageAt(shown.slot)
   // 1-based — `alt` text is read by a person (directly, or by a screen
   // reader), the same category `Gap`'s page numbers below fall into, so it
   // gets the same conversion at the same kind of boundary: the internal,
@@ -1747,6 +1731,27 @@ function App() {
     )
   }
 
+  // The gap's offered moves, and where the strip should sit. Computed only in
+  // a gap; the scan is bounded by the authority's slot count so a wholly
+  // unpaired edition costs one scan rather than one per render.
+  const gapMoves =
+    shown.kind === 'gap'
+      ? nearestPaired(state, resolver, resolver.slotCount(state.authority) ?? state.slot + 1)
+      : undefined
+  // `nearestPaired` already resolved each offer against the edition being
+  // looked at while finding it (see `nearest.ts`'s `NearestOffer`), so this is
+  // only the display conversion — not a second `resolveOffered` call repeating
+  // a resolution the scan already did. `Gap`'s `page` props are display-only
+  // (see their doc there), so the +1 happens right here, at the boundary
+  // handing a value to something a person reads — the same convention `altAt`
+  // follows.
+  const toMove = (offer: NearestOffer | undefined) =>
+    offer && { slot: offer.slot, page: offer.page + 1 }
+  // The tile the strip centres on while showing a gap: the nearest page that
+  // exists, which is the same page `Gap`'s own button offers. `before` first —
+  // a reader who has just walked forward into a gap came from behind it.
+  const stripAnchor = gapMoves && (gapMoves.before?.at ?? gapMoves.after?.at)
+
   return (
     // `position: relative` is what `Chrome` positions itself against —
     // `position: absolute` removes it from this flex column's layout flow
@@ -1780,7 +1785,6 @@ function App() {
                 : 'crosshair'
               : undefined,
         }}
-        ref={pageAreaRef}
         onPointerDown={beginRegion}
         onPointerMove={trackRegion}
         onPointerUp={endRegion}
@@ -1800,13 +1804,13 @@ function App() {
           caller below. Both go through `PageAnnotations`, which measures the
           page it sits over rather than assuming the box around it.
         */}
-        {mode !== 'scroll' && (
+        {at && mode !== 'scroll' && (
           <PageAnnotations
             // Remounted when the mode changes, so the observer never keeps
             // watching an image the mode switch replaced — see
             // `PageAnnotations`' own doc.
             key={mode}
-            match={pageAt(shown.slot)}
+            match={pageAt(at.slot)}
             here={hereBehind}
             prefs={overlayPrefs}
             // The live rectangle while dragging, and the settled one after the
@@ -1816,7 +1820,7 @@ function App() {
             pending={
               panelMode === 'edit' &&
               draft?.edition === shown.edition &&
-              draft.slot === shown.slot
+              draft.slot === at.slot
                 ? (dragging ?? draft.region)
                 : undefined
             }
@@ -1832,10 +1836,22 @@ function App() {
           list is a way to *read* the notes, and `r` is the key that asks for
           that.
         */}
-        {annotationsPrefs.reveal && notesPlacement === 'side' && mode !== 'scroll' && (
+        {at && annotationsPrefs.reveal && notesPlacement === 'side' && mode !== 'scroll' && (
           <NoteList here={here} placement="side" onOpen={openNote} />
         )}
-        {mode === 'scroll' ? (
+        {shown.kind === 'gap' ? (
+          <Gap
+            edition={shown.edition}
+            from={{
+              edition: shown.from.edition,
+              page: resolver.slotAt(shown.from.edition, shown.from.slot)!.page + 1,
+            }}
+            verdict={verdictFor(alignments, shown.from.edition, shown.edition)}
+            before={toMove(gapMoves?.before)}
+            after={toMove(gapMoves?.after)}
+            onTake={take}
+          />
+        ) : mode === 'scroll' ? (
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {grouped.map((g, i) => (
               <div
@@ -1879,7 +1895,7 @@ function App() {
           current && renderGroup(current, 0)
         )}
       </div>
-      {annotationsPrefs.reveal && notesPlacement === 'below' && (
+      {at && annotationsPrefs.reveal && notesPlacement === 'below' && (
         <NoteList here={here} placement="below" onOpen={openNote} />
       )}
       <Chrome
@@ -1900,6 +1916,7 @@ function App() {
         // should draw the solid "where you are" border there. `pairedIndex`'s
         // dashed one is the only marker while this is unset.
         currentIndex={pending ? -1 : currentIndex}
+        anchor={stripAnchor}
         onNavigate={goToSlot}
         correcting={pending ? { to: pending.to, pairedIndex } : undefined}
         onPickCounterpart={pending ? pickCounterpart : undefined}
@@ -1976,6 +1993,31 @@ function App() {
           )}
         </div>
       )}
+      {/*
+        One panel, both states. The gap branch used to mount a second copy
+        that forced `mode` to `'review'` and stubbed every write handler; this
+        is the survivor, and `'edit'` is unreachable in a gap by two guards
+        rather than by that forcing.
+
+        **They are complementary, not redundant — neither alone is enough**,
+        because they cover disjoint routes. `NEW_INTENT` returns early on
+        `shown.kind !== 'at'`, which stops an editor being *opened* in a gap;
+        `panelModeRef.current === 'edit'` in the dispatch guard stops an
+        already-open one being *carried* into one. Remove the second and this
+        is reachable: open an editor on a page, let a refused save drop focus
+        to `<body>` (the state the dispatch guard's own comment records as
+        measured, not hypothetical), then press Space. `toggle` calls `swap`,
+        which changes only `viewing`, and on a slot the viewed edition has no
+        counterpart for that is a gap — with `mode='edit'` rendering beside
+        `Gap`, on a draft anchored to an edition no longer on screen, its
+        region drag dead because `draftImage` requires
+        `draft.edition === shown.edition`. Remove the first instead and `n`
+        opens an editor in a gap directly, which the second cannot see because
+        `panelModeRef.current` is still `undefined` when `n` is pressed.
+
+        A change that removes either has to decide what a note anchored to no
+        slot means before this line is safe again.
+      */}
       <NotePanel
         mode={panelMode}
         draft={draft}

@@ -56,10 +56,11 @@ import { settingsModule } from './settings'
  * nothing else: `App.tsx` renders no credits panel and its module switch has
  * no case for `PANEL_INTENT`, so `C` is swallowed by that branch's own
  * `preventDefault()` and the generated "Credit pages" settings section holds
- * two toggles that persist and govern nothing. This is deliberate and blocked
+ * two toggles that persist and govern nothing. This was deliberate and blocked
  * on O25 (`docs/status.md`) — the whole chrome and every panel below the
- * `shown.kind === 'gap'` branch go unrendered while a gap is showing, and a
- * gap is the state a reader most wants this list from. The entry stays in the
+ * `shown.kind === 'gap'` branch went unrendered while a gap was showing, and a
+ * gap is the state a reader most wants this list from. **O25 is now closed**,
+ * so the panel is unwritten rather than blocked. The entry stays in the
  * array regardless, because the property this comment is about — one array,
  * one hand-edit — is worth more than hiding an inert section, and
  * `modules/credits.ts`'s own doc says plainly what the section does today.
