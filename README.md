@@ -61,18 +61,21 @@ and reading logic runs in the browser and, later, inside a native shell.
 
 ```sh
 # pair a Japanese raw against an English release and write the sidecar
-taiyaku align raw-v01.cbz -- en-v01.cbz --split-spreads \
+taiyaku align raw-v01.cbz -- en-v01.cbz \
     --name-a raw --name-b en --write taiyaku.json
 
 # one volume against the seven chapter files it corresponds to
 taiyaku align raw-v01.cbz -- en-c001.cbz en-c002.cbz en-c003.cbz
 
 # add a third edition to the same document — --write merges
-taiyaku align raw-v01.cbz -- en-fan-c001.cbz --split-spreads \
-    --name-b en-fan --write taiyaku.json
+taiyaku align raw-v01.cbz -- en-fan-c001.cbz --name-b en-fan --write taiyaku.json
 
 # look at what it decided
 taiyaku verify raw-v01.cbz -- en-v01.cbz --out report.html
+
+# which of an edition's pages are the group's own matter — donation cards,
+# staff credits — rather than the work? prints; --write puts them in the sidecar
+taiyaku credits en-fan-c*.cbz --sidecar taiyaku.json
 
 # reading raw page 47, which English page is in front of you?
 taiyaku lookup taiyaku.json raw en 47
@@ -119,10 +122,33 @@ to convert it, rather than reporting a corrupt zip. Several members on either
 side of the `--` are concatenated before solving, which is how chapters map onto
 a volume and how two tankōbon map onto one deluxe edition.
 
-`--split-spreads` handles the case where one edition joins a double-page spread into
-a single wide image and the other splits it in two. It is worth passing almost
-always — measured across the corpus, unhandled spreads make a correct alignment look
-broken.
+Before any alignment there is often a prior question — you have three copies of
+volume 1 and want to know which one to keep. Two commands answer it, and neither
+moves, renames nor deletes anything:
+
+```sh
+# which volumes in a release directory have more than one copy?
+taiyaku inventory releases/
+
+# for one such set, which copy is worth keeping?
+taiyaku duplicates v001-c0 -- v001-c1 --against raw-v01.cbz
+```
+
+They print what they found and leave the acting to a person. `inventory` groups
+candidate copies by the volume number in the name, and prints a group whose name it
+could not parse whether or not it is duplicated — a candidate that vanishes from the
+output is the silence this whole project is written against. `duplicates` then runs
+the protocol over one set: signatures first, then every unordered pair solved once,
+then a clustering on identity and a ranking of what is genuinely distinct.
+`--against` names a reference edition, which is the only thing that can tell two
+copies that refuse each other apart.
+
+One edition joins a double-page spread into a single wide image where the other
+splits it in two, and `align` splits the joined one by default — measured across the
+corpus, unhandled spreads make a correct alignment look broken, so there is no case
+for making that opt-in. `--no-split-spreads` gives the page-level diagnostic
+instead; it cannot write a sidecar, because a sidecar records which pages are joined
+spreads and that path does not detect them.
 
 `--stats` prints the figures the answer was reached from: what calibration measured
 of the two editions, and what shape the alignment came out. A refusal with no numbers
@@ -134,6 +160,13 @@ between two editions with no alignment between them composes through the hub and
 says so. Measured on the primary corpus volume at five editions: 0.91% of pages
 resolve directly but not through the hub, and nothing resolves to two different
 places.
+
+`taiyaku topology <hub>... -- <spoke>... -- <spoke>...` checks that bet on your own
+material: it solves the star and the all-pairs the star replaces, and reports what
+composition loses. It compares unsplit pages rather than the sidecar's slots, so a
+spread one edition joins and another splits is simply lost to it — which is why it
+reports 2.12% on that same volume against the 0.91% above. The two measure the same
+property and are not expected to agree.
 
 ## Design principles
 
