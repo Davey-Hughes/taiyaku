@@ -136,14 +136,22 @@ commit**, through a **pull request**. `main` is protected: it does not accept a 
 PR is the only way in.
 
     git switch -c my-change
-    scripts/check-all.sh            # the local mirror of CI — fmt, clippy, tests, wasm build
-    scripts/check-all.sh --no-wasm  # same, skipping the wasm build
+    scripts/check-all.sh            # the local mirror of CI — all four jobs
+    scripts/check-all.sh --no-wasm  # same, skipping the wasm job
+    scripts/check-all.sh --no-web   # same, skipping the web job
     git push -u origin my-change
     tea pr create                   # or open it in the web UI
 
 Run `scripts/check-all.sh` before pushing anyway, even though CI runs the same four jobs on the PR.
 It is the same gate several minutes earlier, and it is the reason a red PR is unusual rather than
-routine.
+routine. It prints what it did **not** measure as its last line rather than a bare `all green`, so a
+skipped corpus, a missing `wasm-pack` or an absent `web/node_modules` is stated rather than assumed
+away.
+
+One thing it does not mirror: CI's `npm ci`. Running that locally would delete a working
+`node_modules` on every gate run, so the script checks the three commands after it instead. What
+that costs is the lockfile check — `package.json` and `package-lock.json` drifting apart passes
+here and fails the forge. Run `npm --prefix web ci` yourself after changing dependencies.
 
 The forge enforces the shape that used to be a local script's job: merges are squash-only, so a PR
 cannot produce a merge commit or a string of fixup commits on `main`, and the branch is deleted on

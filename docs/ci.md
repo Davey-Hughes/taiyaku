@@ -19,6 +19,39 @@ dependency that assumes threads or links a native library will do it. Without a
 gate, the breakage stays invisible until the reader is being built, by which
 point the offending dependency is load-bearing.
 
+## The local mirror, and the one thing it cannot mirror
+
+`scripts/check-all.sh` reproduces all four jobs above, in the same order with
+the same flags, so the local gate and the CI gate cannot drift. That claim was
+false between M5a and 2026-08-07: the script said "three jobs" and reproduced
+three while CI had grown a fourth, so **a TypeScript change could take the local
+gate green having had nothing run against it at all**. The `wasm` job had
+drifted the narrower way over the same period — its two `cargo build`s were
+mirrored, but not the `wasm-pack` package build or the smoke run, which is the
+only thing anywhere that *executes* the generated module.
+
+Skips are named twice, once where they happen and again in a closing summary
+that refuses to print a bare `all green` when anything was skipped:
+
+```
+all green, except NOT MEASURED:
+  - standing corpus checks (TAIYAKU_CORPUS unset)
+  - the wasm job (--no-wasm)
+  - the web job (web/node_modules absent — run `npm --prefix web ci`)
+```
+
+The corpus checks are the one thing the script measures that the forge cannot,
+since CI has no corpus. Everything else runs in both places — with one
+exception.
+
+**`npm ci` is not mirrored, and that is a real gap rather than an oversight.**
+CI runs it to build the job's `node_modules` from nothing; locally it would
+delete a working install and rebuild it on every gate run. What that costs is
+the one property `npm ci` checks that `lint`, `typecheck` and `test` do not:
+that `package.json` and `package-lock.json` agree. A lockfile that has drifted
+out of sync passes `check-all.sh` and fails the forge. Run
+`npm --prefix web ci` yourself after changing dependencies.
+
 ## Formatting, and the tool that checks it
 
 Until 2026-08-07 the TypeScript half had **no formatting check at all**, which
@@ -245,11 +278,23 @@ this workflow and was removed with the rest of the actions, and no replacement
 was added, because there is no such thing as a cache action that is not
 JavaScript — `actions/cache` and every Rust-specific wrapper alike.
 
-The measurement says not to care yet. On a green run the three jobs take 51s,
-39s and 17s, and they run in parallel, so the pipeline is under a minute
-wall-clock. Caching would save perhaps twenty or thirty seconds of dependency
-compilation against real added complexity. Revisit when a single job passes a
-couple of minutes, or when artifact upload is wanted for the `verify` reports.
+The measurement says not to care yet, but it is older than the pipeline it
+describes. On a green run the **three** jobs of the time took 51s, 39s and 17s,
+and they run in parallel, so the pipeline was under a minute wall-clock.
+Caching would save perhaps twenty or thirty seconds of dependency compilation
+against real added complexity. Revisit when a single job passes a couple of
+minutes, or when artifact upload is wanted for the `verify` reports.
+
+**Two things have been added since those figures were taken, and neither has
+been timed on the runner.** The `web` job is a fourth job that did not exist
+then, and the `wasm` job has grown three steps — the `apt-get` node install, the
+`wasm-pack` fetch and the package build plus smoke run — estimated above at
+roughly 30–60 seconds and never confirmed against an actual run. So the 17s
+figure is certainly low and the "under a minute" conclusion is no longer
+measured, only inherited. It is left standing because the *decision* it supports
+— do not add caching yet — does not turn on the difference, and replacing a
+stale number with a guess would be worse than marking it stale. Take fresh
+figures before using this paragraph to argue anything.
 
 Two options exist that do not need an action at all, neither yet tested:
 
