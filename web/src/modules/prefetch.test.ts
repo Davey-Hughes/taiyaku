@@ -37,7 +37,12 @@ describe('window', () => {
 
 describe('prefetchModule', () => {
   it('defaults to enabled, a small asymmetric window and a capped decode concurrency', () => {
-    expect(prefetchModule.defaults).toEqual({ enabled: true, ahead: 2, behind: 1, maxConcurrent: 3 })
+    expect(prefetchModule.defaults).toEqual({
+      enabled: true,
+      ahead: 2,
+      behind: 1,
+      maxConcurrent: 3,
+    })
   })
 
   it('claims no keys — tuned in settings, not pressed mid-read', () => {

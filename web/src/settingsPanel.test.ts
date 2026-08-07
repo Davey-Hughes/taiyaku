@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { fieldKind, fieldsOf, humanize, nestedCount, nestedSummary, withFieldValue } from './settingsPanel'
+import {
+  fieldKind,
+  fieldsOf,
+  humanize,
+  nestedCount,
+  nestedSummary,
+  withFieldValue,
+} from './settingsPanel'
 
 describe('fieldKind', () => {
   it('reads a boolean default as a checkbox field', () => {
@@ -34,7 +41,9 @@ describe('fieldsOf', () => {
   })
 
   it('marks a per-edition record as an object field rather than guessing a primitive control for it', () => {
-    expect(fieldsOf({ override: {} })).toEqual([{ key: 'override', kind: 'object' }])
+    expect(fieldsOf({ override: {} })).toEqual([
+      { key: 'override', kind: 'object' },
+    ])
   })
 
   it('is empty for a module with nothing to tune, so a generated section renders no controls', () => {
@@ -44,14 +53,19 @@ describe('fieldsOf', () => {
 
 describe('withFieldValue', () => {
   it('flips a boolean field', () => {
-    expect(withFieldValue({ animate: true, ms: 120 }, 'animate', false)).toEqual({
+    expect(
+      withFieldValue({ animate: true, ms: 120 }, 'animate', false),
+    ).toEqual({
       animate: false,
       ms: 120,
     })
   })
 
   it('coerces a numeric field from the string an input element hands back', () => {
-    expect(withFieldValue({ animate: true, ms: 120 }, 'ms', '80')).toEqual({ animate: true, ms: 80 })
+    expect(withFieldValue({ animate: true, ms: 120 }, 'ms', '80')).toEqual({
+      animate: true,
+      ms: 80,
+    })
   })
 
   it('accepts a number directly, without needing a string round-trip', () => {
@@ -63,16 +77,22 @@ describe('withFieldValue', () => {
   })
 
   it('passes a string field through unchanged in shape', () => {
-    expect(withFieldValue({ theme: 'dark' }, 'theme', 'light')).toEqual({ theme: 'light' })
+    expect(withFieldValue({ theme: 'dark' }, 'theme', 'light')).toEqual({
+      theme: 'light',
+    })
   })
 
   it('leaves an object-valued field alone — it is reset-only, never patched a key at a time here', () => {
     const prefs = { override: { 'en-mono': 'ltr' } }
-    expect(withFieldValue(prefs, 'override', 'nope')).toEqual({ override: { 'en-mono': 'ltr' } })
+    expect(withFieldValue(prefs, 'override', 'nope')).toEqual({
+      override: { 'en-mono': 'ltr' },
+    })
   })
 
   it('ignores a key the prefs slice does not have, rather than adding an untyped one', () => {
-    expect(withFieldValue({ animate: true }, 'nope', 5)).toEqual({ animate: true })
+    expect(withFieldValue({ animate: true }, 'nope', 5)).toEqual({
+      animate: true,
+    })
   })
 
   it('does not mutate the prefs object passed in', () => {
@@ -121,10 +141,12 @@ describe('humanize', () => {
   })
 })
 
-
 describe('fieldsOf with declared options', () => {
   it('infers a select for a string the module declared values for', () => {
-    const fields = fieldsOf({ placement: 'auto', label: 'free text' }, { placement: ['auto', 'side'] })
+    const fields = fieldsOf(
+      { placement: 'auto', label: 'free text' },
+      { placement: ['auto', 'side'] },
+    )
     expect(fields).toEqual([
       { key: 'placement', kind: 'select', options: ['auto', 'side'] },
       { key: 'label', kind: 'string' },
@@ -135,13 +157,17 @@ describe('fieldsOf with declared options', () => {
   // own default's type; the value decides the kind, which is what keeps this
   // panel from having to know which module it is looking at.
   it('ignores options declared against something that is not a string', () => {
-    expect(fieldsOf({ on: true, depth: 2 }, { on: ['yes'], depth: ['1'] })).toEqual([
+    expect(
+      fieldsOf({ on: true, depth: 2 }, { on: ['yes'], depth: ['1'] }),
+    ).toEqual([
       { key: 'on', kind: 'boolean' },
       { key: 'depth', kind: 'number' },
     ])
   })
 
   it('leaves a string with an empty option list as free text', () => {
-    expect(fieldsOf({ label: 'x' }, { label: [] })).toEqual([{ key: 'label', kind: 'string' }])
+    expect(fieldsOf({ label: 'x' }, { label: [] })).toEqual([
+      { key: 'label', kind: 'string' },
+    ])
   })
 })

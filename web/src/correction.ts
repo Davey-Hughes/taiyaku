@@ -50,7 +50,10 @@ export function spanOf(at: Position): string {
  * for a composed pair exactly as it does for a stored edge. Nothing new has to
  * cross the WASM boundary for this.
  */
-export function displacedBy(pending: Pending, resolver: Resolver): Position | undefined {
+export function displacedBy(
+  pending: Pending,
+  resolver: Resolver,
+): Position | undefined {
   if (!pending.b) return undefined
   const holder = resolver.resolve(pending.to, pending.from, pending.b)
   if (!holder) return undefined

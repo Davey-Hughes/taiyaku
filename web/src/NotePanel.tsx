@@ -1,5 +1,11 @@
 import { useEffect, useRef, type CSSProperties } from 'react'
-import { exportName, notesJson, type Note, type NotesDoc, type ReviewEntry } from './notes'
+import {
+  exportName,
+  notesJson,
+  type Note,
+  type NotesDoc,
+  type ReviewEntry,
+} from './notes'
 import { COLOUR_NAMES, DEFAULT_COLOUR, noteColour } from './palette'
 
 const panelStyle: CSSProperties = {
@@ -124,6 +130,7 @@ export function NotePanel({
   // The caret goes to the end because reopening a note to add to it is the
   // common case; landing at the start means a reader's first keystroke lands
   // in front of what they wrote last time.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `draft?.id` and `busy` are triggers, not closure reads — the body reaches the textarea through a ref. `draft?.id` in particular is what the comment above specifies: reopening a *different* note must refocus. Removing them would break that.
   useEffect(() => {
     if (mode !== 'edit') return
     const el = bodyRef.current
@@ -142,7 +149,9 @@ export function NotePanel({
   if (!mode) return null
 
   function download() {
-    const url = URL.createObjectURL(new Blob([notesJson(doc)], { type: 'application/json' }))
+    const url = URL.createObjectURL(
+      new Blob([notesJson(doc)], { type: 'application/json' }),
+    )
     const link = document.createElement('a')
     link.href = url
     link.download = exportName(work)
@@ -151,14 +160,19 @@ export function NotePanel({
   }
 
   return (
-    <div style={panelStyle} role="dialog" aria-label={mode === 'edit' ? 'Note' : 'All notes'}>
+    <div
+      style={panelStyle}
+      role="dialog"
+      aria-label={mode === 'edit' ? 'Note' : 'All notes'}
+    >
       {mode === 'edit' && draft && (
         <>
           {/* Where the note is anchored, stated before it is written: a note
               is anchored to a slot of one edition, and a reader who swapped a
               moment ago should not have to remember which. */}
           <p style={{ margin: 0, opacity: 0.8, fontSize: '0.85em' }}>
-            {draft.edition} slot {draft.slot} · {draft.region ? 'region' : 'whole page'}
+            {draft.edition} slot {draft.slot} ·{' '}
+            {draft.region ? 'region' : 'whole page'}
           </p>
           <textarea
             ref={bodyRef}
@@ -176,7 +190,11 @@ export function NotePanel({
             drawn on a swatch has to be one colour or the other and would
             vanish into half of them.
           */}
-          <div style={{ display: 'flex', gap: 6 }} role="group" aria-label="Note colour">
+          <div
+            style={{ display: 'flex', gap: 6 }}
+            role="group"
+            aria-label="Note colour"
+          >
             {COLOUR_NAMES.map((name) => {
               const chosen = (draft.color ?? DEFAULT_COLOUR) === name
               return (
@@ -222,10 +240,16 @@ export function NotePanel({
             racing a write in flight is the one ordering that can lose a note.
           */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button type="button" disabled={busy} onClick={() => onDelete(draft.id)}>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onDelete(draft.id)}
+            >
               Delete
             </button>
-            <span style={{ marginLeft: 'auto', opacity: 0.65, fontSize: '0.8em' }}>
+            <span
+              style={{ marginLeft: 'auto', opacity: 0.65, fontSize: '0.8em' }}
+            >
               {busy ? 'saving…' : 'saved · esc or click away when done'}
             </span>
           </div>
@@ -233,7 +257,13 @@ export function NotePanel({
       )}
       {mode === 'review' && (
         <>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
             <strong>
               {entries.length} note{entries.length === 1 ? '' : 's'}
             </strong>
@@ -241,13 +271,27 @@ export function NotePanel({
               {/* Undo and redo live here as well as on their keys, because
                   this is the screen a reader opens when they want to know what
                   has happened to their notes. */}
-              <button type="button" disabled={!canUndo || busy} onClick={onUndo} title="Undo (z)">
+              <button
+                type="button"
+                disabled={!canUndo || busy}
+                onClick={onUndo}
+                title="Undo (z)"
+              >
                 ↶
               </button>
-              <button type="button" disabled={!canRedo || busy} onClick={onRedo} title="Redo (Z)">
+              <button
+                type="button"
+                disabled={!canRedo || busy}
+                onClick={onRedo}
+                title="Redo (Z)"
+              >
                 ↷
               </button>
-              <button type="button" disabled={entries.length === 0} onClick={download}>
+              <button
+                type="button"
+                disabled={entries.length === 0}
+                onClick={download}
+              >
                 Export
               </button>
               <button type="button" onClick={onClose}>
@@ -258,7 +302,8 @@ export function NotePanel({
           {notice && <p style={{ margin: 0, opacity: 0.85 }}>{notice}</p>}
           {entries.length === 0 && (
             <p style={{ margin: 0, opacity: 0.8 }}>
-              Nothing written yet. <em>n</em> starts a note on the page you are reading.
+              Nothing written yet. <em>n</em> starts a note on the page you are
+              reading.
             </p>
           )}
           {entries.map((entry) => (

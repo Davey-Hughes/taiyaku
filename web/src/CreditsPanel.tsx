@@ -108,7 +108,11 @@ export function CreditsPanel({
 }: CreditsPanelProps) {
   if (!visible) return null
   return (
-    <div style={panelStyle} role="dialog" aria-label={`Credit pages in ${edition}`}>
+    <div
+      style={panelStyle}
+      role="dialog"
+      aria-label={`Credit pages in ${edition}`}
+    >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
         <strong style={{ flex: 1 }}>Credit pages — {edition}</strong>
         <button type="button" onClick={onClose}>
@@ -116,7 +120,9 @@ export function CreditsPanel({
         </button>
       </div>
       {pages.length === 0 ? (
-        <p style={{ margin: 0, opacity: 0.8 }}>No credit pages found in {edition}.</p>
+        <p style={{ margin: 0, opacity: 0.8 }}>
+          No credit pages found in {edition}.
+        </p>
       ) : (
         <>
           {/* What the setting beside this panel is currently doing, said where
@@ -128,8 +134,17 @@ export function CreditsPanel({
               : 'These are still in the reading flow. Switch on “skip” in settings to set them aside.'}
           </p>
           {pages.map((page) => (
-            <button key={page} type="button" style={rowStyle} onClick={() => onGo(page)}>
-              <img src={thumbUrl(work, edition, page)} alt="" style={thumbStyle} />
+            <button
+              key={page}
+              type="button"
+              style={rowStyle}
+              onClick={() => onGo(page)}
+            >
+              <img
+                src={thumbUrl(work, edition, page)}
+                alt=""
+                style={thumbStyle}
+              />
               {/* 1-based, the one conversion in this file: read by a person,
                   the same category `Gap`'s page numbers fall into. `page`
                   itself stays zero-based for `thumbUrl` and `onGo`, which is

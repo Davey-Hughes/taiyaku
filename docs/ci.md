@@ -10,7 +10,7 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 | `lint` | `cargo fmt --check`, `cargo clippy -D warnings` |
 | `test` | `cargo test --workspace` |
 | `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown`, builds the browser package with `wasm-pack`, and runs `scripts/smoke-wasm.mjs` against the compiled module |
-| `web` | `npm ci`, `oxlint --deny-warnings`, `tsc -b` typecheck, `vitest run` in `web/` |
+| `web` | `npm ci`, `biome check` (formatting **and** lint), `tsc -b` typecheck, `vitest run` in `web/` |
 
 The `wasm` job is the one worth keeping even when it feels redundant. The design
 depends on the core being shareable between the browser reader and a future
@@ -18,6 +18,54 @@ native shell, and that property is easy to destroy accidentally — a single
 dependency that assumes threads or links a native library will do it. Without a
 gate, the breakage stays invisible until the reader is being built, by which
 point the offending dependency is load-bearing.
+
+## Formatting, and the tool that checks it
+
+Until 2026-08-07 the TypeScript half had **no formatting check at all**, which
+was measured rather than assumed: a deliberately mangled exported function
+(`(   a:number,b:number ):number{`) passed `oxlint`, `tsc -b` and all 414 tests.
+The Rust half has always been checked — `cargo fmt --all -- --check` exits 1 on
+mangled Rust, also measured — so the gap was one-sided and nothing said so.
+
+`biome` now covers both halves of the `web` job's first step: `npm run lint` is
+`biome check ./src`, which is formatting *and* lint in one command, so the CI
+step needed no change. `oxlint` is gone, along with `.oxlintrc.json`.
+
+**The config file is `biome.jsonc`, and the extension is load-bearing.** A
+`biome.json` containing comments is silently discarded — biome falls back to its
+own defaults (tabs, double quotes, semicolons) and emits **no warning and no
+error**. That was measured here the expensive way: the first version of this
+config was `biome.json` with its rationale in comments, and every run used
+defaults while appearing to work. The A/B is clean — same file, comments
+stripped, config applied. Since the rationale is the point of the file, the file
+is `.jsonc`.
+
+**Four rules are off**, listed with their sites in `biome.jsonc` itself. The
+branch that adopted biome swapped one tool for another and deliberately did not
+change what is enforced; each of the four is a rule `oxlint` never applied, so
+turning it on would have been a second claim inside a tooling commit.
+`noArrayIndexKey` is the one worth returning to — its two sites are `App.tsx`'s
+scroll mode, where `grouped` is rebuilt when a reader toggles `skip`.
+
+**One rule is on by name because biome does not enable it and `oxlint` did.**
+`.oxlintrc.json` named two rules: `react/rules-of-hooks`, whose biome
+counterpart `correctness/useHookAtTopLevel` is on by default, and
+`react/only-export-components`, whose counterpart
+`style/useComponentExportOnlyModules` is **not** in the recommended set. Both
+were checked by probe rather than by reading a list — a file exporting a
+component beside a pure function drew nothing until the rule was named. Left at
+biome's default it would have dropped coverage on the branch whose whole claim
+was that coverage did not change. `tiles.ts` exists because of this rule.
+
+**Two rules are on with inline suppressions carrying their reasons.**
+`correctness/useExhaustiveDependencies` is the descendant of the rule `oxlint`
+was enforcing, and its four suppressions all say the same thing: the flagged
+dependencies are *triggers* rather than closure reads, and biome's own
+suggestion — remove them — would leave scroll mode never following the reader,
+the filmstrip centring once, and a reopened note never refocusing.
+`suspicious/noTsIgnore` is suppressed at file level in `resolver.ts`, where
+biome's suggested fix (`@ts-expect-error`) would break the build in exactly the
+state the section below describes.
 
 ## The `web` job
 

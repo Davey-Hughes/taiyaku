@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { presentWhenDecoded, unboundedDecodeQueue, type DecodeQueue, type ImageFactory } from './decode'
+import {
+  presentWhenDecoded,
+  unboundedDecodeQueue,
+  type DecodeQueue,
+  type ImageFactory,
+} from './decode'
 
 /**
  * One page, fit whole.
@@ -80,7 +85,13 @@ export interface PageViewProps {
  * settles is the only one `presentWhenDecoded`'s `stale()` check lets touch
  * the one real `<img>`'s `src`.
  */
-export function PageView({ src, alt, buffered, decodeQueue, makeImage }: PageViewProps) {
+export function PageView({
+  src,
+  alt,
+  buffered,
+  decodeQueue,
+  makeImage,
+}: PageViewProps) {
   const [shown, setShown] = useState(src)
   // Read inside `presentWhenDecoded`'s `stale` callback at decode-settle
   // time, not at call time — see that function's own doc for why a captured
@@ -93,7 +104,7 @@ export function PageView({ src, alt, buffered, decodeQueue, makeImage }: PageVie
   // re-run this one the moment that happens — pointless, since the `src ===
   // shown` guard already makes the effect a no-op by then. `src` and
   // `buffered` are the only true inputs to "should a new decode start".
-  // oxlint-disable react-hooks/exhaustive-deps -- shown changes as a result of this effect; adding it would tear the in-flight decode down and restart it the moment it settles. See above.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: shown changes as a result of this effect; adding it would tear the in-flight decode down and restart it the moment it settles. See above.
   useEffect(() => {
     latestRef.current = src
     if (!buffered) {
@@ -114,7 +125,6 @@ export function PageView({ src, alt, buffered, decodeQueue, makeImage }: PageVie
       setShown,
     )
   }, [src, buffered])
-  // oxlint-enable react-hooks/exhaustive-deps
 
   const displayed = buffered ? shown : src
 

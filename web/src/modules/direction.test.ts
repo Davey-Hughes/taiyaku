@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { directionModule, effectiveDirection, setOverride, type DirectionPrefs } from './direction'
+import {
+  directionModule,
+  effectiveDirection,
+  setOverride,
+  type DirectionPrefs,
+} from './direction'
 
 describe('effectiveDirection', () => {
   it('uses the sidecar when there is no override', () => {
@@ -29,10 +34,12 @@ describe('directionModule', () => {
 describe('setOverride', () => {
   it('sets the override for the given edition', () => {
     const prefs: DirectionPrefs = { override: {} }
-    expect(setOverride(prefs, 'en-mono', 'ltr')).toEqual({ override: { 'en-mono': 'ltr' } })
+    expect(setOverride(prefs, 'en-mono', 'ltr')).toEqual({
+      override: { 'en-mono': 'ltr' },
+    })
   })
 
-  it('leaves another edition\'s override intact — App.tsx used to inline this merge, untested', () => {
+  it("leaves another edition's override intact — App.tsx used to inline this merge, untested", () => {
     const prefs: DirectionPrefs = { override: { 'en-fan': 'rtl' } }
     expect(setOverride(prefs, 'en-mono', 'ltr')).toEqual({
       override: { 'en-fan': 'rtl', 'en-mono': 'ltr' },

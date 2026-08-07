@@ -61,4 +61,5 @@ export function ulid(now: number, random: () => number): string {
  * unpredictable; two devices starting from the same page load are exactly the
  * case the random half exists for.
  */
-export const cryptoRandom = (): number => crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32
+export const cryptoRandom = (): number =>
+  crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32

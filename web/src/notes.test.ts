@@ -25,7 +25,12 @@ import {
   type Note,
 } from './notes'
 
-const note = (id: string, edition: string, slot: number, region?: Note['region']): Note => ({
+const note = (
+  id: string,
+  edition: string,
+  slot: number,
+  region?: Note['region'],
+): Note => ({
   id,
   edition,
   slot,
@@ -59,13 +64,17 @@ const resolver = fakeResolver(slots, pairs)
 describe('notesHere', () => {
   it('shows a note written on the edition being read, at its own slot', () => {
     const notes = [note('1', 'a', 3), note('2', 'a', 4)]
-    expect(notesHere(notes, 'a', 3, resolver)).toEqual([{ note: notes[0], travelled: false }])
+    expect(notesHere(notes, 'a', 3, resolver)).toEqual([
+      { note: notes[0], travelled: false },
+    ])
   })
 
   it('travels a note written on another edition onto the slot it resolves to', () => {
     const notes = [note('1', 'a', 3)]
     // `a` 3 pairs with `b` 4, so reading `b` at slot 4 shows it, travelled.
-    expect(notesHere(notes, 'b', 4, resolver)).toEqual([{ note: notes[0], travelled: true }])
+    expect(notesHere(notes, 'b', 4, resolver)).toEqual([
+      { note: notes[0], travelled: true },
+    ])
     expect(notesHere(notes, 'b', 3, resolver)).toEqual([])
   })
 
@@ -87,14 +96,20 @@ describe('notesHere', () => {
   it('round-trips every note-bearing slot of one edition into the other and back', () => {
     for (let slot = 0; slot < slots.a.length; slot++) {
       const written = note(`n${slot}`, 'a', slot)
-      const landing = Array.from({ length: slots.b.length }, (_, at) => at).filter(
-        (at) => notesHere([written], 'b', at, resolver).length === 1,
-      )
+      const landing = Array.from(
+        { length: slots.b.length },
+        (_, at) => at,
+      ).filter((at) => notesHere([written], 'b', at, resolver).length === 1)
       const counterpart = pairs[`a|b|${slot}`]
       if (counterpart === undefined) {
-        expect(landing, `a ${slot} has no counterpart, so it must land nowhere`).toEqual([])
+        expect(
+          landing,
+          `a ${slot} has no counterpart, so it must land nowhere`,
+        ).toEqual([])
       } else {
-        expect(landing, `a ${slot} must land on exactly one slot of b`).toEqual([counterpart])
+        expect(landing, `a ${slot} must land on exactly one slot of b`).toEqual(
+          [counterpart],
+        )
       }
       // Wherever it travels or does not, it is always visible where it was
       // written — a note that could vanish from its own edition would be the
@@ -110,7 +125,11 @@ describe('notesHere', () => {
 
 describe('reviewList', () => {
   it('gives every note a landing slot here, or says it has none', () => {
-    const notes = [note('here', 'a', 3), note('gone', 'a', 5), note('local', 'b', 0)]
+    const notes = [
+      note('here', 'a', 3),
+      note('gone', 'a', 5),
+      note('local', 'b', 0),
+    ]
     expect(reviewList(notes, 'b', resolver)).toEqual([
       { note: notes[0], here: 4 },
       { note: notes[1], here: undefined },
@@ -130,12 +149,19 @@ describe('reviewList', () => {
   // called unreachable in the list — the drift a second implementation of
   // travel exists to be checked against.
   it('agrees with notesHere on every slot of every edition', () => {
-    const notes = Array.from({ length: slots.a.length }, (_, slot) => note(`n${slot}`, 'a', slot))
+    const notes = Array.from({ length: slots.a.length }, (_, slot) =>
+      note(`n${slot}`, 'a', slot),
+    )
     for (const viewing of ['a', 'b'] as const) {
       const entries = reviewList(notes, viewing, resolver)
       for (const entry of entries) {
-        const landing = Array.from({ length: slots[viewing].length }, (_, at) => at).filter((at) =>
-          notesHere([entry.note], viewing, at, resolver).some((h) => h.note.id === entry.note.id),
+        const landing = Array.from(
+          { length: slots[viewing].length },
+          (_, at) => at,
+        ).filter((at) =>
+          notesHere([entry.note], viewing, at, resolver).some(
+            (h) => h.note.id === entry.note.id,
+          ),
         )
         expect(landing, `${entry.note.id} viewed from ${viewing}`).toEqual(
           entry.here === undefined ? [] : [entry.here],
@@ -151,7 +177,11 @@ describe('notesBySlot', () => {
   // corpus volume, each resolving. Inverting it costs one resolve per *note*,
   // of which there are a handful, whatever the volume's length.
   it('groups every note under the slot it lands on here', () => {
-    const notes = [note('a3', 'a', 3), note('a4', 'a', 4), note('local', 'b', 4)]
+    const notes = [
+      note('a3', 'a', 3),
+      note('a4', 'a', 4),
+      note('local', 'b', 4),
+    ]
     const map = notesBySlot(notes, 'b', resolver)
     // `a` 3 → `b` 4, `a` 4 → `b` 5, and the local note is already on `b` 4.
     expect(map.get(4)?.map((h) => h.note.id)).toEqual(['local', 'a3'])
@@ -159,7 +189,9 @@ describe('notesBySlot', () => {
   })
 
   it('leaves out a note that lands nowhere here rather than bucketing it at 0', () => {
-    expect([...notesBySlot([note('gone', 'a', 5)], 'b', resolver).keys()]).toEqual([])
+    expect([
+      ...notesBySlot([note('gone', 'a', 5)], 'b', resolver).keys(),
+    ]).toEqual([])
   })
 
   // The third implementation of "where does this note go" has to agree with
@@ -168,15 +200,21 @@ describe('notesBySlot', () => {
   // to catch, extended to the one that renders a whole volume at once.
   it('agrees with notesHere on every slot of every edition', () => {
     const notes = [
-      ...Array.from({ length: slots.a.length }, (_, slot) => note(`a${slot}`, 'a', slot)),
-      ...Array.from({ length: slots.b.length }, (_, slot) => note(`b${slot}`, 'b', slot)),
+      ...Array.from({ length: slots.a.length }, (_, slot) =>
+        note(`a${slot}`, 'a', slot),
+      ),
+      ...Array.from({ length: slots.b.length }, (_, slot) =>
+        note(`b${slot}`, 'b', slot),
+      ),
     ]
     for (const viewing of ['a', 'b'] as const) {
       const map = notesBySlot(notes, viewing, resolver)
       for (let slot = 0; slot < slots[viewing].length; slot++) {
         const direct = notesHere(notes, viewing, slot, resolver)
         expect(
-          (map.get(slot) ?? []).map((h) => `${h.note.id}:${h.travelled}`).sort(),
+          (map.get(slot) ?? [])
+            .map((h) => `${h.note.id}:${h.travelled}`)
+            .sort(),
           `${viewing} slot ${slot}`,
         ).toEqual(direct.map((h) => `${h.note.id}:${h.travelled}`).sort())
       }
@@ -190,7 +228,9 @@ describe('tabOffset', () => {
   })
 
   it('puts a region note at the middle of its own region', () => {
-    expect(tabOffset(note('1', 'a', 0, { x: 0.1, y: 0.2, w: 0.3, h: 0.4 }))).toBeCloseTo(0.4)
+    expect(
+      tabOffset(note('1', 'a', 0, { x: 0.1, y: 0.2, w: 0.3, h: 0.4 })),
+    ).toBeCloseTo(0.4)
   })
 })
 
@@ -272,7 +312,10 @@ describe('pointInSlot', () => {
   })
 
   it('does not divide by a zero-sized paint', () => {
-    expect(pointInSlot({ x: 5, y: 5 }, { x: 0, y: 0, w: 0, h: 0 })).toEqual({ x: 0, y: 0 })
+    expect(pointInSlot({ x: 5, y: 5 }, { x: 0, y: 0, w: 0, h: 0 })).toEqual({
+      x: 0,
+      y: 0,
+    })
   })
 })
 
@@ -372,7 +415,12 @@ describe('isBlank', () => {
   // come, or a note about the whole page.
   it('is false once it has words or a region', () => {
     expect(isBlank({ ...note('1', 'a', 0), body: 'something' })).toBe(false)
-    expect(isBlank({ ...note('1', 'a', 0, { x: 0, y: 0, w: 0.5, h: 0.5 }), body: '' })).toBe(false)
+    expect(
+      isBlank({
+        ...note('1', 'a', 0, { x: 0, y: 0, w: 0.5, h: 0.5 }),
+        body: '',
+      }),
+    ).toBe(false)
   })
 })
 
@@ -453,7 +501,9 @@ describe('gestureFor', () => {
     })
 
   it('does nothing at all while the editor is closed', () => {
-    expect(press({ editing: false, onAnImage: false })).toEqual({ kind: 'ignore' })
+    expect(press({ editing: false, onAnImage: false })).toEqual({
+      kind: 'ignore',
+    })
   })
 
   it('finishes the note when the press lands off the page', () => {
@@ -469,7 +519,9 @@ describe('gestureFor', () => {
   it('draws a new region where the press lands on no existing one', () => {
     // Clear of `box`, which spans .2 to .5 in both axes — the default press
     // point of .5,.5 sits on its very corner.
-    expect(press({ at: { x: 0.7, y: 0.3 }, here: [local(box)] })).toEqual({ kind: 'draw' })
+    expect(press({ at: { x: 0.7, y: 0.3 }, here: [local(box)] })).toEqual({
+      kind: 'draw',
+    })
   })
 
   it('moves the region the press landed in', () => {
@@ -482,7 +534,9 @@ describe('gestureFor', () => {
 
   // Last drawn is on top, so a box inside another is the one you get.
   it('takes the innermost of two overlapping regions', () => {
-    expect(press({ at: { x: 0.3, y: 0.3 }, here: [local(box), local(inner)] })).toEqual({
+    expect(
+      press({ at: { x: 0.3, y: 0.3 }, here: [local(box), local(inner)] }),
+    ).toEqual({
       kind: 'move',
       noteId: 'inner',
       from: inner.region,
@@ -491,14 +545,20 @@ describe('gestureFor', () => {
 
   // A point has no area; without slop there would be nothing to take hold of.
   it('grabs a point from within the slop', () => {
-    expect(press({ at: { x: 0.81, y: 0.81 }, here: [local(point)] }).kind).toBe('move')
-    expect(press({ at: { x: 0.9, y: 0.9 }, here: [local(point)] }).kind).toBe('draw')
+    expect(press({ at: { x: 0.81, y: 0.81 }, here: [local(point)] }).kind).toBe(
+      'move',
+    )
+    expect(press({ at: { x: 0.9, y: 0.9 }, here: [local(point)] }).kind).toBe(
+      'draw',
+    )
   })
 
   // Its region belongs to another edition's slot; dragging it here would move
   // something that is not on this page.
   it('never grabs a travelled note', () => {
-    expect(press({ at: { x: 0.3, y: 0.3 }, here: [{ note: far, travelled: true }] })).toEqual({
+    expect(
+      press({ at: { x: 0.3, y: 0.3 }, here: [{ note: far, travelled: true }] }),
+    ).toEqual({
       kind: 'draw',
     })
   })
@@ -509,7 +569,10 @@ describe('editsToWrite', () => {
 
   it('lays edits over the stored notes', () => {
     const changed = { ...stored[1], body: 'changed' }
-    expect(editsToWrite(stored, { edited: changed })).toEqual([stored[0], changed])
+    expect(editsToWrite(stored, { edited: changed })).toEqual([
+      stored[0],
+      changed,
+    ])
   })
 
   it('adds a note this session invented once it says something', () => {
@@ -527,7 +590,10 @@ describe('editsToWrite', () => {
   // Emptying an existing note is an edit; deleting one is a button.
   it('keeps an existing note that has been emptied', () => {
     const emptied = { ...stored[0], body: '' }
-    expect(editsToWrite(stored, { kept: emptied })).toEqual([emptied, stored[1]])
+    expect(editsToWrite(stored, { kept: emptied })).toEqual([
+      emptied,
+      stored[1],
+    ])
   })
 })
 
@@ -539,10 +605,14 @@ describe('mergeOver', () => {
   it('keeps every note the other device wrote that this reader did not touch', () => {
     const theirs = [note('theirs', 'a', 5)]
     const mine = [note('mine', 'a', 6)]
-    expect(mergeOver(theirs, mine).map((n) => n.id).sort()).toEqual(['mine', 'theirs'])
+    expect(
+      mergeOver(theirs, mine)
+        .map((n) => n.id)
+        .sort(),
+    ).toEqual(['mine', 'theirs'])
   })
 
-  it('takes this reader\'s copy of a note both of them edited', () => {
+  it("takes this reader's copy of a note both of them edited", () => {
     const theirs = [{ ...note('both', 'a', 5), body: 'theirs' }]
     const mine = [{ ...note('both', 'a', 5), body: 'mine' }]
     expect(mergeOver(theirs, mine)).toEqual(mine)

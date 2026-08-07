@@ -13,18 +13,22 @@ describe('nearestPaired', () => {
     // nothing paired after it. `b`'s slot 2 is `{ page: 2, half: 'R' }` — the
     // resolved page and the slot holding it both travel with the offer, so a
     // caller has neither to resolve again.
-    expect(nearestPaired({ authority: 'a', slot: 4, viewing: 'b' }, r, 8))
-      .toEqual({ before: { slot: 3, page: 2, at: 2 } })
+    expect(
+      nearestPaired({ authority: 'a', slot: 4, viewing: 'b' }, r, 8),
+    ).toEqual({ before: { slot: 3, page: 2, at: 2 } })
   })
 
   it('offers only what exists at the start of a volume', () => {
-    expect(nearestPaired({ authority: 'a', slot: 0, viewing: 'b' }, r, 8))
-      .toEqual({ after: { slot: 1, page: 0, at: 0 } })
+    expect(
+      nearestPaired({ authority: 'a', slot: 0, viewing: 'b' }, r, 8),
+    ).toEqual({ after: { slot: 1, page: 0, at: 0 } })
   })
 
   it('offers nothing where the whole edition is unpaired', () => {
     const none = fakeResolver({ a: whole(3), b: whole(3) }, {})
-    expect(nearestPaired({ authority: 'a', slot: 1, viewing: 'b' }, none, 3)).toEqual({})
+    expect(
+      nearestPaired({ authority: 'a', slot: 1, viewing: 'b' }, none, 3),
+    ).toEqual({})
   })
 
   it('resolves each offer once, not once for the scan and again for the caller', () => {
@@ -42,7 +46,11 @@ describe('nearestPaired', () => {
         return r.resolve(from, to, at)
       },
     }
-    const found = nearestPaired({ authority: 'a', slot: 4, viewing: 'b' }, counting, 8)
+    const found = nearestPaired(
+      { authority: 'a', slot: 4, viewing: 'b' },
+      counting,
+      8,
+    )
     // Slot 4 is the gap; the scan checks slot 3 (before, found immediately)
     // and slots 5, 6, 7 (after, all past the end of `a`'s 8 slots — none
     // resolve, so the scan exhausts `within` without an `after`).

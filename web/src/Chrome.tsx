@@ -1,7 +1,12 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { pageUrl } from './api'
 import { Filmstrip, type FilmstripProps } from './Filmstrip'
-import { fadeStyle, isAnimating, scheduleFade, type MotionPrefs } from './modules/motion'
+import {
+  fadeStyle,
+  isAnimating,
+  scheduleFade,
+  type MotionPrefs,
+} from './modules/motion'
 import { readoutRow, type ReadoutsPrefs } from './modules/readouts'
 
 const readoutHeight = 32
@@ -232,7 +237,10 @@ export function Chrome({
   // `motion.ts` rather than inlined so it can be tested directly against a
   // stubbed `requestAnimationFrame`, with no DOM involved — see
   // `motion.test.ts`.
-  useEffect(() => scheduleFade(visible, animating, setShown), [visible, animating])
+  useEffect(
+    () => scheduleFade(visible, animating, setShown),
+    [visible, animating],
+  )
 
   if (!visible) return null
 
@@ -265,7 +273,9 @@ export function Chrome({
             style={previewImgStyle}
           />
           <span style={previewLabelStyle}>
-            {preview.half ? `page ${preview.page + 1} ${preview.half}` : `page ${preview.page + 1}`}
+            {preview.half
+              ? `page ${preview.page + 1} ${preview.half}`
+              : `page ${preview.page + 1}`}
           </span>
         </div>
       )}

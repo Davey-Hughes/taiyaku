@@ -23,7 +23,13 @@ export interface ReadoutsPrefs {
 export const readoutsModule: ReaderModule<ReadoutsPrefs> = {
   id: 'readouts',
   label: 'Readouts',
-  defaults: { position: true, time: true, chapter: true, health: true, notes: true },
+  defaults: {
+    position: true,
+    time: true,
+    chapter: true,
+    health: true,
+    notes: true,
+  },
 }
 
 /** `positionLine`'s inputs. `slot` and `total` are zero/whole-count as everywhere else internal; `page` is already display-ready (1-based) — the same boundary convention `App.tsx`'s `altAt` already applies before handing a page number to something a person reads. */
@@ -59,7 +65,12 @@ export interface PositionInput {
  * hiding it would imply the two editions are the same length, which they
  * are not.
  */
-export function positionLine({ slot, total, page, edition }: PositionInput): string {
+export function positionLine({
+  slot,
+  total,
+  page,
+  edition,
+}: PositionInput): string {
   const percent = Math.round(((slot + 1) / total) * 100)
   const line = `slot ${slot + 1} / ${total} · p. ${page} · ${percent}%`
   return edition ? `${edition} ${line}` : line
@@ -133,7 +144,11 @@ export function chapterLine(chapter: Chapter | undefined): string {
  * absent case: "no chapter edition" is a definite fact about the work, not
  * an estimate of anything.
  */
-export function chapterReadout(chapter: Chapter | undefined, alignments: Alignment[], hub: string): string {
+export function chapterReadout(
+  chapter: Chapter | undefined,
+  alignments: Alignment[],
+  hub: string,
+): string {
   const line = chapterLine(chapter)
   if (!chapter) return line
   const fragile = alignments.some(
@@ -161,10 +176,15 @@ export function chapterReadout(chapter: Chapter | undefined, alignments: Alignme
  * a sign of trouble") — so a slot-level absence still earns a word rather
  * than being swallowed by the pairing's overall verdict.
  */
-export function healthLine(verdict: Verdict | undefined, hasCounterpart: boolean): string | undefined {
+export function healthLine(
+  verdict: Verdict | undefined,
+  hasCounterpart: boolean,
+): string | undefined {
   if (verdict === undefined) return 'verdict unknown'
   if (verdict === 'sound' && hasCounterpart) return undefined
-  return hasCounterpart ? `${verdict} pair` : `${verdict} pair · no counterpart here`
+  return hasCounterpart
+    ? `${verdict} pair`
+    : `${verdict} pair · no counterpart here`
 }
 
 /**
@@ -211,7 +231,11 @@ export function healthLine(verdict: Verdict | undefined, hasCounterpart: boolean
  * assuming it away, so its own contract does not depend on this one caller's
  * particular gating.
  */
-export function healthReadout(alignments: Alignment[], hub: string, viewing: string): string | undefined {
+export function healthReadout(
+  alignments: Alignment[],
+  hub: string,
+  viewing: string,
+): string | undefined {
   if (viewing === hub) return undefined
   return healthLine(verdictFor(alignments, hub, viewing), true)
 }
@@ -240,7 +264,11 @@ export function healthReadout(alignments: Alignment[], hub: string, viewing: str
  * closing over `hub`, because in a gap the authority is the edition the
  * position is recorded against and the hub may be neither side of the pair.
  */
-export function gapHealth(alignments: Alignment[], from: string, viewing: string): string {
+export function gapHealth(
+  alignments: Alignment[],
+  from: string,
+  viewing: string,
+): string {
   return healthLine(verdictFor(alignments, from, viewing), false)!
 }
 
@@ -276,7 +304,11 @@ function minutesLabel(ms: number): string {
  * "no estimate yet" apart from a real number, but not apart from garbage
  * that merely looks like one.
  */
-export function timeLine({ elapsedMs, pagesPerMin, slotsLeft }: TimeInput): string {
+export function timeLine({
+  elapsedMs,
+  pagesPerMin,
+  slotsLeft,
+}: TimeInput): string {
   const elapsed = minutesLabel(elapsedMs)
   if (pagesPerMin <= 0) return `${elapsed} read`
   const remaining = Math.round(slotsLeft / pagesPerMin)
@@ -328,7 +360,11 @@ const TURN_HISTORY_LIMIT = 10
  * *recent* pace, not a session-wide average that a reader who paused for an
  * hour would otherwise never recover from.
  */
-export function nextTurns(turns: number[], now: number, skip: boolean): number[] {
+export function nextTurns(
+  turns: number[],
+  now: number,
+  skip: boolean,
+): number[] {
   if (skip) return turns
   return [...turns, now].slice(-TURN_HISTORY_LIMIT)
 }

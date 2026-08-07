@@ -50,16 +50,26 @@ export function nearestPaired(
   const landingAt = (slot: number): NearestOffer | undefined => {
     const landed = display({ ...state, slot }, resolver)
     if (landed.kind !== 'at') return undefined
-    return { slot, page: resolver.slotAt(landed.edition, landed.slot)!.page, at: landed.slot }
+    return {
+      slot,
+      page: resolver.slotAt(landed.edition, landed.slot)!.page,
+      at: landed.slot,
+    }
   }
   const found: { before?: NearestOffer; after?: NearestOffer } = {}
   for (let slot = state.slot - 1; slot >= 0; slot--) {
     const offer = landingAt(slot)
-    if (offer) { found.before = offer; break }
+    if (offer) {
+      found.before = offer
+      break
+    }
   }
   for (let slot = state.slot + 1; slot < within; slot++) {
     const offer = landingAt(slot)
-    if (offer) { found.after = offer; break }
+    if (offer) {
+      found.after = offer
+      break
+    }
   }
   return found
 }

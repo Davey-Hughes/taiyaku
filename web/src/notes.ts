@@ -113,8 +113,12 @@ export function notesHere(
   const counterparts = counterpartSlots(editions, viewing, slot, resolver)
   const here = notes.filter((n) => counterparts.get(n.edition) === n.slot)
   return [
-    ...here.filter((n) => n.edition === viewing).map((note) => ({ note, travelled: false })),
-    ...here.filter((n) => n.edition !== viewing).map((note) => ({ note, travelled: true })),
+    ...here
+      .filter((n) => n.edition === viewing)
+      .map((note) => ({ note, travelled: false })),
+    ...here
+      .filter((n) => n.edition !== viewing)
+      .map((note) => ({ note, travelled: true })),
   ]
 }
 
@@ -134,7 +138,11 @@ export function notesHere(
  * is not assumed: `notes.test.ts` checks this against `notesHere` on every
  * slot of every edition of the fixture.
  */
-export function reviewList(notes: Note[], viewing: string, resolver: Resolver): ReviewEntry[] {
+export function reviewList(
+  notes: Note[],
+  viewing: string,
+  resolver: Resolver,
+): ReviewEntry[] {
   return notes.map((note) => {
     if (note.edition === viewing) return { note, here: note.slot }
     const at = resolver.slotAt(note.edition, note.slot)
@@ -212,10 +220,13 @@ export function tabOffset(note: Note): number {
  * wrong one.
  */
 export function spreadTabs(offsets: number[], minGap: number): number[] {
-  const order = offsets.map((offset, index) => ({ offset, index })).sort((a, b) => a.offset - b.offset)
+  const order = offsets
+    .map((offset, index) => ({ offset, index }))
+    .sort((a, b) => a.offset - b.offset)
   let previous: number | undefined
   for (const entry of order) {
-    if (previous !== undefined && entry.offset - previous < minGap) entry.offset = previous + minGap
+    if (previous !== undefined && entry.offset - previous < minGap)
+      entry.offset = previous + minGap
     previous = entry.offset
   }
   // A run that ran off the bottom comes back as a group, keeping the gaps it
@@ -223,7 +234,8 @@ export function spreadTabs(offsets: number[], minGap: number): number[] {
   const overshoot = (previous ?? 0) - 1
   if (overshoot > 0) for (const entry of order) entry.offset -= overshoot
   const out = offsets.slice()
-  for (const entry of order) out[entry.index] = Math.min(Math.max(entry.offset, 0), 1)
+  for (const entry of order)
+    out[entry.index] = Math.min(Math.max(entry.offset, 0), 1)
   return out
 }
 
@@ -239,10 +251,18 @@ const clamp = clampFraction
  * refusing a reader's note because their pointer left the image is not an
  * answer.
  */
-export function regionFromDrag(a: { x: number; y: number }, b: { x: number; y: number }): Region {
+export function regionFromDrag(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): Region {
   const x = clamp(Math.min(a.x, b.x))
   const y = clamp(Math.min(a.y, b.y))
-  return { x, y, w: clamp(Math.max(a.x, b.x)) - x, h: clamp(Math.max(a.y, b.y)) - y }
+  return {
+    x,
+    y,
+    w: clamp(Math.max(a.x, b.x)) - x,
+    h: clamp(Math.max(a.y, b.y)) - y,
+  }
 }
 
 /** A rectangle in an element's own pixels. */
@@ -269,8 +289,12 @@ export interface Box {
  * — falls back to the whole box rather than dividing by zero and handing back
  * `NaN` fractions that would then reach the server as a region.
  */
-export function paintedBox(natural: { w: number; h: number }, box: { w: number; h: number }): Box {
-  if (natural.w <= 0 || natural.h <= 0) return { x: 0, y: 0, w: box.w, h: box.h }
+export function paintedBox(
+  natural: { w: number; h: number },
+  box: { w: number; h: number },
+): Box {
+  if (natural.w <= 0 || natural.h <= 0)
+    return { x: 0, y: 0, w: box.w, h: box.h }
   const scale = Math.min(box.w / natural.w, box.h / natural.h)
   const w = natural.w * scale
   const h = natural.h * scale
@@ -285,9 +309,15 @@ export function paintedBox(natural: { w: number; h: number }, box: { w: number; 
  * known. Clamping here would silently move one end of a drag before the
  * rectangle it belongs to had been formed.
  */
-export function pointInSlot(point: { x: number; y: number }, painted: Box): { x: number; y: number } {
+export function pointInSlot(
+  point: { x: number; y: number },
+  painted: Box,
+): { x: number; y: number } {
   if (painted.w <= 0 || painted.h <= 0) return { x: 0, y: 0 }
-  return { x: (point.x - painted.x) / painted.w, y: (point.y - painted.y) / painted.h }
+  return {
+    x: (point.x - painted.x) / painted.w,
+    y: (point.y - painted.y) / painted.h,
+  }
 }
 
 /**
@@ -346,7 +376,8 @@ export function regionContains(
  * falls out of the same arithmetic rather than needing a case.
  */
 export function moveRegion(region: Region, dx: number, dy: number): Region {
-  const within = (value: number, size: number) => Math.min(Math.max(value, 0), Math.max(1 - size, 0))
+  const within = (value: number, size: number) =>
+    Math.min(Math.max(value, 0), Math.max(1 - size, 0))
   return {
     ...region,
     x: within(region.x + dx, region.w),
@@ -397,8 +428,12 @@ export function gestureFor(press: {
   if (!press.onTheDraftsPage) return { kind: 'ignore' }
   const grabbed = [...press.here]
     .reverse()
-    .find((h) => !h.travelled && regionContains(h.note.region, press.at, press.slop))
-  if (grabbed) return { kind: 'move', noteId: grabbed.note.id, from: grabbed.note.region }
+    .find(
+      (h) =>
+        !h.travelled && regionContains(h.note.region, press.at, press.slop),
+    )
+  if (grabbed)
+    return { kind: 'move', noteId: grabbed.note.id, from: grabbed.note.region }
   return { kind: 'draw' }
 }
 
@@ -413,9 +448,14 @@ export function gestureFor(press: {
  * has been emptied is kept, because emptying one is an edit where deleting one
  * is a button.
  */
-export function editsToWrite(stored: Note[], edits: Record<string, Note>): Note[] {
+export function editsToWrite(
+  stored: Note[],
+  edits: Record<string, Note>,
+): Note[] {
   const known = new Set(stored.map((n) => n.id))
-  const keep = Object.values(edits).filter((note) => known.has(note.id) || !isBlank(note))
+  const keep = Object.values(edits).filter(
+    (note) => known.has(note.id) || !isBlank(note),
+  )
   return keep.reduce(withNote, stored)
 }
 
@@ -473,7 +513,10 @@ export function withoutNote(notes: Note[], id: string): Note[] {
  * An unrecognised setting behaves as `auto` rather than refusing — the same
  * fallback `noteColour` makes, for the same reason.
  */
-export function listPlacement(setting: string, viewportWidth: number): 'side' | 'below' {
+export function listPlacement(
+  setting: string,
+  viewportWidth: number,
+): 'side' | 'below' {
   if (setting === 'side') return 'side'
   if (setting === 'below') return 'below'
   return viewportWidth >= 1100 ? 'side' : 'below'

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { regroupModule, toggleBreak, toggleEditionBreak, type RegroupPrefs } from './regroup'
+import {
+  regroupModule,
+  toggleBreak,
+  toggleEditionBreak,
+  type RegroupPrefs,
+} from './regroup'
 
 describe('toggleBreak', () => {
   it('inserts a break where there was none', () => {
@@ -32,10 +37,12 @@ describe('regroupModule', () => {
 describe('toggleEditionBreak', () => {
   it('sets the break list for the given edition', () => {
     const prefs: RegroupPrefs = { breaks: {} }
-    expect(toggleEditionBreak(prefs, 'en-mono', 4)).toEqual({ breaks: { 'en-mono': [4] } })
+    expect(toggleEditionBreak(prefs, 'en-mono', 4)).toEqual({
+      breaks: { 'en-mono': [4] },
+    })
   })
 
-  it('leaves another edition\'s breaks intact — App.tsx used to inline this merge, untested', () => {
+  it("leaves another edition's breaks intact — App.tsx used to inline this merge, untested", () => {
     const prefs: RegroupPrefs = { breaks: { 'en-fan': [2] } }
     expect(toggleEditionBreak(prefs, 'en-mono', 4)).toEqual({
       breaks: { 'en-fan': [2], 'en-mono': [4] },

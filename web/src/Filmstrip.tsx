@@ -87,7 +87,10 @@ const tileImgStyle: CSSProperties = {
  * same page the tile is drawing rather than a second derivation that could
  * disagree.
  */
-function previewOf(group: Group, slots: Position[]): { page: number; half?: 'L' | 'R' } | undefined {
+function previewOf(
+  group: Group,
+  slots: Position[],
+): { page: number; half?: 'L' | 'R' } | undefined {
   const [first] = tilePages(group, slots)
   return first && { page: first.page, half: first.half }
 }
@@ -224,10 +227,14 @@ export function Filmstrip({
   // state they are in.
   const anchorRef = useRef<HTMLButtonElement>(null)
   const railRef = useRef<HTMLDivElement>(null)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `currentIndex`, `visible`, `correcting?.pairedIndex` and `anchor` are triggers, not closure reads — the body reaches the tile through refs. Removing them, which is what this rule suggests, would centre the rail once and never re-centre it.
   useEffect(() => {
     const recenter = () =>
-      (currentRef.current ?? pairedRef.current ?? anchorRef.current)
-        ?.scrollIntoView({ inline: 'center', block: 'nearest' })
+      (
+        currentRef.current ??
+        pairedRef.current ??
+        anchorRef.current
+      )?.scrollIntoView({ inline: 'center', block: 'nearest' })
     recenter()
     // A tile has no explicit width or height, so a not-yet-loaded thumbnail
     // (`loading="lazy"`) lays out at close to zero width until it decodes —
@@ -250,7 +257,9 @@ export function Filmstrip({
     <div ref={railRef} style={railStyle}>
       {groups.map((group, index) => {
         const isCurrent = index === currentIndex
-        const isResolved = correcting?.pairedIndex !== undefined && group.slots.includes(correcting.pairedIndex)
+        const isResolved =
+          correcting?.pairedIndex !== undefined &&
+          group.slots.includes(correcting.pairedIndex)
         // `currentIndex === -1 && !correcting`, not `!isCurrent &&
         // !isResolved`. Those two are already false by the time the ternary
         // below reaches this branch, so testing them again filters nothing —
@@ -269,9 +278,23 @@ export function Filmstrip({
         return (
           <button
             key={group.slots[0]}
-            ref={isCurrent ? currentRef : isResolved ? pairedRef : isAnchor ? anchorRef : undefined}
+            ref={
+              isCurrent
+                ? currentRef
+                : isResolved
+                  ? pairedRef
+                  : isAnchor
+                    ? anchorRef
+                    : undefined
+            }
             type="button"
-            style={isCurrent ? currentTileStyle : isResolved ? resolvedTileStyle : tileStyle}
+            style={
+              isCurrent
+                ? currentTileStyle
+                : isResolved
+                  ? resolvedTileStyle
+                  : tileStyle
+            }
             aria-current={isCurrent ? 'true' : undefined}
             onClick={() =>
               correcting && onPickCounterpart
@@ -282,7 +305,9 @@ export function Filmstrip({
             // through tiles with the keyboard as well as one using a mouse.
             // Both are no-ops while reading — a preview of the page you are
             // already looking at would be noise.
-            onMouseEnter={() => correcting && onPreview?.(previewOf(group, slots))}
+            onMouseEnter={() =>
+              correcting && onPreview?.(previewOf(group, slots))
+            }
             onMouseLeave={() => correcting && onPreview?.(undefined)}
             onFocus={() => correcting && onPreview?.(previewOf(group, slots))}
             onBlur={() => correcting && onPreview?.(undefined)}
@@ -293,23 +318,30 @@ export function Filmstrip({
               // the two halves of one spread are separate tiles with the
               // same `src`, so the label has to travel with the image it
               // labels, not with the tile.
-              <span key={slot} style={{ position: 'relative', display: 'flex', height: '100%' }}>
-              <img
-                src={thumbUrl(work, edition, page)}
-                // 1-based — this is read by a person, and `page` itself
-                // (used for `thumbUrl` above) stays the zero-based value the
-                // server expects, the same boundary convention `App.tsx`'s
-                // `altAt` follows for its own `alt` text. `half` is included
-                // when `tilePages` carries one (a joined spread's slot,
-                // addressed on its own while correcting — see `Tile`'s own
-                // doc): without it, that slot's tile and its other half's
-                // tile would share both the same thumbnail *and* the same
-                // alt text, with nothing telling them apart.
-                alt={half ? `page ${page + 1} ${half}` : `page ${page + 1}`}
-                loading="lazy"
-                style={tileImgStyle}
-              />
-              {/*
+              <span
+                key={slot}
+                style={{
+                  position: 'relative',
+                  display: 'flex',
+                  height: '100%',
+                }}
+              >
+                <img
+                  src={thumbUrl(work, edition, page)}
+                  // 1-based — this is read by a person, and `page` itself
+                  // (used for `thumbUrl` above) stays the zero-based value the
+                  // server expects, the same boundary convention `App.tsx`'s
+                  // `altAt` follows for its own `alt` text. `half` is included
+                  // when `tilePages` carries one (a joined spread's slot,
+                  // addressed on its own while correcting — see `Tile`'s own
+                  // doc): without it, that slot's tile and its other half's
+                  // tile would share both the same thumbnail *and* the same
+                  // alt text, with nothing telling them apart.
+                  alt={half ? `page ${page + 1} ${half}` : `page ${page + 1}`}
+                  loading="lazy"
+                  style={tileImgStyle}
+                />
+                {/*
                 A joined spread's two correction tiles share one thumbnail —
                 `thumbUrl` is page-indexed and the two halves are one page —
                 so without a visible mark a sighted reader has only position
@@ -323,7 +355,7 @@ export function Filmstrip({
                 time `tilePages` splits a spread into two tiles at all — see
                 `pairing.ts`'s `correctionTiles`.
               */}
-              {half && <span style={halfBadgeStyle}>{half}</span>}
+                {half && <span style={halfBadgeStyle}>{half}</span>}
               </span>
             ))}
           </button>

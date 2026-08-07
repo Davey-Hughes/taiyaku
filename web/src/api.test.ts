@@ -13,8 +13,9 @@ import {
 
 describe('url building', () => {
   it('addresses a page by flat index', () => {
-    expect(pageUrl('go-toubun-v01', 'en-mono', 47))
-      .toBe('/api/works/go-toubun-v01/en-mono/pages/47')
+    expect(pageUrl('go-toubun-v01', 'en-mono', 47)).toBe(
+      '/api/works/go-toubun-v01/en-mono/pages/47',
+    )
   })
 
   it('escapes an edition key that needs it', () => {
@@ -37,9 +38,11 @@ describe('network calls', () => {
   })
 
   it('listWorks returns the parsed array of work ids', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(['taiyaku']), { status: 200 }),
-    )
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify(['taiyaku']), { status: 200 }),
+      )
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(listWorks()).resolves.toEqual(['taiyaku'])
@@ -49,7 +52,11 @@ describe('network calls', () => {
   it('listWorks rejects with the server body on a non-2xx', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(new Response('no works configured', { status: 500 })),
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response('no works configured', { status: 500 }),
+        ),
     )
 
     await expect(listWorks()).rejects.toThrow(/no works configured/)
@@ -57,7 +64,10 @@ describe('network calls', () => {
 
   it('getSidecar returns the sidecar verbatim as text, unparsed', async () => {
     const body = '{"editions":[]}'
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { status: 200 })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(body, { status: 200 })),
+    )
 
     await expect(getSidecar('taiyaku')).resolves.toBe(body)
   })
@@ -66,7 +76,10 @@ describe('network calls', () => {
     // Response.ok is true for 204, so this only stays correct if the 204
     // check runs before the !res.ok check — reordering those two lines would
     // route a "nothing recorded" response into res.json() on an empty body.
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+    )
 
     await expect(getProgress('taiyaku')).resolves.toBeUndefined()
   })
@@ -75,23 +88,35 @@ describe('network calls', () => {
     const progress = { edition: 'en-mono', slot: 12 }
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(new Response(JSON.stringify(progress), { status: 200 })),
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify(progress), { status: 200 }),
+        ),
     )
 
     await expect(getProgress('taiyaku')).resolves.toEqual(progress)
   })
 
-  it('getProgress rejects on a non-2xx, carrying the server\'s own wording', async () => {
+  it("getProgress rejects on a non-2xx, carrying the server's own wording", async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(new Response('unknown work "taiyaku"', { status: 404 })),
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response('unknown work "taiyaku"', { status: 404 }),
+        ),
     )
 
-    await expect(getProgress('taiyaku')).rejects.toThrow(/unknown work "taiyaku"/)
+    await expect(getProgress('taiyaku')).rejects.toThrow(
+      /unknown work "taiyaku"/,
+    )
   })
 
   it('putProgress resolves on success and sends the position as JSON', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }))
     vi.stubGlobal('fetch', fetchMock)
 
     const progress = { edition: 'en-mono', slot: 12 }
@@ -108,13 +133,16 @@ describe('network calls', () => {
   it('putProgress rejects with the server body on a non-2xx', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(new Response('slot 12 is out of range for en-mono', {
-        status: 400,
-      })),
+      vi.fn().mockResolvedValue(
+        new Response('slot 12 is out of range for en-mono', {
+          status: 400,
+        }),
+      ),
     )
 
-    await expect(putProgress('taiyaku', { edition: 'en-mono', slot: 12 }))
-      .rejects.toThrow(/slot 12 is out of range for en-mono/)
+    await expect(
+      putProgress('taiyaku', { edition: 'en-mono', slot: 12 }),
+    ).rejects.toThrow(/slot 12 is out of range for en-mono/)
   })
 
   describe('patchAlignment', () => {
@@ -123,7 +151,10 @@ describe('network calls', () => {
       vi.stubGlobal('fetch', (_url: string, init: RequestInit) => {
         calls.push(init)
         return Promise.resolve(
-          new Response('{"taiyaku":1}', { status: 200, headers: { etag: '"new"' } }),
+          new Response('{"taiyaku":1}', {
+            status: 200,
+            headers: { etag: '"new"' },
+          }),
         )
       })
 
@@ -152,7 +183,11 @@ describe('network calls', () => {
     /** A 412 is a real answer a reader has to be told about, not a network error. */
     it('reports a stale validator by name', async () => {
       vi.stubGlobal('fetch', () =>
-        Promise.resolve(new Response('this work has changed since you read it', { status: 412 })),
+        Promise.resolve(
+          new Response('this work has changed since you read it', {
+            status: 412,
+          }),
+        ),
       )
 
       await expect(
@@ -170,7 +205,10 @@ describe('network calls', () => {
       vi.stubGlobal('fetch', (url: string) => {
         urls.push(url)
         return Promise.resolve(
-          new Response('{"work":"w","notes":[]}', { status: 200, headers: { etag: '"n1"' } }),
+          new Response('{"work":"w","notes":[]}', {
+            status: 200,
+            headers: { etag: '"n1"' },
+          }),
         )
       })
 
@@ -186,7 +224,10 @@ describe('network calls', () => {
       vi.stubGlobal('fetch', (_url: string, init: RequestInit) => {
         calls.push(init)
         return Promise.resolve(
-          new Response('{"work":"w","notes":[]}', { status: 200, headers: { etag: '"n2"' } }),
+          new Response('{"work":"w","notes":[]}', {
+            status: 200,
+            headers: { etag: '"n2"' },
+          }),
         )
       })
 
@@ -217,13 +258,15 @@ describe('network calls', () => {
     it('reports a stale validator by name', async () => {
       vi.stubGlobal('fetch', () =>
         Promise.resolve(
-          new Response('these notes have changed since you read them', { status: 412 }),
+          new Response('these notes have changed since you read them', {
+            status: 412,
+          }),
         ),
       )
 
-      await expect(putNotes('w', '"old"', { work: 'w', notes: [] })).rejects.toThrow(
-        /changed since you read them/,
-      )
+      await expect(
+        putNotes('w', '"old"', { work: 'w', notes: [] }),
+      ).rejects.toThrow(/changed since you read them/)
     })
   })
 })

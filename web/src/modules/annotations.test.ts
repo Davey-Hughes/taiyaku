@@ -5,7 +5,13 @@ import { registry } from './registry'
 
 describe('annotationsModule', () => {
   it('claims a key for each of its gestures', () => {
-    expect(annotationsModule.keys?.map((k) => k.key)).toEqual(['n', 'r', 'a', 'z', 'Z'])
+    expect(annotationsModule.keys?.map((k) => k.key)).toEqual([
+      'n',
+      'r',
+      'a',
+      'z',
+      'Z',
+    ])
   })
 
   // The failure declared keybindings exist to prevent, checked against the
@@ -33,7 +39,11 @@ describe('annotationsModule', () => {
   // a text box, which for a placement is a control that invites a typo and
   // answers with nothing.
   it('declares the values its placement setting may take', () => {
-    expect(annotationsModule.options?.notesList).toEqual(['auto', 'side', 'below'])
+    expect(annotationsModule.options?.notesList).toEqual([
+      'auto',
+      'side',
+      'below',
+    ])
   })
 
   // Travel is the whole feature, so it is on. Revealing is off: the margin

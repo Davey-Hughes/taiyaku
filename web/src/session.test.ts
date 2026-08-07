@@ -36,7 +36,12 @@ describe('applyIntent', () => {
 
   it('a view intent never changes state.authority', () => {
     const state: ReadingState = { authority: 'a', slot: 2, viewing: 'a' }
-    const { state: next } = applyIntent({ kind: 'view', edition: 'b' }, state, 'a', r)
+    const { state: next } = applyIntent(
+      { kind: 'view', edition: 'b' },
+      state,
+      'a',
+      r,
+    )
     expect(next.authority).toBe('a')
     expect(next.viewing).toBe('b')
   })
@@ -44,10 +49,20 @@ describe('applyIntent', () => {
   it('a step intent is the only thing that changes state.authority', () => {
     const start: ReadingState = { authority: 'a', slot: 3, viewing: 'a' }
 
-    const { state: viewed } = applyIntent({ kind: 'view', edition: 'b' }, start, 'a', r)
+    const { state: viewed } = applyIntent(
+      { kind: 'view', edition: 'b' },
+      start,
+      'a',
+      r,
+    )
     expect(viewed.authority).toBe('a') // view alone: unchanged, per the test above
 
-    const { state: stepped } = applyIntent({ kind: 'step', by: 1 }, viewed, 'a', r)
+    const { state: stepped } = applyIntent(
+      { kind: 'step', by: 1 },
+      viewed,
+      'a',
+      r,
+    )
     expect(stepped.authority).toBe('b') // step: authority now follows viewing
     expect(stepped.slot).toBe(3)
   })
@@ -72,10 +87,20 @@ describe('applyIntent', () => {
     let state: ReadingState = { authority: 'a', slot: 0, viewing: 'a' } // hub
     let previous = 'a'
 
-    ;({ state, previous } = applyIntent({ kind: 'view', edition: 'b' }, state, previous, r)) // digit -> C
+    ;({ state, previous } = applyIntent(
+      { kind: 'view', edition: 'b' },
+      state,
+      previous,
+      r,
+    )) // digit -> C
     expect(state.viewing).toBe('b')
 
-    ;({ state, previous } = applyIntent({ kind: 'view', edition: 'a' }, state, previous, r)) // digit -> hub
+    ;({ state, previous } = applyIntent(
+      { kind: 'view', edition: 'a' },
+      state,
+      previous,
+      r,
+    )) // digit -> hub
     expect(state.viewing).toBe('a')
 
     ;({ state, previous } = applyIntent({ kind: 'toggle' }, state, previous, r)) // Space
@@ -91,7 +116,11 @@ describe('resolveOffered', () => {
   const gap: ReadingState = { authority: 'a', slot: 4, viewing: 'b' }
 
   it('resolves the offered authority-space slot to where it lands in the viewed edition', () => {
-    expect(resolveOffered(gap, 3, r)).toEqual({ edition: 'b', slot: 2, page: 2 })
+    expect(resolveOffered(gap, 3, r)).toEqual({
+      edition: 'b',
+      slot: 2,
+      page: 2,
+    })
   })
 
   it('is undefined if the offered slot does not actually resolve', () => {
@@ -103,7 +132,11 @@ describe('takeOffered', () => {
   const gap: ReadingState = { authority: 'a', slot: 4, viewing: 'b' }
 
   it('resolves the offered authority-space slot into the viewed edition and commits authority there', () => {
-    expect(takeOffered(gap, 3, r)).toEqual({ authority: 'b', slot: 2, viewing: 'b' })
+    expect(takeOffered(gap, 3, r)).toEqual({
+      authority: 'b',
+      slot: 2,
+      viewing: 'b',
+    })
   })
 
   it('is a no-op if the offered slot does not actually resolve', () => {
@@ -159,12 +192,17 @@ describe('initialPrevious', () => {
 // seeded via `initialPrevious`, must have its very first toggle change
 // `viewing`.
 describe('a freshly-restored session, seeded via initialPrevious', () => {
-  it("the first toggle changes viewing, for every edition restore might start on", () => {
+  it('the first toggle changes viewing, for every edition restore might start on', () => {
     for (const authority of r.editions()) {
       const state: ReadingState = { authority, slot: 0, viewing: authority }
       const previous = initialPrevious(r.editions(), authority)
 
-      const { state: toggled } = applyIntent({ kind: 'toggle' }, state, previous, r)
+      const { state: toggled } = applyIntent(
+        { kind: 'toggle' },
+        state,
+        previous,
+        r,
+      )
 
       expect(toggled.viewing, `starting from ${authority}`).not.toBe(authority)
     }
@@ -192,8 +230,12 @@ describe('alignmentsOf', () => {
   // The whole point: a document a correction just rewrote reports its fresh
   // verdict, not the one the session loaded with.
   it('reflects a verdict a correction changed, not a stale one', () => {
-    const before = JSON.stringify({ alignments: [{ from: 'a', to: 'b', quality: { verdict: 'sound' } }] })
-    const after = JSON.stringify({ alignments: [{ from: 'a', to: 'b', quality: { verdict: 'fragmented' } }] })
+    const before = JSON.stringify({
+      alignments: [{ from: 'a', to: 'b', quality: { verdict: 'sound' } }],
+    })
+    const after = JSON.stringify({
+      alignments: [{ from: 'a', to: 'b', quality: { verdict: 'fragmented' } }],
+    })
     expect(verdictFor(alignmentsOf(before), 'a', 'b')).toBe('sound')
     expect(verdictFor(alignmentsOf(after), 'a', 'b')).toBe('fragmented')
   })
@@ -201,14 +243,17 @@ describe('alignmentsOf', () => {
 
 describe('orderedEditions', () => {
   it('puts the hub first regardless of where it sorts', () => {
-    expect(orderedEditions('en-mono', ['raw', 'en-colour', 'en-mono'])).toEqual([
-      'en-mono', 'en-colour', 'raw',
-    ])
+    expect(orderedEditions('en-mono', ['raw', 'en-colour', 'en-mono'])).toEqual(
+      ['en-mono', 'en-colour', 'raw'],
+    )
   })
 
   it('sorts the rest alphabetically, not by input order', () => {
     expect(orderedEditions('raw', ['en-mono', 'en-colour', 'en-fan'])).toEqual([
-      'raw', 'en-colour', 'en-fan', 'en-mono',
+      'raw',
+      'en-colour',
+      'en-fan',
+      'en-mono',
     ])
   })
 

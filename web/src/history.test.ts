@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { canRedo, canUndo, current, emptyHistory, record, redo, undo } from './history'
+import {
+  canRedo,
+  canUndo,
+  current,
+  emptyHistory,
+  record,
+  redo,
+  undo,
+} from './history'
 
 const same = (a: string, b: string) => a === b
 const build = (...steps: string[]) =>

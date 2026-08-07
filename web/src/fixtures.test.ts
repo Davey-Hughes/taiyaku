@@ -17,7 +17,11 @@ describe('fakeResolver chapterAt', () => {
   )
 
   it('answers the entry the table names for a present key', () => {
-    expect(fake.chapterAt('volume', 0)).toEqual({ member: 0, of: 3, path: 'c001.cbz' })
+    expect(fake.chapterAt('volume', 0)).toEqual({
+      member: 0,
+      of: 3,
+      path: 'c001.cbz',
+    })
   })
 
   it('answers undefined for a key absent from the table', () => {

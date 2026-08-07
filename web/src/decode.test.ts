@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { createDecodeQueue, decodeTo, presentWhenDecoded, type Decodable } from './decode'
+import {
+  createDecodeQueue,
+  decodeTo,
+  presentWhenDecoded,
+  type Decodable,
+} from './decode'
 
 /** A controllable promise, the same shape `motion.test.ts`'s stubbed rAF pair
  * gives a test over timing — here over a fake image's `decode()` instead. */
@@ -237,12 +242,26 @@ describe('presentWhenDecoded', () => {
     const d1 = deferred<void>()
     const d2 = deferred<void>()
     const makeImage = () => {
-      const image = fakeImage(() => (made.length === 1 ? d1.promise : d2.promise))
+      const image = fakeImage(() =>
+        made.length === 1 ? d1.promise : d2.promise,
+      )
       made.push(image)
       return image
     }
-    void presentWhenDecoded(makeImage, queue, 'a.jpg', () => false, () => {})
-    void presentWhenDecoded(makeImage, queue, 'b.jpg', () => false, () => {})
+    void presentWhenDecoded(
+      makeImage,
+      queue,
+      'a.jpg',
+      () => false,
+      () => {},
+    )
+    void presentWhenDecoded(
+      makeImage,
+      queue,
+      'b.jpg',
+      () => false,
+      () => {},
+    )
     expect(made).toHaveLength(2)
     expect(made[0]?.src).toBe('a.jpg')
     expect(made[1]?.src).toBe('b.jpg')

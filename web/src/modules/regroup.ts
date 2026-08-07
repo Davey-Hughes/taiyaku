@@ -41,9 +41,16 @@ export const regroupModule: ReaderModule<RegroupPrefs> = {
  * Vitest-unreachable, so this is extracted here rather than inlined into the
  * `b` key handler, where nothing could catch a regression.
  */
-export function toggleEditionBreak(prefs: RegroupPrefs, edition: string, slot: number): RegroupPrefs {
+export function toggleEditionBreak(
+  prefs: RegroupPrefs,
+  edition: string,
+  slot: number,
+): RegroupPrefs {
   return {
     ...prefs,
-    breaks: { ...prefs.breaks, [edition]: toggleBreak(prefs.breaks[edition] ?? [], slot) },
+    breaks: {
+      ...prefs.breaks,
+      [edition]: toggleBreak(prefs.breaks[edition] ?? [], slot),
+    },
   }
 }

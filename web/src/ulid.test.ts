@@ -5,7 +5,9 @@ const CROCKFORD = /^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$/
 
 describe('ulid', () => {
   it('is 26 Crockford base32 characters', () => {
-    expect(ulid(Date.parse('2026-08-05T10:00:00Z'), () => 0.5)).toMatch(CROCKFORD)
+    expect(ulid(Date.parse('2026-08-05T10:00:00Z'), () => 0.5)).toMatch(
+      CROCKFORD,
+    )
   })
 
   it('sorts by the time it was minted, as plain strings', () => {

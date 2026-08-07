@@ -1,6 +1,8 @@
 :root {
   color-scheme: light dark;
-  font: 16px/1.5 system-ui, sans-serif;
+  font:
+    16px / 1.5 system-ui,
+    sans-serif;
 }
 
 /*
@@ -11,7 +13,9 @@
  * against an undefined height and is ignored: a tall page overflows the
  * viewport instead of being downscaled to fit it.
  */
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
 }
 

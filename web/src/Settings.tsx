@@ -1,6 +1,12 @@
 import type { CSSProperties } from 'react'
 import type { ReaderModule } from './module'
-import { fieldsOf, humanize, nestedCount, nestedSummary, type Field } from './settingsPanel'
+import {
+  fieldsOf,
+  humanize,
+  nestedCount,
+  nestedSummary,
+  type Field,
+} from './settingsPanel'
 
 // A centred modal rather than a docked panel — unlike `Chrome`'s strip and
 // readout row, which must never cover the page underneath, the settings
@@ -51,7 +57,15 @@ const rowStyle: CSSProperties = {
 }
 
 /** One field's control — inferred purely from `field.kind`, which `settingsPanel.ts`'s `fieldKind` already derived from the preference's own runtime type. Nothing here branches on which module or which key this is. */
-function FieldControl({ field, value, onChange }: { field: Field; value: unknown; onChange: (raw: unknown) => void }) {
+function FieldControl({
+  field,
+  value,
+  onChange,
+}: {
+  field: Field
+  value: unknown
+  onChange: (raw: unknown) => void
+}) {
   const label = humanize(field.key)
   if (field.kind === 'boolean') {
     return (
@@ -82,7 +96,10 @@ function FieldControl({ field, value, onChange }: { field: Field; value: unknown
     return (
       <label style={rowStyle}>
         <span>{label}</span>
-        <select value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)}>
+        <select
+          value={typeof value === 'string' ? value : ''}
+          onChange={(e) => onChange(e.target.value)}
+        >
           {(field.options ?? []).map((option) => (
             <option key={option} value={option}>
               {humanize(option)}
@@ -157,7 +174,13 @@ export interface SettingsProps {
  * consequence of generation, not a special case written for this one
  * module's id.
  */
-export function Settings({ visible, modules, prefs, onChange, onReset }: SettingsProps) {
+export function Settings({
+  visible,
+  modules,
+  prefs,
+  onChange,
+  onReset,
+}: SettingsProps) {
   if (!visible) return null
   return (
     <div style={overlayStyle} role="dialog" aria-label="Settings">
@@ -166,7 +189,10 @@ export function Settings({ visible, modules, prefs, onChange, onReset }: Setting
         {modules.map((mod) => {
           const fields = fieldsOf(mod.defaults as object, mod.options)
           if (fields.length === 0) return null
-          const modulePrefs = (prefs[mod.id] ?? mod.defaults) as Record<string, unknown>
+          const modulePrefs = (prefs[mod.id] ?? mod.defaults) as Record<
+            string,
+            unknown
+          >
           return (
             <section key={mod.id} style={sectionStyle}>
               <div style={sectionHeaderStyle}>

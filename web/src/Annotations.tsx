@@ -1,6 +1,12 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import type { AnnotationsPrefs } from './modules/annotations'
-import { isPoint, spreadTabs, tabOffset, type NoteHere, type Region } from './notes'
+import {
+  isPoint,
+  spreadTabs,
+  tabOffset,
+  type NoteHere,
+  type Region,
+} from './notes'
 import { noteColour, type NoteColour } from './palette'
 
 /**
@@ -69,7 +75,11 @@ export interface Box {
  */
 const TAB_MIN_GAP = 0.055
 
-const tabStyle = (offset: number, travelled: boolean, colour: string): CSSProperties => ({
+const tabStyle = (
+  offset: number,
+  travelled: boolean,
+  colour: string,
+): CSSProperties => ({
   position: 'absolute',
   left: '100%',
   marginLeft: 4,
@@ -189,7 +199,11 @@ const tintStyle = (region: Region, colour: NoteColour): CSSProperties => ({
  * against both a white page and a black panel border, rather than picking one
  * and disappearing into the other.
  */
-const pendingStyle = (region: Region, drawing: boolean, colour: NoteColour): CSSProperties =>
+const pendingStyle = (
+  region: Region,
+  drawing: boolean,
+  colour: NoteColour,
+): CSSProperties =>
   // **A point being edited has to be drawn as a point.** As a rectangle it is
   // zero by zero — an outline around nothing, which is invisible, and a reader
   // cannot take hold of something they cannot see. That is why a point could
@@ -218,7 +232,8 @@ const pendingStyle = (region: Region, drawing: boolean, colour: NoteColour): CSS
         height: `${region.h * 100}%`,
         background: drawing ? 'rgba(0, 0, 0, 0.42)' : colour.tint,
         outline: `2px dashed ${colour.edge}`,
-        boxShadow: '0 0 0 1px rgba(0, 0, 0, 0.85), inset 0 0 0 1px rgba(0, 0, 0, 0.85)',
+        boxShadow:
+          '0 0 0 1px rgba(0, 0, 0, 0.85), inset 0 0 0 1px rgba(0, 0, 0, 0.85)',
       }
 
 /**
@@ -306,7 +321,13 @@ export function Annotations({
   return (
     <div style={layerStyle(box)}>
       {pending && (
-        <div style={pendingStyle(pending, drawing === true, noteColour(pendingColour))}>
+        <div
+          style={pendingStyle(
+            pending,
+            drawing === true,
+            noteColour(pendingColour),
+          )}
+        >
           {/*
             Not while the pointer is down: a label under a rectangle still
             being swept out covers the very artwork the reader is drawing
@@ -318,7 +339,9 @@ export function Annotations({
             moved. A point's words live in the list beside the page and in the
             popover on its tab, which is what those surfaces are for.
           */}
-          {!drawing && !isPoint(pending) && pendingBody && <p style={bodyStyle}>{pendingBody}</p>}
+          {!drawing && !isPoint(pending) && pendingBody && (
+            <p style={bodyStyle}>{pendingBody}</p>
+          )}
         </div>
       )}
       {prefs.reveal &&
@@ -326,9 +349,15 @@ export function Annotations({
           .filter((h) => !h.travelled && h.note.region)
           .map((h) =>
             isPoint(h.note.region) ? (
-              <div key={`pin-${h.note.id}`} style={pinStyle(h.note.region!, noteColour(h.note.color))} />
+              <div
+                key={`pin-${h.note.id}`}
+                style={pinStyle(h.note.region!, noteColour(h.note.color))}
+              />
             ) : (
-              <div key={`tint-${h.note.id}`} style={tintStyle(h.note.region!, noteColour(h.note.color))}>
+              <div
+                key={`tint-${h.note.id}`}
+                style={tintStyle(h.note.region!, noteColour(h.note.color))}
+              >
                 {/* A point has no box to hold words, which is the other half of
                     why the list beside the page exists — see `NoteList`. */}
                 {h.note.body && <p style={bodyStyle}>{h.note.body}</p>}
@@ -340,12 +369,15 @@ export function Annotations({
         // slot cannot draw one tab on top of another — see `spreadTabs`. A
         // whole-slot note has no region to derive a position from, so every
         // one of them would otherwise sit at the middle.
-        spreadTabs(here.map((h) => tabOffset(h.note)), TAB_MIN_GAP).map((offset, index) => {
+        spreadTabs(
+          here.map((h) => tabOffset(h.note)),
+          TAB_MIN_GAP,
+        ).map((offset, index) => {
           const h = here[index]
           const hovering = hovered === h.note.id
           return (
             <span key={h.note.id}>
-            {/*
+              {/*
               The note itself, next to its tab, while the pointer is on it.
               Styled rather than the browser's `title`, which appears after a
               delay a reader has usually given up on, cannot be styled to say
@@ -354,32 +386,42 @@ export function Annotations({
               there is one answer to hovering a tab and not two arriving a
               second apart.
             */}
-            {hovering && h.note.body && (
-              <span style={popoverStyle(offset)}>
-                {h.travelled && <em style={{ opacity: 0.75 }}>on {h.note.edition}: </em>}
-                {h.note.body}
-              </span>
-            )}
-          <button
-            key={h.note.id}
-            type="button"
-            style={tabStyle(offset, h.travelled, noteColour(h.note.color).tab)}
-            onClick={() => onOpen(h.note.id)}
-            onPointerEnter={() => setHovered(h.note.id)}
-            onPointerLeave={() => setHovered((current) => (current === h.note.id ? undefined : current))}
-            // The body is the title as well as the label: a reader hovering a
-            // tab wants the note, not a description of the tab. An empty body
-            // — a note saved before anything was typed — says so rather than
-            // showing a blank tooltip that reads as a broken one.
-            aria-label={
-              h.travelled
-                ? `Note written on ${h.note.edition}: ${h.note.body || 'empty'}`
-                : `Note: ${h.note.body || 'empty'}`
-            }
-          >
-            {index + 1}
-          </button>
-          </span>
+              {hovering && h.note.body && (
+                <span style={popoverStyle(offset)}>
+                  {h.travelled && (
+                    <em style={{ opacity: 0.75 }}>on {h.note.edition}: </em>
+                  )}
+                  {h.note.body}
+                </span>
+              )}
+              <button
+                key={h.note.id}
+                type="button"
+                style={tabStyle(
+                  offset,
+                  h.travelled,
+                  noteColour(h.note.color).tab,
+                )}
+                onClick={() => onOpen(h.note.id)}
+                onPointerEnter={() => setHovered(h.note.id)}
+                onPointerLeave={() =>
+                  setHovered((current) =>
+                    current === h.note.id ? undefined : current,
+                  )
+                }
+                // The body is the title as well as the label: a reader hovering a
+                // tab wants the note, not a description of the tab. An empty body
+                // — a note saved before anything was typed — says so rather than
+                // showing a blank tooltip that reads as a broken one.
+                aria-label={
+                  h.travelled
+                    ? `Note written on ${h.note.edition}: ${h.note.body || 'empty'}`
+                    : `Note: ${h.note.body || 'empty'}`
+                }
+              >
+                {index + 1}
+              </button>
+            </span>
           )
         })}
     </div>
@@ -423,7 +465,10 @@ export function Annotations({
  * as an overlay collapsed to nothing in the top-left corner after switching
  * single → two.
  */
-export function PageAnnotations({ match, ...rest }: Omit<AnnotationsProps, 'box'> & { match?: string }) {
+export function PageAnnotations({
+  match,
+  ...rest
+}: Omit<AnnotationsProps, 'box'> & { match?: string }) {
   const anchor = useRef<HTMLDivElement>(null)
   const [box, setBox] = useState<Box>()
 
@@ -431,7 +476,10 @@ export function PageAnnotations({ match, ...rest }: Omit<AnnotationsProps, 'box'
     const host = anchor.current?.parentElement
     if (!host) return
     const images = [...host.querySelectorAll('img')]
-    const img = (match ? images.find((candidate) => candidate.src.endsWith(match)) : undefined) ?? images[0]
+    const img =
+      (match
+        ? images.find((candidate) => candidate.src.endsWith(match))
+        : undefined) ?? images[0]
     if (!img) {
       setBox(undefined)
       return
@@ -462,7 +510,10 @@ export function PageAnnotations({ match, ...rest }: Omit<AnnotationsProps, 'box'
   }, [match])
 
   return (
-    <div ref={anchor} style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+    <div
+      ref={anchor}
+      style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
+    >
       <Annotations box={box} {...rest} />
     </div>
   )

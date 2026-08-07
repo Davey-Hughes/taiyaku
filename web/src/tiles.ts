@@ -38,8 +38,9 @@ export interface Tile {
  *
  * Kept in its own module, separate from `Filmstrip.tsx`'s component, rather
  * than exported alongside it: a pure function sharing a file with a
- * component is exactly what defeats React Fast Refresh (oxlint's
- * `react/only-export-components` flags this), and this codebase already
+ * component is exactly what defeats React Fast Refresh (biome's
+ * `style/useComponentExportOnlyModules` flags this — enabled by name in
+ * `biome.jsonc`, since it is not in the recommended set), and this codebase already
  * keeps pure logic and components apart everywhere else (`pairing.ts`,
  * `reading.ts`, `nearest.ts` beside `App.tsx`, `Chrome.tsx`, `Gap.tsx`).
  * `tilePages` is also directly unit-tested (`tiles.test.ts`), which a plain

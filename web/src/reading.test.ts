@@ -9,28 +9,45 @@ const r = fakeResolver(
   { 'a|b|1': 0, 'a|b|2': 1, 'a|b|3': 2, 'b|a|0': 1, 'b|a|1': 2, 'b|a|2': 3 },
 )
 
-const at = (slot: number): ReadingState => ({ authority: 'a', slot, viewing: 'a' })
+const at = (slot: number): ReadingState => ({
+  authority: 'a',
+  slot,
+  viewing: 'a',
+})
 
 describe('display', () => {
   it('shows the authority slot itself when viewing the authority', () => {
-    expect(display(at(2), r)).toEqual({ kind: 'at', edition: 'a', slot: 2, via: 'identity' })
+    expect(display(at(2), r)).toEqual({
+      kind: 'at',
+      edition: 'a',
+      slot: 2,
+      via: 'identity',
+    })
   })
 
   it('resolves into the viewed edition when they differ', () => {
     expect(display(swap(at(2), 'b'), r)).toEqual({
-      kind: 'at', edition: 'b', slot: 1, via: 'direct',
+      kind: 'at',
+      edition: 'b',
+      slot: 1,
+      via: 'direct',
     })
   })
 
   it('reports a gap rather than moving to the nearest slot', () => {
     expect(display(swap(at(0), 'b'), r)).toEqual({
-      kind: 'gap', edition: 'b', from: { edition: 'a', slot: 0 },
+      kind: 'gap',
+      edition: 'b',
+      from: { edition: 'a', slot: 0 },
     })
   })
 
   it('lands a slot on one half of a joined spread, not on the whole page', () => {
     expect(display(swap(at(3), 'b'), r)).toEqual({
-      kind: 'at', edition: 'b', slot: 2, via: 'direct',
+      kind: 'at',
+      edition: 'b',
+      slot: 2,
+      via: 'direct',
     })
   })
 })
@@ -64,12 +81,18 @@ describe('navigate', () => {
 
 describe('restore', () => {
   it('starts at slot 0 of the hub when nothing is stored', () => {
-    expect(restore(undefined, 'a', r)).toEqual({ authority: 'a', slot: 0, viewing: 'a' })
+    expect(restore(undefined, 'a', r)).toEqual({
+      authority: 'a',
+      slot: 0,
+      viewing: 'a',
+    })
   })
 
   it('starts at the stored position, viewing the edition it was stored against', () => {
     expect(restore({ edition: 'b', slot: 5 }, 'a', r)).toEqual({
-      authority: 'b', slot: 5, viewing: 'b',
+      authority: 'b',
+      slot: 5,
+      viewing: 'b',
     })
   })
 
@@ -77,7 +100,9 @@ describe('restore', () => {
     // The hub is only a fallback for "nothing recorded yet" — a stored
     // position, even on the hub, must not be forced back to slot 0.
     expect(restore({ edition: 'a', slot: 7 }, 'a', r)).toEqual({
-      authority: 'a', slot: 7, viewing: 'a',
+      authority: 'a',
+      slot: 7,
+      viewing: 'a',
     })
   })
 
@@ -89,7 +114,9 @@ describe('restore', () => {
     // boundary happens to fall — guessing "last slot" would just be a
     // different silent wrong page.
     expect(restore({ edition: 'a', slot: 8 }, 'a', r)).toEqual({
-      authority: 'a', slot: 0, viewing: 'a',
+      authority: 'a',
+      slot: 0,
+      viewing: 'a',
     })
   })
 
@@ -98,7 +125,9 @@ describe('restore', () => {
     // place the reader in an edition the sidecar no longer defines (renamed
     // or dropped), so this is exactly the "nothing recorded" case.
     expect(restore({ edition: 'gone', slot: 3 }, 'a', r)).toEqual({
-      authority: 'a', slot: 0, viewing: 'a',
+      authority: 'a',
+      slot: 0,
+      viewing: 'a',
     })
   })
 })

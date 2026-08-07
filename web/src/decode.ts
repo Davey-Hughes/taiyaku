@@ -105,12 +105,10 @@ export function createDecodeQueue(max: number): DecodeQueue {
           } catch (err) {
             result = Promise.reject(err as unknown)
           }
-          result
-            .then(resolve, reject)
-            .finally(() => {
-              active -= 1
-              schedule()
-            })
+          result.then(resolve, reject).finally(() => {
+            active -= 1
+            schedule()
+          })
         })
         schedule()
       })
@@ -157,9 +155,11 @@ export function presentWhenDecoded(
   present: (src: string) => void,
 ): Promise<void> {
   const image = makeImage()
-  return queue.run(() => decodeTo(image, src)).then(() => {
-    if (!stale()) present(src)
-  })
+  return queue
+    .run(() => decodeTo(image, src))
+    .then(() => {
+      if (!stale()) present(src)
+    })
 }
 
 /** A `DecodeQueue` that runs every job immediately, uncapped — `PageView.tsx`'s fallback when no shared queue is handed in, so the component works standalone without forcing every caller to construct one. */

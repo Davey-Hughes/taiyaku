@@ -1,12 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { creditSlotsIn, creditsModule, PANEL_INTENT, skippedApartFrom } from './credits'
+import {
+  creditSlotsIn,
+  creditsModule,
+  PANEL_INTENT,
+  skippedApartFrom,
+} from './credits'
 import type { Position } from '../resolver'
 import { groups } from '../pairing'
 import { intentOf } from '../keys'
 import { registry } from './registry'
 
 const press = (key: string, mods: Partial<KeyboardEvent> = {}) =>
-  ({ key, ctrlKey: false, metaKey: false, altKey: false, ...mods }) as KeyboardEvent
+  ({
+    key,
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
+    ...mods,
+  }) as KeyboardEvent
 
 /** Four pages, page 1 a spread — the slot table `allSlots` would return. */
 const spreadAt1: Position[] = [
@@ -79,7 +90,11 @@ describe('skippedApartFrom', () => {
     for (const slots of [flat, spreadAt1]) {
       const credits = everyPage
       for (let standing = 0; standing < slots.length; standing++) {
-        const skipped = skippedApartFrom(creditSlotsIn(slots, credits), slots, standing)
+        const skipped = skippedApartFrom(
+          creditSlotsIn(slots, credits),
+          slots,
+          standing,
+        )
         const grouped = groups(slots, 'two', 'rtl', [], skipped)
         expect(
           grouped.some((g) => g.slots.includes(standing)),
@@ -110,7 +125,9 @@ describe('the module contract', () => {
   it('reaches the panel intent through intentOf, against the real registry', () => {
     const key = creditsModule.keys?.[0]?.key
     expect(key).toBeDefined()
-    expect(intentOf(press(key as string), ['raw', 'en'], registry.all())).toEqual({
+    expect(
+      intentOf(press(key as string), ['raw', 'en'], registry.all()),
+    ).toEqual({
       kind: 'module',
       intent: PANEL_INTENT,
     })

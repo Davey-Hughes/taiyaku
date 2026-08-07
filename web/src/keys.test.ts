@@ -4,7 +4,13 @@ import type { ReaderModule } from './module'
 
 const editions = ['raw', 'en-mono', 'en-colour']
 const press = (key: string, mods: Partial<KeyboardEvent> = {}) =>
-  ({ key, ctrlKey: false, metaKey: false, altKey: false, ...mods }) as KeyboardEvent
+  ({
+    key,
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
+    ...mods,
+  }) as KeyboardEvent
 
 const mod = (id: string, keys: string[]): ReaderModule<{ on: boolean }> => ({
   id,
@@ -33,7 +39,9 @@ describe('intentOf', () => {
 
   it('yields a module key to a modifier, same as every built-in', () => {
     const modules = [mod('direction', ['d'])]
-    expect(intentOf(press('d', { ctrlKey: true }), editions, modules)).toBeUndefined()
+    expect(
+      intentOf(press('d', { ctrlKey: true }), editions, modules),
+    ).toBeUndefined()
   })
 
   it('lets a built-in win over a module claiming the same key', () => {
@@ -49,8 +57,14 @@ describe('intentOf', () => {
   })
 
   it('maps a digit to the edition at that position, one-based', () => {
-    expect(intentOf(press('1'), editions)).toEqual({ kind: 'view', edition: 'raw' })
-    expect(intentOf(press('3'), editions)).toEqual({ kind: 'view', edition: 'en-colour' })
+    expect(intentOf(press('1'), editions)).toEqual({
+      kind: 'view',
+      edition: 'raw',
+    })
+    expect(intentOf(press('3'), editions)).toEqual({
+      kind: 'view',
+      edition: 'en-colour',
+    })
   })
 
   it('ignores a digit past the end rather than wrapping', () => {
@@ -59,8 +73,14 @@ describe('intentOf', () => {
   })
 
   it('maps the arrows to navigation', () => {
-    expect(intentOf(press('ArrowRight'), editions)).toEqual({ kind: 'step', by: 1 })
-    expect(intentOf(press('ArrowLeft'), editions)).toEqual({ kind: 'step', by: -1 })
+    expect(intentOf(press('ArrowRight'), editions)).toEqual({
+      kind: 'step',
+      by: 1,
+    })
+    expect(intentOf(press('ArrowLeft'), editions)).toEqual({
+      kind: 'step',
+      by: -1,
+    })
   })
 
   it('maps tab to the chrome toggle', () => {
@@ -73,7 +93,9 @@ describe('intentOf', () => {
   // other intent's. Named for what it actually checks.
   it('c asks to correct, and yields to a modifier', () => {
     expect(intentOf(press('c'), ['raw', 'en'], [])).toEqual({ kind: 'correct' })
-    expect(intentOf(press('c', { ctrlKey: true }), ['raw', 'en'], [])).toBeUndefined()
+    expect(
+      intentOf(press('c', { ctrlKey: true }), ['raw', 'en'], []),
+    ).toBeUndefined()
   })
 
   it('yields every key to a modifier, so browser shortcuts still work', () => {
@@ -88,7 +110,8 @@ describe('intentOf', () => {
 const target = (tagName: string, tabindex?: string) =>
   ({
     tagName,
-    hasAttribute: (name: string) => name === 'tabindex' && tabindex !== undefined,
+    hasAttribute: (name: string) =>
+      name === 'tabindex' && tabindex !== undefined,
   }) as unknown as EventTarget
 
 describe('isInteractiveTarget', () => {
@@ -113,7 +136,11 @@ describe('isInteractiveTarget', () => {
   // it one of three tag names", and the next surface that takes text should
   // not have to rediscover this bug.
   it('is true for a contenteditable element, whatever its tag', () => {
-    const editable = { tagName: 'DIV', isContentEditable: true, hasAttribute: () => false }
+    const editable = {
+      tagName: 'DIV',
+      isContentEditable: true,
+      hasAttribute: () => false,
+    }
     expect(isInteractiveTarget(editable as unknown as EventTarget)).toBe(true)
   })
 

@@ -14,7 +14,10 @@ export interface DirectionPrefs {
  * back to. An override is a preference about the person reading it, so it lives
  * client-side with the other preferences.
  */
-export function effectiveDirection(sidecar: Direction, override: Direction | undefined): Direction {
+export function effectiveDirection(
+  sidecar: Direction,
+  override: Direction | undefined,
+): Direction {
   return override ?? sidecar
 }
 
@@ -38,6 +41,10 @@ export const directionModule: ReaderModule<DirectionPrefs> = {
  * writing the one key that changed) would have silently wiped every other
  * edition's saved override on the next toggle, caught by nothing.
  */
-export function setOverride(prefs: DirectionPrefs, edition: string, direction: Direction): DirectionPrefs {
+export function setOverride(
+  prefs: DirectionPrefs,
+  edition: string,
+  direction: Direction,
+): DirectionPrefs {
   return { ...prefs, override: { ...prefs.override, [edition]: direction } }
 }

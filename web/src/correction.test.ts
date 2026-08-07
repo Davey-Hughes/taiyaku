@@ -22,7 +22,12 @@ function offsetResolver(): Resolver {
     indexOf: (_edition, position) => position.page,
     resolve: (from, to, position) => {
       if (from === to) return { ...position, via: 'identity' }
-      const offset = from === 'raw' && to === 'en' ? 1 : from === 'en' && to === 'raw' ? -1 : undefined
+      const offset =
+        from === 'raw' && to === 'en'
+          ? 1
+          : from === 'en' && to === 'raw'
+            ? -1
+            : undefined
       if (offset === undefined) return undefined
       const page = position.page + offset
       return page >= 0 && page < 10 ? { page, via: 'direct' } : undefined
@@ -59,7 +64,10 @@ describe('displacedBy', () => {
   it('is undefined when nothing holds the target', () => {
     const resolver = { ...offsetResolver(), resolve: () => undefined }
     expect(
-      displacedBy({ from: 'raw', to: 'en', a: { page: 3 }, b: { page: 5 } }, resolver),
+      displacedBy(
+        { from: 'raw', to: 'en', a: { page: 3 }, b: { page: 5 } },
+        resolver,
+      ),
     ).toBeUndefined()
   })
 
@@ -77,7 +85,10 @@ describe('displacedBy', () => {
   it('is undefined when the slot being corrected already holds the target', () => {
     // raw slot 4 already pairs with en slot 5 under offsetResolver's mapping.
     expect(
-      displacedBy({ from: 'raw', to: 'en', a: { page: 4 }, b: { page: 5 } }, offsetResolver()),
+      displacedBy(
+        { from: 'raw', to: 'en', a: { page: 4 }, b: { page: 5 } },
+        offsetResolver(),
+      ),
     ).toBeUndefined()
   })
 })

@@ -68,7 +68,8 @@ export function fieldsOf<P extends object>(
     // options against a boolean or a number would be a module contradicting
     // its own default's type, and inferring from the *value* is what keeps
     // this panel from having to know which module it is looking at.
-    if (kind === 'string' && options[key]?.length) return { key, kind: 'select', options: options[key] }
+    if (kind === 'string' && options[key]?.length)
+      return { key, kind: 'select', options: options[key] }
     return { key, kind }
   })
 }
@@ -100,7 +101,11 @@ export function fieldsOf<P extends object>(
  *   into storage, where `prefs.ts`'s `loadPrefs` would hand it straight back
  *   out on the next load with nothing downstream expecting it.
  */
-export function withFieldValue<P extends object>(prefs: P, key: string, raw: unknown): P {
+export function withFieldValue<P extends object>(
+  prefs: P,
+  key: string,
+  raw: unknown,
+): P {
   const current = (prefs as Record<string, unknown>)[key]
   if (!(key in prefs)) return prefs
   if (typeof current === 'boolean') return { ...prefs, [key]: Boolean(raw) }

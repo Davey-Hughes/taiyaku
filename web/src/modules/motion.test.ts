@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fadeStyle, isAnimating, motionModule, scheduleFade, transitionStyle } from './motion'
+import {
+  fadeStyle,
+  isAnimating,
+  motionModule,
+  scheduleFade,
+  transitionStyle,
+} from './motion'
 
 describe('transitionStyle', () => {
   it('emits no transition at all when animation is off', () => {
@@ -7,7 +13,9 @@ describe('transitionStyle', () => {
   })
 
   it('uses the configured duration when animation is on', () => {
-    expect(transitionStyle({ animate: true, ms: 80 })).toEqual({ transition: 'opacity 80ms ease' })
+    expect(transitionStyle({ animate: true, ms: 80 })).toEqual({
+      transition: 'opacity 80ms ease',
+    })
   })
 
   it('treats a zero duration as no transition rather than a 0ms one', () => {

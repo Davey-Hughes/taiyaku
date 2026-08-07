@@ -66,7 +66,11 @@ export function restore(
   if (progress.slot < 0 || progress.slot >= count) {
     return { authority: progress.edition, slot: 0, viewing: progress.edition }
   }
-  return { authority: progress.edition, slot: progress.slot, viewing: progress.edition }
+  return {
+    authority: progress.edition,
+    slot: progress.slot,
+    viewing: progress.edition,
+  }
 }
 
 export type Display =
@@ -91,7 +95,12 @@ export function navigate(state: ReadingState, slot: number): ReadingState {
  */
 export function display(state: ReadingState, resolver: Resolver): Display {
   if (state.viewing === state.authority) {
-    return { kind: 'at', edition: state.viewing, slot: state.slot, via: 'identity' }
+    return {
+      kind: 'at',
+      edition: state.viewing,
+      slot: state.slot,
+      via: 'identity',
+    }
   }
   const from = resolver.slotAt(state.authority, state.slot)
   const landed = from && resolver.resolve(state.authority, state.viewing, from)

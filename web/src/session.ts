@@ -76,7 +76,11 @@ export function applyIntent(
       // without a renderer: `groups` is a property of how the page is being
       // drawn right now (mode, direction override, hand-inserted breaks),
       // which nothing below the component tree knows.
-      if (groups) return { state: navigate(state, stepToGroup(groups, shown.slot, intent.by)), previous }
+      if (groups)
+        return {
+          state: navigate(state, stepToGroup(groups, shown.slot, intent.by)),
+          previous,
+        }
       const count = resolver.slotCount(shown.edition) ?? shown.slot + 1
       const slot = Math.min(Math.max(shown.slot + intent.by, 0), count - 1)
       return { state: navigate(state, slot), previous }
@@ -111,7 +115,11 @@ export function resolveOffered(
 ): { edition: string; slot: number; page: number } | undefined {
   const landed = display({ ...state, slot: offered }, resolver)
   if (landed.kind !== 'at') return undefined
-  return { edition: landed.edition, slot: landed.slot, page: resolver.slotAt(landed.edition, landed.slot)!.page }
+  return {
+    edition: landed.edition,
+    slot: landed.slot,
+    page: resolver.slotAt(landed.edition, landed.slot)!.page,
+  }
 }
 
 /**
@@ -126,7 +134,11 @@ export function resolveOffered(
  * A no-op (returns `state` unchanged) if `offered` does not resolve — see
  * `resolveOffered`.
  */
-export function takeOffered(state: ReadingState, offered: number, resolver: Resolver): ReadingState {
+export function takeOffered(
+  state: ReadingState,
+  offered: number,
+  resolver: Resolver,
+): ReadingState {
   const resolved = resolveOffered(state, offered, resolver)
   return resolved ? navigate(state, resolved.slot) : state
 }
@@ -147,7 +159,11 @@ export function takeOffered(state: ReadingState, offered: number, resolver: Reso
  * accessor and the binding has no `trust` yet — a follow-up for M5b, where
  * `readouts` wants this same value and a binding accessor earns its keep.
  */
-export function verdictFor(alignments: Alignment[], from: string, to: string): Verdict | undefined {
+export function verdictFor(
+  alignments: Alignment[],
+  from: string,
+  to: string,
+): Verdict | undefined {
   const edge = alignments.find(
     (a) => (a.from === from && a.to === to) || (a.from === to && a.to === from),
   )

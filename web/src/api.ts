@@ -24,7 +24,8 @@ export const thumbUrl = (work: string, edition: string, index: number) =>
 
 export async function listWorks(): Promise<string[]> {
   const res = await fetch('/api/works')
-  if (!res.ok) throw new Error(`listing works: ${res.status} ${await res.text()}`)
+  if (!res.ok)
+    throw new Error(`listing works: ${res.status} ${await res.text()}`)
   return res.json()
 }
 
@@ -43,9 +44,12 @@ export interface FetchedSidecar {
  * rather than repeating the fetch, so there is one implementation of "load
  * the sidecar" and not two that have to be kept in step.
  */
-export async function getSidecarWithEtag(work: string): Promise<FetchedSidecar> {
+export async function getSidecarWithEtag(
+  work: string,
+): Promise<FetchedSidecar> {
   const res = await fetch(`/api/works/${seg(work)}`)
-  if (!res.ok) throw new Error(`loading ${work}: ${res.status} ${await res.text()}`)
+  if (!res.ok)
+    throw new Error(`loading ${work}: ${res.status} ${await res.text()}`)
   return { json: await res.text(), etag: res.headers.get('etag') ?? undefined }
 }
 
@@ -60,10 +64,13 @@ export interface StoredProgress {
 }
 
 /** `undefined` where nothing is recorded — the server answers 204, not 404. */
-export async function getProgress(work: string): Promise<StoredProgress | undefined> {
+export async function getProgress(
+  work: string,
+): Promise<StoredProgress | undefined> {
   const res = await fetch(`/api/works/${seg(work)}/progress`)
   if (res.status === 204) return undefined
-  if (!res.ok) throw new Error(`reading progress: ${res.status} ${await res.text()}`)
+  if (!res.ok)
+    throw new Error(`reading progress: ${res.status} ${await res.text()}`)
   return res.json()
 }
 
@@ -81,14 +88,18 @@ export async function getProgress(work: string): Promise<StoredProgress | undefi
  * budget, so there is no reason to reserve this flag for only the unload
  * path — every write gets the same resilience.
  */
-export async function putProgress(work: string, progress: StoredProgress): Promise<void> {
+export async function putProgress(
+  work: string,
+  progress: StoredProgress,
+): Promise<void> {
   const res = await fetch(`/api/works/${seg(work)}/progress`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(progress),
     keepalive: true,
   })
-  if (!res.ok) throw new Error(`writing progress: ${res.status} ${await res.text()}`)
+  if (!res.ok)
+    throw new Error(`writing progress: ${res.status} ${await res.text()}`)
 }
 
 /** The notes document and the validator a write has to be conditional on. */
@@ -109,8 +120,12 @@ export interface FetchedNotes {
  */
 export async function getNotes(work: string): Promise<FetchedNotes> {
   const res = await fetch(`/api/works/${seg(work)}/notes`)
-  if (!res.ok) throw new Error(`reading notes: ${res.status} ${await res.text()}`)
-  return { doc: (await res.json()) as NotesDoc, etag: res.headers.get('etag') ?? undefined }
+  if (!res.ok)
+    throw new Error(`reading notes: ${res.status} ${await res.text()}`)
+  return {
+    doc: (await res.json()) as NotesDoc,
+    etag: res.headers.get('etag') ?? undefined,
+  }
 }
 
 /**
@@ -127,14 +142,22 @@ export async function getNotes(work: string): Promise<FetchedNotes> {
  * is watching the result of, not a background write that has to survive the
  * tab going away.
  */
-export async function putNotes(work: string, etag: string, doc: NotesDoc): Promise<FetchedNotes> {
+export async function putNotes(
+  work: string,
+  etag: string,
+  doc: NotesDoc,
+): Promise<FetchedNotes> {
   const res = await fetch(`/api/works/${seg(work)}/notes`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json', 'if-match': etag },
     body: JSON.stringify(doc),
   })
-  if (!res.ok) throw new Error(`writing notes: ${res.status} ${await res.text()}`)
-  return { doc: (await res.json()) as NotesDoc, etag: res.headers.get('etag') ?? undefined }
+  if (!res.ok)
+    throw new Error(`writing notes: ${res.status} ${await res.text()}`)
+  return {
+    doc: (await res.json()) as NotesDoc,
+    etag: res.headers.get('etag') ?? undefined,
+  }
 }
 
 export interface CorrectionRequest {
@@ -177,6 +200,7 @@ export async function patchAlignment(
     headers: { 'content-type': 'application/json', 'if-match': etag },
     body: JSON.stringify(correction),
   })
-  if (!res.ok) throw new Error(`correcting ${work}: ${res.status} ${await res.text()}`)
+  if (!res.ok)
+    throw new Error(`correcting ${work}: ${res.status} ${await res.text()}`)
   return { json: await res.text(), etag: res.headers.get('etag') ?? undefined }
 }

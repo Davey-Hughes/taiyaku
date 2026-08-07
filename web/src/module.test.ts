@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { buildRegistry, collisions, duplicateIds, sliceFor, type ReaderModule } from './module'
+import {
+  buildRegistry,
+  collisions,
+  duplicateIds,
+  sliceFor,
+  type ReaderModule,
+} from './module'
 import { withFieldValue } from './settingsPanel'
 
-const mod = (id: string, keys: string[] = []): ReaderModule<{ on: boolean }> => ({
+const mod = (
+  id: string,
+  keys: string[] = [],
+): ReaderModule<{ on: boolean }> => ({
   id,
   label: id,
   defaults: { on: true },
@@ -20,14 +29,14 @@ describe('collisions', () => {
     expect(collisions([mod('a', ['g']), mod('b', ['h'])])).toEqual([])
   })
 
-  it('ignores a key claimed twice by one module, which is that module\'s business', () => {
+  it("ignores a key claimed twice by one module, which is that module's business", () => {
     expect(collisions([mod('a', ['g', 'g'])])).toEqual([])
   })
 
   it('names all three modules when three claim one key, not just the first two', () => {
-    expect(collisions([mod('a', ['g']), mod('b', ['g']), mod('c', ['g'])])).toEqual([
-      { key: 'g', modules: ['a', 'b', 'c'] },
-    ])
+    expect(
+      collisions([mod('a', ['g']), mod('b', ['g']), mod('c', ['g'])]),
+    ).toEqual([{ key: 'g', modules: ['a', 'b', 'c'] }])
   })
 })
 
@@ -43,7 +52,9 @@ describe('duplicateIds', () => {
 
 describe('buildRegistry', () => {
   it('throws on a collision rather than letting two modules fight at runtime', () => {
-    expect(() => buildRegistry([mod('a', ['g']), mod('b', ['g'])])).toThrow(/\bg\b/)
+    expect(() => buildRegistry([mod('a', ['g']), mod('b', ['g'])])).toThrow(
+      /\bg\b/,
+    )
   })
 
   it('names every clashing module in the thrown message when three claim one key', () => {
@@ -75,18 +86,18 @@ describe('buildRegistry', () => {
 })
 
 describe('sliceFor', () => {
-  it('reads a module\'s own slice back out of a map keyed by id', () => {
+  it("reads a module's own slice back out of a map keyed by id", () => {
     const a = mod('a')
     const map = { a: { on: false } }
     expect(sliceFor(map, a)).toEqual({ on: false })
   })
 
-  it('falls back to the module\'s defaults when the map has no entry for it', () => {
+  it("falls back to the module's defaults when the map has no entry for it", () => {
     const a = mod('a')
     expect(sliceFor({}, a)).toBe(a.defaults)
   })
 
-  it('reads only its own module\'s entry, ignoring the rest of the map', () => {
+  it("reads only its own module's entry, ignoring the rest of the map", () => {
     const a = mod('a')
     const b = mod('b')
     const map = { a: { on: false }, b: { on: true } }
@@ -100,7 +111,11 @@ describe('the generic per-module preference map App.tsx builds', () => {
     on: boolean
     n: number
   }
-  const extra: ReaderModule<ExtraPrefs> = { id: 'extra', label: 'Extra', defaults: { on: true, n: 5 } }
+  const extra: ReaderModule<ExtraPrefs> = {
+    id: 'extra',
+    label: 'Extra',
+    defaults: { on: true, n: 5 },
+  }
 
   it('a module known only to the registry is read, changed and reset through sliceFor/withFieldValue alone — nothing here names "extra"', () => {
     const built = buildRegistry([mod('a'), extra])

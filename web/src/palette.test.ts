@@ -37,7 +37,6 @@ describe('noteColour', () => {
   })
 })
 
-
 describe('nextColour', () => {
   it('starts at the default when nothing is used', () => {
     expect(nextColour([])).toBe(DEFAULT_COLOUR)

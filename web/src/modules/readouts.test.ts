@@ -16,7 +16,9 @@ import {
 
 describe('positionLine', () => {
   it('shows a 1-based slot, the page, and a percentage', () => {
-    expect(positionLine({ slot: 87, total: 195, page: 84 })).toBe('slot 88 / 195 · p. 84 · 45%')
+    expect(positionLine({ slot: 87, total: 195, page: 84 })).toBe(
+      'slot 88 / 195 · p. 84 · 45%',
+    )
   })
 
   it('reads 100% on the last slot, not 99%', () => {
@@ -35,21 +37,25 @@ describe('positionLine', () => {
     // while the reader is looking at another edition, and the percentage is
     // against the authority's slot count — so the row has to say whose
     // numbers these are.
-    expect(positionLine({ slot: 88, total: 193, page: 87, edition: 'raw-mono' }))
-      .toBe('raw-mono slot 89 / 193 · p. 87 · 46%')
+    expect(
+      positionLine({ slot: 88, total: 193, page: 87, edition: 'raw-mono' }),
+    ).toBe('raw-mono slot 89 / 193 · p. 87 · 46%')
   })
 
   it('is unchanged where no edition is given', () => {
     // The reading case, which is every case but the gap. No prefix, no
     // leading space.
-    expect(positionLine({ slot: 87, total: 195, page: 84, edition: undefined }))
-      .toBe('slot 88 / 195 · p. 84 · 45%')
+    expect(
+      positionLine({ slot: 87, total: 195, page: 84, edition: undefined }),
+    ).toBe('slot 88 / 195 · p. 84 · 45%')
   })
 })
 
 describe('chapterLine', () => {
   it('names the chapter and its position', () => {
-    expect(chapterLine({ member: 2, of: 7, path: 'x - c002.cbz' })).toBe('c002 · 3 of 7')
+    expect(chapterLine({ member: 2, of: 7, path: 'x - c002.cbz' })).toBe(
+      'c002 · 3 of 7',
+    )
   })
 
   it('says the work has no chapter edition rather than showing nothing', () => {
@@ -92,25 +98,35 @@ describe('healthLine', () => {
   })
 
   it('appends the same counterpart note to a non-sound verdict', () => {
-    expect(healthLine('refused', false)).toBe('refused pair · no counterpart here')
+    expect(healthLine('refused', false)).toBe(
+      'refused pair · no counterpart here',
+    )
   })
 })
 
 describe('timeLine', () => {
   it('labels the remaining figure as an estimate', () => {
-    expect(timeLine({ elapsedMs: 18 * 60_000, pagesPerMin: 4, slotsLeft: 88 })).toMatch(/~/)
+    expect(
+      timeLine({ elapsedMs: 18 * 60_000, pagesPerMin: 4, slotsLeft: 88 }),
+    ).toMatch(/~/)
   })
 
   it('omits the estimate rather than dividing by zero before any pages are turned', () => {
-    expect(timeLine({ elapsedMs: 1000, pagesPerMin: 0, slotsLeft: 88 })).not.toMatch(/~/)
+    expect(
+      timeLine({ elapsedMs: 1000, pagesPerMin: 0, slotsLeft: 88 }),
+    ).not.toMatch(/~/)
   })
 
   it('never reads to the minute on the elapsed side either — under a minute reads as <1m', () => {
-    expect(timeLine({ elapsedMs: 1000, pagesPerMin: 0, slotsLeft: 88 })).toBe('<1m read')
+    expect(timeLine({ elapsedMs: 1000, pagesPerMin: 0, slotsLeft: 88 })).toBe(
+      '<1m read',
+    )
   })
 
   it('reports the projected minutes remaining at the given pace', () => {
-    expect(timeLine({ elapsedMs: 18 * 60_000, pagesPerMin: 4, slotsLeft: 88 })).toBe('18m read · ~22m left')
+    expect(
+      timeLine({ elapsedMs: 18 * 60_000, pagesPerMin: 4, slotsLeft: 88 }),
+    ).toBe('18m read · ~22m left')
   })
 })
 
@@ -151,15 +167,21 @@ describe('nextTurns', () => {
 
 describe('readoutRow', () => {
   it('joins in a fixed order regardless of which fields are set', () => {
-    expect(readoutRow({ health: 'fragmented pair', position: 'slot 1 / 2 · p. 1 · 50%' })).toBe(
-      'slot 1 / 2 · p. 1 · 50% · fragmented pair',
-    )
+    expect(
+      readoutRow({
+        health: 'fragmented pair',
+        position: 'slot 1 / 2 · p. 1 · 50%',
+      }),
+    ).toBe('slot 1 / 2 · p. 1 · 50% · fragmented pair')
   })
 
   it('skips an absent field rather than leaving an empty segment', () => {
-    expect(readoutRow({ position: 'slot 1 / 2 · p. 1 · 50%', chapter: 'no chapter edition' })).toBe(
-      'slot 1 / 2 · p. 1 · 50% · no chapter edition',
-    )
+    expect(
+      readoutRow({
+        position: 'slot 1 / 2 · p. 1 · 50%',
+        chapter: 'no chapter edition',
+      }),
+    ).toBe('slot 1 / 2 · p. 1 · 50% · no chapter edition')
   })
 
   it('orders health second, ahead of time and chapter, so a clipped row loses those first', () => {
@@ -174,7 +196,9 @@ describe('readoutRow', () => {
         chapter: 'c002 · 3 of 7',
         health: 'fragmented pair',
       }),
-    ).toBe('slot 1 / 2 · p. 1 · 50% · fragmented pair · 18m read · ~22m left · c002 · 3 of 7')
+    ).toBe(
+      'slot 1 / 2 · p. 1 · 50% · fragmented pair · 18m read · ~22m left · c002 · 3 of 7',
+    )
   })
 
   it('is the empty string with nothing enabled', () => {
@@ -192,26 +216,44 @@ describe('readoutRow', () => {
         chapter: 'c002 · 3 of 7',
         notes: '1 note here of 4',
       }),
-    ).toBe('slot 1 / 2 · p. 1 · 50% · fragmented pair · c002 · 3 of 7 · 1 note here of 4')
+    ).toBe(
+      'slot 1 / 2 · p. 1 · 50% · fragmented pair · c002 · 3 of 7 · 1 note here of 4',
+    )
   })
 })
 
 describe('chapterReadout', () => {
-  const sound: Alignment = { from: 'hub', to: 'mono', quality: { verdict: 'sound' } }
-  const fragmented: Alignment = { from: 'hub', to: 'fan', quality: { verdict: 'fragmented' } }
+  const sound: Alignment = {
+    from: 'hub',
+    to: 'mono',
+    quality: { verdict: 'sound' },
+  }
+  const fragmented: Alignment = {
+    from: 'hub',
+    to: 'fan',
+    quality: { verdict: 'fragmented' },
+  }
 
   it('marks the chapter line when a hub-touching alignment is not sound', () => {
-    expect(chapterReadout({ member: 0, of: 7, path: 'c000.cbz' }, [sound, fragmented], 'hub')).toBe(
-      '~c000 · 1 of 7',
-    )
+    expect(
+      chapterReadout(
+        { member: 0, of: 7, path: 'c000.cbz' },
+        [sound, fragmented],
+        'hub',
+      ),
+    ).toBe('~c000 · 1 of 7')
   })
 
   it('leaves the chapter line unmarked when every hub-touching alignment is sound', () => {
-    expect(chapterReadout({ member: 0, of: 7, path: 'c000.cbz' }, [sound], 'hub')).toBe('c000 · 1 of 7')
+    expect(
+      chapterReadout({ member: 0, of: 7, path: 'c000.cbz' }, [sound], 'hub'),
+    ).toBe('c000 · 1 of 7')
   })
 
   it('never marks the no-chapter-edition case — there is nothing derived to caveat', () => {
-    expect(chapterReadout(undefined, [fragmented], 'hub')).toBe('no chapter edition')
+    expect(chapterReadout(undefined, [fragmented], 'hub')).toBe(
+      'no chapter edition',
+    )
   })
 })
 
@@ -230,11 +272,15 @@ describe('healthReadout', () => {
   })
 
   it('names a fragmented edge', () => {
-    expect(healthReadout(alignments, 'raw-mono', 'en-fan')).toBe('fragmented pair')
+    expect(healthReadout(alignments, 'raw-mono', 'en-fan')).toBe(
+      'fragmented pair',
+    )
   })
 
   it('reports unknown for a spoke-to-spoke pair with no stored edge', () => {
-    expect(healthReadout(alignments, 'en-mono', 'en-fan')).toBe('verdict unknown')
+    expect(healthReadout(alignments, 'en-mono', 'en-fan')).toBe(
+      'verdict unknown',
+    )
   })
 })
 
@@ -249,11 +295,15 @@ describe('gapHealth', () => {
     // because a sound pairing with a counterpart has nothing to report. A
     // gap is a slot-level absence inside an otherwise sound pairing, which
     // is exactly what `Gap.tsx`'s own sentence for `sound` says in words.
-    expect(gapHealth(alignments, 'raw-mono', 'en-mono')).toBe('sound pair · no counterpart here')
+    expect(gapHealth(alignments, 'raw-mono', 'en-mono')).toBe(
+      'sound pair · no counterpart here',
+    )
   })
 
   it('names a fragmented pairing and the absence together', () => {
-    expect(gapHealth(alignments, 'raw-mono', 'en-fan')).toBe('fragmented pair · no counterpart here')
+    expect(gapHealth(alignments, 'raw-mono', 'en-fan')).toBe(
+      'fragmented pair · no counterpart here',
+    )
   })
 
   it('reports unknown rather than nothing where no edge is stored', () => {
@@ -272,7 +322,9 @@ describe('gapHealth', () => {
     // directly beneath that sentence is the contradiction this exists to
     // prevent.
     expect(healthReadout(alignments, 'raw-mono', 'raw-mono')).toBeUndefined()
-    expect(gapHealth(alignments, 'en-fan', 'raw-mono')).toBe('fragmented pair · no counterpart here')
+    expect(gapHealth(alignments, 'en-fan', 'raw-mono')).toBe(
+      'fragmented pair · no counterpart here',
+    )
   })
 })
 

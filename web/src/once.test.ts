@@ -7,7 +7,8 @@ describe('once', () => {
     // under React StrictMode's double-invoked effect: both callers ask
     // before either has had a chance to resolve.
     let calls = 0
-    const fn = () => new Promise<number>((resolve) => setTimeout(() => resolve(++calls), 0))
+    const fn = () =>
+      new Promise<number>((resolve) => setTimeout(() => resolve(++calls), 0))
     const ensure = once(fn)
 
     const a = ensure()

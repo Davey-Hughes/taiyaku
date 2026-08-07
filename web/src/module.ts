@@ -101,7 +101,10 @@ export interface Registry {
  * and writing its own slice needs this function and its own `id`, nothing
  * that names the module by hand.
  */
-export function sliceFor<P extends object>(map: Record<string, object>, mod: ReaderModule<P>): P {
+export function sliceFor<P extends object>(
+  map: Record<string, object>,
+  mod: ReaderModule<P>,
+): P {
   return (map[mod.id] as P | undefined) ?? mod.defaults
 }
 
@@ -109,11 +112,15 @@ export function sliceFor<P extends object>(map: Record<string, object>, mod: Rea
 export function buildRegistry(modules: ReaderModule<unknown>[]): Registry {
   const dupes = duplicateIds(modules)
   if (dupes.length > 0) {
-    throw new Error(`two modules share one id: ${dupes.map((id) => `\`${id}\``).join(', ')}`)
+    throw new Error(
+      `two modules share one id: ${dupes.map((id) => `\`${id}\``).join(', ')}`,
+    )
   }
   const clashes = collisions(modules)
   if (clashes.length > 0) {
-    const detail = clashes.map((c) => `\`${c.key}\` claimed by ${c.modules.join(' and ')}`)
+    const detail = clashes.map(
+      (c) => `\`${c.key}\` claimed by ${c.modules.join(' and ')}`,
+    )
     throw new Error(`two modules claim one key: ${detail.join('; ')}`)
   }
   const byId = new Map(modules.map((m) => [m.id, m]))

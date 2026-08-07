@@ -4,20 +4,30 @@ import { loadPrefs, resetPrefs, savePrefs } from './prefs'
 function fakeStorage(): Storage {
   const map = new Map<string, string>()
   return {
-    get length() { return map.size },
+    get length() {
+      return map.size
+    },
     clear: () => map.clear(),
     getItem: (k) => map.get(k) ?? null,
     key: (i) => [...map.keys()][i] ?? null,
-    removeItem: (k) => { map.delete(k) },
-    setItem: (k, v) => { map.set(k, v) },
+    removeItem: (k) => {
+      map.delete(k)
+    },
+    setItem: (k, v) => {
+      map.set(k, v)
+    },
   }
 }
 
 /** A storage that always throws, simulating a full or unavailable store. */
 function throwingStorage(): Storage {
-  const fail = () => { throw new Error('quota exceeded') }
+  const fail = () => {
+    throw new Error('quota exceeded')
+  }
   return {
-    get length() { return 0 },
+    get length() {
+      return 0
+    },
     clear: fail,
     getItem: () => null,
     key: () => null,
@@ -26,53 +36,76 @@ function throwingStorage(): Storage {
   }
 }
 
-afterEach(() => { vi.unstubAllGlobals() })
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 describe('prefs', () => {
   it('returns the defaults when nothing is stored', () => {
     vi.stubGlobal('localStorage', fakeStorage())
-    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({ animate: true, ms: 120 })
+    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({
+      animate: true,
+      ms: 120,
+    })
   })
 
   it('round-trips a saved slice', () => {
     vi.stubGlobal('localStorage', fakeStorage())
     savePrefs('motion', { animate: false, ms: 0 })
-    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({ animate: false, ms: 0 })
+    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({
+      animate: false,
+      ms: 0,
+    })
   })
 
   it('fills in a key the stored slice predates, rather than dropping it', () => {
     const s = fakeStorage()
     s.setItem('taiyaku.prefs.motion', JSON.stringify({ animate: false }))
     vi.stubGlobal('localStorage', s)
-    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({ animate: false, ms: 120 })
+    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({
+      animate: false,
+      ms: 120,
+    })
   })
 
   it('falls back to the defaults on unparseable storage rather than throwing', () => {
     const s = fakeStorage()
     s.setItem('taiyaku.prefs.motion', 'not json')
     vi.stubGlobal('localStorage', s)
-    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({ animate: true, ms: 120 })
+    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({
+      animate: true,
+      ms: 120,
+    })
   })
 
   it('reset removes the slice so the defaults apply again', () => {
     vi.stubGlobal('localStorage', fakeStorage())
     savePrefs('motion', { animate: false, ms: 0 })
     resetPrefs('motion')
-    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({ animate: true, ms: 120 })
+    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({
+      animate: true,
+      ms: 120,
+    })
   })
 
   it('falls back to the defaults when the stored value parses but is a string, rather than spreading its character indices', () => {
     const s = fakeStorage()
     s.setItem('taiyaku.prefs.motion', JSON.stringify('hello'))
     vi.stubGlobal('localStorage', s)
-    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({ animate: true, ms: 120 })
+    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({
+      animate: true,
+      ms: 120,
+    })
   })
 
   it('falls back to the defaults when the stored value parses but is an array', () => {
     const s = fakeStorage()
     s.setItem('taiyaku.prefs.motion', JSON.stringify(['nope']))
     vi.stubGlobal('localStorage', s)
-    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({ animate: true, ms: 120 })
+    expect(loadPrefs('motion', { animate: true, ms: 120 })).toEqual({
+      animate: true,
+      ms: 120,
+    })
   })
 
   it('warns naming the preference id when saving fails, rather than failing silently', () => {

@@ -62,7 +62,12 @@ export const prefetchModule: ReaderModule<PrefetchPrefs> = {
  * returns only the ones that exist rather than a slot index nothing can
  * resolve.
  */
-export function window(slot: number, total: number, ahead: number, behind: number): number[] {
+export function window(
+  slot: number,
+  total: number,
+  ahead: number,
+  behind: number,
+): number[] {
   const result: number[] = []
   const depth = Math.max(ahead, behind)
   for (let distance = 1; distance <= depth; distance += 1) {

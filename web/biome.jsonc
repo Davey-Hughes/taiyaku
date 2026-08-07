@@ -1,0 +1,112 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.7/schema.json",
+
+  // `lineWidth` is biome's own default of 80, which the doc comments here
+  // already wrap near. It is **not** the smallest diff, and the alternatives
+  // were measured rather than argued about — 53 of 70 files change here,
+  // against 32 at width 100 and 44 at 120:
+  //
+  //     width   files    diff
+  //      80     53/70   +1327 / -396
+  //     100     32/70   +422  / -184
+  //     120     44/70   +265  / -408
+  //
+  // 80 splits the 424 non-comment lines that sat at 81-100, which is most of
+  // its cost. 120's smaller raw diff is the wrong kind: it mostly *joins*
+  // wrapped signatures back into long lines. 80 was chosen for agreeing with
+  // the prose already in these files and for being the default, so the number
+  // is not up for re-argument later.
+  //
+  // Measure this with `--max-diagnostics` raised. Biome prints at most 20
+  // diagnostics by default, and a naive count of its output reports exactly 20
+  // files at every width — a cap that reads convincingly as a result.
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 80
+  },
+
+  // Single quotes and no semicolons: not a preference expressed here for the
+  // first time, but the one already in the source — 171 imports used `'` and
+  // none used `"`, and no statement ended in `;`.
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "jsxQuoteStyle": "double",
+      "semicolons": "asNeeded"
+    }
+  },
+
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+
+      // **Four rules are off because this branch swaps a tool and does not
+      // change what is enforced.** oxlint never flagged any of them, so
+      // turning them on here would land a second, unrelated claim — fifteen
+      // sites, four of which change rendered markup — inside a commit whose
+      // subject is the swap. They are a follow-up, listed with their sites in
+      // `docs/ci.md`, not a permanent judgement that the rules are wrong.
+      // They are spread across the three groups below; the one rule turned
+      // *on* by name sits among them, marked where it appears.
+      "style": {
+        // 9 sites. `foo!` assertions, in `main.tsx`'s root lookup, two
+        // `Annotations.tsx` handlers, `readouts.ts`, `nearest.ts` and four
+        // tests. Each wants its own look at whether the invariant is real.
+        "noNonNullAssertion": "off",
+
+        // **On deliberately, and not on by default** — this is the second of
+        // the two rules `.oxlintrc.json` enabled by name
+        // (`react/only-export-components`), so leaving it at biome's default
+        // would have quietly dropped coverage while the branch claimed to
+        // change none. Verified by probe rather than by reading the docs: a
+        // file exporting both a pure function and a component draws nothing
+        // from biome's recommended set and is flagged once this is on.
+        // `tiles.ts` exists because of this rule; its doc comment says so.
+        "useComponentExportOnlyModules": "error"
+      },
+      "a11y": {
+        // 3 sites, and the fix is markup rather than a suppression:
+        // `NoteList.tsx`'s `<div role="list">` wants to be a `<ul>` and
+        // `NotePanel.tsx`'s `<div role="group">` a `<fieldset>`.
+        "useSemanticElements": "off",
+        // 1 site, and the most interesting of the three: `NoteList.tsx` gives
+        // `<button>` — interactive — the non-interactive role `listitem`.
+        // Restructuring to `<ul><li><button>` is the real answer.
+        "noInteractiveElementToNoninteractiveRole": "off"
+      },
+      "suspicious": {
+        // 2 sites, both `App.tsx`'s scroll mode: `key={i}` and
+        // `key={`${mode}:${i}`}` over `grouped`. **This one may be a real
+        // defect rather than a style opinion** — `grouped` is rebuilt when a
+        // reader toggles `skip`, so an index key can hold a mounted group's
+        // identity still while its contents change underneath. It is off here
+        // for the same one-claim-per-branch reason as the others, but unlike
+        // them it wants investigating rather than a decision about taste.
+        "noArrayIndexKey": "off"
+      }
+
+      // Deliberately left ON, both with inline suppressions carrying their
+      // reasons: `correctness/useExhaustiveDependencies`, which is the rule
+      // oxlint was enforcing as `react-hooks/exhaustive-deps` and whose four
+      // suppressions are load-bearing (see `App.tsx`), and
+      // `suspicious/noTsIgnore`, whose two sites in `resolver.ts` must stay
+      // `@ts-ignore` rather than becoming `@ts-expect-error` — `docs/ci.md`
+      // records why, and biome's own suggested fix would break the build in
+      // the state where `crates/taiyaku-wasm/pkg` exists.
+    }
+  },
+
+  // Off deliberately. Biome's import sorting is a separate opinion from
+  // formatting, and turning it on would reorder imports across every file in
+  // the same commit that introduces the formatter, making both unreviewable.
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "off"
+      }
+    }
+  }
+}

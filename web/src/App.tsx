@@ -11,10 +11,24 @@ import {
 } from './api'
 import { PageAnnotations } from './Annotations'
 import { Chrome } from './Chrome'
-import { describePosition, displacedBy, spanOf, type Pending } from './correction'
+import {
+  describePosition,
+  displacedBy,
+  spanOf,
+  type Pending,
+} from './correction'
 import { createDecodeQueue, decodeTo, type DecodeQueue } from './decode'
 import { debounce, type Debounced } from './debounce'
-import { canRedo, canUndo, current as currentHistory, emptyHistory, record, redo, undo, type History } from './history'
+import {
+  canRedo,
+  canUndo,
+  current as currentHistory,
+  emptyHistory,
+  record,
+  redo,
+  undo,
+  type History,
+} from './history'
 import { Gap } from './Gap'
 import { CreditsPanel } from './CreditsPanel'
 import { intentOf, isInteractiveTarget } from './keys'
@@ -35,7 +49,13 @@ import {
   skippedApartFrom,
   type CreditsPrefs,
 } from './modules/credits'
-import { directionModule, effectiveDirection, setOverride, TOGGLE_INTENT, type Direction } from './modules/direction'
+import {
+  directionModule,
+  effectiveDirection,
+  setOverride,
+  TOGGLE_INTENT,
+  type Direction,
+} from './modules/direction'
 import { motionModule } from './modules/motion'
 import { prefetchModule, window as prefetchWindow } from './modules/prefetch'
 import {
@@ -79,7 +99,13 @@ import {
 import { NoteList } from './NoteList'
 import { NotePanel, type PanelMode } from './NotePanel'
 import { PageView } from './PageView'
-import { cellsFor, correctionTiles, groups, type Group, type Mode } from './pairing'
+import {
+  cellsFor,
+  correctionTiles,
+  groups,
+  type Group,
+  type Mode,
+} from './pairing'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
 import { display, navigate, restore, type ReadingState } from './reading'
 import { Settings } from './Settings'
@@ -91,7 +117,12 @@ import { withFieldValue } from './settingsPanel'
 // (after that script has run) and break CI or a fresh clone (where it
 // hasn't) — see docs/ci.md's `web` job notes and the global no-resolver-in-
 // tests constraint.
-import { wasmResolver, type Chapter, type Position, type Resolver } from './resolver'
+import {
+  wasmResolver,
+  type Chapter,
+  type Position,
+  type Resolver,
+} from './resolver'
 import {
   alignmentsOf,
   applyIntent,
@@ -127,7 +158,8 @@ const NOTES_DEBOUNCE_MS = 700
  * objects, so reference equality would record a step for a write that changed
  * nothing and leave undo needing two presses to do anything visible.
  */
-const sameNotes = (a: Note[], b: Note[]) => JSON.stringify(a) === JSON.stringify(b)
+const sameNotes = (a: Note[], b: Note[]) =>
+  JSON.stringify(a) === JSON.stringify(b)
 
 /**
  * How near a marker counts as grabbing it, in slot fractions.
@@ -177,7 +209,10 @@ interface Session {
 /** Every slot of one edition, in order. `Resolver` has no bulk accessor. */
 function allSlots(resolver: Resolver, edition: string): Position[] {
   const count = resolver.slotCount(edition) ?? 0
-  return Array.from({ length: count }, (_, index) => resolver.slotAt(edition, index)!)
+  return Array.from(
+    { length: count },
+    (_, index) => resolver.slotAt(edition, index)!,
+  )
 }
 
 /**
@@ -270,7 +305,9 @@ function App() {
   // Every state of the notes this session has written, and where the reader
   // stands in it. Seeded on load, so the document as it arrived is the floor
   // undo cannot go below.
-  const [notesHistory, setNotesHistory] = useState<History<Note[]>>(() => emptyHistory<Note[]>([]))
+  const [notesHistory, setNotesHistory] = useState<History<Note[]>>(() =>
+    emptyHistory<Note[]>([]),
+  )
   const [notesNotice, setNotesNotice] = useState<string>()
   // Which surface the note panel is showing, or none. `n` opens the editor on
   // a fresh draft, a margin tab opens it on an existing note, `a` toggles the
@@ -325,7 +362,11 @@ function App() {
   // is exactly one `work` for this component's lifetime (no work-switcher
   // exists yet), so there is nothing to reload against.
   const [prefsMap, setPrefsMap] = useState<Record<string, object>>(() =>
-    Object.fromEntries(registry.all().map((mod) => [mod.id, loadPrefs(mod.id, mod.defaults as object)])),
+    Object.fromEntries(
+      registry
+        .all()
+        .map((mod) => [mod.id, loadPrefs(mod.id, mod.defaults as object)]),
+    ),
   )
   // Persisted via an effect rather than inline in `setPrefsMap`'s callers —
   // several of them (the `d`/`b` handlers below) update this with a
@@ -388,7 +429,9 @@ function App() {
   // nothing cached). Rebuilding drops nothing already in flight: a job
   // queued against the old instance keeps running under its old cap, and
   // this only changes which instance the *next* `run` call goes to.
-  const [swapQueue, setSwapQueue] = useState<DecodeQueue>(() => createDecodeQueue(prefetchPrefs.maxConcurrent))
+  const [swapQueue, setSwapQueue] = useState<DecodeQueue>(() =>
+    createDecodeQueue(prefetchPrefs.maxConcurrent),
+  )
   useEffect(() => {
     setSwapQueue(createDecodeQueue(prefetchPrefs.maxConcurrent))
   }, [prefetchPrefs.maxConcurrent])
@@ -501,7 +544,10 @@ function App() {
       if (!work) throw new Error('no works available')
       const fetched = await getSidecarWithEtag(work)
       const sidecar: SidecarShape = JSON.parse(fetched.json)
-      const editions = orderedEditions(sidecar.hub, Object.keys(sidecar.editions))
+      const editions = orderedEditions(
+        sidecar.hub,
+        Object.keys(sidecar.editions),
+      )
       const [hub] = editions
       if (!hub) throw new Error(`${work} defines no editions`)
       const resolver = await wasmResolver(fetched.json)
@@ -561,7 +607,7 @@ function App() {
   // Adding `session` to satisfy exhaustive-deps would defeat that: the
   // listener would be torn down and re-added on every keystroke instead of
   // once, for no behavioural gain.
-  // oxlint-disable react-hooks/exhaustive-deps -- session is read via setSession's updater below, not closed over; see above.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: session is read via setSession's updater below, not closed over; see above.
   useEffect(() => {
     if (!session) return
     const { resolver, editions } = session
@@ -654,7 +700,10 @@ function App() {
         // reader has swapped away from it (that swap is what they are
         // comparing against), otherwise `previous` — the edition a `Space`
         // would return to, and so the most recent "other" edition in view.
-        const to = current.state.authority !== shown.edition ? current.state.authority : current.previous
+        const to =
+          current.state.authority !== shown.edition
+            ? current.state.authority
+            : current.previous
         if (to === shown.edition) return // nothing to correct against
         const slots = allSlots(current.resolver, shown.edition)
         setPending({ from: shown.edition, to, a: slots[shown.slot] })
@@ -682,8 +731,14 @@ function App() {
             setPrefsMap((map) => {
               const prefs = sliceFor(map, directionModule)
               const flipped: Direction =
-                effectiveDirection(sidecarReading, prefs.override[edition]) === 'rtl' ? 'ltr' : 'rtl'
-              return { ...map, [directionModule.id]: setOverride(prefs, edition, flipped) }
+                effectiveDirection(sidecarReading, prefs.override[edition]) ===
+                'rtl'
+                  ? 'ltr'
+                  : 'rtl'
+              return {
+                ...map,
+                [directionModule.id]: setOverride(prefs, edition, flipped),
+              }
             })
             break
           }
@@ -699,7 +754,11 @@ function App() {
             if (shown.kind !== 'at') return
             setPrefsMap((map) => ({
               ...map,
-              [regroupModule.id]: toggleEditionBreak(sliceFor(map, regroupModule), shown.edition, shown.slot),
+              [regroupModule.id]: toggleEditionBreak(
+                sliceFor(map, regroupModule),
+                shown.edition,
+                shown.slot,
+              ),
             }))
             break
           }
@@ -819,7 +878,6 @@ function App() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [session?.resolver, session?.editions])
-  // oxlint-enable react-hooks/exhaustive-deps
 
   // A ref rather than a module-level singleton or a `useState`: created once,
   // on the first render, and its pending timer must survive every render in
@@ -831,7 +889,9 @@ function App() {
   // `if` below is the idiom for a ref whose initial value is itself worth not
   // recomputing: every render after the first sees `current` already set and
   // skips straight past it.
-  const writeProgressRef = useRef<Debounced<[string, { edition: string; slot: number }]> | null>(null)
+  const writeProgressRef = useRef<Debounced<
+    [string, { edition: string; slot: number }]
+  > | null>(null)
   if (writeProgressRef.current === null) {
     writeProgressRef.current = debounce((work, position) => {
       putProgress(work, position).catch((err: unknown) => console.error(err))
@@ -864,7 +924,9 @@ function App() {
   // component, and `writeNotes` closes over state that changes every render —
   // so the debounce calls through this ref to reach the current one rather
   // than the one that existed at first render.
-  const writeNotesLatestRef = useRef<((notes: Note[]) => Promise<void>) | null>(null)
+  const writeNotesLatestRef = useRef<((notes: Note[]) => Promise<void>) | null>(
+    null,
+  )
 
   // A pending write must survive the tab going away, not just the session
   // staying open. `visibilitychange` firing `hidden` is the modern, reliable
@@ -920,16 +982,23 @@ function App() {
   // That is precisely the drift `docs/notes.md` warns about: a swap moving
   // the reader one page per press, silently, with every test still green.
   const restored = useRef(false)
-  // oxlint-disable react-hooks/exhaustive-deps -- session changes on every swap too; adding it here would write progress on every swap, not just every navigation. See above.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: session changes on every swap too; adding it here would write progress on every swap, not just every navigation. See above.
   useEffect(() => {
     if (!session) return
     if (!restored.current) {
       restored.current = true
       return
     }
-    writeProgress(session.work, { edition: session.state.authority, slot: session.state.slot })
-  }, [session?.work, session?.state.authority, session?.state.slot, writeProgress])
-  // oxlint-enable react-hooks/exhaustive-deps
+    writeProgress(session.work, {
+      edition: session.state.authority,
+      slot: session.state.slot,
+    })
+  }, [
+    session?.work,
+    session?.state.authority,
+    session?.state.slot,
+    writeProgress,
+  ])
 
   // The reading-time readout's raw material — `modules/readouts.ts`'s
   // `nextTurns`/`timeLine`/`pagesPerMinute` do the actual arithmetic; this
@@ -958,14 +1027,13 @@ function App() {
   // that were not reading at all.
   const turnsRef = useRef<number[]>([])
   const restoredTurn = useRef(false)
-  // oxlint-disable react-hooks/exhaustive-deps -- session changes on every swap too, and a swap is not a page turn; see above.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: session changes on every swap too, and a swap is not a page turn; see above.
   useEffect(() => {
     if (!session) return
     const skip = !restoredTurn.current
     restoredTurn.current = true
     turnsRef.current = nextTurns(turnsRef.current, Date.now(), skip)
   }, [session?.state.authority, session?.state.slot])
-  // oxlint-enable react-hooks/exhaustive-deps
 
   // `elapsedMs` (below, at render) is a plain subtraction against this, fixed
   // once per page load — "session" means "since this reader opened the
@@ -1004,10 +1072,16 @@ function App() {
   // watching every mounted group, which is real work left to a later
   // milestone — recorded in docs/status.md's "What M5a leaves open".
   const currentGroupRef = useRef<HTMLDivElement>(null)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the three `session?.state.*` deps are triggers, not closure reads — the body touches only `mode` and a ref, and exists to re-scroll when the position changes. Removing them, which is what this rule suggests, would leave scroll mode never following the reader.
   useEffect(() => {
     if (mode !== 'scroll') return
     currentGroupRef.current?.scrollIntoView({ block: 'start' })
-  }, [mode, session?.state.authority, session?.state.slot, session?.state.viewing])
+  }, [
+    mode,
+    session?.state.authority,
+    session?.state.slot,
+    session?.state.viewing,
+  ])
 
   // Warms the browser's own cache for the slots `modules/prefetch.ts`'s
   // `window` names either side of wherever the reader is looking, so an
@@ -1029,13 +1103,19 @@ function App() {
   // (kept fresh by the effect near the top of this component) rather than
   // the `session`/`shown`/`resolver` bindings this function only creates
   // after that guard.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the three `session?.state.*` deps are triggers, not closure reads — this effect reads `sessionRef.current` and exists to re-run the prefetch window when the position moves. Removing them, which is what this rule suggests, would prefetch once and never again.
   useEffect(() => {
     const current = sessionRef.current
     if (!current || mode === 'scroll' || !prefetchPrefs.enabled) return
     const shownNow = display(current.state, current.resolver)
     if (shownNow.kind !== 'at') return
     const total = current.resolver.slotCount(shownNow.edition) ?? 0
-    const targets = prefetchWindow(shownNow.slot, total, prefetchPrefs.ahead, prefetchPrefs.behind)
+    const targets = prefetchWindow(
+      shownNow.slot,
+      total,
+      prefetchPrefs.ahead,
+      prefetchPrefs.behind,
+    )
     for (const slot of targets) {
       const position = current.resolver.slotAt(shownNow.edition, slot)
       if (!position) continue
@@ -1073,14 +1153,20 @@ function App() {
   // `nearestPaired` returned), and `takeOffered` is what resolves it into
   // the viewed edition and commits authority there.
   function take(slot: number) {
-    setSession((prev) => (prev ? { ...prev, state: takeOffered(prev.state, slot, prev.resolver) } : prev))
+    setSession((prev) =>
+      prev
+        ? { ...prev, state: takeOffered(prev.state, slot, prev.resolver) }
+        : prev,
+    )
   }
 
   // The filmstrip's click job: real navigation, via `reading.ts`'s
   // `navigate` directly — not `swap`. A tile is a destination the reader
   // chose, not another edition to peek at and return from.
   function goToSlot(slot: number) {
-    setSession((prev) => (prev ? { ...prev, state: navigate(prev.state, slot) } : prev))
+    setSession((prev) =>
+      prev ? { ...prev, state: navigate(prev.state, slot) } : prev,
+    )
   }
 
   // The filmstrip's click job while `pending` is set: `slot` is a slot of
@@ -1114,11 +1200,17 @@ function App() {
     // click would otherwise start a concurrent write against the same `etag`,
     // and the loser of that race gets a `412` for a correction the reader
     // only asked for once.
-    if (!pending || pending.b === undefined || etag === undefined || submitting) return
+    if (!pending || pending.b === undefined || etag === undefined || submitting)
+      return
     const { from, to, a, b } = pending
     setSubmitting(true)
     try {
-      const fresh = await patchAlignment(work, etag, { from, to, a: spanOf(a), b: spanOf(b) })
+      const fresh = await patchAlignment(work, etag, {
+        from,
+        to,
+        a: spanOf(a),
+        b: spanOf(b),
+      })
       const nextResolver = await wasmResolver(fresh.json)
       const bSlot = nextResolver.indexOf(to, b)
       // The outgoing resolver's `WasmSidecar` would otherwise be stranded —
@@ -1129,12 +1221,21 @@ function App() {
       resolver.dispose?.()
       setSession((prev) => {
         if (!prev) return prev
-        const state = bSlot === undefined ? prev.state : navigate({ ...prev.state, viewing: to }, bSlot)
+        const state =
+          bSlot === undefined
+            ? prev.state
+            : navigate({ ...prev.state, viewing: to }, bSlot)
         // `alignments` alongside the resolver swap — `Sidecar::rewrite`
         // recomputes `quality` on every correction, so leaving this at
         // whatever loaded at session start would show a verdict the
         // document no longer states. See `session.ts`'s `alignmentsOf`.
-        return { ...prev, resolver: nextResolver, alignments: alignmentsOf(fresh.json), state, previous: prev.state.viewing }
+        return {
+          ...prev,
+          resolver: nextResolver,
+          alignments: alignmentsOf(fresh.json),
+          state,
+          previous: prev.state.viewing,
+        }
       })
       setEtag(fresh.etag)
       setPending(undefined)
@@ -1159,13 +1260,21 @@ function App() {
           // than the one this session loaded with.
           resolver.dispose?.()
           setSession((prev) =>
-            prev ? { ...prev, resolver: nextResolver, alignments: alignmentsOf(fresh.json) } : prev,
+            prev
+              ? {
+                  ...prev,
+                  resolver: nextResolver,
+                  alignments: alignmentsOf(fresh.json),
+                }
+              : prev,
           )
           setEtag(fresh.etag)
         } catch (rereadErr) {
           console.error(rereadErr)
         }
-        setCorrectionNotice('This work changed since it was read — check the pairing below and confirm again.')
+        setCorrectionNotice(
+          'This work changed since it was read — check the pairing below and confirm again.',
+        )
       } else {
         setCorrectionNotice(message)
       }
@@ -1227,11 +1336,17 @@ function App() {
    * something wrong, and a loop would hammer the server with a reader watching
    * nothing happen.
    */
-  async function writeNotes(notes: Note[], { retry = true } = {}): Promise<void> {
+  async function writeNotes(
+    notes: Note[],
+    { retry = true } = {},
+  ): Promise<void> {
     if (!notesDoc || notesEtag === undefined) return
     setNotesBusy(true)
     try {
-      const fresh = await putNotes(work, notesEtag, { work: notesDoc.work, notes })
+      const fresh = await putNotes(work, notesEtag, {
+        work: notesDoc.work,
+        notes,
+      })
       setNotesDoc(fresh.doc)
       setNotesEtag(fresh.etag)
       setNotesHistory((h) => record(h, fresh.doc.notes, sameNotes))
@@ -1249,7 +1364,9 @@ function App() {
           const merged = mergeOver(fresh.doc.notes, notes)
           setNotesBusy(false)
           await writeNotes(merged, { retry: false })
-          setNotesNotice('These notes changed on another device; yours were kept on top.')
+          setNotesNotice(
+            'These notes changed on another device; yours were kept on top.',
+          )
           return
         } catch (rereadErr) {
           console.error(rereadErr)
@@ -1281,7 +1398,10 @@ function App() {
   function handleSettingChange(id: string, key: string, raw: unknown) {
     const mod = registry.get(id)
     if (!mod) return
-    setPrefsMap((map) => ({ ...map, [id]: withFieldValue(map[id] ?? (mod.defaults as object), key, raw) }))
+    setPrefsMap((map) => ({
+      ...map,
+      [id]: withFieldValue(map[id] ?? (mod.defaults as object), key, raw),
+    }))
   }
 
   // Resets both halves: the stored slice (`resetPrefs`, so a reload does not
@@ -1337,16 +1457,24 @@ function App() {
   // reader cannot grab a box they cannot see, and an edit mode that hid the
   // things it lets you edit would be a puzzle. `reveal` goes back to governing
   // it the moment the editor closes.
-  const notesPlacement = listPlacement(annotationsPrefs.notesList, viewportWidth)
+  const notesPlacement = listPlacement(
+    annotationsPrefs.notesList,
+    viewportWidth,
+  )
   const overlayPrefs =
-    panelMode === 'edit' ? { ...annotationsPrefs, reveal: true } : annotationsPrefs
+    panelMode === 'edit'
+      ? { ...annotationsPrefs, reveal: true }
+      : annotationsPrefs
 
   const slots = allSlots(resolver, shown.edition)
   // `shown.edition` — not `state.viewing` directly, though they're always
   // equal (see `reading.ts`'s `Display`) — because this is the edition the
   // page area is about to draw, which is what an override keyed by edition
   // must line up with.
-  const effectiveReading = effectiveDirection(reading, directionPrefs.override[shown.edition])
+  const effectiveReading = effectiveDirection(
+    reading,
+    directionPrefs.override[shown.edition],
+  )
   // Same `shown.edition` reasoning as `effectiveReading` above: breaks are
   // stored per edition, keyed by the edition whose slots `groups` is about
   // to pair.
@@ -1397,7 +1525,9 @@ function App() {
   // first group — the cover — while the readout correctly reported where the
   // reader was. `skippedApartFrom` is what keeps `-1` from arising at all;
   // this draws nothing rather than something wrong if it ever does.
-  const currentIndex = at ? grouped.findIndex((g) => g.slots.includes(at.slot)) : -1
+  const currentIndex = at
+    ? grouped.findIndex((g) => g.slots.includes(at.slot))
+    : -1
   const current = currentIndex >= 0 ? grouped[currentIndex] : undefined
 
   // While correcting, the filmstrip shows `pending.to`'s tiles rather than
@@ -1416,15 +1546,19 @@ function App() {
   // so any slot — including one half of a spread — can be named on its own,
   // and the dashed marker below (`pairedIndex`) always lands on a tile that
   // names exactly the slot the alignment resolves to.
-  const correctionGroups = pending && correctionSlots ? correctionTiles(correctionSlots) : undefined
+  const correctionGroups =
+    pending && correctionSlots ? correctionTiles(correctionSlots) : undefined
   // Where the alignment currently resolves `pending.a` to, in `pending.to` —
   // the tile a reader disagrees with when they open correction mode, so it
   // has to be visible to disagree with it (see `Filmstrip`'s own doc on
   // `correcting`). `undefined` when `pending.a` currently pairs with nothing
   // in `to`, a real state `Resolver.resolve` can answer and this must not
   // crash on rather than a bug.
-  const landedAtCounterpart = pending && resolver.resolve(pending.from, pending.to, pending.a)
-  const pairedIndex = landedAtCounterpart ? resolver.indexOf(pending.to, landedAtCounterpart) : undefined
+  const landedAtCounterpart =
+    pending && resolver.resolve(pending.from, pending.to, pending.a)
+  const pairedIndex = landedAtCounterpart
+    ? resolver.indexOf(pending.to, landedAtCounterpart)
+    : undefined
   // Named before the write, not after it: the 1:1 rule means this slot loses
   // its counterpart, and nothing undoes a correction short of making another.
   const displaced = pending && displacedBy(pending, resolver)
@@ -1521,12 +1655,20 @@ function App() {
   const reportFrom =
     shown.kind === 'at'
       ? { edition: shown.edition, slot: shown.slot, name: undefined }
-      : { edition: shown.from.edition, slot: shown.from.slot, name: shown.from.edition }
+      : {
+          edition: shown.from.edition,
+          slot: shown.from.slot,
+          name: shown.from.edition,
+        }
   // Same `?? slot + 1` fallback the deleted gap branch used for
   // `nearestPaired`'s bound: an edition the resolver cannot count still
   // renders a line rather than `NaN%`.
-  const reportTotal = resolver.slotCount(reportFrom.edition) ?? reportFrom.slot + 1
-  const chapter: Chapter | undefined = resolver.chapterAt(reportFrom.edition, reportFrom.slot)
+  const reportTotal =
+    resolver.slotCount(reportFrom.edition) ?? reportFrom.slot + 1
+  const chapter: Chapter | undefined = resolver.chapterAt(
+    reportFrom.edition,
+    reportFrom.slot,
+  )
   const positionText = positionLine({
     slot: reportFrom.slot,
     total: reportTotal,
@@ -1556,7 +1698,8 @@ function App() {
   // `pageUrl` takes a page index, not a slot index — they diverge from the
   // first joined spread onward, so every slot is converted through the
   // `Resolver`-derived `slots` array before it reaches a URL.
-  const pageAt = (slot: number) => pageUrl(work, shown.edition, slots[slot].page)
+  const pageAt = (slot: number) =>
+    pageUrl(work, shown.edition, slots[slot].page)
   // 1-based — `alt` text is read by a person (directly, or by a screen
   // reader), the same category `Gap`'s page numbers below fall into, so it
   // gets the same conversion at the same kind of boundary: the internal,
@@ -1608,8 +1751,11 @@ function App() {
    * `pageAt` already builds from the slot rather than by threading slot
    * identity down the tree.
    */
-  function draftImage(target: EventTarget | null): HTMLImageElement | undefined {
-    if (!draft || panelMode !== 'edit' || draft.edition !== shown.edition) return undefined
+  function draftImage(
+    target: EventTarget | null,
+  ): HTMLImageElement | undefined {
+    if (!draft || panelMode !== 'edit' || draft.edition !== shown.edition)
+      return undefined
     if (!(target instanceof HTMLImageElement)) return undefined
     return target.src.endsWith(pageAt(draft.slot)) ? target : undefined
   }
@@ -1621,7 +1767,10 @@ function App() {
       { w: el.naturalWidth, h: el.naturalHeight },
       { w: rect.width, h: rect.height },
     )
-    return pointInSlot({ x: clientX - rect.left, y: clientY - rect.top }, painted)
+    return pointInSlot(
+      { x: clientX - rect.left, y: clientY - rect.top },
+      painted,
+    )
   }
 
   /** What the region should be, given where the drag began and where the pointer is now. */
@@ -1670,7 +1819,9 @@ function App() {
       // already, and show it. Its own region is where the move starts, so
       // grabbing one that was moved earlier continues from where it is now
       // rather than from where the server still has it.
-      const held = edits[gesture.noteId] ?? here.find((h) => h.note.id === gesture.noteId)?.note
+      const held =
+        edits[gesture.noteId] ??
+        here.find((h) => h.note.id === gesture.noteId)?.note
       if (!held) return
       setEdits((map) => (map[held.id] ? map : { ...map, [held.id]: held }))
       setCurrentId(held.id)
@@ -1717,7 +1868,10 @@ function App() {
     setEdits((map) => {
       const note = map[id]
       if (!note) return map
-      const next = { ...map, [id]: { ...note, region: anchor, updated: new Date().toISOString() } }
+      const next = {
+        ...map,
+        [id]: { ...note, region: anchor, updated: new Date().toISOString() },
+      }
       scheduleSave(next)
       return next
     })
@@ -1733,7 +1887,13 @@ function App() {
       // two-page branch below for the case where it wasn't.
       const [slot] = group.slots
       return (
-        <PageView key={key} src={pageAt(slot)} alt={altAt(slot)} buffered={buffered} decodeQueue={swapQueue} />
+        <PageView
+          key={key}
+          src={pageAt(slot)}
+          alt={altAt(slot)}
+          buffered={buffered}
+          decodeQueue={swapQueue}
+        />
       )
     }
     // Two fixed cells, always both present, whether `group` is an ordinary
@@ -1754,7 +1914,12 @@ function App() {
     return (
       <div key={key} style={{ display: 'flex', width: '100%', height: '100%' }}>
         <div style={{ flex: 1, minWidth: 0, height: '100%' }}>
-          <PageView src={pageAt(first)} alt={altAt(first)} buffered={buffered} decodeQueue={swapQueue} />
+          <PageView
+            src={pageAt(first)}
+            alt={altAt(first)}
+            buffered={buffered}
+            decodeQueue={swapQueue}
+          />
         </div>
         {/*
           Collapsed to zero width and hidden, not unmounted, when `wide`: a
@@ -1785,12 +1950,23 @@ function App() {
         <div
           style={
             wide
-              ? { flex: '0 0 0', width: 0, minWidth: 0, height: '100%', overflow: 'hidden' }
+              ? {
+                  flex: '0 0 0',
+                  width: 0,
+                  minWidth: 0,
+                  height: '100%',
+                  overflow: 'hidden',
+                }
               : { flex: 1, minWidth: 0, height: '100%' }
           }
           aria-hidden={wide || undefined}
         >
-          <PageView src={pageAt(second)} alt={altAt(second)} buffered={buffered} decodeQueue={swapQueue} />
+          <PageView
+            src={pageAt(second)}
+            alt={altAt(second)}
+            buffered={buffered}
+            decodeQueue={swapQueue}
+          />
         </div>
       </div>
     )
@@ -1801,7 +1977,11 @@ function App() {
   // unpaired edition costs one scan rather than one per render.
   const gapMoves =
     shown.kind === 'gap'
-      ? nearestPaired(state, resolver, resolver.slotCount(state.authority) ?? state.slot + 1)
+      ? nearestPaired(
+          state,
+          resolver,
+          resolver.slotCount(state.authority) ?? state.slot + 1,
+        )
       : undefined
   // `nearestPaired` already resolved each offer against the edition being
   // looked at while finding it (see `nearest.ts`'s `NearestOffer`), so this is
@@ -1822,10 +2002,30 @@ function App() {
     // `position: absolute` removes it from this flex column's layout flow
     // entirely, so it can overlay the toolbar and the page area below
     // without either one changing size when it mounts or unmounts.
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
-      <div style={{ flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 8, padding: 8 }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        position: 'relative',
+      }}
+    >
+      <div
+        style={{
+          flex: '0 0 auto',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: 8,
+        }}
+      >
         {(['single', 'two', 'scroll'] as const).map((m) => (
-          <button key={m} type="button" onClick={() => setMode(m)} aria-pressed={m === mode}>
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMode(m)}
+            aria-pressed={m === mode}
+          >
             {m}
           </button>
         ))}
@@ -1901,15 +2101,19 @@ function App() {
           list is a way to *read* the notes, and `r` is the key that asks for
           that.
         */}
-        {at && annotationsPrefs.reveal && notesPlacement === 'side' && mode !== 'scroll' && (
-          <NoteList here={here} placement="side" onOpen={openNote} />
-        )}
+        {at &&
+          annotationsPrefs.reveal &&
+          notesPlacement === 'side' &&
+          mode !== 'scroll' && (
+            <NoteList here={here} placement="side" onOpen={openNote} />
+          )}
         {shown.kind === 'gap' ? (
           <Gap
             edition={shown.edition}
             from={{
               edition: shown.from.edition,
-              page: resolver.slotAt(shown.from.edition, shown.from.slot)!.page + 1,
+              page:
+                resolver.slotAt(shown.from.edition, shown.from.slot)!.page + 1,
             }}
             verdict={verdictFor(alignments, shown.from.edition, shown.edition)}
             before={toMove(gapMoves?.before)}
@@ -1939,7 +2143,9 @@ function App() {
                 <PageAnnotations
                   key={`${mode}:${i}`}
                   match={pageAt(g.slots[0])}
-                  here={(scrolledNotes.get(g.slots[0]) ?? []).filter((h) => h.note.id !== currentId)}
+                  here={(scrolledNotes.get(g.slots[0]) ?? []).filter(
+                    (h) => h.note.id !== currentId,
+                  )}
                   prefs={overlayPrefs}
                   pending={
                     panelMode === 'edit' &&
@@ -2008,8 +2214,9 @@ function App() {
         >
           {pending.b === undefined ? (
             <p style={{ margin: 0 }}>
-              Pick the <strong>{pending.to}</strong> page that matches <strong>{pending.from}</strong>{' '}
-              {describePosition(pending.a)}. <em>Escape</em> cancels without writing anything.
+              Pick the <strong>{pending.to}</strong> page that matches{' '}
+              <strong>{pending.from}</strong> {describePosition(pending.a)}.{' '}
+              <em>Escape</em> cancels without writing anything.
             </p>
           ) : (
             <>
@@ -2021,8 +2228,9 @@ function App() {
                   corpus, where the strip has 235 tiles and the picked one
                   scrolls out of view as easily as not. */}
               <p style={{ margin: 0 }}>
-                Pair <strong>{pending.from}</strong> {describePosition(pending.a)} with{' '}
-                <strong>{pending.to}</strong> {describePosition(pending.b)}?
+                Pair <strong>{pending.from}</strong>{' '}
+                {describePosition(pending.a)} with <strong>{pending.to}</strong>{' '}
+                {describePosition(pending.b)}?
               </p>
               {/* Named before the write, not after it — see `displaced`'s own
                   doc above. Shown even when `displaced` is undefined, so a
@@ -2034,13 +2242,19 @@ function App() {
                   ? `${pending.from} ${describePosition(displaced)} will lose its ${pending.to} counterpart.`
                   : `Nothing loses its counterpart — ${pending.to} ${describePosition(pending.b)} pairs with nothing today.`}
               </p>
-              {correctionNotice && <p style={{ margin: 0, opacity: 0.85 }}>{correctionNotice}</p>}
+              {correctionNotice && (
+                <p style={{ margin: 0, opacity: 0.85 }}>{correctionNotice}</p>
+              )}
               {/* Both disabled while the write is on the wire — see
                   `submitting`'s doc. Cancel especially: it is the control
                   that most looks like it undoes the write, and it is the one
                   that cannot. */}
               <div style={{ display: 'flex', gap: 8 }}>
-                <button type="button" disabled={submitting} onClick={() => void confirmCorrection()}>
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => void confirmCorrection()}
+                >
                   {submitting ? 'Writing…' : 'Confirm'}
                 </button>
                 <button
@@ -2102,9 +2316,11 @@ function App() {
           )
         }
         onColour={(colour) =>
-          editCurrent((current) =>
-            ({ ...current, color: colour, updated: new Date().toISOString() }),
-          )
+          editCurrent((current) => ({
+            ...current,
+            color: colour,
+            updated: new Date().toISOString(),
+          }))
         }
         // Every note this session touched, not only the one on show — the
         // point of an edit mode is that a reader can nudge three boxes and

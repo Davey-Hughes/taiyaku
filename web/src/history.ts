@@ -39,7 +39,11 @@ export function emptyHistory<T>(initial: T): History<T> {
  * nothing should not cost a step of history, or undo would need pressing twice
  * to do anything visible.
  */
-export function record<T>(history: History<T>, next: T, same: (a: T, b: T) => boolean): History<T> {
+export function record<T>(
+  history: History<T>,
+  next: T,
+  same: (a: T, b: T) => boolean,
+): History<T> {
   if (same(history.entries[history.at], next)) return history
   const kept = [...history.entries.slice(0, history.at + 1), next]
   const overflow = Math.max(kept.length - LIMIT, 0)
@@ -48,7 +52,8 @@ export function record<T>(history: History<T>, next: T, same: (a: T, b: T) => bo
 }
 
 export const canUndo = <T>(history: History<T>): boolean => history.at > 0
-export const canRedo = <T>(history: History<T>): boolean => history.at < history.entries.length - 1
+export const canRedo = <T>(history: History<T>): boolean =>
+  history.at < history.entries.length - 1
 
 /** One step back, or the same history where there is nowhere to go. */
 export function undo<T>(history: History<T>): History<T> {
@@ -61,4 +66,5 @@ export function redo<T>(history: History<T>): History<T> {
 }
 
 /** The state in force. */
-export const current = <T>(history: History<T>): T => history.entries[history.at]
+export const current = <T>(history: History<T>): T =>
+  history.entries[history.at]

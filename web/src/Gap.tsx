@@ -29,9 +29,12 @@ export interface GapProps {
 }
 
 const sentence: Record<Verdict, string> = {
-  sound: 'This pairing is sound overall — this is one isolated gap, not a sign of trouble.',
-  fragmented: 'This pairing is fragmented: matches are sparse across the whole volume, so gaps like this one are expected.',
-  refused: 'This pairing was refused: these editions were not found to correspond at all.',
+  sound:
+    'This pairing is sound overall — this is one isolated gap, not a sign of trouble.',
+  fragmented:
+    'This pairing is fragmented: matches are sparse across the whole volume, so gaps like this one are expected.',
+  refused:
+    'This pairing was refused: these editions were not found to correspond at all.',
 }
 
 /**
@@ -44,7 +47,14 @@ const sentence: Record<Verdict, string> = {
  * this names the edition and the page instead, and offers the move rather
  * than taking it.
  */
-export function Gap({ edition, from, verdict, before, after, onTake }: GapProps) {
+export function Gap({
+  edition,
+  from,
+  verdict,
+  before,
+  after,
+  onTake,
+}: GapProps) {
   return (
     <div
       role="status"
@@ -60,12 +70,16 @@ export function Gap({ edition, from, verdict, before, after, onTake }: GapProps)
       }}
     >
       <p style={{ fontSize: '1.1em', margin: 0 }}>
-        No <strong>{edition}</strong> page for <strong>{from.edition}</strong> page{' '}
-        {from.page}.
+        No <strong>{edition}</strong> page for <strong>{from.edition}</strong>{' '}
+        page {from.page}.
       </p>
-      {verdict && <p style={{ margin: 0, opacity: 0.8 }}>{sentence[verdict]}</p>}
+      {verdict && (
+        <p style={{ margin: 0, opacity: 0.8 }}>{sentence[verdict]}</p>
+      )}
       {before === undefined && after === undefined ? (
-        <p style={{ margin: 0, opacity: 0.8 }}>No paired page nearby in {edition} either.</p>
+        <p style={{ margin: 0, opacity: 0.8 }}>
+          No paired page nearby in {edition} either.
+        </p>
       ) : (
         <div style={{ display: 'flex', gap: 12 }}>
           {before && (

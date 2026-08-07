@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { cellsFor, correctionTiles, type Group, groups, stepToGroup } from './pairing'
+import {
+  cellsFor,
+  correctionTiles,
+  type Group,
+  groups,
+  stepToGroup,
+} from './pairing'
 import { bSlots, odd, whole } from './fixtures'
 
 /** Slots 0..n-1, with `spreads` naming the pages that are joined. */
@@ -18,7 +24,9 @@ function slotsWith(pages: number, spreads: number[]) {
 describe('single', () => {
   it('is one slot per group', () => {
     expect(groups(whole(3), 'single', 'rtl')).toEqual([
-      { slots: [0] }, { slots: [1] }, { slots: [2] },
+      { slots: [0] },
+      { slots: [1] },
+      { slots: [2] },
     ])
   })
 
@@ -39,11 +47,17 @@ describe('single', () => {
 
 describe('two-page', () => {
   it('pairs slots (0,1), (2,3), …', () => {
-    expect(groups(whole(4), 'two', 'rtl')).toEqual([{ slots: [0, 1] }, { slots: [2, 3] }])
+    expect(groups(whole(4), 'two', 'rtl')).toEqual([
+      { slots: [0, 1] },
+      { slots: [2, 3] },
+    ])
   })
 
   it('leaves a trailing odd slot alone rather than pairing it with nothing', () => {
-    expect(groups(whole(3), 'two', 'rtl')).toEqual([{ slots: [0, 1] }, { slots: [2] }])
+    expect(groups(whole(3), 'two', 'rtl')).toEqual([
+      { slots: [0, 1] },
+      { slots: [2] },
+    ])
   })
 
   it('shows a joined spread as one wide tile, not as two paired halves', () => {
@@ -131,27 +145,51 @@ describe('two-page with a hand-inserted break', () => {
 
 describe('cellsFor', () => {
   it('splits an ordinary pair into two equal-width cells, ltr in slot order', () => {
-    expect(cellsFor({ slots: [2, 3] }, 'ltr')).toEqual({ wide: false, first: 2, second: 3 })
+    expect(cellsFor({ slots: [2, 3] }, 'ltr')).toEqual({
+      wide: false,
+      first: 2,
+      second: 3,
+    })
   })
 
   it('reverses an ordinary pair for rtl', () => {
-    expect(cellsFor({ slots: [2, 3] }, 'rtl')).toEqual({ wide: false, first: 3, second: 2 })
+    expect(cellsFor({ slots: [2, 3] }, 'rtl')).toEqual({
+      wide: false,
+      first: 3,
+      second: 2,
+    })
   })
 
   it('puts a joined spread wide in the first cell, with its real second half mirrored into the second', () => {
-    expect(cellsFor({ slots: [4, 5], spread: true }, 'ltr')).toEqual({ wide: true, first: 4, second: 5 })
+    expect(cellsFor({ slots: [4, 5], spread: true }, 'ltr')).toEqual({
+      wide: true,
+      first: 4,
+      second: 5,
+    })
   })
 
   it('does not reorder a spread for rtl — it has no left/right to reorder', () => {
-    expect(cellsFor({ slots: [4, 5], spread: true }, 'rtl')).toEqual({ wide: true, first: 4, second: 5 })
+    expect(cellsFor({ slots: [4, 5], spread: true }, 'rtl')).toEqual({
+      wide: true,
+      first: 4,
+      second: 5,
+    })
   })
 
   it('mirrors a solo slot (no pairing partner) into both cells, wide', () => {
-    expect(cellsFor({ slots: [7] }, 'ltr')).toEqual({ wide: true, first: 7, second: 7 })
+    expect(cellsFor({ slots: [7] }, 'ltr')).toEqual({
+      wide: true,
+      first: 7,
+      second: 7,
+    })
   })
 
   it('mirrors a solo slot the same way regardless of reading direction', () => {
-    expect(cellsFor({ slots: [7] }, 'rtl')).toEqual({ wide: true, first: 7, second: 7 })
+    expect(cellsFor({ slots: [7] }, 'rtl')).toEqual({
+      wide: true,
+      first: 7,
+      second: 7,
+    })
   })
 
   it('keeps the same two positions stable across a shape change at a spread boundary', () => {
@@ -170,7 +208,11 @@ describe('cellsFor', () => {
 
 describe('correctionTiles', () => {
   it('is one group per slot, ignoring pairing entirely', () => {
-    expect(correctionTiles(whole(3))).toEqual([{ slots: [0] }, { slots: [1] }, { slots: [2] }])
+    expect(correctionTiles(whole(3))).toEqual([
+      { slots: [0] },
+      { slots: [1] },
+      { slots: [2] },
+    ])
   })
 
   // bSlots: 0, 1, 2R, 2L, 3, 4, 5, 6, 7 — slots 2 and 3 are one page, joined
@@ -206,7 +248,9 @@ describe('correctionTiles', () => {
 describe('scroll', () => {
   it('is one slot per group, like single — the difference is layout, not grouping', () => {
     expect(groups(whole(3), 'scroll', 'rtl')).toEqual([
-      { slots: [0] }, { slots: [1] }, { slots: [2] },
+      { slots: [0] },
+      { slots: [1] },
+      { slots: [2] },
     ])
   })
 
@@ -406,7 +450,9 @@ describe('groups, with slots set aside', () => {
     // and the property M5b's manual pass checks for.
     const slots = slotsWith(7, [3])
     for (const mode of ['single', 'two', 'scroll'] as const) {
-      expect(groups(slots, mode, 'rtl', [], new Set())).toEqual(groups(slots, mode, 'rtl'))
+      expect(groups(slots, mode, 'rtl', [], new Set())).toEqual(
+        groups(slots, mode, 'rtl'),
+      )
     }
   })
 })
@@ -431,14 +477,14 @@ describe('groups, the cases the whole-branch review found', () => {
     // `skip` on silently changed the parity of the rest of the volume for a
     // reader who had fixed it themselves.
     const slots = slotsWith(5, [])
-    expect(groups(slots, 'two', 'rtl', [1], new Set([1])).map((x) => x.slots)).toEqual([
-      [0],
-      [2, 3],
-      [4],
-    ])
+    expect(
+      groups(slots, 'two', 'rtl', [1], new Set([1])).map((x) => x.slots),
+    ).toEqual([[0], [2, 3], [4]])
     // Distinguishable from the same call without the break, which is the
     // whole point — these were byte-identical before.
-    expect(groups(slots, 'two', 'rtl', [], new Set([1])).map((x) => x.slots)).toEqual([
+    expect(
+      groups(slots, 'two', 'rtl', [], new Set([1])).map((x) => x.slots),
+    ).toEqual([
       [0, 2],
       [3, 4],
     ])
@@ -472,7 +518,10 @@ describe('stepToGroup, across a group that straddles a skipped slot', () => {
     // so nothing drawn is stepped over in either direction. The forward answer
     // is therefore a reversal (4 → 0), not only an unsticking.
     const g = groups(slotsWith(6, []), 'two', 'rtl', [], new Set([1, 3]))
-    expect(g.map((x) => x.slots)).toEqual([[0, 2], [4, 5]])
+    expect(g.map((x) => x.slots)).toEqual([
+      [0, 2],
+      [4, 5],
+    ])
     expect(stepToGroup(g, 1, -1)).toBe(0)
     expect(stepToGroup(g, 1, 1)).toBe(0)
   })
@@ -526,7 +575,9 @@ describe('skipping is presentational', () => {
       return visited
     }
 
-    expect(walk(groups(slots, 'single', 'rtl', [], new Set([2, 3])))).toEqual([1, 4, 5])
+    expect(walk(groups(slots, 'single', 'rtl', [], new Set([2, 3])))).toEqual([
+      1, 4, 5,
+    ])
     expect(walk(groups(slots, 'single', 'rtl'))).toEqual([1, 2, 3])
 
     // Same slot table in both worlds — only which entries are reachable

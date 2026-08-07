@@ -71,7 +71,10 @@ export function groups(
   while (index < slots.length) {
     const here = slots[index]
     const next = slots[index + 1]
-    const joined = here.half !== undefined && next?.half !== undefined && next.page === here.page
+    const joined =
+      here.half !== undefined &&
+      next?.half !== undefined &&
+      next.page === here.page
     if (joined) {
       // A spread is one image, so it is set aside only when both halves are.
       // `creditSlotsIn` filters by page and both halves carry the same one, so
@@ -115,7 +118,8 @@ export function groups(
     // than close out this one. Both tests are against `partner` rather than
     // `index + 1`, so a skipped slot in between does not hide a spread or
     // swallow a break.
-    const nextIsSpreadStart = at?.half !== undefined && slots[partner + 1]?.page === at.page
+    const nextIsSpreadStart =
+      at?.half !== undefined && slots[partner + 1]?.page === at.page
     // The partner search can also land *inside* a spread, on its second half,
     // when the first half is skipped and the second is not. Pairing with it
     // would put half a wide image in an ordinary cell and drop the other half
@@ -123,14 +127,21 @@ export function groups(
     // disagree about a case the spread branch above deliberately specifies.
     // Stopping short instead lets `index` reach the spread's own first half on
     // the next turn, where that branch handles it.
-    const partnerIsSpreadTail = at?.half !== undefined && slots[partner - 1]?.page === at.page
+    const partnerIsSpreadTail =
+      at?.half !== undefined && slots[partner - 1]?.page === at.page
     // Any break *in* the skipped run counts, not only one exactly at
     // `partner`. A break is a slot a reader marked by hand to restart pairing
     // at; a skipped slot in between must not swallow it, or switching `skip`
     // on would silently change the parity for the rest of the volume of a
     // reader who had fixed it themselves.
-    const nextIsBreak = at !== undefined && breaks.some((b) => b > index && b <= partner)
-    if (at === undefined || nextIsSpreadStart || partnerIsSpreadTail || nextIsBreak) {
+    const nextIsBreak =
+      at !== undefined && breaks.some((b) => b > index && b <= partner)
+    if (
+      at === undefined ||
+      nextIsSpreadStart ||
+      partnerIsSpreadTail ||
+      nextIsBreak
+    ) {
       out.push({ slots: [index] })
       index += 1
       continue
@@ -351,7 +362,9 @@ function nearestGroup(all: Group[], slot: number, by: 1 | -1): number {
   // the forward answer, and the case for it is that landing on the tile
   // holding slot 2 shows content that jumping to 4 skipped past.
   if (by === 1) {
-    const ahead = all.find((group) => group.slots[group.slots.length - 1] > slot)
+    const ahead = all.find(
+      (group) => group.slots[group.slots.length - 1] > slot,
+    )
     return ahead ? ahead.slots[0] : slot
   }
   // Groups are in ascending order, so the last one *beginning* below `slot` is

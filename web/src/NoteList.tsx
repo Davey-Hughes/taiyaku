@@ -107,13 +107,19 @@ export function NoteList({ here, placement, onOpen }: NoteListProps) {
           style={rowStyle}
           onClick={() => onOpen(h.note.id)}
         >
-          <span style={numberStyle(noteColour(h.note.color).tab)}>{index + 1}</span>
+          <span style={numberStyle(noteColour(h.note.color).tab)}>
+            {index + 1}
+          </span>
           <span>
             {/* Where a travelled note came from, and what kind of mark it is —
                 both said in the row rather than left to be inferred from a
                 marker the reader may not have found yet. */}
-            {h.travelled && <em style={{ opacity: 0.7 }}>on {h.note.edition} · </em>}
-            {isPoint(h.note.region) && <em style={{ opacity: 0.7 }}>point · </em>}
+            {h.travelled && (
+              <em style={{ opacity: 0.7 }}>on {h.note.edition} · </em>
+            )}
+            {isPoint(h.note.region) && (
+              <em style={{ opacity: 0.7 }}>point · </em>
+            )}
             {h.note.body || <em style={{ opacity: 0.7 }}>empty</em>}
           </span>
         </button>

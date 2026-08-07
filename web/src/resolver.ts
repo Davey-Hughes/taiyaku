@@ -1,3 +1,8 @@
+// biome-ignore-all lint/suspicious/noTsIgnore: the `@ts-ignore` below must stay
+// `@ts-ignore` and not become `@ts-expect-error` — see the comment on it, and
+// `docs/ci.md`. Biome's suggested fix breaks the build in the state where
+// `crates/taiyaku-wasm/pkg` exists. The rule also fires a second time on the
+// prose above the directive, which merely names the token.
 import { once } from './once'
 
 // `taiyaku-wasm` is a `file:` dependency on the gitignored, generated
@@ -134,7 +139,10 @@ export async function wasmResolver(json: string): Promise<Resolver> {
     slotAt: (edition, index) => {
       const p = sc.slotAt(edition, index)
       if (p === undefined) return undefined
-      const position: Position = { page: p.page, half: p.half as 'L' | 'R' | undefined }
+      const position: Position = {
+        page: p.page,
+        half: p.half as 'L' | 'R' | undefined,
+      }
       p.free()
       return position
     },
