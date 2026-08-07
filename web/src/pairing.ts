@@ -38,12 +38,31 @@ export interface Group {
  * when a break falls on one of a spread's own slots — a spread is one image
  * and cannot be halved, so that break is absorbed rather than applied, and
  * pairing simply resumes where the spread already forces it to.
+ *
+ * `skipped` is the `credits` module's set of slots a reader has asked to keep
+ * out of the reading flow. **It is honoured here rather than by filtering the
+ * result**, and the difference is the whole of whether `skip` works in `two`
+ * mode. A filter over finished groups can only drop a group whose every slot
+ * is skipped, and on the primary corpus that is none of them: each of
+ * `en-fan`'s four credit pages sits at a chapter's end and so pairs with an
+ * ordinary page, measured at 122 tiles with `skip` on and 122 with it off.
+ * Deciding *while pairing* lets the partner search step past a skipped slot,
+ * so its neighbour pairs forward instead of being stranded beside a page the
+ * reader asked to set aside.
+ *
+ * **Slot numbers are untouched either way.** `Group.slots` holds indices into
+ * the unfiltered `slots` array, so skipping changes which slots are drawn and
+ * never what any of them is called — `docs/status.md` §4's "skipping never
+ * renumbers", and the reason the position readout still divides by the whole
+ * edition. Empty by default, so every caller that does not skip is unaffected
+ * and pays nothing.
  */
 export function groups(
   slots: Position[],
   mode: Mode,
   _reading: 'rtl' | 'ltr',
   breaks: number[] = [],
+  skipped: Set<number> = NOTHING_SKIPPED,
 ): Group[] {
   const paired = mode === 'two'
 
@@ -54,8 +73,22 @@ export function groups(
     const next = slots[index + 1]
     const joined = here.half !== undefined && next?.half !== undefined && next.page === here.page
     if (joined) {
-      out.push({ slots: [index, index + 1], spread: true })
+      // A spread is one image, so it is set aside only when both halves are.
+      // `creditSlotsIn` filters by page and both halves carry the same one, so
+      // in practice the two always agree; the test is written out anyway
+      // rather than assuming that, since this function is given a slot set and
+      // has no way to check where it came from.
+      if (!(skipped.has(index) && skipped.has(index + 1))) {
+        out.push({ slots: [index, index + 1], spread: true })
+      }
       index += 2
+      continue
+    }
+    if (skipped.has(index)) {
+      // Emit nothing and carry on. In `single` and `scroll` that is the whole
+      // of skipping; in `two` it is half, and the partner search below is the
+      // other half.
+      index += 1
       continue
     }
     if (!paired) {
@@ -63,24 +96,55 @@ export function groups(
       index += 1
       continue
     }
+    // **The partner is the next slot that is not set aside**, not simply
+    // `index + 1`. Pairing around a skipped slot rather than over it is what
+    // makes `skip` mean anything in `two` mode at all: measured on the primary
+    // corpus, every one of `en-fan`'s four credit pages sits at a chapter's
+    // end and so pairs with an ordinary page, so a rule that only dropped
+    // wholly-skipped pairs dropped none of them — 122 tiles with `skip` on and
+    // 122 with it off. Skipping past the slot re-pairs its neighbour forward
+    // instead, which is what a reader who asked for those pages to be set
+    // aside meant.
+    let partner = index + 1
+    while (partner < slots.length && skipped.has(partner)) partner += 1
+    const at = slots[partner]
     // A spread starting at the *second* position of a would-be pair must not
     // be split across two groups, so the pair stops short and the spread
     // opens the next group. A hand-inserted break at that same position does
-    // the same thing: the slot at `index + 1` must open a fresh group rather
-    // than close out this one.
-    const nextIsSpreadStart =
-      next?.half !== undefined && slots[index + 2]?.page === next.page
-    const nextIsBreak = next !== undefined && breaks.includes(index + 1)
-    if (next === undefined || nextIsSpreadStart || nextIsBreak) {
+    // the same thing: the slot at `partner` must open a fresh group rather
+    // than close out this one. Both tests are against `partner` rather than
+    // `index + 1`, so a skipped slot in between does not hide a spread or
+    // swallow a break.
+    const nextIsSpreadStart = at?.half !== undefined && slots[partner + 1]?.page === at.page
+    // The partner search can also land *inside* a spread, on its second half,
+    // when the first half is skipped and the second is not. Pairing with it
+    // would put half a wide image in an ordinary cell and drop the other half
+    // — and `single` mode keeps that spread whole, so the two modes would
+    // disagree about a case the spread branch above deliberately specifies.
+    // Stopping short instead lets `index` reach the spread's own first half on
+    // the next turn, where that branch handles it.
+    const partnerIsSpreadTail = at?.half !== undefined && slots[partner - 1]?.page === at.page
+    // Any break *in* the skipped run counts, not only one exactly at
+    // `partner`. A break is a slot a reader marked by hand to restart pairing
+    // at; a skipped slot in between must not swallow it, or switching `skip`
+    // on would silently change the parity for the rest of the volume of a
+    // reader who had fixed it themselves.
+    const nextIsBreak = at !== undefined && breaks.some((b) => b > index && b <= partner)
+    if (at === undefined || nextIsSpreadStart || partnerIsSpreadTail || nextIsBreak) {
       out.push({ slots: [index] })
       index += 1
       continue
     }
-    out.push({ slots: [index, index + 1] })
-    index += 2
+    out.push({ slots: [index, partner] })
+    // Past the partner, not past `index + 1`: everything between them is
+    // skipped and has already had its chance to be emitted.
+    index = partner + 1
   }
   return out
 }
+
+/** One empty set, so the default argument does not allocate per call. */
+const NOTHING_SKIPPED: Set<number> = new Set()
 
 /**
  * One group per slot, always — ignoring `mode`, spreads, and breaks alike.
@@ -196,13 +260,89 @@ export function cellsFor(group: Group, reading: 'rtl' | 'ltr'): Cells {
  * mode draws the halves in separate cells. What is given up is reaching it by
  * arrow in a mode that cannot show you which one you are on.
  *
- * A slot no group claims stays put rather than guessing at a neighbour: the
- * caller has a slot from somewhere this function does not model, and moving
- * it somewhere plausible would be worse than not moving it.
+ * **The clamp below has a known defect at the end of the volume, tabled as
+ * O28.** `Math.min(Math.max(here + by, 0), all.length - 1)` keeps a reader in
+ * the group they are already in when there is nowhere further to go, and this
+ * function then lands on that group's *first* slot — which, standing on its
+ * second, is behind them. Measured with nothing skipped: `two` mode
+ * `[[0,1],[2,3],[4,5]]` answers 4 going forward from slot 5, and `single` and
+ * `scroll` do the same from the second half of a trailing joined spread, so it
+ * is not a `two`-mode quirk. Only the *final* group: from a mid-pair second
+ * slot the next tile is answered correctly, and backward at the start already
+ * returns the slot unchanged. An arrow cannot put a reader on a second slot —
+ * that is the cost this doc already names — but a swap, a confirmed
+ * correction, or a restored progress record can.
+ *
+ * A slot no group claims goes to the nearest group in the direction of travel
+ * (`nearestGroup` below) rather than staying put. **That branch is a backstop,
+ * not a live path**: `modules/credits.ts`'s `skippedApartFrom` exempts the
+ * page the reader is standing on from being skipped, so `groups` always emits
+ * a group containing it and `findIndex` cannot answer `-1` for any position
+ * the reader can hold. It is kept because the invariant lives in another
+ * module and a caller that passed a skipped set without the exemption would
+ * otherwise strand a reader with no way out but the panel that put them there.
+ * *An earlier version of this paragraph said the opposite — that such a slot
+ * stayed put — and then, when `skipped` arrived, that the state was ordinary.
+ * Neither is true now.*
  */
 export function stepToGroup(all: Group[], slot: number, by: 1 | -1): number {
   const here = all.findIndex((group) => group.slots.includes(slot))
-  if (here === -1) return slot
+  if (here === -1) return nearestGroup(all, slot, by)
   const next = Math.min(Math.max(here + by, 0), all.length - 1)
   return all[next].slots[0]
+}
+
+/**
+ * Where an arrow goes from a slot no group holds.
+ *
+ * **Unreachable as the reader is wired today, and deliberately kept.**
+ * `modules/credits.ts`'s `skippedApartFrom` takes the page the reader stands
+ * on out of the skipped set, so every position they can hold is in some group
+ * and `stepToGroup`'s `findIndex` never answers `-1`. The three routes onto a
+ * skipped page — taking one from the credits panel, clicking its filmstrip
+ * tile before switching `skip` on, switching `skip` on where you already
+ * were — are all closed by that exemption. This exists because the invariant
+ * that closes them lives in a *different module*: a caller that built a
+ * skipped set without it, or a future simplification of `skippedApartFrom`,
+ * would strand a reader on a page nothing draws, and a silent backstop is
+ * cheaper than that. `pairing.test.ts` pins its behaviour directly for the
+ * same reason.
+ *
+ * **It needs no knowledge of which slots are skipped**, which is why it can
+ * live here at all: `all` is already the grouping, so "the nearest group in
+ * the direction of travel" is answerable from it alone, and this stays a pure
+ * function of the grouping.
+ *
+ * Returns `slot` unchanged when nothing survives ahead — the same boundary
+ * answer the reader gives at the first and last slot.
+ */
+function nearestGroup(all: Group[], slot: number, by: 1 | -1): number {
+  // **Tested on the group's whole span, not on its first or last slot alone.**
+  // A group used to be a contiguous run, so either end stood for all of it.
+  // The `skipped` partner search broke that: `[2, 4]` is one tile with slot 3
+  // set aside between its halves, and it *straddles* the slot a reader on 3 is
+  // standing at. Asking only whether its first slot is past 3 (forward) or its
+  // last is before 3 (backward) says no both ways, and the arrow passes over
+  // the one tile adjacent in either direction — measured as `←` giving 0 and
+  // `→` giving 5 where 2 was right.
+  //
+  // With slots 1 and 3 both set aside (`[[0, 2], [4, 5]]`, reader on 1) the
+  // two directions failed differently, and only one was stuck: `←` returned 1
+  // and did nothing, while `→` returned 4 — it moved, but over slot 2, which
+  // *is* drawn, as half of the tile `[0, 2]`. The span test changes `→` to 0,
+  // which is that same tile. So this is not only an unsticking: it reverses
+  // the forward answer, and the case for it is that landing on the tile
+  // holding slot 2 shows content that jumping to 4 skipped past.
+  if (by === 1) {
+    const ahead = all.find((group) => group.slots[group.slots.length - 1] > slot)
+    return ahead ? ahead.slots[0] : slot
+  }
+  // Groups are in ascending order, so the last one *beginning* below `slot` is
+  // the nearest behind it — including one that straddles it.
+  let behind: Group | undefined
+  for (const group of all) {
+    if (group.slots[0] < slot) behind = group
+    else break
+  }
+  return behind ? behind.slots[0] : slot
 }

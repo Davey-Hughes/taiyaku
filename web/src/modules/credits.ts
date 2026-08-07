@@ -1,4 +1,5 @@
 import type { ReaderModule } from '../module'
+import type { Position } from '../resolver'
 
 export const PANEL_INTENT = 'credits:panel'
 
@@ -18,32 +19,28 @@ export interface CreditsPrefs {
  * and nothing is meant to become unreachable. `C` is claimed for the panel
  * that will list every one, and taking an entry will go there.
  *
- * **The panel is not mounted, and neither half of this module does anything
- * in the shipped build.** Say what shipped, not what the design sketched: this
- * file declares the contract — an id, a label, `defaults`, and the `C` claim —
- * and `App.tsx` renders no panel for it and has no `case PANEL_INTENT` in its
- * module switch, so a `C` press is consumed by `preventDefault()` and falls
- * out of the switch in silence. Pressing `s` does show a "Credit pages"
- * settings section, generated from `defaults` like every other module's, and
- * its two toggles persist across a reload and govern nothing.
+ * **Both halves now do something.** `C` opens `CreditsPanel`, which lists this
+ * edition's credit pages; `skip` keeps them out of the reading flow. The panel
+ * was blocked on O25 until 2026-08-07 — `App.tsx`'s `shown.kind === 'gap'`
+ * branch returned the `Gap` view *instead of* the reader's tree, so anything
+ * mounted below it went unrendered, and a gap is precisely the state a reader
+ * asks "what did I skip?" from. That branch is gone and there is one mount
+ * site a gap does not hide.
  *
- * **Why it is registered anyway.** The panel was blocked on O25 — `App.tsx`'s
- * `shown.kind === 'gap'` branch returned the `Gap` view *instead of* the
- * reader's tree, so anything mounted below it was not rendered, and a gap is
- * precisely the state a reader asks "what did I skip?" from. Mounting a third
- * panel that vanished in that state would have been the partial answer O25
- * existed to prevent. Registration is kept because `modules/registry.ts`'s
- * property — adding a module to one array is the only hand-edit its existence
- * needs — is worth more than hiding an inert settings section, provided the
- * docs are honest about what the section currently does, which is what this
- * paragraph is for. Do not strip `keys` or `defaults` to quiet the section.
+ * **`skip` is carried out by `pairing.ts`'s `groups`, which is handed the
+ * skipped slots**, not by filtering the groups it returns. The difference is
+ * not academic: a filter can only drop a group whose every slot is skipped,
+ * and measured on the primary corpus that is none of them, since each of
+ * `en-fan`'s four credit pages sits at a chapter's end and so pairs with an
+ * ordinary page — 122 tiles in two-page mode with the setting on and 122 with
+ * it off. Deciding while pairing lets the partner search step past a skipped
+ * slot so its neighbour pairs forward. See `docs/notes.md`, "The credit-pages
+ * panel, and where skipping had to be decided".
  *
- * **O25 is closed and this is no longer blocked, only unwritten.** `App.tsx`
- * now narrows `Display` once rather than returning early, so every panel has
- * one mount site that a gap does not hide — mounting this one is an ordinary
- * addition to it plus a `PANEL_INTENT` case in the module switch. What is
- * still genuinely unfinished is `creditSlots` below, for the reason its own
- * doc gives.
+ * `creditSlots` and `nextReadable` are both gone. The first is `creditSlotsIn`
+ * below, filtering the already-expanded slot table instead of deriving slot
+ * expansion a second time; the second walked slots in a reader that has
+ * stepped by group since #12, and its job is now the grouping's.
  *
  * **`C`, not `c`.** Lower-case `c` is `keys.ts`'s own reserved built-in for
  * correction mode, checked before any module's declared keys are — a module
@@ -72,80 +69,104 @@ export const creditsModule: ReaderModule<CreditsPrefs> = {
   keys: [{ key: 'C', intent: PANEL_INTENT }],
 }
 
-/** An edition's page count and its joined spreads — what slot expansion needs. */
-export interface Pagination {
-  pages: number
-  spreads: number[]
-}
-
 /**
- * Every slot the given pages present.
+ * Every slot of `slots` that one of `pages` presents.
  *
  * The sidecar's `credits` is in pages and the reader addresses slots, so this
  * is the one place the two meet. A joined spread presents two slots and both
- * are skipped together: half a credits card is not a page anybody wants.
+ * are returned: half a credits card is not a page anybody wants, and both
+ * halves carry the same `page`, so filtering on `page` gets that without
+ * needing to know which pages are spreads.
  *
- * **This must be replaced when the panel is mounted, not adopted as it
- * stands.** Two things are wrong with it and neither is a bug in the
- * arithmetic, which is why the tests below pass:
+ * **`slots` is `App.tsx`'s `allSlots(resolver, edition)`, deliberately.** The
+ * function this replaced took a `{ pages, spreads }` and walked it, which was
+ * a second implementation of slot expansion — `taiyaku_core`'s `slot::expand`
+ * owns that derivation and `docs/sidecar.md` is normative on the page
+ * sequence; `docs/status.md` names two consumers deriving it separately as the
+ * defect `taiyaku-read` exists to prevent, because the format cannot detect
+ * the disagreement. Taking the already-expanded table instead means the
+ * browser reads core's answer rather than recomputing it in a third language.
+ * It also removes the reason the old signature was uncallable: nothing in
+ * `web/` could build a `{ pages, spreads }`, since `Resolver` exposes neither
+ * a page count nor a spread list.
  *
- * 1. **It is a second implementation of slot expansion.** `taiyaku_core`'s
- *    `slot::expand` owns that derivation and the page sequence is normative —
- *    `docs/sidecar.md`, and `docs/status.md` names two consumers deriving it
- *    separately as the defect `taiyaku-read` was created to prevent, because
- *    the format cannot detect the disagreement. The loop below is that second
- *    consumer, in a third language. The replacement is a filter over
- *    `App.tsx`'s existing `allSlots(resolver, edition)`, keeping the page of
- *    each slot: `allSlots` goes through the `Resolver`, which is
- *    `taiyaku-wasm`'s `Binding`, which is core's own expansion — so there is
- *    one derivation and the browser reads it rather than repeating it.
- * 2. **Nothing in `web/` can build the `Pagination` it asks for.** The
- *    `Resolver` interface exposes no page count and no spread list, only
- *    `slotCount` and `slotAt`. So this signature cannot be satisfied from what
- *    the reader has; it is only callable from a test that writes the numbers
- *    down itself, which is exactly what the tests below do.
- *
- * Kept rather than deleted because the behaviour it states is the behaviour
- * the panel wants — both halves of a joined spread go together — and the tests
- * pin that. What has to change is where the expansion comes from.
+ * A page the edition does not have contributes nothing rather than throwing.
+ * `credits` is a heuristic's output written by a person, while the slot table
+ * is re-derived from the archives on every load — same file, different
+ * provenance — so the two can disagree after a re-solve or a replaced member.
+ * Returning `undefined` on an ordinary out-of-range index is what `Resolver`'s
+ * own `slotAt`, `indexOf` and `chapterAt` all do, reserving a throw for what
+ * `resolver.ts` calls "a real defect, not an ordinary gap"; degrading to
+ * "fewer skipped pages" is the safe
+ * direction, where a thrown error would take the whole reader down over a
+ * stale list.
  */
-export function creditSlots(pages: number[], edition: Pagination): number[] {
+export function creditSlotsIn(slots: Position[], pages: number[]): number[] {
   const wanted = new Set(pages)
   const out: number[] = []
-  let slot = 0
-  for (let page = 0; page < edition.pages; page++) {
-    const width = edition.spreads.includes(page) ? 2 : 1
-    if (wanted.has(page)) {
-      for (let i = 0; i < width; i++) out.push(slot + i)
-    }
-    slot += width
-  }
+  slots.forEach((position, slot) => {
+    if (wanted.has(position.page)) out.push(slot)
+  })
   return out
 }
 
 /**
- * The next slot in `step`'s direction that is not skipped.
+ * The slots to set aside, minus the page the reader is standing on.
  *
- * Returns `from` unchanged when every slot ahead is skipped or the edition
- * ends, so an arrow at the boundary does nothing rather than landing somewhere
- * surprising — the same answer the reader already gives at the first and last
- * slot.
+ * **A reader on a credit page is there for a reason, and there are four.**
+ * Taking an entry from the panel is the deliberate one, and `CreditsPanel`
+ * promises in as many words that it goes there. The others are switching
+ * `skip` on while already standing on one, restoring saved progress that
+ * points at one, and a swap or a confirmed correction resolving onto the other
+ * edition's credit page. *An earlier version of this paragraph said the panel
+ * was the only way in. It is not, and `pairing.ts` listed two of the others
+ * one module away.*
+ *
+ * Leaving the slot skipped breaks the promise in a way that reads as a bug
+ * rather than a refusal: the page area draws whatever group survives at the
+ * reader's position instead, the filmstrip marks that group, and only the
+ * readout still says where they really are. Measured before this existed:
+ * taking `page 96` on `en-fan` drew the volume *cover*, while the row beneath
+ * read `slot 98 / 240 · p. 96 · 41%`.
+ *
+ * **The toggle route has a consequence worth knowing.** A reader who switches
+ * `skip` on while standing on a credit page sees the setting appear to do
+ * nothing: their own page stays drawn, and only the rest of the volume's
+ * credit pages leave the flow. One arrow proves it worked. Moving them off
+ * instead would be a navigation nobody asked for, which is the same argument
+ * `nearest.ts` makes about not jumping a reader out of a gap.
+ *
+ * Exempting the slot rather than special-casing the renderer means the page is
+ * drawn in all three modes, appears in the filmstrip, and is stepped off by
+ * the ordinary arrow path — there is no stranded state left to handle. The
+ * exemption travels with the reader, so the page goes back to being set aside
+ * the moment they leave it.
+ *
+ * **The invariant this establishes is load-bearing elsewhere and stated
+ * nowhere else**, so it is stated here: *every position the reader can hold
+ * belongs to some group.* `App.tsx` relies on it to draw a page at all —
+ * without it `grouped.findIndex` answers `-1` and the page area draws nothing,
+ * which is what "every page skipped drew a blank page area" was. `pairing.ts`'s
+ * `nearestGroup` is the backstop for its violation and is unreachable while it
+ * holds. **Matching by slot instead of by page would break it silently**, on a
+ * joined spread: the reader's own half would be exempted and the other still
+ * skipped, so the spread would stay out of the grouping and nothing would be
+ * drawn. `credits.test.ts` pins the whole-spread behaviour for that reason.
+ *
+ * **Both halves of a joined spread go together**, matched by page rather than
+ * by slot: exempting one half would draw half a credits card, which is the
+ * same rule `creditSlotsIn` above follows in the other direction.
  */
-export function nextReadable(
-  from: number,
-  /**
-   * The direction to walk, never a distance — narrowed to match `keys.ts`'s
-   * own `Intent`'s `{ kind: 'step'; by: 1 | -1 }`. This is what makes the
-   * `while` below obviously terminating: `at` moves by a nonzero amount every
-   * iteration, so it cannot stall on a skipped slot the way a wider `number`
-   * (in particular `0`) would.
-   */
-  step: 1 | -1,
+export function skippedApartFrom(
   skipped: number[],
-  slotCount: number,
-): number {
-  const hidden = new Set(skipped)
-  let at = from + step
-  while (at >= 0 && at < slotCount && hidden.has(at)) at += step
-  return at >= 0 && at < slotCount ? at : from
+  slots: Position[],
+  standing: number | undefined,
+): Set<number> {
+  const out = new Set(skipped)
+  const here = standing === undefined ? undefined : slots[standing]
+  if (here === undefined) return out
+  slots.forEach((position, slot) => {
+    if (position.page === here.page) out.delete(slot)
+  })
+  return out
 }

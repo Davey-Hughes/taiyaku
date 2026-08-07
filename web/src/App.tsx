@@ -16,6 +16,7 @@ import { createDecodeQueue, decodeTo, type DecodeQueue } from './decode'
 import { debounce, type Debounced } from './debounce'
 import { canRedo, canUndo, current as currentHistory, emptyHistory, record, redo, undo, type History } from './history'
 import { Gap } from './Gap'
+import { CreditsPanel } from './CreditsPanel'
 import { intentOf, isInteractiveTarget } from './keys'
 import { sliceFor } from './module'
 import {
@@ -27,6 +28,13 @@ import {
   REVIEW_INTENT,
   UNDO_INTENT,
 } from './modules/annotations'
+import {
+  creditSlotsIn,
+  creditsModule,
+  PANEL_INTENT,
+  skippedApartFrom,
+  type CreditsPrefs,
+} from './modules/credits'
 import { directionModule, effectiveDirection, setOverride, TOGGLE_INTENT, type Direction } from './modules/direction'
 import { motionModule } from './modules/motion'
 import { prefetchModule, window as prefetchWindow } from './modules/prefetch'
@@ -130,6 +138,9 @@ const sameNotes = (a: Note[], b: Note[]) => JSON.stringify(a) === JSON.stringify
  */
 const GRAB_SLOP = 0.02
 
+/** One empty set rather than a fresh one per render, so nothing skipped stays cheap and referentially stable. */
+const EMPTY_SLOTS: Set<number> = new Set()
+
 /**
  * Enough of the sidecar to pick a work's first edition, its reading
  * direction and the verdict on a pair — `reading` is what `groups` needs to
@@ -193,6 +204,10 @@ function App() {
   // above, and deliberately a separate flag rather than reusing it: the
   // panel and the chrome are shown and hidden independently.
   const [settingsVisible, setSettingsVisible] = useState(false)
+  // `C`'s target (`modules/credits.ts`), the same shape `settingsVisible` has
+  // and for the same reason: panel visibility is UI state with no bearing on
+  // `ReadingState`, so it never reaches `applyIntent`.
+  const [creditsVisible, setCreditsVisible] = useState(false)
 
   // `c`'s target. Set to a `Pending` assertion the moment correction mode
   // opens (`pending.b` still absent — meaning no counterpart has been picked
@@ -410,6 +425,13 @@ function App() {
   // breaks. An arrow steps by group rather than by slot (`pairing.ts`'s
   // `stepToGroup`), and only this component knows what the groups are.
   const groupedRef = useRef<Group[]>(undefined)
+
+  // The credits preferences, for the keydown handler — which subscribes once
+  // at load and so cannot see `prefsMap`. Assigned during render like
+  // `groupedRef`, and for the same reason: it is derived state, recomputed
+  // from props and state every render, so a discarded render writes the same
+  // value the retained one will.
+  const creditsPrefsRef = useRef<CreditsPrefs>(creditsModule.defaults)
 
   // `pageAreaRef` and `pageUrlRef` stood here, under a comment claiming both
   // were "read by the layout effect below". Neither was read and there was no
@@ -759,6 +781,15 @@ function App() {
             // reached through the module contract instead of a second
             // hard-coded `Intent` kind (see `modules/settings.ts`).
             setSettingsVisible((visible) => !visible)
+            break
+          }
+          case PANEL_INTENT: {
+            // Gated on the preference here rather than inside the component,
+            // so a reader who has switched the panel off pays no render and
+            // `C` is genuinely inert — which is what "Offer the panel that
+            // lists them" means.
+            if (!creditsPrefsRef.current.panel) return
+            setCreditsVisible((shown) => !shown)
             break
           }
         }
@@ -1319,7 +1350,36 @@ function App() {
   // Same `shown.edition` reasoning as `effectiveReading` above: breaks are
   // stored per edition, keyed by the edition whose slots `groups` is about
   // to pair.
-  const grouped = groups(slots, mode, effectiveReading, regroupPrefs.breaks[shown.edition] ?? [])
+  const creditsPrefs = sliceFor(prefsMap, creditsModule)
+  // Read once per render and shared by the skip filter below and the panel at
+  // the foot of this component. `Resolver.credits` crosses the wasm boundary
+  // and copies (`Array.from(sc.credits(edition))`), so calling it in both
+  // places would allocate a second array every render for an answer already in
+  // hand — the same redundant-crossing argument `NearestOffer` carries.
+  const creditPages = resolver.credits(shown.edition)
+  // Those page indices, converted to this edition's slots exactly once per
+  // render. Empty — and so free — whenever `skip` is off or the sidecar names
+  // no credit pages, which is every edition in the corpus today.
+  // `at?.slot` is the exemption: a reader who took a credit page from the
+  // panel is standing on it deliberately, so that one page is drawn while the
+  // rest stay set aside. See `skippedApartFrom` for what went wrong without
+  // it.
+  const skippedSlots = creditsPrefs.skip
+    ? skippedApartFrom(creditSlotsIn(slots, creditPages), slots, at?.slot)
+    : EMPTY_SLOTS
+  // One grouping, three surfaces: this array is what the page area draws,
+  // what `groupedRef` gives the arrow keys, and what `Chrome` hands the
+  // filmstrip. Passing `skippedSlots` into `groups` rather than filtering its
+  // result is what makes "out of the reading flow" mean all three *and* work
+  // in `two` mode — see `groups`' own doc for the measurement that settled
+  // that.
+  const grouped = groups(
+    slots,
+    mode,
+    effectiveReading,
+    regroupPrefs.breaks[shown.edition] ?? [],
+    skippedSlots,
+  )
   // Assigned during render rather than in an effect: the keydown handler must
   // never step against a grouping older than what is on screen, and an effect
   // would leave exactly one frame where it could. Writing a ref during render
@@ -1327,13 +1387,18 @@ function App() {
   // is recomputed from props and state every render, so a discarded render
   // simply writes the same thing the retained one will.
   groupedRef.current = grouped
+  creditsPrefsRef.current = creditsPrefs
   // `-1` in a gap: there is no group of the viewed edition the reader is
   // standing on, and `-1` is already `Filmstrip`'s "mark nothing" — the same
   // value correction mode passes, for the same reason.
-  const currentIndex = at
-    ? Math.max(grouped.findIndex((g) => g.slots.includes(at.slot)), 0)
-    : -1
-  const current = at ? grouped[currentIndex] : undefined
+  // No `Math.max(…, 0)` clamp. That was harmless while every slot belonged to
+  // some group, and became a trap once `skip` could remove one: `findIndex`
+  // answering `-1` was clamped to `0`, so the page area drew the volume's
+  // first group — the cover — while the readout correctly reported where the
+  // reader was. `skippedApartFrom` is what keeps `-1` from arising at all;
+  // this draws nothing rather than something wrong if it ever does.
+  const currentIndex = at ? grouped.findIndex((g) => g.slots.includes(at.slot)) : -1
+  const current = currentIndex >= 0 ? grouped[currentIndex] : undefined
 
   // While correcting, the filmstrip shows `pending.to`'s tiles rather than
   // `shown.edition`'s — see `correcting`'s doc on `FilmstripProps`. The page
@@ -2086,6 +2151,27 @@ function App() {
         prefs={prefsMap}
         onChange={handleSettingChange}
         onReset={handleSettingReset}
+      />
+      <CreditsPanel
+        visible={creditsVisible}
+        work={work}
+        edition={shown.edition}
+        pages={creditPages}
+        skipping={creditsPrefs.skip}
+        onGo={(page) => {
+          // The panel deals in pages, the reader in slots. Converted through
+          // `creditSlotsIn` rather than a `findIndex` of its own, so this file
+          // holds no second page-to-slot rule: that function is the one place
+          // the two spaces meet, which is the whole point of replacing the
+          // expansion `creditSlots` used to do here. A joined spread yields
+          // both its slots and the first is where to land, since its two slots
+          // are one image and `groups` puts that one first.
+          const [slot] = creditSlotsIn(slots, [page])
+          if (slot === undefined) return
+          goToSlot(slot)
+          setCreditsVisible(false)
+        }}
+        onClose={() => setCreditsVisible(false)}
       />
     </div>
   )

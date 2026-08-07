@@ -40,7 +40,7 @@ import { settingsModule } from './settings'
  *
  * This is also the one place a seventh module is registered at all — adding
  * one to the array below is the only hand-edit its *existence* requires.
- * `creditsModule` is the eighth, claiming `C` for the panel that will list a
+ * `creditsModule` is the eighth, claiming `C` for the panel that lists a
  * scanlation group's own pages — one key, the same shape as `settingsModule`'s
  * single claim, and nothing more here than that entry and the import above.
  * Making its preferences load, save, and reach the settings panel needs no
@@ -51,19 +51,18 @@ import { settingsModule } from './settings'
  * bespoke behaviour (like `prefetch`'s decode-queue rebuild) needs anything
  * hand-written in `App.tsx`, and that is behaviour, not tunability.
  *
- * **`creditsModule` is exactly that case, and its behaviour is not written
- * yet — the panel is not mounted.** Registration wires its preferences and
- * nothing else: `App.tsx` renders no credits panel and its module switch has
- * no case for `PANEL_INTENT`, so `C` is swallowed by that branch's own
- * `preventDefault()` and the generated "Credit pages" settings section holds
- * two toggles that persist and govern nothing. This was deliberate and blocked
- * on O25 (`docs/status.md`) — the whole chrome and every panel below the
- * `shown.kind === 'gap'` branch went unrendered while a gap was showing, and a
- * gap is the state a reader most wants this list from. **O25 is now closed**,
- * so the panel is unwritten rather than blocked. The entry stays in the
- * array regardless, because the property this comment is about — one array,
- * one hand-edit — is worth more than hiding an inert section, and
- * `modules/credits.ts`'s own doc says plainly what the section does today.
+ * **`creditsModule` was exactly that case for a while, and no longer is.**
+ * Registration wired its preferences and nothing else: `App.tsx` rendered no
+ * credits panel and its module switch had no case for `PANEL_INTENT`, so `C`
+ * was swallowed by that branch's own `preventDefault()` and the generated
+ * "Credit pages" section held two toggles that persisted and governed nothing.
+ * That was deliberate and blocked on O25 (`docs/status.md`), which closed on
+ * 2026-08-07; the panel and the skip landed with it. The entry would have
+ * stayed in the array either way, because the property this comment is about —
+ * one array, one hand-edit — is worth more than hiding an inert section, and
+ * `modules/credits.ts`'s own doc said plainly what the section did meanwhile.
+ * That is the shape to repeat for the next module registered ahead of its
+ * behaviour, not an argument that this one is still waiting.
  */
 const modules = [
   directionModule,

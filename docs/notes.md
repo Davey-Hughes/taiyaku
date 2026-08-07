@@ -5484,3 +5484,204 @@ three files then diffed identical to the backup.
 `cargo build --release -p taiyaku-serve`. `taiyaku-serve` is a library crate and
 the `taiyaku` binary belongs to `taiyaku-cli`, so that builds nothing runnable.
 Corrected before the pass.
+
+## The credit-pages panel, and where skipping had to be decided
+
+Driven against a **fixture**, not the corpus, because the corpus cannot exercise
+this at all: **no sidecar in it has a `credits` field** — all five editions
+across `gotoubun-v01` and `kaguya-v01` report `None` — so `Resolver.credits`
+answers `[]` everywhere, the panel renders its empty state, and `skip` skips
+nothing. A pass against the corpus as it stands could not fail. That is the
+same trap the O25 plan fell into when it named a gap whose anchor check could
+not distinguish pass from fail, caught this time before the pass rather than
+during it.
+
+The fixture is a copy of `corpus/gotoubun-v01/taiyaku.json` with
+`taiyaku credits --write` run over all seven `en-fan` members, placed **beside**
+the archives it names (member paths are relative to the sidecar) under a
+different stem, so its `fixture.progress.json` and `fixture.notes.json` siblings
+cannot collide with the real ones. Removed afterwards; the corpus's own three
+JSON files diffed identical to a backup taken first.
+
+It wrote `en-fan credits = [95, 168, 198, 225]`, exactly the set
+`gotoubun_fan_edition_classifies_four_credit_pages` asserts, and the command
+printed its own reasoning:
+
+```
+page  member    local  run  at-end  recurs  verdict
+  95  c001      51/52    1     yes      14  credits
+ 168  c003      31/32    1     yes      24  credits
+ 198  c004      29/30    1     yes      14  credits
+ 225  c005      26/27    1     yes      99  credits
+ 226  c005.5     0/9     4      no       2  -
+   1  c000       1/44   42      no     103  -
+```
+
+**The two rejections are the rule working.** Page 226 sits at a member's
+*start* and page 1 inside a 42-page run; `at-end` is what discriminates, which
+is §4's "position is the part that survives". Note also that `recurs` would
+have ranked page 1 highest of all six — the clearest reason that signal
+classifies nothing.
+
+Those are zero-based page indices, so the panel shows **pages 96, 169, 199 and
+226**, and the thumbnails requested `/api/works/fixture/en-fan/pages/95…225` —
+the conversion checked in both directions at once.
+
+### Skipping had to be decided while pairing, not after it
+
+The design said `skip` would filter finished groups, dropping one only when
+every slot in it was skipped, so that `two` mode could not hide an ordinary
+page paired with a credit page. Built that way and driven, **`skip` did nothing
+at all in `two` mode**:
+
+```
+two mode, skip off:  122 tiles   … page 93+94   page 95+96   page 97+98 …
+two mode, skip on:   122 tiles   … page 93+94   page 95+96   page 97+98 …
+```
+
+Every one of the four credit pages sits at a chapter's end, so every one pairs
+with an ordinary page, so no group was ever wholly skipped. The rule was not
+wrong about the trade-off it named — hiding a wanted page is worse — it was
+wrong that the trade-off was the only choice.
+
+Deciding *while pairing* is the third option: the partner search steps past a
+skipped slot, so its neighbour pairs forward instead of being stranded beside
+it. Same run, after the change:
+
+```
+two mode, skip off:  122 tiles   … page 93+94   page 95+96   page 97+98 …
+two mode, skip on:   119 tiles   … page 93+94   page 95+97   page 98+99 …
+```
+
+`page 95+97` is the whole of it. `readableGroups`, which had been written,
+tested and reviewed clean, was deleted: `groups`' own `skipped` argument
+subsumes it and does the part it could not.
+
+### Every check, and what each produced
+
+| check | result |
+| --- | --- |
+| `C` lists the viewed edition's credit pages | four entries, `page 96/169/199/226`, thumbnails requesting pages 95/168/198/225 |
+| viewing an edition with none | `No credit pages found in raw-mono.` |
+| `skip` off, `single` | 235 tiles |
+| `skip` on, `single` | 231 tiles, no credit tile present |
+| `skip` off, `two` | 122 tiles |
+| `skip` on, `two` | 119 tiles, no credit tile, neighbour re-paired to `95+97` |
+| position readout total | `/ 240` either way — skipping never renumbers |
+| taking an entry with `skip` on | `slot 98 / 240 · p. 96`; `→` to p. 97, `←` to p. 95 |
+| the panel's own line | "still in the reading flow" → "kept out of the reading flow. Taking one still goes there." |
+| `panel` off | `C` inert |
+
+### Five defects the whole-branch review found, and one I had the evidence for
+
+The pass above recorded "taking an entry with `skip` on" as passing on the
+strength of its readout — `slot 98 / 240 · p. 96`. It also returned
+`pageShown: ["page 1"]` in the same object, which I wrote off as a decode-swap
+artefact. **It was the defect.** `App.tsx`'s `currentIndex` clamped
+`findIndex`'s `-1` to `0` with a `Math.max` that had been harmless while every
+slot belonged to some group, so the page area drew the volume *cover* while the
+readout beneath it correctly said page 96. Every surface disagreed with every
+other and the check still went green, because the check only read one of them.
+
+Four more, none of which any test could reach:
+
+- **`nearestGroup` could not see a group straddling the skipped slot.** `[2, 4]`
+  with 3 set aside is one tile spanning it; testing only a group's first slot
+  forward and last slot backward said "not adjacent" both ways, so the arrow
+  passed over the one tile next to the reader — `←` gave 0 and `→` gave 5 where
+  2 was right. With slots 1 and 3 both set aside the arrow did not move at all.
+  Every one of the four new tests for this was `single` mode, where a group is
+  one slot and the shape cannot arise.
+- **A partially-skipped joined spread was split in `two` mode**, pairing slot 0
+  with a spread's second half and dropping the first — while `single` mode, on
+  the same input, kept the spread whole. Unreachable through `creditSlotsIn`,
+  which filters by page, but the spread branch had deliberately written that
+  case out rather than assuming it away, and the two modes then disagreed.
+- **A hand-inserted `regroup` break falling inside the skipped run vanished.**
+  `groups(…, [1], {1})` was byte-identical to `groups(…, [], {1})`: a reader
+  who had fixed parity by hand and later switched `skip` on would get a
+  different parity for the rest of the volume and no sign why.
+- **Every page skipped drew a blank page area** with none of the words the
+  panel's own empty case was given.
+
+The first is fixed by not skipping the page the reader is standing on
+(`skippedApartFrom`) — the panel is the only way onto one, so being there is
+deliberate, and exempting it means the page is drawn in all three modes, marked
+in the filmstrip, and stepped off by the ordinary arrow path. Re-driven with
+both preferences asserted rather than blind-toggled:
+
+```
+single mode:
+slot 98 / 240 · p. 96 · 41%     drawn: page 96
+tiles 232 (231 + the exempted one)   credit tiles present: page 96 only
+marked: page 96                 → page 97   ← page 95
+```
+
+and stepping away puts it back to 231 tiles with none present. **That run is
+`single` mode**, which the block did not say. `two` mode behaves the same way
+and its numbers differ: the exempted page is drawn as half of a pair rather
+than alone, so the strip holds 120 tiles standing on it against 119 away, and
+the group is `[96, 97]` — page 95 beside page 96 — where with the reader
+elsewhere slot 97 is in no group at all.
+
+Three of the other four are `pairing.ts` fixes, pinned by tests that would have
+caught them. **The fourth is not, and its invariant is the one thing here that
+nothing else states**: "every page skipped drew a blank page area" is fixed
+incidentally by `skippedApartFrom`, in another module, and what makes it true
+is that *every position the reader can hold belongs to some group*. Nothing in
+`App.tsx` says so and nothing would go red if it stopped being true — the page
+area would simply draw nothing. Matching by slot instead of by page would break
+it on the first joined spread. `credits.test.ts` now pins it directly.
+
+**What this says about the pass, not the code.** The browser pass was written
+to check the readout, and every one of these lives somewhere else — in the
+drawn page, in the tile count, in a mode the tests never entered. A check that
+reads one surface cannot notice the others disagreeing with it, and this branch
+produced four passing tests and an approving review over a feature whose page
+area was drawing the wrong page.
+
+### Walking the reader from every position, and the one thing it found
+
+The exemption in `skippedApartFrom` changes the grouping *as the reader moves*
+— stand on a credit page and it is drawn, step off and it is set aside again —
+which is the kind of feedback loop a fixed example cannot rule out. So the real
+per-render pipeline was run as a whole:
+
+```
+step(at, by) = stepToGroup(groups(slots, mode, reading, breaks,
+                 skippedApartFrom(creditSlotsIn(slots, creditPages), slots, at)),
+               at, by)
+```
+
+from **every slot** of seven editions — flat, spreads and credits interleaved, a
+credit page adjacent to a spread, consecutive credits, credits at both ends, a
+hand-inserted break, and the real `en-fan` shape (235 pages, spreads at 45, 91,
+133, 164, 196, credits at 95, 168, 198, 225) — in `single` and `two`, asserting
+that an arrow always makes progress, never reverses, never revisits a slot, and
+that no position is a dead end in both directions.
+
+**Nothing about skipping failed.** No stuck arrow, no oscillation, no content
+stepped over. The whole-branch review reached the same conclusion independently
+by exhaustive enumeration over every slot table up to nine slots.
+
+**What failed was older than any of it**, in 7 of 42 cases and always the same
+shape: a forward arrow on the *last* group's second slot answers that group's
+first slot, moving backward one page. It reproduces with no credits and no
+skipped set — `stepToGroup`'s clamp meeting its own land-on-the-first-slot
+rule, both from `c11c1e9` — and in all three modes wherever the volume ends in
+a joined spread:
+
+```
+two,    [[0,1],[2,3],[4,5]]      from slot 5 → 4
+single, [[0],[1],[2],[3,4]]      from slot 4 → 3
+scroll, same                     from slot 4 → 3
+```
+
+Tabled as O28 rather than fixed here: the fix is three lines in the reader's
+central step function, and this branch is about credit pages. See its entry in
+`status.md` for what reaches that state, since an arrow cannot.
+
+The simulation itself is worth keeping in mind as a shape rather than as a
+file — it is what would have caught `nearestGroup`'s straddle bug, which four
+unit tests missed because every one of them was `single` mode, where the shape
+cannot arise.

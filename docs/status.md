@@ -37,7 +37,7 @@ hidden.
 
 ## What is built
 
-Five crates, 410 tests, plus 397 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 410 tests, plus 414 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
 and `vite` in `web/`. Twelve of the 410 are standing checks gated on
@@ -82,7 +82,7 @@ is not shaped by what can cross the JavaScript boundary.
 | `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, notes (`<stem>.notes.json`, read and written whole under `If-Match`), an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
-| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of six `ReaderModule`s — of eight the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint, with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the page it sits over rather than the box around it; a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself). The other two registry entries claim no reading behaviour. `settings` claims only the panel's own key. `credits` (§4 below) declares the credit-page preferences and claims `C`, and **its panel is not mounted** — `App.tsx` renders none and its module switch has no case for the intent, so `C` is swallowed and the generated "Credit pages" section holds two toggles that persist and govern nothing; mounting it was blocked on O25 until that closed, and is now an ordinary addition to the one mount site the fix leaves. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
+| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of six `ReaderModule`s — of eight the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint, with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the page it sits over rather than the box around it; a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself). The other two registry entries claim no reading behaviour. `settings` claims only the panel's own key. `credits` (§4 below) is the eighth and the only one whose behaviour is a panel rather than a page treatment: `C` lists the viewed edition's credit pages, a thumbnail and a page number each and no labels the sidecar cannot support, and `skip` keeps them out of the reading flow by being handed to `groups` rather than filtering its result — so the page area, the arrows and the filmstrip skip together, and two-page mode re-pairs around a skipped slot instead of stranding its neighbour. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
 
 `taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
 a member becomes pages" — so two consumers deriving it separately is a defect the
@@ -269,16 +269,17 @@ margin threshold plus a crop-tolerant hash. Not the DP.
 
 ### Open items
 
-Twenty-seven, each found by a whole-branch review, carried as a deferral,
+Twenty-eight, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature produced
-against the corpus, or turned up by designing the fix for another one, and
+against the corpus, turned up by designing the fix for another one, or turned
+up by simulating the reader from every position it can hold, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
 visible act rather than a thing someone remembers. **Twenty are now closed
 — O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25 and O27 — leaving seven.**
+O21, O22, O25 and O27 — leaving eight.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -312,6 +313,7 @@ each is in the detail below; the table is what a reader scans.
 | O25 | [x] | The settings panel and the whole chrome are unreachable while showing a gap | `App.tsx::App`, the `at` narrowing | M5c browser pass |
 | O26 | [ ] | `align --write` truncates the sidecar before writing it | `main.rs::align` | credit-pages whole-branch review |
 | O27 | [x] | Two refs are held and read by nothing | `App.tsx::App`, the ref block above `viewportWidth` | O25 design |
+| O28 | [ ] | A forward arrow on the last group's second slot moves backward | `pairing.ts::stepToGroup` | credits-panel arrow simulation |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -1258,6 +1260,43 @@ It closed the same day, on O25's own branch:
   test covers this; nothing in the suite touches `App.tsx`, which stayed at
   397 passing.
 
+**One came from simulating the reader rather than reading it** — O28, turned up
+on 2026-08-07 while checking that the credits panel's skipping could not strand
+an arrow, and not blocking because it costs one page of movement in a state a
+reader reaches only sideways:
+
+- **O28 — A forward arrow on the last group's second slot moves backward.
+  Open.** `stepToGroup` clamps with `Math.min(Math.max(here + by, 0), all.length
+  - 1)` and then lands on the chosen group's *first* slot. At the end of the
+  volume those two combine: the clamp keeps the reader in the group they are
+  already in, and its first slot is behind them. Measured across all three
+  modes, on a grouping with nothing skipped —
+
+  ```
+  two,    [[0,1],[2,3],[4,5]]      from slot 5 → 4
+  single, [[0],[1],[2],[3,4]]      from slot 4 → 3
+  scroll, same                     from slot 4 → 3
+  ```
+
+  — so it is not a `two`-mode quirk: any volume ending in a joined spread has
+  it in every mode. **Only the final group.** From a mid-pair second slot the
+  answer is right (`from 3 → 4`, the next tile), and backward at the *start* is
+  already correct, returning the slot unchanged.
+  **It predates everything around it**, including group stepping's own arrival
+  in `c11c1e9` — it is that commit's clamp meeting that commit's
+  land-on-the-first-slot rule — and reproduces with no `skipped` set at all, so
+  the credits work neither caused it nor widened it. `status.md`'s account of
+  `c11c1e9` names the cost as "the second half of a joined spread is no longer
+  reachable by arrow", which is about *reaching* that slot and not about what
+  an arrow does once a reader is on one.
+  **Reachable, but only sideways**: an arrow cannot put a reader there, by that
+  same rule. A swap or a confirmed correction resolving onto a final second
+  slot can, and so can a restored progress record.
+  **What would close it:** deciding whether the clamp should return the slot
+  unchanged at the end of the volume, as it already does at the beginning. That
+  is a three-line change to the reader's central step function, which is why it
+  is tabled rather than made in passing on a branch about credit pages.
+
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
 
@@ -1757,13 +1796,14 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the seven open items tabled above — six of them found by a
+What remains: the eight open items tabled above — six of them found by a
 whole-branch review, now that O12 (carried rather than found) and O14 (found
-by one, closed by M5b) are both out of the count, with one exception: O23,
+by one, closed by M5b) are both out of the count, with two exceptions: O23,
 turned up by measuring what a new surface produced against the corpus rather
-than by reviewing a branch. **Every milestone M5 named has now shipped.**
+than by reviewing a branch, and O28, turned up by walking the reader through
+every position it can hold. **Every milestone M5 named has now shipped.**
 
-### 4. Skipping scanlation credit pages — shipped to the sidecar, and the reader's half is unblocked
+### 4. Skipping scanlation credit pages — shipped
 
 A reader setting that keeps donation pleas, credits cards and recruitment ads out
 of the reading flow, and puts them in a section of their own that can be opened
@@ -1825,7 +1865,18 @@ three of them are settled in code.**
   an address meant would make one device's progress and another's notes wrong.
   Same precedent as the swap: what is shown changes, what is written does not.
   Recorded on `web/src/modules/credits.ts`'s `creditsModule`, and carried out by
-  `nextReadable`, which walks to the next unskipped slot without renumbering.
+  `pairing.ts`'s `groups`, which is handed the skipped slots and leaves them out
+  of the grouping — so the page area, the arrow keys and the filmstrip all skip
+  together, and `Group.slots` still indexes the unfiltered table.
+  *This said "carried out by `nextReadable`, which walks to the next unskipped
+  slot" until 2026-08-07. That function was written three commits after an arrow
+  stopped stepping by slot and started stepping by group (#12), so it could not
+  have been wired without undoing that; and it governed arrows alone, leaving a
+  skipped page in the filmstrip and in scroll mode. It is deleted. A first
+  attempt filtered finished groups instead, which turned out to do nothing at
+  all in two-page mode — see `notes.md`, "The credit-pages panel, and where
+  skipping had to be decided", for the 122-tiles-either-way measurement that
+  moved the decision inside `groups`.*
 - **The false-positive rate against colour inserts and author afterwords.**
   Measured, and the answer is not the comfortable one: a colour insert *is* swept
   up. `kaguya-v01`'s one candidate is the publisher's own colour announcement
@@ -1845,19 +1896,28 @@ out of twelve pages anybody has looked at. `MAX_CREDIT_RUN` is **1, measured**
 over 461 pages and four scanlation groups, and one of those four groups prints no
 credit page at all. Two volumes are not the population.
 
-**What has not shipped is the reader's half.** `web/src/modules/credits.ts` is
-registered like every other module and its preferences load, save and appear in
-the settings panel — and **the panel that would list the pages is not mounted**,
-so `C` does nothing and the "Credit pages" settings section holds two toggles
-that persist and govern nothing. That was deliberate rather than unfinished:
-mounting it waited on O25, since every panel below `App.tsx`'s
-`shown.kind === 'gap'` branch went unrendered while a gap was showing, and a gap
-is the state a reader most wants this list from. **O25 is now closed**, so the
-mount site exists and this is an ordinary addition to it. `creditSlots` in the same file is
-the other thing to finish, and its own doc comment says why it must be replaced
-rather than adopted: it re-derives slot expansion in TypeScript where
-`taiyaku_core::slot::expand` owns it, and its `Pagination` argument cannot be
-built from the `Resolver` as it stands.
+**The reader's half has now shipped too, and both toggles govern something.**
+`C` opens a panel listing the viewed edition's credit pages — a thumbnail and a
+page number each, and no labels, because the sidecar records page indices and
+which one is a donation card is something a person establishes by looking. An
+edition with none says so in words. Taking an entry goes there whether or not
+`skip` is on: nothing here is meant to become unreachable, and the arrow that
+follows steps off again.
+
+**`skip` is honoured inside `groups` rather than by filtering its result**, and
+that was not the first design. Filtering finished groups can only drop a group
+whose every slot is skipped, and measured on this volume that is none of them —
+each of the four credit pages sits at a chapter's end and so pairs with an
+ordinary page, giving 122 tiles in two-page mode with the setting on and 122
+with it off. Deciding while pairing lets a skipped slot's neighbour pair
+forward instead. See `notes.md`, "The credit-pages panel, and where skipping had
+to be decided".
+
+`creditSlots` is gone with it, replaced by `creditSlotsIn`, which filters the
+slot table `allSlots` already returns rather than re-deriving slot expansion in
+TypeScript — one derivation, read through the `Resolver` from
+`taiyaku_core::slot::expand`, which is what its own doc comment asked for. The
+`Pagination` it could not be given no longer exists.
 
 ### Later
 

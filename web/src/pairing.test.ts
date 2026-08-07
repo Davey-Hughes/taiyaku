@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { cellsFor, correctionTiles, groups, stepToGroup } from './pairing'
+import { cellsFor, correctionTiles, type Group, groups, stepToGroup } from './pairing'
 import { bSlots, odd, whole } from './fixtures'
+
+/** Slots 0..n-1, with `spreads` naming the pages that are joined. */
+function slotsWith(pages: number, spreads: number[]) {
+  const out: { page: number; half?: 'L' | 'R' }[] = []
+  for (let page = 0; page < pages; page++) {
+    if (spreads.includes(page)) {
+      out.push({ page, half: 'R' }, { page, half: 'L' })
+    } else {
+      out.push({ page })
+    }
+  }
+  return out
+}
 
 describe('single', () => {
   it('is one slot per group', () => {
@@ -215,19 +228,6 @@ describe('scroll', () => {
 describe('stepToGroup', () => {
   const rtl = 'rtl' as const
 
-  /** Slots 0..n-1, with `spreads` naming the pages that are joined. */
-  function slotsWith(pages: number, spreads: number[]) {
-    const out: { page: number; half?: 'L' | 'R' }[] = []
-    for (let page = 0; page < pages; page++) {
-      if (spreads.includes(page)) {
-        out.push({ page, half: 'R' }, { page, half: 'L' })
-      } else {
-        out.push({ page })
-      }
-    }
-    return out
-  }
-
   /**
    * The defect this exists for, reported from a manual pass: a joined spread
    * is two slots drawn as one image, so stepping by slot showed the same
@@ -294,5 +294,194 @@ describe('stepToGroup', () => {
     const slots = slotsWith(3, [])
     const g = groups(slots, 'single', rtl)
     expect(stepToGroup(g, 99, 1)).toBe(99)
+  })
+})
+
+describe('groups, with slots set aside', () => {
+  it('emits no group for a skipped slot', () => {
+    const g = groups(slotsWith(6, []), 'single', 'rtl', [], new Set([3]))
+    expect(g.map((x) => x.slots)).toEqual([[0], [1], [2], [4], [5]])
+  })
+
+  it('drops a joined spread whole when both halves are skipped', () => {
+    // Slots 2 and 3 are page 2's two halves — one credits card, one tile.
+    const g = groups(slotsWith(5, [2]), 'single', 'rtl', [], new Set([2, 3]))
+    expect(g.map((x) => x.slots)).toEqual([[0], [1], [4], [5]])
+  })
+
+  it('keeps a joined spread whose halves disagree', () => {
+    // `creditSlotsIn` filters by page and both halves share one, so this
+    // cannot arise from the credits module. `groups` is handed a slot set and
+    // cannot check where it came from, so it keeps the image rather than
+    // drawing half of one.
+    const g = groups(slotsWith(5, [2]), 'single', 'rtl', [], new Set([2]))
+    expect(g.map((x) => x.slots)).toEqual([[0], [1], [2, 3], [4], [5]])
+  })
+
+  it('pairs around a skipped slot rather than stranding its neighbour', () => {
+    // **The reason this lives in `groups` rather than in a filter over its
+    // result.** Unskipped, `two` mode pairs (0,1) (2,3) (4,5). With slot 3
+    // set aside, a filter could only drop a pair whose *both* slots were
+    // skipped — none here — so `skip` would do nothing at all. Pairing past
+    // it instead gives slot 2 a real partner and leaves no tile holding a
+    // page the reader asked to set aside.
+    const g = groups(slotsWith(6, []), 'two', 'rtl', [], new Set([3]))
+    expect(g.map((x) => x.slots)).toEqual([[0, 1], [2, 4], [5]])
+  })
+
+  it('measured: on the primary corpus this is the difference between working and not', () => {
+    // `en-fan`'s four credit pages each sit at a chapter's end and so pair
+    // with an ordinary page. Driven in a browser against a written sidecar,
+    // filtering finished groups gave 122 tiles with `skip` on and 122 with it
+    // off. This is that shape in miniature: every skipped slot is the second
+    // of its would-be pair.
+    const none = groups(slotsWith(8, []), 'two', 'rtl')
+    const set = groups(slotsWith(8, []), 'two', 'rtl', [], new Set([1, 5]))
+    expect(none.length).toBe(4)
+    expect(set.length).toBeLessThan(none.length)
+    expect(set.flatMap((x) => x.slots)).not.toContain(1)
+    expect(set.flatMap((x) => x.slots)).not.toContain(5)
+  })
+
+  it('honours a break at the partner, not at the slot after this one', () => {
+    // The break is a slot number, so a skipped slot in between must not move
+    // which slot it refers to. Slot 1 skipped, break on 2: slot 0 finds 2 as
+    // its partner and the break says 2 opens a fresh group instead.
+    const g = groups(slotsWith(5, []), 'two', 'rtl', [2], new Set([1]))
+    expect(g.map((x) => x.slots)).toEqual([[0], [2, 3], [4]])
+  })
+
+  it('leaves every caller that skips nothing exactly as it was', () => {
+    // `skip` switched off must cost nothing and change nothing —
+    // `module.ts`'s contract that a module which is off contributes nothing,
+    // and the property M5b's manual pass checks for.
+    const slots = slotsWith(7, [3])
+    for (const mode of ['single', 'two', 'scroll'] as const) {
+      expect(groups(slots, mode, 'rtl', [], new Set())).toEqual(groups(slots, mode, 'rtl'))
+    }
+  })
+})
+
+describe('groups, the cases the whole-branch review found', () => {
+  it('keeps a joined spread whole in two mode when only one half is skipped', () => {
+    // The partner search can land on a spread's *second* half when its first
+    // is skipped. Pairing with it put half a wide image in an ordinary cell
+    // and dropped the other half — while `single` mode, given the same input,
+    // kept the spread. The two modes must agree.
+    const slots = slotsWith(3, [1])
+    const two = groups(slots, 'two', 'rtl', [], new Set([1]))
+    const single = groups(slots, 'single', 'rtl', [], new Set([1]))
+    expect(two.map((x) => x.slots)).toEqual([[0], [1, 2], [3]])
+    expect(two.find((x) => x.spread)?.slots).toEqual([1, 2])
+    expect(single.find((x) => x.spread)?.slots).toEqual([1, 2])
+  })
+
+  it('honours a break that falls inside the skipped run', () => {
+    // A break is a slot a reader marked by hand. Testing only `partner`
+    // swallowed one sitting between `index` and `partner`, so switching
+    // `skip` on silently changed the parity of the rest of the volume for a
+    // reader who had fixed it themselves.
+    const slots = slotsWith(5, [])
+    expect(groups(slots, 'two', 'rtl', [1], new Set([1])).map((x) => x.slots)).toEqual([
+      [0],
+      [2, 3],
+      [4],
+    ])
+    // Distinguishable from the same call without the break, which is the
+    // whole point — these were byte-identical before.
+    expect(groups(slots, 'two', 'rtl', [], new Set([1])).map((x) => x.slots)).toEqual([
+      [0, 2],
+      [3, 4],
+    ])
+  })
+})
+
+describe('stepToGroup, across a group that straddles a skipped slot', () => {
+  // `[2, 4]` is one tile with slot 3 set aside between its halves — a shape
+  // that could not exist before `groups` took a `skipped` set, and that breaks
+  // any test written against a group's first or last slot alone.
+  //
+  // **These pin a backstop, not a reachable state.** `skippedApartFrom` exempts
+  // the page the reader is standing on, so the app never asks `stepToGroup`
+  // about a slot in no group. That invariant lives in `modules/credits.ts`,
+  // one module away, which is exactly why the fallback is kept and why it is
+  // tested here rather than left to be exercised by accident.
+
+  it('steps onto the straddling tile rather than over it', () => {
+    const g = groups(slotsWith(6, []), 'two', 'rtl', [], new Set([3]))
+    expect(g.map((x) => x.slots)).toEqual([[0, 1], [2, 4], [5]])
+    // Both directions land on it: the skipped slot sits inside its span.
+    expect(stepToGroup(g, 3, 1)).toBe(2)
+    expect(stepToGroup(g, 3, -1)).toBe(2)
+  })
+
+  it('answers both directions with the tile the reader is inside', () => {
+    // The two directions failed differently here, and the comment this
+    // replaces claimed both were stuck. Only `←` was: it returned 1 and did
+    // nothing. `→` returned 4 — it moved, but past slot 2, which is drawn as
+    // half of the tile `[0, 2]`. Both now answer 0, that tile's first slot,
+    // so nothing drawn is stepped over in either direction. The forward answer
+    // is therefore a reversal (4 → 0), not only an unsticking.
+    const g = groups(slotsWith(6, []), 'two', 'rtl', [], new Set([1, 3]))
+    expect(g.map((x) => x.slots)).toEqual([[0, 2], [4, 5]])
+    expect(stepToGroup(g, 1, -1)).toBe(0)
+    expect(stepToGroup(g, 1, 1)).toBe(0)
+  })
+})
+
+describe('stepToGroup, standing on a slot no group holds', () => {
+  // Reachable three ways once `skip` filters groups: taking a credit page
+  // from the panel, clicking its filmstrip tile before switching `skip` on,
+  // and switching `skip` on while already standing there. Before the credits
+  // panel this could not happen, and the function simply refused to move.
+
+  it('steps forward to the nearest surviving group', () => {
+    const g = groups(slotsWith(6, []), 'single', 'rtl', [], new Set([3]))
+    expect(stepToGroup(g, 3, 1)).toBe(4)
+  })
+
+  it('steps backward to the nearest surviving group', () => {
+    const g = groups(slotsWith(6, []), 'single', 'rtl', [], new Set([3]))
+    expect(stepToGroup(g, 3, -1)).toBe(2)
+  })
+
+  it('stays put when nothing survives ahead', () => {
+    // The boundary answer the reader already gives at the first and last
+    // slot: an arrow that has nowhere to go does nothing, rather than
+    // jumping to the far end of the volume.
+    const g = groups(slotsWith(6, []), 'single', 'rtl', [], new Set([3, 4, 5]))
+    expect(stepToGroup(g, 3, 1)).toBe(3)
+  })
+
+  it('crosses a run of skipped slots in one press', () => {
+    const g = groups(slotsWith(6, []), 'single', 'rtl', [], new Set([1, 2, 3]))
+    expect(stepToGroup(g, 0, 1)).toBe(4)
+  })
+})
+
+describe('skipping is presentational', () => {
+  // Moved here from `modules/credits.test.ts` when `nextReadable` was retired:
+  // the claim is now a property of the grouping, not of a slot walker.
+  // The whole content of the numbering decision. If someone later renumbers
+  // for readability, this goes red — which is the point.
+  it('changes which slot an arrow lands on, never what a slot is called', () => {
+    const slots = slotsWith(6, [])
+
+    const walk = (from: Group[]) => {
+      const visited: number[] = []
+      let at = 0
+      for (let i = 0; i < 3; i++) {
+        at = stepToGroup(from, at, 1)
+        visited.push(at)
+      }
+      return visited
+    }
+
+    expect(walk(groups(slots, 'single', 'rtl', [], new Set([2, 3])))).toEqual([1, 4, 5])
+    expect(walk(groups(slots, 'single', 'rtl'))).toEqual([1, 2, 3])
+
+    // Same slot table in both worlds — only which entries are reachable
+    // differs. `slots.length` is what the position readout divides by.
+    expect(slots.length).toBe(6)
   })
 })
