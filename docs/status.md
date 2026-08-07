@@ -1374,9 +1374,9 @@ came out against shipping it, one shipped as two commands, the third the large
 piece, shipped across four milestones, and the fourth shipped as an eighth
 command plus a field in the format — and they stay here rather than being
 deleted, for the reason the open-items table gives: a list that only ever grows
-says nothing about whether anything lands. **What is left of the fourth is the
-reader's half**: the module is registered and its panel is not mounted. O25,
-which blocked it, is closed, so what is left is the mounting itself.
+says nothing about whether anything lands. **All four are now shipped whole**:
+the fourth's reader half — the panel and a `skip` that governs something —
+landed on 2026-08-07 with O25, which had blocked it, closed the same day.
 Everything still genuinely unbuilt is under "Later".
 
 ### 1. Refuse on margins, not just counts — measured, and margin does not fit
