@@ -37,7 +37,7 @@ hidden.
 
 ## What is built
 
-Five crates, 414 tests, plus 414 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 414 tests, plus 417 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
 and `vite` in `web/`. Twelve of the 414 are standing checks gated on
@@ -277,9 +277,9 @@ produced against the corpus, turned up by designing the fix for another one, or
 turned up by simulating the reader from every position it can hold, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Twenty-two are now closed
+visible act rather than a thing someone remembers. **Twenty-three are now closed
 — O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25, O26, O27 and O30 — leaving eight.**
+O21, O22, O25, O26, O27, O28 and O30 — leaving seven.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -313,7 +313,7 @@ each is in the detail below; the table is what a reader scans.
 | O25 | [x] | The settings panel and the whole chrome are unreachable while showing a gap | `App.tsx::App`, the `at` narrowing | M5c browser pass |
 | O26 | [x] | `align --write` truncates the sidecar before writing it | `main.rs::write_sidecar` | credit-pages whole-branch review |
 | O27 | [x] | Two refs are held and read by nothing | `App.tsx::App`, the ref block above `viewportWidth` | O25 design |
-| O28 | [ ] | A forward arrow on the last group's second slot moves backward | `pairing.ts::stepToGroup` | credits-panel arrow simulation |
+| O28 | [x] | A forward arrow on the last group's second slot moves backward | `pairing.ts::stepToGroup` | credits-panel arrow simulation |
 | O29 | [ ] | A failed `--write` names a temp path the caller never typed | `atomic.rs::write` | O26's corpus drive |
 | O30 | [x] | A relative `TAIYAKU_CORPUS` skipped every standing check and reported `ok` | `corpus.rs::corpus`, `corpus.rs::corpus_root` | O26's corpus drive |
 
@@ -1286,37 +1286,48 @@ on 2026-08-07 while checking that the credits panel's skipping could not strand
 an arrow, and not blocking because it costs one page of movement in a state a
 reader reaches only sideways:
 
-- **O28 — A forward arrow on the last group's second slot moves backward.
-  Open.** `stepToGroup` clamps with `Math.min(Math.max(here + by, 0), all.length
-  - 1)` and then lands on the chosen group's *first* slot. At the end of the
-  volume those two combine: the clamp keeps the reader in the group they are
-  already in, and its first slot is behind them. Measured across all three
-  modes, on a grouping with nothing skipped —
-
-  ```
-  two,    [[0,1],[2,3],[4,5]]      from slot 5 → 4
-  single, [[0],[1],[2],[3,4]]      from slot 4 → 3
-  scroll, same                     from slot 4 → 3
-  ```
-
-  — so it is not a `two`-mode quirk: any volume ending in a joined spread has
-  it in every mode. **Only the final group.** From a mid-pair second slot the
-  answer is right (`from 3 → 4`, the next tile), and backward at the *start* is
-  already correct, returning the slot unchanged.
-  **It predates everything around it**, including group stepping's own arrival
-  in `c11c1e9` — it is that commit's clamp meeting that commit's
-  land-on-the-first-slot rule — and reproduces with no `skipped` set at all, so
-  the credits work neither caused it nor widened it. `status.md`'s account of
-  `c11c1e9` names the cost as "the second half of a joined spread is no longer
-  reachable by arrow", which is about *reaching* that slot and not about what
-  an arrow does once a reader is on one.
-  **Reachable, but only sideways**: an arrow cannot put a reader there, by that
-  same rule. A swap or a confirmed correction resolving onto a final second
-  slot can, and so can a restored progress record.
-  **What would close it:** deciding whether the clamp should return the slot
-  unchanged at the end of the volume, as it already does at the beginning. That
-  is a three-line change to the reader's central step function, which is why it
-  is tabled rather than made in passing on a branch about credit pages.
+- **O28 — A forward arrow on the last group's second slot moved backward.
+  Closed.** `stepToGroup` clamped with `Math.min(Math.max(here + by, 0),
+  all.length - 1)` and then landed on the chosen group's *first* slot. At the
+  end of the volume those two combined: the clamp kept the reader in the group
+  they were already in, and its first slot was behind them.
+  **The decision the item was waiting on was taken the way it was framed** —
+  the clamp now returns the slot unchanged wherever there is no next group, at
+  *both* ends rather than only the one that reversed direction. `stepToGroup`
+  holds two rules, and they meet only at a boundary: landing on a group's first
+  slot says where an arrow goes when it *moves*, and a press with nowhere to go
+  does not move. One rule now covers both ends instead of two rules meeting in
+  the middle, which is how this arose.
+  **Two things this entry had wrong, both found by running it rather than
+  reading it, and both changing what the fix had to be.** It recorded that
+  backward at the start "already returns the slot unchanged" — true only from a
+  group's *first* slot, which is the only case the existing test covered. From
+  the second half of a leading joined spread, backward answered 0: the same
+  invisible move, in the direction the reader had pressed, which is why it read
+  as correct. And it describes a defect of volumes ending in a joined spread; in
+  `two` mode a pair is a group too, so an ordinary six-page volume has it at
+  slot 5, which the entry's own first measured line shows and its prose did not
+  say.
+  **None of the affected presses changed the picture**, which is why a manual
+  pass never found it. A group is one image and both slots sit inside it, so the
+  arrow appeared to do nothing — correctly, at the end of a volume — while
+  silently re-authoring which slot a swap, a note or a written position answers
+  from.
+  **It predated everything around it**, including group stepping's own arrival
+  in `c11c1e9` — that commit's clamp meeting that commit's
+  land-on-the-first-slot rule — and reproduced with no `skipped` set at all, so
+  the credits work neither caused it nor widened it.
+  Three tests pin it, across all three modes and both ends, and were checked by
+  restoring the old clamp rather than by having once failed to compile: the two
+  boundary tests fail with the predicted values and the third — a second slot
+  *away* from a boundary still moving in both directions — passes either way,
+  which is what stops the fix being spelled "a second slot never moves". See
+  `notes.md`, "O28 — closes here".
+  **What is unchanged:** an arrow still cannot *put* a reader on a group's
+  second slot. That is the cost `c11c1e9` accepted and this does not revisit;
+  a swap, a confirmed correction or a restored progress record are still the
+  three ways onto one, and an arrow now leaves a reader there rather than
+  moving them off it in whichever direction the nearest boundary faces.
 
 **One came from driving a fix against the corpus after making it** — O29,
 turned up on 2026-08-07 while checking that `align --write` still wrote at all
@@ -1824,7 +1835,7 @@ commit after it: an arrow moved by slot where a group is what is drawn.** A
 joined spread is two slots and one wide image, so stepping by slot redrew what
 was already on screen and the press appeared to do nothing — *"I have to right
 arrow twice to go by it"* — and in `two` mode a press advanced the pair by one,
-redrawing half of it. `stepToGroup` (`web/src/pairing.ts`, pure, seven tests)
+redrawing half of it. `stepToGroup` (`web/src/pairing.ts`, pure, ten tests)
 steps by group instead, measured on `en-mono`, which has spreads at pages 45,
 46 and 49: pressing right from displayed slot 45 walks `45 → 46 → 47 → 49 →
 51`, one image per press, symmetric backwards. **Landing on the group's first
@@ -1836,7 +1847,9 @@ costs:** the second half of a joined spread is no longer reachable by arrow,
 nor is its own swap answer; it stays addressable where addressing it is the
 point — the correction filmstrip puts one tile per slot, and `two` mode draws
 the halves in separate cells. Confirmed acceptable during the same manual
-pass. The grouping reaches `applyIntent` as an optional parameter with the
+pass. *That cost is unchanged by O28, which closed the clamp this same commit
+introduced — see its entry above; what changed is only what an arrow does where
+there is no next group to land in.* The grouping reaches `applyIntent` as an optional parameter with the
 slot arithmetic kept as the fallback, because how the page is grouped right
 now — mode, direction override, hand-inserted parity breaks — is something
 nothing below the component tree knows.
@@ -1906,13 +1919,13 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the eight open items tabled above — five of them found by a
+What remains: the seven open items tabled above — five of them found by a
 whole-branch review, now that O12 (carried rather than found), O14 (found
-by one, closed by M5b) and O26 (found by one, closed on its own branch) are all
-out of the count, with three exceptions: O23,
+by one, closed by M5b), O26 (found by one, closed on its own branch) and O28
+(found by walking the reader through every position it can hold, closed on its
+own branch) are all out of the count, with two exceptions: O23,
 turned up by measuring what a new surface produced against the corpus rather
-than by reviewing a branch, O28, turned up by walking the reader through
-every position it can hold, and O29, turned up by driving O26's own fix against
+than by reviewing a branch, and O29, turned up by driving O26's own fix against
 the corpus once it was made. **Every milestone M5 named has now shipped.**
 
 ### 4. Skipping scanlation credit pages — shipped

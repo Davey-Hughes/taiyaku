@@ -260,18 +260,34 @@ export function cellsFor(group: Group, reading: 'rtl' | 'ltr'): Cells {
  * mode draws the halves in separate cells. What is given up is reaching it by
  * arrow in a mode that cannot show you which one you are on.
  *
- * **The clamp below has a known defect at the end of the volume, tabled as
- * O28.** `Math.min(Math.max(here + by, 0), all.length - 1)` keeps a reader in
- * the group they are already in when there is nowhere further to go, and this
- * function then lands on that group's *first* slot — which, standing on its
- * second, is behind them. Measured with nothing skipped: `two` mode
- * `[[0,1],[2,3],[4,5]]` answers 4 going forward from slot 5, and `single` and
- * `scroll` do the same from the second half of a trailing joined spread, so it
- * is not a `two`-mode quirk. Only the *final* group: from a mid-pair second
- * slot the next tile is answered correctly, and backward at the start already
- * returns the slot unchanged. An arrow cannot put a reader on a second slot —
- * that is the cost this doc already names — but a swap, a confirmed
- * correction, or a restored progress record can.
+ * **An arrow with nowhere to go leaves the slot alone**, at both ends of the
+ * volume. Where `here + by` falls outside the group range the slot comes back
+ * unchanged. The older clamp — `Math.min(Math.max(here + by, 0), all.length -
+ * 1)` — kept the reader in the group they were already in, and the first-slot
+ * landing above then moved them to its start; standing on that group's
+ * *second* slot, that is backward on a forward press, which was O28. Not a
+ * `two`-mode quirk: measured with nothing skipped, `two` `[[0,1],[2,3],[4,5]]`
+ * answered 4 going forward from slot 5, and any volume ending in a joined
+ * spread did the same in `single` and `scroll`.
+ *
+ * **The first-slot rule governs where an arrow lands when it moves, not what
+ * it does when it cannot**, and that is the distinction the clamp lost. None
+ * of these presses changed the picture — a group is one image and both slots
+ * were inside it — so what they silently changed was which slot a swap, a note
+ * or a written position answers from.
+ *
+ * **The start of the volume held the mirror of it**, which O28's own entry got
+ * wrong: it recorded that backward at the start "already returns the slot
+ * unchanged", and that is true only from a group's *first* slot. Measured from
+ * the second half of a leading joined spread, backward answered 0 — the same
+ * invisible move, in the same direction the reader had pressed, which is why
+ * it read as correct. One rule now covers both ends rather than two rules
+ * meeting in the middle, which is how this was missed in the first place.
+ *
+ * An arrow still cannot *put* a reader on a second slot — that is the cost
+ * named above — but a swap, a confirmed correction or a restored progress
+ * record can, and an arrow now leaves them there rather than moving them off
+ * it in whichever direction the nearest boundary happens to face.
  *
  * A slot no group claims goes to the nearest group in the direction of travel
  * (`nearestGroup` below) rather than staying put. **That branch is a backstop,
@@ -288,7 +304,8 @@ export function cellsFor(group: Group, reading: 'rtl' | 'ltr'): Cells {
 export function stepToGroup(all: Group[], slot: number, by: 1 | -1): number {
   const here = all.findIndex((group) => group.slots.includes(slot))
   if (here === -1) return nearestGroup(all, slot, by)
-  const next = Math.min(Math.max(here + by, 0), all.length - 1)
+  const next = here + by
+  if (next < 0 || next >= all.length) return slot
   return all[next].slots[0]
 }
 

@@ -281,12 +281,61 @@ describe('stepToGroup', () => {
     expect(stepToGroup(g, 2, 1)).toBe(4)
   })
 
-  /** Both ends clamp rather than wrapping or running off. */
-  it('clamps at both ends', () => {
+  /** Both ends stop rather than wrapping or running off. */
+  it('stops at both ends', () => {
     const slots = slotsWith(4, [])
     const g = groups(slots, 'single', rtl)
     expect(stepToGroup(g, 0, -1)).toBe(0)
     expect(stepToGroup(g, 3, 1)).toBe(3)
+  })
+
+  /**
+   * O28. The old clamp kept the reader in the group they were already in and
+   * the first-slot landing then moved them to its start — backward, on a
+   * forward press. None of these presses change the picture, since both slots
+   * are inside one drawn group; what moved was the slot a swap answers from.
+   *
+   * `two` mode needs no spread for this, because a pair is a group too.
+   */
+  it('leaves the slot alone going forward off the end', () => {
+    const pairs = groups(slotsWith(6, []), 'two', rtl)
+    // [[0,1],[2,3],[4,5]] — slot 5 is the last pair's second page.
+    expect(stepToGroup(pairs, 5, 1)).toBe(5)
+
+    for (const mode of ['single', 'two', 'scroll'] as const) {
+      // Six pages, the last one a joined spread: slot 6 is its second half.
+      const g = groups(slotsWith(6, [5]), mode, rtl)
+      expect(stepToGroup(g, 6, 1)).toBe(6)
+    }
+  })
+
+  /**
+   * The mirror of it, at the start. O28's entry recorded that backward here
+   * "already returns the slot unchanged", which held only from a group's
+   * *first* slot — from the second it answered 0, invisibly, in the direction
+   * the reader had pressed.
+   */
+  it('leaves the slot alone going backward off the start', () => {
+    const pairs = groups(slotsWith(6, []), 'two', rtl)
+    expect(stepToGroup(pairs, 1, -1)).toBe(1)
+
+    for (const mode of ['single', 'two', 'scroll'] as const) {
+      // Six pages, the first one a joined spread: slot 1 is its second half.
+      const g = groups(slotsWith(6, [0]), mode, rtl)
+      expect(stepToGroup(g, 1, -1)).toBe(1)
+    }
+  })
+
+  /**
+   * And the rule is confined to the boundary: away from it, a second slot
+   * still moves to the neighbouring group's first slot in both directions.
+   * Without this the fix could be spelled "a second slot never moves".
+   */
+  it('still moves off a second slot in the middle of the volume', () => {
+    // 0, 1, 2R, 2L, 3, 4, 5 — slot 3 is the spread's second half.
+    const g = groups(slotsWith(6, [2]), 'single', rtl)
+    expect(stepToGroup(g, 3, 1)).toBe(4)
+    expect(stepToGroup(g, 3, -1)).toBe(1)
   })
 
   /** A slot no group claims cannot move — better than guessing at one. */

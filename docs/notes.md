@@ -5681,10 +5681,75 @@ Tabled as O28 rather than fixed here: the fix is three lines in the reader's
 central step function, and this branch is about credit pages. See its entry in
 `status.md` for what reaches that state, since an arrow cannot.
 
+*O28 has since closed — see "O28 — closes here" below, which also corrects two
+things this passage gets wrong.*
+
 The simulation itself is worth keeping in mind as a shape rather than as a
 file — it is what would have caught `nearestGroup`'s straddle bug, which four
 unit tests missed because every one of them was `single` mode, where the shape
 cannot arise.
+
+## O28 — closes here
+
+The fix is one line where the clamp was, and it is the *shape* of the clamp
+that was wrong rather than its bounds:
+
+```ts
+const next = here + by
+if (next < 0 || next >= all.length) return slot
+return all[next].slots[0]
+```
+
+`stepToGroup` holds two rules. Landing on a group's first slot makes a swap
+predictable from what is visible — both halves of a joined spread draw the same
+image and resolve differently, so a reader who cannot see which half they are
+on should always be on the one the group names. Clamping stops an arrow running
+off the end. **They only meet where there is no next group**, and there the
+first has no business running at all: it says where an arrow lands when it
+*moves*, and a press with nowhere to go does not move.
+
+**None of the affected presses changed the picture.** A group is one image and
+both slots sit inside it, so the arrow appeared to do nothing — correctly, at
+the end of a volume — while re-authoring which slot a swap, a note or a written
+position would answer from. That is why the manual pass never found it and the
+simulation did.
+
+Measured across all three modes, with nothing skipped:
+
+| Mode | Groups | Press | Before | After |
+| ---- | ------ | ----- | -----: | ----: |
+| `two` | `[[0,1],[2,3],[4,5]]` | forward from 5 | 4 | **5** |
+| `single` | `[[0],…,[4],[5,6]]` | forward from 6 | 5 | **6** |
+| `scroll` | `[[0],…,[4],[5,6]]` | forward from 6 | 5 | **6** |
+| `two` | `[[0,1],[2,3],[4],[5,6]]` | forward from 6 | 5 | **6** |
+| `two` | `[[0,1],[2,3],[4,5]]` | backward from 1 | 0 | **1** |
+| `single` | `[[0,1],[2],…,[6]]` | backward from 1 | 0 | **1** |
+
+**Two things O28's own entry had wrong, both found by running it rather than
+reading it.**
+
+The first: it recorded that backward at the start of the volume "already
+returns the slot unchanged". It does — from a group's *first* slot, which is
+the only case the existing test covered (`stepToGroup(g, 0, -1)` on a grouping
+with no spreads, where every group is one slot). From the second half of a
+leading joined spread, backward answered 0: the same invisible move as the
+defect, in the same direction the reader had pressed, which is exactly why it
+read as correct. Fixing only the forward end would have left it there, and left
+the two ends of one function stating two rules — which is how this arose in the
+first place.
+
+The second: the entry describes a defect of volumes ending in a joined spread.
+In `two` mode it needs no spread at all, because a pair is a group too — an
+ordinary six-page volume has it at slot 5. The entry's own first measured line
+shows this and the prose around it does not say so.
+
+**Checked by sabotage rather than by having once failed to compile.** With the
+old clamp restored, the two new boundary tests fail with the predicted values —
+`expected 4 to be 5` and `expected +0 to be 1` — and the third passes either
+way. That third one pins that a second slot *away* from a boundary still moves
+in both directions (`3 → 4` forward, `3 → 1` backward, across a mid-volume
+spread); without it the fix could be spelled "a second slot never moves", which
+is a different and worse function.
 
 ## O26: align --write, driven against the corpus
 

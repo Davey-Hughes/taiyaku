@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The local mirror of CI (.forgejo/workflows/ci.yml). Run it before landing a branch —
-# scripts/land.sh runs it for you, on the merged tree, before the commit exists.
+# The local mirror of CI (.forgejo/workflows/ci.yml). Run it yourself before pushing a branch —
+# nothing runs it for you, and the forge runs the same three jobs after the push rather than before.
 #
 #   scripts/check-all.sh             # everything CI runs
 #   scripts/check-all.sh --no-wasm   # skip the wasm target build
