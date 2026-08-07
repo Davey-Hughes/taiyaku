@@ -28,6 +28,7 @@ function offsetResolver(): Resolver {
       return page >= 0 && page < 10 ? { page, via: 'direct' } : undefined
     },
     chapterAt: () => undefined,
+    credits: () => [],
   }
 }
 

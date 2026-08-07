@@ -1,5 +1,6 @@
 import { buildRegistry } from '../module'
 import { annotationsModule } from './annotations'
+import { creditsModule } from './credits'
 import { directionModule } from './direction'
 import { motionModule } from './motion'
 import { prefetchModule } from './prefetch'
@@ -39,13 +40,29 @@ import { settingsModule } from './settings'
  *
  * This is also the one place a seventh module is registered at all — adding
  * one to the array below is the only hand-edit its *existence* requires.
- * Making its preferences actually load, save, and reach the settings panel
- * needs no edit here or in `App.tsx`: `App.tsx`'s preference state is a
- * single map built from `registry.all()`, keyed by id, so a module with a
- * `defaults` shape and nothing else is fully wired the moment it appears in
- * this array. Only a module that also wants a keybinding (like `direction`'s
- * `d`) or bespoke behaviour (like `prefetch`'s decode-queue rebuild) needs
- * anything hand-written in `App.tsx`, and that is behaviour, not tunability.
+ * `creditsModule` is the eighth, claiming `C` for the panel that will list a
+ * scanlation group's own pages — one key, the same shape as `settingsModule`'s
+ * single claim, and nothing more here than that entry and the import above.
+ * Making its preferences load, save, and reach the settings panel needs no
+ * edit here or in `App.tsx`: `App.tsx`'s preference state is a single map
+ * built from `registry.all()`, keyed by id, so a module with a `defaults`
+ * shape and nothing else is fully wired the moment it appears in this array.
+ * Only a module that also wants a keybinding (like `direction`'s `d`) or
+ * bespoke behaviour (like `prefetch`'s decode-queue rebuild) needs anything
+ * hand-written in `App.tsx`, and that is behaviour, not tunability.
+ *
+ * **`creditsModule` is exactly that case, and its behaviour is not written
+ * yet — the panel is not mounted.** Registration wires its preferences and
+ * nothing else: `App.tsx` renders no credits panel and its module switch has
+ * no case for `PANEL_INTENT`, so `C` is swallowed by that branch's own
+ * `preventDefault()` and the generated "Credit pages" settings section holds
+ * two toggles that persist and govern nothing. This is deliberate and blocked
+ * on O25 (`docs/status.md`) — the whole chrome and every panel below the
+ * `shown.kind === 'gap'` branch go unrendered while a gap is showing, and a
+ * gap is the state a reader most wants this list from. The entry stays in the
+ * array regardless, because the property this comment is about — one array,
+ * one hand-edit — is worth more than hiding an inert section, and
+ * `modules/credits.ts`'s own doc says plainly what the section does today.
  */
 const modules = [
   directionModule,
@@ -55,6 +72,7 @@ const modules = [
   prefetchModule,
   annotationsModule,
   settingsModule,
+  creditsModule,
 ]
 
 export const registry = buildRegistry(modules)

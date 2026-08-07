@@ -586,3 +586,117 @@ fn the_inventory_finds_every_duplicate_set() {
     assert_eq!(volumes.len(), 16, "16 volumes: {volumes:?}");
     assert!(volumes.contains(&95), "v095-colour-c0 parses to 95");
 }
+
+/// Load one work's sidecar, or panic naming the path — every corpus check
+/// below reads a `taiyaku.json` before doing anything else, and a missing or
+/// unparsable one is a corpus setup problem, not a thing the assertions below
+/// should have to explain.
+fn read_sidecar(volume: &Path) -> Sidecar {
+    let path = volume.join("taiyaku.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    Sidecar::from_json(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// Go-Toubun v01's fan edition classifies exactly its four credit pages.
+///
+/// Exercises the actual classification rule — `credits::credit_pages`, the
+/// pure function `command` calls once it has `unpaired_runs` in hand — rather
+/// than a copy of it: `credit_pages` reads only run geometry, no page hashes,
+/// so calling it directly here is the same code path `command` runs and needs
+/// no fingerprinting to reach.
+///
+/// Asserts the *set*, not the count: four-of-six is reachable by classifying
+/// the wrong four, and an earlier draft of this design did exactly that in
+/// both directions — it would have taken `c005.5`'s front matter and left
+/// `c005`'s staff credits behind. See `docs/notes.md`, "A second group's
+/// habits, and what the bound is worth".
+///
+/// The six unpaired runs are asserted separately from the four classified
+/// pages: a regression in boundary splitting (`unpaired_runs`) and a
+/// regression in the classification rule (`credit_pages`, via
+/// `MAX_CREDIT_RUN`) are two different ways for credits detection to break,
+/// and collapsing both into one assertion would hide which one did.
+#[test]
+fn gotoubun_fan_edition_classifies_four_credit_pages() {
+    let Some(root) = corpus() else {
+        eprintln!("TAIYAKU_CORPUS unset; skipping");
+        return;
+    };
+    let doc = read_sidecar(&root.join("gotoubun-v01"));
+
+    let runs = taiyaku_core::unpaired_runs(&doc, "en-fan", "raw-mono").expect("aligned");
+    let pages = crate::credits::credit_pages(&runs);
+
+    println!(
+        "gotoubun en-fan: {} unpaired runs, classified {:?}",
+        runs.len(),
+        pages
+    );
+
+    assert_eq!(
+        runs.len(),
+        6,
+        "six unpaired runs, or boundary splitting has regressed"
+    );
+    assert_eq!(
+        pages,
+        vec![95, 168, 198, 225],
+        "the classified set must be exactly these four pages, not merely four of six"
+    );
+}
+
+/// Kaguya-sama v01's fan edition classifies what the survey measured: one
+/// page, and it is a known false positive.
+///
+/// Same code path as the Go-Toubun check above: `unpaired_runs` then
+/// `credits::credit_pages`, the pure function `command` calls, called
+/// directly rather than reimplemented.
+///
+/// **212 is a FALSE POSITIVE.** It is the publisher's full-colour
+/// promotional announcement ("VOLUME 1 WILL BE RELEASED ON 3/18", the series
+/// moving to Young Jump as a weekly) — not scanlation matter, and not what
+/// the rule means to find. It is pinned here anyway, because this check's
+/// job is to notice when the tool's output *changes*, not to bless what it
+/// outputs today. **If a future improvement to the classification rule makes
+/// this test fail because 212 stops being classified, that is the correct
+/// outcome: update this expectation, do not restore the behaviour that keeps
+/// it passing.**
+///
+/// **This check also pins the solver, not only the classifier.**
+/// `corpus/kaguya-v01/taiyaku.json` comes from an alignment the solver itself
+/// rated `FRAGMENTED` (average run 13.3 slots, 23 runs) — the corpus's only
+/// sidecar with that verdict. `unpaired_runs` reads that alignment directly,
+/// so a change to the solver, unrelated to credit pages at all, can move this
+/// check's numbers for reasons that have nothing to do with the rule under
+/// test. See `docs/notes.md`, "A second group's habits, and what the bound is
+/// worth".
+#[test]
+fn kaguya_fan_edition_classifies_what_the_survey_measured() {
+    let Some(root) = corpus() else {
+        eprintln!("TAIYAKU_CORPUS unset; skipping");
+        return;
+    };
+    let doc = read_sidecar(&root.join("kaguya-v01"));
+
+    let runs = taiyaku_core::unpaired_runs(&doc, "en-fan", "raw-mono").expect("aligned");
+    let pages = crate::credits::credit_pages(&runs);
+
+    println!(
+        "kaguya en-fan: {} unpaired runs, classified {:?} (page 212 is a KNOWN FALSE POSITIVE \
+         — a publisher promo, not scanlation matter)",
+        runs.len(),
+        pages
+    );
+
+    assert_eq!(
+        runs.len(),
+        9,
+        "nine unpaired runs, or the FRAGMENTED alignment this check depends on has changed"
+    );
+    assert_eq!(
+        pages,
+        vec![212],
+        "212 is a known false positive; if this goes red because 212 is no longer classified, \
+         that is correct — update this expectation, not the rule"
+    );
+}

@@ -18,6 +18,7 @@
 mod cache;
 #[cfg(test)]
 mod corpus;
+mod credits;
 mod duplicates;
 mod fingerprint;
 mod inventory;
@@ -49,6 +50,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("serve") => serve(&args[1..]),
         Some("duplicates") => duplicates::command(&args[1..]),
         Some("inventory") => inventory::command(&args[1..]),
+        Some("credits") => credits::command(&args[1..]),
         Some(other) => Err(format!("unknown command `{other}`")),
         None => {
             println!("taiyaku {}", env!("CARGO_PKG_VERSION"));
@@ -66,6 +68,10 @@ fn run(args: &[String]) -> Result<(), String> {
                 "       taiyaku duplicates <copy>... -- <copy>... [--against <member>...] [--ltr]"
             );
             println!("       taiyaku inventory <root> [--min-pages N] [--pattern SPEC]");
+            println!(
+                "       taiyaku credits <member>... --sidecar FILE [--against EDITION] \
+                 [--cache DIR] [--write]"
+            );
             println!();
             println!("align options: --ltr --stats --cache DIR --write FILE --title NAME");
             println!("               --name-a KEY --name-b KEY --direct --no-split-spreads");
@@ -703,6 +709,7 @@ fn describe_edition(
         label: label.to_string(),
         members: described,
         spreads,
+        credits: Vec::new(),
     })
 }
 
@@ -1254,6 +1261,9 @@ fn align(args: &[String]) -> Result<(), String> {
                     Merged::Added => "added".to_string(),
                     Merged::Replaced => "replaced".to_string(),
                     Merged::CarriedHandRuns(n) => format!("replaced, carrying {n} hand run(s)"),
+                    Merged::DroppedCredits(n) => {
+                        format!("replaced, dropping {n} credits page(s)")
+                    }
                 };
                 let note = format!(
                     "merged {out}: {verb} `{b_name}` | {} editions, {} alignments",

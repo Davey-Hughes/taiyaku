@@ -708,8 +708,13 @@ numbering usually means bonus content that belongs inside the tankōbon**, not
 content outside it. Extras, side stories, and omake are routinely released as
 fractional chapters and then collected in the volume. So a fractional chapter is
 a *candidate member* by default. Which pages of it land, and where, is for the
-alignment to decide — c005.5's first four pages are scanlator title and credit
-pages that do not correspond to anything, while its last five are volume content.
+alignment to decide — c005.5's first four pages correspond to nothing, while its
+last five are volume content. **Those four were called "scanlator title and
+credit pages" here until 2026-08-05; they are the volume's own front matter** —
+cover, title page, table of contents, decorative half-title — and they pair with
+nothing only because `c000` carries a second copy of the same front matter that
+the 1:1 rule matched first. See "Scanlation credit pages are already visible in
+the alignment", which corrects the same mistake in its own table.
 
 More broadly: editions vary in what extras they carry, so the members of an
 edition cannot be declared from filenames at all. This settles the open question
@@ -2841,9 +2846,17 @@ Measured 2026-07-31 on `corpus/gotoubun-v01`, while planning M3. The question wa
 whether a reader could skip a scanlation group's donation and credits pages
 without anyone hand-tagging them. **The alignment already knows where they are.**
 
+**Two of the five rows below were mislabelled, and the labels were corrected on
+2026-08-05 by extracting every page and looking at it.** The corrected column is
+what the table now carries; what each row used to say is in the "Corrected"
+section beneath it, because a table quietly edited teaches nobody what the
+mistake was. The arithmetic was never wrong — the same five groups and the same
+fifty slots reproduce exactly — only the reading of what the pages *are*.
+
 A credits page exists in the fan edition and in no other, so it pairs with
 nothing. Reading the `raw-mono → en-fan` alignment and asking which of the fan
-edition's 235 slots no run ever mentions gives 50 slots in five groups:
+edition's 240 slots no run ever mentions gives 50 slots in five groups. Page
+indices are zero-based:
 
 | Fan pages | Count | Member | Local | What it is |
 | --------- | ----- | ------ | ----- | ---------- |
@@ -2851,42 +2864,283 @@ edition's 235 slots no run ever mentions gives 50 slots in five groups:
 | 95 | 1 | `c001` | 51 of 52 | **donation plea** |
 | 168 | 1 | `c003` | 31 of 32 | **donation plea** |
 | 198 | 1 | `c004` | 29 of 30 | **donation plea** |
-| 225–229 | 5 | `c005`, `c005.5` | 26, 0–3 | chapter end plus a bonus chapter |
+| 225 | 1 | `c005` | 26 of 27 | **staff credits** — TL / TLC / PR / ED names |
+| 226–229 | 4 | `c005.5` | 0–3 | the volume's own front matter — cover, title page, contents, divider |
 
-Three of the five groups are a **single unpaired page sitting at its member's
-final index**, and all three were extracted and looked at: the same
-`WE NEED DONATIONS! … lhtranslation.com` card, verbatim. The two long groups are
-genuine content the raw volume does not contain — `c000` page 20 was extracted as
-a negative control and is ordinary manga.
+**Four of the six groups are a single unpaired page sitting at its member's
+final index, and all four are credit pages.** Three are the same
+`WE NEED DONATIONS! … lhtranslation.com` card, verbatim. The fourth is a staff
+credits page — a meme panel captioned `TL: 5TBGamma / TLC/PR: ThunderCloud /
+ED: monka`. The 42-page group is genuine content the raw volume does not contain
+— `c000` page 20 was extracted as a negative control and is ordinary manga.
 
 **So the separating rule is shape, not content:** an isolated unpaired page at a
-member boundary is a credits page; an unpaired run spanning most of a member is
-material the other edition lacks. Both fall out of `alignments`, which every
-sidecar already carries.
+member's *final* index is a credits page; an unpaired run spanning most of a
+member is material the other edition lacks. Both fall out of `alignments`, which
+every sidecar already carries.
 
-**The three cards are visually identical and byte-different** — 175,385, 174,117
-and 170,889 bytes, three different SHA-256s, because each chapter re-encoded it.
-Exact-hash deduplication finds none of them. **dhash does**, and taiyaku already
-has dhash-16 with a corpus behind it — the same property that makes it work
-across editions makes it work across a re-encode. `notes.md` already records
-distance-zero lookup finding duplicate pages inside one edition; this is that,
-put to a use.
+### Corrected 2026-08-05: what the five rows actually hold
 
-**Two independent signals, then**, which is what makes this worth building rather
-than guessing at:
+Re-measured while planning the credit-page feature, by running the complement
+arithmetic against the shipped sidecar and then extracting and viewing twelve
+pages. Four corrections, three of them to this section's own claims.
 
-1. unpaired against the hub, and isolated at a member boundary
-2. near-duplicate of a page in a *sibling member* of the same edition, by dhash
+**1. `c005` local 26 is a credits page, not a "chapter end".** The row used to
+read "chapter end plus a bonus chapter" for a five-slot group spanning two
+members. Split at the member boundary it is two groups, and the first is a staff
+credits page naming three people. **It is a true positive that this section's own
+rule catches and this section's own table threw away.**
 
-Signal 2 needs no alignment at all, so it also works on an edition with no
-counterpart — which matters, because a fan edition is often the only one a
-library has.
+**2. `c005.5` locals 0–3 are the volume's front matter, not scanlator matter.**
+They were described elsewhere in this file as "scanlator title and credit pages
+that do not correspond to anything". Extracted, they are the tankōbon cover, the
+volume title page (`Gotoubun no hanayome / Negi Haruba / 1`), the table of
+contents listing chapters 1–5 with page numbers, and a decorative half-title.
+They are unpaired for a mechanical reason rather than a semantic one: `c000`
+also carries a copy of the cover, the 1:1 rule gave raw's front matter to that
+copy first, and this one had nothing left to pair with. **A reader wants these
+pages**, so a rule that swept them up would be worse than no rule.
 
-**Not yet measured, and stated as unknown:** whether the rule holds on other
-scanlation groups in the corpus, what happens to groups that put credits on the
-*first* page rather than the last, and the false-positive rate against colour
-inserts and author afterwords, which are also single unpaired pages near a
-boundary. The Go-Toubun fan edition is one group's habits, not the population.
+**3. The edition has 240 slots, not 235.** 235 is its page count. `en-fan`
+carries five joined spreads — pages 45, 91, 133, 164 and 196, recorded in the
+edition-level `spreads` list — so expansion adds five slots. The 50-slot figure
+survives unchanged because no spread falls inside an unpaired region, which is
+luck rather than design and is exactly the kind of agreement that hides a
+page-for-slot substitution.
+
+**4. Signal 1's weakness is recall, not precision — and the corpus shows it.**
+`c000` local 43, the edition's page 43, is a credits page for a **different
+group**: a pink disc reading `PRESENTED BY: underdogscans + BOSEN SCAN` over
+`rp / tl / prf / edt / qc` names, where the three pleas are `lhtranslation`. So
+one fan edition mixes releases from at least two groups. The solver **paired**
+that page, so it is not in the unpaired set at all and no unpaired-based signal
+can reach it. Precision on this volume is four of four; recall is at best four of
+five, and only twelve of 235 pages have been looked at, so the true denominator
+is unknown.
+
+### The dhash signal finds duplicated pages, which is not the same thing
+
+The three cards are visually identical and byte-different — 175,385, 174,117 and
+170,889 bytes, three different SHA-256s, because each chapter re-encoded it.
+Exact-hash deduplication finds none of them. **dhash finds them, but not the way
+this section originally implied, and it is the weaker signal of the two.**
+
+Measured 2026-08-05 over all 235 pages, using the dhash-16 values already in the
+CLI's fingerprint cache — the hashes taiyaku itself computed, not a
+reimplementation. For each page, the Hamming distance to the nearest page in a
+*different member* of the same edition:
+
+| Distance | Pages | What they are |
+| -------- | ----: | ------------- |
+| 2 | 2 | the volume **cover**, carried by both `c000` and `c005.5` |
+| 14 | 2 | two of the three donation pleas |
+| 24 | 1 | the third donation plea |
+| 33–64 | 2 | ordinary pages |
+| >64 | 228 | ordinary pages, and **both staff-credit pages** — 93 and 99 |
+
+The two staff-credit pages sit at 93 (`c000` local 43, `underdogscans + BOSEN
+SCAN`) and 99 (`c005` local 26, `TL: 5TBGamma …`), measured 2026-08-06. This
+paragraph read "99 and 100" until then, which was wrong twice over: 100 is
+`c005.5` local 3, the decorative half-title, which is front matter and not a
+credits page at all, and page 43's distance had never been measured. The
+correction does not change the conclusion — both are far above anything that
+could be called recurrence — but a figure attached to the wrong page is how the
+mislabelling this whole section corrects got in.
+
+**Its two tightest matches in the whole edition are a false positive.** The
+closest pair by a wide margin is the volume cover appearing in two chapter
+files, which is a page a reader wants. The signal is therefore a *duplicate*
+detector, and duplicated front matter is as common as duplicated credits.
+
+**It misses both staff-credit pages**, at distances 93 and 99, because each
+appears exactly once. So it cannot serve as a confirmer either: gating signal 1
+on it would veto the two true positives signal 1 uniquely finds.
+
+**The pleas sit at 14–24 rather than near zero, and that is worth its own
+sentence.** They are near-black cards carrying small text, and dhash reads
+gradients, so a low-variance image has few strong gradients and re-encoding
+noise flips a lot of the weak ones. This is the mirror of "Blank pages match each
+other perfectly and lie about it": a blank page's hash is stable and meaningless,
+and a nearly-blank page's hash is unstable. Both failures come from the same
+property, and neither is visible to a check that compares dhash to dhash.
+
+**What is still not measured:** the other 223 pages of this edition, the whole of
+`corpus/kaguya-v01/en-fan`'s 12 chapter files from a third group, groups that put
+credits at a member's *first* index rather than its last, and the false-positive
+rate against colour inserts and author afterwords. The Go-Toubun fan edition is
+two groups' habits, not the population.
+
+**Two signals, then, and they are not equals.** Signal 1 — unpaired against the
+hub, isolated at a member's final index — is four for four here. Signal 2 —
+near-duplicate of a page in a sibling member, by dhash — is three for five, and
+needs no alignment, so it is the only thing that works on an edition with no
+counterpart. Neither is a subset of the other and neither confirms the other;
+what signal 2 is really good for is saying *why* a page recurs, which a person
+reviewing candidates wants to know.
+
+## A second group's habits, and what the bound is worth
+
+Measured 2026-08-07, to fix `MAX_CREDIT_RUN` in
+`crates/taiyaku-cli/src/credits.rs` from something wider than one volume. The
+section above ends by listing what was still unmeasured, and the first item on
+that list was `corpus/kaguya-v01/en-fan` — twelve chapter files from a group
+that had never been looked at. Rebuild with:
+
+```sh
+scripts/credit-survey.sh corpus
+```
+
+**Two findings, and the second is the one that matters more than the bound.**
+The bound stays at 1, for want of any evidence that would raise it. And Kaguya
+contributes no true positive at all — its one candidate is a **false positive**,
+which takes signal 1's precision across the corpus from four of four down to
+four of five.
+
+### The alignment Kaguya was surveyed through is FRAGMENTED
+
+`corpus/kaguya-v01` had no sidecar, so one was written first: `raw-mono` (213
+loose JPEGs) against `en-fan`'s twelve archives. The verdict was
+
+```
+23 runs | 194 whole pairings | 6 involving a spread half | 13 unmatched slots
+FRAGMENTED - paired, but too broken up to trust | average run 13.3 slots
+```
+
+**Signal 1 reads an alignment, so every Kaguya figure below inherits that.** The
+damage is visible in the rows: `c5.5` has 15 pages, of which the solver paired
+exactly two — local 7 and local 14 — leaving unpaired runs of 7 and 6 either
+side of a single page in the middle of a chapter. Extracted, all fifteen are
+ordinary manga. Those two runs are an artefact of a bad alignment and not a
+fact about the release. The Kaguya rows are therefore evidence about
+*positioning* — where this group puts its own matter — and much weaker evidence
+about run *lengths*, which fragmentation both invents and splits.
+
+Go-Toubun's alignment is unaffected and its result is unchanged: six runs,
+candidates at exactly pages 95, 168, 198 and 225.
+
+### The two `credits:` lines
+
+```
+credits: edition=en-fan against=raw-mono pages=235 slots=240 runs=6 candidates=4 bound=1 work=Go-Toubun no Hanayome v01
+credits: edition=en-fan against=raw-mono pages=226 slots=231 runs=9 candidates=1 bound=1 work=Kaguya-sama v01
+```
+
+`work=` is last on the line, and that placement is load-bearing rather than
+cosmetic: a work title holds spaces, and `duplicate-survey.sh` and
+`margin-survey.sh` established the discipline that a survey reads these fields
+positionally. Leading with the title shifted every later field by an amount no
+collector can predict. Trailing with it leaves the eight fields before it fixed
+and lets the free text run to end of line.
+
+### Every candidate, and what it turned out to be
+
+Fifteen runs across the two editions. Every page either edition marks `credits`
+was extracted and looked at, as was every run of length 2 or 3, as were all
+twelve of Kaguya's chapter-final pages and all twelve of its chapter-opening
+pages — the last two groups are not candidates at all, and were viewed because
+"where does *this* group put its credits" is the question the volume was added
+to answer, and the fragmented alignment is not trustworthy enough to be asked
+it.
+
+| Edition | Pages | Member, local | Run | At end | Marked | What it actually is |
+| ------- | ----- | ------------- | --: | ------ | ------ | ------------------- |
+| go-toubun | 95 | `c001` 51/52 | 1 | yes | **credits** | donation card, `lhtranslation.com` — true positive |
+| go-toubun | 168 | `c003` 31/32 | 1 | yes | **credits** | the same donation card, re-encoded — true positive |
+| go-toubun | 198 | `c004` 29/30 | 1 | yes | **credits** | the same donation card again — true positive |
+| go-toubun | 225 | `c005` 26/27 | 1 | yes | **credits** | staff credits, `TL: 5TBGamma / TLC/PR: ThunderCloud / ED: monka` — true positive |
+| go-toubun | 226–229 | `c005.5` 0–3 | 4 | no | – | volume front matter: cover, title page, contents, half-title |
+| go-toubun | 1–42 | `c000` 1–42 | 42 | no | – | the prototype one-shot, absent from the raw volume |
+| kaguya | 0 | `c1` 0/31 | 1 | no | – | wraparound dust jacket — front, spine, back, barcode |
+| kaguya | 2–4 | `c1` 2–4/31 | **3** | no | – | "THE INSIDE COVER!" omake, "THE INSIDE BACK COVER!" omake, and a blank page carrying only 「この作品は、デジタル配信用に再編集を行ったものです。」 |
+| kaguya | 7 | `c1` 7/31 | 1 | no | – | colour chapter opener, 新連載! |
+| kaguya | 105–111 | `c5.5` 0–6/15 | 7 | no | – | colour chapter title page, then ordinary manga |
+| kaguya | 113–118 | `c5.5` 8–13/15 | 6 | no | – | ordinary manga |
+| kaguya | 157 | `c8` 1/18 | 1 | no | – | chapter title page carrying the magazine's own あらすじ blurb and a `seiga.nicovideo.jp` promo |
+| kaguya | **212** | `c10` 19/20 | 1 | **yes** | **credits** | **false positive** — the publisher's colour announcement |
+| kaguya | 213–220 | `c10.5` 0–7/13 | 8 | no | – | volume front matter and character profiles |
+| kaguya | 222 | `c10.5` 9/13 | 1 | no | – | a gag panel between two character profiles |
+
+### The false positive is a colour insert, which was the predicted failure
+
+Kaguya page 212 is `c10`'s last page and unpaired, so the rule takes it. It is a
+full-colour magazine announcement: *"THANK YOU SO MUCH FOR THE POPULARITY!! BIG
+NEWS!! The War of Love and Brains moves to a new stage!! Volume 1 will be
+released on 3/18!!! Kaguya is moving to a new magazine, and will return in issue
+17 of Young Jump on 3/24… as a weekly series!!"*
+
+It is the **publisher's** own matter, not the scanlation group's, and the rule's
+own definition is "a scanlation group's own matter rather than the work". It is
+unpaired for the mechanical reason `c005.5`'s front matter was: `raw-mono` is a
+tankōbon scan and this page belongs to the magazine serialisation, so there is
+nothing on the raw side for it to pair with. The section above listed "the
+false-positive rate against colour inserts and author afterwords" as unmeasured.
+It is now measured, at one.
+
+### This group prints no credit page at all
+
+All twelve chapters carry `ScanInformation: Psylocke Scans` in a `ComicInfo.xml`
+and nothing on any page. Checked three ways, because a negative is easy to
+assert and hard to earn: all twelve chapter-final pages (eleven end on ordinary
+manga with an `END` mark; `c1` ends on the tankōbon's grey half-title), all
+twelve chapter-opening pages (all ordinary chapter openers), and a sweep of all
+226 pages ranked by mean luminance and by standard deviation, since a donation
+card is near-black and a plain text card is flat. The darkest pages are the
+covers and colour inserts; the flattest are the digital-distribution notice, the
+grey half-title, and the volume's table of contents. There is no card.
+
+**So the second volume adds one group whose habit is to print no credits, and
+four groups is not four data points about run length.** Go-Toubun's edition is
+itself two groups — `lhtranslation` on `c001`/`c003`/`c004` and
+`underdogscans + BOSEN SCAN` on `c000` — and `c005` names a third set of people
+again.
+
+### Why the bound stays at 1
+
+Two questions decide it, and the corpus answers both against raising it.
+
+**Is there a run of 2 or 3 that is genuinely credits?** No. Every credit page
+found anywhere in the corpus is a run of exactly **1** — the three donation
+cards, the `c005` staff page, and the `c000` disc. Five for five. There is
+nothing longer to raise the bound *for*.
+
+**Is there a run of 2 or 3 that is not credits?** Yes, and it is the corpus's
+only run of that length: Kaguya pages 2–4, the volume's two inside-cover omake
+and the digital edition's notice page. It is excluded by position as well
+(`c1`'s local 2 is not a member end), so it would not flip today — but it is the
+one observation available about what a three-page unpaired run tends to hold,
+and it holds front matter.
+
+So 1 is not a cautious compromise between two readings. **It is the only length
+anyone has measured**, and the single piece of contrary evidence points the
+other way. Raising it would buy no true positive and would put a three-page
+block of front matter one position-rule away from being swept up.
+
+**What this does not claim.** That no group prints a two-page credits spread.
+Four groups is not the population; such a spread would be missed, and missed
+silently. That remains roadmap item 1, and it is a recall gap rather than a
+precision one — which is the safer of the two to have, since a missed credits
+page costs a reader one page-turn and a swept-up front-matter page costs them
+part of the book.
+
+### Two things no page-level rule can reach
+
+**Credits typeset onto a story page.** Go-Toubun `c002` local 40 is the
+chapter's last story page, and `TL: 5TBGamma / PR: anon` is set in the bottom
+margin under the artwork. There is no page to classify — skipping it would skip
+the page the chapter ends on.
+
+**A credits page the solver paired.** Go-Toubun `c000` local 43, page 43, is the
+pink `underdogscans + BOSEN SCAN` disc naming five people. It is a run of 1 *at
+its member's last index* — exactly the shape the rule is built for — and signal
+1 never sees it, because the solver paired it and the rule only looks at
+unpaired runs. This is the recall ceiling the section above records, confirmed
+by extraction rather than inferred.
+
+**Sample size, stated plainly.** Two volumes, two fan editions, 461 pages, 15
+unpaired runs, four scanlation groups, one of which prints no credits. Five true
+credit pages exist; signal 1 finds four of them and adds one false positive.
+Precision four of five, recall four of five. Both denominators are of *known*
+credit pages, and the corpus has been swept for unknown ones on Kaguya only.
 
 ## M3: what the Stump instance actually offers, measured 2026-07-31
 

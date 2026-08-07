@@ -55,6 +55,12 @@ export interface Resolver {
   resolve(from: string, to: string, at: Position): Landed | undefined
   chapterAt(edition: string, index: number): Chapter | undefined
   /**
+   * The edition's credit pages, as **page** indices — the sidecar's own
+   * `credits` field, which is the page-sequence kind like `spreads`.
+   * `modules/credits.ts` converts to slots where it draws.
+   */
+  credits(edition: string): number[]
+  /**
    * Frees whatever native resource backs this resolver, if any. Optional —
    * the hand-written fakes `reading.test.ts`/`session.test.ts`/etc. build
    * (`fixtures.ts`'s `fakeResolver`) have nothing to free, and requiring
@@ -151,6 +157,7 @@ export async function wasmResolver(json: string): Promise<Resolver> {
       c.free()
       return chapter
     },
+    credits: (edition) => Array.from(sc.credits(edition)),
     dispose: () => sc.free(),
   }
 }

@@ -238,6 +238,15 @@ pages — an edition is however many of them the work spans.
 - `spreads` lists the indices, in the edition's flat page sequence, of pages that
   are joined double-page spreads. Detection is by aspect ratio and is cheap;
   storing it means a reader never has to re-derive it.
+- `credits` lists the indices, in the edition's flat page sequence, of pages that
+  are a scanlation group's own matter rather than the work — donation cards,
+  staff credits, recruitment ads. A reader may keep them out of the reading flow
+  and open them deliberately; they are never deleted or hidden. **Page indices,
+  like `spreads`.** Absent and empty both mean nothing has been classified.
+  Unlike `spreads`, which is measured from the image's aspect ratio, this is the
+  output of a heuristic — `taiyaku credits` proposes it and a person writes it —
+  so a reader consuming it should treat it as an assertion about presentation
+  and not about the work.
 
 ### How a member becomes pages
 

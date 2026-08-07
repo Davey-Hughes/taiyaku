@@ -8,11 +8,13 @@
 //! native-only. Solving does not: the dynamic programming runs over page
 //! hashes, so it is portable and lives here alongside the lookup.
 
+mod credits;
 mod route;
 mod sidecar;
 mod slot;
 mod solve;
 
+pub use credits::{UnpairedRun, unpaired_runs};
 pub use route::{Route, Via, invert, resolve, route};
 pub use sidecar::{
     Alignment, Anchor, ChapterAt, Corrected, Edition, Member, Merged, NotCorrected, Quality,

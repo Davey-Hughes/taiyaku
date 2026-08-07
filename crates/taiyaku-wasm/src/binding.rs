@@ -193,6 +193,22 @@ impl Binding {
         })
     }
 
+    /// The edition's credit pages, as page indices.
+    ///
+    /// Pages, not slots — the field is the page-sequence kind, like `spreads`.
+    /// `web/src/modules/credits.ts` converts once, where it draws.
+    ///
+    /// An unknown edition answers empty rather than erroring: the reader asks
+    /// about whatever edition it is showing, and "no list" and "no edition" are
+    /// the same non-event to a caller deciding whether to skip a page.
+    pub fn credits(&self, edition: &str) -> Vec<u32> {
+        self.sidecar
+            .editions
+            .get(edition)
+            .map(|e| e.credits.clone())
+            .unwrap_or_default()
+    }
+
     /// Which chapter a flat slot index of `edition` falls in, or `None`.
     ///
     /// Takes an index rather than a `(page, half)` pair for the same reason
@@ -329,6 +345,26 @@ pub(crate) const REAL_FIXTURE: &str = r#"{
       ]
     }
   ]
+}"#;
+
+/// One edition carrying a `credits` list, for `credits` itself. No alignment
+/// is needed — this exercises a lookup on a single edition, not a route —
+/// so `hub` names the edition itself and `alignments` is empty, the same
+/// minimal shape `taiyaku-core`'s `credits_round_trip_present_empty_and_absent`
+/// uses for the same reason.
+#[cfg(test)]
+pub(crate) const SIDECAR_WITH_CREDITS: &str = r#"{
+  "taiyaku": 1,
+  "work": { "title": "T", "reading": "rtl" },
+  "editions": {
+    "fan": {
+      "label": "Fan",
+      "members": [{ "path": "fan.cbz", "sha256": "00", "pages": 8 }],
+      "credits": [3, 4]
+    }
+  },
+  "hub": "fan",
+  "alignments": []
 }"#;
 
 #[cfg(test)]
@@ -623,6 +659,19 @@ mod tests {
             1,
             "four resolves of one pair, from a scan and its former repeat, \
              must build the route once"
+        );
+    }
+
+    /// An unknown edition answers empty, not an error: the reader asks for
+    /// every edition it draws, and a missing list is not a fault.
+    #[test]
+    fn credits_crosses_the_boundary_as_page_indices() {
+        let binding = Binding::from_json(SIDECAR_WITH_CREDITS).expect("parses");
+        assert_eq!(binding.credits("fan"), vec![3, 4]);
+        assert!(
+            binding.credits("no-such-edition").is_empty(),
+            "an unknown edition answers empty, not an error: the reader asks for \
+             every edition it draws and a missing list is not a fault"
         );
     }
 }

@@ -294,6 +294,21 @@ pub fn fingerprint(page: &GrayImage) -> PageHash {
     PageHash(words)
 }
 
+/// Bits differing between two dhashes, 0 to 256.
+///
+/// `taiyaku_core::similarity` measures the same underlying quantity but
+/// normalises it to a `0.0..=1.0` fraction of agreement, which is what
+/// `solve`'s calibration wants. Callers that need the raw count — `credits`
+/// reports a Hamming distance a person reads directly, such as "distance 2"
+/// or "distance 99" — get it from here rather than reversing that fraction
+/// back out of a float.
+pub(crate) fn hamming(a: PageHash, b: PageHash) -> u32 {
+    a.0.iter()
+        .zip(b.0.iter())
+        .map(|(x, y)| (x ^ y).count_ones())
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

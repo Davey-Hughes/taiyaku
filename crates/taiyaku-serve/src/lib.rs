@@ -4,7 +4,17 @@
 //! is what lets taiyaku run beside Stump now and replace it later without a
 //! redesign. See `docs/superpowers/specs/2026-07-30-reader-design.md`.
 
-mod atomic;
+/// Write a file so a crash cannot publish half of one.
+///
+/// Public where most of this crate's modules are private, and unlike `notes`,
+/// which is public to keep three vague names off the crate root rather than
+/// for any caller outside this crate. This one is genuinely cross-crate:
+/// `taiyaku-cli`'s `credits --write` rewrites a whole sidecar in place, the
+/// exact case this module's own doc names as the worst one, and the
+/// alternative to exporting it is a fifth copy of write-and-rename in another
+/// crate. The module path says what the function guarantees, which a re-export
+/// at the crate root as a bare `write` would not.
+pub mod atomic;
 mod composite;
 #[cfg(test)]
 mod corpus;

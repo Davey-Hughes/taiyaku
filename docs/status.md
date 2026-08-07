@@ -1,6 +1,6 @@
 # Status
 
-Where the project is, what is settled, and what comes next. Updated 2026-08-05.
+Where the project is, what is settled, and what comes next. Updated 2026-08-07.
 
 The detailed evidence for everything asserted here is in [`notes.md`](notes.md),
 which is a working log rather than a summary — every claim below traces to a
@@ -37,13 +37,15 @@ hidden.
 
 ## What is built
 
-Five crates, 373 tests, plus 377 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 410 tests, plus 390 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
-and `vite` in `web/`. Ten of the 373 are standing checks gated on
-`TAIYAKU_CORPUS`, one of which also needs `TAIYAKU_STUMP_URL` and
-`TAIYAKU_STUMP_KEY`; each skips cleanly when what it needs is absent, so CI
-stays green without the corpus or a reachable Stump. One measures composition
+and `vite` in `web/`. Twelve of the 410 are standing checks gated on
+`TAIYAKU_CORPUS` — nine in `crates/taiyaku-cli/src/corpus.rs` and three in
+`crates/taiyaku-serve/src/corpus.rs` — one of which also needs
+`TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
+needs is absent, so CI stays green without the corpus or a reachable Stump.
+One measures composition
 against a direct solve — 2,427 page comparisons, 0.91% loss, 0.00% disagreement.
 One measures that the server and the aligner agree about what page N is — 617
 pages across 3 editions, no disagreement. One measures that a note can be anchored to
@@ -52,11 +54,14 @@ spreads and so have more slots than pages, which is the case a four-page
 fixture cannot tell apart from a page check. One measures that the server and
 Stump serve the same bytes for a member both hold — 187 pages compared byte-for-byte,
 no disagreement, and 8 members this Stump instance does not hold recorded as
-absent rather than silently skipped. The remaining six run duplicate resolution
-over real duplicate sets and are listed in §2 below with what each one measured.
-`check-all.sh` runs all nine with `--nocapture` against an absolute,
-canonicalised `TAIYAKU_CORPUS`, so a green gate shows what each one measured, or
-says plainly that it did not run them at all.
+absent rather than silently skipped. Two pin credit-page classification against
+both fan editions the corpus holds — Go-Toubun's four pages and Kaguya's single
+known false positive, asserted as *sets* rather than counts, since four of six
+is reachable by classifying the wrong four; see §4 below. The remaining six run
+duplicate resolution over real duplicate sets and are listed in §2 below with
+what each one measured. `check-all.sh` runs all twelve with `--nocapture`
+against an absolute, canonicalised `TAIYAKU_CORPUS`, so a green gate shows what
+each one measured, or says plainly that it did not run them at all.
 
 `taiyaku-core` is the portable half — no I/O, so it compiles to WebAssembly:
 
@@ -77,7 +82,7 @@ is not shaped by what can cross the JavaScript boundary.
 | `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, notes (`<stem>.notes.json`, read and written whole under `If-Match`), an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
-| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of six `ReaderModule`s against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint, with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the page it sits over rather than the box around it; a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself). A seventh registry entry, `settings`, claims no reading behaviour, only the panel's own key. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
+| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of six `ReaderModule`s — of eight the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint, with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the page it sits over rather than the box around it; a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself). The other two registry entries claim no reading behaviour. `settings` claims only the panel's own key. `credits` (§4 below) declares the credit-page preferences and claims `C`, and **its panel is not mounted** — `App.tsx` renders none and its module switch has no case for the intent, so `C` is swallowed and the generated "Credit pages" section holds two toggles that persist and govern nothing; it waits on O25 and says so in its own doc comment. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
 
 `taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
 a member becomes pages" — so two consumers deriving it separately is a defect the
@@ -85,7 +90,7 @@ format cannot detect. The aligner and the server now derive it in one place, and
 a gated corpus check compares all 617 pages of the primary volume across the two
 paths.
 
-Seven commands:
+Eight commands:
 
 ```
 taiyaku align  <a-member>... -- <b-member>...   [--ltr] [--cache DIR] [--stats] [--write FILE [--title NAME] [--name-a KEY] [--name-b KEY] [--direct]] | --no-split-spreads [--stats]
@@ -95,6 +100,7 @@ taiyaku lookup <taiyaku.json> <from> <to> <page>...
 taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT] [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump]
 taiyaku inventory <root>                        [--min-pages N] [--pattern SPEC]
 taiyaku duplicates <copy>... -- <copy>...       [--against <member>...] [--cache DIR] [--ltr]
+taiyaku credits <member>...                     --sidecar FILE [--against EDITION] [--cache DIR] [--write]
 ```
 
 `align` takes several members on either side, which is how one volume aligns
@@ -144,6 +150,28 @@ treated it, and that is the only thing that can tell two copies refusing each
 other apart. It prints
 a table per set for a person and one fixed-field `set:` line for a survey, the
 discipline `--stats` established; `scripts/duplicate-survey.sh` is that survey.
+
+`credits` keeps that same discipline for a third question: which pages of an
+edition are the scanlation group's own matter — donation cards, staff credits —
+rather than the work. It proposes and prints; it writes the edition's `credits`
+list only under `--write`. **Only one of its two signals classifies.** Signal 1
+is `unpaired_runs`: the stretches of one member's pages the alignment against
+the counterpart never reaches, split at member boundaries, and a run is a
+candidate when it ends at its member's *last* page and is no longer than
+`MAX_CREDIT_RUN`. Signal 2 is `recurrences`, how close each page comes to a page
+in a different member by dhash; it is printed beside every row and consulted by
+nothing, because on `corpus/gotoubun-v01` its two tightest matches in the whole
+edition are the volume cover and it misses both staff-credit pages entirely.
+The end-of-member rule is four for four on that volume and the first-index
+version is zero for four — what accumulates at a member's start is front matter.
+`MAX_CREDIT_RUN` is **1, measured** — surveyed over both fan editions the corpus
+holds, 461 pages and four scanlation groups, where every credit page found is a
+run of exactly 1 and the only run of length 2 or 3 is a volume's front matter.
+`scripts/credit-survey.sh` is that survey. It cost the four-for-four claim above:
+`kaguya-v01`'s one candidate is a **false positive**, a publisher's colour
+announcement, so precision across the corpus is four of five. That group prints
+no credit page at all. See `notes.md`, "A second group's habits, and what the
+bound is worth".
 
 ## What is settled
 
@@ -241,7 +269,7 @@ margin threshold plus a crop-tolerant hash. Not the DP.
 
 ### Open items
 
-Twenty-five, each found by a whole-branch review, carried as a deferral,
+Twenty-six, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, or turned up by measuring what a new feature produced
@@ -249,7 +277,7 @@ against the corpus, and each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
 visible act rather than a thing someone remembers. **Eighteen are now closed
 — O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21 and O22 — leaving seven.**
+O21 and O22 — leaving eight.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -281,6 +309,7 @@ each is in the detail below; the table is what a reader scans.
 | O23 | [ ] | Two hand corrections make a sound alignment report `fragmented` — *measured: avg run 64.33 → 32.00 → 21.22 on Go-Toubun v01, against a 27.0 threshold* | `sidecar.rs::rewrite`, `solve.rs::verdict` | M5d |
 | O24 | [ ] | A solver-written direct edge to a third edition survives that edition being replaced | `sidecar.rs::merge_spoke` | M5d whole-branch review |
 | O25 | [ ] | The settings panel and the whole chrome are unreachable while showing a gap | `App.tsx`, the `shown.kind === 'gap'` branch | M5c browser pass |
+| O26 | [ ] | `align --write` truncates the sidecar before writing it | `main.rs::align` | credit-pages whole-branch review |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -988,7 +1017,7 @@ here now: a flag that cannot change what a run does is refused, not ignored.
   meant to be a flag, so an unrecognised one is a mistake rather than possibly
   somebody's filename. Before that rule the scan would have had to know which
   flags take values and step over them, which is most of an argument parser.
-  Each of the seven commands declares its own set rather than sharing a global
+  Each of the eight commands declares its own set rather than sharing a global
   one — `--pattern` is real for `inventory` and a typo for `align`, and one
   list would accept it in both. The message names the whole alphabet rather
   than guessing a nearest match: a typo is usually one character off, but the
@@ -1113,8 +1142,53 @@ it hides are both reachable one keypress earlier:
   nothing marked?) is a design question, and `Gap`'s own offered moves already
   exist to get out of one. Fixing half of it and calling the item closed would
   be the kind of partial answer this table exists to prevent.
+  **A third panel now waits on this.** The credits module (§4 below) is
+  registered, its preferences load and save, and its panel is deliberately not
+  mounted for exactly this reason — a reader in a gap is who asks what was
+  skipped, so a list that disappears there is the half-answer above. The cost
+  is visible in the shipped build: `C` is swallowed by `App.tsx`'s module
+  branch, which calls `preventDefault()` and then finds no matching case, and
+  the generated "Credit pages" settings section offers two toggles that persist
+  and govern nothing. `web/src/modules/credits.ts` and `modules/registry.ts`
+  both say so in their own doc comments rather than leaving the shipped build
+  to disagree with the documentation.
   **What would close it:** deciding what the filmstrip shows in a gap, and
   landing that together with the one-line `Settings` fix.
+
+**One came from reviewing a branch that fixed the same hazard next door** —
+O26, turned up on 2026-08-07 by the credit-pages whole-branch review, and not
+blocking because it is older than that branch and nothing on the branch made
+the exposure worse:
+
+- **O26 — `align --write` truncates the sidecar before writing it. Open.**
+  `fs::write` opens for truncation and then writes, so a crash or a full disk
+  inside that window leaves a short file where a whole document was. The
+  document is the worst one in this project to lose half of: it holds every
+  edition of the work, every alignment between them, and every run a reader
+  hand-corrected through the reading UI. This is the same hazard O2 closed for
+  the reading position, and that `atomic.rs` now owns for every writer inside
+  `taiyaku-serve`.
+  **`credits --write` had the identical exposure and was fixed on the branch
+  that opened this**, which is what made the gap visible. The fix was cheap
+  because `taiyaku-cli` already depends on `taiyaku-serve`; the only barrier
+  was visibility, `atomic` being a private module and `write` being
+  `pub(crate)`. Both are public now and `credits::write_sidecar` goes through
+  them, pinned by a test that watches the destination's inode change.
+  **`align` is deliberately not changed with it.** It predates that branch, so
+  fixing it is outside what the branch was reviewed for, and a drive-by change
+  to the one command that writes every sidecar in the corpus is not a thing to
+  land unreviewed beside a documentation pass. Recorded here instead, which is
+  what this table is for.
+  **It is one line and a test.** `main::align` builds a `Sidecar` — merged into
+  whatever the file already held, that part having been fixed long ago — and
+  ends on `fs::write(out, sidecar.to_json())`. Routing that through
+  `taiyaku_serve::atomic::write` is the same edit `credits` just took. The
+  neighbouring `fs::write` in `verify`'s contact-sheet path is **not** in
+  scope: an HTML report is regenerated from the archives on demand, so half of
+  one costs a re-run rather than a document.
+  **What would close it:** that edit, plus the test whose shape
+  `credits::tests::writing_a_credits_list_replaces_the_sidecar_rather_than_truncating_it`
+  already establishes.
 
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
@@ -1131,12 +1205,14 @@ something an alignment already reports. A merge keeps whatever hub the file name
 
 ## What comes next
 
-Roughly in order. The first three are settled — one closed by a measurement
-that came out against shipping it, one shipped as two commands, and the third
-the large piece, shipped across four milestones — and they stay here rather
-than being deleted, for the reason the open-items table gives: a list that only
-ever grows says nothing about whether anything lands. **The next unbuilt thing
-is the fourth**, and it wants a brainstorm before any code.
+Roughly in order. All four are now settled — one closed by a measurement that
+came out against shipping it, one shipped as two commands, the third the large
+piece, shipped across four milestones, and the fourth shipped as an eighth
+command plus a field in the format — and they stay here rather than being
+deleted, for the reason the open-items table gives: a list that only ever grows
+says nothing about whether anything lands. **What is left of the fourth is the
+reader's half**: the module is registered and its panel is not mounted, which
+waits on O25. Everything still genuinely unbuilt is under "Later".
 
 ### 1. Refuse on margins, not just counts — measured, and margin does not fit
 
@@ -1610,14 +1686,14 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the seven open items tabled above — five of them found by a
+What remains: the eight open items tabled above — six of them found by a
 whole-branch review, now that O12 (carried rather than found) and O14 (found
 by one, closed by M5b) are both out of the count, with O23 and O25 the
 exceptions, turned up by measuring what a new surface produced against the
 corpus rather than by reviewing a branch. **Every milestone M5 named has now
 shipped.**
 
-### 4. Skipping scanlation credit pages
+### 4. Skipping scanlation credit pages — shipped to the sidecar, and the reader's half waits on O25
 
 A reader setting that keeps donation pleas, credits cards and recruitment ads out
 of the reading flow, and puts them in a section of their own that can be opened
@@ -1625,32 +1701,92 @@ deliberately. Not deleted and not hidden — a scanlation group's credit is the
 thing it asked for in exchange for the work, and a reader that silently discarded
 it would be taking a side. It is simply not part of reading the chapter.
 
-**The evidence says taiyaku can already find them**, which is why this is on the
+**The evidence says taiyaku can already find them**, which is why this was on the
 roadmap rather than in the "if it is worth it" pile. Measured on the primary
 volume — see `notes.md`, "Scanlation credit pages are already visible in the
-alignment" — three of the fan edition's seven chapter files each contribute
-exactly one page that pairs with nothing and sits at the member's final index,
-and all three are the same donation card. Long unpaired runs, by contrast, are
-genuine content the other edition lacks. **Shape separates them, and every
-sidecar already carries the alignment that shows it.**
+alignment" — **four** of the fan edition's seven chapter files each contribute
+exactly one page that pairs with nothing and sits at the member's final index:
+`c001`, `c003`, `c004` and `c005`, at pages 95, 168, 198 and 225. Three are the
+same `lhtranslation` donation card; the fourth, page 225, is a **staff-credits
+page** naming three people, not the donation card. *This paragraph said "three"
+and "all three are the same donation card" until 2026-08-07, which is the exact
+mislabelling `notes.md` corrected on 2026-08-05 — the branch fixed the working
+log and left the living document standing wrong. Both now say four.*
+
+**Long unpaired runs are usually genuine content the other edition lacks — but
+not always, and a bad alignment is the exception.** On Go-Toubun the 42-page run
+really is the prototype one-shot the raw volume has no chapter for. On
+`kaguya-v01`, whose sidecar the solver itself rates `FRAGMENTED` (average run
+13.3 slots, 23 runs), the runs at pages 105–111 and 113–118 are **ordinary
+manga** — `c5.5` has fifteen pages and the solver paired exactly two of them, so
+the runs either side are an artefact of the alignment rather than a fact about
+the release. Length therefore says what it says only as far as the alignment
+under it is sound. **Position is the part that survives**, and it is what the
+rule actually tests: an isolated unpaired page at a member's *final* index. Every
+sidecar already carries the alignment that shows it.
 
 A second signal needs no alignment at all: the cards recur across sibling members
 of one edition, so a near-duplicate by dhash finds them even in an edition with no
 counterpart, which is the common case for a fan release. They are byte-different
-per chapter, so exact hashing does not.
+per chapter, so exact hashing does not. **It shipped as `credits::recurrences`,
+a diagnostic that classifies nothing** — measured on Go-Toubun, its two tightest
+matches in the whole edition are the volume cover, and it misses both
+staff-credit pages entirely, because each appears exactly once. It is printed
+beside every row so a person can judge a candidate by it, and consulted by no
+code; that module's own doc says why gating signal 1 on it would veto the two
+true positives signal 1 uniquely finds.
 
-**Unsettled, and wanting a brainstorm before any code.** Whether the classification
-belongs in `taiyaku.json` as a per-edition list — the way `spreads` is, since both
-are derived facts about a page sequence — or stays client-side the way parity
-breaks do. Whether it is `taiyaku align`'s job to record or a separate command's to
-propose. What the toggle does to page numbering, which is the same authority
-question swapping already raised. And the false-positive rate against colour
-inserts and author afterwords, which have the same shape and must not be swept up.
-None of that is decided, and the measurement above is one group's habits rather
-than the population.
+**All four of the questions this section used to leave open are settled, and
+three of them are settled in code.**
 
-**Sequencing:** after the reader can display pages at all, since the feature is a
-reading-flow setting and there is nothing to toggle before M5.
+- **Where the classification lives.** In `taiyaku.json`, as a per-edition
+  `credits` list of page indices — the way `spreads` is, and for the reason both
+  had in common. Specified in `sidecar.md`; carried by `Edition::credits` in
+  `taiyaku-core::sidecar`, and carried across a merge or dropped with a replaced
+  spoke by `merge_spoke`.
+- **Who records it.** Not `align`. A command of its own, `taiyaku credits`, which
+  **proposes and prints and writes nothing without `--write`** — the discipline
+  `inventory` and `duplicates` already set. The rule itself is
+  `credits::credit_pages` over `taiyaku_core::unpaired_runs`.
+- **What the toggle does to page numbering.** Nothing. **Skipping never
+  renumbers**: a slot keeps its number whether or not it is skipped, so the
+  readout jumps rather than counting differently. The slot is the addressed unit
+  and `sidecar.md` is normative on that, so a per-reader toggle that changed what
+  an address meant would make one device's progress and another's notes wrong.
+  Same precedent as the swap: what is shown changes, what is written does not.
+  Recorded on `web/src/modules/credits.ts`'s `creditsModule`, and carried out by
+  `nextReadable`, which walks to the next unskipped slot without renumbering.
+- **The false-positive rate against colour inserts and author afterwords.**
+  Measured, and the answer is not the comfortable one: a colour insert *is* swept
+  up. `kaguya-v01`'s one candidate is the publisher's own colour announcement
+  page. See `notes.md`, "A second group's habits, and what the bound is worth".
+
+**Precision is measured, and it is not perfect: four true positives and one false
+positive across the corpus.** The four are Go-Toubun's pages 95, 168, 198 and 225;
+the one is Kaguya's page 212. Both are pinned by gated corpus checks
+(`taiyaku-cli/src/corpus.rs`), which assert the classified *set* rather than its
+size — four of six is reachable by classifying the wrong four — and the Kaguya
+check pins the false positive deliberately, so that a later improvement which
+stops classifying 212 goes red and the expectation is updated rather than the
+rule reverted. **Recall is worse than precision and is bounded above rather than
+known:** `c000`'s page 43 is a credits page for a second group that the solver
+*paired*, so no unpaired-based signal can reach it at all — four of five at best,
+out of twelve pages anybody has looked at. `MAX_CREDIT_RUN` is **1, measured**
+over 461 pages and four scanlation groups, and one of those four groups prints no
+credit page at all. Two volumes are not the population.
+
+**What has not shipped is the reader's half.** `web/src/modules/credits.ts` is
+registered like every other module and its preferences load, save and appear in
+the settings panel — and **the panel that would list the pages is not mounted**,
+so `C` does nothing and the "Credit pages" settings section holds two toggles
+that persist and govern nothing. That is deliberate rather than unfinished:
+mounting it waits on O25, since every panel below `App.tsx`'s
+`shown.kind === 'gap'` branch goes unrendered while a gap is showing, and a gap is
+the state a reader most wants this list from. `creditSlots` in the same file is
+the other thing to finish, and its own doc comment says why it must be replaced
+rather than adopted: it re-derives slot expansion in TypeScript where
+`taiyaku_core::slot::expand` owns it, and its `Pagination` argument cannot be
+built from the `Resolver` as it stands.
 
 ### Later
 

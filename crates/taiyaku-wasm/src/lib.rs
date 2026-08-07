@@ -118,6 +118,12 @@ impl WasmSidecar {
             .index_of(edition, taiyaku_core::Slot { page, half }))
     }
 
+    /// The edition's credit pages, as page indices — empty for an unknown
+    /// edition or one with no list.
+    pub fn credits(&self, edition: &str) -> Vec<u32> {
+        self.inner.credits(edition)
+    }
+
     /// Which chapter a flat slot index falls in, or `undefined`.
     #[wasm_bindgen(js_name = chapterAt)]
     pub fn chapter_at(&self, edition: &str, index: u32) -> Option<WasmChapter> {

@@ -6,7 +6,9 @@ import type { Chapter, Position, Resolver } from './resolver'
  * `slots` gives each edition's slot sequence in order; `pairs` maps a
  * `from|to|index` key to the counterpart index, and any key absent from it is
  * a gap. `chapters` maps an `edition|index` key to a `Chapter`, and any key
- * absent from it has none. Explicit rather than derived, so a test states the
+ * absent from it has none. `credits` maps an edition to its credit pages, and
+ * any key absent from it has none — the same non-event `Resolver.credits`
+ * gives an unknown edition. Explicit rather than derived, so a test states the
  * alignment it means instead of depending on arithmetic that is already
  * tested in Rust.
  */
@@ -14,6 +16,7 @@ export function fakeResolver(
   slots: Record<string, Position[]>,
   pairs: Record<string, number>,
   chapters: Record<string, Chapter> = {},
+  credits: Record<string, number[]> = {},
 ): Resolver {
   const key = (from: string, to: string, index: number) => `${from}|${to}|${index}`
   const chapterKey = (edition: string, index: number) => `${edition}|${index}`
@@ -35,6 +38,7 @@ export function fakeResolver(
       return landed && { ...landed, via: 'direct' }
     },
     chapterAt: (edition, index) => chapters[chapterKey(edition, index)],
+    credits: (edition) => credits[edition] ?? [],
   }
 }
 

@@ -147,6 +147,21 @@ pub struct Edition {
     /// Indices, in the flattened page sequence, of joined double-page spreads.
     #[serde(default)]
     pub spreads: Vec<u32>,
+    /// Indices, in the flattened page sequence, of pages a reader can keep out
+    /// of the reading flow — a scanlation group's donation cards and staff
+    /// credits.
+    ///
+    /// Page indices, like `spreads`, and not slots: both describe the page
+    /// sequence rather than the alignment. Unlike `spreads` this is a
+    /// heuristic's output rather than a measurement of the image, which is why
+    /// `taiyaku credits` prints it for review and writes it only under
+    /// `--write`.
+    ///
+    /// Skipped when empty, so a sidecar written before this feature existed
+    /// round-trips byte for byte. An absent list and an empty one both mean
+    /// nothing has been classified.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credits: Vec<u32>,
 }
 
 impl Edition {
@@ -296,6 +311,15 @@ pub enum Merged {
     /// The spoke's bytes were unchanged, so the corrections on the old edge
     /// were carried onto the new one. The count is how many.
     CarriedHandRuns(usize),
+    /// The spoke's bytes changed, so a `credits` list on the old edition was
+    /// discarded rather than carried onto pages that may not exist. The count
+    /// is how many entries went.
+    ///
+    /// Dropped rather than refused, which is the opposite of the stance on
+    /// hand runs (O13) and deliberately so: a hand correction is a human
+    /// decision that re-running nothing can recover, while a `credits` list
+    /// is a tool's output that `taiyaku credits` reproduces in one command.
+    DroppedCredits(usize),
 }
 
 /// What a correction did.
@@ -560,7 +584,28 @@ impl Sidecar {
             }
         }
 
+        // Content, not paths — the same idiom as the from-side guard above,
+        // and `spoke_replaced` already computed it: a `credits` list
+        // addresses pages of specific bytes, so whether those bytes changed
+        // is exactly what decides whether the list still means anything.
+        let stored_credits = self
+            .editions
+            .get(name)
+            .map(|e| e.credits.clone())
+            .unwrap_or_default();
+        let dropped = if spoke_replaced {
+            stored_credits.len()
+        } else {
+            0
+        };
+
         let replaced = self.editions.insert(name.to_string(), edition).is_some();
+        if !spoke_replaced {
+            // Unchanged bytes, so the list still names pages that exist —
+            // restore it onto the freshly inserted edition. A no-op when
+            // `name` is brand new: `stored_credits` is empty there too.
+            self.editions.get_mut(name).expect("just inserted").credits = stored_credits;
+        }
         // Only the `start` <-> `name` edge is replaced here — the one edge
         // this call is actually re-solving. It is not true that no surviving
         // edge can address a `name` that is now gone: a solver-only direct
@@ -591,6 +636,9 @@ impl Sidecar {
         }
         self.alignments.push(alignment);
         Ok(match (carried, replaced) {
+            // A caller that has lost a list needs to hear that rather than
+            // the fact of replacement, which it already asked for.
+            (0, true) if dropped > 0 => Merged::DroppedCredits(dropped),
             (0, true) => Merged::Replaced,
             (0, false) => Merged::Added,
             _ => Merged::CarriedHandRuns(carried),
@@ -1422,6 +1470,7 @@ mod tests {
                 pages: 30,
             }],
             spreads: Vec::new(),
+            credits: Vec::new(),
         }
     }
 
@@ -1451,6 +1500,7 @@ mod tests {
                 pages,
             }],
             spreads: Vec::new(),
+            credits: Vec::new(),
         }
     }
 
@@ -1537,6 +1587,7 @@ mod tests {
                     },
                 ],
                 spreads: Vec::new(),
+                credits: Vec::new(),
             },
         );
 
@@ -1601,6 +1652,62 @@ mod tests {
         assert_eq!(s.editions.len(), 2);
         assert_eq!(s.alignments.len(), 1, "the old edge must not survive");
         assert_eq!(s.editions["b"].members[0].sha256, "99");
+    }
+
+    /// `align --write` merges an edition in; `taiyaku credits --write` fills
+    /// its `credits` list. A merge can therefore land on a list it knows
+    /// nothing about, and an unchanged re-solve — the ordinary case above —
+    /// must not discard it.
+    #[test]
+    fn re_merging_an_unchanged_spoke_keeps_its_credits() {
+        let mut s = two_edition();
+        s.editions.get_mut("b").unwrap().credits = vec![7, 51];
+
+        let merged = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Hub,
+                &edition("a.cbz", "00"),
+                "b",
+                edition("b.cbz", "01"),
+                edge("a", "b"),
+            )
+            .expect("merges");
+
+        assert_ne!(merged, Merged::Added, "the spoke already existed");
+        assert_eq!(
+            s.editions["b"].credits,
+            vec![7, 51],
+            "unchanged bytes must keep the list: the pages it names still exist"
+        );
+    }
+
+    /// A replaced spoke's `credits` list names pages of bytes that no longer
+    /// exist. Dropped rather than refused: unlike a hand-corrected run (O13),
+    /// nothing here is a human decision — `taiyaku credits` regenerates the
+    /// list in one command.
+    #[test]
+    fn replacing_a_spoke_drops_its_credits_and_says_how_many() {
+        let mut s = two_edition();
+        s.editions.get_mut("b").unwrap().credits = vec![7, 51];
+
+        let merged = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Hub,
+                &edition("a.cbz", "00"),
+                "b",
+                edition("b2.cbz", "99"),
+                edge("a", "b"),
+            )
+            .expect("merges");
+
+        assert_eq!(
+            merged,
+            Merged::DroppedCredits(2),
+            "a list addressing pages that no longer exist must not survive silently"
+        );
+        assert!(s.editions["b"].credits.is_empty());
     }
 
     /// A spoke whose bytes are unchanged is the ordinary re-solve: the solver
@@ -2389,6 +2496,60 @@ mod tests {
     }
 
     #[test]
+    fn credits_round_trip_present_empty_and_absent() {
+        // Present: parsed, and emitted again in the same order.
+        let text = r#"{
+          "taiyaku": 1,
+          "work": { "title": "W", "reading": "rtl" },
+          "editions": {
+            "raw": {
+              "label": "raw",
+              "members": [{ "path": "a.cbz", "sha256": "aa", "pages": 4 }],
+              "spreads": [],
+              "credits": [1, 3]
+            }
+          },
+          "hub": "raw",
+          "alignments": []
+        }"#;
+        let parsed = Sidecar::from_json(text).expect("parses");
+        assert_eq!(parsed.editions["raw"].credits, vec![1, 3]);
+        let again = Sidecar::from_json(&parsed.to_json()).expect("re-parses");
+        assert_eq!(again.editions["raw"].credits, vec![1, 3]);
+
+        // Absent: defaults to empty rather than failing to parse.
+        let without = text.replace(",\n              \"credits\": [1, 3]", "");
+        let parsed = Sidecar::from_json(&without).expect("parses without credits");
+        assert!(parsed.editions["raw"].credits.is_empty());
+    }
+
+    #[test]
+    fn an_edition_with_no_credits_emits_no_credits_key() {
+        // An empty list and an absent one mean the same thing, so a sidecar that
+        // has never met this feature must round-trip without growing a field.
+        // `spreads` always emits because every alignment computes one; `credits`
+        // exists only once somebody runs the command.
+        let text = r#"{
+          "taiyaku": 1,
+          "work": { "title": "W", "reading": "rtl" },
+          "editions": {
+            "raw": {
+              "label": "raw",
+              "members": [{ "path": "a.cbz", "sha256": "aa", "pages": 4 }],
+              "spreads": []
+            }
+          },
+          "hub": "raw",
+          "alignments": []
+        }"#;
+        let emitted = Sidecar::from_json(text).expect("parses").to_json();
+        assert!(
+            !emitted.contains("credits"),
+            "an edition with no credits must not emit the key:\n{emitted}"
+        );
+    }
+
+    #[test]
     fn the_real_sidecar_round_trips() {
         let parsed = Sidecar::from_json(REAL).expect("parses");
 
@@ -2731,6 +2892,7 @@ mod tests {
                 },
             ],
             spreads: vec![],
+            credits: Vec::new(),
         }
     }
 
@@ -2760,6 +2922,7 @@ mod tests {
             label: "E".into(),
             members: vec![],
             spreads: vec![],
+            credits: Vec::new(),
         };
 
         assert_eq!(empty.total_pages(), 0);
@@ -2787,6 +2950,7 @@ mod tests {
                 },
             ],
             spreads: vec![],
+            credits: Vec::new(),
         };
 
         assert_eq!(edition.total_pages(), 2);

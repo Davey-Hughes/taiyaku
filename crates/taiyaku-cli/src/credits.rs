@@ -1,0 +1,1161 @@
+//! Signal 2: how close each page comes to a page in a *different* member of the
+//! same edition, by dhash.
+//!
+//! **This is a diagnostic and never a classifier**, and that is a measurement
+//! rather than a preference. Run over all 235 pages of `corpus/gotoubun-v01`'s
+//! fan edition, its two tightest matches in the whole edition — Hamming
+//! distance 2 — are the volume *cover*, which the release carries in two chapter
+//! files. Its true positives, the three donation cards, sit at 14 to 24 rather
+//! than near zero, because a near-black card has few strong gradients and
+//! re-encoding flips the weak ones. And it misses both staff-credit pages, at
+//! distances 93 and 99, because each appears exactly once.
+//!
+//! So it cannot decide, and gating signal 1 on it would veto the two true
+//! positives signal 1 uniquely finds. What it is good for is telling a person
+//! reviewing a candidate *why* a page recurs and where. See `docs/notes.md`,
+//! "The dhash signal finds duplicated pages, which is not the same thing".
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+use taiyaku_core::{PageHash, Sidecar, UnpairedRun, unpaired_runs};
+
+use crate::fingerprint::hamming;
+
+/// How close one page comes to a page in another member of the same edition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Recurrence {
+    /// Index in the edition's flat page sequence.
+    pub page: u32,
+    /// Hamming distance over the 256-bit dhash, 0 to 256.
+    pub distance: u32,
+    pub nearest_member: usize,
+    pub nearest_local: u32,
+}
+
+/// For each page, the nearest page in a *different* member.
+///
+/// Quadratic in the edition's page count, which is fine at the scale this runs
+/// at — 235 pages is 27,495 comparisons of four `u64` xors — and worth keeping
+/// simple rather than indexing, because the answer is printed for a person and
+/// never sits on a request path.
+///
+/// An edition with fewer than two members reports nothing rather than falling
+/// back to within-member neighbours: there is no recurrence to measure, and an
+/// invented number would be read as one.
+pub fn recurrences(members: &[Vec<PageHash>]) -> Vec<Recurrence> {
+    if members.len() < 2 {
+        return Vec::new();
+    }
+
+    // Flatten once, remembering which member each page came from.
+    let mut flat: Vec<(usize, u32, PageHash)> = Vec::new();
+    for (mi, pages) in members.iter().enumerate() {
+        for (li, h) in pages.iter().enumerate() {
+            flat.push((mi, li as u32, *h));
+        }
+    }
+
+    flat.iter()
+        .enumerate()
+        .filter_map(|(page, (mi, _, h))| {
+            let (distance, nearest_member, nearest_local) = flat
+                .iter()
+                .filter(|(mj, _, _)| mj != mi)
+                .map(|(mj, lj, g)| (hamming(*h, *g), *mj, *lj))
+                .min_by_key(|(d, _, _)| *d)?;
+            Some(Recurrence {
+                page: page as u32,
+                distance,
+                nearest_member,
+                nearest_local,
+            })
+        })
+        .collect()
+}
+
+/// The longest run at a member's last page that still reads as credits.
+///
+/// **1, and measured rather than provisional.** Surveyed 2026-08-07 with
+/// `scripts/credit-survey.sh` over both fan editions the corpus holds —
+/// `gotoubun-v01` and `kaguya-v01`, 461 pages, 15 unpaired runs, four
+/// scanlation groups — and then by extracting every candidate and looking at
+/// it. **Every credit page found anywhere is a run of exactly 1**, all five of
+/// them, so there is no measured run of 2 or 3 to raise this for. The corpus's
+/// only run of that length at all — Kaguya's pages 2 to 4 — is the volume's two
+/// inside covers and the digital edition's own notice page, so the single piece
+/// of evidence a longer bound could be tested against argues against it.
+///
+/// This is therefore not a compromise struck between two readings; 1 is the
+/// only length anyone has measured. What it does *not* claim is that no group
+/// prints a two-page credits spread: four groups is not the population, and
+/// such a spread would go undetected with no sign that it had. See
+/// `docs/notes.md`, "A second group's habits, and what the bound is worth".
+const MAX_CREDIT_RUN: u32 = 1;
+
+/// Is this unpaired run a scanlation group's own matter?
+///
+/// Position, then length, and **only signal 1** — `recurrences` is printed
+/// beside every row and consulted by nobody, for the reason this module's own
+/// doc comment gives.
+///
+/// The position test is `at_member_end` rather than "at either end of a
+/// member". Measured on `corpus/gotoubun-v01`'s fan edition the end rule is
+/// four for four and the first-index rule zero for four: what accumulates at a
+/// member's *start* is front matter, which belongs in the reading flow.
+fn is_candidate(run: &UnpairedRun) -> bool {
+    run.at_member_end && run.pages.end - run.pages.start <= MAX_CREDIT_RUN
+}
+
+/// The pages the candidate runs cover, ascending.
+///
+/// Sorted here because `Edition::credits` is documented ascending and nothing
+/// in the format enforces it. Today's only producer — `unpaired_runs` — walks
+/// the page sequence forward and so is already in order, which is exactly why
+/// the guarantee needs stating somewhere it can be tested: a later producer, a
+/// survey or a hand merge, would break it silently.
+///
+/// Whole runs rather than each run's first page, so raising `MAX_CREDIT_RUN`
+/// widens the list instead of leaving the rest of a two-page card unlisted.
+///
+/// `pub(crate)`, not private: this is the whole classification rule, with no
+/// hashes or archives involved, so `corpus.rs`'s two gated corpus checks call
+/// it directly on a real sidecar's `unpaired_runs` rather than reimplementing
+/// `is_candidate`'s position-and-length test against a copy of it.
+pub(crate) fn credit_pages(runs: &[UnpairedRun]) -> Vec<u32> {
+    let mut pages: Vec<u32> = runs
+        .iter()
+        .filter(|run| is_candidate(run))
+        .flat_map(|run| run.pages.clone())
+        .collect();
+    pages.sort_unstable();
+    pages
+}
+
+/// Write the document back, replacing the file rather than truncating it.
+///
+/// Through `taiyaku_serve::atomic::write`, never `fs::write`. `fs::write`
+/// opens for truncation and then writes, so a crash or a full disk inside that
+/// window leaves a short file where a whole sidecar was — and this command's
+/// target is the worst file in the project to lose half of. It holds *every*
+/// edition of the work, every alignment between them, and every run a reader
+/// hand-corrected through the reading UI; `credits --write` touches one list
+/// on one edition and would take all of it down with the rest. A write-and-
+/// rename either publishes the whole new document or leaves the whole old one.
+///
+/// The helper `atomic::write` already names the path in its own error, so
+/// there is nothing to add here.
+///
+/// Extracted from `command` rather than inlined, so the property can be tested
+/// without an archive in sight — the same reason `edition_of_digests` and
+/// `resolve_counterpart` are their own functions. `command` cannot be driven
+/// in a test at all: it fingerprints real members before it reaches the write.
+fn write_sidecar(sidecar: &str, doc: &Sidecar) -> Result<(), String> {
+    taiyaku_serve::atomic::write(Path::new(sidecar), doc.to_json().as_bytes(), "json")
+}
+
+/// What a member is called in the table: the last component of the path the
+/// sidecar records, which is the part that distinguishes one chapter from the
+/// next.
+fn label_of(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+}
+
+/// One unpaired run, as the table prints it.
+///
+/// Built up rather than formatted in place so the column widths can be taken
+/// over the whole table, and so the layout can be tested without archives.
+struct Row {
+    page: u32,
+    member: String,
+    local: u32,
+    member_pages: u32,
+    run: u32,
+    at_end: bool,
+    /// `None` where the edition has one member and so has no recurrence to
+    /// measure — printed as `-` rather than as a distance nobody computed.
+    recurs: Option<u32>,
+    nearest: Option<String>,
+    credits: bool,
+}
+
+const HEADERS: [&str; 8] = [
+    "page", "member", "local", "run", "at-end", "recurs", "nearest", "verdict",
+];
+
+/// Which columns read left-aligned: the two that hold names, and the verdict.
+const LEFT: [bool; 8] = [false, true, false, false, false, false, true, true];
+
+impl Row {
+    fn cells(&self) -> [String; 8] {
+        [
+            self.page.to_string(),
+            self.member.clone(),
+            format!("{}/{}", self.local, self.member_pages),
+            self.run.to_string(),
+            match self.at_end {
+                true => "yes".to_string(),
+                false => "no".to_string(),
+            },
+            self.recurs
+                .map_or_else(|| "-".to_string(), |d| d.to_string()),
+            self.nearest.clone().unwrap_or_else(|| "-".to_string()),
+            match self.credits {
+                true => "credits".to_string(),
+                false => "-".to_string(),
+            },
+        ]
+    }
+}
+
+/// One row per unpaired run, widest cell deciding each column.
+///
+/// Widths are measured rather than fixed because a member is named after the
+/// file it came from, and a scanlation group's file names run to fifty
+/// characters — a fixed width either truncates them or wastes half the line on
+/// a corpus whose members are called `c1.cbz`.
+fn table(rows: &[Row]) -> String {
+    let cells: Vec<[String; 8]> = rows.iter().map(Row::cells).collect();
+    let mut widths = HEADERS.map(str::len);
+    for row in &cells {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+
+    let header = HEADERS.map(String::from);
+    let mut out = String::new();
+    for row in std::iter::once(&header).chain(cells.iter()) {
+        let line: Vec<String> = row
+            .iter()
+            .zip(widths)
+            .zip(LEFT)
+            .map(|((cell, w), left)| match left {
+                true => format!("{cell:<w$}"),
+                false => format!("{cell:>w$}"),
+            })
+            .collect();
+        // Trailing pad on the last column is invisible in a terminal and
+        // visible in a diff of captured output, so it comes off.
+        let _ = writeln!(out, "{}", line.join("  ").trim_end());
+    }
+    out
+}
+
+/// Which edition of `doc` these members' digests are, refusing by name where
+/// none is.
+///
+/// A thin wrapper over `Sidecar::edition_of` so the refusal — naming the
+/// sidecar and every digest that found no home — can be tested without an
+/// archive in sight: `edition_of` only ever compares the sorted `sha256` set,
+/// and a fabricated digest string compares exactly the way a real one does.
+fn edition_of_digests(doc: &Sidecar, sidecar: &str, digests: &[String]) -> Result<String, String> {
+    doc.edition_of(digests).map(str::to_string).ok_or_else(|| {
+        format!(
+            "no edition of `{sidecar}` is made of these {} members.\nlooked for: {}",
+            digests.len(),
+            digests.join(", ")
+        )
+    })
+}
+
+/// A spoke uses the hub; the hub has to be told.
+///
+/// Extracted from `command` so the one case with no honest default — the
+/// document's hub, asked for unpaired pages with no `--against` — can be
+/// tested without an archive: it is a question about `doc.alignments` alone.
+///
+/// The suggestion list is filtered to alignments that actually touch
+/// `edition` before taking "whichever side is not it" (I4). Without that
+/// filter a direct edge between two spokes — neither of them the hub — still
+/// mapped to `al.from`, an edition with no edge to the hub at all, which then
+/// failed downstream with a different, more confusing refusal.
+fn resolve_counterpart(
+    doc: &Sidecar,
+    edition: &str,
+    against: Option<&str>,
+) -> Result<String, String> {
+    if let Some(name) = against {
+        return Ok(name.to_string());
+    }
+    if edition != doc.hub {
+        return Ok(doc.hub.clone());
+    }
+
+    let mut spokes: Vec<&str> = doc
+        .alignments
+        .iter()
+        .filter(|al| al.from == edition || al.to == edition)
+        .map(|al| match al.from == edition {
+            true => al.to.as_str(),
+            false => al.from.as_str(),
+        })
+        .collect();
+    spokes.sort_unstable();
+    spokes.dedup();
+
+    Err(match spokes.is_empty() {
+        // The empty case: with nothing to suggest, the sentence has to end on
+        // its own rather than trail off after a bare `--against:`.
+        true => format!(
+            "`{edition}` is this work's hub, so which edition it is unpaired against is \
+             a choice rather than a default, and this document has no alignment naming an \
+             edition to suggest. Name one with --against."
+        ),
+        false => format!(
+            "`{edition}` is this work's hub, so which edition it is unpaired against is \
+             a choice rather than a default. Name one with --against: {}",
+            spokes.join(", ")
+        ),
+    })
+}
+
+/// The post-fingerprint half of `command`: everything driven by the document
+/// and the members' hashes, with no filesystem or archive access, so it can be
+/// tested without either.
+///
+/// `fingerprinted` is `(digest, hashes)` per member, in whatever order the
+/// caller fingerprinted them — the command line's order, which a shell glob
+/// need not agree with. **Page order in the result comes from the matched
+/// `Edition`'s own `members` list, never from this order** — `edition_of`
+/// matched a sorted set, so the argument order it accepted said nothing about
+/// which chapter is first, and a shell glob orders `c10.5` before `c1` in any
+/// case. `page_order_comes_from_the_editions_own_member_order` pins this by
+/// handing the two hashes in reverse and checking nothing moves.
+fn classify(
+    doc: &Sidecar,
+    edition: &str,
+    counterpart: &str,
+    fingerprinted: &[(String, Vec<PageHash>)],
+) -> Result<(Vec<Row>, String, Vec<u32>), String> {
+    let runs = unpaired_runs(doc, edition, counterpart)?;
+
+    let target = doc
+        .editions
+        .get(edition)
+        .expect("caller resolved an edition of this document");
+
+    let by_digest: BTreeMap<&str, &Vec<PageHash>> = fingerprinted
+        .iter()
+        .map(|(sha, hashes)| (sha.as_str(), hashes))
+        .collect();
+    let mut ordered: Vec<Vec<PageHash>> = Vec::new();
+    for member in &target.members {
+        let hashes = *by_digest
+            .get(member.sha256.as_str())
+            .expect("caller fingerprinted every member's sha256");
+        // The two signals number pages independently — one from the archives,
+        // one from the document's recorded counts — so a disagreement would
+        // print one page's recurrence beside another page's run rather than
+        // fail.
+        if hashes.len() as u32 != member.pages {
+            return Err(format!(
+                "`{}` holds {} pages but the sidecar records {} for it, so the two signals \
+                 would be numbering different pages; re-run align to bring the document up \
+                 to date",
+                member.path,
+                hashes.len(),
+                member.pages
+            ));
+        }
+        ordered.push(hashes.clone());
+    }
+
+    let recurring = recurrences(&ordered);
+    let labels: Vec<&str> = target
+        .members
+        .iter()
+        .map(|member| label_of(&member.path))
+        .collect();
+
+    let mut rows: Vec<Row> = runs
+        .iter()
+        .map(|run| {
+            let near = recurring.iter().find(|r| r.page == run.pages.start);
+            Row {
+                page: run.pages.start,
+                member: labels[run.member].to_string(),
+                local: run.local.start,
+                member_pages: target.members[run.member].pages,
+                run: run.pages.end - run.pages.start,
+                at_end: run.at_member_end,
+                recurs: near.map(|r| r.distance),
+                nearest: near.map(|r| format!("{}#{}", labels[r.nearest_member], r.nearest_local)),
+                credits: is_candidate(run),
+            }
+        })
+        .collect();
+    // Shortest run first, so the rows a person actually has to judge are at the
+    // top and a chapter-length gap is at the bottom where it belongs.
+    rows.sort_by_key(|row| (row.run, row.page));
+
+    let pages = credit_pages(&runs);
+    // Fixed fields in a fixed order, the discipline `--stats` and `duplicates`'
+    // `set:` line set, so a survey can read down a column. `work` is **last**,
+    // and that placement is the whole reason it is safe to carry: a work title
+    // holds spaces — `Go-Toubun no Hanayome v01` is three of them — and every
+    // collector in `scripts/` splits these lines on whitespace and takes fields
+    // positionally. Leading with it shifts every later field by an unknowable
+    // amount; trailing with it leaves every field before it positionally fixed
+    // and lets the free text run unambiguously to end of line. It stays on the
+    // row rather than moving to a header because a collected table row has to
+    // identify itself without the collector tracking state. `candidates` counts
+    // pages rather than runs because it is the length of the list `--write`
+    // writes; with `MAX_CREDIT_RUN` at 1 the two coincide.
+    let line = format!(
+        "credits: edition={edition} against={counterpart} pages={} slots={} runs={} \
+         candidates={} bound={MAX_CREDIT_RUN} work={}",
+        target.total_pages(),
+        target.slots(doc.work.reading).len(),
+        runs.len(),
+        pages.len(),
+        doc.work.title
+    );
+
+    Ok((rows, line, pages))
+}
+
+/// `taiyaku credits` — propose the credit pages of one edition.
+///
+/// Prints; writes only under `--write`, the discipline `inventory` and
+/// `duplicates` set. Both signals are reported on every row — including the
+/// rows nothing classifies, since signal 2 is what a person judges a candidate
+/// *by* — but only signal 1 classifies, for the reason this module's own doc
+/// comment gives.
+///
+/// The table goes to stderr and the one fixed-field `credits:` line to stdout,
+/// so a survey can collect the lines without the tables, exactly as
+/// `duplicates` splits its tables from its `set:` line.
+pub fn command(args: &[String]) -> Result<(), String> {
+    const KNOWN: &[&str] = &["--sidecar", "--against", "--cache", "--write"];
+    crate::reject_unknown_flags("credits", args, KNOWN)?;
+
+    // Every valued flag resolves before a member is opened, so a typo does not
+    // cost the seconds it takes to fingerprint an edition.
+    let sidecar = crate::option_value(args, "--sidecar", "a path to a taiyaku.json")?;
+    let against = crate::option_value(args, "--against", "an edition name")?;
+    let cache = crate::option_value(args, "--cache", "a directory")?;
+    let write = args.iter().any(|a| a == "--write");
+
+    if write && sidecar.is_none() {
+        return Err("--write needs --sidecar: there is nothing to write the list into".into());
+    }
+    if against.is_some() && sidecar.is_none() {
+        return Err("--against names an edition of a sidecar, so it needs --sidecar too".into());
+    }
+
+    let members: Vec<PathBuf> = args
+        .iter()
+        .filter(|a| !a.starts_with("--"))
+        .filter(|a| Some(a.as_str()) != sidecar)
+        .filter(|a| Some(a.as_str()) != against)
+        .filter(|a| Some(a.as_str()) != cache)
+        .map(PathBuf::from)
+        .collect();
+    if members.is_empty() {
+        return Err(USAGE.into());
+    }
+
+    // Refused rather than ignored, the rule `align` applies to every flag that
+    // cannot take effect. What classifies a page is the alignment, and the
+    // alignment lives in the sidecar; signal 2 alone is a diagnostic this
+    // module is explicit about never letting decide, so a run without a
+    // sidecar could only print a table of `-`.
+    let Some(sidecar) = sidecar else {
+        return Err(
+            "credits needs --sidecar: a page is proposed because an alignment never reaches \
+             it, and the alignment is what the sidecar holds"
+                .into(),
+        );
+    };
+
+    // I2: read and parse before a single member is fingerprinted. A mistyped
+    // path or an unreadable document is the same class of mistake as a wrong
+    // flag, and belongs on the same side of the cost line — before the
+    // seconds a fingerprint pass takes, not after them.
+    let text = std::fs::read_to_string(sidecar).map_err(|e| format!("{sidecar}: {e}"))?;
+    let mut doc = Sidecar::from_json(&text)?;
+
+    // Through the same cached path `cached_edition` is built from, so a member
+    // already fingerprinted by `align` costs nothing here. Per member and in
+    // pages, rather than the flat slot list `cached_edition` returns:
+    // `recurrences` needs the members kept apart to tell a recurrence from a
+    // chapter repeating its own page, and both signals index pages.
+    let cache_root = PathBuf::from(cache.unwrap_or(".taiyaku-cache"));
+    let mut fingerprinted: Vec<(String, Vec<PageHash>)> = Vec::new();
+    for member in &members {
+        let digest = taiyaku_read::member_digest(member)?;
+        let (pages, _hit) = crate::cache::member_pages(&cache_root, member)?;
+        fingerprinted.push((digest, pages.iter().map(|page| page.hash).collect()));
+    }
+
+    // Content, not paths: `edition_of` compares the sorted sha256 set, which is
+    // the idiom `merge_spoke`'s own guard states. A renamed but byte-identical
+    // archive is still this edition.
+    let digests: Vec<String> = fingerprinted.iter().map(|(sha, _)| sha.clone()).collect();
+    let edition = edition_of_digests(&doc, sidecar, &digests)?;
+    let counterpart = resolve_counterpart(&doc, &edition, against)?;
+
+    let (rows, line, pages) = classify(&doc, &edition, &counterpart, &fingerprinted)?;
+
+    eprint!("{}", table(&rows));
+
+    if write {
+        // Wholesale rather than merged: the field holds no hand entries, so a
+        // re-run after the bound changes must leave nothing stale.
+        let count = pages.len();
+        doc.editions
+            .get_mut(&edition)
+            .expect("edition_of_digests named an edition of this document")
+            .credits = pages;
+        write_sidecar(sidecar, &doc)?;
+        eprintln!("wrote {count} credits page(s) for `{edition}` to {sidecar}");
+    }
+
+    // M6: printed only once whatever `--write` promised has actually happened.
+    // On an unwritable target `write_sidecar` above returns before this is
+    // reached, so a failed run never leaves a well-formed `credits:` line on
+    // stdout for a survey to collect.
+    println!("{line}");
+
+    Ok(())
+}
+
+const USAGE: &str = "\
+taiyaku credits <member>... --sidecar FILE [--against EDITION] [--cache DIR] [--write]
+
+Propose the pages of one edition that are a scanlation group's own matter
+rather than the work. Prints what it found; writes nothing without --write.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_without_a_sidecar_is_refused() {
+        let args: Vec<String> = ["a.cbz", "--write"].iter().map(|s| s.to_string()).collect();
+        let err = command(&args).expect_err("refuses");
+        assert!(
+            err.contains("--write") && err.contains("--sidecar"),
+            "the refusal must name both flags: {err}"
+        );
+    }
+
+    #[test]
+    fn a_valued_flag_with_no_value_is_refused_before_any_member_is_read() {
+        // O15's rule. The member path does not exist, so a version that resolved
+        // options late would fail on a missing file instead of ever refusing.
+        let args: Vec<String> = ["no-such-file.cbz", "--sidecar"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let err = command(&args).expect_err("refuses");
+        assert!(
+            err.contains("--sidecar") && !err.contains("no-such-file"),
+            "the flag must be refused before the member is opened: {err}"
+        );
+    }
+
+    #[test]
+    fn a_misspelled_flag_is_refused() {
+        // O21's rule.
+        let args: Vec<String> = ["a.cbz", "--wrote"].iter().map(|s| s.to_string()).collect();
+        let err = command(&args).expect_err("refuses");
+        assert!(err.contains("--wrote"), "the refusal must name it: {err}");
+    }
+
+    #[test]
+    fn no_members_is_refused_with_the_usage() {
+        let err = command(&[]).expect_err("refuses");
+        assert!(
+            err.contains("credits"),
+            "the refusal must show the usage: {err}"
+        );
+    }
+
+    #[test]
+    fn against_without_a_sidecar_is_refused() {
+        let args: Vec<String> = ["a.cbz", "--against", "raw"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let err = command(&args).expect_err("refuses");
+        assert!(
+            err.contains("--against") && err.contains("--sidecar"),
+            "the refusal must name both flags: {err}"
+        );
+    }
+
+    #[test]
+    fn no_sidecar_at_all_is_refused_naming_the_flag() {
+        let args: Vec<String> = ["a.cbz"].iter().map(|s| s.to_string()).collect();
+        let err = command(&args).expect_err("refuses");
+        assert!(err.contains("--sidecar"), "unhelpful: {err}");
+    }
+
+    #[test]
+    fn a_missing_sidecar_file_is_refused_before_any_member_is_fingerprinted() {
+        // I2. `no-such-file.cbz` is never opened: if it were, the refusal
+        // would come from `taiyaku_read::member_digest` instead and would
+        // name the member rather than the sidecar path.
+        let args: Vec<String> = [
+            "no-such-file.cbz",
+            "--sidecar",
+            "/nonexistent-dir/taiyaku.json",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let err = command(&args).expect_err("refuses");
+        assert!(
+            err.contains("nonexistent-dir") && !err.contains("no-such-file"),
+            "the sidecar path must be refused before the member is opened: {err}"
+        );
+    }
+
+    #[test]
+    fn the_table_widens_to_its_names_and_says_nothing_it_did_not_measure() {
+        // The `-` in the recurs column is the case that matters: an edition of
+        // one member has no recurrence to report, and a `0` there would read as
+        // a perfect match.
+        let rows = [
+            Row {
+                page: 95,
+                member: "a-very-long-chapter-name.cbz".to_string(),
+                local: 51,
+                member_pages: 52,
+                run: 1,
+                at_end: true,
+                recurs: Some(14),
+                nearest: Some("c4.cbz#29".to_string()),
+                credits: true,
+            },
+            Row {
+                page: 1,
+                member: "c0.cbz".to_string(),
+                local: 1,
+                member_pages: 44,
+                run: 42,
+                at_end: false,
+                recurs: None,
+                nearest: None,
+                credits: false,
+            },
+        ];
+        let out = table(&rows);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "a header and one row each: {out}");
+        // No cell in this fixture holds a space, so splitting on whitespace
+        // recovers the cells and states the columns without pinning the
+        // padding, which is asserted separately below.
+        fn cells(line: &str) -> Vec<&str> {
+            line.split_whitespace().collect()
+        }
+        assert_eq!(cells(lines[0]), HEADERS);
+        assert_eq!(
+            cells(lines[1]),
+            [
+                "95",
+                "a-very-long-chapter-name.cbz",
+                "51/52",
+                "1",
+                "yes",
+                "14",
+                "c4.cbz#29",
+                "credits"
+            ]
+        );
+        assert_eq!(
+            cells(lines[2]),
+            ["1", "c0.cbz", "1/44", "42", "no", "-", "-", "-"],
+            "an unmeasured recurrence prints as `-`, never as the 0 that would \
+             read as a perfect match"
+        );
+
+        // The member column is as wide as the widest member, so every column
+        // after it lines up rather than being pushed along by one long name.
+        // `local` is right-aligned, so it is the right edges that agree.
+        let ends_at =
+            |line: &str, cell: &str| line.find(cell).expect("cell is in the line") + cell.len();
+        assert_eq!(
+            ends_at(lines[1], "51/52"),
+            ends_at(lines[2], "1/44"),
+            "the local column ends in the same place on both rows: {out}"
+        );
+    }
+
+    /// An unpaired run of `pages` at `local` within a member, flagged or not.
+    ///
+    /// The slot range is set equal to the page range: nothing this module does
+    /// reads it, and a fabricated spread would only invite a reader to trust a
+    /// number the fixture invented.
+    fn run(page: u32, local: u32, length: u32, at_member_end: bool) -> UnpairedRun {
+        UnpairedRun {
+            slots: page..page + length,
+            pages: page..page + length,
+            member: 0,
+            local: local..local + length,
+            at_member_end,
+        }
+    }
+
+    #[test]
+    fn only_a_short_run_at_a_members_last_page_is_a_candidate() {
+        // All four quadrants of the rule, so neither half can be dropped
+        // without a failure. The bound is `MAX_CREDIT_RUN`, not a literal:
+        // Task 6 raises it from a survey and this test must move with it.
+        let over = MAX_CREDIT_RUN + 1;
+        assert!(is_candidate(&run(10, 5, MAX_CREDIT_RUN, true)));
+        assert!(
+            !is_candidate(&run(10, 5, over, true)),
+            "a run past the bound is too long to be a card, wherever it sits"
+        );
+        assert!(
+            !is_candidate(&run(10, 0, MAX_CREDIT_RUN, false)),
+            "a member's first page is front matter, and front matter is the work"
+        );
+        assert!(!is_candidate(&run(10, 0, over, false)));
+    }
+
+    #[test]
+    fn a_written_list_comes_out_ascending() {
+        // Runs handed over out of order, which `unpaired_runs` does not do
+        // today and which nothing in the format would catch if a later
+        // producer did. The list goes through `to_json` and back rather than
+        // being asserted in memory, because "written" is the claim.
+        let runs = [
+            run(200, 9, 1, true),
+            run(7, 3, 1, true),
+            run(100, 4, 3, false), // not a candidate: must not appear at all
+            run(42, 1, 1, true),
+        ];
+        let pages = credit_pages(&runs);
+        assert_eq!(pages, vec![7, 42, 200], "sorted, and candidates only");
+
+        let text = r#"{
+          "taiyaku": 1,
+          "work": { "title": "W", "reading": "rtl" },
+          "editions": {
+            "fan": {
+              "label": "fan",
+              "members": [{ "path": "c1.cbz", "sha256": "c1", "pages": 300 }],
+              "spreads": []
+            }
+          },
+          "hub": "fan",
+          "alignments": []
+        }"#;
+        let mut doc = Sidecar::from_json(text).expect("fixture parses");
+        doc.editions
+            .get_mut("fan")
+            .expect("the fixture has it")
+            .credits = pages;
+
+        let written = Sidecar::from_json(&doc.to_json()).expect("round-trips");
+        let credits = &written.editions["fan"].credits;
+        assert_eq!(credits, &vec![7, 42, 200]);
+        assert!(
+            credits.windows(2).all(|pair| pair[0] < pair[1]),
+            "the written list must ascend: {credits:?}"
+        );
+    }
+
+    /// `--write` must not be able to leave a short sidecar behind.
+    ///
+    /// The same property O2 established for progress and `atomic.rs` now owns
+    /// for everything that writes beside a sidecar: the destination is
+    /// *replaced* by a rename, never opened for truncation. A crash cannot be
+    /// staged in a test, so this pins the mechanism that rules it out — the
+    /// idiom `progress.rs`'s own atomicity test set.
+    ///
+    /// It is observed by **inode identity** rather than by taking write
+    /// permission off the existing file, which is what `progress.rs` still
+    /// does. `atomic.rs`'s own test records why that approach was abandoned
+    /// there: on a filesystem that ignores the read-only bit, or under root,
+    /// the permission-denied write it distinguishes "replaced" from
+    /// "truncated" by simply succeeds, and the test prints a skip line libtest
+    /// captures — a green that measured nothing. A rename gives the path a
+    /// different inode; an in-place write keeps the same one, whoever is
+    /// running and whatever the filesystem enforces.
+    ///
+    /// The fixture carries a **second** edition and an alignment between the
+    /// two, because that is what is actually at stake: `credits --write`
+    /// rewrites the whole document to change one list on one edition, so the
+    /// half-written file this rules out would take the other edition's members
+    /// and the runs joining them with it.
+    #[test]
+    fn writing_a_credits_list_replaces_the_sidecar_rather_than_truncating_it() {
+        let dir = std::env::temp_dir().join("taiyaku-test-credits-write");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("taiyaku.json");
+        let sidecar = path.to_str().expect("utf-8 temp path").to_string();
+
+        let mut doc = fan_and_raw();
+        std::fs::write(&path, doc.to_json()).expect("the fixture is written");
+
+        #[cfg(unix)]
+        let before = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(&path).expect("stat").ino()
+        };
+
+        doc.editions
+            .get_mut("fan")
+            .expect("the fixture has it")
+            .credits = vec![3];
+        let wrote = write_sidecar(&sidecar, &doc);
+
+        let read_back = std::fs::read_to_string(&path).expect("the destination is readable");
+
+        #[cfg(unix)]
+        let after = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(&path).expect("stat").ino()
+        };
+
+        // Nothing may be left lying beside the sidecar. A failed write and a
+        // failed rename each clean up after themselves rather than leaving one
+        // file per attempt in the reader's own library directory.
+        let strays: Vec<String> = std::fs::read_dir(&dir)
+            .expect("the temp dir is readable")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains(".tmp"))
+            .collect();
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        wrote.expect("the write succeeds");
+        #[cfg(unix)]
+        assert_ne!(
+            before, after,
+            "a rename replaces the destination with a different inode; an \
+             in-place truncating write would have kept the same one"
+        );
+        assert!(strays.is_empty(), "temp files left behind: {strays:?}");
+
+        // Whole, not half: the new list is there and everything the command
+        // never touched came through with it.
+        let written =
+            Sidecar::from_json(&read_back).expect("the destination holds a whole document");
+        assert_eq!(written.editions["fan"].credits, vec![3]);
+        assert_eq!(
+            written.editions["raw"].members.len(),
+            1,
+            "the untouched edition must survive the rewrite"
+        );
+        assert_eq!(
+            written.alignments.len(),
+            1,
+            "the alignment joining the two must survive the rewrite"
+        );
+    }
+
+    /// Distinct hashes at known Hamming distances, built by setting the low
+    /// `n` bits of an all-zero hash rather than by writing literals nobody can
+    /// check by eye. `PageHash` has neither `Default` nor a bit-flip method,
+    /// so this builds the raw `[u64; 4]` words directly instead of widening
+    /// the fingerprint type's public API for a test's convenience.
+    fn hash_with_bits_set(n: u32) -> PageHash {
+        let mut words = [0u64; 4];
+        for bit in 0..n {
+            words[(bit / 64) as usize] |= 1 << (bit % 64);
+        }
+        PageHash(words)
+    }
+
+    #[test]
+    fn the_nearest_neighbour_is_never_in_the_same_member() {
+        // Member 0 holds two pages one bit apart. Member 1 holds one page eight
+        // bits away. The within-member pair is closer and must be ignored:
+        // a chapter repeating its own page says nothing about recurrence.
+        let members = vec![
+            vec![hash_with_bits_set(0), hash_with_bits_set(1)],
+            vec![hash_with_bits_set(8)],
+        ];
+        let found = recurrences(&members);
+        let page0 = found.iter().find(|r| r.page == 0).expect("page 0 reported");
+        assert_eq!(
+            page0.distance, 8,
+            "the 1-bit neighbour is in the same member"
+        );
+        assert_eq!(page0.nearest_member, 1);
+        assert_eq!(page0.nearest_local, 0);
+    }
+
+    #[test]
+    fn pages_are_numbered_across_the_whole_edition_not_within_a_member() {
+        let members = vec![
+            vec![hash_with_bits_set(0), hash_with_bits_set(40)],
+            vec![hash_with_bits_set(1)],
+        ];
+        let found = recurrences(&members);
+        assert_eq!(
+            found.iter().map(|r| r.page).collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "member 1's only page is the edition's page 2"
+        );
+    }
+
+    #[test]
+    fn a_single_member_edition_reports_nothing() {
+        // Nothing to recur against. Reporting distance 0 here, or the nearest
+        // page within the member, would invent a signal.
+        let members = vec![vec![hash_with_bits_set(0), hash_with_bits_set(1)]];
+        assert!(recurrences(&members).is_empty());
+    }
+
+    #[test]
+    fn nearest_member_and_local_are_actually_computed_across_three_members() {
+        // Three members, so "the other member" is not a well-defined guess
+        // and neither is `1 - mi`. Page 0 (member 0, all-zero hash) is
+        // farthest from member 1's single page, farther still from member
+        // 2's first page, and nearest of all to member 2's *second* page —
+        // a nonzero local index in a member that isn't simply "the other
+        // one". Distances 50, 60, and 5 are all distinct, so no tie-break
+        // can paper over a wrong answer.
+        let members = vec![
+            vec![hash_with_bits_set(0)],
+            vec![hash_with_bits_set(50)],
+            vec![hash_with_bits_set(60), hash_with_bits_set(5)],
+        ];
+        let found = recurrences(&members);
+        let page0 = found.iter().find(|r| r.page == 0).expect("page 0 reported");
+        assert_eq!(
+            page0.distance, 5,
+            "member 2's second page is the true nearest neighbour"
+        );
+        assert_eq!(
+            page0.nearest_member, 2,
+            "nearest neighbour is in member 2, not member 1 or `1 - mi`"
+        );
+        assert_eq!(
+            page0.nearest_local, 1,
+            "nearest neighbour is member 2's second page, not its first"
+        );
+    }
+
+    /// A minimal one-edition document, for the tests below that only care
+    /// about edition matching and the hub refusal, never about pages.
+    fn one_edition(name: &str, sha: &str) -> Sidecar {
+        let text = format!(
+            r#"{{
+              "taiyaku": 1,
+              "work": {{ "title": "W", "reading": "rtl" }},
+              "editions": {{
+                "{name}": {{
+                  "label": "{name}",
+                  "members": [{{ "path": "m.cbz", "sha256": "{sha}", "pages": 1 }}],
+                  "spreads": []
+                }}
+              }},
+              "hub": "{name}",
+              "alignments": []
+            }}"#
+        );
+        Sidecar::from_json(&text).expect("fixture parses")
+    }
+
+    #[test]
+    fn no_matching_edition_is_refused_by_name() {
+        let doc = one_edition("fan", "c1");
+        let err =
+            edition_of_digests(&doc, "taiyaku.json", &["zzz".to_string()]).expect_err("refuses");
+        assert!(
+            err.contains("taiyaku.json") && err.contains("zzz"),
+            "the refusal must name the sidecar and the digest it could not place: {err}"
+        );
+    }
+
+    /// A document with four editions: `hub`, two spokes joined to it directly,
+    /// and a third alignment — `spokeA` to `spokeB` — that touches neither.
+    /// The buggy version of `resolve_counterpart` mapped every alignment to
+    /// "whichever side is not the hub", so `spokeA`-`spokeB` still contributed
+    /// `spokeA` even though that edge never reaches the hub at all.
+    fn hub_with_a_spoke_to_spoke_edge() -> Sidecar {
+        let text = r#"{
+          "taiyaku": 1,
+          "work": { "title": "W", "reading": "rtl" },
+          "editions": {
+            "hub":    { "label": "hub",    "members": [{ "path": "h.cbz", "sha256": "h", "pages": 1 }], "spreads": [] },
+            "spokeA": { "label": "spokeA", "members": [{ "path": "a.cbz", "sha256": "a", "pages": 1 }], "spreads": [] },
+            "spokeB": { "label": "spokeB", "members": [{ "path": "b.cbz", "sha256": "b", "pages": 1 }], "spreads": [] },
+            "spokeC": { "label": "spokeC", "members": [{ "path": "c.cbz", "sha256": "c", "pages": 1 }], "spreads": [] }
+          },
+          "hub": "hub",
+          "alignments": [
+            { "from": "spokeA", "to": "spokeB", "by": "solver", "runs": [] },
+            { "from": "hub", "to": "spokeC", "by": "solver", "runs": [] }
+          ]
+        }"#;
+        Sidecar::from_json(text).expect("fixture parses")
+    }
+
+    #[test]
+    fn the_hub_refusal_only_offers_editions_that_actually_touch_it() {
+        let doc = hub_with_a_spoke_to_spoke_edge();
+
+        let err = resolve_counterpart(&doc, "hub", None).expect_err("refuses");
+
+        assert!(err.contains("hub"), "the refusal must name the hub: {err}");
+        assert!(
+            err.contains("spokeC"),
+            "the edition actually joined to the hub must be offered: {err}"
+        );
+        assert!(
+            !err.contains("spokeA") && !err.contains("spokeB"),
+            "a spoke-to-spoke edge that never touches the hub must not be offered as an \
+             answer, since it has no edge to the hub for `unpaired_runs` to find: {err}"
+        );
+    }
+
+    #[test]
+    fn the_hub_refusal_ends_cleanly_with_no_alignments_at_all() {
+        let doc = one_edition("hub", "h");
+
+        let err = resolve_counterpart(&doc, "hub", None).expect_err("refuses");
+
+        assert!(
+            !err.trim_end().ends_with("--against:"),
+            "a document with nothing to suggest must not trail off after a bare \
+             `--against:`: {err}"
+        );
+    }
+
+    #[test]
+    fn against_is_used_verbatim_even_for_the_hub() {
+        // `--against` is a choice the caller made, not a default this
+        // function has to justify — so it is returned unchecked, hub or not.
+        let doc = one_edition("hub", "h");
+        assert_eq!(
+            resolve_counterpart(&doc, "hub", Some("elsewhere")).unwrap(),
+            "elsewhere"
+        );
+    }
+
+    /// A two-member `fan` edition aligned against a one-member `raw` hub,
+    /// with `c1`'s last page (page 3) unpaired — the same shape
+    /// `taiyaku-core::credits`'s `a_run_at_a_members_final_index_is_flagged_at_its_end`
+    /// fixture uses, reused here because `classify` needs a real alignment to
+    /// call `unpaired_runs` through.
+    fn fan_and_raw() -> Sidecar {
+        let text = r#"{
+          "taiyaku": 1,
+          "work": { "title": "Reversed Order Co.", "reading": "rtl" },
+          "editions": {
+            "raw": {
+              "label": "raw",
+              "members": [{ "path": "r.cbz", "sha256": "r0", "pages": 8 }],
+              "spreads": []
+            },
+            "fan": {
+              "label": "fan",
+              "members": [
+                { "path": "c1.cbz", "sha256": "c1", "pages": 4 },
+                { "path": "c2.cbz", "sha256": "c2", "pages": 4 }
+              ],
+              "spreads": []
+            }
+          },
+          "hub": "raw",
+          "alignments": [
+            { "from": "raw", "to": "fan", "by": "solver",
+              "runs": [{"a":"0-2","b":"0-2"},{"a":"3"},{"a":"4-7","b":"4-7"}] }
+          ]
+        }"#;
+        Sidecar::from_json(text).expect("fixture parses")
+    }
+
+    #[test]
+    fn page_order_comes_from_the_editions_own_member_order_not_the_argument_order() {
+        // fan page 3 — c1's last — is the one unpaired page. Handing
+        // `classify` the two members' hashes in the opposite order from the
+        // document's own `members` list (c2 before c1) must not move that
+        // page onto c2, nor change either the row or the printed line.
+        let doc = fan_and_raw();
+        let c1_hashes: Vec<PageHash> = (0..4).map(hash_with_bits_set).collect();
+        let c2_hashes: Vec<PageHash> = (20..24).map(hash_with_bits_set).collect();
+
+        let forward = vec![
+            ("c1".to_string(), c1_hashes.clone()),
+            ("c2".to_string(), c2_hashes.clone()),
+        ];
+        let reversed = vec![("c2".to_string(), c2_hashes), ("c1".to_string(), c1_hashes)];
+
+        let (rows_fwd, line_fwd, pages_fwd) =
+            classify(&doc, "fan", "raw", &forward).expect("classifies");
+        let (rows_rev, line_rev, pages_rev) =
+            classify(&doc, "fan", "raw", &reversed).expect("classifies");
+
+        assert_eq!(
+            pages_fwd, pages_rev,
+            "the page list must not depend on argument order"
+        );
+        assert_eq!(
+            line_fwd, line_rev,
+            "the printed line must not depend on argument order"
+        );
+        let simplify = |rows: &[Row]| -> Vec<(u32, String)> {
+            rows.iter().map(|r| (r.page, r.member.clone())).collect()
+        };
+        assert_eq!(simplify(&rows_fwd), simplify(&rows_rev));
+
+        let row = rows_fwd
+            .iter()
+            .find(|r| r.page == 3)
+            .expect("page 3 is reported");
+        assert_eq!(
+            row.member, "c1.cbz",
+            "page 3 is c1's own last page in the document's member order"
+        );
+    }
+
+    #[test]
+    fn the_work_title_is_last_so_its_spaces_cannot_shift_another_field() {
+        // `Reversed Order Co.` holds two spaces, which is the whole point: the
+        // collectors in `scripts/` split on whitespace and index fields
+        // positionally, so a title anywhere but the end silently moves every
+        // field after it by a count nobody can predict from the format alone.
+        let doc = fan_and_raw();
+        let fingerprinted = vec![
+            ("c1".to_string(), vec![hash_with_bits_set(0); 4]),
+            ("c2".to_string(), vec![hash_with_bits_set(0); 4]),
+        ];
+
+        let (_, line, _) = classify(&doc, "fan", "raw", &fingerprinted).expect("classifies");
+
+        assert!(
+            line.starts_with("credits: edition=fan against=raw"),
+            "the fixed fields must lead the line: {line}"
+        );
+
+        // Every field before `work=` sits at a known index, whatever the title
+        // holds. Asserted as the whole prefix rather than as "work is last", so
+        // a field inserted after `bound=` fails here rather than drifting.
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(
+            &fields[..8],
+            &[
+                "credits:",
+                "edition=fan",
+                "against=raw",
+                "pages=8",
+                "slots=8",
+                "runs=1",
+                "candidates=1",
+                "bound=1",
+            ],
+            "the fixed fields must be positionally stable: {line}"
+        );
+        assert_eq!(
+            line.split_once(" work=").map(|(_, title)| title),
+            Some("Reversed Order Co."),
+            "the title must run unambiguously to end of line, spaces and all: {line}"
+        );
+    }
+}

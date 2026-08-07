@@ -1,9 +1,22 @@
 //! Write a file so a crash cannot publish half of one.
 //!
-//! Three callers now: the reading position (O2), a generated cover, and a
-//! sidecar rewritten by a correction. The first two carried their own copy of
-//! this and said so in a comment; a third copy is where a comment asking
-//! whoever changes one to keep the others in step stops being good enough.
+//! Five callers, counted rather than remembered: `progress::store` (O2),
+//! `cover.rs`'s generated cover, `notes::store`, the sidecar rewritten by a
+//! correction in `routes.rs`, and `taiyaku credits --write` rewriting one from
+//! the command line. The first two carried their own copy of this and said so
+//! in a comment; a third copy is where a comment asking whoever changes one to
+//! keep the others in step stops being good enough.
+//!
+//! **This tally said "three" while it was already four, and the count was
+//! raised to "four" while it was already five.** Both times the number was
+//! written from memory of what this module was for rather than from the call
+//! sites. `notes::store` was the one missed twice. If you add a caller, grep
+//! for `atomic::write` and count what comes back.
+//!
+//! The last of the five is in another crate, which is why this module is
+//! `pub`. It is not a server concern that happens to be reachable — a sidecar
+//! is a sidecar whoever rewrites it, and the alternative to exporting this was
+//! a fifth copy of write-and-rename in `taiyaku-cli`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,7 +46,11 @@ pub(crate) fn temp_path(path: &Path, extension: &str) -> PathBuf {
 /// own library directory. `cover.rs`'s writer, before this module existed,
 /// did this unconditionally for the same reason; both failure paths now get
 /// the same treatment here.
-pub(crate) fn write(path: &Path, bytes: &[u8], extension: &str) -> Result<(), String> {
+///
+/// `pub`, not `pub(crate)`: `taiyaku-cli`'s `credits::write_sidecar` is the
+/// one caller outside this crate, and it is writing the very file the
+/// paragraph above names as the worst thing to lose half of.
+pub fn write(path: &Path, bytes: &[u8], extension: &str) -> Result<(), String> {
     let temporary = temp_path(path, extension);
     if let Err(e) = std::fs::write(&temporary, bytes) {
         let _ = std::fs::remove_file(&temporary);
