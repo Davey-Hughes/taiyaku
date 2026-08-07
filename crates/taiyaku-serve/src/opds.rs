@@ -282,7 +282,7 @@ async fn stream_page(
     };
     let tag = crate::routes::page_etag(&sha256, offset);
     if crate::routes::if_none_match_hits(&headers, &tag) {
-        return crate::routes::not_modified(&tag);
+        return crate::routes::not_modified(&tag, Some(crate::routes::PAGE_CACHE_CONTROL));
     }
 
     let fetched = tokio::task::spawn_blocking(move || {
@@ -296,6 +296,10 @@ async fn stream_page(
             [
                 (header::CONTENT_TYPE, page.content_type),
                 (header::ETAG, tag),
+                (
+                    header::CACHE_CONTROL,
+                    crate::routes::PAGE_CACHE_CONTROL.to_string(),
+                ),
             ],
             page.bytes,
         )
@@ -338,7 +342,14 @@ async fn cover(
     .await;
 
     match fetched {
-        Ok(Ok(bytes)) => ([(header::CONTENT_TYPE, "image/jpeg")], bytes).into_response(),
+        Ok(Ok(bytes)) => (
+            [
+                (header::CONTENT_TYPE, "image/jpeg"),
+                (header::CACHE_CONTROL, crate::routes::PAGE_CACHE_CONTROL),
+            ],
+            bytes,
+        )
+            .into_response(),
         Ok(Err(e)) => missing(e),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

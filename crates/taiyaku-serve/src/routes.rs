@@ -128,11 +128,73 @@ pub(crate) fn if_none_match_hits(headers: &HeaderMap, tag: &str) -> bool {
         == Some(tag)
 }
 
+/// How long a client may reuse a page, tile or cover without asking at all.
+///
+/// O1: an `ETag` shrinks a repeat to about 300 bytes; it does not remove the
+/// round trip. Prefetch exists to hide a round trip before the reader notices
+/// it, so a round trip that still has to happen — just for fewer bytes — is one
+/// the reader still waits on. This is the half that makes a genuine repeat cost
+/// nothing.
+///
+/// `private` because this server has no auth, and the cache this exists to
+/// reach is the reader's own browser rather than a shared proxy.
+///
+/// **Not `immutable`, and the reason is the URL rather than the bytes.** A
+/// page's bytes never change for a given member `sha256` and offset — that is
+/// exactly what `page_etag` above is derived from — but the URL names a work,
+/// an edition and an index, none of which move when an archive is replaced.
+/// `immutable` tells a client never to revalidate for the entry's whole
+/// lifetime, so replacing a member would leave every reader who had seen that
+/// page holding the old bytes, with no way to correct it short of clearing the
+/// browser's cache. The bound below is what makes a replacement
+/// self-correcting.
+///
+/// **No `Last-Modified` alongside it, deliberately.** It would need the
+/// member file's mtime, which needs a `stat`, on the async worker, on every
+/// request — putting disk I/O back on the one path `locate_member` above is
+/// written to keep clear of. It would also be the weaker validator of the two:
+/// these bytes are addressed by content, and mtime is not, so re-downloading a
+/// byte-identical archive would invalidate a cache entry that is still correct.
+/// The `ETag` covers revalidation; this covers freshness; there is no third
+/// question for a date to answer.
+///
+/// One day is chosen from two ends rather than measured: long enough that a
+/// work read across an evening and reopened the next morning costs no round
+/// trip, short enough that a replaced archive corrects itself without anyone
+/// knowing to clear anything. Any value from an hour to a week satisfies both.
+pub(crate) const PAGE_CACHE_CONTROL: &str = "private, max-age=86400";
+
 /// The reply to a validator that already matches: the tag, and no body —
 /// sending the very bytes the header exists to avoid transferring would
 /// defeat the entire point of a `304`.
-pub(crate) fn not_modified(tag: &str) -> Response {
-    (StatusCode::NOT_MODIFIED, [(header::ETAG, tag.to_string())]).into_response()
+///
+/// **`freshness` is a parameter rather than a constant, and the four callers
+/// do not agree on it.** RFC 9111 §4.3.4 has a client update its stored
+/// response from a `304`'s headers, so whatever this sends is what the client
+/// believes until it asks again. For a page that is `PAGE_CACHE_CONTROL`:
+/// omitting it would leave the entry exactly as stale as it was and cost a
+/// round trip on the very next read, so a revalidation that carries no
+/// freshness buys one response and no more. For a sidecar or a notes document
+/// it is `None`, and that is not a smaller version of the same thing — those
+/// two are rewritten by `PATCH /alignments` and `PUT /notes`, so a freshness
+/// lifetime on either says a reader may go a day without seeing a correction
+/// they made themselves.
+///
+/// Written as an argument each caller must supply rather than a default one
+/// of them overrides, because the first version of this took the page constant
+/// unconditionally and silently handed it to `get_sidecar` and `get_notes` —
+/// which share this function and want the opposite answer. A caller that has
+/// to say which it is cannot inherit the wrong one by being written later.
+pub(crate) fn not_modified(tag: &str, freshness: Option<&str>) -> Response {
+    let mut response =
+        (StatusCode::NOT_MODIFIED, [(header::ETAG, tag.to_string())]).into_response();
+    if let Some(freshness) = freshness {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_str(freshness).expect("freshness is a valid header value"),
+        );
+    }
+    response
 }
 
 /// A sidecar's `ETag`: a SHA-256 over exactly the bytes this server would send.
@@ -249,7 +311,7 @@ async fn get_sidecar(
     let sidecar = found.sidecar();
     let tag = sidecar_etag(&sidecar);
     if if_none_match_hits(&headers, &tag) {
-        return not_modified(&tag);
+        return not_modified(&tag, None);
     }
     // Served verbatim from the parsed document rather than by re-reading the
     // file, so what the client resolves against is exactly what this server
@@ -294,7 +356,7 @@ async fn get_page(
     };
     let tag = page_etag(&sha256, offset);
     if if_none_match_hits(&headers, &tag) {
-        return not_modified(&tag);
+        return not_modified(&tag, Some(PAGE_CACHE_CONTROL));
     }
 
     // Reading a page blocks: a zip decompression from disk, or an HTTP round
@@ -315,6 +377,7 @@ async fn get_page(
             [
                 (header::CONTENT_TYPE, page.content_type),
                 (header::ETAG, tag),
+                (header::CACHE_CONTROL, PAGE_CACHE_CONTROL.to_string()),
             ],
             page.bytes,
         )
@@ -333,6 +396,15 @@ async fn get_page(
 /// Separate from `get_page` rather than a query parameter on it, because the
 /// two have different cache lifetimes and different content types: a page is
 /// whatever the archive holds, a tile is always JPEG.
+///
+/// It sends `Cache-Control` and **no `ETag`**, which is not an oversight.
+/// `get_page` can answer a `304` before doing any work because
+/// `locate_member` derives the tag from the in-memory sidecar; here the
+/// member `sha256` and offset are found inside `spawn_blocking`, one level in,
+/// so a validator would arrive too late to skip anything a tile costs. The
+/// freshness header removes the round trip without needing one; adding the
+/// tag would mean hoisting the lookup out here, which is its own change and
+/// buys only a cheaper request after this header has expired.
 async fn get_thumb(
     State(state): State<Arc<ServeState>>,
     AxPath((id, edition, raw)): AxPath<(String, String, String)>,
@@ -362,7 +434,14 @@ async fn get_thumb(
     .await;
 
     match fetched {
-        Ok(Ok(bytes)) => ([(header::CONTENT_TYPE, "image/jpeg")], bytes).into_response(),
+        Ok(Ok(bytes)) => (
+            [
+                (header::CONTENT_TYPE, "image/jpeg"),
+                (header::CACHE_CONTROL, PAGE_CACHE_CONTROL),
+            ],
+            bytes,
+        )
+            .into_response(),
         Ok(Err(e)) => not_found(e),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -440,7 +519,7 @@ async fn get_notes(
         Ok(Ok(json)) => {
             let tag = notes_etag(&json);
             if if_none_match_hits(&headers, &tag) {
-                return not_modified(&tag);
+                return not_modified(&tag, None);
             }
             (
                 [
@@ -1538,6 +1617,161 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// O1: every route whose bytes are fixed by a member's content says how
+    /// long they may be reused without asking.
+    ///
+    /// The `ETag` shipped before this and shrank a repeat to about 300 bytes;
+    /// it never removed the round trip, which is the part a reader waits on.
+    /// All four byte routes are checked rather than the one this was first
+    /// noticed on, because O5 already recorded once what fixing only the
+    /// `/api/…` route is worth: Panels reaches pages through the OPDS stream,
+    /// and the cover is the only route a cold grid view touches at all.
+    ///
+    /// The `304` is checked for the same header, and it is the case most
+    /// easily left out: RFC 9111 §4.3.4 has a client refresh its stored
+    /// response from the `304`'s headers, so omitting it here would leave the
+    /// entry exactly as stale as it was and cost a round trip on the very
+    /// next read.
+    #[tokio::test]
+    async fn every_route_serving_a_member_s_bytes_says_how_long_they_may_be_reused() {
+        let state = crate::test_support::state_with_real_pages();
+        let app = build_router(state);
+
+        for uri in [
+            "/api/works/w/a/pages/0",
+            "/api/works/w/a/pages/0/thumb",
+            "/opds/v1.2/works/w/a/pages/0",
+            "/opds/v1.2/works/w/a/cover",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL),
+                Some(&header::HeaderValue::from_static(PAGE_CACHE_CONTROL)),
+                "{uri} serves bytes fixed by a member's content and must say \
+                 so; without it every reuse asks the network first"
+            );
+        }
+
+        // Both routes that carry a validator, revalidated — not just the
+        // `/api/…` one. O5 already recorded once what checking only that one
+        // is worth: Panels reaches pages through the OPDS stream, so a `304`
+        // asserted only here would be asserted on the route nothing uses.
+        for uri in ["/api/works/w/a/pages/0", "/opds/v1.2/works/w/a/pages/0"] {
+            let first = app
+                .clone()
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let tag = first.headers()[header::ETAG].clone();
+
+            let revalidated = app
+                .clone()
+                .oneshot(
+                    Request::get(uri)
+                        .header(header::IF_NONE_MATCH, &tag)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED, "{uri}");
+            assert_eq!(
+                revalidated.headers().get(header::CACHE_CONTROL),
+                Some(&header::HeaderValue::from_static(PAGE_CACHE_CONTROL)),
+                "{uri}: a 304 that omits it buys one response and no more — \
+                 the client stores the same stale entry and asks again next \
+                 read"
+            );
+        }
+    }
+
+    /// The other half, and the half that has something to fail against: no
+    /// document a client can change is given a freshness lifetime.
+    ///
+    /// A page is fixed by a member's `sha256`. A sidecar is rewritten by
+    /// `PATCH /alignments`, notes by `PUT /notes`, progress by
+    /// `PUT /progress`, and every feed restates whatever those hold — so a
+    /// client told it may reuse any of them for a day would show a correction
+    /// it had just made being undone, or lose a note to a second device.
+    ///
+    /// This is what fails the day someone reaches for a blanket
+    /// `SetResponseHeaderLayer` on the router rather than the four routes
+    /// where the claim is true.
+    ///
+    /// **Both statuses are checked, and the second one is why this test
+    /// exists in the shape it does.** The first version of this looked only
+    /// at the `200`s and passed while the server was actively telling clients
+    /// they could reuse a sidecar for a day: `not_modified` is shared by
+    /// `get_page`, `get_sidecar`, `get_notes` and the OPDS stream, so putting
+    /// the page constant inside it leaked a freshness lifetime onto the `304`
+    /// of every route that shares it. A client caches what the `304` says
+    /// (RFC 9111 §4.3.4), so the leak was worth exactly as much as putting it
+    /// on the `200` would have been, and no test saw it.
+    #[tokio::test]
+    async fn no_document_a_client_can_change_is_given_a_freshness_lifetime() {
+        let state = crate::test_support::state_with_real_pages();
+        let app = build_router(state);
+
+        for uri in [
+            "/api/works",
+            "/api/works/w",
+            "/api/works/w/progress",
+            "/api/works/w/notes",
+            "/opds/v1.2/catalog",
+            "/opds/v1.2/works",
+            "/opds/v1.2/works/w",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL),
+                None,
+                "{uri} answers a document this server rewrites; a freshness \
+                 lifetime on it hands a reader back an edit they have already \
+                 made"
+            );
+        }
+
+        // The two that carry a validator, revalidated. A `304` is where a
+        // client refreshes what it believes about an entry, so a mutable
+        // document's `304` has to be as silent about freshness as its `200`.
+        for uri in ["/api/works/w", "/api/works/w/notes"] {
+            let first = app
+                .clone()
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let tag = first.headers()[header::ETAG].clone();
+
+            let revalidated = app
+                .clone()
+                .oneshot(
+                    Request::get(uri)
+                        .header(header::IF_NONE_MATCH, &tag)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED, "{uri}");
+            assert_eq!(
+                revalidated.headers().get(header::CACHE_CONTROL),
+                None,
+                "{uri} shares `not_modified` with the page routes, and a \
+                 client stores what a 304 tells it — a freshness lifetime \
+                 here is worth exactly what one on the 200 would be"
+            );
+        }
     }
 
     /// A real request, through the real router, has to produce a real log

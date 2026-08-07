@@ -37,10 +37,10 @@ hidden.
 
 ## What is built
 
-Five crates, 416 tests, plus 417 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 418 tests, plus 417 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
-and `vite` in `web/`. Twelve of the 416 are standing checks gated on
+and `vite` in `web/`. Twelve of the 418 are standing checks gated on
 `TAIYAKU_CORPUS` — nine in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
@@ -79,7 +79,7 @@ is not shaped by what can cross the JavaScript boundary.
 | Crate | Holds |
 | ----- | ----- |
 | `taiyaku-read` | how a member becomes pages — archives, directories, natural order, page counts, content hashes, one page by index |
-| `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, notes (`<stem>.notes.json`, read and written whole under `If-Match`), an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below) |
+| `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, notes (`<stem>.notes.json`, read and written whole under `If-Match`), an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below). A caching split runs the length of the file: the four routes whose bytes are fixed by a member's `sha256` carry a day's freshness — two of them an `ETag` as well, and the thumbnail and cover neither, since both find the member only inside `spawn_blocking`, too late for a validator to save the work it would be skipping — while every route answering a document this server rewrites carries no freshness at all, on the `304` as well as the `200`, which is the half that is easy to get wrong (O1) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
 | `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of six `ReaderModule`s — of eight the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint, with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the page it sits over rather than the box around it; a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself). The other two registry entries claim no reading behaviour. `settings` claims only the panel's own key. `credits` (§4 below) is the eighth and the only one whose behaviour is a panel rather than a page treatment: `C` lists the viewed edition's credit pages, a thumbnail and a page number each and no labels the sidecar cannot support, and `skip` keeps them out of the reading flow by being handed to `groups` rather than filtering its result — so the page area, the arrows and the filmstrip skip together, and two-page mode re-pairs around a skipped slot instead of stranding its neighbour. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
@@ -277,16 +277,16 @@ produced against the corpus, turned up by designing the fix for another one, or
 turned up by simulating the reader from every position it can hold, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Twenty-four are now closed
-— O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25, O26, O27, O28, O29 and O30 — leaving six.**
+visible act rather than a thing someone remembers. **Twenty-five are now closed
+— O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
+O21, O22, O25, O26, O27, O28, O29 and O30 — leaving five.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
 
 | ID | Open | What | Where | Opened by |
 | --- | :---: | ---- | ----- | --------- |
-| O1 | [ ] | Page responses carry no cache headers — *measured: 17 of 39 in one scripted session, but only 12 were genuine reader revisits — no real-session evidence yet* | `routes.rs::get_page` | M2 review |
+| O1 | [x] | Page responses carry no cache headers — *closed by removing the round trip rather than by counting them: 0 page requests reached the server across a ten-slot re-read* | `routes.rs::get_page` | M2 review |
 | O2 | [x] | Progress is written non-atomically | `progress.rs::store` | M2 review |
 | O3 | [x] | `PUT /progress` does not range-check the slot | `routes.rs::put_progress` | M2 review |
 | O4 | [x] | Two sidecars claiming one work id is untested | `works.rs::load_works` | M2 review |
@@ -321,16 +321,21 @@ Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
 
 **`serve` was a first cut, and five things about it were known thin** — O1 to
-O5, each found by the whole-branch review. Four of the five are closed. O1
-closed once, on a browser-reader `304` count that looked like the second
-measurement the first one (against Panels) had been waiting for — and
-reopened on review, when the count turned out to be measuring this task's
-own traffic as much as a reader's. O5 was nearly deferred alongside it on
-the strength of a wrong estimate — "a custom rejection handler touches
-routing for every route" — which was checked rather than repeated and
-turned out to be two handlers and a local parse:
+O5, each found by the whole-branch review. All five are now closed. O1 was the
+last and the longest-lived: it closed once, on a browser-reader `304` count
+that looked like the second measurement the first one (against Panels) had
+been waiting for — and reopened on review, when the count turned out to be
+measuring this task's own traffic as much as a reader's. It closed for good on
+the *other* of the two exits its own entry named, which needed no session log
+at all. O5 was nearly deferred alongside it on the strength of a wrong
+estimate — "a custom rejection handler touches routing for every route" —
+which was checked rather than repeated and turned out to be two handlers and a
+local parse:
 
-- **O1 — Page responses carry no cache headers. Reopened.** The bytes for a
+- **O1 — Page responses carry no cache headers. Closed.** *Everything from
+  here to "What would close it" is the record as it stood while the item was
+  open, kept rather than rewritten, because the reopening is the part worth
+  reading. The close is at the end.* The bytes for a
   given work, edition and index never change, and the sidecar already
   records a `sha256` per member, so an `ETag` (shipped the task before this
   one — `routes.rs::locate_member`/`page_etag`) was a line of code once the
@@ -423,6 +428,58 @@ turned out to be two handlers and a local parse:
   reading session to feed it. Landing `Cache-Control`/`Last-Modified` so a
   genuine repeat costs no round trip at all, rather than a cheaper one,
   would close the item outright, independent of any session log.
+  **It closed on that second exit, and taking it made the session log
+  unnecessary rather than merely optional.** The item's own argument for
+  reopening was that a validator shrinks a response and does not remove the
+  round trip; `PAGE_CACHE_CONTROL` — `private, max-age=86400`, on
+  `get_page`, `get_thumb`, the OPDS stream and the OPDS cover — removes it.
+  With freshness in hand there is no reuse left to count, so the question
+  "how many revisits does real reading produce?" stops gating the item: the
+  answer costs nothing either way.
+  **Measured from the server's side of the wire, which is the half every
+  earlier attempt at this was missing.** Ten slots read forward in the
+  browser reader against `corpus/gotoubun-v01`, all three passes driven
+  through the real reader rather than by script: the pass that populates
+  the cache, then the same ten slots read again after a full reload. The
+  second read touched 14 distinct pages once prefetch is counted and sent
+  **zero page requests to the server** — not zero bytes, zero requests,
+  confirmed against `--log-requests`'s own JSONL rather than against a
+  browser-side classifier. The only traffic in that window was ten progress
+  writes, two work-list reads, and a `304` apiece for the sidecar and the
+  notes. Before this change every one of those 14 would have been a
+  conditional request the reader waited on.
+  **`Last-Modified` was named in this item and is deliberately not shipped.**
+  It would need the member file's mtime, which needs a `stat`, on the async
+  worker, on every request — putting disk I/O back on the one path
+  `locate_member` is written to keep clear of so a `304` can be answered
+  before any work happens. It would also be the weaker of the two validators
+  on material addressed by content: re-downloading a byte-identical archive
+  moves the mtime and would throw away a cache entry that is still correct.
+  The `ETag` answers revalidation and `Cache-Control` answers freshness;
+  there is no third question left for a date.
+  **`immutable` is not shipped either, and the reason is the URL rather than
+  the bytes.** A page's bytes are fixed by `(member sha256, offset)` — that is
+  what `page_etag` is derived from — but the URL names a work, an edition and
+  an index, none of which move when an archive is replaced. `immutable` would
+  tell a client never to revalidate for the entry's whole lifetime, which is
+  O11's failure mode imported into the browser. The one-day bound is chosen
+  from two ends rather than measured: long enough that a work reopened the
+  next morning costs no round trip, short enough that a replaced archive
+  corrects itself with nobody clearing anything.
+  **One defect was introduced closing this and caught by driving it, not by
+  the tests written for it.** `not_modified` is shared by four handlers, and
+  the first version of the change put the page constant inside it — so
+  `get_sidecar` and `get_notes`, which share it, began telling clients they
+  could reuse a *sidecar* for a day. In the browser both documents stopped
+  reaching the server at all, which is a lost correction waiting to happen:
+  `PATCH /alignments` rewrites the sidecar, and a reader who made a
+  correction and reloaded would have been served their own stale copy. The
+  test written alongside the change did not catch it, because it asserted on
+  the `200` path and the leak was on the `304` — and a client stores what a
+  `304` tells it (RFC 9111 §4.3.4), so the two are worth the same. `freshness`
+  is now a parameter every caller must supply, and the test checks both
+  statuses on both mutable routes; reintroducing the leak fails it by name.
+  See `notes.md`, "O1 — closes here, and the fix broke the sidecar on the way".
 - **O2 — Progress is written non-atomically. Closed.** `fs::write` truncated
   first, so a crash mid-write left a short file and the next read answered 500
   rather than "nothing recorded" — the worse of the two wrong answers, since it
@@ -1935,14 +1992,25 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the six open items tabled above — five of them found by a
-whole-branch review, now that O12 (carried rather than found), O14 (found
-by one, closed by M5b), O26 (found by one, closed on its own branch), O28
-(found by walking the reader through every position it can hold, closed on its
-own branch) and O29 (found by driving O26's own fix against the corpus, closed
-the same way) are all out of the count, with one exception: O23,
+What remains: the five open items tabled above — four of them found by a
+whole-branch review, now that O1 (found by one, closed by removing the round
+trip its own entry was arguing about), O12 (carried rather than found), O14
+(found by one, closed by M5b), O26 (found by one, closed on its own branch),
+O28 (found by walking the reader through every position it can hold, closed on
+its own branch) and O29 (found by driving O26's own fix against the corpus,
+closed the same way) are all out of the count, with one exception: O23,
 turned up by measuring what a new surface produced against the corpus rather
 than by reviewing a branch. **Every milestone M5 named has now shipped.**
+
+**Four of the five that remain wait on evidence rather than on code**, which
+is worth stating plainly now that the one item with a code-shaped exit has
+taken it: O6 needs an art book with a legitimate reason to be in a sidecar,
+O9 a client issuing concurrent requests for one key, O11 archives replaced
+often enough for the cache to matter, and O23 a work corrected enough times
+in real reading to say whether the verdict misleads. O24 is the odd one —
+not evidence but a decision, about what a merge owes an edge it did not
+solve, and no corpus document has yet had a `--direct` edge and a re-solve
+in it.
 
 ### 4. Skipping scanlation credit pages — shipped
 

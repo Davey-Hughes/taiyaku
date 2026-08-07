@@ -5970,3 +5970,173 @@ branches fails both tests and each names its own branch's message —
 `out.json.tmp.1289842.1: No such file or directory` for staging and
 `out.json.tmp.1289842.3: Is a directory` for the rename — so neither test is
 passing on the strength of the other's branch.
+
+## O1 — closes here, and the fix broke the sidecar on the way
+
+O1 named two exits and had been stuck on the first one since M2. The first was
+a real session log showing conditional-request reuse over genuine reading; the
+second was one sentence at the end of the entry:
+
+> Landing `Cache-Control`/`Last-Modified` so a genuine repeat costs no round
+> trip at all, rather than a cheaper one, would close the item outright,
+> independent of any session log.
+
+The second exit is the one taken, and taking it is what makes the first
+unnecessary rather than merely optional. The item's whole argument for
+reopening was that an `ETag` shrinks a response and leaves the round trip in
+place — so the number that mattered was "how many round trips does real
+reading make?" Give the client freshness and there are no round trips left to
+count, and the question stops gating anything.
+
+**What shipped is one constant and four call sites.**
+`PAGE_CACHE_CONTROL = "private, max-age=86400"`, on `get_page`, `get_thumb`,
+the OPDS stream and the OPDS cover. Two of those four had no validator of any
+kind before this.
+
+**`Last-Modified` is named in the item and is deliberately not shipped.** Two
+reasons, and the first is the one that would have hurt. It needs the member
+file's mtime, which needs a `stat`, on the async worker, on every request —
+and `locate_member` exists precisely so a `304` can be answered from the
+in-memory sidecar before any I/O happens. Adding a date would have put disk
+back on the path the previous task cleared. The second: these bytes are
+addressed by content, and mtime is not, so re-downloading a byte-identical
+archive would move the date and throw away a cache entry that is still
+correct. The `ETag` answers revalidation, `Cache-Control` answers freshness,
+and there is no third question left for a date to answer.
+
+**`immutable` is not shipped either, and the reason is the URL, not the
+bytes.** A page's bytes really are fixed by `(member sha256, offset)` — that
+is what `page_etag` is derived from. But the URL names a work, an edition and
+an index, and none of those move when an archive is replaced. `immutable`
+tells a client never to revalidate for the entry's whole lifetime, so a
+replaced member would leave every reader holding the old bytes with no way to
+correct it: O11's failure mode, imported into the browser. One day is chosen
+from two ends rather than measured — long enough that a work reopened next
+morning costs no round trip, short enough that a replacement corrects itself
+with nobody clearing anything. Any value from an hour to a week satisfies
+both; this is the round number in the middle, and it is a choice, not a
+measurement.
+
+### Measured from the server's side, which is what every earlier attempt lacked
+
+The earlier O1 measurements were all taken in the browser and classified by
+`transferSize`, and the entry already records why that was thin — Resource
+Timing's `responseStatus` normalises a validated hit to `200`, and only one
+indirect CDP check ever confirmed a `304` on the wire. This run does not
+argue with any of that; it asks the other end. `taiyaku serve
+--log-requests` writes a JSONL line per request it actually receives, so
+"did the reader ask?" has an answer that owes nothing to a browser field.
+
+Ten slots read forward in the real browser reader against
+`corpus/gotoubun-v01`, `raw-mono`, starting at slot 100 — a populating pass,
+then a full reload, then the same ten slots read again:
+
+| | Second read of the same ten slots |
+| --- | ---: |
+| Distinct pages touched (prefetch included) | 14 |
+| Resource Timing entries | 16 |
+| …of those, `deliveryType: "cache"` | 16 |
+| Bytes on the wire | 0 |
+| **Page requests the server logged** | **0** |
+
+The server's log for that whole window holds ten progress writes, two
+work-list reads, and one `304` each for the sidecar and the notes. Not one
+page request. Before this change every one of those 14 would have been a
+conditional request the reader waited on — cheap in bytes, and a full round
+trip in latency, which is what the item was about.
+
+`deliveryType` is worth a line of its own. It is a first-class browser field
+meaning "served from the HTTP cache", and unlike `transferSize` it does not
+have to be interpreted — but it is still a browser field, and this run does
+not rest on it. CDP's own request list reports `200` for all sixteen,
+including the ones that never left the machine, which is the same trap in a
+new place: the wire is the only thing that settles it, and the server is on
+the wire.
+
+### The fix broke the sidecar, and the test written for it did not notice
+
+`not_modified` is shared by four handlers — `get_page`, `get_sidecar`,
+`get_notes` and the OPDS stream. The first version of this change put
+`PAGE_CACHE_CONTROL` inside it, unconditionally, which is the obvious place
+for it right up until you list the callers.
+
+The result: **the server began telling clients they could reuse a sidecar,
+and a notes document, for a day.** In the browser both stopped reaching the
+server at all — `transferSize: 0`, nothing in the request log. That is a lost
+correction waiting to happen. `PATCH /alignments` rewrites the sidecar; a
+reader who corrects a run, reloads, and is handed their own stale copy has
+watched the correction UI silently undo itself. Notes are worse, because the
+`ETag` a stale read carries is what the next `If-Match` write is conditional
+on.
+
+**Two things about how this was found are worth keeping.** It was not found by
+the test written alongside the change — that test asserted the mutable routes
+carry no `Cache-Control` on their `200`, which was true the whole time. The
+leak was on the `304`, and a client stores what a `304` tells it (RFC 9111
+§4.3.4), so the two are worth exactly the same. And it was not found by
+reading the diff either; it was found by driving the reader and noticing that
+the sidecar was missing from the server's log — a request that *should* have
+been there, rather than one that should not. The absence is what showed it.
+
+It was also, briefly, misdiagnosed as pre-existing: two documents being served
+from cache with no `Cache-Control` on them looks exactly like heuristic
+freshness, which is a thing browsers do. Restarting the server with the leak
+fixed and re-asking settled it in one call — both documents revalidated, and
+the server logged a `304` for each. Self-inflicted, not inherited.
+
+**The fix makes the caller answer.** `not_modified(tag, freshness:
+Option<&str>)`: the page routes pass `Some(PAGE_CACHE_CONTROL)`, the sidecar
+and notes pass `None`. A default one caller overrides is what produced the bug;
+an argument nobody can omit cannot be inherited by whoever writes the fifth
+caller.
+
+**Checked by sabotage, both directions.** Commenting out each of the five
+header sites in turn fails
+`every_route_serving_a_member_s_bytes_says_how_long_they_may_be_reused` and the
+message names the route. Restoring `Some(PAGE_CACHE_CONTROL)` at
+`get_sidecar`'s call fails
+`no_document_a_client_can_change_is_given_a_freshness_lifetime` on its `304`
+assertion — the exact bug, caught by name.
+
+### Two gaps found reviewing the close, and one of them was a real one
+
+**The OPDS stream's `304` was asserted by nothing.** The freshness test
+checked all four byte routes on their `200` and then checked exactly one of
+them — the `/api/…` page route — on its `304`. `opds.rs`'s
+`stream_page` shares `not_modified` and passes `Some(PAGE_CACHE_CONTROL)`,
+and no test and no curl in this whole task ever looked at what it sent. That
+is the same gap O5 already recorded once and for the same client: Panels
+reaches pages through the OPDS stream, not `/api/…`, so a `304` asserted only
+on the latter is asserted on the route nothing uses. Both are now in the
+loop, and stripping the freshness from `opds.rs:285` fails it by name.
+
+**`status.md` overclaimed in the sentence written to describe this.** It said
+the four byte routes "carry an `ETag` and a day's freshness". Two of them do;
+`get_thumb` and the OPDS cover carry freshness alone, because both find the
+member only inside `spawn_blocking`, which is too late for a validator to
+skip the work it would be validating. Corrected there rather than left as a
+sentence that reads true and is not.
+
+### The behaviour the bug threatened, driven end to end
+
+Nothing had actually confirmed that a correction survives the browser cache —
+only that the `304` no longer carries freshness, which is a statement about
+headers rather than about what a reader sees. Driven directly against
+`corpus/gotoubun-v01`, with the sidecar backed up first and restored after:
+
+1. The browser reads `/api/works/taiyaku` twice, so the document is stored.
+   `ETag` `980d3b80…`, no hand runs.
+2. A correction goes in through the real route — `PATCH /alignments`,
+   `If-Match` on that tag, `raw-mono` slot 40 to `en-mono` slot 41 — and
+   returns 200. The document now holds two hand runs: the correction, and the
+   slot it displaced, left unpaired.
+3. The browser reads the sidecar again, a plain `fetch` with no cache
+   options. It gets `af2168f9…`, both hand runs, `deliveryType` `(network)`,
+   5,052 bytes on the wire.
+
+The correction is visible on the next read. With the leak in place this same
+read was `deliveryType: "cache"`, `transferSize: 0`, and absent from the
+server's log entirely — so the reader would have been handed its own stale
+copy and watched the correction undo itself. That is the failure this
+verifies against, and it is measured rather than reasoned about, because the
+leaking version was run and logged before it was fixed.
