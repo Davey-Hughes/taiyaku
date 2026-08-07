@@ -693,8 +693,11 @@ fn sidecar_dir(out: &Path) -> &Path {
 /// it. A write-and-rename either publishes the whole new document or leaves the
 /// whole old one.
 ///
-/// `atomic::write` already names a path in its own error, so there is nothing to
-/// add here. Which path it names is O29.
+/// `atomic::write` names the destination — the path spelled right here, as the
+/// caller typed it — in both of its failures, so there is nothing to add. That
+/// is O29, closed: the staging branch used to answer with the temporary it
+/// invents, which is not a file anyone asked for and is deleted before the
+/// error is returned.
 ///
 /// A named function rather than a statement inside either command, because a
 /// test can call one and cannot reach the other: `align` solves and `credits`

@@ -37,10 +37,10 @@ hidden.
 
 ## What is built
 
-Five crates, 414 tests, plus 417 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 416 tests, plus 417 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
-and `vite` in `web/`. Twelve of the 414 are standing checks gated on
+and `vite` in `web/`. Twelve of the 416 are standing checks gated on
 `TAIYAKU_CORPUS` — nine in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
@@ -277,9 +277,9 @@ produced against the corpus, turned up by designing the fix for another one, or
 turned up by simulating the reader from every position it can hold, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Twenty-three are now closed
+visible act rather than a thing someone remembers. **Twenty-four are now closed
 — O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25, O26, O27, O28 and O30 — leaving seven.**
+O21, O22, O25, O26, O27, O28, O29 and O30 — leaving six.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -314,7 +314,7 @@ each is in the detail below; the table is what a reader scans.
 | O26 | [x] | `align --write` truncates the sidecar before writing it | `main.rs::write_sidecar` | credit-pages whole-branch review |
 | O27 | [x] | Two refs are held and read by nothing | `App.tsx::App`, the ref block above `viewportWidth` | O25 design |
 | O28 | [x] | A forward arrow on the last group's second slot moves backward | `pairing.ts::stepToGroup` | credits-panel arrow simulation |
-| O29 | [ ] | A failed `--write` names a temp path the caller never typed | `atomic.rs::write` | O26's corpus drive |
+| O29 | [x] | A failed `--write` names a temp path the caller never typed | `atomic.rs::write` | O26's corpus drive |
 | O30 | [x] | A relative `TAIYAKU_CORPUS` skipped every standing check and reported `ok` | `corpus.rs::corpus`, `corpus.rs::corpus_root` | O26's corpus drive |
 
 Sites are named by symbol rather than line, because a line number in a document
@@ -1334,10 +1334,10 @@ turned up on 2026-08-07 while checking that `align --write` still wrote at all
 once O26 moved it, and not blocking because it makes a message noisier without
 making it wrong:
 
-- **O29 — A failed `--write` names a temp path the caller never typed. Open.**
-  `atomic::write` names the *temporary* when staging fails and the destination
-  when the rename fails. Inside the module that is the right distinction — the
-  two failures are not the same event. At a command line it is not, because the
+- **O29 — A failed `--write` named a temp path the caller never typed. Closed.**
+  `atomic::write` named the *temporary* when staging failed and the destination
+  when the rename failed. Inside the module that is the right distinction — the
+  two failures are not the same event. At a command line it was not, because the
   temporary is a filename the caller never chose and cannot look for:
 
   ```
@@ -1345,26 +1345,42 @@ making it wrong:
   taiyaku: /nonexistent-dir-xyz/out.json.tmp.4041762.0: No such file or directory
   ```
 
-  The destination is still legible inside that string and the diagnosis is
-  unchanged, so nothing is *misleading* — this is noise, not a wrong answer,
-  which is why it is tabled and not fixed.
-  **It is not new with O26 and not confined to `align`.** `credits --write` has
+  The destination was still legible inside that string and the diagnosis
+  unchanged, so nothing was *misleading* — noise, not a wrong answer, which is
+  why it was tabled rather than fixed on the branch that found it.
+  **It was not new with O26 and not confined to `align`.** `credits --write` had
   answered this way since the branch that fixed it, and the four callers inside
-  `taiyaku-serve` have since `atomic.rs` existed — where it matters less,
-  because a 500 does not print a path to anyone. What O26 did was put it on a
-  second command-line surface, which is what made it worth writing down. Before
-  the change `align` carried `.map_err(|e| format!("{out}: {e}"))` and named
-  the destination for both failures.
+  `taiyaku-serve` since `atomic.rs` existed — where it matters less, because a
+  500 does not print a path to anyone. *That last clause is false, and finding
+  out why is what decided where this was fixed; see below.* What O26 did was put
+  it on a second command-line surface, which is what made it worth writing down.
+  Before the change `align` carried `.map_err(|e| format!("{out}: {e}"))` and
+  named the destination for both failures.
   **Measured, not reasoned about:** the line above is a real run, recorded in
   `notes.md`, "O26: align --write, driven against the corpus".
-  **What would close it:** deciding where the destination gets named. Either
-  `atomic::write` takes the caller's intended path into its staging error —
-  one function, and five callers whose messages all change — or the command
-  line wraps it, which is now a *single* place, `write_sidecar`, since O26
-  merged the two into one. Sharing that writer is what makes the second option
-  cheap; it was two identical wrappers before, the shape `atomic.rs` exists to
-  stop. Neither is a change to make on a branch whose one claim is that `align`
-  writes atomically.
+  **Closed, and in `atomic::write` rather than at the command line.** The
+  decision was framed here as a choice between the two, with the command-line
+  wrap preferred as the cheaper: `write_sidecar` is a single place since O26
+  merged the two writers. **Reading the callers before building it settled the
+  choice the other way, because the paragraph above is wrong about them.** It
+  says the four `taiyaku-serve` callers matter less "because a 500 does not
+  print a path to anyone". `routes.rs`'s `Failed(message)` arm is
+  `(StatusCode::INTERNAL_SERVER_ERROR, message).into_response()` — the string
+  *is* the body — so `notes::store`, `progress::store` and the sidecar rewrite
+  were all handing the temporary's name to HTTP clients. Only `cover.rs`
+  discards it. A command-line wrap would have fixed one surface of four.
+  **The fix needed no caller changes at all**, which the framing had also
+  missed: `atomic::write` is already given the destination, and merely named
+  the temporary instead in one of its two branches. Both now name the
+  destination, and the distinction between them — a staging write failing is
+  not a rename failing — is carried in words rather than by substituting a
+  path the caller cannot look for, since the temporary is deleted before the
+  error returns. Driven against the corpus, the scenario at the top of this
+  entry now answers ``/nonexistent-dir-xyz/out.json: staging a temporary
+  beside it: No such file or directory``. Two tests, one per branch, each
+  asserting the absence of `.tmp.` rather than an exact sentence, and both
+  checked by sabotage: restoring either branch's old wording fails its own
+  test and only its own.
 
 **One came from the same corpus drive, one level up** — O30, turned up on
 2026-08-07 when O26's fix was checked against the corpus and the documented way
@@ -1919,14 +1935,14 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the seven open items tabled above — five of them found by a
+What remains: the six open items tabled above — five of them found by a
 whole-branch review, now that O12 (carried rather than found), O14 (found
-by one, closed by M5b), O26 (found by one, closed on its own branch) and O28
+by one, closed by M5b), O26 (found by one, closed on its own branch), O28
 (found by walking the reader through every position it can hold, closed on its
-own branch) are all out of the count, with two exceptions: O23,
+own branch) and O29 (found by driving O26's own fix against the corpus, closed
+the same way) are all out of the count, with one exception: O23,
 turned up by measuring what a new surface produced against the corpus rather
-than by reviewing a branch, and O29, turned up by driving O26's own fix against
-the corpus once it was made. **Every milestone M5 named has now shipped.**
+than by reviewing a branch. **Every milestone M5 named has now shipped.**
 
 ### 4. Skipping scanlation credit pages — shipped
 

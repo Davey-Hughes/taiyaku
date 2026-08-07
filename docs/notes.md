@@ -5801,6 +5801,13 @@ commands agree; making either one name the destination is a change to
 `atomic::write`'s five other callers or a wrapper at both sites, and neither
 belongs on a branch whose claim is that `align` writes atomically. Tabled.
 
+*O29 has since closed — see "O29 — closes here, and not where the item said it
+would" below. Two things in the paragraph above turned out to be wrong, and
+both are why it closed where it did: the fix is a change to no caller at all,
+since `atomic::write` is already handed the destination, and this was never
+only a command-line problem — three callers in `taiyaku-serve` put the string
+straight into a 500 body.*
+
 The verdicts are the ones already on record for this volume — `sound` at average
 run 64.3 for `raw-mono -> en-mono`, `FRAGMENTED` at 23.8 for `raw-mono ->
 en-fan` — which is the point: the fix moved where the bytes are written, not
@@ -5876,3 +5883,90 @@ it was run.
 this trap and closed it correctly for the run it sat beside; it was three lines
 too low in the file. A guard placed after the thing it guards is worth what it
 looks like it is worth right up until something measures it.
+
+## O29 — closes here, and not where the item said it would
+
+The item offered two places and preferred the wrong one. Its wording:
+
+> Either `atomic::write` takes the caller's intended path into its staging
+> error — one function, and five callers whose messages all change — or the
+> command line wraps it, which is now a *single* place, `write_sidecar`, since
+> O26 merged the two into one.
+
+**Reading the callers before building anything settled it the other way**, on
+one sentence the item had recorded as a reason not to care:
+
+> the four callers inside `taiyaku-serve` have since `atomic.rs` existed —
+> where it matters less, because a 500 does not print a path to anyone.
+
+A 500 here does print a path. `routes.rs`'s `Failed` arm is
+`(StatusCode::INTERNAL_SERVER_ERROR, message).into_response()`, so the error
+string *is* the response body, and three of the four callers reach it —
+`notes::store` (`routes.rs:540`), `progress::store` (`routes.rs:620`) and the
+sidecar rewrite (`routes.rs:836`). Only `cover.rs` discards its error with
+`let _ =`. So the temporary's name was reaching HTTP clients as well as the
+command line, and the cheap command-line wrap would have fixed one surface of
+four.
+
+**The other half of the framing was wrong too, in the direction that made the
+work smaller.** "Five callers whose messages all change" reads as five edits;
+it is none. `atomic::write` is *already handed the destination* — it is the
+`path` parameter — and simply named `temporary` instead in one of its two
+branches. The fix is that branch.
+
+**What the wrap would have produced, which is why it was never really the
+cheaper option.** `write_sidecar` gets back a pre-formatted `String` with a
+path already in it, so wrapping means prefixing:
+
+```
+staging:  out.json: out.json.tmp.4041762.0: No such file or directory
+rename:   out.json: out.json: No such file or directory
+```
+
+Both paths in one message, or the same path twice. Producing a clean message
+from the command line needs the bare `io::Error`, which means changing what
+`atomic::write` returns — touching the same function plus all five call sites,
+this time for real.
+
+Both branches now name the destination and carry the distinction in words,
+because the two failures genuinely are different events and the temporary is
+deleted before the error returns, so naming it points at a file that no longer
+exists.
+
+Driven against the corpus, the exact scenario the item recorded:
+
+```
+$ taiyaku align "…/raw-mono/Go-Toubun no Hanayome - v01.cbz" \
+    -- "…/en-mono/Go-Toubun no Hanayome - v01 (2018).cbz" \
+    --name-a raw --name-b en --cache .taiyaku-cache \
+    --write /nonexistent-dir-xyz/out.json
+
+5 runs | 180 whole pairings | 13 involving a spread half | 2 unmatched slots
+sound | average run 64.3 slots
+taiyaku: /nonexistent-dir-xyz/out.json: staging a temporary beside it: No such file or directory (os error 2)
+```
+
+against the before, recorded in "O26: align --write, driven against the
+corpus":
+
+```
+taiyaku: /nonexistent-dir-xyz/out.json.tmp.4041762.0: No such file or directory
+```
+
+The alignment line is worth keeping beside it: 64.3 slots a run is the same
+figure O23's entry records for this pair, so the run reaching the write is the
+ordinary one and not some degenerate case that happens to fail early.
+
+**Two tests, one per branch, and each asserts the absence of `.tmp.` rather
+than an exact sentence** — the claim is that no invented filename appears, not
+that a particular wording is printed, and `temp_path` builds every temporary
+with that infix so it cannot show up by accident. The rename branch is forced
+by putting a *directory* at the destination: staging succeeds, and a file
+cannot be renamed onto a directory. That test also checks the temporary is not
+left behind on the way out.
+
+**Checked by sabotage.** Restoring the old `temporary.display()` in both
+branches fails both tests and each names its own branch's message —
+`out.json.tmp.1289842.1: No such file or directory` for staging and
+`out.json.tmp.1289842.3: Is a directory` for the rename — so neither test is
+passing on the strength of the other's branch.
