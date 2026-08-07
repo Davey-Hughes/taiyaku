@@ -22,6 +22,9 @@ use std::path::{Path, PathBuf};
 use taiyaku_core::{PageHash, Sidecar, UnpairedRun, unpaired_runs};
 
 use crate::fingerprint::hamming;
+// One sidecar writer for the whole crate, shared with `align --write`. A second
+// copy of the call is a second place to forget it goes through `atomic::write`.
+use crate::write_sidecar;
 
 /// How close one page comes to a page in another member of the same edition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,28 +134,6 @@ pub(crate) fn credit_pages(runs: &[UnpairedRun]) -> Vec<u32> {
         .collect();
     pages.sort_unstable();
     pages
-}
-
-/// Write the document back, replacing the file rather than truncating it.
-///
-/// Through `taiyaku_serve::atomic::write`, never `fs::write`. `fs::write`
-/// opens for truncation and then writes, so a crash or a full disk inside that
-/// window leaves a short file where a whole sidecar was — and this command's
-/// target is the worst file in the project to lose half of. It holds *every*
-/// edition of the work, every alignment between them, and every run a reader
-/// hand-corrected through the reading UI; `credits --write` touches one list
-/// on one edition and would take all of it down with the rest. A write-and-
-/// rename either publishes the whole new document or leaves the whole old one.
-///
-/// The helper `atomic::write` already names the path in its own error, so
-/// there is nothing to add here.
-///
-/// Extracted from `command` rather than inlined, so the property can be tested
-/// without an archive in sight — the same reason `edition_of_digests` and
-/// `resolve_counterpart` are their own functions. `command` cannot be driven
-/// in a test at all: it fingerprints real members before it reaches the write.
-fn write_sidecar(sidecar: &str, doc: &Sidecar) -> Result<(), String> {
-    taiyaku_serve::atomic::write(Path::new(sidecar), doc.to_json().as_bytes(), "json")
 }
 
 /// What a member is called in the table: the last component of the path the

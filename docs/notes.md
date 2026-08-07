@@ -5685,3 +5685,91 @@ The simulation itself is worth keeping in mind as a shape rather than as a
 file — it is what would have caught `nearestGroup`'s straddle bug, which four
 unit tests missed because every one of them was `single` mode, where the shape
 cannot arise.
+
+## O26: align --write, driven against the corpus
+
+The unit test that closes O26 calls `write_sidecar` directly, which is the only
+way to reach the write — `align` solves before it writes, so a test that went
+through the command would need real archives. Which is exactly what the corpus
+is, so the command path was driven there instead of being left unclaimed.
+
+Two runs against `corpus/gotoubun-v01`, writing to a scratch path outside the
+corpus so no real sidecar was touched:
+
+```
+1. raw-mono -- en-mono          → wrote scratch.json    inode 575378, 1712 bytes
+2. raw-mono -- en-fan/*.cbz     → merged scratch.json   inode 575396, 5.1k
+                                  added `en-fan` | 3 editions, 2 alignments
+```
+
+The second is the case O26 is about: a file that already exists, holding an
+edition and an edge, rewritten to add a spoke. **The inode changed**, so the
+destination was replaced by a rename rather than opened for truncation — the
+same observation the unit test makes, on a real document rather than a fixture.
+No `.tmp` file was left in the directory, and `lookup` read the result back
+whole: three editions, and `raw-mono 10 -> en-mono 8` still answering off the
+edge written by the *first* run, which the second run had to carry through
+untouched.
+
+A third run, `en-fan` given as a directory, is worth recording because it is the
+failure path: the command refused it (`no page images. It holds .cbz, none of
+which taiyaku reads as a page`) and the existing file kept its inode and its
+size — the two things `ls -li` shows, which is what was actually looked at, not
+a hash of the bytes. That refusal happens before the solve, so nothing is
+staged over a document that is about to be kept.
+
+**A refusal *after* the solve names a path the caller never typed**, which is
+the one thing this change makes worse. `--write /nonexistent-dir-xyz/out.json`
+used to answer `/nonexistent-dir-xyz/out.json: No such file or directory` and
+now answers:
+
+```
+taiyaku: /nonexistent-dir-xyz/out.json.tmp.4041762.0: No such file or directory
+```
+
+`atomic::write` names the *temporary* on a failed stage and the destination on
+a failed rename, which is the right distinction inside the module and the wrong
+one at a command line, where `.tmp.4041762.0` is a file nobody asked for. The
+destination is still legible inside it, so the message misleads about nothing —
+but it is noise. `credits --write` has said this since it was fixed, so the two
+commands agree; making either one name the destination is a change to
+`atomic::write`'s five other callers or a wrapper at both sites, and neither
+belongs on a branch whose claim is that `align` writes atomically. Tabled.
+
+The verdicts are the ones already on record for this volume — `sound` at average
+run 64.3 for `raw-mono -> en-mono`, `FRAGMENTED` at 23.8 for `raw-mono ->
+en-fan` — which is the point: the fix moved where the bytes are written, not
+what they are.
+
+**The standing checks turned out to drive this harder than the runs above did.**
+`corpus::composing_through_the_hub_agrees_with_a_direct_solve` calls
+`crate::align` itself, once per spoke, building a **five-edition star with four
+alignments** into a scratch path — so every `--write` merge after the first goes
+through the changed writer, on a document four times the size of the one the
+unit test uses. It passes, and the figure it exists to hold is unmoved:
+
+```
+2427 page comparisons | loss 0.91% | disagreement 0.00% | 21 blank pages not compared
+```
+
+0.91% against the 1.0% ceiling, which is what `corpus.rs` records as the
+measured value. All nine `taiyaku-cli` checks pass in 38.29s; the three in
+`taiyaku-serve` pass in 15.80s, one of them printing its own skip for an unset
+`TAIYAKU_STUMP_URL`. Twelve for twelve, matching the count `status.md` carries.
+
+**Run them with an absolute path.** The invocation `corpus.rs`'s own module doc
+gives —
+
+```sh
+TAIYAKU_CORPUS=corpus cargo test -p taiyaku-cli corpus:: -- --nocapture
+```
+
+— does not run them. `cargo test` sets each package's test binary CWD to that
+package's directory rather than the workspace root, so `corpus` resolves under
+`crates/taiyaku-cli/` and finds nothing; the check prints `TAIYAKU_CORPUS unset;
+skipping` (the variable *is* set — the message names the wrong cause) and libtest
+reports `ok`. A green run that measured nothing, which is the exact failure
+`atomic.rs`'s own test comment describes one level down. `scripts/check-all.sh`
+already knows: it canonicalises to an absolute path and says why, in a comment
+that names this trap. Nothing else does, and the doc comment carrying the
+trapping command is not one of them.

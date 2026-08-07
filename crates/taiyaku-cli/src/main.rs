@@ -678,6 +678,39 @@ fn sidecar_dir(out: &Path) -> &Path {
         .unwrap_or(Path::new("."))
 }
 
+/// Write a sidecar back, replacing the file rather than truncating it.
+///
+/// **The one writer both `align --write` (O26) and `credits --write` go
+/// through**, which is why it sits here rather than in either command's module.
+///
+/// Through `taiyaku_serve::atomic::write`, never `fs::write`. `fs::write` opens
+/// for truncation and then writes, so a crash or a full disk inside that window
+/// leaves a short file where a whole sidecar was — and this is the worst file in
+/// the project to lose half of. It holds *every* edition of the work, every
+/// alignment between them, and every run a reader hand-corrected through the
+/// reading UI. `credits --write` changes one list on one edition and `align
+/// --write` adds or replaces one spoke; either would take all the rest down with
+/// it. A write-and-rename either publishes the whole new document or leaves the
+/// whole old one.
+///
+/// `atomic::write` already names a path in its own error, so there is nothing to
+/// add here. Which path it names is O29.
+///
+/// A named function rather than a statement inside either command, because a
+/// test can call one and cannot reach the other: `align` solves and `credits`
+/// fingerprints before either reaches the write, so driving it through a command
+/// needs real archives with real pages in them, and the property is about the
+/// write alone. Two tests exercise this one function over the two documents the
+/// two commands actually put at risk —
+/// `tests::writing_an_alignment_replaces_the_sidecar_rather_than_truncating_it`
+/// on a three-edition star carrying a hand correction, and
+/// `credits::tests::writing_a_credits_list_replaces_the_sidecar_rather_than_truncating_it`
+/// on the pair `credits` rewrites. Neither proves its command still *calls*
+/// this; that was driven against the corpus instead, and `notes.md` records it.
+fn write_sidecar(out: &str, sidecar: &Sidecar) -> Result<(), String> {
+    taiyaku_serve::atomic::write(Path::new(out), sidecar.to_json().as_bytes(), "json")
+}
+
 /// Describe one edition for the sidecar: its members, their content hashes,
 /// and which of its pages are joined spreads.
 ///
@@ -1291,7 +1324,7 @@ fn align(args: &[String]) -> Result<(), String> {
                 format!("wrote {out}"),
             ),
         };
-        std::fs::write(out, sidecar.to_json()).map_err(|e| format!("{out}: {e}"))?;
+        write_sidecar(out, &sidecar)?;
         eprintln!("{note}");
     }
     Ok(())
@@ -1490,6 +1523,135 @@ mod tests {
     #[test]
     fn sidecar_dir_is_the_parent_of_a_pathed_filename() {
         assert_eq!(sidecar_dir(Path::new("out/taiyaku.json")), Path::new("out"));
+    }
+
+    /// A star with a hand-corrected run in it: what `align --write` rewrites
+    /// wholesale in order to add or replace one spoke.
+    fn three_editions_one_hand_corrected() -> Sidecar {
+        let text = r#"{
+          "taiyaku": 1,
+          "work": { "title": "Reversed Order Co.", "reading": "rtl" },
+          "editions": {
+            "raw": {
+              "label": "raw",
+              "members": [{ "path": "r.cbz", "sha256": "r0", "pages": 8 }],
+              "spreads": []
+            },
+            "en-fan": {
+              "label": "en-fan",
+              "members": [{ "path": "f.cbz", "sha256": "f0", "pages": 8 }],
+              "spreads": []
+            },
+            "en-mono": {
+              "label": "en-mono",
+              "members": [{ "path": "m.cbz", "sha256": "m0", "pages": 8 }],
+              "spreads": []
+            }
+          },
+          "hub": "raw",
+          "alignments": [
+            { "from": "raw", "to": "en-fan", "by": "solver",
+              "runs": [{"a":"0-3","b":"0-3"},{"a":"4-7","b":"4-7","by":"hand"}] },
+            { "from": "raw", "to": "en-mono", "by": "solver",
+              "runs": [{"a":"0-7","b":"0-7"}] }
+          ]
+        }"#;
+        Sidecar::from_json(text).expect("fixture parses")
+    }
+
+    /// O26: `align --write` must not be able to leave a short sidecar behind.
+    ///
+    /// The property O2 established for progress and `atomic.rs` now owns for
+    /// everything that writes beside a sidecar: the destination is *replaced*
+    /// by a rename, never opened for truncation. A crash cannot be staged in a
+    /// test, so this pins the mechanism that rules it out — the same shape
+    /// `credits::tests::writing_a_credits_list_replaces_the_sidecar_rather_than_truncating_it`
+    /// set for the command next door.
+    ///
+    /// Observed by **inode identity** rather than by taking write permission
+    /// off the existing file. `atomic.rs`'s own test records why: on a
+    /// filesystem that ignores the read-only bit, or under root, the
+    /// permission-denied write that approach distinguishes "replaced" from
+    /// "truncated" by simply succeeds, and the skip line it prints is captured
+    /// by libtest — a green that measured nothing. A rename gives the path a
+    /// different inode; an in-place write keeps the same one, whoever is
+    /// running and whatever the filesystem enforces.
+    ///
+    /// The fixture is a **three-edition star carrying a hand correction**,
+    /// because that is what is actually at stake here and it is more than
+    /// `credits` risks: `align --write` rewrites the whole document to add or
+    /// replace *one* spoke, so a half-written file takes the other editions,
+    /// the edges joining them, and every run a reader corrected through the
+    /// reading UI with it.
+    #[test]
+    fn writing_an_alignment_replaces_the_sidecar_rather_than_truncating_it() {
+        let dir = std::env::temp_dir().join("taiyaku-test-align-write");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("taiyaku.json");
+        let out = path.to_str().expect("utf-8 temp path").to_string();
+
+        let doc = three_editions_one_hand_corrected();
+        std::fs::write(&path, doc.to_json()).expect("the fixture is written");
+
+        #[cfg(unix)]
+        let before = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(&path).expect("stat").ino()
+        };
+
+        let wrote = write_sidecar(&out, &doc);
+
+        let read_back = std::fs::read_to_string(&path).expect("the destination is readable");
+
+        #[cfg(unix)]
+        let after = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(&path).expect("stat").ino()
+        };
+
+        // Nothing may be left lying beside the sidecar. A failed write and a
+        // failed rename each clean up after themselves rather than leaving one
+        // file per attempt in the reader's own library directory.
+        let strays: Vec<String> = std::fs::read_dir(&dir)
+            .expect("the temp dir is readable")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains(".tmp"))
+            .collect();
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        wrote.expect("the write succeeds");
+        #[cfg(unix)]
+        assert_ne!(
+            before, after,
+            "a rename replaces the destination with a different inode; an \
+             in-place truncating write would have kept the same one"
+        );
+        assert!(strays.is_empty(), "temp files left behind: {strays:?}");
+
+        // Whole, not half: everything the write never touched came through.
+        let written =
+            Sidecar::from_json(&read_back).expect("the destination holds a whole document");
+        assert_eq!(
+            written.editions.len(),
+            3,
+            "every edition must survive the rewrite"
+        );
+        assert_eq!(
+            written.alignments.len(),
+            2,
+            "every edge must survive the rewrite"
+        );
+        assert!(
+            written
+                .alignments
+                .iter()
+                .flat_map(|edge| &edge.runs)
+                .any(|run| run.by == Some(Source::Hand)),
+            "the hand-corrected run must survive the rewrite"
+        );
     }
 
     /// Important 1a: an edition key reaches two URLs —

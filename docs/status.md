@@ -37,10 +37,10 @@ hidden.
 
 ## What is built
 
-Five crates, 410 tests, plus 414 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 411 tests, plus 414 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
-and `vite` in `web/`. Twelve of the 410 are standing checks gated on
+and `vite` in `web/`. Twelve of the 411 are standing checks gated on
 `TAIYAKU_CORPUS` — nine in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
@@ -269,17 +269,17 @@ margin threshold plus a crop-tolerant hash. Not the DP.
 
 ### Open items
 
-Twenty-eight, each found by a whole-branch review, carried as a deferral,
+Twenty-nine, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
-before it left behind, turned up by measuring what a new feature produced
-against the corpus, turned up by designing the fix for another one, or turned
-up by simulating the reader from every position it can hold, and
+before it left behind, turned up by measuring what a new feature or a fix
+produced against the corpus, turned up by designing the fix for another one, or
+turned up by simulating the reader from every position it can hold, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Twenty are now closed
+visible act rather than a thing someone remembers. **Twenty-one are now closed
 — O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25 and O27 — leaving eight.**
+O21, O22, O25, O26 and O27 — leaving eight.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -311,9 +311,10 @@ each is in the detail below; the table is what a reader scans.
 | O23 | [ ] | Two hand corrections make a sound alignment report `fragmented` — *measured: avg run 64.33 → 32.00 → 21.22 on Go-Toubun v01, against a 27.0 threshold* | `sidecar.rs::rewrite`, `solve.rs::verdict` | M5d |
 | O24 | [ ] | A solver-written direct edge to a third edition survives that edition being replaced | `sidecar.rs::merge_spoke` | M5d whole-branch review |
 | O25 | [x] | The settings panel and the whole chrome are unreachable while showing a gap | `App.tsx::App`, the `at` narrowing | M5c browser pass |
-| O26 | [ ] | `align --write` truncates the sidecar before writing it | `main.rs::align` | credit-pages whole-branch review |
+| O26 | [x] | `align --write` truncates the sidecar before writing it | `main.rs::write_sidecar` | credit-pages whole-branch review |
 | O27 | [x] | Two refs are held and read by nothing | `App.tsx::App`, the ref block above `viewportWidth` | O25 design |
 | O28 | [ ] | A forward arrow on the last group's second slot moves backward | `pairing.ts::stepToGroup` | credits-panel arrow simulation |
+| O29 | [ ] | A failed `--write` names a temp path the caller never typed | `atomic.rs::write` | O26's corpus drive |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -1179,9 +1180,10 @@ it hides are both reachable one keypress earlier:
 **One came from reviewing a branch that fixed the same hazard next door** —
 O26, turned up on 2026-08-07 by the credit-pages whole-branch review, and not
 blocking because it is older than that branch and nothing on the branch made
-the exposure worse:
+the exposure worse. It closed the same day, on a branch of its own — which is
+the point of having deferred it rather than taking it as a drive-by:
 
-- **O26 — `align --write` truncates the sidecar before writing it. Open.**
+- **O26 — `align --write` truncates the sidecar before writing it. Closed.**
   `fs::write` opens for truncation and then writes, so a crash or a full disk
   inside that window leaves a short file where a whole document was. The
   document is the worst one in this project to lose half of: it holds every
@@ -1195,21 +1197,39 @@ the exposure worse:
   was visibility, `atomic` being a private module and `write` being
   `pub(crate)`. Both are public now and `credits::write_sidecar` goes through
   them, pinned by a test that watches the destination's inode change.
-  **`align` is deliberately not changed with it.** It predates that branch, so
-  fixing it is outside what the branch was reviewed for, and a drive-by change
-  to the one command that writes every sidecar in the corpus is not a thing to
-  land unreviewed beside a documentation pass. Recorded here instead, which is
-  what this table is for.
-  **It is one line and a test.** `main::align` builds a `Sidecar` — merged into
-  whatever the file already held, that part having been fixed long ago — and
-  ends on `fs::write(out, sidecar.to_json())`. Routing that through
-  `taiyaku_serve::atomic::write` is the same edit `credits` just took. The
-  neighbouring `fs::write` in `verify`'s contact-sheet path is **not** in
-  scope: an HTML report is regenerated from the archives on demand, so half of
-  one costs a re-run rather than a document.
-  **What would close it:** that edit, plus the test whose shape
-  `credits::tests::writing_a_credits_list_replaces_the_sidecar_rather_than_truncating_it`
-  already establishes.
+  **`align` now goes through the same call.** `main::align` builds a `Sidecar`
+  — merged into whatever the file already held, that part having been fixed
+  long ago — and ended on `fs::write(out, sidecar.to_json())`; it ends on
+  `write_sidecar`, which is `taiyaku_serve::atomic::write`. **That
+  `write_sidecar` is `credits`' own, moved up to the crate root and shared**,
+  so `atomic.rs`'s caller tally stays at five: a sixth command-line writer, one
+  call site for the two of them. The module doc records that, since a tally of
+  *commands* would now be wrong. Both commands' tests still stand, over the two
+  documents each puts at risk. The neighbouring
+  `fs::write` in `verify`'s contact-sheet path was **not** in scope and is
+  unchanged: an HTML report is regenerated from the archives on demand, so half
+  of one costs a re-run rather than a document.
+  **The estimate said "one line and a test" and was one line short**, in a way
+  worth recording because it is a shape that recurs: the line to change sat in
+  the middle of `align`, and a test can call a function but cannot reach a
+  statement — `align` solves before it writes, so driving that write through
+  the command needs real archives with real pages in them. The write moved into
+  a named `write_sidecar` first, unchanged, and only then changed. The
+  extraction is what made the failure observable.
+  **Pinned by `main::tests::writing_an_alignment_replaces_the_sidecar_rather_than_truncating_it`**,
+  the shape `credits::tests::writing_a_credits_list_replaces_the_sidecar_rather_than_truncating_it`
+  established: inode identity, no temp file left beside the sidecar, and the
+  document readable whole afterwards. It was watched failing against the
+  `fs::write` version first — one inode, unchanged, which is the truncation
+  itself — and the fixture is a three-edition star carrying a hand-corrected
+  run, because that is what `align --write` rewrites in order to add one spoke
+  and therefore what a short file would take with it.
+  **The command itself was driven against the corpus**, since a test that calls
+  `write_sidecar` does not prove `align` still calls it: two runs on
+  `gotoubun-v01` to a scratch path outside the corpus, the second merging a
+  second spoke into what the first wrote, where the destination's inode moved
+  575378 → 575396 and `lookup` read three editions back off it. See
+  `notes.md`, "O26: align --write, driven against the corpus".
 
 **One came from designing another item's fix** — O27, turned up on 2026-08-07
 while tracing which render-assigned refs O25's restructure would newly reach,
@@ -1296,6 +1316,43 @@ reader reaches only sideways:
   unchanged at the end of the volume, as it already does at the beginning. That
   is a three-line change to the reader's central step function, which is why it
   is tabled rather than made in passing on a branch about credit pages.
+
+**One came from driving a fix against the corpus after making it** — O29,
+turned up on 2026-08-07 while checking that `align --write` still wrote at all
+once O26 moved it, and not blocking because it makes a message noisier without
+making it wrong:
+
+- **O29 — A failed `--write` names a temp path the caller never typed. Open.**
+  `atomic::write` names the *temporary* when staging fails and the destination
+  when the rename fails. Inside the module that is the right distinction — the
+  two failures are not the same event. At a command line it is not, because the
+  temporary is a filename the caller never chose and cannot look for:
+
+  ```
+  $ taiyaku align … --write /nonexistent-dir-xyz/out.json
+  taiyaku: /nonexistent-dir-xyz/out.json.tmp.4041762.0: No such file or directory
+  ```
+
+  The destination is still legible inside that string and the diagnosis is
+  unchanged, so nothing is *misleading* — this is noise, not a wrong answer,
+  which is why it is tabled and not fixed.
+  **It is not new with O26 and not confined to `align`.** `credits --write` has
+  answered this way since the branch that fixed it, and the four callers inside
+  `taiyaku-serve` have since `atomic.rs` existed — where it matters less,
+  because a 500 does not print a path to anyone. What O26 did was put it on a
+  second command-line surface, which is what made it worth writing down. Before
+  the change `align` carried `.map_err(|e| format!("{out}: {e}"))` and named
+  the destination for both failures.
+  **Measured, not reasoned about:** the line above is a real run, recorded in
+  `notes.md`, "O26: align --write, driven against the corpus".
+  **What would close it:** deciding where the destination gets named. Either
+  `atomic::write` takes the caller's intended path into its staging error —
+  one function, and five callers whose messages all change — or the command
+  line wraps it, which is now a *single* place, `write_sidecar`, since O26
+  merged the two into one. Sharing that writer is what makes the second option
+  cheap; it was two identical wrappers before, the shape `atomic.rs` exists to
+  stop. Neither is a change to make on a branch whose one claim is that `align`
+  writes atomically.
 
 **Series-level identity is manual.** Which two files are the same volume is decided
 by the person running the tool.
@@ -1796,12 +1853,14 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the eight open items tabled above — six of them found by a
-whole-branch review, now that O12 (carried rather than found) and O14 (found
-by one, closed by M5b) are both out of the count, with two exceptions: O23,
+What remains: the eight open items tabled above — five of them found by a
+whole-branch review, now that O12 (carried rather than found), O14 (found
+by one, closed by M5b) and O26 (found by one, closed on its own branch) are all
+out of the count, with three exceptions: O23,
 turned up by measuring what a new surface produced against the corpus rather
-than by reviewing a branch, and O28, turned up by walking the reader through
-every position it can hold. **Every milestone M5 named has now shipped.**
+than by reviewing a branch, O28, turned up by walking the reader through
+every position it can hold, and O29, turned up by driving O26's own fix against
+the corpus once it was made. **Every milestone M5 named has now shipped.**
 
 ### 4. Skipping scanlation credit pages — shipped
 
