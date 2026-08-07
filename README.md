@@ -10,11 +10,15 @@ you're back.
 The name is 対訳 (*taiyaku*), the Japanese term for a bilingual parallel-text edition
 where the original and its translation sit facing each other.
 
-> **Status: the aligner works, and the reader has a back end and no front end.**
+> **Status: the aligner works, and so does the reader.**
 > `taiyaku align` pairs two editions and writes a sidecar, measured against eleven
 > series; `taiyaku serve` hands an HTTP client that sidecar, its pages and a reading
-> position. Nothing draws them yet. What is built, what is known broken, and what
-> comes next are in [`docs/status.md`](docs/status.md).
+> position, from local disk or a Stump instance; and the browser reader draws them —
+> single-page, two-page and continuous-scroll modes, a swap between editions that
+> never loses your place, hand corrections written back into the sidecar, and notes
+> written on the raw that stay readable while you read the English. What is built,
+> what is known broken, and what comes next are in
+> [`docs/status.md`](docs/status.md).
 
 ## The problem
 
@@ -87,6 +91,24 @@ TAIYAKU_STUMP_URL=https://stump.example TAIYAKU_STUMP_KEY=… \
 # point an OPDS reader at
 #   http://<host>:8484/opds/v1.2/catalog
 ```
+
+To read in the browser, build the WebAssembly binding once, then run the reader
+against `serve`. The binding is generated and gitignored, so `npm ci` needs it to
+exist first:
+
+```sh
+./scripts/build-wasm.sh          # generates crates/taiyaku-wasm/pkg
+npm --prefix web ci
+
+taiyaku serve taiyaku.json --addr 127.0.0.1:8080
+npm --prefix web run dev         # http://localhost:5173
+```
+
+`npm run dev` proxies `/api` and `/opds` through to `serve` rather than the server
+enabling CORS — CORS would be a production-facing change made for a development
+convenience. The proxy target defaults to `http://127.0.0.1:8080`, which is why the
+`--addr` above is 8080 and not the 8484 used earlier on this page; set
+`TAIYAKU_SERVE` to point it somewhere else.
 
 Members may be `.cbz`, `.zip`, any other zip-based archive whatever it is named,
 or a plain directory of page images. The container is identified by content
