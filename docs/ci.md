@@ -43,9 +43,31 @@ is `.jsonc`.
 **Four rules are off**, listed with their sites in `biome.jsonc` itself. The
 branch that adopted biome swapped one tool for another and deliberately did not
 change what is enforced; each of the four is a rule `oxlint` never applied, so
-turning it on would have been a second claim inside a tooling commit.
-`noArrayIndexKey` is the one worth returning to — its two sites are `App.tsx`'s
-scroll mode, where `grouped` is rebuilt when a reader toggles `skip`.
+turning it on would have been a second claim inside a tooling commit. Three of
+them stay open questions about taste, and the fourth does not.
+
+**`noArrayIndexKey` is the one that must stay off**, and it is worth knowing
+why, because the branch that turned it off originally recorded the opposite —
+"the one worth returning to", a possible defect wanting investigation. It was
+investigated, and the index key at `App.tsx`'s scroll mode is the *mechanism*
+rather than an oversight. Reconciling by position is what keeps `decode.ts`'s
+gate alive across a page turn; a key derived from the slot remounts `PageView`
+whenever slots shift, and a freshly-mounted `PageView` has nothing decoded.
+`renderGroup` says so where it happens, and "The flicker, before and after" in
+`notes.md` measured it: **3 of 79 animation-frame samples landed mid-load
+without the gate, 0 of 83 with it.** So the rule's fix would undo a measured
+improvement.
+
+The rule's own premise fails here too. Its bug needs state that survives a
+shift onto the wrong item, and nothing under that key has any: the wrapper
+`<div>` holds none, `PageView` resets from `[src, buffered]`, and
+`PageAnnotations` re-measures from `[match]` — and that component's own doc
+comment already reasons about this key by name. The one visible consequence of
+a `skip` toggle in scroll mode is a reused `PageView` showing the previous page
+until the new one decodes, which is the designed no-blank-frame behaviour.
+
+Read from the code and the measurements it cites; nobody has driven a browser,
+toggled `skip` in scroll mode and watched. That is the limit of the claim.
 
 **One rule is on by name because biome does not enable it and `oxlint` did.**
 `.oxlintrc.json` named two rules: `react/rules-of-hooks`, whose biome

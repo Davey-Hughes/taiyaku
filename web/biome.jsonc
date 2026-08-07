@@ -43,12 +43,18 @@
     "rules": {
       "recommended": true,
 
-      // **Four rules are off because this branch swaps a tool and does not
-      // change what is enforced.** oxlint never flagged any of them, so
-      // turning them on here would land a second, unrelated claim — fifteen
-      // sites, four of which change rendered markup — inside a commit whose
-      // subject is the swap. They are a follow-up, listed with their sites in
-      // `docs/ci.md`, not a permanent judgement that the rules are wrong.
+      // **Four rules are off**, none of which oxlint ever flagged. They were
+      // turned off together so that adopting biome swapped a tool without
+      // also changing what is enforced — fifteen sites, four of which change
+      // rendered markup, is a second claim and did not belong in that commit.
+      //
+      // **Three of them are still open questions and one is not.** For
+      // `noNonNullAssertion` and the two `a11y` rules, "off" means nobody has
+      // decided yet, and each carries its sites so someone can. For
+      // `noArrayIndexKey`, "off" is the decision: its finding was
+      // investigated and the code is right. Do not treat the four as one
+      // list of chores.
+      //
       // They are spread across the three groups below; the one rule turned
       // *on* by name sits among them, marked where it appears.
       "style": {
@@ -79,12 +85,27 @@
       },
       "suspicious": {
         // 2 sites, both `App.tsx`'s scroll mode: `key={i}` and
-        // `key={`${mode}:${i}`}` over `grouped`. **This one may be a real
-        // defect rather than a style opinion** — `grouped` is rebuilt when a
-        // reader toggles `skip`, so an index key can hold a mounted group's
-        // identity still while its contents change underneath. It is off here
-        // for the same one-claim-per-branch reason as the others, but unlike
-        // them it wants investigating rather than a decision about taste.
+        // `key={`${mode}:${i}`}` over `grouped`. **Off because the index key
+        // is the mechanism here, not an oversight — this is the one rule in
+        // this block whose fix would undo a measured improvement.**
+        // Reconciling by *position* is what keeps `decode.ts`'s gate alive
+        // across a turn: a key derived from the slot remounts `PageView`
+        // whenever slots shift, and a freshly-mounted `PageView` has nothing
+        // decoded. `App.tsx`'s `renderGroup` says so where it happens, and
+        // `docs/notes.md`'s "The flicker, before and after" put a number on
+        // it — 3 of 79 animation frames landed mid-load without the gate, 0
+        // of 83 with it.
+        //
+        // The rule's own premise also fails here. Its bug needs state that
+        // survives a shift onto the wrong item, and nothing under this key
+        // does: the wrapper `<div>` holds none, `PageView` resets from
+        // `[src, buffered]`, and `PageAnnotations` re-measures from
+        // `[match]` — whose doc comment already reasons about this very key.
+        //
+        // An earlier version of this comment called it a possible defect and
+        // said it wanted investigating. It was investigated; that was wrong,
+        // and pointed the next reader at a fix that would reintroduce the
+        // flicker. Recorded rather than quietly deleted.
         "noArrayIndexKey": "off"
       }
 
