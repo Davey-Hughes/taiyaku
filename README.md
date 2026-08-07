@@ -220,6 +220,14 @@ The squashed commit is instead the PR title as its subject and the PR descriptio
 verbatim — so write the description as the commit message you want on `main`, not as a note to the
 reviewer.
 
+`SQUASH_TEMPLATE.md` therefore stops at its title line, and the blank line after it is load-bearing.
+Forgejo already prepends the description to the squash prefill on its own, so naming
+`${PullRequestDescription}` in the template body wrote it a second time — the shape the merges
+between `#14` and `#27` carried until their messages were rewritten. Deleting the trailing blank line
+does not undo that either: the template is split on its *first* newline, and a file with no second
+part falls back to the default body, which is the `Reviewed-on:` trailer this template exists to
+suppress.
+
 Once per clone, so a non-fast-forward `git pull` fails rather than quietly creating a merge commit:
 
     git config merge.ff only && git config pull.ff only
