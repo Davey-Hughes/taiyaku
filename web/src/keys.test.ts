@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { intentOf, isInteractiveTarget } from './keys'
+import { intentOf, isInteractivePress, isInteractiveTarget } from './keys'
 import type { ReaderModule } from './module'
 
 const editions = ['raw', 'en-mono', 'en-colour']
@@ -156,5 +156,58 @@ describe('isInteractiveTarget', () => {
 
   it('is false for no target at all', () => {
     expect(isInteractiveTarget(null)).toBe(false)
+  })
+})
+
+describe('isInteractivePress', () => {
+  // No jsdom in this repo, so these fakes stand in for elements: the function
+  // asks `closest` one question, and what is testable here is that it asks it
+  // and trusts the answer. Whether the *selector* names the right controls is
+  // DOM behaviour with no harness to assert it against — that half is checked
+  // in the browser, and that pass is recorded in `docs/status.md`.
+  const el = (match: unknown) => ({ closest: (_sel: string) => match })
+
+  it('is false when nothing in the ancestry is a control', () => {
+    expect(isInteractivePress(el(null) as unknown as EventTarget)).toBe(false)
+  })
+
+  it('is true when `closest` finds one', () => {
+    expect(
+      isInteractivePress(el({ tagName: 'BUTTON' }) as unknown as EventTarget),
+    ).toBe(true)
+  })
+
+  it('asks about every control the keydown rule knows, plus select', () => {
+    let asked = ''
+    const spy = {
+      closest: (sel: string) => {
+        asked = sel
+        return null
+      },
+    }
+    isInteractivePress(spy as unknown as EventTarget)
+    for (const control of [
+      'button',
+      'a',
+      'input',
+      'textarea',
+      'select',
+      'tabindex',
+      'contenteditable',
+    ])
+      expect(asked).toContain(control)
+  })
+
+  // The difference between the two rules, stated as a test: a press lands on
+  // the text, and only the ancestor-aware one sees the button holding it.
+  it('parts company with the keydown rule on a node inside a control', () => {
+    const inner = { tagName: 'SPAN', closest: () => ({ tagName: 'BUTTON' }) }
+    expect(isInteractivePress(inner as unknown as EventTarget)).toBe(true)
+    expect(isInteractiveTarget(inner as unknown as EventTarget)).toBe(false)
+  })
+
+  it('is false for a null target and for one that cannot be asked', () => {
+    expect(isInteractivePress(null)).toBe(false)
+    expect(isInteractivePress({} as EventTarget)).toBe(false)
   })
 })

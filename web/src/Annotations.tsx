@@ -273,7 +273,8 @@ export interface AnnotationsProps {
   /**
    * Where the page is drawn inside the page area. Every marker here is
    * positioned as a percentage of *this* box, not of the page area, because a
-   * region is fractions of the slot and the area around a page is letterbox.
+   * region is fractions of the page (`notes.ts`'s `Region`) and the area
+   * around a page is letterbox.
    *
    * `undefined` before the first measurement, and for one frame only — the
    * layer renders nothing rather than falling back to the page area, since
@@ -467,11 +468,19 @@ export function Annotations({
  */
 export function PageAnnotations({
   match,
+  version,
   ...rest
-}: Omit<AnnotationsProps, 'box'> & { match?: string }) {
+}: Omit<AnnotationsProps, 'box'> & { match?: string; version?: unknown }) {
   const anchor = useRef<HTMLDivElement>(null)
   const [box, setBox] = useState<Box>()
+  // The measurement the subscribing effect below built, held for the effect
+  // after it to re-run without rebuilding anything. See that second effect for
+  // why the two are separate at all.
+  const remeasure = useRef<(() => void) | undefined>(undefined)
 
+  // Subscribing: which element is watched, and how it is measured. Keyed on
+  // `match` alone, so this runs when the page it watches changes and at no
+  // other time.
   useLayoutEffect(() => {
     const host = anchor.current?.parentElement
     if (!host) return
@@ -502,12 +511,52 @@ export function PageAnnotations({
         height: inner.height,
       })
     }
+    remeasure.current = measure
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(img)
     observer.observe(host)
-    return () => observer.disconnect()
+    return () => {
+      observer.disconnect()
+      remeasure.current = undefined
+    }
   }, [match])
+
+  // Re-measuring, which is a different event from re-subscribing and used to
+  // be the same one.
+  //
+  // `version` is not read below. It is a trigger: a `ResizeObserver` never
+  // fires on a CSS transform, because a transform changes nothing about layout
+  // size, so a zoom or a pan would otherwise leave every marker where the page
+  // used to be. The arithmetic above needs no change for zoom — both rects it
+  // reads come from `getBoundingClientRect()`, which reports post-transform
+  // geometry — so this is a staleness fix, not a frame-of-reference one. A
+  // stale overlay looks exactly like a wrong transform, which is why it is
+  // threaded down rather than left to be noticed.
+  //
+  // It was a dependency of the effect above until it got its own, which meant
+  // the observer was constructed and disconnected once per view change —
+  // sixty times a second for the length of a drag, to watch the same two
+  // elements it was already watching. The element being observed changes when
+  // `match` does; the measurement has to be redone far more often than that.
+  //
+  // What the split gives up: a `version` change no longer re-resolves *which*
+  // `<img>` is being watched, only re-measures the one already found. Nothing
+  // needs it to — React reconciles `PageView`'s single image in place, so the
+  // element changes only when `match` does or when the `key` at the call site
+  // remounts this component, which is what that `key` is documented above to
+  // be for.
+  //
+  // Runs a second time on mount, after the effect above has already measured
+  // once. Both land in the same commit's layout phase and React batches the
+  // two `setBox` calls into one render, so the cost is one redundant
+  // `getBoundingClientRect` pair at mount — cheaper than the first-run flag it
+  // would take to skip it.
+  //
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version is a trigger, not a closure read — see above. Removing it, which is what this rule suggests, would leave every marker where the page was before the zoom.
+  useLayoutEffect(() => {
+    remeasure.current?.()
+  }, [version])
 
   return (
     <div

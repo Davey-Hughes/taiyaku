@@ -483,10 +483,23 @@ length rather than how much of the edition was paired. See `notes.md`,
 
 ## Forward compatibility
 
-A reader **must** ignore keys it does not recognise. L1 adds a per-run or
+A reader **must** ignore keys it does not recognise. L1 **may** add a per-run or
 per-page transform, L2 adds matched text regions, and an L0-only reader consumes
 neither. Version bumps of `taiyaku` are reserved for changes that would make an
 old reader wrong rather than merely incomplete.
+
+*Corrected on 2026-08-08, when L1 shipped.* That sentence read "L1 **adds** a
+per-run or per-page transform", and as built it adds neither: the transform a
+swap maps the visible rect through is derived at read time from the two drawn
+images' natural dimensions, and nothing about it is written down. The permission
+is the part that matters and it is unchanged — this rule is exactly why a stored
+transform can still be added later without a version bump, so the door stays
+open at no cost, which is the reason not to have walked through it on no
+evidence. It is the same ground the gatefold question above is deferred on. What
+would reopen it is a pair the derived transform cannot serve: it was measured
+over twelve corpus volumes and can say nothing about an edition nobody has
+looked at. See `notes.md`, "Which derived transform maps a rect between
+editions", and `docs/status.md`, §5 of "What comes next".
 
 ## Previously open, now settled
 

@@ -31,7 +31,7 @@ import {
 } from './history'
 import { Gap } from './Gap'
 import { CreditsPanel } from './CreditsPanel'
-import { intentOf, isInteractiveTarget } from './keys'
+import { intentOf, isInteractivePress, isInteractiveTarget } from './keys'
 import { sliceFor } from './module'
 import {
   annotationsModule,
@@ -75,6 +75,13 @@ import {
   TOGGLE_INTENT as REGROUP_TOGGLE_INTENT,
 } from './modules/regroup'
 import { TOGGLE_INTENT as SETTINGS_TOGGLE_INTENT } from './modules/settings'
+import {
+  IN_INTENT as ZOOM_IN_INTENT,
+  OUT_INTENT as ZOOM_OUT_INTENT,
+  WHOLE_INTENT as ZOOM_WHOLE_INTENT,
+  zoomModule,
+  type ZoomPrefs,
+} from './modules/zoom'
 import { nearestPaired, type NearestOffer } from './nearest'
 import {
   editsToWrite,
@@ -100,6 +107,7 @@ import { NoteList } from './NoteList'
 import { NotePanel, type PanelMode } from './NotePanel'
 import { PageView } from './PageView'
 import {
+  cellOf,
   cellsFor,
   correctionTiles,
   groups,
@@ -134,6 +142,20 @@ import {
 } from './session'
 import { nextColour } from './palette'
 import { cryptoRandom, ulid } from './ulid'
+import { Viewport } from './Viewport'
+import {
+  WHOLE,
+  clampRect,
+  mapView,
+  panBy,
+  wheelBy,
+  zoomAt,
+  type Cell,
+  type Drawn,
+  type Frame,
+  type MapKind,
+  type Rect,
+} from './viewport'
 
 /**
  * How long a burst of `navigate` calls (arrow-stepping, a filmstrip click, a
@@ -162,7 +184,8 @@ const sameNotes = (a: Note[], b: Note[]) =>
   JSON.stringify(a) === JSON.stringify(b)
 
 /**
- * How near a marker counts as grabbing it, in slot fractions.
+ * How near a marker counts as grabbing it, in page fractions — the space
+ * `pointOn` below hands back, per `notes.ts`'s `Region`.
  *
  * A point has no area, so without this the only way to take hold of one would
  * be to hit an infinitely small spot. Roughly the radius `Annotations` draws a
@@ -172,6 +195,66 @@ const GRAB_SLOP = 0.02
 
 /** One empty set rather than a fresh one per render, so nothing skipped stays cheap and referentially stable. */
 const EMPTY_SLOTS: Set<number> = new Set()
+
+/**
+ * Which of `viewport.ts`'s derived transforms `onSwap: 'content'` maps
+ * through.
+ *
+ * **A result, and it said this line was wrong.** It read `'letterbox'` until
+ * 2026-08-08, on the guess that a letterbox "is centred by construction" — the
+ * rule that took Tongari v09 from 98 runs to 7 — and that framing differences
+ * between packagings arise the same way. The corpus says the reasoning was
+ * sound about letterboxing and wrong about these editions: the shared artwork
+ * is as tall as the taller page, and the wider one carries margin at its
+ * sides, not its top and bottom.
+ *
+ * `docs/notes.md`, "Which derived transform maps a rect between editions", is
+ * the measurement — 288 slots over twelve corpus volumes, `raw-mono` against
+ * `en-mono` — and `mapRect`'s own doc carries the figures beside the
+ * arithmetic. What `'pillarbox'` beat, in order: `'letterbox'`, which corrects
+ * nothing on the axis that needs it and adds four times the error on the axis
+ * that does not, so it loses to doing nothing at all; `'identity'`, which is
+ * exactly right on the vertical and uncorrected on the horizontal, where
+ * `'pillarbox'` cuts the median residual from 0.0296 of page width to 0.0195;
+ * and `'reset'`, a half-page bound rather than a residual. None of the three
+ * is what `mapView` corrects most visibly — that is the fit-whole letterbox
+ * *inside* the page area, which `paintedIn` removes whichever one is chosen.
+ *
+ * Still the seam rather than the decision: had no candidate beaten throwing
+ * the view away, the design's §4 promotion rule ships reset-on-swap, which is
+ * a change to `modules/zoom.ts`'s `defaults.onSwap` and not to this constant.
+ */
+const CONTENT_MAP: MapKind = 'pillarbox'
+
+/** A rect's own centre — where a keyboard zoom anchors, having no pointer to anchor on. */
+const centreOf = (rect: Rect) => ({
+  x: rect.x + rect.w / 2,
+  y: rect.y + rect.h / 2,
+})
+
+/**
+ * The natural size of the page `url` names, from the images the page area is
+ * drawing right now.
+ *
+ * Matched by URL suffix rather than by threading slot identity down the tree,
+ * the same rule `draftImage` and `PageAnnotations` already match by — `pageAt`
+ * builds exactly this URL, and `two` mode draws two pages of which only one is
+ * the slot being asked about.
+ *
+ * `undefined` covers three states that are one state for a caller: the page is
+ * not on screen, or it is but has not decoded (`PageView`'s decode gate holds
+ * the *outgoing* page's `src` on the element until the incoming one is ready,
+ * so a swap pressed twice quickly genuinely has no frame to measure), or it
+ * decoded to nothing. All three mean the transform cannot be computed, which
+ * `mapView` and the design's §9 both answer by leaving the view alone.
+ */
+function frameOf(host: HTMLElement, url: string): Frame | undefined {
+  const img = [...host.querySelectorAll('img')].find((candidate) =>
+    candidate.src.endsWith(url),
+  )
+  if (!img || img.naturalWidth <= 0 || img.naturalHeight <= 0) return undefined
+  return { w: img.naturalWidth, h: img.naturalHeight }
+}
 
 /**
  * Enough of the sidecar to pick a work's first edition, its reading
@@ -232,6 +315,16 @@ function allSlots(resolver: Resolver, edition: string): Position[] {
 function App() {
   const [session, setSession] = useState<Session>()
   const [mode, setMode] = useState<Mode>('single')
+  // The part of the drawn group the reader is looking at. `WHOLE` is
+  // fit-whole, which is what every mode did before zoom existed and what
+  // scroll mode still does — see the `Viewport` wrapper below, which is only
+  // mounted for the two modes that draw one group into a fixed box.
+  //
+  // Every rect held here satisfies `w === h`; `Rect`'s own doc says why that
+  // is load-bearing and which functions may break it. The four that write
+  // this state — `zoomAt`, `panBy`, `clampRect` and `mapView` — all preserve
+  // it, and nothing else may.
+  const [view, setView] = useState<Rect>(WHOLE)
   // `Tab`'s target — not `session` state, since it names nothing about the
   // reading model, only whether the strip and readout row are on screen.
   const [chromeVisible, setChromeVisible] = useState(false)
@@ -397,6 +490,11 @@ function App() {
   const prefetchPrefs = sliceFor(prefsMap, prefetchModule)
   const annotationsPrefs = sliceFor(prefsMap, annotationsModule)
   const regroupPrefs = sliceFor(prefsMap, regroupModule)
+  // Read here rather than beside `creditsPrefs` further down, because two
+  // effects declared above the `if (!session) return null` guard close over
+  // it — the wheel subscription and the swap's own geometry — and a binding
+  // created after that guard is not in scope for either.
+  const zoomPrefs = sliceFor(prefsMap, zoomModule)
 
   // Two decode queues, not one — a review found that sharing a single queue
   // between the live page turn and the prefetch window let stale prefetch
@@ -476,16 +574,57 @@ function App() {
   // value the retained one will.
   const creditsPrefsRef = useRef<CreditsPrefs>(creditsModule.defaults)
 
-  // `pageAreaRef` and `pageUrlRef` stood here, under a comment claiming both
-  // were "read by the layout effect below". Neither was read and there was no
-  // layout effect — every hook in this file is a `useEffect`. Both entered in
-  // `bcafee5` (M5c) and were born dead: the overlay ended up measuring the
-  // image it sits over rather than the page area, which is the fix recorded in
-  // `notes.md` under "The annotation overlay was placed on the page area, not
-  // on the page", and neither ref survived that change with a purpose. Removed
-  // as O27. The region drag reads its geometry off the `<img>` via
-  // `draftImage`/`pointOn`, which is where it has to come from — going back
-  // through the page area is the bug that fix exists to prevent.
+  // The zoom preferences, for the keydown handler, in exactly the shape and
+  // for exactly the reason `creditsPrefsRef` above has: `=`, `-` and `0` need
+  // `enabled`, `step` and `maxScale`, and that handler subscribes once at
+  // load. Assigned during render beside it. The *rect* needs no ref — the
+  // three cases write it through `setView`'s updater form, which hands them
+  // the current value without closing over it.
+  const zoomPrefsRef = useRef<ZoomPrefs>(zoomModule.defaults)
+
+  // What the page area is drawing right now, for the keydown handler and for
+  // the swap effect below — the page holding the slot the reader is standing
+  // on, which of the group's cells draws it, and which half of it the slot
+  // actually names. Assigned during render like `groupedRef`, for the same
+  // reason.
+  //
+  // `half` is `Drawn`'s, and it is the slot's rather than the image's: a
+  // joined spread is one image drawn for two slots, so the URL and the frame
+  // are the same on both and only this tells `mapView` which of the two the
+  // reader is on. Absent for every ordinary slot.
+  //
+  // `undefined` is not "not measured yet": it is exactly the two states with
+  // no page to zoom into. Scroll mode keeps fit-whole and mounts no
+  // `Viewport` (the spec's scope decision), and a gap draws `Gap` in place of
+  // the page area. Both read the same way at every use — there is nothing on
+  // screen for a zoom, a pan or a swap's arithmetic to be about.
+  const drawnRef = useRef<
+    { url: string; cell: Cell; half?: 'L' | 'R' } | undefined
+  >(undefined)
+
+  // The page area itself, for the two things that genuinely need the box
+  // rather than the image inside it: the wheel subscription (which must be
+  // non-passive, see its own comment) and the swap, which measures both
+  // pages' natural sizes out of it and takes the box's aspect to fit against.
+  //
+  // A `pageAreaRef` stood here before and was removed as O27, because it was
+  // read by nothing: the annotation overlay measures the `<img>` it sits over,
+  // not the area around it, and that distinction is the fix `notes.md` records
+  // under "The annotation overlay was placed on the page area, not on the
+  // page". Nothing here disturbs that — the region drag still reads its
+  // geometry off the `<img>` via `draftImage`/`pointOn`. What this ref is for
+  // is the box zoom is expressed in fractions *of*, which is the page area and
+  // could not be the page.
+  const pageAreaRef = useRef<HTMLDivElement>(null)
+
+  // A swap whose incoming page has not been measured yet. Set by the keydown
+  // handler, which is the last moment the outgoing page is still on screen to
+  // measure; consumed by the effect below, once the incoming one has decoded.
+  // `edition` is the one being *left*, which is what tells a swap that changed
+  // nothing (a digit for the edition already showing) from one that did.
+  const swapRef = useRef<{ from: Drawn; edition: string } | undefined>(
+    undefined,
+  )
 
   // The window's width, for `auto` note-list placement. A listener rather than
   // a one-off read, because "is there room beside the page" stops being true
@@ -532,6 +671,12 @@ function App() {
     /** Which note is being moved — not always the one the panel was showing when the drag began. */
     noteId?: string
   } | null>(null)
+  // Where the pointer was on the previous pan frame, in client pixels. A ref
+  // rather than state and a *previous* position rather than the drag's origin:
+  // `panBy` takes a delta and clamps, so each frame only needs the step since
+  // the last one — accumulating against the origin instead would fight the
+  // clamp, replaying the whole drag every frame once an edge is reached.
+  const panRef = useRef<{ x: number; y: number } | null>(null)
   // The rectangle under the pointer right now. State rather than a ref,
   // because the whole point is that it re-renders: a drag with no live
   // feedback is invisible, which is how the region gesture first shipped.
@@ -851,6 +996,39 @@ function App() {
             setCreditsVisible((shown) => !shown)
             break
           }
+          // The three zoom keys share one guard and differ only in what they
+          // hand `zoomAt`. Gated on `drawnRef.current` as well as the
+          // preference, so they are inert exactly where the `Viewport` wrapper
+          // is not mounted or has nothing under it — scroll mode and a gap.
+          // Without that, `=` in scroll mode would silently zoom a rect nobody
+          // is drawing, and the reader would find it applied on their next
+          // switch back to single.
+          case ZOOM_IN_INTENT: {
+            const zoom = zoomPrefsRef.current
+            if (!zoom.enabled || !drawnRef.current) return
+            // A keyboard zoom has no pointer to anchor on, so it anchors on
+            // the rect's own centre — the one case where `zoomAt`'s doc's
+            // "zooming about the centre feels broken" does not apply, because
+            // there is no point the reader is aiming at for it to slide away
+            // from.
+            setView((rect) =>
+              zoomAt(rect, centreOf(rect), zoom.step, zoom.maxScale),
+            )
+            break
+          }
+          case ZOOM_OUT_INTENT: {
+            const zoom = zoomPrefsRef.current
+            if (!zoom.enabled || !drawnRef.current) return
+            setView((rect) =>
+              zoomAt(rect, centreOf(rect), 1 / zoom.step, zoom.maxScale),
+            )
+            break
+          }
+          case ZOOM_WHOLE_INTENT: {
+            if (!zoomPrefsRef.current.enabled || !drawnRef.current) return
+            setView(WHOLE)
+            break
+          }
         }
         return
       }
@@ -863,6 +1041,33 @@ function App() {
       // button's own keyboard activation as the only thing that runs.
       if (isInteractiveTarget(event.target)) return
       event.preventDefault()
+      // What this keypress does to the view, decided **before** `setSession`
+      // rather than after it. A swap has to measure the outgoing page, and the
+      // only place that page is still on screen to be measured is here: React
+      // batches an event handler's updates and re-renders once it returns, so
+      // "after the state update" and "before it" are the same DOM either way —
+      // but only one of the two says so.
+      if (intent.kind === 'step') {
+        // A turn carries both zoom and pan (spec §3) and re-clamps. Not a
+        // mapping: same edition, same coordinate space.
+        //
+        // **Idempotent as the code stands, and kept anyway.** `clampRect`'s
+        // own doc used to frame this as a rect carried from a pair onto a
+        // singleton addressing space that does not exist; it now retracts that
+        // sentence and dates the retraction, because it is true of a rect in
+        // *slot* space and not of one in group space, where the group is
+        // always the whole page-area box and a rect inside it stays inside it.
+        // This comment pointed at the old wording for four commits after it
+        // was withdrawn — the hazard of citing a neighbour's reasoning rather
+        // than restating it.
+        // Every producer of this state (`zoomAt`, `panBy`, `mapView`) already
+        // clamps, so this changes nothing today. It is here because the bound
+        // belongs to the state rather than to each producer's good manners,
+        // and a turn is where a rect that had drifted would first be visible.
+        setView(clampRect)
+      } else {
+        recordSwap()
+      }
       setSession((prev) => {
         if (!prev) return prev
         const { state, previous } = applyIntent(
@@ -874,6 +1079,35 @@ function App() {
         )
         return { ...prev, state, previous }
       })
+    }
+    /**
+     * Measure the outgoing page and leave the rest of the swap to the effect
+     * below, which runs once the incoming one has decoded.
+     *
+     * Two halves because the swap's two frames are available at two different
+     * moments and neither can wait for the other: the outgoing page is on
+     * screen now and gone after the re-render, and the incoming one does not
+     * exist yet — `PageView`'s decode gate deliberately holds the old image
+     * until the new one is ready to paint, so reading `naturalWidth` in this
+     * handler would measure the page being left, twice.
+     *
+     * Anything that cannot be measured leaves `swapRef` clear, which the
+     * effect reads as "this swap carries nothing" and the reader sees as a
+     * view left where it was — the design's §9 answer for a swap onto a gap,
+     * reached the same way for a swap pressed faster than a page decodes.
+     */
+    function recordSwap() {
+      swapRef.current = undefined
+      const drawn = drawnRef.current
+      const host = pageAreaRef.current
+      const leaving = sessionRef.current?.state.viewing
+      if (!zoomPrefsRef.current.enabled || !drawn || !host || !leaving) return
+      const frame = frameOf(host, drawn.url)
+      if (!frame) return
+      swapRef.current = {
+        from: { frame, cell: drawn.cell, half: drawn.half },
+        edition: leaving,
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -1131,6 +1365,189 @@ function App() {
     prefetchPrefs.ahead,
     prefetchPrefs.behind,
     prefetchQueue,
+  ])
+
+  // Whether the page area is on screen to subscribe to — see the wheel
+  // effect's own dependency note below. A boolean rather than `session`, so
+  // "the reader moved" is not confused with "there is something to attach to".
+  const loaded = session !== undefined
+
+  // The wheel, subscribed by hand rather than through React's `onWheel`.
+  //
+  // React registers `wheel` on the root container as a **passive** listener —
+  // `react-dom`'s `addTrappedEventListener` passes `passive: true` for exactly
+  // `touchstart`, `touchmove` and `wheel`, checked in
+  // `node_modules/react-dom/cjs/react-dom-client.development.js` at this
+  // version (19.2) — and `preventDefault()` inside a passive listener does
+  // nothing except log a console error, once per notch. Zoom has to stop the
+  // browser acting on the same wheel: a trackpad pinch arrives here as a
+  // `wheel` with `ctrlKey` set, and left alone it zooms the whole page's chrome
+  // instead of the manga. So this is `{ passive: false }` on the page area
+  // itself. The same event serving both gestures is why the design's table
+  // lists "wheel / pinch" as one row.
+  //
+  // Declared ahead of the `if (!session) return null` below, like the two
+  // effects above it, which is why `loaded` is in the dependencies: the page
+  // area does not exist until the session does, and a ref to an element React
+  // has not rendered yet is `null`. `loaded` rather than `session` itself, so
+  // this subscribes when the page area appears rather than tearing the
+  // listener down and putting it back on every page turn.
+  //
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `loaded` is a mount trigger, not a closure read — the body reads only refs, `mode` and `zoomPrefs`. Removing it, which is what this rule suggests, would subscribe once against a page area that does not exist yet and never again.
+  useEffect(() => {
+    const host = pageAreaRef.current
+    if (!host || !zoomPrefs.enabled || mode === 'scroll') return
+    function onWheel(event: WheelEvent) {
+      if (!host) return
+      // Inert wherever the three zoom keys are, for the reason the
+      // `ZOOM_IN_INTENT` case above states in full. Checked inside the handler
+      // rather than beside `zoomPrefs.enabled` above, because `drawnRef` is
+      // assigned during render and none of this effect's dependencies changes
+      // when it flips: the page area still renders in a gap — it just draws
+      // `Gap` in place of the group — so the listener stays attached across
+      // one, and so does the `currentIndex === -1` case that draws nothing.
+      //
+      // Ahead of `preventDefault()`, so a wheel this declines is left to the
+      // browser rather than swallowed. That is what scroll mode already does,
+      // by attaching no listener at all.
+      if (!drawnRef.current) return
+      event.preventDefault()
+      const box = host.getBoundingClientRect()
+      // A zero-sized box is an element mid-teardown, not a viewport, and
+      // dividing by it puts `NaN` into `at` — which `zoomAt` propagates into
+      // the rect, `Viewport` turns into `scale(NaN)`, and the reader sees the
+      // page vanish with no error anywhere. Task 1's review flagged that
+      // neither `clampRect` nor `fitRect` screens non-finite sizes; this is
+      // the boundary where DOM numbers enter, so it is the place to stop them
+      // rather than hardening every pure function against a caller that
+      // should not exist.
+      if (box.width <= 0 || box.height <= 0) return
+      // Proportional to the delta, and normalised across `deltaMode` first —
+      // `wheelBy`'s doc has the whole rule and names every constant it guesses
+      // at. What was here before was `deltaY < 0 ? step : 1 / step`, a full
+      // step per event whatever its size, which at the defaults let a single
+      // trackpad flick pin the view at `maxScale`.
+      const by = wheelBy(event, zoomPrefs.step)
+      setView((rect) =>
+        zoomAt(
+          rect,
+          // Where the pointer is over the *group*, which is what `zoomAt`
+          // anchors on — the page area's own fractions, mapped back through
+          // the rect currently on screen. Computed inside the updater rather
+          // than from a `view` this closure captured: two notches inside one
+          // React batch would otherwise both anchor against the rect before
+          // either of them, and the second would undo part of the first.
+          {
+            x: rect.x + ((event.clientX - box.left) / box.width) * rect.w,
+            y: rect.y + ((event.clientY - box.top) / box.height) * rect.h,
+          },
+          by,
+          zoomPrefs.maxScale,
+        ),
+      )
+    }
+    host.addEventListener('wheel', onWheel, { passive: false })
+    return () => host.removeEventListener('wheel', onWheel)
+  }, [mode, zoomPrefs, loaded])
+
+  // The second half of a swap: the incoming page's own geometry, which does
+  // not exist at the moment the key is pressed.
+  //
+  // `recordSwap` (in the keydown effect above) measured the outgoing page and
+  // left the rest here, because `PageView`'s decode gate holds the old image
+  // on screen until the new one is ready to paint — so the frame this needs
+  // arrives one decode after the keypress, and a `ResizeObserver` would not
+  // report it either (the element's layout size does not change, only its
+  // content). A `load` listener in the capture phase is what does: `load` does
+  // not bubble, but it does capture, so one listener on the page area hears
+  // whichever of its images settles.
+  //
+  // Every early return below clears the pending swap rather than leaving it to
+  // be applied against a later page. The one that does *not* is the case where
+  // the image simply has not arrived yet — that one waits, and its cleanup
+  // clears the swap only if a newer one has not already replaced it.
+  //
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the three `session?.state.*` deps are triggers, not closure reads — they are what "the reader moved" means, and the body reads refs. Removing them, which is what this rule suggests, would leave a swap's geometry never finished.
+  useEffect(() => {
+    const pending = swapRef.current
+    if (!pending) return
+    const host = pageAreaRef.current
+    // Nothing landed on: a swap into a gap draws `Gap` in place of the page
+    // area, and the design's §9 says the view is left untouched and restored
+    // when the reader swaps back — which is what dropping the pending swap
+    // here achieves, since the swap back has no outgoing page to measure
+    // either and so records nothing of its own.
+    //
+    // `session.state.viewing` equal to the edition being left is a swap that
+    // changed nothing — a digit for the edition already on screen. `swap`
+    // builds a fresh `ReadingState` either way, so this is the only thing that
+    // tells the two apart.
+    if (
+      !host ||
+      !drawnRef.current ||
+      session?.state.viewing === pending.edition
+    ) {
+      swapRef.current = undefined
+      return
+    }
+    const kind: MapKind = zoomPrefs.onSwap === 'reset' ? 'reset' : CONTENT_MAP
+    const apply = () => {
+      // Superseded by a later swap while this one waited. Reported as done so
+      // the listener stands down; the newer swap has its own effect.
+      if (swapRef.current !== pending) return true
+      // Read here rather than captured when the effect ran. `mode` is not one
+      // of this effect's dependencies — it is not what "the reader moved"
+      // means — and adding it would be worse than useless: while a swap is
+      // waiting this effect leaves a cleanup that clears `swapRef`, and React
+      // runs that cleanup *before* the re-run that would read it, so a mode
+      // switch would drop the swap rather than redo it. Captured, a switch
+      // between single and two-page while the incoming page decodes leaves a
+      // `cell` measured under the other mode — and `cell` is which half of the
+      // group the page occupies, so a stale one lands the view about half a
+      // group out. That does not wash out on its own: every later swap maps
+      // the displaced rect through a correct transform and carries the
+      // displacement with it, until the reader presses `0`. One deref here.
+      const to = drawnRef.current
+      // The mode switch was to scroll, or the reader has moved onto a gap:
+      // there is no drawn page to carry the view onto. Dropped rather than
+      // held, the same answer as the guard above and for the same reason.
+      if (!to) {
+        swapRef.current = undefined
+        return true
+      }
+      const frame = frameOf(host, to.url)
+      if (!frame) return false
+      const box = host.getBoundingClientRect()
+      // The wheel handler's zero-box guard, for the same reason — and here it
+      // also protects the `w === h` invariant, since `fitRect` hands back an
+      // unfitted rect for an aspect it cannot use.
+      if (box.width <= 0 || box.height <= 0) return false
+      swapRef.current = undefined
+      setView((rect) =>
+        mapView(
+          rect,
+          pending.from,
+          { frame, cell: to.cell, half: to.half },
+          box.width / box.height,
+          kind,
+        ),
+      )
+      return true
+    }
+    if (apply()) return
+    const onLoad = () => {
+      if (apply()) host.removeEventListener('load', onLoad, true)
+    }
+    host.addEventListener('load', onLoad, true)
+    return () => {
+      host.removeEventListener('load', onLoad, true)
+      if (swapRef.current === pending) swapRef.current = undefined
+    }
+  }, [
+    session?.state.authority,
+    session?.state.slot,
+    session?.state.viewing,
+    zoomPrefs.onSwap,
   ])
 
   if (!session) return null
@@ -1516,6 +1933,7 @@ function App() {
   // simply writes the same thing the retained one will.
   groupedRef.current = grouped
   creditsPrefsRef.current = creditsPrefs
+  zoomPrefsRef.current = zoomPrefs
   // `-1` in a gap: there is no group of the viewed edition the reader is
   // standing on, and `-1` is already `Filmstrip`'s "mark nothing" — the same
   // value correction mode passes, for the same reason.
@@ -1711,6 +2129,33 @@ function App() {
     return half ? `page ${displayPage} ${half}` : `page ${displayPage}`
   }
 
+  // The page the swap measures against, assigned during render like
+  // `groupedRef` and for the same reason — see the ref's own doc for what its
+  // absence means. Declared here rather than beside `grouped` above because
+  // `pageAt` is a `const` and would still be in its temporal dead zone there.
+  //
+  // `cellOf` is asked only in `two` mode: one image fills the group in the
+  // other two, which is `'only'` without a group to consult (`Cell`'s doc).
+  //
+  // `half` comes off the same `slots` entry `pageAt` and `altAt` already read,
+  // and for the same reason each of those exists: a joined spread's two slots
+  // share one `page`, so the page index alone cannot tell them apart. `altAt`
+  // says "page 5 R" out loud from this field; this hands the same fact to the
+  // swap's arithmetic, which needs it to land on the R half rather than on the
+  // middle of the spread. `undefined` for every ordinary slot, which is what
+  // `Drawn.half` expects there.
+  drawnRef.current =
+    at && current && mode !== 'scroll'
+      ? {
+          url: pageAt(at.slot),
+          cell:
+            mode === 'two'
+              ? cellOf(current, effectiveReading, at.slot)
+              : 'only',
+          half: slots[at.slot].half,
+        }
+      : undefined
+
   // Which mechanism governs a mounted `PageView`'s image — see that
   // component's own `buffered` doc for the full reasoning. Scroll mode
   // mounts every group at once and leans on `loading="lazy"` to bound that
@@ -1792,6 +2237,78 @@ function App() {
    * whichever answer comes back.
    */
   function beginRegion(event: React.PointerEvent) {
+    // Pan takes the drag on a press that is on the drawn page, with the editor
+    // closed or the modifier held. `gestureFor`'s four cases are untouched: it
+    // is described in its own doc as "the most-changed rule of this milestone
+    // [M5c] and lived where nothing could test it", and rewriting it to add a
+    // fifth case would spend exactly the testability that comment records.
+    //
+    // **`drawnRef.current`** makes this inert wherever the three zoom keys
+    // are, for the reason the `ZOOM_IN_INTENT` case above states in full — and
+    // it subsumes the `mode !== 'scroll'` test that used to be written here,
+    // since `drawnRef` is already `undefined` in scroll mode. Without it, a
+    // drag anywhere over a gap — including off one of `Gap`'s own buttons —
+    // pans a rect nobody is drawing: `Gap` renders *inside* the page area, so
+    // this handler is on it.
+    //
+    // **The press must not be on a control.** "The editor is closed" is not
+    // the same set as "the pointer is over the page", and the guard above does
+    // not close the difference: the things that share the page area *with* a
+    // drawn page are `NoteList` in its `side` placement and the note tabs
+    // `PageAnnotations` draws (`pointerEvents: 'auto'` on those, deliberately,
+    // so they can be clicked). Neither stops propagation, so without this test
+    // a sweep to select text in the note list pans the manga underneath it,
+    // and so does a drag begun on a tab.
+    //
+    // **This was `event.target instanceof HTMLImageElement` until 2026-08-08**,
+    // which excluded the same controls by being narrower still: it panned only
+    // on the drawn page. The comment here argued that was the narrowest test
+    // true of the page and false of a button, and it was — but it also made
+    // the letterbox around the page dead to a drag, and a reader trying it
+    // said so. That cost was stated in this comment and judged acceptable on
+    // the reasoning that the letterbox shrinks as the zoom grows; what the
+    // reasoning missed is that a reader reaches for the nearest grey to drag
+    // from, and being ignored there reads as the pan being broken rather than
+    // as a boundary.
+    //
+    // `isInteractivePress` is the ancestor-aware sibling of the
+    // `isInteractiveTarget` this file already uses for keys, and the ancestry
+    // is the whole point: a press on a note-list entry lands on the *text*, so
+    // the keydown rule — which asks only about the target — answers `false`
+    // for exactly the case the image test was protecting against. Excluding
+    // controls rather than requiring the page also means the next component
+    // added inside the page area is included by default and has to opt out,
+    // which is the right way round for a background gesture.
+    //
+    // `stopPropagation` on every child was the other candidate, and lost
+    // again: it would put "and this is why the manga does not pan" in
+    // `NoteList.tsx` and `Annotations.tsx`, where nobody looking for the pan
+    // rule would find it.
+    //
+    // The one press this hands back that it used to keep is the modifier held
+    // with the editor open, on something that is not a page image; it now
+    // falls through to `gestureFor`, which reads it as `close` — rule 1 of
+    // that function's own list ("looking away is how a person stops writing
+    // one"), not a new behaviour invented here. With the editor *closed*
+    // nothing is lost by taking the drag ahead of `gestureFor` at all, since
+    // it answers `{ kind: 'ignore' }` for every press in that state.
+    //
+    // No `preventDefault` here, deliberately, though the region drag below
+    // calls one to stop the browser's text selection fighting the rectangle.
+    // A prevented `pointerdown` also stops focus moving, and this branch runs
+    // on every press on the page rather than only while the editor is open: a
+    // reader who clicked a mode button and then dragged the page would leave
+    // focus on that button, where `isInteractiveTarget` stands the keydown
+    // handler down and the arrow keys stop working.
+    const panning =
+      zoomPrefs.enabled &&
+      drawnRef.current !== undefined &&
+      !isInteractivePress(event.target) &&
+      (panelMode !== 'edit' || event.shiftKey)
+    if (panning) {
+      panRef.current = { x: event.clientX, y: event.clientY }
+      return
+    }
     const el = draftImage(event.target)
     const gesture = gestureFor({
       editing: panelMode === 'edit',
@@ -1840,12 +2357,43 @@ function App() {
   }
 
   function trackRegion(event: React.PointerEvent) {
+    const from = panRef.current
+    if (from) {
+      const box = event.currentTarget.getBoundingClientRect()
+      // The wheel handler's zero-box guard, for the same reason.
+      if (box.width <= 0 || box.height <= 0) return
+      setView((rect) => {
+        // A drag moves the page under the viewport, so the rect moves the
+        // other way: dragging right shows what was to the left. The step is
+        // scaled by `rect.w`/`rect.h` because the rect is what one page area's
+        // width is showing — at 4x, a pointer crossing the box has crossed a
+        // quarter of the group.
+        const next = panBy(
+          rect,
+          (-(event.clientX - from.x) / box.width) * rect.w,
+          (-(event.clientY - from.y) / box.height) * rect.h,
+        )
+        // The rect back unchanged where the pan had nowhere to go, so React's
+        // own `Object.is` bail-out applies. `panBy` says a drag at fit-whole
+        // is "a no-op instead of a jitter", and it is the *rect* that is one:
+        // without this the no-op still allocates a fresh, equal rect on every
+        // pointer move, and every one of those re-renders this component and
+        // re-runs `PageAnnotations`' measurement. Fit-whole is what a reader
+        // who never zooms is in the whole time, so that is the common case
+        // rather than an edge of one. Only `x` and `y` are compared because
+        // `panBy` is the only writer here and it never touches the sizes.
+        return next.x === rect.x && next.y === rect.y ? rect : next
+      })
+      panRef.current = { x: event.clientX, y: event.clientY }
+      return
+    }
     const started = dragRef.current
     if (!started) return
     setDragging(regionUnderPointer(started, event))
   }
 
   function endRegion(event: React.PointerEvent) {
+    panRef.current = null
     const started = dragRef.current
     dragRef.current = null
     setDragging(undefined)
@@ -2050,6 +2598,7 @@ function App() {
                 : 'crosshair'
               : undefined,
         }}
+        ref={pageAreaRef}
         onPointerDown={beginRegion}
         onPointerMove={trackRegion}
         onPointerUp={endRegion}
@@ -2058,6 +2607,7 @@ function App() {
         // behind it.
         onPointerLeave={endRegion}
         onPointerCancel={() => {
+          panRef.current = null
           dragRef.current = null
           setDragging(undefined)
         }}
@@ -2092,6 +2642,11 @@ function App() {
             drawing={dragging !== undefined}
             pendingBody={draft?.body}
             pendingColour={draft?.color}
+            // The re-measure trigger, not a value the overlay reads — see
+            // `PageAnnotations`' own comment on the dependency. Only here: the
+            // scroll-mode overlays below sit under no `Viewport` and cannot go
+            // stale for this reason.
+            version={view}
             onOpen={openNote}
           />
         )}
@@ -2163,7 +2718,18 @@ function App() {
             ))}
           </div>
         ) : (
-          current && renderGroup(current, 0)
+          current && (
+            // Scroll mode's branch above is untouched: it mounts every group
+            // at once and keeps fit-whole, which is the spec's scope decision
+            // rather than an oversight. `WHOLE` while the module is disabled
+            // rather than unmounting the wrapper, so turning zoom off does not
+            // change what React reconciles here — a changed element type at
+            // this position is what `cellsFor`'s doc records forcing a remount
+            // and throwing away `PageView`'s decode gate.
+            <Viewport rect={zoomPrefs.enabled ? view : WHOLE}>
+              {renderGroup(current, 0)}
+            </Viewport>
+          )
         )}
       </div>
       {at && annotationsPrefs.reveal && notesPlacement === 'below' && (

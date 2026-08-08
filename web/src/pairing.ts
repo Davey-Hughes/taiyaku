@@ -1,4 +1,5 @@
 import type { Position } from './resolver'
+import type { Cell } from './viewport'
 
 export type Mode = 'single' | 'two' | 'scroll'
 
@@ -241,6 +242,38 @@ export function cellsFor(group: Group, reading: 'rtl' | 'ltr'): Cells {
   if (wide) return { wide: true, first: a, second: b }
   const [first, second] = reading === 'rtl' ? [b, a] : [a, b]
   return { wide: false, first, second }
+}
+
+/**
+ * Which of `two` mode's two drawing positions holds `slot` — `viewport.ts`'s
+ * `Cell`, for the group `cellsFor` has just laid out.
+ *
+ * `cellsFor`'s answer restated in the vocabulary the geometry uses, rather
+ * than a second rule: `wide` is `'only'` because that is precisely how
+ * `App.tsx` draws it — the second cell is collapsed to zero width, so the
+ * first fills the group — and an ordinary pair is `'first'` or `'second'` by
+ * which of `cellsFor`'s two positions the slot landed in, already
+ * reading-direction-corrected. Doing that comparison at the call site would
+ * put a `reading === 'rtl'` test back into `App.tsx`, which is the thing
+ * `cellsFor` exists to keep out of it.
+ *
+ * `'second'` is the answer for a slot this group does not hold at all, which
+ * no caller can reach: the only caller finds its group by
+ * `slots.includes(slot)`, and a non-`wide` group holds exactly `first` and
+ * `second`. Stated rather than thrown on, because a wrong cell is a swap that
+ * lands half a page out, not a crash.
+ *
+ * `single` and `scroll` mode never call this. One image fills the group in
+ * both, which is `'only'` without asking — see `Cell`'s own doc.
+ */
+export function cellOf(
+  group: Group,
+  reading: 'rtl' | 'ltr',
+  slot: number,
+): Cell {
+  const cells = cellsFor(group, reading)
+  if (cells.wide) return 'only'
+  return cells.first === slot ? 'first' : 'second'
 }
 
 /**

@@ -102,3 +102,34 @@ export function isInteractiveTarget(target: EventTarget | null): boolean {
   if (el.isContentEditable === true) return true
   return typeof el.hasAttribute === 'function' && el.hasAttribute('tabindex')
 }
+
+/**
+ * Whether a *pointer* press landed on a control, counting ancestors.
+ *
+ * `isInteractiveTarget` above answers the same question for a keydown, where
+ * the target is the focused element itself and asking about ancestors would
+ * be asking about nothing. A pointer press is different in kind: its target is
+ * whatever node is under the pixel, which for a button holding a run of text
+ * is a `span` or a text node's parent — not the button. So the keydown rule
+ * applied to a press would return `false` for a drag begun on the words inside
+ * a note-list entry, and the caller would treat it as a press on the page.
+ *
+ * `closest` rather than a hand-written walk, and the same set of controls
+ * spelled once here rather than twice: a selector is what `closest` takes, and
+ * keeping the two functions' notions of "a control" from drifting apart is
+ * worth more than sharing an implementation between them.
+ *
+ * Deliberately **not** used for the keydown case. Ancestors matter to a press
+ * and not to a keystroke, and collapsing the two would make a key pressed
+ * while focus sits anywhere inside a `tabindex` container stop being a reader
+ * intent — a behaviour nobody asked for, in the name of one fewer function.
+ */
+export function isInteractivePress(target: EventTarget | null): boolean {
+  const el = target as { closest?: (selector: string) => unknown } | null
+  if (!el || typeof el.closest !== 'function') return false
+  return (
+    el.closest(
+      'button, a, input, textarea, select, [tabindex], [contenteditable=""], [contenteditable="true"]',
+    ) !== null
+  )
+}

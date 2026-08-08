@@ -6140,3 +6140,305 @@ server's log entirely — so the reader would have been handed its own stale
 copy and watched the correction undo itself. That is the failure this
 verifies against, and it is measured rather than reasoned about, because the
 leaking version was run and logged before it was fixed.
+
+## Which derived transform maps a rect between editions
+
+L1 needs one rule for turning a rect on one edition's page into the same
+content on another's, derived at read time from the two drawn images' natural
+dimensions and nothing else. The design named two candidates and a baseline,
+and the promotion rule was fixed in the spec (§4) before any number existed, so
+that the result decided the cost rather than the cost deciding how the result
+reads. `crates/taiyaku-cli/src/geometry_experiment.rs` is the harness; it
+reports and asserts only that it measured something. It ran twice: once to find
+the answer, and once more — both directions, 98 s — to try to break it.
+
+**Measured:** `raw-mono` against `en-mono`, the one edition pair all twelve
+corpus volumes carry, 24 slots per volume evenly spread through it — **288 of
+2,200 eligible slots, out of 2,258 the solver paired**, across four series at
+v01, v03 and v08. 52 further paired slots were excluded because one side was a
+whole page and the other a spread half, which names no pair of drawn images,
+and 6 because a side was blank and every blank page matches every other one
+perfectly. For each slot, the central 60% of the raw page was fingerprinted,
+and a coarse-to-fine grid search over per-axis scale and offset found the crop
+of the English page whose fingerprint scored highest against it. Scored with
+`taiyaku_core::similarity` over `fingerprint`, not a metric invented here, so
+the number is in the same currency as every figure above.
+
+**Reported over the 284 slots whose search settled**, not all 288. Four ended
+the coarse pass on the edge of its own range, which is the search saying it ran
+out of room rather than that it found a minimum: its answer there is a bound,
+and a bound has no business inside a distribution of measurements. The first
+run counted those four and then reported them anyway; every figure below is the
+restatement. What the exclusion changed is at the end of this section, and the
+short version is that it moved no median by more than 0.0008 and no p90 by more
+than 0.0013, and roughly halved every maximum.
+
+Residuals are fractions of the target page, and the figure is the furthest a
+candidate puts a point that the best map puts somewhere else. Distribution, not
+mean — the tail is the interesting part, for the same reason `margin` is the
+weakest per-page value in a run.
+
+| within the window | min | median | p90 | max |
+| ----------------- | --- | ------ | --- | --- |
+| identity dx | 0.0086 | 0.0296 | 0.0405 | 0.0848 |
+| identity dy | 0.0000 | 0.0041 | 0.0116 | 0.0743 |
+| letterbox dx | 0.0086 | 0.0296 | 0.0405 | 0.0848 |
+| letterbox dy | 0.0025 | 0.0162 | 0.0224 | 0.0899 |
+| pillarbox dx | 0.0021 | **0.0195** | **0.0276** | 0.1013 |
+| pillarbox dy | 0.0000 | **0.0041** | **0.0116** | 0.0743 |
+| CONTROL dx | 0.0011 | 0.0011 | 0.0023 | 0.0394 |
+| CONTROL dy | 0.0011 | 0.0011 | 0.0041 | 0.0514 |
+
+### The shipped candidate was the right idea on the wrong axis
+
+The best map's **vertical** scale is 0.996 at the median — the identity map to
+within one tick of the search's own final resolution — and its vertical offset
+is 0.000. The vertical axis wants nothing done to it. Its **horizontal** scale
+is not 1: it tracks `aFrom / aTo` across all twelve volumes, sign included,
+going below 1 for exactly the three volumes where that ratio is below 1 and
+above it for the other nine. Per volume the two agree to a median 0.5%, against
+the 5.5% by which each differs from 1.
+
+That is `letterbox`'s own assumption with its axes swapped. `letterbox` takes
+the **max** of the two aspects as the shared content's, which puts every
+framing difference on the vertical axis and never rescales the horizontal. The
+corpus says the opposite: the shared artwork is as **tall** as the taller page
+says, and the wider-aspect page carries its extra as margin at left and right.
+Taking the **min** instead — one token in `mapRect` — is the rule called
+`pillarbox` in the table above. It was not in the spec because nothing had
+looked yet.
+
+So the two candidates the design named finished second and third:
+
+- **`pillarbox` wins.** Median residual **0.0195 of page width and 0.0041 of
+  page height**, p90 **0.0276 and 0.0116**. Better than `identity` on the
+  horizontal in 10 of 12 volumes, and identical to it on the vertical by
+  construction. The two volumes where it does not win — Kobayashi v01 and v03 —
+  are the two whose aspect ratio is nearest to matching already (`aTo/aFrom` of
+  1.034 and 0.998), so there is almost nothing there for either rule to correct
+  and they land within 0.002 of each other.
+- **`identity` is second**, median 0.0296 / 0.0041, p90 0.0405 / 0.0116. It is
+  exactly right on the vertical and uncorrected on the horizontal.
+- **`letterbox` as shipped is third, and is strictly worse than doing
+  nothing.** It leaves the horizontal untouched, so it inherits identity's
+  entire horizontal residual unchanged, and then adds a 5% vertical rescale
+  that the pixels do not want: its vertical residual is **four times**
+  identity's at the median (0.0162 against 0.0041) and twice it at p90. A
+  candidate that can only add error to one axis and correct nothing on the
+  other is not a candidate.
+- **`reset` loses to all three.** It is not a residual but a bound: after a
+  reset the reader sees the whole page and has to re-find the balloon, so the
+  distance is up to half a page. That is a bound and it is not measured; it
+  does not need to be, because every candidate above is inside 5% of a page and
+  half a page is 50%.
+
+Similarity tells the same story in the solver's own currency. Median over the
+window: best map 0.934, **pillarbox 0.727**, identity 0.723, letterbox 0.703.
+At p90: 0.969, **0.871**, 0.844, 0.828. The ordering is the same at both
+points and the same in the per-volume rows.
+
+### The control, and why the horizontal number is believed
+
+The score is `fingerprint`, which resizes every crop to a 17x16 grid whatever
+its shape. Two crops holding the same artwork at different aspects are
+therefore *rendered* differently before they are compared, so a search could
+buy similarity by picking a scale ratio that squares the two renderings up
+rather than by finding where the artwork is — and `sx/sy ≈ aFrom/aTo` is
+exactly what that artefact would look like. **The horizontal finding is
+indistinguishable from that artefact on its face, so it was tested.**
+
+The identical search was run against a copy of the *source* page resampled to
+the target's aspect. A resize moves nothing in fractional coordinates, so the
+true answer there is exactly the identity map on both axes, with the aspect
+difference fully present and no framing difference at all. It came back
+**`sx/sy = 1.0000` for all twelve volumes** while `aFrom/aTo` ranged 0.952 to
+1.063, and a residual of 0.0011 — a floor 28 times below identity's horizontal
+median. The search does not chase aspect. The horizontal scale it finds on real
+pages is a property of the pages.
+
+One thing this control does not establish, said rather than left implied: it
+rules out the artefact on a synthetic resample, where the two crops hold the
+same pixels and the similarity peak is sharp. It cannot exclude a subtler
+coupling on real pages, where content and framing vary together and the peak is
+shallow enough for a small preference to tip it.
+
+### The falsification: the same search, the other way round
+
+Run on real pages, that is what the reverse direction settles, so it was run.
+`en-mono → raw-mono`, on the identical 288 slots and in the same pass — the
+same slots rather than a fresh sample of the reverse pairing, so that a scale
+which failed to invert could not be blamed on the draw. The prediction was
+fixed before the run: **a real geometric relation between two pages inverts
+when the pages swap roles**, so the reverse horizontal scale must come back as
+`aTo/aFrom` where the forward one gave `aFrom/aTo`, and the vertical must stay
+at 1. A preference belonging to the metric or the search does not know which
+page is which; it returns the same side of 1 both ways.
+
+**It inverts, in twelve volumes out of twelve.** Medians per volume, with the
+prediction printed beside the measurement rather than asserted about it:
+
+| volume | fwd sx | predicted 1/fwd | rev sx | aTo/aFrom | fwd·rev | rev sy |
+| ------ | ------ | --------------- | ------ | --------- | ------- | ------ |
+| gotoubun-v01 | 0.9475 | 1.0554 | 1.0450 | 1.0502 | 0.9941 | 1.0000 |
+| gotoubun-v03 | 0.9512 | 1.0512 | 1.0488 | 1.0499 | 0.9964 | 0.9963 |
+| gotoubun-v08 | 0.9475 | 1.0554 | 1.0375 | 1.0406 | 0.9901 | 1.0037 |
+| kaguya-v01 | 1.0525 | 0.9501 | 0.9400 | 0.9479 | 0.9901 | 0.9925 |
+| kaguya-v03 | 1.0450 | 0.9569 | 0.9475 | 0.9479 | 0.9944 | 1.0000 |
+| kaguya-v08 | 1.0450 | 0.9569 | 0.9475 | 0.9479 | 0.9901 | 1.0075 |
+| kobayashi-v01 | 0.9775 | 1.0230 | 1.0038 | 1.0342 | 0.9887 | 0.9925 |
+| kobayashi-v03 | 1.0075 | 0.9926 | 0.9888 | 0.9980 | 0.9924 | 0.9850 |
+| kobayashi-v08 | 1.0675 | 0.9368 | 0.9325 | 0.9409 | 0.9954 | 0.9850 |
+| oshinoko-v01 | 1.0525 | 0.9501 | 0.9475 | 0.9467 | 0.9949 | 0.9963 |
+| oshinoko-v03 | 1.0600 | 0.9434 | 0.9475 | 0.9461 | 1.0004 | 1.0000 |
+| oshinoko-v08 | 1.0525 | 0.9501 | 0.9400 | 0.9479 | 0.9964 | 0.9962 |
+
+Every row crosses to the other side of 1, including Kobayashi v01 and v03,
+whose aspects nearly match and whose crossings are therefore the two smallest.
+The reverse scale misses the predicted reciprocal by a median 0.009 and at
+worst 0.019; it would have had to miss it by about 0.10 for the bias
+hypothesis, which is an order of magnitude away. Read the other way, the
+reverse scale tracks `aTo/aFrom` to a median 0.005, the exact mirror of the
+forward run tracking `aFrom/aTo` to 0.005.
+
+**The whole test in one number is the product of the two directions' scales**,
+which is 1 if the relation is real and the square of the scale if it is not:
+
+| over 277 slots settled both ways | min | median | p90 | max |
+| -------------------------------- | --- | ------ | --- | --- |
+| sx forward · sx reverse | 0.8920 | **0.9941** | 1.0091 | 1.0840 |
+| sx forward squared, if it were bias | 0.7877 | **1.0842** | 1.1236 | 1.2128 |
+| sy forward · sy reverse | 0.8929 | 0.9925 | 1.0110 | 1.2502 |
+
+0.994 against 1.084. And the vertical row is the reading of the horizontal
+one: the vertical product's *true* value is exactly 1 — every candidate leaves
+the vertical alone and the best map agrees — and it measures 0.9925, because
+the search's final tick is 0.00375 and it lands one to two ticks low on each
+direction. The horizontal product measures 0.9941, above that floor. **The
+horizontal scale is reciprocal to within the search's own resolution.**
+
+The reverse direction brought its own control and its own candidates, and both
+say what the forward ones said. The reverse control returns `sx/sy` of 1.0000
+or 1.0038 in all twelve volumes with a residual of 0.0011, so the search does
+not chase aspect in that direction either. And among the reverse direction's
+candidates, `pillarbox` inverted still beats `identity` on the horizontal:
+median 0.0189 against 0.0307, p90 0.0264 against 0.0416 — the same ordering and
+the same magnitudes as the forward run's 0.0195 against 0.0296.
+
+What this does **not** rule out, since it is the reason the control exists: an
+artefact that is itself antisymmetric in direction would also invert. That is
+precisely the aspect-matching artefact — a search that squares two renderings
+up rather than finding artwork would return `aFrom/aTo` one way and `aTo/aFrom`
+the other — and it is what the control excludes, by putting the full aspect
+difference in front of the same search with the answer known. The two
+experiments are complements, and neither alone would be enough: the control
+rules out the direction-antisymmetric artefact and the reverse run rules out
+the direction-blind one.
+
+### The exposure, and why there is no standing check
+
+The promotion rule's first branch applies: the residual is comfortably inside a
+panel, so the number is recorded here and the candidate ships, with no
+thirteenth gated check. `docs/status.md` still says twelve.
+
+The threshold was a guess and remains one — what fraction of a page a panel
+occupies was never measured, and this experiment did not measure it either. The
+spec's working figure was that 5% of a 1200px page is about 60px, "a fraction
+of a balloon rather than a panel". `pillarbox`'s p90 of 2.8% of page width sits
+at half that, and its vertical p90 of 1.2% at a quarter of it.
+
+Not promoting it to a standing check is a decision with a reason, not an
+omission. The transform is `mapRect` in `web/src/viewport.ts`, and a Rust
+corpus check cannot see a change to it — it would re-measure the corpus's page
+dimensions, which no code in this repository can alter, and go green while the
+browser did something else entirely. The unit tests beside `mapRect` are what
+guards `mapRect`. What this experiment guards against is choosing the wrong
+rule, and that is a one-time question it has now answered.
+
+Three residual exposures, in order of size:
+
+1. **The horizontal residual does not go to zero.** `pillarbox` leaves 2.0% of
+   page width at the median and 2.8% at p90 — about 8 times the search's own
+   floor, so it is real and not measurement noise. Some of it is a per-page
+   horizontal offset rather than a per-edition one: the best map's horizontal
+   offset moves by 0.004 to 0.083 *within* a single volume, which is as large
+   as its median. Nothing derived from two frames can correct something that
+   changes page to page, so that part is a floor for any candidate of this
+   shape, including a stored per-page transform's absence.
+2. **The vertical residual is small but not zero**: 0.4% of page height at the
+   median, 1.2% at p90, against a control floor of 0.1%. Uncorrected by every
+   candidate here, all of which leave the vertical alone.
+3. **The maxima were the search failing, not the candidate — and that is now a
+   measurement rather than a suspicion.** The first run reported identity's
+   horizontal max as 0.180 against a control max of 0.133 and read the tail as
+   "a handful of low-contrast pages the grid search cannot localise". Both of
+   those figures were the boundary slots, and both halve once the searches that
+   ran out of room are dropped: identity's max is 0.085 and the control's is
+   0.039. The reading was right and the pages have now been looked at. All
+   four are near-blank: 0.1% to 0.9% of their pixels are darker than mid-grey
+   and their luma standard deviations are 21 to 33, against a per-volume
+   median of 65 to 90 for the same edition. Two of them are the same near-blank
+   page twice — Kaguya v08's raw pages 65 and 187 are the same size with
+   identical statistics and a maximum per-pixel difference of 52. They survived
+   the blank-page exclusion because that test is an *exactly* zero dhash and
+   these pages carry a mark or two. Every one of the four pinned its horizontal
+   scale to an extreme of the coarse range, 0.82 or 1.18, which is ±18% — far
+   outside any aspect the corpus pairs. So they are not "the truth is just
+   outside the box"; they are pages with no peak to find, where the search
+   walked to the wall.
+
+**Two figures above are the search's resolution, not physics.** The best
+vertical scale reads 0.9925 rather than 1.0000, and the control reads 0.9963
+where the truth is exactly 1; both are one to two ticks of the final refinement
+pass (0.00375 each). Read them as 1.0.
+
+### What excluding the unsettled slots changed
+
+Promised above and printed by the harness itself, which reports both the
+settled figures and the all-288 figures so that "restated" is a number rather
+than a claim. Left column is what the first run reported, right is what 284
+settled slots report:
+
+| within the window | all 288 median / p90 / max | 284 settled median / p90 / max |
+| ----------------- | -------------------------- | ------------------------------ |
+| identity dx | 0.0304 / 0.0405 / 0.1796 | 0.0296 / 0.0405 / 0.0848 |
+| identity dy | 0.0041 / 0.0120 / 0.1429 | 0.0041 / 0.0116 / 0.0743 |
+| letterbox dy | 0.0163 / 0.0228 / 0.1524 | 0.0162 / 0.0224 / 0.0899 |
+| pillarbox dx | 0.0199 / 0.0289 / 0.1631 | 0.0195 / 0.0276 / 0.1013 |
+| pillarbox dy | 0.0041 / 0.0120 / 0.1429 | 0.0041 / 0.0116 / 0.0743 |
+
+No median moved by more than 0.0008, no p90 by more than 0.0013, and every
+ordering, every margin and every conclusion is unchanged — which is the reason
+the correction is worth stating rather than worth hiding. The maxima are where
+it shows, and they are the figure the decision was already told not to rest on.
+The control's row is filtered by its own boundary rather than the forward
+search's, because the four searches of a slot fail independently and filtering
+one measurement by another's result is how a distribution acquires a shape
+nobody chose; that takes its dx max from 0.1327 to 0.0394.
+
+The reverse direction runs out of room more often than the forward one — 11
+slots of 288 against 4 — which is why the reciprocal figures are over the 277
+where both settled. It is not explained here, only counted: the two directions
+crop different pages and search onto different pages, and which asymmetry does
+it has not been measured.
+
+### What ships
+
+`pillarbox`, and the falsification is why it is safe to say so rather than to
+hedge. In `web/src/viewport.ts`'s `mapRect`, `const content = Math.max(aFrom,
+aTo)` becomes `Math.min`; `cw` and `ch` swap roles, so `mapRect`'s doc claim
+that "`x`/`w` come out unchanged" inverts to `y`/`h`, and `viewport.test.ts`'s
+`heightens` test becomes a `widens` test. The `MapKind` name and the doc block
+that explains the `max` choice at length both change with it: that explanation
+is measured wrong.
+
+The alternatives it beat, in order: `letterbox` as currently shipped, which
+corrects nothing on the axis that needs it and adds four times the error on the
+axis that does not; `identity`, which is right on the vertical and uncorrected
+on the horizontal and would still be the recommendation had the reverse run
+failed to invert; and `reset`, which is not a residual but a half-page bound.
+`zoomModule`'s `onSwap` default and Task 7 Step 8's `kind` must not be `reset`.
+
+The transform is TypeScript, so this note is the record and the unit tests
+beside `mapRect` are the guard. A Rust corpus check cannot see a change to
+`mapRect`; that is why there is no thirteenth gated check, and it is a decision
+rather than an omission.

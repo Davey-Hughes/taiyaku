@@ -81,7 +81,11 @@ fn unusable(value: &str, is_dir: bool) -> Option<String> {
 ///
 /// The panic is O15's rule applied to an environment variable: a value typed
 /// with nothing usable behind it is refused rather than read as absent.
-fn corpus() -> Option<PathBuf> {
+/// `pub(crate)` for `geometry_experiment`, which is gated the same way and must
+/// gate it the *same* way rather than carrying a second copy of this rule —
+/// unset skips, set-but-unusable panics. Two spellings of one gate is how one
+/// of them ends up skipping in silence, which is the failure O30 closed.
+pub(crate) fn corpus() -> Option<PathBuf> {
     let value = std::env::var("TAIYAKU_CORPUS").ok()?;
     let root = PathBuf::from(&value);
     if let Some(why) = unusable(&value, root.is_dir()) {
@@ -95,7 +99,7 @@ fn corpus() -> Option<PathBuf> {
 ///
 /// Order does not matter — `taiyaku_read::read_edition` sorts naturally, which it has
 /// to, because `c005.5.cbz` sorts before `c005.cbz` in every shell glob.
-fn members(dir: &Path) -> Vec<String> {
+pub(crate) fn members(dir: &Path) -> Vec<String> {
     let archives: Vec<String> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
         .filter_map(|entry| {

@@ -21,6 +21,11 @@ mod corpus;
 mod credits;
 mod duplicates;
 mod fingerprint;
+// A one-off measurement rather than a shipped command, and gated on
+// `TAIYAKU_CORPUS` exactly as `corpus` is — so it is declared the same way, and
+// no part of it is compiled into the binary.
+#[cfg(test)]
+mod geometry_experiment;
 mod inventory;
 mod report;
 mod signature;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  cellOf,
   cellsFor,
   correctionTiles,
   type Group,
@@ -203,6 +204,32 @@ describe('cellsFor', () => {
     const spread = cellsFor({ slots: [4, 5], spread: true }, 'ltr')
     expect(pair).toEqual({ wide: false, first: 2, second: 3 })
     expect(spread).toEqual({ wide: true, first: 4, second: 5 })
+  })
+})
+
+describe('cellOf', () => {
+  it('names the cell an ordinary pair puts a slot in, ltr', () => {
+    expect(cellOf({ slots: [2, 3] }, 'ltr', 2)).toBe('first')
+    expect(cellOf({ slots: [2, 3] }, 'ltr', 3)).toBe('second')
+  })
+
+  // The half the swap would land on if reading direction were ignored is the
+  // *other* one, which is the whole reason this reads `cellsFor` rather than
+  // comparing against `group.slots[0]`.
+  it('reverses with rtl, because the cells do', () => {
+    expect(cellOf({ slots: [2, 3] }, 'rtl', 2)).toBe('second')
+    expect(cellOf({ slots: [2, 3] }, 'rtl', 3)).toBe('first')
+  })
+
+  it('is `only` for a joined spread, either half and either direction', () => {
+    const spread: Group = { slots: [4, 5], spread: true }
+    expect(cellOf(spread, 'ltr', 4)).toBe('only')
+    expect(cellOf(spread, 'ltr', 5)).toBe('only')
+    expect(cellOf(spread, 'rtl', 4)).toBe('only')
+  })
+
+  it('is `only` for a solo slot with no pairing partner', () => {
+    expect(cellOf({ slots: [7] }, 'rtl', 7)).toBe('only')
   })
 })
 

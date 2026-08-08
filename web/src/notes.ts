@@ -1,6 +1,44 @@
 import type { Resolver } from './resolver'
 
-/** A rectangle on one slot, in fractions of that slot — never pixels. */
+/**
+ * A rectangle marked on a note's slot, in fractions of the **page** that slot
+ * is drawn on — never pixels.
+ *
+ * *Corrected on 2026-08-08. Every "slot fractions" in this file said slot and
+ * meant page, from M5c until L1 needed the two told apart; the code has
+ * measured against the drawn page throughout.* `App.tsx`'s `pointOn` is where
+ * the numbers are made and says so — it reads the `<img>`'s own
+ * `getBoundingClientRect()` through `paintedBox` below — and
+ * `Annotations.tsx` positions every marker as a percentage of that same
+ * painted box.
+ *
+ * **The two readings differ on exactly one thing: a joined spread.**
+ * `pairing.ts`'s `groups` draws a spread's two slots as one wide image and
+ * `tiles.ts` says the group "stands for *both* halves as a single wide tile
+ * and has no one half to name", so slots `4L` and `4R` are expressed against
+ * the same page and a region anchored to either can name any part of it.
+ * Everywhere else a slot is a page and the two coincide, which is why nothing
+ * has gone wrong under the old wording.
+ *
+ * **The consequence belonged to L1, and L1 discharged it on 2026-08-08.**
+ * Where one edition joins a spread and the other splits it, getting a reader
+ * to the right half is the transform's job — the slot model gets them to the
+ * right *page* and stops. `viewport.ts`'s `Drawn` now carries a `half` for
+ * exactly that: `mapView` takes the rect out of `halfBox`'s box on the way in
+ * and puts it back on the way out, and hands `mapRect` the half's own frame
+ * rather than the spread's. Note *regions* still do not travel — that was
+ * never L1's scope — but the transform they would travel through no longer has
+ * this hole in it.
+ *
+ * *Until then this paragraph read "L1 did not discharge it" and described the
+ * failure: `mapView` was handed each side's drawn image and nothing about
+ * halves, and `mapRect` derives everything from the two aspects, so it read
+ * the spread's extra width as margin at both edges and mapped its central band
+ * onto the single page rather than the half the reader was on. Kept rather
+ * than deleted, because it is the sharpest case of what the correction at the
+ * top of this comment is about — everywhere else a slot is a page, and a
+ * spread is where the difference is actually paid.*
+ */
 export interface Region {
   x: number
   y: number
@@ -43,10 +81,20 @@ export interface NoteHere {
   note: Note
   /**
    * Written on another edition and resolved onto this slot. Its region does
-   * **not** travel — transforming one correctly is L1 geometry, a *Later*
-   * item — so a travelled note draws a margin tab and never a tint. Drawing
-   * the box at an untransformed position would put it over the wrong panel,
-   * which is the reader lying about what it knows.
+   * **not** travel, so a travelled note draws a margin tab and never a tint.
+   * Drawing the box at an untransformed position would put it over the wrong
+   * panel, which is the reader lying about what it knows.
+   *
+   * *Updated 2026-08-08.* This said "transforming one correctly is L1
+   * geometry, a *Later* item". L1 landed, and the transform now exists —
+   * `viewport.ts`'s `mapRect`, measured over the corpus. What has not been
+   * built is drawing a region through it, which L1's design put out of scope
+   * by name so the milestone stayed one shippable thing
+   * (`docs/superpowers/specs/2026-08-07-l1-geometry-design.md`, "What L1 is
+   * for"). So the behaviour here is unchanged and the reason for it has
+   * moved: not "no transform exists" but "nothing draws through the one that
+   * does" — which is cheaper than it was, not free, since the transform is
+   * shared and the drawing is not.
    */
   travelled: boolean
 }
@@ -190,11 +238,15 @@ export function notesBySlot(
 }
 
 /**
- * Where a note's margin tab sits, as a fraction of the slot's height.
+ * Where a note's margin tab sits, as a fraction of the page's height.
  *
- * The middle of its region, or the middle of the slot for a whole-slot note.
+ * The middle of its region, or the middle of the page for a whole-slot note.
  * Fractions in, fraction out — the arithmetic is scale-free, so a tab tracks
  * at any fit scale with nothing to recompute.
+ *
+ * Page rather than slot, per `Region`'s doc — though this is the one axis
+ * where the distinction cannot bite: a joined spread's two slots split its
+ * width, not its height, so a spread half is exactly as tall as its page.
  */
 export function tabOffset(note: Note): number {
   return note.region ? note.region.y + note.region.h / 2 : 0.5
@@ -243,11 +295,11 @@ const clampFraction = (v: number) => Math.min(Math.max(v, 0), 1)
 const clamp = clampFraction
 
 /**
- * A drag, in slot fractions, as a region.
+ * A drag, in page fractions, as a region.
  *
  * Normalised so dragging up-and-left produces the same rectangle as
- * down-and-right, and clamped to the slot so a drag that leaves the page still
- * names something inside it — the server refuses a region outside `0..1`, and
+ * down-and-right, and clamped to the page so a drag that leaves it still names
+ * something inside it — the server refuses a region outside `0..1`, and
  * refusing a reader's note because their pointer left the image is not an
  * answer.
  */
@@ -304,6 +356,11 @@ export function paintedBox(
 /**
  * A point in an element's pixels, as fractions of the painted page.
  *
+ * The name says slot and the doc says page, which is the whole of `Region`'s
+ * correction in one identifier. Kept rather than renamed: it is exported,
+ * called from `App.tsx`'s `pointOn` and named by its own tests, and this pass
+ * changes comments only.
+ *
  * Deliberately **not** clamped: a point in the letterbox reads as outside
  * `0..1`, and `regionFromDrag` is what clamps a whole drag once both ends are
  * known. Clamping here would silently move one end of a drag before the
@@ -337,7 +394,7 @@ export function pointAt(at: { x: number; y: number }): Region {
 }
 
 /**
- * Whether a point in slot fractions falls inside a region.
+ * Whether a point in page fractions falls inside a region.
  *
  * What decides whether a drag on the page *moves* the region already there or
  * draws a new one, so getting it wrong means a reader who meant to nudge a box
@@ -363,7 +420,7 @@ export function regionContains(
 }
 
 /**
- * A region translated by an offset, kept whole and kept inside the slot.
+ * A region translated by an offset, kept whole and kept inside the page.
  *
  * **Clamped as a whole rather than per edge.** Clamping `x` and `y`
  * independently against `0..1` would let a region dragged past the corner keep
@@ -372,7 +429,7 @@ export function regionContains(
  * reads as the tool fighting you. Moving the origin within `0 .. 1 - w`
  * instead means it stops at the edge at exactly the size it had.
  *
- * A region that already fills the slot has nowhere to go and stays put, which
+ * A region that already fills the page has nowhere to go and stays put, which
  * falls out of the same arithmetic rather than needing a case.
  */
 export function moveRegion(region: Region, dx: number, dy: number): Region {

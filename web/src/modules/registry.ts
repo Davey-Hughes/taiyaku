@@ -7,6 +7,7 @@ import { prefetchModule } from './prefetch'
 import { readoutsModule } from './readouts'
 import { regroupModule } from './regroup'
 import { settingsModule } from './settings'
+import { zoomModule } from './zoom'
 
 /**
  * Every reading behaviour this build ships, declared once. `motionModule`
@@ -63,6 +64,20 @@ import { settingsModule } from './settings'
  * `modules/credits.ts`'s own doc said plainly what the section did meanwhile.
  * That is the shape to repeat for the next module registered ahead of its
  * behaviour, not an argument that this one is still waiting.
+ *
+ * `zoomModule` is the ninth, and lands in `creditsModule`'s earlier situation
+ * rather than its current one: three keys declared (`=`, `-`, `0`) and none of
+ * them do anything yet. This array is still the whole story for *existence* —
+ * a `Zoom` section appears in the generated settings panel the moment it is
+ * in this array, `enabled`, `maxScale` and `step` as ordinary controls and
+ * `onSwap` as a choice, the same `defaults`-plus-`options` generation
+ * `creditsModule` already exercises. What registration does not reach is the
+ * same thing it never reached for `credits` while `credits` was inert:
+ * `intentOf` resolves `=` to `zoom:in` correctly, but `App.tsx`'s
+ * module-intent switch has no `case` for it yet, so the key is swallowed by
+ * that branch's own `preventDefault()` and does nothing. Those cases are
+ * Task 7 of the same milestone
+ * (`docs/superpowers/plans/2026-08-07-l1-geometry.md`), not a later one.
  */
 const modules = [
   directionModule,
@@ -73,6 +88,7 @@ const modules = [
   annotationsModule,
   settingsModule,
   creditsModule,
+  zoomModule,
 ]
 
 export const registry = buildRegistry(modules)

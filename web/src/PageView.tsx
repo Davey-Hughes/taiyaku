@@ -15,11 +15,36 @@ import {
  * to reconcile: aspect preserved, downscaled to fit, never cropped, never
  * distorted, never force-filled. The container's `align-items: center` (with
  * this image's default `flex-grow: 0`) is what keeps a page smaller than the
- * viewport at its own size instead of stretched to fill — upscaling past
- * 100% is a `fit` module setting in M5b and is off until then.
+ * viewport at its own size instead of stretched to fill.
  *
- * The letterbox around the page is background, and it is where the annotation
- * margin tabs will live in M5c.
+ * **Two different mechanisms decide how large a page is drawn, and only one of
+ * them is here.** *Corrected on 2026-08-08, when L1 shipped zoom.* This
+ * paragraph read "upscaling past 100% is a `fit` module setting in M5b and is
+ * off until then", which was already wrong about M5b — it came and went with
+ * no `fit` module, deferred by name in
+ * `docs/superpowers/plans/2026-08-03-m5b-modules.md` — and zoom has since made
+ * it incomplete as well. What each mechanism does:
+ *
+ * - **`fitWhole`, here, governs how one page sits in its own box** — the cell
+ *   `App.tsx` draws it into, which in `two` mode is half the group. Inside
+ *   that box nothing below upscales: `max-width`/`max-height` at 100% is the
+ *   ceiling and this milestone did not raise it. `upscaleToFit` is still an
+ *   unbuilt `fit` module setting
+ *   (`docs/superpowers/specs/2026-08-02-reader-m5-design.md`), and raising it
+ *   is what that setting would do.
+ * - **`Viewport` scales the group around it.** L1 puts a single CSS transform
+ *   on a wrapper above `renderGroup`'s output, so a zoomed page is painted
+ *   past its natural size with no declaration here changing — a transform
+ *   scales this box along with everything else in the group, and changes
+ *   nothing about layout size. That is the route by which a page now exceeds
+ *   100%, and `Viewport.tsx`'s own doc is why it sits above `PageView` rather
+ *   than resizing the images underneath.
+ *
+ * Scroll mode has neither: `App.tsx` wraps only the single and two-page branch
+ * in `Viewport`, so fit-whole is still the whole story there.
+ *
+ * The letterbox around the page is background, and since M5c it is where the
+ * annotation margin tabs live.
  */
 const fitWhole: CSSProperties = {
   maxWidth: '100%',

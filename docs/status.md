@@ -1,6 +1,6 @@
 # Status
 
-Where the project is, what is settled, and what comes next. Updated 2026-08-07.
+Where the project is, what is settled, and what comes next. Updated 2026-08-08.
 
 The detailed evidence for everything asserted here is in [`notes.md`](notes.md),
 which is a working log rather than a summary — every claim below traces to a
@@ -35,12 +35,25 @@ swap makes, marked in the margin, and listed — including the notes that cannot
 be reached from where the reader is standing, which are marked rather than
 hidden.
 
+**L1 shipped zoom, and with it the first thing the alignment does for a reader
+that a side-by-side viewer cannot do at all.** A reader zoomed into a speech
+balloon on the raw presses the swap and lands on the same balloon in English:
+the rect they are looking at is mapped onto the other edition's page and the
+viewport fitted around the result. A page turn carries the view and re-clamps;
+continuous scroll is untouched and keeps fit-whole. **Which transform does the
+mapping was measured rather than argued, and the measurement went against the
+design**: of the two candidates it named, one turned out worse than doing
+nothing, and what ships is a third neither had proposed. §5 below is the record.
+Nothing in the sidecar, the aligner or the server changed to make it work.
+
 ## What is built
 
-Five crates, 418 tests, plus 417 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 424 tests, plus 497 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
-and `vite` in `web/`. Twelve of the 418 are standing checks gated on
+and `vite` in `web/`. That list did not grow for L1: zoom is a CSS transform and
+a page of arithmetic, and its corpus experiment fingerprints with `image` and
+`rayon` exactly as `align` already did. Twelve of the 424 are standing checks gated on
 `TAIYAKU_CORPUS` — nine in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
@@ -63,6 +76,23 @@ what each one measured. `check-all.sh` runs all twelve with `--nocapture`
 against an absolute, canonicalised `TAIYAKU_CORPUS`, so a green gate shows what
 each one measured, or says plainly that it did not run them at all.
 
+**A thirteenth test is gated on `TAIYAKU_CORPUS` and is deliberately not one of
+those twelve.** `crates/taiyaku-cli/src/geometry_experiment.rs` is L1's one-off
+measurement of which derived transform a swap should map through, and it stays a
+measurement rather than becoming a check: it asserts only that it measured
+something — a non-empty sample, a search that found a minimum in every volume,
+every residual finite — so that a glob matching no volume cannot print an empty
+table and pass, which is the one failure a measurement must not have.
+`check-all.sh` filters on `corpus::`, so it does not reach this one and the
+twelve above are still twelve; it also wants `--release`, under which it takes
+about a minute against about forty without. Not promoting it was decided in
+advance, by a rule fixed before the number existed (the L1 design's §4), and
+the rule's first branch fired. It also could not have been promoted as written:
+the transform it picked is TypeScript, so a Rust corpus check would re-measure
+page dimensions no code in this repository can alter and go green while the
+browser did something else. The unit tests beside `mapRect` are what guards
+`mapRect`. See `notes.md`, "The exposure, and why there is no standing check".
+
 `taiyaku-core` is the portable half — no I/O, so it compiles to WebAssembly:
 
 | Module | Holds |
@@ -82,7 +112,7 @@ is not shaped by what can cross the JavaScript boundary.
 | `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, notes (`<stem>.notes.json`, read and written whole under `If-Match`), an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below). A caching split runs the length of the file: the four routes whose bytes are fixed by a member's `sha256` carry a day's freshness — two of them an `ETag` as well, and the thumbnail and cover neither, since both find the member only inside `spawn_blocking`, too late for a validator to save the work it would be skipping — while every route answering a document this server rewrites carries no freshness at all, on the `304` as well as the `200`, which is the half that is easy to get wrong (O1) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
-| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of six `ReaderModule`s — of eight the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint, with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the page it sits over rather than the box around it; a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself). The other two registry entries claim no reading behaviour. `settings` claims only the panel's own key. `credits` (§4 below) is the eighth and the only one whose behaviour is a panel rather than a page treatment: `C` lists the viewed edition's credit pages, a thumbnail and a page number each and no labels the sidecar cannot support, and `skip` keeps them out of the reading flow by being handed to `groups` rather than filtering its result — so the page area, the arrows and the filmstrip skip together, and two-page mode re-pairs around a skipped slot instead of stranding its neighbour. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
+| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of seven `ReaderModule`s — of nine the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint, with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the page it sits over rather than the box around it; a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself), and `zoom` (§5 below: free continuous zoom and pan in single-page and two-page mode — wheel or pinch anchored at the pointer, a drag to pan with the note editor closed or a modifier held, and `=`, `-` and `0`; the view is one rect in *group* space, since a viewport can straddle both halves of a pair, and it is drawn as a single CSS transform on a wrapper, so `PageView`, `paintedBox` and every existing measurement are untouched; a page turn carries the rect and re-clamps, and a swap carries the visible content onto the other edition's page through the derived transform, or throws it away, a preference either way; continuous scroll keeps fit-whole, deliberately — its zoom is a different mechanism, since the strip's layout height is a function of scale and pan competes with scroll rather than sitting beside it). The other two registry entries claim no reading behaviour. `settings` claims only the panel's own key. `credits` (§4 below) is the only one whose behaviour is a panel rather than a page treatment: `C` lists the viewed edition's credit pages, a thumbnail and a page number each and no labels the sidecar cannot support, and `skip` keeps them out of the reading flow by being handed to `groups` rather than filtering its result — so the page area, the arrows and the filmstrip skip together, and two-page mode re-pairs around a skipped slot instead of stranding its neighbour. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
 
 `taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
 a member becomes pages" — so two consumers deriving it separately is a defect the
@@ -216,6 +246,19 @@ alternative that lost.
   together on 2 of the 7 that nest, the third shifts everything after a
   `ComicInfo.xml` on 12.
 - **A content-addressed fingerprint cache** keyed on member SHA-256. 3.4 s → 189 ms.
+- **`pillarbox` as the transform a swap maps the visible rect through** — the
+  shared artwork is as tall as the taller page says, and the wider-aspect page
+  carries its extra as margin at left and right. Measured over the 284 slots
+  whose search settled, of 288 sampled from twelve corpus volumes across four
+  series: median residual **0.0195 of page width and 0.0041 of page height**,
+  p90 0.0276 and 0.0116. It beat `identity` (0.0296 / 0.0041 — right on the
+  vertical, uncorrected on the horizontal), `letterbox` (0.0296 / 0.0162, which
+  is **worse than doing nothing**: it never rescales the axis that needed
+  correcting and adds four times `identity`'s vertical error to the axis that
+  did not) and reset-on-swap, which is a half-page bound rather than a residual.
+  Neither of the two candidates the design named won, and `pillarbox` was not
+  one of them; §5 below and `notes.md`, "Which derived transform maps a rect
+  between editions", are the record.
 
 ## What has been proven against real material
 
@@ -1514,7 +1557,13 @@ deleted, for the reason the open-items table gives: a list that only ever grows
 says nothing about whether anything lands. **All four are now shipped whole**:
 the fourth's reader half — the panel and a `skip` that governs something —
 landed on 2026-08-07 with O25, which had blocked it, closed the same day.
-Everything still genuinely unbuilt is under "Later".
+
+**A fifth arrived from below rather than from this list.** L1 geometry sat under
+"Later" from 2026-07-30, the day this file was written, until it shipped on
+2026-08-08; it is §5. The entry that advertised it is kept and corrected at the
+foot of "Later" rather than deleted, because both halves of what it promised
+turned out to be wrong and that is worth reading. Everything still genuinely
+unbuilt is under "Later".
 
 ### 1. Refuse on margins, not just counts — measured, and margin does not fit
 
@@ -1935,14 +1984,22 @@ implementation of travel exists to disagree with the first. Notes live in
 written whole under `If-Match` through the atomic writer O2 introduced; the
 `GET` synthesises an empty document where no file exists, so a client's *first*
 write is an ordinary conditional write rather than a second precondition
-spelling. A note is anchored to a **slot**, never a page, and its region — when
-it has one — is fractions of that slot, so a re-scan or a different served
-resolution cannot move a marker.
+spelling. A note is anchored to a **slot**, never a page, while its region —
+when it has one — is fractions of the **page that slot is drawn on**, so a
+re-scan or a different served resolution cannot move a marker. *That last figure
+read "fractions of that slot" until 2026-08-08; the code has measured against
+the drawn page since M5c, and the two differ only on a joined spread, whose two
+slots share one wide image. `notes.ts`'s `Region` carries the correction and
+what it costs L1.*
 
 **What it deliberately does not do, stated rather than discovered.** A
-region does **not** travel: transforming one between editions is L1 geometry,
-so a travelled note draws a margin tab and never a tint, because drawing the
-untransformed box would put it over the wrong panel. Two devices annotating
+region does **not** travel, so a travelled note draws a margin tab and never a
+tint, because drawing the untransformed box would put it over the wrong panel.
+*Until 2026-08-08 the reason given here was that transforming one between
+editions is L1 geometry. L1 shipped; the transform exists and is measured, and
+what is missing is drawing a region through it — deliberately out of that
+milestone's scope, and cheaper now rather than free, since the transform is
+shared and the drawing is not. See §5.* Two devices annotating
 one work do not *merge* — the second is refused with the current validator and
 re-applies, the same bargain `patch_alignments` makes, and merging would need
 this server to decide what two conflicting edits to one note mean. Export is the stored
@@ -2128,13 +2185,186 @@ TypeScript — one derivation, read through the `Resolver` from
 `taiyaku_core::slot::expand`, which is what its own doc comment asked for. The
 `Pagination` it could not be given no longer exists.
 
+### 5. L1 geometry — shipped, and what shipped was in neither candidate list
+
+Promoted out of "Later" on 2026-08-08 rather than reached in order, which is why
+a list that opens "all four" has a fifth entry.
+
+**What it is.** Free continuous zoom and pan in single-page and two-page mode —
+wheel or pinch anchored at the pointer, a drag to pan — a page turn that carries
+the view onto the next group and re-clamps it, and a swap that carries the
+*visible content*: the rect the reader is looking at, named against the other
+edition's page and then fitted around. Zoom is a `ReaderModule` like the other
+eight, so its four preferences generate their own settings section with no
+hand-wiring and its three keys are checked against the live registry at startup.
+
+**A drag pans from the grey around the page as well as from the page.** That
+took two goes. The first rule was "the press is on the drawn `<img>`", which
+was the narrowest thing true of the page and false of a control — and it made
+the letterbox dead to a drag, which a reader trying it reported straight away.
+The comment defending it had *stated* that cost and judged it acceptable on the
+grounds that the letterbox shrinks as the zoom grows; what that missed is that
+a reader reaches for the nearest grey to drag from, and being ignored there
+reads as the pan being broken rather than as a boundary. It now excludes
+controls instead of requiring the page, via `keys.ts`'s `isInteractivePress` —
+the ancestor-aware sibling of the `isInteractiveTarget` the keydown handler
+uses, and the ancestry is the point: a press on a note-list entry lands on the
+*text*, so the keydown rule answers `false` for exactly the case the image test
+existed to catch. Confirmed in the browser both ways: a drag from the grey pans,
+a drag begun on a note's margin tab does not.
+
+**Verified in a browser against the corpus**, on sidecar copies with absolute
+member paths so nothing written landed in `corpus/`: a wheel zoom holds the
+point under the pointer to zero drift and the scale is uniform at every
+magnification sampled; a swap onto a joined spread lands on the correct half
+(`raw-mono` 5 → `en-mono` 4 at page fraction x 0.526–0.974, which `taiyaku
+lookup` independently calls "4 right half"); two-page mode carries a viewport
+straddling both cells; an annotation region stays on its art through a zoom and
+a pan; and scroll mode draws no transform at all. What no test here touches is
+trackpad *feel* — `PER_NOTCH.pinch` and the notch caps are guesses, and a
+synthetic wheel event cannot say whether `{ passive: false }` defeats a real
+trackpad's chrome-zoom.
+
+**Fit beat fill, and it is the swap's whole promise.** Filling the viewport
+crops a sliver that was visible a moment ago, and a swap that hides something
+the reader was looking at is the failure that makes the feature untrustworthy.
+Fitting shows a little extra instead — the same conservative direction the
+composition loss takes, where a reader sees "no counterpart" rather than a wrong
+page. Magnification is deliberately *not* the invariant: two editions are
+different physical printings at different scan resolutions, so "the same zoom
+factor" is a statement about pixels rather than about art.
+
+**Carrying the view across a page turn beat two alternatives.** Panning to the
+reading-order start is the conventional reader behaviour and is wrong here for
+the same reason the swap preserves content — someone zoomed into a corner is
+working through something, and moving them is a decision made on their behalf.
+Resetting on every turn has no hidden state and makes a reader with small text
+re-zoom on every page, at a cost borne entirely by the person the feature exists
+for.
+
+**Nothing in the sidecar, the aligner or the server changed**, and that was the
+scope decision rather than a happy accident. The transform is derived at read
+time from the two drawn images' natural dimensions; `sidecar.md`'s
+forward-compatibility rule already permits adding a stored one later without a
+version bump, so the door stays open at no cost — which is the reason not to
+have walked through it on no evidence, the same ground the gatefold question is
+deferred on.
+
+**The measurement went against the design, and that is the headline.** The
+design named two candidate transforms and a baseline, and fixed the promotion
+rule before any number existed so that the result decided the cost rather than
+the cost deciding how the result reads. `crates/taiyaku-cli/src/geometry_experiment.rs`
+then sampled 288 paired slots — 24 each from twelve corpus volumes across four
+series, `raw-mono` against `en-mono`, the one edition pair all twelve carry —
+and for each ran a coarse-to-fine grid search for the best rect-to-rect map,
+scored with the solver's own `similarity` over `fingerprint` rather than a
+metric invented for the question, so the numbers are in the same currency as
+every other figure in `notes.md`. Reported over the 284 whose search settled;
+the four dropped ended the coarse pass against the wall of its own range, which
+is the search saying it ran out of room rather than that it found a minimum.
+The outcome:
+
+- **`pillarbox` won, and neither the design nor the plan had named it** — the
+  experiment is where it came from, because nothing had looked yet. It takes
+  the **min** of the two aspects as the shared content's where `letterbox`
+  takes the max — one token in `mapRect`. Median residual 0.0195 of page width
+  and 0.0041 of page height, p90 0.0276 and 0.0116; it beats `identity` on the
+  horizontal in 10 volumes of 12, and the two it does not are the two whose
+  aspects nearly match already, where there is almost nothing for either rule
+  to correct.
+- **`identity` finished second**, 0.0296 / 0.0041 — exactly right on the
+  vertical, uncorrected on the horizontal.
+- **`letterbox`, which the design named and which `mapRect` carried from the
+  task that built it until the measurement replaced it, finished third and lost
+  to doing nothing.** 0.0296 / 0.0162: it never rescales
+  the horizontal, so it inherits `identity`'s horizontal residual whole, and
+  then adds a vertical error four times `identity`'s at the median on an axis
+  the pixels wanted left alone. A candidate that can only add error to one axis
+  and correct nothing on the other is not a candidate.
+- **`reset` loses to all three.** It is a bound rather than a residual — the
+  reader sees the whole page and re-finds the balloon, so up to half of one —
+  and it does not need measuring while every candidate above is inside 5% of a
+  page.
+
+**The horizontal finding could have been an artefact, and two runs exclude it
+between them.** `fingerprint` resizes every crop to one fixed grid, so a search
+can buy similarity by squaring two renderings up rather than by locating
+artwork, and the finding — the best map's horizontal scale tracking `aFrom/aTo`
+in twelve volumes of twelve — is exactly what that would look like. A control
+ran the same search against a resample of the *source* page, where the aspect
+difference is fully present and the true answer is known to be identity: it came
+back `sx/sy = 1.0000` in all twelve, at a residual of 0.0011. And the same
+search run backwards over the same slots inverts, in twelve of twelve — the two
+directions' horizontal scales multiply to a median 0.9941, against the 1.0842
+they would give if the scale belonged to the metric rather than to the pages.
+Neither run alone would do it: the control excludes the direction-antisymmetric
+artefact and the reverse run excludes the direction-blind one.
+
+**The threshold this was judged against is still a guess, and says so.** What
+fraction of a page a panel occupies has never been measured and this experiment
+did not measure it either; the working figure was that 5% of a 1200px page is
+about 60px, a fraction of a balloon rather than a panel. `pillarbox`'s p90 of
+2.8% of page width sits at half that and its vertical p90 of 1.2% at a quarter.
+
+**The spread half was a scope gap, and it was closed on 2026-08-08.** Where one
+edition joins a spread and the other splits it, a swap now lands on the half the
+reader's slot names. Both halves of a joined spread are drawn as one wide image
+and share one coordinate space (`notes.ts`'s `Region`), so getting a reader to
+the correct half is the transform's job rather than something the slot model
+absorbs — which is what the design's §1 said and what the implementation did not
+do. The fix is two arguments and no new arithmetic: `viewport.ts`'s `Drawn`
+carries a `half`, `mapView` takes the rect out of that half's box on the way in
+and puts it back on the way out, and `mapRect` is handed the half's own frame
+rather than the whole spread's, since it reconciles two *aspects* and a joined
+spread's is twice its half's. Where the half sits in the composition is forced
+rather than chosen — a half is half of the *image*, and `paintedIn`'s letterbox
+is where image fractions begin, so a half applied before it would be half of the
+cell instead. A slot with no half passes through both new steps as a
+floating-point identity rather than a near one, which is why they are
+unconditional and why every `mapView` test written before them holds unchanged.
+
+*Until that date this paragraph read "what it does not do, stated plainly
+because a reader would hit it". `mapRect` was handed the two drawn images and
+nothing about halves, so it read the spread's extra width as margin at both
+edges and mapped its central band onto the single page — the fold, rather than
+either of the pages the other edition prints. The finding was **read off
+`mapView`'s composition rather than driven**: the by-hand pass crossed a joined
+spread with an *arrow*, which is a turn within one edition and unaffected, and
+did not swap between an edition that joins one and an edition that splits it.
+That is the part worth keeping now the defect is gone. It was reachable on the
+primary corpus — `en-mono` joins Go-Toubun v01's page 4 where the raw prints two
+pages — and a pass with hands on the keys still did not meet it, because meeting
+it needed one particular key pressed in one particular place.*
+
+**Two smaller exposures remain, and both are measured rather than guessed.**
+`pillarbox` leaves 2.0% of page width at the median, part of which is a per-page
+horizontal offset that moves by up to 0.083 within a single volume and which
+nothing derived from two frames can correct; and the vertical residual is 0.4%
+at the median against a control floor of 0.1%, uncorrected by every candidate
+here.
+
+**Travelled note regions are still not drawn**, and the reason has changed
+rather than gone: the transform they needed now exists, so what remains is
+drawing through it. L1's design put that out of scope by name to keep the
+milestone one shippable thing.
+
 ### Later
 
-- **L1 geometry** — affine transform per pair, so a swap preserves zoom and pan.
-- **L2 text regions** — bubble pairing by transformed centroid, which L1 makes
-  arithmetic rather than a matching problem.
+- **L2 text regions** — bubble pairing by transformed centroid, which L1's
+  `mapRect` now makes arithmetic rather than a matching problem.
 - **Art book linking**, if it is worth it — needs a different hash, and roughly one
   art book page in three has any manga counterpart at all.
+
+**L1 geometry left this list on 2026-08-08, and the line it left behind is kept
+rather than deleted.** It read:
+
+> **L1 geometry** — affine transform per pair, so a swap preserves zoom and pan.
+
+Wrong on both counts, which is exactly why it is worth keeping: a list of future
+work is also a record of what the project expected of that work. There was no
+zoom for a swap to preserve — building it was most of the milestone, and the
+design records that inversion as the largest thing it settled — and no per-pair
+transform is stored, in the sidecar or beside it. §5 above is what shipped.
 
 ## Corpus
 
