@@ -2,6 +2,24 @@
 export interface KeyBinding {
   key: string
   intent: string
+  /**
+   * What this key does, in words a reader can read.
+   *
+   * Optional, and the help screen falls back to `intent` without it, so no
+   * existing declaration breaks. **Added 2026-08-08, and widening this
+   * contract is meant to be a decision rather than a habit** — see this
+   * file's own note that a ninth module needing a new extension point is a
+   * signal to revisit. The signal here was the help screen: `intent` strings
+   * were written as internal identifiers and two of them, `annotations:reveal`
+   * and `annotations:review`, differ by one letter while naming different
+   * things. Rendering those to a reader is not documentation, it is a leak.
+   *
+   * The alternative was stripping the `namespace:` prefix in the overlay,
+   * which fixes half of them and relies on a naming convention nothing
+   * enforces — `zoom:whole` would still read as jargon and `annotations:review`
+   * would still be a near-homograph of its neighbour.
+   */
+  label?: string
 }
 
 /**

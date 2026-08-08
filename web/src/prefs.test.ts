@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { loadPrefs, resetPrefs, savePrefs } from './prefs'
+import { NAMESPACE, loadPrefs, resetPrefs, savePrefs } from './prefs'
 
 function fakeStorage(): Storage {
   const map = new Map<string, string>()
@@ -124,5 +124,19 @@ describe('prefs', () => {
     expect(warn).toHaveBeenCalledTimes(1)
     expect(warn.mock.calls[0]?.[0]).toContain('motion')
     warn.mockRestore()
+  })
+})
+
+describe('the storage namespace', () => {
+  it('prefixes every key, so nothing this reader writes is unqualified', () => {
+    expect(NAMESPACE).toBe('taiyaku.prefs')
+  })
+
+  // Two segments, not one: a later kind of stored value gets a sibling rather
+  // than being mixed in with preferences.
+  it('leaves room for a sibling that is not a preference', () => {
+    const [root, kind] = NAMESPACE.split('.')
+    expect(root).toBe('taiyaku')
+    expect(kind).toBe('prefs')
   })
 })

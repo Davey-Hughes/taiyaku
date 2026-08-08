@@ -27,7 +27,13 @@ export const regroupModule: ReaderModule<RegroupPrefs> = {
   id: 'regroup',
   label: 'Regroup pages',
   defaults: { breaks: {} },
-  keys: [{ key: 'b', intent: TOGGLE_INTENT }],
+  keys: [
+    {
+      key: 'b',
+      intent: TOGGLE_INTENT,
+      label: 'break the two-page pairing at this slot',
+    },
+  ],
 }
 
 /**

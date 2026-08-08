@@ -46,9 +46,18 @@ design**: of the two candidates it named, one turned out worse than doing
 nothing, and what ships is a third neither had proposed. §5 below is the record.
 Nothing in the sidecar, the aligner or the server changed to make it work.
 
+**Three reader complaints landed on top of it, and the browser corrected two
+designs on the way.** Pages fill their box now, the two halves of a spread meet
+at the seam, and `?` or `h` lists every key the reader answers — generated from
+the same table `intentOf` dispatches from, so there is no second copy to drift.
+§6 below is the record, and the parts worth reading are the two failures: the
+seam's design closed the gap on the wrong element and a measurement said so, and
+closing it introduced a regression that put every annotation marker 376px from
+its artwork until the same pass caught that too.
+
 ## What is built
 
-Five crates, 424 tests, plus 497 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 424 tests, plus 581 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
 and `vite` in `web/`. That list did not grow for L1: zoom is a CSS transform and
@@ -112,7 +121,7 @@ is not shaped by what can cross the JavaScript boundary.
 | `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, notes (`<stem>.notes.json`, read and written whole under `If-Match`), an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below). A caching split runs the length of the file: the four routes whose bytes are fixed by a member's `sha256` carry a day's freshness — two of them an `ETag` as well, and the thumbnail and cover neither, since both find the member only inside `spawn_blocking`, too late for a validator to save the work it would be skipping — while every route answering a document this server rewrites carries no freshness at all, on the `304` as well as the `200`, which is the half that is easy to get wrong (O1) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
-| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of seven `ReaderModule`s — of nine the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint, with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the page it sits over rather than the box around it; a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself), and `zoom` (§5 below: free continuous zoom and pan in single-page and two-page mode — wheel or pinch anchored at the pointer, a drag to pan with the note editor closed or a modifier held, and `=`, `-` and `0`; the view is one rect in *group* space, since a viewport can straddle both halves of a pair, and it is drawn as a single CSS transform on a wrapper, so `PageView`, `paintedBox` and every existing measurement are untouched; a page turn carries the rect and re-clamps, and a swap carries the visible content onto the other edition's page through the derived transform, or throws it away, a preference either way; continuous scroll keeps fit-whole, deliberately — its zoom is a different mechanism, since the strip's layout height is a function of scale and pan competes with scroll rather than sitting beside it). The other two registry entries claim no reading behaviour. `settings` claims only the panel's own key. `credits` (§4 below) is the only one whose behaviour is a panel rather than a page treatment: `C` lists the viewed edition's credit pages, a thumbnail and a page number each and no labels the sidecar cannot support, and `skip` keeps them out of the reading flow by being handed to `groups` rather than filtering its result — so the page area, the arrows and the filmstrip skip together, and two-page mode re-pairs around a skipped slot instead of stranding its neighbour. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
+| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of nine `ReaderModule`s — of twelve the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint — the tab in the letterbox beside the page, moving to the *outer* margin in two-page mode since closing the seam leaves a page no margin on its seam side — with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the artwork it sits over rather than the element around it — the same box, until `fit` made the element the whole cell and the two routinely different (§6 below); a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself), `fit` (§6 below: how large a page is drawn inside its own box, and how far the two pages of a spread sit apart — `upscaleToFit` **on** by default, reversing the M5 design, so a 685×1024 scan fills a 1263px box instead of sitting at 1:1 in the middle of it, with `upscaleFilter` exposed beside it because that is a 23% enlargement of line art; and `gap` at `0`, where it is the two pages' *artwork* that meets rather than their elements — a distinction the design got wrong and a browser corrected), `layout` (which of the three reading modes is drawn — a module purely so that it *persists*, since it was component state and so was forgotten on every reload), and `zoom` (§5 below: free continuous zoom and pan in single-page and two-page mode — wheel or pinch anchored at the pointer, a drag to pan with the note editor closed or a modifier held, and `=`, `-` and `0`; the view is one rect in *group* space, since a viewport can straddle both halves of a pair, and it is drawn as a single CSS transform on a wrapper, so `PageView`, `paintedBox` and every existing measurement are untouched — by zoom, which is what this claim was about; `fit` later changed both, §6; a page turn carries the rect and re-clamps, and a swap carries the visible content onto the other edition's page through the derived transform, or throws it away, a preference either way; continuous scroll keeps fit-whole, deliberately — its zoom is a different mechanism, since the strip's layout height is a function of scale and pan competes with scroll rather than sitting beside it). The other three registry entries claim no reading behaviour. `settings` claims only the panel's own key. The remaining two are panels rather than page treatments. `credits` (§4 below): `C` lists the viewed edition's credit pages, a thumbnail and a page number each and no labels the sidecar cannot support, and `skip` keeps them out of the reading flow by being handed to `groups` rather than filtering its result — so the page area, the arrows and the filmstrip skip together, and two-page mode re-pairs around a skipped slot instead of stranding its neighbour. `help` (§6 below): `?` or `h` opens a list of every key the reader answers, generated from `keys.ts`'s one ordered table and from the registry rather than written out — so a binding that changes what it does cannot keep an old description, because there is one description — and listing only the modules that are switched on. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
 
 `taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
 a member becomes pages" — so two consumers deriving it separately is a defect the
@@ -1565,6 +1574,14 @@ foot of "Later" rather than deleted, because both halves of what it promised
 turned out to be wrong and that is worth reading. Everything still genuinely
 unbuilt is under "Later".
 
+**A sixth was never on any list, here or under "Later".** It is three reader
+complaints raised after L1 shipped — pages not filling the page, a gap down the
+middle of a spread, and no way to find out what the keys do — grouped onto one
+branch because each is small and none touches the alignment. It is §6. That it
+came from reading the corpus rather than from a review is the pattern `notes.md`
+keeps recording: the browser is where the reader's own defects surface, and no
+amount of unit testing substitutes.
+
 ### 1. Refuse on margins, not just counts — measured, and margin does not fit
 
 The candidate fix was measured against the corpus rather than shipped. Margins
@@ -2042,7 +2059,11 @@ marker was offset by the letterbox around a portrait page — the drag
 arithmetic had been right all along and the drawing wrong, which is why every
 check that read the stored fractions back agreed with itself. Markers are now
 placed by an overlay that measures the page it sits over, which also gave
-continuous-scroll mode the markers it had never had. **All four share one
+continuous-scroll mode the markers it had never had. *That fix stopped one
+layer short, and only `fit` could reveal it: the overlay measured the `<img>`
+**element**, and until `upscaleToFit` shipped on 2026-08-08 the element and the
+artwork inside it were the same box. §6 has the 376px that opened up between
+them, and where the measurement moved to.* **All four share one
 cause:** each was invisible to a check comparing this code's output to its own
 other output, and obvious to one comparing it to what a person meets — the
 pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
@@ -2347,6 +2368,148 @@ here.
 rather than gone: the transform they needed now exists, so what remains is
 drawing through it. L1's design put that out of scope by name to keep the
 milestone one shippable thing.
+
+### 6. Fit, the seam, and the keybind help — shipped, and two of its designs were wrong
+
+Three unrelated reader complaints raised after L1 shipped, grouped onto one
+branch because each is small and none touches the alignment. They are not one
+feature and this entry does not pretend otherwise.
+
+**What it is.** A `fit` `ReaderModule` — `upscaleToFit` (on), `upscaleFilter`
+and `gap` — so a page fills its box instead of sitting at natural size in a
+large letterbox; a two-page seam the artwork actually meets across, with the
+note tabs moved out of the way of it; and a `help` module whose overlay lists
+every key the reader answers, generated from `keys.ts`'s one ordered
+`READER_KEYS` table and from the registry. Nothing in the sidecar, the aligner
+or the server changed, and no dependency was added.
+
+**The default reverses the M5 design, deliberately, and that document is
+corrected in place rather than rewritten.** It set `upscaleToFit` off and
+argued it well: enlarging a low-resolution scan costs something real, so the
+reader should ask for it. Measured in a browser at a 1400×1263 page area on
+`corpus/gotoubun-v01`, `en-mono` (2147×3056) drew at 887×1263 and filled the
+height while `raw-mono` (685×1024) drew at 685×1024, leaving 239px unused — and
+the first reader to meet that reported it as a defect in the images or the
+aligner, not as a setting they had not found. A default that makes a working
+reader look broken is the wrong default however sound the reasoning behind it,
+so the default reversed and the reasoning stayed. The enlargement is 23% of
+inked line work, which is why `upscaleFilter` shipped in the same commit rather
+than later. Neither the aspect difference (raw 0.6689 against 0.7026, about 5%)
+nor raw-versus-English explains the complaint — `en-fan` at 1114×1600 does the
+same thing on a tall enough display — and both were checked before anything was
+built.
+
+**The seam's design closed the gap on the wrong element, and only a measurement
+said so.** The design had each cell justify its page toward the seam. Built
+exactly as specified it moved nothing: the two `<img>` *elements* already
+touched at 0px while their artwork sat **359px apart**, because `upscaleToFit`
+had just made each element fill its whole cell — leaving `justify-content`
+nothing to distribute — and `object-fit: contain` then centres the art inside
+that element. The fix is `object-position` on the image, which took the 359px to
+**0px**, measured the same way; the cell keeps only the padding that splits
+`gap`. **No test could have caught the dead version.** `justify-content` on a
+box with a single full-width child is silently inert, so an assertion can only
+see that the declaration is present, which is exactly what the assertion in
+`fit.test.ts` did.
+
+**This branch also introduced a regression and then fixed it, which is worth
+the record.** Making the element larger than the artwork inside it broke every
+annotation marker, because `Annotations.tsx` measured the element: in single
+mode a 1385×475 element holding 334×475 of artwork, so a region tint that
+belonged at x 842 was drawn at 466 — out by 376px, on the default settings, from
+the moment `fit` shipped. `notes.ts`'s `paintedBox` was wrong the subtler way:
+it had been an identity for the whole of its life (with `auto` sizing, box and
+content coincide), and when the distinction finally arrived it split the
+letterbox evenly — right for a centred page, wrong for a page against the seam.
+In two-page mode it answered 179 and 872 across the page area where the artwork
+was at 359 and 693. Both now measure the artwork, through one answer in
+`App.tsx` that the drawn pages, the marker overlay and the drag arithmetic all
+ask, so what is drawn and what measures it cannot disagree.
+
+**The tab move is the M5 design's own guarantee going out from under it.** That
+document wrote "fit-whole guarantees the side margins the tabs live in on every
+portrait page", which was true of a centred page and stopped being true of a
+seam-aligned one. In `two` mode a tab now sits in the margin *away* from the
+seam; single and scroll mode are unchanged, and the default is the old
+behaviour. Letting the tabs overlap was cheapest and is the one thing this
+codebase must not do — a tab drawn over the facing page's art asserts a note is
+on a page it is not on.
+
+**The help is generated, which is the whole of its design.** `Space`, the
+arrows, `Tab`, `c` and `1`–`9` used to live in `intentOf` as bare `if`
+statements that nothing could enumerate, so a written help screen would have
+been a second copy of a rule — and this project has spent nine review rounds on
+comments that were true when written and false later. One ordered table is now
+dispatched from and listed from. `KeyBinding` gained an optional `label` for it,
+which is a widening of the module contract and was reported rather than done
+quietly, per `module.ts`'s own rule.
+
+**Verified in a browser against the corpus**, on a scratch sidecar with absolute
+member paths so nothing landed in the gitignored `corpus/`: the artwork seam at
+0px in two-page mode; a region tint at x 842 where 842 was expected in single
+mode, against 466 before the fix, and 663 where 663 was expected in two-page; a
+note tab at x 552–570 with the facing page's artwork starting at 574; `?` and
+`h` both opening the overlay and `Escape` closing it; and the ZOOM section
+disappearing from the list with `zoom.enabled` off. See `notes.md`, "Fit, the
+seam, and the keybind help".
+
+**What is not built**, and why it is a deferral rather than an omission: `trim`
+and `fillWidth`/`fillHeight`, which the M5 design lists in the same module.
+Nobody asked for them, and `trim`'s case — Tongari v09's letterboxed scans — has
+no reader waiting on it. The reasoning is kept in the M5 design for whoever hits
+it.
+
+**One known hole, stated because a reader could meet it.** A module is listed in
+the overlay unless it declares `enabled: false`, and `credits` gates its key on
+a preference called `panel` instead. Turning that off leaves `C` listed while
+the key does nothing. It is the only module in today's registry with an off
+switch under another name; the fix if it grows is a field on the contract, not a
+list of per-module exceptions inside the help module, which is the copy of a
+rule that file exists to avoid.
+
+### 7. Reading direction, and what it did not reach — shipped
+
+Reported as "the reading direction doesn't seem to work". It worked, and did
+less than its name claims: it decided which slot of a pair was drawn on which
+side, and nothing else.
+
+**Two things it did not reach.** The filmstrip ran left-to-right under a
+right-to-left work — measured on `gotoubun-v01`, whose raw is `rtl`: tiles ran
+page 1 at x 26 through page 10 at x 939, *unchanged* when the direction was
+flipped, so a reader hunting a page had to read the strip backwards from the
+pages beside it. And the right arrow always advanced, so in a right-to-left
+work it moved away from the page about to be read.
+
+**One rule, three consumers.** `stepFor` in `modules/direction.ts` answers
+which way a physical arrow turns the page. `App.tsx` maps the arrow intent
+through it, `Filmstrip` lays its rail out with `row-reverse` from the same
+answer, and `helpGroups` asks it which arrow advances so the overlay stops
+telling a manga reader that `→` is the next page. Deriving the help rather
+than restating it is the point: three places each deciding for themselves is
+how they came to disagree.
+
+`row-reverse` rather than reversing the tile array, deliberately. `stepToGroup`,
+the current-tile border and the correction picker all address tiles **by
+index**, and reversing the data would have made every one of them wrong in a
+way no type could catch.
+
+**Verified in a browser** on `gotoubun-v01` with the raw set to `rtl`: `→` went
+page 2 → 1 and two `←` went 1 → 3; the strip came back `row-reverse` with tiles
+descending left to right and the current tile still scrolled into view; the
+overlay read `→ previous page` and `← next page`.
+
+**The mode is remembered too**, which is unrelated except in being a thing the
+reader forgot. `mode` was a `useState`, reset to single page on every load.
+`layoutModule` holds it now, and registration is the whole fix — `App.tsx`
+builds its preference state from `registry.all()` and writes every slice
+through `prefs.ts`, so loading, saving and a settings control all follow.
+
+It is a module rather than a direct `loadPrefs('mode', …)` call, which was
+shorter and would have been the first value this reader stored without being a
+module — and so the first stored key nobody thought to namespace. Everything
+in `localStorage` was already under `taiyaku.prefs.*`; what was missing was
+anything stopping the next value from not being, and `prefs.ts` now states that
+rule where the keys are built.
 
 ### Later
 

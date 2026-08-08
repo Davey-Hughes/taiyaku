@@ -1,7 +1,9 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import type { AnnotationsPrefs } from './modules/annotations'
+import type { ArtworkHug } from './modules/fit'
 import {
   isPoint,
+  paintedBox,
   spreadTabs,
   tabOffset,
   type NoteHere,
@@ -39,7 +41,13 @@ const layerStyle = (box: Box): CSSProperties => ({
   zIndex: 2,
 })
 
-/** Where the drawn page sits inside the page area, in that area's own pixels. */
+/**
+ * Where the page's **artwork** sits inside the page area, in that area's own
+ * pixels — not where the `<img>` element sits, which since `upscaleToFit` is
+ * a much larger box with the artwork somewhere inside it. `PageAnnotations`
+ * builds this through `notes.ts`'s `paintedBox`, which is the one rule for
+ * that distinction and has the measurements.
+ */
 export interface Box {
   left: number
   top: number
@@ -48,26 +56,6 @@ export interface Box {
 }
 
 /**
- * A note's tab, in the margin **beside** the page rather than on it.
- *
- * `left: 100%` places it just past the page's right edge, which is where the
- * design puts it — "fit-whole guarantees the side margins the tabs live in on
- * every portrait page", and nothing is drawn over artwork. This layer is
- * anchored to the page itself (regions are fractions of the page, so it has to
- * be), which makes `right: 2` mean two pixels *inside* the artwork rather than
- * two pixels from the edge of the reader: a 10px translucent sliver on the
- * page's own right margin, against 609px of empty background beside it.
- * Reported as not being able to see the markers at all, and fair — it was
- * hiding on the page.
- *
- * The assumption this rests on is the design's own: a portrait page in a
- * landscape viewport leaves margin. Where it does not — a page as wide as the
- * area it is drawn in — the tab would sit outside the page area's own
- * `overflow: hidden` and be clipped. No page in this corpus does that, and the
- * honest fix if one ever does is to measure the margin rather than to move the
- * tab back onto the artwork.
- */
-/**
  * How far apart two tabs must sit, as a fraction of the page's height.
  *
  * A tab is 26px tall; on a page drawn around 530px high that is roughly 0.05,
@@ -75,14 +63,69 @@ export interface Box {
  */
 const TAB_MIN_GAP = 0.055
 
+/**
+ * A note's tab, in the margin **beside** the page rather than on it — on the
+ * side that page actually has a margin on.
+ *
+ * `'right'` is the default and what every mode but one draws: `left: 100%`
+ * with a 4px offset, just past the page's right edge, which is where the
+ * design puts it and where nothing is drawn over artwork. `'left'` is the
+ * mirror, `right: 100%` with the same offset, and exists for one caller — the
+ * first cell of a real two-page pair.
+ *
+ * **The design's guarantee this used to rest on now has a hole in it.** M5
+ * argued "fit-whole guarantees the side margins the tabs live in on every
+ * portrait page", and that was true of a page centred in its box: `contain`
+ * leaves the same letterbox on both sides, so either would do and the right
+ * was picked. `fit.ts`'s `hug` then closed the two-page seam by pushing each
+ * half's artwork against it — 359px of gap to 0px, measured, see `pageStyle`
+ * — and it pays for that with the whole of one margin per page. In `two` mode
+ * the guarantee holds on the outer side of each page and nowhere else, so
+ * *which* margin stopped being a free choice and became this parameter.
+ * Single mode and scroll mode never hug, so nothing there changed, which is
+ * what the default keeps free.
+ *
+ * Two alternatives, both rejected:
+ *
+ * - **Hold a gap open whenever the left page carries a note.** `fit.ts`'s
+ *   `gap` already reopens a measured amount of seam, so this needs no side at
+ *   all. It buys the margin back at the cost of a seam that opens and closes
+ *   as pages turn — a layout that moves for a reason nothing on screen
+ *   explains reads as a bug, not as room being made for a marker.
+ * - **Let the tabs overlap.** Cheapest of all: no change anywhere. A tab drawn
+ *   past the left page's right edge lands on the facing page's artwork, which
+ *   asserts a note is on a page it is not on. Being hard to find is a
+ *   nuisance; being on the wrong page is the reader lying about what it knows.
+ *
+ * This layer is anchored to the artwork itself (regions are fractions of the
+ * page, so it has to be), which makes `right: 2` mean two pixels *inside* the
+ * artwork rather than two pixels from the edge of the reader: a 10px
+ * translucent sliver on the page's own right margin, against 609px of empty
+ * background beside it. Reported as not being able to see the markers at all,
+ * and fair — it was hiding on the page.
+ *
+ * The assumption this rests on is the design's own: a portrait page in a
+ * landscape viewport leaves margin. Where it does not — a page as wide as the
+ * box it is drawn in — the tab sits outside the page area's own `overflow:
+ * hidden` and is clipped. **`upscaleToFit` made every page's `<img>` exactly
+ * that wide**, and until `PageAnnotations` below started measuring the
+ * artwork rather than the element, this layer was that element: the 1385px
+ * element recorded on `paintedBox` fills a 1385px page area, so `left: 100%`
+ * plus 4px was 4px outside it. Read off `App.tsx`'s `overflow` and that
+ * measurement rather than seen on screen — the controller's browser pass is
+ * what confirms it. Measuring the artwork is what puts the tab back in the
+ * 526px of real background beside the page.
+ */
 const tabStyle = (
   offset: number,
   travelled: boolean,
   colour: string,
+  side: 'left' | 'right',
 ): CSSProperties => ({
   position: 'absolute',
-  left: '100%',
-  marginLeft: 4,
+  ...(side === 'left'
+    ? { right: '100%', marginRight: 4 }
+    : { left: '100%', marginLeft: 4 }),
   top: `${offset * 100}%`,
   transform: 'translateY(-50%)',
   pointerEvents: 'auto',
@@ -239,13 +282,20 @@ const pendingStyle = (
 /**
  * A note's words beside its tab, while the pointer is on it.
  *
- * Anchored to the tab's own vertical position and drawn to the *left*, into
- * the page rather than off the edge of the reader — a tab sits in the right
- * margin, so a popover to its right would run out of window.
+ * Anchored to the tab's own vertical position and drawn *into the page*, away
+ * from whichever margin the tab is in — the same `side` `tabStyle` takes. A
+ * popover outside a right-margin tab runs off the edge of the reader. Outside
+ * a left-margin tab it has only whatever the outer letterbox happens to be,
+ * which is 359px in the two-page geometry `paintedBox` records against this
+ * box's fixed 240px — room there, and nothing promising it at another window
+ * size. Into the page is the one side that is always as wide as the page.
  */
-const popoverStyle = (offset: number): CSSProperties => ({
+const popoverStyle = (
+  offset: number,
+  side: 'left' | 'right',
+): CSSProperties => ({
   position: 'absolute',
-  // Just inside the page's right edge, beside the tab that summoned it.
+  // Just inside the page's own edge, beside the tab that summoned it.
   //
   // It used to be placed at `right: calc(100% + 8px)` — outside the layer
   // entirely — and an absolutely positioned box given only a `right` offset
@@ -254,7 +304,7 @@ const popoverStyle = (offset: number): CSSProperties => ({
   // text came out one letter per line, read as "completely vertical". A fixed
   // `width` rather than `maxWidth` is the other half: shrink-to-fit is exactly
   // what went wrong, so nothing here is left to it.
-  right: 6,
+  ...(side === 'left' ? { left: 6 } : { right: 6 }),
   top: `${offset * 100}%`,
   transform: 'translateY(-50%)',
   width: 240,
@@ -271,10 +321,11 @@ const popoverStyle = (offset: number): CSSProperties => ({
 
 export interface AnnotationsProps {
   /**
-   * Where the page is drawn inside the page area. Every marker here is
-   * positioned as a percentage of *this* box, not of the page area, because a
-   * region is fractions of the page (`notes.ts`'s `Region`) and the area
-   * around a page is letterbox.
+   * Where the page's artwork is drawn inside the page area. Every marker here
+   * is positioned as a percentage of *this* box, not of the page area and not
+   * of the `<img>` element either, because a region is fractions of the page
+   * (`notes.ts`'s `Region`) and everything around the artwork — inside the
+   * element or outside it — is letterbox.
    *
    * `undefined` before the first measurement, and for one frame only — the
    * layer renders nothing rather than falling back to the page area, since
@@ -299,6 +350,14 @@ export interface AnnotationsProps {
   pendingBody?: string
   /** The draft's colour name, so the rectangle being drawn is already the colour it will be. */
   pendingColour?: string
+  /**
+   * Which margin the note tabs sit in — see `tabStyle`, which has the whole
+   * argument. `'right'` by default, so single mode, scroll mode and every
+   * existing call site draw exactly what they drew before this existed; only
+   * the first cell of a real two-page pair asks for `'left'`, because the seam
+   * has taken its right margin.
+   */
+  tabSide?: 'left' | 'right'
   onOpen: (id: string) => void
 }
 
@@ -310,6 +369,7 @@ export function Annotations({
   drawing,
   pendingBody,
   pendingColour,
+  tabSide = 'right',
   onOpen,
 }: AnnotationsProps) {
   const [hovered, setHovered] = useState<string>()
@@ -388,7 +448,7 @@ export function Annotations({
               second apart.
             */}
               {hovering && h.note.body && (
-                <span style={popoverStyle(offset)}>
+                <span style={popoverStyle(offset, tabSide)}>
                   {h.travelled && (
                     <em style={{ opacity: 0.75 }}>on {h.note.edition}: </em>
                   )}
@@ -402,6 +462,7 @@ export function Annotations({
                   offset,
                   h.travelled,
                   noteColour(h.note.color).tab,
+                  tabSide,
                 )}
                 onClick={() => onOpen(h.note.id)}
                 onPointerEnter={() => setHovered(h.note.id)}
@@ -441,6 +502,16 @@ export function Annotations({
  * offset and over-scaled, reported as corners that do not line up with the
  * pointer.
  *
+ * **There are two letterboxes now, and this holds the artwork's box rather
+ * than the element's.** *2026-08-08, with `upscaleToFit` on by default.* The
+ * `<img>` fills its cell and `object-fit: contain` draws the page inside it,
+ * so the element carries letterbox of its own — 526px each side of a 334px
+ * page in the geometry recorded on `notes.ts`'s `paintedBox` — on top of
+ * whatever the cell leaves around the element. Measuring the element was
+ * right while the two coincided and is wrong in every mode now; `paintedBox`
+ * is the rule, applied inside `measure` so a zoom, a pan, a resize and a
+ * decode all go back through it.
+ *
  * Self-measuring rather than measured by `App.tsx`, because the three reading
  * modes hold their pages in different boxes and continuous scroll holds one
  * per group. A component that finds its own page works in all three; a bespoke
@@ -469,8 +540,20 @@ export function Annotations({
 export function PageAnnotations({
   match,
   version,
+  hug,
   ...rest
-}: Omit<AnnotationsProps, 'box'> & { match?: string; version?: unknown }) {
+}: Omit<AnnotationsProps, 'box'> & {
+  match?: string
+  version?: unknown
+  /**
+   * Which edge of its own element this page's artwork is pulled to —
+   * `fit.ts`'s `ArtworkHug`, the same value `App.tsx` hands the `PageView`
+   * underneath. Part of *where the artwork is*, so it belongs to the
+   * measurement rather than to the drawing: `'centre'` by default, and only a
+   * real two-page pair's two cells pass anything else.
+   */
+  hug?: ArtworkHug
+}) {
   const anchor = useRef<HTMLDivElement>(null)
   const [box, setBox] = useState<Box>()
   // The measurement the subscribing effect below built, held for the effect
@@ -504,11 +587,32 @@ export function PageAnnotations({
       // be found by a fresh mount (see `key` at the call sites), and until then
       // the markers stay where the page last was rather than jumping to 0,0.
       if (inner.width === 0 || inner.height === 0) return
+      // **The element's rect is not the page**, and this took the element's
+      // rect until 2026-08-08. `fit.ts`'s `upscaleToFit` (default on) makes
+      // the `<img>` fill its whole cell and `object-fit: contain` then draws
+      // the artwork somewhere inside it: measured on `gotoubun-v01` in single
+      // mode, a 1385x475 element holding 334x475 of artwork inset 526px, so a
+      // marker at 25% of the page was drawn about 263px from the art it names.
+      // `paintedBox` is that arithmetic — the same call `App.tsx`'s `pointOn`
+      // measures a drag through, so the overlay and the gesture cannot come to
+      // different answers about where the page is.
+      //
+      // Undecoded, `naturalWidth` is 0 and `paintedBox` answers "the whole
+      // element", which is precisely the placement this is here to correct.
+      // Stopping short of it rather than taking it: `AnnotationsProps.box`
+      // says a fallback that looks nearly right is worse than a frame of
+      // nothing, and the `load` listener below is what ends that frame.
+      if (img.naturalWidth === 0 || img.naturalHeight === 0) return
+      const art = paintedBox(
+        { w: img.naturalWidth, h: img.naturalHeight },
+        { w: inner.width, h: inner.height },
+        hug,
+      )
       setBox({
-        left: inner.left - outer.left,
-        top: inner.top - outer.top,
-        width: inner.width,
-        height: inner.height,
+        left: inner.left - outer.left + art.x,
+        top: inner.top - outer.top + art.y,
+        width: art.w,
+        height: art.h,
       })
     }
     remeasure.current = measure
@@ -516,11 +620,33 @@ export function PageAnnotations({
     const observer = new ResizeObserver(measure)
     observer.observe(img)
     observer.observe(host)
+    // A decode is the third thing that moves this box, and neither of the
+    // other two triggers can see it: the measurement now reads `naturalWidth`,
+    // which is 0 until the image decodes, while the *element* is `100%` by
+    // `100%` under `upscaleToFit` and so changes no layout size for the
+    // `ResizeObserver` to fire on. `version` only changes on a zoom or a pan.
+    //
+    // Two things go wrong without it. The overlay draws nothing for the whole
+    // of the first image's decode and never comes back. And on a page turn the
+    // box keeps the *previous* page's natural size: `match` changing is what
+    // re-runs this effect, and that happens in the commit before `PageView`
+    // has swapped the newly decoded `src` in, so the `<img>` measured here is
+    // still showing the page being turned away from. Two pages of one scan
+    // share an aspect and hide it; a turn onto a joined spread, whose scan is
+    // twice as wide and fits the same element quite differently, does not.
+    img.addEventListener('load', measure)
     return () => {
       observer.disconnect()
+      img.removeEventListener('load', measure)
       remeasure.current = undefined
     }
-  }, [match])
+    // `hug` joins `match` because it is part of *how* the element is measured,
+    // not of how often: it changes when the reader turns onto a page that sits
+    // in the other cell, or flips the reading direction under a page that
+    // stays put — at most once per keystroke, nothing like `version`'s sixty
+    // times a second, which is the whole reason that one has an effect of its
+    // own below.
+  }, [match, hug])
 
   // Re-measuring, which is a different event from re-subscribing and used to
   // be the same one.

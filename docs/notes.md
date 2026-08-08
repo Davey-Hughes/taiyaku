@@ -6442,3 +6442,157 @@ The transform is TypeScript, so this note is the record and the unit tests
 beside `mapRect` are the guard. A Rust corpus check cannot see a change to
 `mapRect`; that is why there is no thirteenth gated check, and it is a decision
 rather than an omission.
+
+
+## Fit, the seam, and the keybind help
+
+Three unrelated reader complaints raised after L1 shipped, grouped onto one
+branch because each is small and none touches the alignment. The design is
+`docs/superpowers/specs/2026-08-08-fit-seam-and-help-design.md`. What is worth
+recording here is not the three features — the design has those — but the two
+places the browser disagreed with what had been reasoned, one of which was a
+regression this branch introduced.
+
+Everything measured below was measured in a real browser against
+`corpus/gotoubun-v01` (`raw-mono` 685×1024, `en-mono` 2147×3056 — the *cover*
+alone is 2146 wide, which an earlier draft of `fit.ts`'s comment quoted by
+mistake), served by `taiyaku serve` behind Vite's proxy, on a scratch sidecar
+with absolute member paths so nothing written landed in the gitignored
+`corpus/`.
+
+### The complaint was not the images and not the aspect
+
+"The Japanese raw editions have large gaps and don't fill the page." At a
+1400×1263 page area, `en-mono` drew at 887×1263 and `raw-mono` at 685×1024 —
+its own natural size, 239px of height unused. `PageView`'s fit rule was
+`max-width`/`max-height: 100%` with `width`/`height: auto`, which downscales a
+page larger than its box and leaves a smaller one alone.
+
+**Two things it is not**, both checked before anything was built. Not the aspect
+difference: raw 0.6689 against `en-mono` 0.7026 is about 5%, nowhere near the
+observed gap. Not raw-versus-English: `en-fan` is 1114×1600 and does the same on
+a tall enough display. It is low-resolution scans meeting a viewport bigger than
+they are. The images themselves are clean — L1's geometry experiment printed a
+per-edition flat-border measurement and `gotoubun-v01`'s raw reads `0.000,
+0.000`, so there is nothing baked in to trim.
+
+`upscaleToFit` therefore defaults **on**, reversing the M5 design, which is
+corrected in place there rather than rewritten. The enlargement is 23% of a
+line-art scan and `upscaleFilter` ships in the same commit because of it.
+
+### The seam was closed on the wrong element, and only measurement said so
+
+At the same window in two-page mode: cells 700px wide, images 685px, each
+centred in its own cell — 15px of grey at the seam, widening as the window does.
+The design's fix was for each cell to stop centring its page and justify it
+toward the seam: `display: flex` plus `justify-content: flex-end` on the first
+cell and `flex-start` on the second, with a `gap` reopening a measured amount of
+grey on purpose.
+
+**Built exactly as designed, it moved nothing.** Measured with the defaults: the
+two `<img>` *elements* already touched — 0px between them — while their artwork
+sat **359px apart**. Two things had combined. `upscaleToFit` had just made each
+element fill its whole cell, so there was no free space left in the cell for
+`justify-content` to distribute; and `object-fit: contain` then draws the art
+inside that element wherever `object-position` says, which unset is `50% 50%`.
+The cell was positioning a box that was already the right size, and the thing
+actually off-centre was one layer further in.
+
+The fix is `object-position` on the image — `pageStyle` gained an `ArtworkHug`,
+`100% 50%` on the left cell and `0% 50%` on the right — which took the 359px to
+**0px**, measured the same way. `seamStyle` keeps only the padding that splits
+`gap`.
+
+**The dead declarations were confirmed dead rather than assumed.** On a static
+fixture of the cell → `PageView`'s `width: 100%` wrapper → `<img>` nesting, and
+then on `gotoubun-v01` itself, swapping `flex-end`↔`flex-start` on both cells
+produced byte-identical geometry, and removing `display: flex` altogether did
+too. **No test could have caught this.** `justify-content` on a non-flex box, or
+on one whose only child fills it, is silently inert, so an assertion can only
+see that the declaration is present — which is exactly what the assertion in
+`fit.test.ts` did. A rule that is inert and a rule that works are the same
+string.
+
+### The regression: every marker measured the element, not the artwork
+
+`upscaleToFit` made the `<img>` element larger than the artwork inside it for
+the first time, and two annotation paths were measuring the element.
+
+**`Annotations.tsx` measured the element outright.** In single mode: a
+1385×475 element holding **334×475** of artwork, inset 526px each side. A region
+tint that should have started at x 842 was drawn at **466** — every marker on
+every page out by 376px, on the default settings, from the moment `fit` shipped.
+
+**`notes.ts`'s `paintedBox` was subtler and had been an identity for its whole
+life.** With `width`/`height: auto` the element is sized to the fitted image, so
+`Math.min` of the two ratios is the fit scale and `x`/`y` come out 0 — the
+function described a distinction that had not arrived yet. When it did arrive it
+was right about the scale and wrong about the placement: it split the letterbox
+evenly, which is what `object-position: 50% 50%` does and is not what a page
+hugging the seam does. Measured in two-page mode it answered 179 for both cells
+— 179 and 872 across the page area — where the artwork was at **359** and
+**693**. Each 692.5px cell holds 334px of art, so 359px of leftover was being
+halved instead of pushed to one side.
+
+Both now measure the artwork, through one `hugFor` in `App.tsx` that the two
+drawn `PageView`s, the marker overlay and the drag arithmetic all ask, so the
+page that is drawn and the geometry that measures it cannot disagree. The
+browser arithmetic and the unit tests agree to the pixel: 2147×3056 in a
+1385×475 element gives `w` 333.71 and `x` 525.64 against the measured 334 and
+526; the same scan in a 692.5×475 cell gives `x` 358.79 and `x` 0 against the
+measured 359 and 693.
+
+**One trigger had to be added with it**, `img.addEventListener('load', measure)`.
+The overlay now reads `naturalWidth`, and neither existing trigger can see that
+change: the element is `100%` by `100%`, so a decode alters no layout size for
+the `ResizeObserver` to fire on, and the zoom `version` only moves on a zoom or
+a pan. Without it the overlay would sit out the first decode and, on a page
+turn, keep the previous page's natural size — invisible while two pages of one
+scan share an aspect, and wrong the moment a turn lands on a joined spread.
+
+### The tabs, and the guarantee that stopped holding
+
+A note's tab is drawn at `left: 100%` plus a small gap, in the letterbox the M5
+design promised: "fit-whole guarantees the side margins the tabs live in on
+every portrait page." Closing the seam is what removed that margin on one side
+of each page of a pair. In `two` mode the tab now goes in the margin *away* from
+the seam; single and scroll mode are unchanged, and the default is the old
+behaviour so no existing call site changed meaning. Measured after: a left-cell
+tab at x 552–570 against the facing page's artwork starting at 574.
+
+Two alternatives lost. Holding a minimum seam gap open whenever the left page
+carries a note keeps one tab rule everywhere, but the gap then appears and
+disappears as pages turn, which reads as a layout bug rather than as considered
+space. Letting the tabs overlap is cheapest and is the one thing this codebase
+must not do: a tab drawn over the facing page's art asserts a note is on a page
+it is not on.
+
+### The help is generated, which is the whole of its design
+
+`keys.ts` is now one ordered `READER_KEYS` table that `intentOf` dispatches from
+and the overlay lists from, replacing six bare `if` statements that nothing
+could enumerate. A binding that changes what it does cannot keep an old
+description, because there is one description. The two properties the `if`
+statements carried implicitly are now stated: the reader's own keys are answered
+before any module's, and a matched row ends the walk even when it resolves to
+nothing — so `4` on a three-edition work is silent rather than offered on to the
+modules, which would otherwise let a module hold `4` on a work with three
+editions and lose it on a work with four.
+
+`KeyBinding` gained an optional `label` for the same reason, and that is a
+widening of the module contract — `module.ts` asks for that to be a decision
+rather than a habit, so it was reported rather than done quietly. The M5 design
+carries the correction.
+
+**Verified in a browser**, same fixture: `?` and `h` both open the overlay and
+`Escape` closes it, and with `zoom.enabled` set false the ZOOM section
+disappears from the list — which is the join between the registry and the
+reader's preferences doing its job, and the thing that stops the overlay
+promising a key that has been switched off.
+
+**One gap in that join is known and is not closed.** `enabled` is a convention
+rather than a field of the contract, and `credits` gates its key on a preference
+called `panel`. Turning that off leaves `C` listed while the key does nothing.
+It is the only module in today's registry with an off switch under another name;
+the fix if it grows is a contract field, not a list of per-module exceptions in
+the help module, which is the copy of a rule the whole file exists to avoid.

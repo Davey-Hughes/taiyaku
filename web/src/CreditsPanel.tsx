@@ -1,10 +1,17 @@
 import type { CSSProperties } from 'react'
 import { thumbUrl } from './api'
 
-// Same shell as `NotePanel`'s, deliberately: two panels that open over the
-// page with different keys should not be two different-looking objects. Kept
-// as its own constant rather than exported from there, because a shared style
-// module for two callers is indirection without a second reader.
+// Same shell as `NotePanel`'s, deliberately: panels that open over the page
+// with different keys should not be two different-looking objects.
+//
+// **The reason given here for not sharing it has expired.** It read "a shared
+// style module for two callers is indirection without a second reader", and
+// there are four copies now — this, `NotePanel`, `Settings` and `Help`, the
+// last arriving 2026-08-08. Two of them have already drifted in ways nobody
+// decided. Extracting it is a change across four components and belongs to a
+// pass of its own rather than to the branch that added the fourth; recorded
+// here so the next person to add a fifth finds the argument already lost
+// rather than making it again.
 const panelStyle: CSSProperties = {
   position: 'absolute',
   top: 16,

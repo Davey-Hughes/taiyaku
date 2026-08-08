@@ -1,21 +1,20 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   presentWhenDecoded,
   unboundedDecodeQueue,
   type DecodeQueue,
   type ImageFactory,
 } from './decode'
+import {
+  fitModule,
+  pageStyle,
+  type ArtworkHug,
+  type FitPrefs,
+} from './modules/fit'
 
 /**
- * One page, fit whole.
- *
- * `width`/`height: auto` on a replaced element sizes the box to its own
- * intrinsic aspect ratio, clamped by `max-width`/`max-height` at 100% — box
- * size and content size coincide, so there is nothing left for `object-fit`
- * to reconcile: aspect preserved, downscaled to fit, never cropped, never
- * distorted, never force-filled. The container's `align-items: center` (with
- * this image's default `flex-grow: 0`) is what keeps a page smaller than the
- * viewport at its own size instead of stretched to fill.
+ * One page, drawn through `fit.ts`'s `pageStyle` — what the CSS values are
+ * and why now lives on that function's own doc comment, not here.
  *
  * **Two different mechanisms decide how large a page is drawn, and only one of
  * them is here.** *Corrected on 2026-08-08, when L1 shipped zoom.* This
@@ -25,13 +24,16 @@ import {
  * `docs/superpowers/plans/2026-08-03-m5b-modules.md` — and zoom has since made
  * it incomplete as well. What each mechanism does:
  *
- * - **`fitWhole`, here, governs how one page sits in its own box** — the cell
- *   `App.tsx` draws it into, which in `two` mode is half the group. Inside
- *   that box nothing below upscales: `max-width`/`max-height` at 100% is the
- *   ceiling and this milestone did not raise it. `upscaleToFit` is still an
- *   unbuilt `fit` module setting
- *   (`docs/superpowers/specs/2026-08-02-reader-m5-design.md`), and raising it
- *   is what that setting would do.
+ * - **This component governs how one page sits in its own box** — the cell
+ *   `App.tsx` draws it into, which in `two` mode is half the group. *Corrected
+ *   on 2026-08-08, when Task 2 of
+ *   `docs/superpowers/plans/2026-08-08-fit-seam-and-help.md` wired this
+ *   component to `pageStyle`.* This bullet used to say the box's ceiling was
+ *   fixed — "`max-width`/`max-height` at 100% is the ceiling and this
+ *   milestone did not raise it" — and that `upscaleToFit` was "still an
+ *   unbuilt `fit` module setting". Both are false now: `pageStyle`, in
+ *   `fit.ts`, is what draws the image below, and its `upscaleToFit` is the
+ *   setting that raises the ceiling.
  * - **`Viewport` scales the group around it.** L1 puts a single CSS transform
  *   on a wrapper above `renderGroup`'s output, so a zoomed page is painted
  *   past its natural size with no declaration here changing — a transform
@@ -41,19 +43,20 @@ import {
  *   than resizing the images underneath.
  *
  * Scroll mode has neither: `App.tsx` wraps only the single and two-page branch
- * in `Viewport`, so fit-whole is still the whole story there.
+ * in `Viewport`, so `pageStyle`'s rule is still the whole story there.
  *
  * The letterbox around the page is background, and since M5c it is where the
- * annotation margin tabs live.
+ * annotation margin tabs live. **In two-page mode that letterbox is now
+ * one-sided.** *Added 2026-08-08, with `hug`.* This paragraph used to say only
+ * the first sentence, which was true of a page centred in its box and stopped
+ * being true the moment a pair's two halves started hugging the seam: there is
+ * no margin left on a page's seam side, so the left page's tabs — drawn at
+ * `left: 100%` in `Annotations.tsx` — now land on the facing page's artwork.
+ * `docs/superpowers/specs/2026-08-08-fit-seam-and-help-design.md` specifies the
+ * fix (the tab moves to the margin *away* from the seam, single and scroll mode
+ * unchanged) and it is not built here; this comment is the pointer, not the
+ * repair.
  */
-const fitWhole: CSSProperties = {
-  maxWidth: '100%',
-  maxHeight: '100%',
-  width: 'auto',
-  height: 'auto',
-  objectFit: 'contain',
-  display: 'block',
-}
 
 /** `() => new Image()` — a detached, off-DOM `HTMLImageElement`. Kept out of `decode.ts` so that module stays free of every DOM reference; this is the one place a real one is ever constructed. */
 const newImage: ImageFactory = () => new Image()
@@ -85,6 +88,22 @@ export interface PageViewProps {
   decodeQueue?: DecodeQueue
   /** Builds the off-screen probe image a swap decodes into before presenting — a real, detached `<img>` by default (`newImage`, above); a future test of this component would hand in a fake, the same seam `decode.test.ts` already exercises directly against `presentWhenDecoded`. */
   makeImage?: ImageFactory
+  /**
+   * Page geometry. Defaults to `fitModule.defaults` so this component still
+   * works standalone — the same reason `decodeQueue` defaults to an uncapped
+   * queue — and so a caller that has not been threaded yet draws what the
+   * settings panel says rather than a third behaviour of its own.
+   */
+  fit?: FitPrefs
+  /**
+   * Which edge of this box the page's artwork hugs — `pageStyle`'s own
+   * parameter, threaded through unchanged. Defaults to `'centre'`, so single
+   * mode, scroll mode and any standalone use draw exactly what they drew
+   * before it existed; only the two cells of a real two-page pair ask for
+   * anything else, and only `App.tsx` knows which cell it is drawing. See
+   * `ArtworkHug` for why the left cell passes `right-edge`.
+   */
+  hug?: ArtworkHug
 }
 
 /**
@@ -116,6 +135,8 @@ export function PageView({
   buffered,
   decodeQueue,
   makeImage,
+  fit,
+  hug,
 }: PageViewProps) {
   const [shown, setShown] = useState(src)
   // Read inside `presentWhenDecoded`'s `stale` callback at decode-settle
@@ -152,6 +173,13 @@ export function PageView({
   }, [src, buffered])
 
   const displayed = buffered ? shown : src
+  // Cheap and derived from a prop plus a constant, so computed on every
+  // render rather than memoised — the same call `App.tsx` makes for every
+  // `sliceFor` read, per that file's own doc on why.
+  // `hug` is passed through rather than defaulted here: `pageStyle`'s own
+  // default is `'centre'`, and undefined reaches it as "not given", so there
+  // is one place the centred case is written down.
+  const style = pageStyle(fit ?? fitModule.defaults, hug)
 
   return (
     <div
@@ -176,7 +204,7 @@ export function PageView({
         src={displayed}
         alt={alt}
         loading={buffered ? undefined : 'lazy'}
-        style={fitWhole}
+        style={style}
         draggable={false}
       />
     </div>

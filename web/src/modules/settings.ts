@@ -25,5 +25,5 @@ export const settingsModule: ReaderModule<Record<string, never>> = {
   id: 'settings',
   label: 'Settings',
   defaults: {},
-  keys: [{ key: 's', intent: TOGGLE_INTENT }],
+  keys: [{ key: 's', intent: TOGGLE_INTENT, label: 'open the settings panel' }],
 }

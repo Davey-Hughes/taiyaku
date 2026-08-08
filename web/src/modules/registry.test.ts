@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { registry } from './registry'
 
 describe('registry', () => {
-  it('registers all nine modules this build ships, in the order they are declared', () => {
+  it('registers all twelve modules this build ships, in the order they are declared', () => {
     expect(registry.ids).toEqual([
       'direction',
       'motion',
@@ -13,6 +13,9 @@ describe('registry', () => {
       'settings',
       'credits',
       'zoom',
+      'fit',
+      'help',
+      'layout',
     ])
   })
 

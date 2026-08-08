@@ -28,7 +28,13 @@ export const directionModule: ReaderModule<DirectionPrefs> = {
   id: 'direction',
   label: 'Reading direction',
   defaults: { override: {} },
-  keys: [{ key: 'd', intent: TOGGLE_INTENT }],
+  keys: [
+    {
+      key: 'd',
+      intent: TOGGLE_INTENT,
+      label: 'flip this edition between right-to-left and left-to-right',
+    },
+  ],
 }
 
 /**
@@ -47,4 +53,29 @@ export function setOverride(
   direction: Direction,
 ): DirectionPrefs {
   return { ...prefs, override: { ...prefs.override, [edition]: direction } }
+}
+
+/**
+ * Which way a physical arrow key turns the page.
+ *
+ * The arrows are *physical* — `ArrowRight` is the key on the right of the
+ * keyboard, and `keys.ts` is right to report it as `by: 1` without knowing
+ * anything about the work. What that means for the reader is not physical: in
+ * a right-to-left work the next page is drawn to the **left**, so pressing
+ * `→` to advance would move the reader away from the page they are about to
+ * read.
+ *
+ * This is the one place that mapping lives. `App.tsx` puts a `step` intent
+ * through it before applying it, `Filmstrip` lays its rail out the same way,
+ * and `modules/help.ts` asks it which arrow advances so the help cannot say
+ * `→ next page` to a reader for whom it is false. Three consumers, one rule —
+ * the alternative was each deciding for itself, which is how the filmstrip
+ * came to run left-to-right under a right-to-left work in the first place.
+ *
+ * `ltr` is the identity, so a work with no override behaves exactly as it did
+ * before this existed.
+ */
+export function stepFor(by: 1 | -1, reading: Direction): 1 | -1 {
+  if (reading !== 'rtl') return by
+  return by === 1 ? -1 : 1
 }

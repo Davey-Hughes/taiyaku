@@ -32,8 +32,10 @@ export const WHOLE_INTENT = 'zoom:whole'
  * against a number.
  *
  * `0` is safe to claim and cannot become an edition jump later: `keys.ts`'s
- * `intentOf` tests digits with `/^[1-9]$/`, so the tenth edition would need a
- * different key regardless of what this module does.
+ * `READER_KEYS` answers `1`..`9` and deliberately leaves `0` alone, and says
+ * so where it is declared, so a tenth edition would need a different key
+ * regardless of what this module does. *This cited `intentOf`'s `/^[1-9]$/`
+ * until 2026-08-08, when that test became a table row.*
  */
 export interface ZoomPrefs {
   enabled: boolean
@@ -53,8 +55,8 @@ export const zoomModule: ReaderModule<ZoomPrefs> = {
   },
   options: { onSwap: ['content', 'reset'] },
   keys: [
-    { key: '=', intent: IN_INTENT },
-    { key: '-', intent: OUT_INTENT },
-    { key: '0', intent: WHOLE_INTENT },
+    { key: '=', intent: IN_INTENT, label: 'zoom in' },
+    { key: '-', intent: OUT_INTENT, label: 'zoom out' },
+    { key: '0', intent: WHOLE_INTENT, label: 'fit the whole page' },
   ],
 }

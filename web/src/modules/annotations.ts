@@ -68,11 +68,15 @@ export const annotationsModule: ReaderModule<AnnotationsPrefs> = {
   defaults: { markers: true, travel: true, reveal: false, notesList: 'auto' },
   options: { notesList: ['auto', 'side', 'below'] },
   keys: [
-    { key: 'n', intent: NEW_INTENT },
-    { key: 'r', intent: REVEAL_INTENT },
-    { key: 'a', intent: REVIEW_INTENT },
-    { key: 'z', intent: UNDO_INTENT },
-    { key: 'Z', intent: REDO_INTENT },
+    { key: 'n', intent: NEW_INTENT, label: 'write a note on this page' },
+    {
+      key: 'r',
+      intent: REVEAL_INTENT,
+      label: 'tint the regions notes are anchored to',
+    },
+    { key: 'a', intent: REVIEW_INTENT, label: 'list every note on this work' },
+    { key: 'z', intent: UNDO_INTENT, label: 'undo the last note edit' },
+    { key: 'Z', intent: REDO_INTENT, label: 'redo the last undone note edit' },
   ],
 }
 

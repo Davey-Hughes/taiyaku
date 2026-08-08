@@ -15,7 +15,28 @@
  * polluted by spreading a stored string's character indices or an array's own
  * keys.
  */
-const key = (id: string) => `taiyaku.prefs.${id}`
+/**
+ * The prefix every key this reader writes to `localStorage` begins with.
+ *
+ * **One namespace, one writer.** This module is the only thing in `web/src`
+ * that touches `localStorage` at all — checked rather than assumed, and worth
+ * keeping true: a value stored anywhere else would be the first one whose key
+ * nobody thought about, on an origin this reader may share with whatever else
+ * is served from it.
+ *
+ * That is also why the reading mode became a `ReaderModule` rather than a
+ * direct `loadPrefs('mode', …)` call when it needed to persist — see
+ * `modules/layout.ts`. Anything the reader remembers about a person is a
+ * module's slice, so it is namespaced by construction and nobody has to
+ * remember to do it.
+ *
+ * `prefs` is a second segment rather than part of one prefix so that a later
+ * kind of stored value — a cache, a draft — gets its own sibling instead of
+ * being mixed in with preferences.
+ */
+export const NAMESPACE = 'taiyaku.prefs'
+
+const key = (id: string) => `${NAMESPACE}.${id}`
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)

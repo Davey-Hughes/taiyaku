@@ -3,6 +3,7 @@ import {
   directionModule,
   effectiveDirection,
   setOverride,
+  stepFor,
   type DirectionPrefs,
 } from './direction'
 
@@ -50,5 +51,25 @@ describe('setOverride', () => {
     const prefs: DirectionPrefs = { override: { 'en-fan': 'rtl' } }
     setOverride(prefs, 'en-mono', 'ltr')
     expect(prefs).toEqual({ override: { 'en-fan': 'rtl' } })
+  })
+})
+
+describe('stepFor', () => {
+  it('leaves a left-to-right work alone, so nothing changes without an override', () => {
+    expect(stepFor(1, 'ltr')).toBe(1)
+    expect(stepFor(-1, 'ltr')).toBe(-1)
+  })
+
+  // The whole point: in a right-to-left work the next page is drawn to the
+  // left, so the left arrow is the one that advances.
+  it('makes the left arrow advance in a right-to-left work', () => {
+    expect(stepFor(-1, 'rtl')).toBe(1)
+    expect(stepFor(1, 'rtl')).toBe(-1)
+  })
+
+  it('is its own inverse, so a reader who flips direction twice is where they started', () => {
+    for (const reading of ['ltr', 'rtl'] as const)
+      for (const by of [1, -1] as const)
+        expect(stepFor(stepFor(by, reading), reading)).toBe(by)
   })
 })

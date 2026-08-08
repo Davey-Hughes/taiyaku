@@ -2,6 +2,9 @@ import { buildRegistry } from '../module'
 import { annotationsModule } from './annotations'
 import { creditsModule } from './credits'
 import { directionModule } from './direction'
+import { fitModule } from './fit'
+import { helpModule } from './help'
+import { layoutModule } from './layout'
 import { motionModule } from './motion'
 import { prefetchModule } from './prefetch'
 import { readoutsModule } from './readouts'
@@ -78,6 +81,39 @@ import { zoomModule } from './zoom'
  * that branch's own `preventDefault()` and does nothing. Those cases are
  * Task 7 of the same milestone
  * (`docs/superpowers/plans/2026-08-07-l1-geometry.md`), not a later one.
+ *
+ * `fitModule` is the tenth, and claims no keys — the `prefetchModule`/
+ * `readoutsModule` shape, tuned in settings rather than pressed mid-read.
+ * Registration alone generates its "Fit" settings section, `upscaleToFit`
+ * and `gap` as ordinary controls and `upscaleFilter` as a choice, the same
+ * `defaults`-plus-`options` inference every module here gets for free. What
+ * registration does not reach is again what it never reached for `credits`
+ * while `credits` was inert: nothing yet calls `pageStyle`/`seamStyle`, so
+ * the settings this section offers govern nothing until then. The difference
+ * from `credits` is how long that lasts — Tasks 2 and 3 of the same plan
+ * (`docs/superpowers/plans/2026-08-08-fit-seam-and-help.md`) wire `PageView`
+ * and the seam layout through them in this same milestone, not a later one.
+ *
+ * `helpModule` is the eleventh, and it is the case `creditsModule`'s note
+ * above asks for rather than a repeat of it: its two keys (`?` and `h`, one
+ * intent between them) get their `case` in `App.tsx` and their overlay in the
+ * same commit as this entry, so nothing here is inert for a while. Its
+ * generated settings section is one `enabled` toggle. What this array does
+ * *not* do for it is the reason the module is worth naming here at all: this
+ * entry is also what puts every other module's keys into the overlay, because
+ * `App.tsx` lists from `registry.all()` and not from a written list, so a
+ * module registered below is documented to the reader by that registration
+ * alone. A twelfth that claims a key needs no edit to `Help.tsx` to appear in
+ * it — only a `label` on the binding if it would rather not be described by
+ * its intent string.
+ *
+ * `layoutModule` is the twelfth and exists for one reason: the reading mode
+ * was a plain `useState` and so was forgotten on every reload. Registering it
+ * is the entire fix — this array is what makes a preference load, save and
+ * reach the settings panel — and it is also why the reader still has exactly
+ * one way of remembering anything about a person. A `loadPrefs('mode', …)` in
+ * `App.tsx` would have been shorter and would have been the first stored value
+ * that was not a module's.
  */
 const modules = [
   directionModule,
@@ -89,6 +125,9 @@ const modules = [
   settingsModule,
   creditsModule,
   zoomModule,
+  fitModule,
+  helpModule,
+  layoutModule,
 ]
 
 export const registry = buildRegistry(modules)

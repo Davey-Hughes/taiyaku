@@ -66,7 +66,13 @@ export const creditsModule: ReaderModule<CreditsPrefs> = {
   id: 'credits',
   label: 'Credit pages',
   defaults: { skip: false, panel: true },
-  keys: [{ key: 'C', intent: PANEL_INTENT }],
+  keys: [
+    {
+      key: 'C',
+      intent: PANEL_INTENT,
+      label: "list this edition's credit pages",
+    },
+  ],
 }
 
 /**

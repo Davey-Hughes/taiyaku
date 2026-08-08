@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { intentOf, isInteractivePress, isInteractiveTarget } from './keys'
+import {
+  intentOf,
+  isInteractivePress,
+  isInteractiveTarget,
+  READER_KEYS,
+} from './keys'
 import type { ReaderModule } from './module'
 
 const editions = ['raw', 'en-mono', 'en-colour']
@@ -72,6 +77,25 @@ describe('intentOf', () => {
     expect(intentOf(press('0'), editions)).toBeUndefined()
   })
 
+  // The half of that the test above cannot see, since it passes no modules: a
+  // digit past the end **stops**, it does not go on to offer the key around.
+  // `4` is the reader's whether or not a fourth edition exists, so a module
+  // claiming it stays silent on a three-edition work — otherwise the same
+  // press would mean different things at different edition counts. Written
+  // against the `if`-statement version and passing there, so that it says
+  // something about the table that replaced it.
+  //
+  // `0` is the contrast, and deliberate: it is claimed by nobody here, which
+  // is what leaves it free for `modules/zoom.ts` to take.
+  it('stops on a digit past the end rather than offering it to a module', () => {
+    const modules = [mod('greedy', ['4', '0'])]
+    expect(intentOf(press('4'), editions, modules)).toBeUndefined()
+    expect(intentOf(press('0'), editions, modules)).toEqual({
+      kind: 'module',
+      intent: 'greedy:0',
+    })
+  })
+
   it('maps the arrows to navigation', () => {
     expect(intentOf(press('ArrowRight'), editions)).toEqual({
       kind: 'step',
@@ -101,6 +125,58 @@ describe('intentOf', () => {
   it('yields every key to a modifier, so browser shortcuts still work', () => {
     expect(intentOf(press('1', { metaKey: true }), editions)).toBeUndefined()
     expect(intentOf(press(' ', { ctrlKey: true }), editions)).toBeUndefined()
+  })
+})
+
+describe('READER_KEYS', () => {
+  it('describes every built-in the reader answers before modules', () => {
+    const claimed = READER_KEYS.flatMap((b) => b.keys)
+    for (const key of [' ', 'ArrowRight', 'ArrowLeft', 'Tab', 'c'])
+      expect(claimed).toContain(key)
+  })
+
+  it('covers the digits as one row rather than nine', () => {
+    const digits = READER_KEYS.filter((b) => b.keys.includes('1'))
+    expect(digits).toHaveLength(1)
+    expect(digits[0].keys).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+      '6',
+      '7',
+      '8',
+      '9',
+    ])
+  })
+
+  // `0` staying unclaimed is what makes it safe for zoom to take — see
+  // `modules/zoom.ts`, which says so in its own doc.
+  it('leaves 0 unclaimed', () => {
+    expect(READER_KEYS.flatMap((b) => b.keys)).not.toContain('0')
+  })
+
+  it('gives every row a label for the help to show', () => {
+    for (const b of READER_KEYS) {
+      expect(b.label.length).toBeGreaterThan(0)
+      expect(b.keys.length).toBeGreaterThan(0)
+    }
+  })
+
+  // The property the ordering carries: a module cannot take a reader key,
+  // which `intentOf`'s own comment calls "not so much a priority choice as
+  // those keys not being a module's to claim".
+  it('answers a built-in even when a module claims the same key', () => {
+    const greedy = mod('greedy', [' ', 'c', '1'])
+    expect(intentOf(press(' '), editions, [greedy])).toEqual({ kind: 'toggle' })
+    expect(intentOf(press('c'), editions, [greedy])).toEqual({
+      kind: 'correct',
+    })
+    expect(intentOf(press('1'), editions, [greedy])).toEqual({
+      kind: 'view',
+      edition: editions[0],
+    })
   })
 })
 

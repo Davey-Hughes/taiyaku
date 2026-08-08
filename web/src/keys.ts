@@ -12,6 +12,89 @@ export type Intent =
   | { kind: 'module'; intent: string }
 
 /**
+ * One of the reader's own keys: what it is called, what it asks for, and how
+ * to say so to a person.
+ *
+ * `label` exists so the help screen can be *generated* rather than written.
+ * A second list of what the keys do is a copy of a rule, and this project has
+ * repeatedly found copies of rules drifting from the rules — a comment true
+ * when written and false four commits later is the same failure at a smaller
+ * scale. One table, dispatched from and listed from.
+ *
+ * `keys` is every key the row answers, so the digits are one row rather than
+ * nine: `1`..`9` is a single rule — select the nth edition — and nine help
+ * lines saying the same thing would be worse than one saying it once.
+ *
+ * `resolve` takes the pressed key because a row can answer several, and takes
+ * `editions` because the digit row is the only rule here that depends on
+ * anything outside the keyboard.
+ */
+export interface ReaderBinding {
+  keys: string[]
+  label: string
+  resolve: (key: string, editions: string[]) => Intent | undefined
+}
+
+/**
+ * The reader's own keys, **in the order they are answered**.
+ *
+ * The order is the rule that was previously carried by the sequence of `if`
+ * statements in `intentOf`: these are checked before any module, because a
+ * module claiming one of them would never fire regardless. Keeping them first
+ * is therefore not a priority choice so much as those keys not being a
+ * module's to claim.
+ *
+ * **Two readers, which is the whole point.** `intentOf` below dispatches from
+ * it, and `Help.tsx` lists from it through `modules/help.ts` — so a row that
+ * changes what a key does cannot keep an old description, because there is
+ * one description. The alternative was to leave the `if` statements and give
+ * the help its own list, which is the copy this exists to avoid.
+ *
+ * *This said "nothing lists from this yet" until the overlay landed later the
+ * same day. A comment describing work in flight is a comment with an expiry
+ * date on it.*
+ *
+ * `0` is absent on purpose, and `modules/zoom.ts` depends on that: it claims
+ * `0` for zoom-to-whole-page, which is only safe while no row here answers it.
+ * A tenth edition would therefore need a key other than `0`.
+ */
+export const READER_KEYS: ReaderBinding[] = [
+  {
+    keys: [' '],
+    label: 'swap to the last edition and back',
+    resolve: () => ({ kind: 'toggle' }),
+  },
+  {
+    keys: ['ArrowRight'],
+    label: 'next page',
+    resolve: () => ({ kind: 'step', by: 1 }),
+  },
+  {
+    keys: ['ArrowLeft'],
+    label: 'previous page',
+    resolve: () => ({ kind: 'step', by: -1 }),
+  },
+  {
+    keys: ['Tab'],
+    label: 'show or hide the filmstrip and readouts',
+    resolve: () => ({ kind: 'chrome' }),
+  },
+  {
+    keys: ['c'],
+    label: 'correct this pairing',
+    resolve: () => ({ kind: 'correct' }),
+  },
+  {
+    keys: ['1', '2', '3', '4', '5', '6', '7', '8', '9'],
+    label: 'jump to the nth edition',
+    resolve: (key, editions) => {
+      const edition = editions[Number(key) - 1]
+      return edition === undefined ? undefined : { kind: 'view', edition }
+    },
+  },
+]
+
+/**
  * A keypress, as an intent, or nothing.
  *
  * The alt-tab model: `Space` flips between the current edition and the last
@@ -24,10 +107,19 @@ export type Intent =
  *
  * `modules` is the registered set's own list (`Registry.all()`), not a fixed
  * import — this file names the `ReaderModule` type and nothing else, so a
- * seventh module needs no edit here. The built-ins above are checked first:
- * they are the reader's own reserved keys, and a module claiming one of them
- * would never fire regardless, so the fixed checks staying first is not a
- * priority choice so much as those keys not being a module's to claim.
+ * new module needs no edit here. `READER_KEYS` above is walked first, in
+ * the order it is written: those are the reader's own reserved keys, and a
+ * module claiming one of them would never fire regardless, so the table going
+ * first is not a priority choice so much as those keys not being a module's
+ * to claim.
+ *
+ * A matched row **ends the walk even when it resolves to nothing**, which is
+ * the digit rule: `4` on a three-edition work is silent rather than offered
+ * on to the modules. `continue` there would let a module hold `4` on a work
+ * with three editions and lose it on a work with four, so the same press
+ * would mean different things depending on the material. The `if` statements
+ * this replaced returned `undefined` rather than falling through, so the walk
+ * is keeping that behaviour rather than choosing it afresh.
  */
 export function intentOf(
   event: KeyboardEvent,
@@ -35,14 +127,9 @@ export function intentOf(
   modules: ReaderModule<unknown>[] = [],
 ): Intent | undefined {
   if (event.ctrlKey || event.metaKey || event.altKey) return undefined
-  if (event.key === ' ') return { kind: 'toggle' }
-  if (event.key === 'ArrowRight') return { kind: 'step', by: 1 }
-  if (event.key === 'ArrowLeft') return { kind: 'step', by: -1 }
-  if (event.key === 'Tab') return { kind: 'chrome' }
-  if (event.key === 'c') return { kind: 'correct' }
-  if (/^[1-9]$/.test(event.key)) {
-    const edition = editions[Number(event.key) - 1]
-    return edition === undefined ? undefined : { kind: 'view', edition }
+  for (const binding of READER_KEYS) {
+    if (binding.keys.includes(event.key))
+      return binding.resolve(event.key, editions)
   }
   for (const mod of modules) {
     const binding = mod.keys?.find((k) => k.key === event.key)

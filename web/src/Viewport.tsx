@@ -8,9 +8,10 @@ import type { Rect } from './viewport'
  * images underneath. Two things fall out of that choice and both are
  * load-bearing:
  *
- * 1. **`PageView` is untouched.** Its `fitWhole` styling, its decode gate and
- *    its buffer-swap race fix all keep working, because none of them is aware
- *    of an ancestor's transform.
+ * 1. **`PageView` is untouched.** Its sizing — `modules/fit.ts`'s `pageStyle`
+ *    since the `fit` module shipped, a fixed `fitWhole` constant before it —
+ *    along with its decode gate and its buffer-swap race fix all keep
+ *    working, because none of them is aware of an ancestor's transform.
  * 2. **Every existing measurement stays correct.** `App.tsx`'s `pointOn` and
  *    `PageAnnotations` both measure through `getBoundingClientRect()`, which
  *    reports post-transform geometry, so a region drawn under zoom lands where

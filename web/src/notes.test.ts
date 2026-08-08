@@ -298,6 +298,90 @@ describe('paintedBox', () => {
       h: 400,
     })
   })
+
+  // The four above describe a page sized to its own content, where the element
+  // and the artwork differ by a sliver. `fit.ts`'s `upscaleToFit` defaults on
+  // and makes the element the whole cell, so the difference is now most of the
+  // element. The two geometries below are real: measured in a browser on
+  // `gotoubun-v01` at fit-whole on 2026-08-08, from a 2147x3056 scan.
+  const scan = { w: 2147, h: 3056 }
+  /** Single mode: the element is the whole page area. */
+  const area = { w: 1385, h: 475 }
+  /** Two-page mode: each cell is half of it. */
+  const cell = { w: 692.5, h: 475 }
+
+  it('insets the artwork inside an element far larger than it, in both axes', () => {
+    // Measured: 334x475 of artwork, 526px of background each side.
+    const art = paintedBox(scan, area)
+    expect(art.w).toBeCloseTo(334, 0)
+    expect(art.h).toBe(475)
+    expect(art.x).toBeCloseTo(526, 0)
+    expect(art.y).toBe(0)
+  })
+
+  it('insets it above and below when the element is the taller of the two', () => {
+    // The other axis of the same case: a wide page upscaled into a square
+    // element fills the width and leaves background top and bottom.
+    expect(paintedBox({ w: 200, h: 100 }, { w: 400, h: 400 })).toEqual({
+      x: 0,
+      y: 100,
+      w: 400,
+      h: 200,
+    })
+  })
+
+  // `pageStyle`'s `hug` closed the two-page seam with `object-position`, so a
+  // pair's two halves are pushed against each other and the leftover is no
+  // longer split evenly. Measured in two-page mode: this answered 179 in each
+  // cell — 179 and 872 across the page area — where the artwork sat at 359 and
+  // 693.
+  it('pushes the artwork to the right edge for the left cell of a pair', () => {
+    expect(paintedBox(scan, cell, 'right-edge').x).toBeCloseTo(359, 0)
+  })
+
+  it('pushes the artwork to the left edge for the right cell of a pair', () => {
+    // 0 within the cell, and the cell's own left edge is at 692.5 — the 693
+    // that was measured across the page area.
+    expect(paintedBox(scan, cell, 'left-edge').x).toBe(0)
+  })
+
+  it('splits the leftover evenly when nothing is hugged', () => {
+    expect(paintedBox(scan, cell, 'centre').x).toBeCloseTo(179, 0)
+  })
+
+  it('never hugs the vertical, whatever the horizontal does', () => {
+    // `pageStyle` writes `50%` for the vertical component of all three
+    // positions — `0% 50%`, `100% 50%`, `50% 50%` — so a hug can only ever
+    // move the artwork sideways.
+    for (const hug of ['centre', 'left-edge', 'right-edge'] as const)
+      expect(paintedBox(scan, cell, hug).y).toBe(0)
+    for (const hug of ['centre', 'left-edge', 'right-edge'] as const)
+      expect(paintedBox({ w: 200, h: 100 }, { w: 400, h: 400 }, hug).y).toBe(
+        100,
+      )
+  })
+
+  it('falls back to the whole box for an undecoded image, hug or no hug', () => {
+    // The guard comes first: there is no artwork placed yet, so there is no
+    // leftover for a hug to push anywhere.
+    expect(
+      paintedBox({ w: 0, h: 0 }, { w: 300, h: 400 }, 'right-edge'),
+    ).toEqual({ x: 0, y: 0, w: 300, h: 400 })
+  })
+
+  it('answers exactly as it did before `hug` existed when nothing hugs', () => {
+    // Every caller outside a two-page pair passes no hug at all, and the four
+    // expectations at the top of this block are what they must keep getting.
+    expect(paintedBox({ w: 100, h: 200 }, { w: 400, h: 200 })).toEqual(
+      paintedBox({ w: 100, h: 200 }, { w: 400, h: 200 }, 'centre'),
+    )
+    expect(paintedBox({ w: 100, h: 200 }, { w: 400, h: 200 })).toEqual({
+      x: 150,
+      y: 0,
+      w: 100,
+      h: 200,
+    })
+  })
 })
 
 describe('pointInSlot', () => {
@@ -309,6 +393,19 @@ describe('pointInSlot', () => {
   it('reports a point in the letterbox as outside, for the drag to clamp', () => {
     const painted = { x: 150, y: 0, w: 100, h: 200 }
     expect(pointInSlot({ x: 0, y: 100 }, painted).x).toBeLessThan(0)
+  })
+
+  it('reads the seam edge of a hugged page as the page’s own edge', () => {
+    // The left cell of a two-page pair: its artwork is flush against the seam,
+    // so the far edge of the cell *is* the far edge of the page. Halving the
+    // leftover instead read that same pixel as 1.54 — the drag defect, in one
+    // number.
+    const painted = paintedBox(
+      { w: 2147, h: 3056 },
+      { w: 692.5, h: 475 },
+      'right-edge',
+    )
+    expect(pointInSlot({ x: 692.5, y: 237.5 }, painted).x).toBeCloseTo(1, 5)
   })
 
   it('does not divide by a zero-sized paint', () => {

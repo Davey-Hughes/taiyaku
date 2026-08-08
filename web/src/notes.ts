@@ -1,3 +1,4 @@
+import type { ArtworkHug } from './modules/fit'
 import type { Resolver } from './resolver'
 
 /**
@@ -326,31 +327,74 @@ export interface Box {
 }
 
 /**
- * Where the page is actually painted inside its element.
+ * Where the page is actually painted inside its element — the one rule, for
+ * every mode and every fit setting.
  *
- * `PageView` draws a page with `object-fit: contain` — aspect preserved,
- * downscaled to fit, never cropped, the design's "the page fits whole" — so
- * the painted image is inset within its element whenever the two aspects
- * differ, and the inset is background, not page. A region measured against the
- * *element* rather than against this would be offset by the letterbox: every
- * tint drawn a little off, on every page whose aspect does not match the
- * viewport, in a way that looks like a rounding error rather than a wrong
- * frame of reference.
+ * `PageView` draws a page with `object-fit: contain` — aspect preserved, never
+ * cropped, the design's "the page fits whole" — so the painted image is inset
+ * within its element whenever the two aspects differ, and the inset is
+ * background, not page. A region measured against the *element* rather than
+ * against this is offset by that inset and scaled against the wrong width —
+ * the whole page shifted, and every tint and marker on it with it. That is a
+ * wrong frame of reference rather than a rounding error, however small the
+ * inset happens to be on any one page.
+ *
+ * **The element is now routinely far larger than the artwork, in both axes,
+ * and until `upscaleToFit` it never was.** *2026-08-08.* This doc used to say
+ * "downscaled to fit", and while a page was sized to its own content — `width`
+ * and `height` `auto` under both `max-*` at 100%, which is still what
+ * `pageStyle` emits with the setting off — the two boxes were the same box.
+ * `pageStyle`'s own doc says so: with `auto`, `contain` "has nothing to
+ * reconcile, since box and content coincide". This function was an identity
+ * for the whole of its life, describing a distinction that had not arrived.
+ * `upscaleToFit` sets both to `100%`, so the element is the whole cell and the
+ * art is whatever `contain` fits inside it. Measured in a browser on
+ * `gotoubun-v01`, single mode at fit-whole, 2026-08-08: a 1385x475 element
+ * holding **334x475** of artwork, inset **526px** each side, from a 2147x3056
+ * scan. The arithmetic below needed nothing for that — `Math.min` of the two
+ * ratios is scale-free and was already right in both directions — but a caller
+ * that read the element instead of asking this went from exactly right to
+ * 526px out, which is where `Annotations` was until this became its
+ * measurement too.
+ *
+ * **`hug` is the half that did need arithmetic.** `pageStyle` emits
+ * `object-position`, and `contain` puts the leftover wherever that says: `0%`
+ * against the left edge, `100%` against the right, and the `50%` this used to
+ * assume split evenly. The two cells of a real two-page pair hug the seam, so
+ * an evenly split inset is wrong there by half the leftover. Measured the same
+ * session, two-page mode: this answered 179 for the left cell and the same 179
+ * for the right — 179 and 872 across the page area — where the artwork was
+ * actually at **359** and **693**. Each 692.5px cell holds 334px of art, so
+ * the 359px of leftover was being halved instead of pushed to one side.
+ *
+ * **Only the horizontal is ever hugged.** `pageStyle` writes `50%` for the
+ * vertical component of all three positions — `0% 50%`, `100% 50%`, `50% 50%`
+ * — so `y` stays centred whatever `hug` says. That is those declarations
+ * restated rather than a second opinion about them.
  *
  * An image whose size is not known yet — `naturalWidth` is 0 until it decodes
  * — falls back to the whole box rather than dividing by zero and handing back
- * `NaN` fractions that would then reach the server as a region.
+ * `NaN` fractions that would then reach the server as a region. `hug` does
+ * nothing in that branch, for the same reason the rest of it does nothing:
+ * there is no artwork placed yet, so there is no leftover to push anywhere.
  */
 export function paintedBox(
   natural: { w: number; h: number },
   box: { w: number; h: number },
+  hug: ArtworkHug = 'centre',
 ): Box {
   if (natural.w <= 0 || natural.h <= 0)
     return { x: 0, y: 0, w: box.w, h: box.h }
   const scale = Math.min(box.w / natural.w, box.h / natural.h)
   const w = natural.w * scale
   const h = natural.h * scale
-  return { x: (box.w - w) / 2, y: (box.h - h) / 2, w, h }
+  const spare = box.w - w
+  return {
+    x: hug === 'left-edge' ? 0 : hug === 'right-edge' ? spare : spare / 2,
+    y: (box.h - h) / 2,
+    w,
+    h,
+  }
 }
 
 /**

@@ -31,6 +31,7 @@ import {
 } from './history'
 import { Gap } from './Gap'
 import { CreditsPanel } from './CreditsPanel'
+import { Help } from './Help'
 import { intentOf, isInteractivePress, isInteractiveTarget } from './keys'
 import { sliceFor } from './module'
 import {
@@ -52,10 +53,18 @@ import {
 import {
   directionModule,
   effectiveDirection,
+  stepFor,
   setOverride,
   TOGGLE_INTENT,
   type Direction,
 } from './modules/direction'
+import { fitModule, seamStyle, type ArtworkHug } from './modules/fit'
+import {
+  enabledModules,
+  helpModule,
+  TOGGLE_INTENT as HELP_TOGGLE_INTENT,
+  type HelpPrefs,
+} from './modules/help'
 import { motionModule } from './modules/motion'
 import { prefetchModule, window as prefetchWindow } from './modules/prefetch'
 import {
@@ -68,6 +77,7 @@ import {
   readoutsModule,
   timeLine,
 } from './modules/readouts'
+import { layoutModule } from './modules/layout'
 import { registry } from './modules/registry'
 import {
   regroupModule,
@@ -139,6 +149,7 @@ import {
   takeOffered,
   verdictFor,
   type Alignment,
+  type ReadingIntent,
 } from './session'
 import { nextColour } from './palette'
 import { cryptoRandom, ulid } from './ulid'
@@ -314,7 +325,12 @@ function allSlots(resolver: Resolver, edition: string): Position[] {
  */
 function App() {
   const [session, setSession] = useState<Session>()
-  const [mode, setMode] = useState<Mode>('single')
+  // The reading mode is a preference, not component state: it was a
+  // `useState` until 2026-08-08 and so was forgotten on every reload, which a
+  // reader who works in two-page mode met every time they opened the reader.
+  // `layoutModule` holds it now, which is what makes it load, save and reach
+  // the settings panel; `setMode` writes that slice and nothing else changes,
+  // because every read below still reads a `Mode`.
   // The part of the drawn group the reader is looking at. `WHOLE` is
   // fit-whole, which is what every mode did before zoom existed and what
   // scroll mode still does — see the `Viewport` wrapper below, which is only
@@ -336,6 +352,9 @@ function App() {
   // and for the same reason: panel visibility is UI state with no bearing on
   // `ReadingState`, so it never reaches `applyIntent`.
   const [creditsVisible, setCreditsVisible] = useState(false)
+  // `?`/`h`'s target (`modules/help.ts`), the same shape again. Both keys
+  // carry one intent, so this is one flag and not two.
+  const [helpVisible, setHelpVisible] = useState(false)
 
   // `c`'s target. Set to a `Pending` assertion the moment correction mode
   // opens (`pending.b` still absent — meaning no counterpart has been picked
@@ -484,12 +503,16 @@ function App() {
   // had as their own `useState` values. Derived on every render rather than
   // memoised: each is a cheap property lookup with a fallback, not a
   // computation worth caching.
+  const mode = sliceFor(prefsMap, layoutModule).mode
+  const setMode = (next: Mode) =>
+    setPrefsMap((map) => ({ ...map, [layoutModule.id]: { mode: next } }))
   const directionPrefs = sliceFor(prefsMap, directionModule)
   const motionPrefs = sliceFor(prefsMap, motionModule)
   const readoutsPrefs = sliceFor(prefsMap, readoutsModule)
   const prefetchPrefs = sliceFor(prefsMap, prefetchModule)
   const annotationsPrefs = sliceFor(prefsMap, annotationsModule)
   const regroupPrefs = sliceFor(prefsMap, regroupModule)
+  const fitPrefs = sliceFor(prefsMap, fitModule)
   // Read here rather than beside `creditsPrefs` further down, because two
   // effects declared above the `if (!session) return null` guard close over
   // it — the wheel subscription and the swap's own geometry — and a binding
@@ -560,6 +583,17 @@ function App() {
     pendingRef.current = pending
   }, [pending])
 
+  // Whether the help overlay is open, for the same `Escape` branch and by the
+  // same route. Kept in an effect rather than assigned during render like
+  // `creditsPrefsRef` below, because this is plain state and not derived from
+  // anything — the split `panelModeRef` above already draws, and for the same
+  // reason: nothing recomputes this value, so a render that React discards has
+  // nothing to recompute it back from.
+  const helpVisibleRef = useRef(false)
+  useEffect(() => {
+    helpVisibleRef.current = helpVisible
+  }, [helpVisible])
+
   // The grouping the page area is drawing right now, for the keydown effect —
   // which subscribes once at load and so cannot see `grouped`, computed below
   // at render from `mode`, the direction override and the reader's own parity
@@ -574,6 +608,9 @@ function App() {
   // value the retained one will.
   const creditsPrefsRef = useRef<CreditsPrefs>(creditsModule.defaults)
 
+  // See `readingRef.current =` below for why this is a ref rather than a read.
+  const readingRef = useRef<Direction>('rtl')
+
   // The zoom preferences, for the keydown handler, in exactly the shape and
   // for exactly the reason `creditsPrefsRef` above has: `=`, `-` and `0` need
   // `enabled`, `step` and `maxScale`, and that handler subscribes once at
@@ -581,6 +618,13 @@ function App() {
   // three cases write it through `setView`'s updater form, which hands them
   // the current value without closing over it.
   const zoomPrefsRef = useRef<ZoomPrefs>(zoomModule.defaults)
+
+  // The help preferences, for the keydown handler, in `creditsPrefsRef`'s
+  // shape and for its reason: `?` and `h` need `enabled`, and that handler
+  // subscribes once at load. Assigned during render beside it, because like
+  // `creditsPrefs` it is derived — recomputed from `prefsMap` every render, so
+  // a discarded render writes what the retained one will.
+  const helpPrefsRef = useRef<HelpPrefs>(helpModule.defaults)
 
   // What the page area is drawing right now, for the keydown handler and for
   // the swap effect below — the page holding the slot the reader is standing
@@ -767,6 +811,30 @@ function App() {
       // exists for — gating it on `isInteractiveTarget` would make it fire
       // everywhere except the one moment it matters most.
       if (event.key === 'Escape') {
+        // The help overlay closes first, ahead of everything else here.
+        //
+        // **This is a departure, and a deliberate one:** neither the settings
+        // panel nor the credits panel closes on `Escape` — both are dismissed
+        // by pressing their own key again or by their Close button, and this
+        // one can be too. Matching them was the alternative and it is what
+        // "consistent" would have meant, but the panel this most resembles is
+        // the note panel a few lines below, which does close on `Escape`: a
+        // `role="dialog"` a reader has just opened over the page is the thing
+        // `Escape` means, and the plan's own browser check names it.
+        //
+        // First rather than last because closing this discards nothing, while
+        // every branch under it either abandons a correction or flushes a
+        // note. If both are open, spending the keypress on the one that costs
+        // nothing and can be reopened with `?` is the cheaper mistake.
+        //
+        // Not gated on `enabled`, unlike the toggle further down: a reader who
+        // switches the module off while the overlay is up would otherwise be
+        // left with a panel whose own keys have just gone inert.
+        if (helpVisibleRef.current) {
+          event.preventDefault()
+          setHelpVisible(false)
+          return
+        }
         // The note panel closes on `Escape` too, but only where there is no
         // correction to abandon: a reader mid-correction pressing `Escape`
         // means the correction, which is the irreversible one.
@@ -1029,6 +1097,16 @@ function App() {
             setView(WHOLE)
             break
           }
+          case HELP_TOGGLE_INTENT: {
+            // One case for two keys, which is what one intent across `?` and
+            // `h` buys — see `modules/help.ts`. Gated on the preference here
+            // rather than inside `Help`, exactly as `PANEL_INTENT` above is
+            // and for its reason: switched off, both keys are genuinely inert
+            // and nothing renders.
+            if (!helpPrefsRef.current.enabled) return
+            setHelpVisible((shown) => !shown)
+            break
+          }
         }
         return
       }
@@ -1070,8 +1148,18 @@ function App() {
       }
       setSession((prev) => {
         if (!prev) return prev
+        // An arrow is a *physical* key and `intentOf` reports it as one; which
+        // page that reaches depends on the work. `stepFor` is the single rule
+        // (`modules/direction.ts`), shared with the filmstrip's layout and the
+        // help's labels, so the three cannot disagree about which way is
+        // forward — which they did until 2026-08-08, when the strip ran
+        // left-to-right under a right-to-left work.
+        const turned: ReadingIntent =
+          intent.kind === 'step'
+            ? { ...intent, by: stepFor(intent.by, readingRef.current) }
+            : intent
         const { state, previous } = applyIntent(
-          intent,
+          turned,
           prev.state,
           prev.previous,
           resolver,
@@ -1896,6 +1984,7 @@ function App() {
   // stored per edition, keyed by the edition whose slots `groups` is about
   // to pair.
   const creditsPrefs = sliceFor(prefsMap, creditsModule)
+  const helpPrefs = sliceFor(prefsMap, helpModule)
   // Read once per render and shared by the skip filter below and the panel at
   // the foot of this component. `Resolver.credits` crosses the wasm boundary
   // and copies (`Array.from(sc.credits(edition))`), so calling it in both
@@ -1933,7 +2022,15 @@ function App() {
   // simply writes the same thing the retained one will.
   groupedRef.current = grouped
   creditsPrefsRef.current = creditsPrefs
+  // The reading direction the *arrows* must follow, for the keydown listener —
+  // which subscribes once at load and cannot see `effectiveReading`, computed
+  // above at render from the sidecar and this reader's per-edition override.
+  // Assigned during render like `creditsPrefsRef` and for the same reason: it
+  // is derived state, recomputed every render, so a discarded render writes
+  // the same value the retained one will.
+  readingRef.current = effectiveReading
   zoomPrefsRef.current = zoomPrefs
+  helpPrefsRef.current = helpPrefs
   // `-1` in a gap: there is no group of the viewed edition the reader is
   // standing on, and `-1` is already `Filmstrip`'s "mark nothing" — the same
   // value correction mode passes, for the same reason.
@@ -2156,6 +2253,42 @@ function App() {
         }
       : undefined
 
+  /**
+   * Which edge of its own element a slot's artwork is pulled to — `fit.ts`'s
+   * `ArtworkHug`, asked by slot rather than by cell.
+   *
+   * One answer for the three things that have to agree about it: the two
+   * `PageView`s `renderGroup` draws, the marker overlay that measures one of
+   * them, and `pointOn`'s drag arithmetic. Written out at each of the three, a
+   * copy that fell out of step would draw the page one way and measure it
+   * another — a region landing about 180px from where the reader swept it out,
+   * `paintedBox` having the measurement — and nothing in `web/` could catch
+   * that, since none of the three is reachable from a test.
+   *
+   * `cellOf` is the rule and is asked rather than repeated, for the reason its
+   * own doc gives: the comparison written here would put a `reading === 'rtl'`
+   * test back into this file. This is only the translation from a cell to an
+   * edge, and the direction is the thing to get right — the *first* cell hugs
+   * its **right** edge, because that is the side the seam is on. `ArtworkHug`
+   * has the whole naming argument.
+   *
+   * `'centre'` everywhere else — single and scroll mode, a joined spread or a
+   * solo slot (`cellOf`'s `'only'`), and a slot with no group on screen at
+   * all. Nothing hugs in any of those, so nothing is off-centre in them
+   * either.
+   */
+  const hugFor = (group: Group | undefined, slot: number): ArtworkHug => {
+    if (mode !== 'two' || !group) return 'centre'
+    const cell = cellOf(group, effectiveReading, slot)
+    return cell === 'first'
+      ? 'right-edge'
+      : cell === 'second'
+        ? 'left-edge'
+        : 'centre'
+  }
+  /** The hug for the slot the reader is on, which is the one the overlay draws over. */
+  const shownHug = at ? hugFor(current, at.slot) : 'centre'
+
   // Which mechanism governs a mounted `PageView`'s image — see that
   // component's own `buffered` doc for the full reasoning. Scroll mode
   // mounts every group at once and leans on `loading="lazy"` to bound that
@@ -2205,12 +2338,36 @@ function App() {
     return target.src.endsWith(pageAt(draft.slot)) ? target : undefined
   }
 
-  /** Where a pointer event falls, in fractions of the page it is over. */
+  /**
+   * Where a pointer event falls, in fractions of the page it is over.
+   *
+   * **The hug is what `paintedBox` cannot infer from the two rects.**
+   * *2026-08-08, closing what the previous version of this comment recorded
+   * and did not fix.* Left to its default, that function splits the letterbox
+   * evenly, which is what `object-fit: contain` does under `object-position`'s
+   * own `50% 50%`. The two cells of a real pair pass a hug instead, so their
+   * art sits flush against the seam — and a drag measured as though it were
+   * centred lands the whole rectangle about 180px sideways of where it was
+   * swept out, which is half of the 359px seam that closing it moved
+   * (`paintedBox` has both measurements). Nothing changes where the fit is
+   * width-bound and there is no horizontal letterbox left to distribute.
+   *
+   * `el` always comes from `draftImage`, which returns nothing without a
+   * draft, so the `'centre'` below is unreachable rather than a third case.
+   * Written out rather than asserted on: the cost of being wrong here is a
+   * region 180px from where it was drawn, not a crash, and this file would
+   * rather draw the centred page than throw at a reader mid-drag.
+   *
+   * `PageAnnotations` measures the same page through the same `paintedBox`, so
+   * the rectangle a reader sweeps out and the marker drawn over it afterwards
+   * cannot disagree about where the page is.
+   */
   function pointOn(el: HTMLImageElement, clientX: number, clientY: number) {
     const rect = el.getBoundingClientRect()
     const painted = paintedBox(
       { w: el.naturalWidth, h: el.naturalHeight },
       { w: rect.width, h: rect.height },
+      draft ? hugFor(current, draft.slot) : 'centre',
     )
     return pointInSlot(
       { x: clientX - rect.left, y: clientY - rect.top },
@@ -2441,6 +2598,7 @@ function App() {
           alt={altAt(slot)}
           buffered={buffered}
           decodeQueue={swapQueue}
+          fit={fitPrefs}
         />
       )
     }
@@ -2461,12 +2619,32 @@ function App() {
     const { wide, first, second } = cellsFor(group, effectiveReading)
     return (
       <div key={key} style={{ display: 'flex', width: '100%', height: '100%' }}>
-        <div style={{ flex: 1, minWidth: 0, height: '100%' }}>
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            height: '100%',
+            ...seamStyle(fitPrefs, 'first'),
+          }}
+        >
+          {/*
+            The hug is `hugFor`, not a rule written out here, so the page this
+            draws and the geometry that measures it cannot disagree — that
+            function's doc has the naming argument (`right-edge` on the *left*
+            cell is not backwards), why only a real pair hugs, and why screen
+            position rather than reading direction decides it.
+
+            It asks `cellOf` about `group`, which is `current` here: `two` mode
+            renders exactly one group, the `mode !== 'two'` return above having
+            taken scroll mode's many-group case out of this branch.
+          */}
           <PageView
             src={pageAt(first)}
             alt={altAt(first)}
             buffered={buffered}
             decodeQueue={swapQueue}
+            fit={fitPrefs}
+            hug={hugFor(group, first)}
           />
         </div>
         {/*
@@ -2505,7 +2683,12 @@ function App() {
                   height: '100%',
                   overflow: 'hidden',
                 }
-              : { flex: 1, minWidth: 0, height: '100%' }
+              : {
+                  flex: 1,
+                  minWidth: 0,
+                  height: '100%',
+                  ...seamStyle(fitPrefs, 'second'),
+                }
           }
           aria-hidden={wide || undefined}
         >
@@ -2514,6 +2697,8 @@ function App() {
             alt={altAt(second)}
             buffered={buffered}
             decodeQueue={swapQueue}
+            fit={fitPrefs}
+            hug={hugFor(group, second)}
           />
         </div>
       </div>
@@ -2628,6 +2813,18 @@ function App() {
             match={pageAt(at.slot)}
             here={hereBehind}
             prefs={overlayPrefs}
+            // Where the artwork sits inside the `<img>` this measures, which
+            // is not the middle of it for either half of a pair — the same
+            // value the `PageView` underneath is drawing with, from the same
+            // `hugFor`.
+            hug={shownHug}
+            // The tab goes in the margin the hug leaves. `right-edge` is the
+            // left cell of a real pair and only that: its artwork is against
+            // the seam, so the outside is the only margin it has. Everything
+            // else keeps the default and is unchanged. Derived from the hug
+            // rather than asking `cellOf` a second time, so the two cannot
+            // come to different conclusions about which cell this is.
+            tabSide={shownHug === 'right-edge' ? 'left' : 'right'}
             // The live rectangle while dragging, and the settled one after the
             // pointer is released but before Save — so a reader can see what
             // they drew, and see it again when they reopen the note. Only
@@ -2737,6 +2934,11 @@ function App() {
       )}
       <Chrome
         visible={chromeVisible}
+        // The strip runs the way the pages do — `stepFor`'s rule, applied to
+        // layout rather than to a keypress. `effectiveReading` is the viewed
+        // edition's, override included, which is the same value the page area
+        // pairs its cells with.
+        reading={effectiveReading}
         motion={motionPrefs}
         readouts={readoutsPrefs}
         position={positionText}
@@ -2954,6 +3156,18 @@ function App() {
           setCreditsVisible(false)
         }}
         onClose={() => setCreditsVisible(false)}
+      />
+      {/* `enabledModules` and not `registry.all()`: `Help` lists exactly the
+          modules it is handed, and handing it all of them would advertise the
+          keys of a module the reader has switched off. The filter is the
+          caller's job by design — see that function's doc for what `enabled`
+          means for a module that has no such preference, and for the one
+          module whose off switch it cannot see. */}
+      <Help
+        visible={helpVisible}
+        modules={enabledModules(registry.all(), prefsMap)}
+        reading={effectiveReading}
+        onClose={() => setHelpVisible(false)}
       />
     </div>
   )

@@ -160,16 +160,47 @@ check rather than readouts you know.
 
 **The page fits whole.** Aspect preserved, downscaled to fit, **never cropped,
 never distorted, never force-filled, and not upscaled past 100%**. The
-letterbox around it is background.
+letterbox around it is background. *The last of those four stopped being the
+default on 2026-08-08 — see the correction under the table.*
 
-Every geometry override lives in the `fit` module and is off by default:
+Every geometry override lives in the `fit` module. All but one are off by
+default:
 
 | Setting | Default | Does |
 | ------- | ------- | ---- |
 | `trim` | off | autocrop to the inked area |
 | `fillWidth` / `fillHeight` | off | fills one axis, cropping the other |
-| `upscaleToFit` | off | lets a page smaller than the viewport grow past 100% |
+| `upscaleToFit` | **on** | lets a page smaller than the viewport grow past 100% |
 | `upscaleFilter` | `smooth` | interpolation used when upscaling |
+
+> **Corrected 2026-08-08, when `fit` shipped.** This row read `off`, and the
+> paragraph below — unchanged — is the argument for it: enlarging a
+> low-resolution scan costs something real, so the reader should be the one to
+> ask for it. That argument is sound and stays. What this document could not
+> know is how the *other* side of the trade reads to someone who did not write
+> it. Measured in a browser at a 1400×1263 page area on `corpus/gotoubun-v01`:
+> `en-mono` is 2147×3056 and drew at 887×1263, filling the height, while
+> `raw-mono` is 685×1024 and drew at 685×1024 — 239px of height unused, at 1:1
+> in the middle of a large letterbox. **The first reader to meet that reported
+> it as a defect in the images or in the aligner, not as a setting they had not
+> found.** A default that makes a working reader look broken is the wrong
+> default however sound the reasoning behind it, so the default reversed and
+> the reasoning stayed. The cost is not hidden: 685 → 1263 is a 23% enlargement
+> of inked line work, which is exactly what the paragraph below warns about,
+> and is why `upscaleFilter` shipped in the same commit rather than later —
+> turning the default on without exposing the filter would trade one complaint
+> for another. See `docs/notes.md`, "Fit, the seam, and the keybind help",
+> and `docs/superpowers/specs/2026-08-08-fit-seam-and-help-design.md` §1.
+>
+> **Two of the four rows above are still unbuilt, and a fifth setting is
+> missing.** `upscaleToFit` and `upscaleFilter` ship. `trim` and
+> `fillWidth`/`fillHeight` do not: nobody asked for them, and `trim`'s case —
+> Tongari v09's letterboxed scans — has no reader waiting on it. The reasoning
+> below stands for whoever hits it. The module also gained a setting this table
+> never named, `gap`: the pixels between the two pages of a spread, defaulting
+> to `0`. It joined `fit` rather than `regroup` or a module of its own because
+> a seam is geometry, which is the line this section already draws two
+> paragraphs below.
 
 `upscaleToFit` earns its own setting rather than falling out of "fit": a
 low-resolution scan on a 4K monitor is a real case in this corpus, and the
@@ -208,6 +239,31 @@ visually — storing regions that are never shown).
 Fit-whole guarantees the side margins the tabs live in on every portrait page,
 and because regions are stored as fractions of the slot, tabs and tints track
 correctly at any fit scale without extra arithmetic.
+
+> **Corrected 2026-08-08, when the two-page seam closed.** Both halves of that
+> sentence were conditional on a page being *centred* in its box. That was true
+> of every page this document could see and is true of neither half of a
+> two-page pair now.
+>
+> **The margin.** Closing the seam pulls each page's artwork against it, so the
+> left page has no right-hand margin left and its tabs — drawn at `left: 100%`
+> — land on the facing page's artwork. Fixed by giving the tab a side rather
+> than by reopening the seam: in `two` mode a tab lives in the margin *away*
+> from the seam, and single and scroll mode are unchanged. Measured after the
+> fix on `corpus/gotoubun-v01`, two-page mode: a left-cell tab at x 552–570
+> with the facing page's artwork starting at 574.
+>
+> **The arithmetic.** "Without extra arithmetic" held only while the `<img>`
+> element and the artwork inside it were the same box, which is what
+> `width`/`height: auto` under both `max-*` at 100% gives. `upscaleToFit` makes
+> the element the whole cell and leaves `object-fit: contain` to place the art
+> inside it, so `notes.ts`'s `paintedBox` — an identity for the whole of its
+> life until then — became load-bearing, and then had to learn the hug as well:
+> it split the letterbox evenly, which is right for a centred page and wrong
+> for a page against the seam. Measured in two-page mode, it answered 179 and
+> 872 across the page area where the artwork was at 359 and 693. This was a
+> regression introduced and closed on the same branch, and the record is in
+> `docs/notes.md`, "Fit, the seam, and the keybind help".
 
 ### O13 is fixed where it is tractable and refused where it is not
 
@@ -264,12 +320,38 @@ than hand-built UI seven times.
 | `prefetch` | depth ahead / behind, decode cap | — | — | — | — |
 | `readouts` | which of the four show | — | readout row | — | all four |
 | `annotations` | markers, travel, reveal | new / reveal / review | margin + overlay | tabs, region tint | note count |
-| `fit` *(later)* | trim, fill, upscale-to-fit, upscale filter | — | settings only | geometry | — |
+| `fit` | upscale-to-fit, upscale filter, seam gap | — | settings only | geometry | — |
 | `filters` *(later)* | per-filter parameters | — | settings only | canvas / WebGL | — |
 
 Eight rows against one interface is the evidence the interface is the right
 shape. If a ninth needs a new extension point, that is a signal to revisit
 rather than to widen quietly.
+
+> **Corrected 2026-08-08.** Two facts in the table and the paragraph have moved,
+> and the paragraph's own rule has now been exercised once.
+>
+> **`fit` is no longer *(later)*, and its `defaults` cell was wrong in both
+> directions.** Of the four settings listed, two shipped (`upscaleToFit`,
+> `upscaleFilter`) and two did not (`trim`, `fillWidth`/`fillHeight`); a fifth
+> this table never named did ship (`gap`). The row above is corrected in place;
+> the fit table earlier in this document carries why.
+>
+> **The registry holds eleven modules, not eight.** `settings` and `credits`
+> were registered during M5 without appearing here, `zoom` arrived with L1 on
+> 2026-08-08, and `help` — the keybind overlay — the same day. What has *not*
+> changed is the set of extension points: none of the three later modules
+> needed one, which is the claim this paragraph was actually making.
+>
+> **The "signal to revisit" fired once, and was answered rather than ignored.**
+> `KeyBinding` gained an optional `label` on 2026-08-08, so the keybind help
+> could be generated from the tables the reader already dispatches from instead
+> of being a second copy of them. The alternative was to put `intent` strings in
+> front of a reader — internal identifiers, two of which
+> (`annotations:reveal`, `annotations:review`) are one letter apart while naming
+> different things. It is optional, so nothing existing broke, and it was
+> reported by the implementer rather than slipped in, which is the behaviour
+> this paragraph asked for. `module.ts` carries the reasoning at the field
+> itself.
 
 ### Where state lives
 

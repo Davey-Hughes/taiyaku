@@ -2,6 +2,7 @@ import { useEffect, useRef, type CSSProperties } from 'react'
 import { thumbUrl } from './api'
 import type { Group } from './pairing'
 import type { Position } from './resolver'
+import type { Direction } from './modules/direction'
 import { tilePages } from './tiles'
 
 const railStyle: CSSProperties = {
@@ -66,7 +67,9 @@ const resolvedTileStyle: CSSProperties = {
 }
 
 // `height` fixed, `width: auto` so aspect ratio is preserved — the same
-// never-crop rule `PageView.tsx`'s `fitWhole` follows, just at tile scale.
+// never-crop rule `modules/fit.ts`'s `pageStyle` follows for a page, just at
+// tile scale. A tile is deliberately *not* on that rule's upscale switch: a
+// thumbnail enlarged past its source helps nobody find a page.
 // No `max-width` clamp here: unlike a full page, a tile's width is meant to
 // vary with its content (a spread reads about twice as wide as a single
 // page), so nothing should force it back down to a square-ish box.
@@ -96,6 +99,22 @@ function previewOf(
 }
 
 export interface FilmstripProps {
+  /**
+   * Which way the rail runs.
+   *
+   * A right-to-left work is read right-to-left, and a strip that always ran
+   * the other way put page 1 on the left while the pages beside it put page 1
+   * on the right — measured on `gotoubun-v01`, whose raw is `rtl`: tile order
+   * was page 1 at x 26 through page 10 at x 939, unchanged when the direction
+   * was flipped. A reader hunting a page had to read the strip backwards from
+   * the reader.
+   *
+   * `row-reverse` rather than reversing the array, so a tile's index still
+   * means what it meant — `stepToGroup`, the current-tile border and the
+   * correction picker all address tiles by index, and reversing the data would
+   * have made every one of them wrong in a way no type could catch.
+   */
+  reading: Direction
   work: string
   /** The edition being viewed — tiles show its pages, not the authority's. */
   edition: string
@@ -203,6 +222,7 @@ export interface FilmstripProps {
  * that exists while standing in a gap.
  */
 export function Filmstrip({
+  reading,
   work,
   edition,
   slots,
@@ -254,7 +274,13 @@ export function Filmstrip({
   }, [currentIndex, visible, correcting?.pairedIndex, anchor])
 
   return (
-    <div ref={railRef} style={railStyle}>
+    <div
+      ref={railRef}
+      style={{
+        ...railStyle,
+        flexDirection: reading === 'rtl' ? 'row-reverse' : 'row',
+      }}
+    >
       {groups.map((group, index) => {
         const isCurrent = index === currentIndex
         const isResolved =
