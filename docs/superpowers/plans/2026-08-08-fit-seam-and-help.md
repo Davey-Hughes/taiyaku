@@ -16,7 +16,7 @@
 - **No Rust, sidecar, aligner or server changes.** This is entirely `web/`.
 - **Pure logic lives apart from components.** A pure function sharing a file with a component defeats React Fast Refresh and biome's `style/useComponentExportOnlyModules` flags it. Follow `pairing.ts` / `viewport.ts` / `keys.ts`.
 - **`web/` has no DOM harness.** Vitest cannot construct elements — `document` is undefined. Test pure functions that return values; anything that is a rendered pixel is deferred to the controller's browser pass.
-- **House documentation style, enforced strictly:** every decision records the alternative it beat and what it cost; a figure that is a measurement says where it came from; **a figure that is a guess says it is a guess.** This branch's predecessor spent nine review rounds on comments asserting things the code does not do — check every claim against the code before writing it, including claims copied from this plan.
+- **House documentation style, enforced strictly:** every decision records the alternative it beat and what it cost; a figure that is a measurement says where it came from; **a figure that is a guess says it is a guess.** This branch's predecessor spent repeated review rounds on comments asserting things the code does not do — check every claim against the code before writing it, including claims copied from this plan.
 - **Steps marked `[deferred: controller]`** are browser checks. Do not start a dev server (`npm run dev` blocks); run the automated checks named beside them and report the by-hand step as not run.
 - **Run `scripts/check-all.sh` before the final commit.** It mirrors all four CI jobs.
 
@@ -589,7 +589,7 @@ git commit -m "keys: one table, dispatched from and listed from
 
 The built-ins were a sequence of if statements with nothing enumerable,
 so a help screen listing them would have been a second copy of a rule.
-This project has spent nine review rounds on copies of rules drifting
+This project has repeatedly spent review rounds on copies of rules drifting
 from the rules; a table that intentOf walks and the help reads cannot.
 
 Ordering is preserved and is the point: a module claiming a reader key

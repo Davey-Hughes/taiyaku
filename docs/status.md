@@ -2424,7 +2424,17 @@ letterbox evenly — right for a centred page, wrong for a page against the seam
 In two-page mode it answered 179 and 872 across the page area where the artwork
 was at 359 and 693. Both now measure the artwork, through one answer in
 `App.tsx` that the drawn pages, the marker overlay and the drag arithmetic all
-ask, so what is drawn and what measures it cannot disagree.
+ask.
+
+***And a fourth consumer did not ask.*** This paragraph closed "so what is
+drawn and what measures it cannot disagree" until 2026-08-08, when a review of
+the merged branch found `viewport.ts`'s `paintedIn` — which its own doc calls
+the fractional twin of `paintedBox` — had never been given the hug. `mapView`
+calls it for both sides of a swap, so a zoomed swap in two-page mode measured
+both pages as centred while both were hugged to the seam. Fixed on the branch
+after; `Drawn` carries the hug now. Single and scroll mode were never affected,
+because their hug is `centre` and the two answers coincide there — which is
+precisely why three rounds of review and a browser pass all missed it.
 
 **The tab move is the M5 design's own guarantee going out from under it.** That
 document wrote "fit-whole guarantees the side margins the tabs live in on every
@@ -2438,7 +2448,7 @@ on a page it is not on.
 **The help is generated, which is the whole of its design.** `Space`, the
 arrows, `Tab`, `c` and `1`–`9` used to live in `intentOf` as bare `if`
 statements that nothing could enumerate, so a written help screen would have
-been a second copy of a rule — and this project has spent nine review rounds on
+been a second copy of a rule — and this project has repeatedly spent review rounds on
 comments that were true when written and false later. One ordered table is now
 dispatched from and listed from. `KeyBinding` gained an optional `label` for it,
 which is a widening of the module contract and was reported rather than done

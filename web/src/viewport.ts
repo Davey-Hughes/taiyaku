@@ -1,3 +1,5 @@
+import type { ArtworkHug } from './modules/fit'
+
 /**
  * What part of the drawn group the reader is looking at.
  *
@@ -429,7 +431,7 @@ export function groupToImage(rect: Rect, cell: Cell): Rect {
  * they are the same rule stated in the two units each caller already has.
  *
  * This is what stops the swap being wrong by exactly the letterbox. Group
- * space is the page-area box, but `PageView` draws fit-whole, so a portrait
+ * space is the page-area box, but `PageView` drew fit-whole until the `fit` module shipped, so a portrait
  * page in a landscape viewport is inset with background down both sides. A
  * swap maps between *page* frames, so the inset comes out on the way in and
  * goes back on the way out.
@@ -443,7 +445,11 @@ export function groupToImage(rect: Rect, cell: Cell): Rect {
  * this result is not fit to hold as viewport state on its own; it feeds the
  * swap's arithmetic, not the zoom rect itself.
  */
-export function paintedIn(imageAspect: number, boxAspect: number): Rect {
+export function paintedIn(
+  imageAspect: number,
+  boxAspect: number,
+  hug: ArtworkHug = 'centre',
+): Rect {
   if (
     !Number.isFinite(imageAspect) ||
     !Number.isFinite(boxAspect) ||
@@ -453,7 +459,8 @@ export function paintedIn(imageAspect: number, boxAspect: number): Rect {
     return WHOLE
   const w = Math.min(1, imageAspect / boxAspect)
   const h = Math.min(1, boxAspect / imageAspect)
-  return { x: (1 - w) / 2, y: (1 - h) / 2, w, h }
+  const x = hug === 'left-edge' ? 0 : hug === 'right-edge' ? 1 - w : (1 - w) / 2
+  return { x, y: (1 - h) / 2, w, h }
 }
 
 /**
@@ -701,6 +708,21 @@ export interface Drawn {
   frame: Frame
   cell: Cell
   /**
+   * Which edge this page's artwork is pulled to inside its element.
+   *
+   * **`mapView` was the fourth consumer of that fact and the one that did not
+   * ask**, which is why this field exists. `notes.ts`'s `paintedBox` learned
+   * the hug when the seam shipped, and `paintedIn` — which that function's own
+   * doc calls its fractional twin — did not, so a swap while zoomed in
+   * two-page mode measured both pages as centred while both were hugged to
+   * the seam. Single and scroll mode were unaffected: their hug is `centre`,
+   * where the two answers coincide, which is exactly why nothing caught it.
+   *
+   * Optional, defaulting to `centre`, so every caller drawing one page into
+   * one box is unchanged.
+   */
+  hug?: ArtworkHug
+  /**
    * Which half of `frame` the slot on screen addresses, when `frame` is a
    * joined spread. `undefined` for an ordinary slot, which is every slot
    * outside a spread.
@@ -901,7 +923,11 @@ export function mapView(
   const onFrom = outOf(
     outOf(
       groupToImage(rect, from.cell),
-      paintedIn(aspectOf(from.frame), cellAspect(from.cell, areaAspect)),
+      paintedIn(
+        aspectOf(from.frame),
+        cellAspect(from.cell, areaAspect),
+        from.hug,
+      ),
     ),
     halfBox(from.half),
   )
@@ -914,7 +940,7 @@ export function mapView(
   const onTo = imageToGroup(
     into(
       into(mapped, halfBox(to.half)),
-      paintedIn(aspectOf(to.frame), cellAspect(to.cell, areaAspect)),
+      paintedIn(aspectOf(to.frame), cellAspect(to.cell, areaAspect), to.hug),
     ),
     to.cell,
   )

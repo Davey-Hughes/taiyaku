@@ -1,3 +1,4 @@
+import type { Direction } from './modules/direction'
 import type { Verdict } from './session'
 
 /** One of `nearestPaired`'s offers, resolved to something a person reads. */
@@ -14,6 +15,13 @@ export interface GapMove {
 }
 
 export interface GapProps {
+  /**
+   * Which way the work reads. The two offers point the way the pages go: in a
+   * right-to-left work the earlier page is to the right, and an unconditional
+   * `←`/`→` sent a reader the wrong way on the one screen they reach by being
+   * lost.
+   */
+  reading: Direction
   /** The edition with no counterpart — the one being looked at. */
   edition: string
   /**
@@ -48,6 +56,7 @@ const sentence: Record<Verdict, string> = {
  * than taking it.
  */
 export function Gap({
+  reading,
   edition,
   from,
   verdict,
@@ -81,15 +90,26 @@ export function Gap({
           No paired page nearby in {edition} either.
         </p>
       ) : (
-        <div style={{ display: 'flex', gap: 12 }}>
+        <div
+          style={{
+            display: 'flex',
+            gap: 12,
+            // The earlier page is on the right in a right-to-left work, so the
+            // two offers sit the way the pages do. Same rule as the filmstrip's
+            // rail and for the same reason: this is the one screen a reader
+            // reaches by being lost, and it should not also be the one that
+            // points the wrong way.
+            flexDirection: reading === 'rtl' ? 'row-reverse' : 'row',
+          }}
+        >
           {before && (
             <button type="button" onClick={() => onTake(before.slot)}>
-              ← {edition} page {before.page}
+              {reading === 'rtl' ? '→' : '←'} {edition} page {before.page}
             </button>
           )}
           {after && (
             <button type="button" onClick={() => onTake(after.slot)}>
-              {edition} page {after.page} →
+              {edition} page {after.page} {reading === 'rtl' ? '←' : '→'}
             </button>
           )}
         </div>

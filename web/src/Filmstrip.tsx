@@ -2,7 +2,7 @@ import { useEffect, useRef, type CSSProperties } from 'react'
 import { thumbUrl } from './api'
 import type { Group } from './pairing'
 import type { Position } from './resolver'
-import type { Direction } from './modules/direction'
+import { stepFor, type Direction } from './modules/direction'
 import { tilePages } from './tiles'
 
 const railStyle: CSSProperties = {
@@ -278,7 +278,12 @@ export function Filmstrip({
       ref={railRef}
       style={{
         ...railStyle,
-        flexDirection: reading === 'rtl' ? 'row-reverse' : 'row',
+        // Derived from `stepFor` rather than re-deciding what `rtl` means:
+        // the rail runs the way a forward step goes, which is the same rule
+        // the arrows and the help ask. This read `reading === 'rtl'` until a
+        // review pointed out that the section claiming three consumers of one
+        // rule had two, and the third was this line.
+        flexDirection: stepFor(1, reading) === 1 ? 'row' : 'row-reverse',
       }}
     >
       {groups.map((group, index) => {

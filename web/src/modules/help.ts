@@ -175,13 +175,22 @@ export function helpGroups(
   //
   // Only the pairing flips. `READER_KEYS` still owns both strings, so nothing
   // here has to know what "next page" says.
-  const swapped = stepFor(1, reading) !== 1
-  const arrows = reader.filter((b) => b.keys.some((k) => k.startsWith('Arrow')))
+  // Paired by what a row *does*, not by where it sits. The first version
+  // filtered rows whose key started with `Arrow` and reversed that list, which
+  // is a swap for exactly two and nonsense for three — and `ARROWS` above
+  // already names `ArrowUp`/`ArrowDown` ahead of a caller, so the breaking
+  // case is one this file anticipates. Asking `resolve` what a row turns, and
+  // `stepFor` what the physical key does under this reading, pairs them by
+  // meaning and does not care how many there are.
+  const stepOf = (b: ReaderBinding): 1 | -1 | undefined => {
+    const intent = b.resolve(b.keys[0] ?? '', [])
+    return intent?.kind === 'step' ? intent.by : undefined
+  }
   const describe = (binding: ReaderBinding): string => {
-    if (!swapped) return binding.label
-    const i = arrows.indexOf(binding)
-    if (i === -1) return binding.label
-    return arrows[arrows.length - 1 - i].label
+    const declared = stepOf(binding)
+    if (declared === undefined) return binding.label
+    const effective = stepFor(declared, reading)
+    return reader.find((o) => stepOf(o) === effective)?.label ?? binding.label
   }
   const groups: HelpGroup[] = [
     {
@@ -225,7 +234,7 @@ export function helpGroups(
  *
  * **`enabled` is a convention, not a field of the contract, and a module
  * without one is treated as always on.** That is the honest reading rather
- * than a safe-looking one: 8 of the 11 registered modules have no such
+ * than a safe-looking one: 9 of the 12 registered modules have no such
  * preference (only `prefetch`, `zoom` and `help` do), so the alternative —
  * treating an absent flag as off — would empty the overlay of `d`, `b`, `s`,
  * `C` and all five annotation keys, every one of which works. The other

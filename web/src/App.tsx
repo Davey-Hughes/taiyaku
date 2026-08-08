@@ -505,7 +505,14 @@ function App() {
   // computation worth caching.
   const mode = sliceFor(prefsMap, layoutModule).mode
   const setMode = (next: Mode) =>
-    setPrefsMap((map) => ({ ...map, [layoutModule.id]: { mode: next } }))
+    setPrefsMap((map) => ({
+      ...map,
+      // Spread rather than replace. `LayoutPrefs` has one field today, so this
+      // changes nothing — and it is exactly the bug `direction.ts` extracted
+      // `setOverride` to prevent, which is reason enough not to write the
+      // version that only works while the type stays small.
+      [layoutModule.id]: { ...sliceFor(map, layoutModule), mode: next },
+    }))
   const directionPrefs = sliceFor(prefsMap, directionModule)
   const motionPrefs = sliceFor(prefsMap, motionModule)
   const readoutsPrefs = sliceFor(prefsMap, readoutsModule)
@@ -643,7 +650,7 @@ function App() {
   // the page area. Both read the same way at every use — there is nothing on
   // screen for a zoom, a pan or a swap's arithmetic to be about.
   const drawnRef = useRef<
-    { url: string; cell: Cell; half?: 'L' | 'R' } | undefined
+    { url: string; cell: Cell; half?: 'L' | 'R'; hug: ArtworkHug } | undefined
   >(undefined)
 
   // The page area itself, for the two things that genuinely need the box
@@ -1193,7 +1200,10 @@ function App() {
       const frame = frameOf(host, drawn.url)
       if (!frame) return
       swapRef.current = {
-        from: { frame, cell: drawn.cell, half: drawn.half },
+        // `hug` too: the artwork is pulled to the seam in two-page mode, and
+        // a swap that measured it as centred was the one consumer of that
+        // fact still asking the wrong question — see `Drawn.hug`.
+        from: { frame, cell: drawn.cell, half: drawn.half, hug: drawn.hug },
         edition: leaving,
       }
     }
@@ -1615,7 +1625,7 @@ function App() {
         mapView(
           rect,
           pending.from,
-          { frame, cell: to.cell, half: to.half },
+          { frame, cell: to.cell, half: to.half, hug: to.hug },
           box.width / box.height,
           kind,
         ),
@@ -2241,6 +2251,17 @@ function App() {
   // swap's arithmetic, which needs it to land on the R half rather than on the
   // middle of the spread. `undefined` for every ordinary slot, which is what
   // `Drawn.half` expects there.
+  const hugFor = (group: Group | undefined, slot: number): ArtworkHug => {
+    if (mode !== 'two' || !group) return 'centre'
+    const cell = cellOf(group, effectiveReading, slot)
+    return cell === 'first'
+      ? 'right-edge'
+      : cell === 'second'
+        ? 'left-edge'
+        : 'centre'
+  }
+
+  const shownHug = at ? hugFor(current, at.slot) : 'centre'
   drawnRef.current =
     at && current && mode !== 'scroll'
       ? {
@@ -2250,6 +2271,10 @@ function App() {
               ? cellOf(current, effectiveReading, at.slot)
               : 'only',
           half: slots[at.slot].half,
+          // Carried so the swap measures the page where it is drawn rather
+          // than where a centred page would be — `Drawn.hug` records why this
+          // was missing.
+          hug: shownHug,
         }
       : undefined
 
@@ -2277,17 +2302,7 @@ function App() {
    * all. Nothing hugs in any of those, so nothing is off-centre in them
    * either.
    */
-  const hugFor = (group: Group | undefined, slot: number): ArtworkHug => {
-    if (mode !== 'two' || !group) return 'centre'
-    const cell = cellOf(group, effectiveReading, slot)
-    return cell === 'first'
-      ? 'right-edge'
-      : cell === 'second'
-        ? 'left-edge'
-        : 'centre'
-  }
   /** The hug for the slot the reader is on, which is the one the overlay draws over. */
-  const shownHug = at ? hugFor(current, at.slot) : 'centre'
 
   // Which mechanism governs a mounted `PageView`'s image — see that
   // component's own `buffered` doc for the full reasoning. Scroll mode
@@ -2624,7 +2639,12 @@ function App() {
             flex: 1,
             minWidth: 0,
             height: '100%',
-            ...seamStyle(fitPrefs, 'first'),
+            // Not while `wide`: the second cell is collapsed to zero width and
+            // gets no seam padding, so padding this one narrows the box the
+            // single drawn page centres in and shifts it `gap / 4` off centre —
+            // measured at 10px with `gap: 40` in a 1385px area. A joined spread
+            // or a solo slot has no seam to open.
+            ...(wide ? {} : seamStyle(fitPrefs, 'first')),
           }}
         >
           {/*
@@ -2861,6 +2881,7 @@ function App() {
           )}
         {shown.kind === 'gap' ? (
           <Gap
+            reading={effectiveReading}
             edition={shown.edition}
             from={{
               edition: shown.from.edition,

@@ -185,7 +185,7 @@ default:
 > it as a defect in the images or in the aligner, not as a setting they had not
 > found.** A default that makes a working reader look broken is the wrong
 > default however sound the reasoning behind it, so the default reversed and
-> the reasoning stayed. The cost is not hidden: 685 → 1263 is a 23% enlargement
+> the reasoning stayed. The cost is not hidden: 1024 → 1263 is a 23% enlargement
 > of inked line work, which is exactly what the paragraph below warns about,
 > and is why `upscaleFilter` shipped in the same commit rather than later —
 > turning the default on without exposing the filter would trade one complaint
@@ -336,7 +336,7 @@ rather than to widen quietly.
 > this table never named did ship (`gap`). The row above is corrected in place;
 > the fit table earlier in this document carries why.
 >
-> **The registry holds eleven modules, not eight.** `settings` and `credits`
+> **The registry holds twelve modules, not eight.** `settings` and `credits`
 > were registered during M5 without appearing here, `zoom` arrived with L1 on
 > 2026-08-08, and `help` — the keybind overlay — the same day. What has *not*
 > changed is the set of extension points: none of the three later modules

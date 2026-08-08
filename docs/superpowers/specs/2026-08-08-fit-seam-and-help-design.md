@@ -116,6 +116,18 @@ shrinks this problem on its own; this section makes it exact.
 Each cell stops centring its page and justifies it **toward the seam** — first
 cell right-aligned, second cell left-aligned — with a `gap` between them:
 
+*Superseded during implementation, and the mechanism named here is wrong.*
+`justify-content` on the cell does nothing: `PageView` wraps its `<img>` in a
+`width: 100%` flex div, so the cell's only child fills whatever the padding
+leaves and there is no free space to distribute. Worse, `object-fit: contain`
+centres the artwork *inside* an element that `upscaleToFit` now makes fill its
+cell, so moving the element moves nothing — measured, the elements touched at
+0px while the artwork stayed 359px apart. What ships is `object-position` on
+the image (`pageStyle` takes an `ArtworkHug`), with padding on the cell opening
+the `gap`. Recorded rather than rewritten: "justify it toward the seam" is the
+sentence that made this look like a layout problem when it was a paint
+problem.
+
 | Setting | Default | Does |
 | ------- | ------- | ---- |
 | `gap` | `0` | pixels between the two pages in `two` mode |
@@ -170,7 +182,7 @@ The built-ins cannot. `Space`, `ArrowRight`, `ArrowLeft`, `Tab`, `c` and `1`–`
 live inside `intentOf` as a sequence of bare `if` statements, deliberately
 answered **before** any module is consulted, and nothing about them is
 enumerable. A help screen listing them would be a second copy of a rule, and
-this project has now spent nine review rounds on comments that were true when
+this project has repeatedly spent review rounds on comments that were true when
 written and false later.
 
 ### What ships

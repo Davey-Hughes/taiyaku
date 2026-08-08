@@ -972,3 +972,66 @@ describe('mapView across a joined spread', () => {
     }
   })
 })
+
+describe('mapView across a two-page seam', () => {
+  // Every other `mapView` test runs `cell: 'only'`, where the hug is `centre`
+  // and a hugged page and a centred one are the same box — which is exactly
+  // why a swap measuring both as centred went unnoticed until a review.
+  const frame = { w: 700, h: 1000 }
+  const area = 2 // a landscape page area, so each cell is letterboxed
+
+  it('measures a hugged page where it is drawn, not where a centred one would be', () => {
+    const rect = { x: 0.4, y: 0.4, w: 0.2, h: 0.2 }
+    const hugged = mapView(
+      rect,
+      { frame, cell: 'first', hug: 'right-edge' },
+      { frame, cell: 'second', hug: 'left-edge' },
+      area,
+      'pillarbox',
+    )
+    const centred = mapView(
+      rect,
+      { frame, cell: 'first' },
+      { frame, cell: 'second' },
+      area,
+      'pillarbox',
+    )
+    expect(hugged).not.toEqual(centred)
+  })
+
+  it('is unchanged for a page that really is centred', () => {
+    const rect = { x: 0.4, y: 0.4, w: 0.2, h: 0.2 }
+    expect(
+      mapView(
+        rect,
+        { frame, cell: 'only', hug: 'centre' },
+        { frame, cell: 'only', hug: 'centre' },
+        area,
+        'pillarbox',
+      ),
+    ).toEqual(
+      mapView(
+        rect,
+        { frame, cell: 'only' },
+        { frame, cell: 'only' },
+        area,
+        'pillarbox',
+      ),
+    )
+  })
+
+  // Same edition on both sides is the identity case: whatever the hug, a swap
+  // that changes nothing must land where it started.
+  it('round-trips a hugged page onto itself', () => {
+    const rect = { x: 0.35, y: 0.35, w: 0.3, h: 0.3 }
+    const there = mapView(
+      rect,
+      { frame, cell: 'first', hug: 'right-edge' },
+      { frame, cell: 'first', hug: 'right-edge' },
+      area,
+      'pillarbox',
+    )
+    expect(there.x).toBeCloseTo(rect.x, 6)
+    expect(there.y).toBeCloseTo(rect.y, 6)
+  })
+})

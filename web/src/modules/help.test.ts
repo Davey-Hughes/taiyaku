@@ -287,3 +287,43 @@ describe('helpGroups and the reading direction', () => {
     expect(helpGroups([])[0].rows).toEqual(helpGroups([], 'ltr')[0].rows)
   })
 })
+
+describe('helpGroups pairs step rows by meaning, not by position', () => {
+  // The case the first implementation got wrong: with three step-like rows it
+  // reversed the list instead of pairing them, so one row kept its own label
+  // and another took a stranger's.
+  const table = [
+    {
+      keys: ['ArrowRight'],
+      label: 'next page',
+      resolve: () => ({ kind: 'step' as const, by: 1 as const }),
+    },
+    {
+      keys: ['ArrowLeft'],
+      label: 'previous page',
+      resolve: () => ({ kind: 'step' as const, by: -1 as const }),
+    },
+    { keys: ['x'], label: 'something else', resolve: () => undefined },
+  ]
+
+  it('swaps only the two that mean forward and back', () => {
+    const rows = Object.fromEntries(
+      helpGroups([], 'rtl', table)
+        .flatMap((g) => g.rows)
+        .map((r) => [r.keys, r.description]),
+    )
+    expect(rows['←']).toBe('next page')
+    expect(rows['→']).toBe('previous page')
+    expect(rows.x).toBe('something else')
+  })
+
+  it('leaves a row alone when nothing else means the opposite', () => {
+    const lonely = [table[0], table[2]]
+    const rows = Object.fromEntries(
+      helpGroups([], 'rtl', lonely)
+        .flatMap((g) => g.rows)
+        .map((r) => [r.keys, r.description]),
+    )
+    expect(rows['→']).toBe('next page')
+  })
+})
