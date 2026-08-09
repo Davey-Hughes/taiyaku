@@ -197,7 +197,12 @@ pub fn partition_by_size(sizes: &[usize]) -> (Vec<usize>, Vec<usize>) {
 ///
 /// Results come back in page order regardless of which path each took, because
 /// every later index — slots, runs, the whole alignment — is derived from it.
-fn decode_all<T, F>(pages: &[Page], describe: F) -> Result<Vec<T>, String>
+///
+/// Widened from private for `detect`, which needs the same bounded parallel
+/// decode and must not carry a second copy of the large-page rule: the ceiling
+/// is `MAX_DECODE_ALLOC` and the corpus holds 430 MB TIFFs, so decoding the
+/// large ones one at a time is what keeps a detection run inside memory.
+pub(crate) fn decode_all<T, F>(pages: &[Page], describe: F) -> Result<Vec<T>, String>
 where
     T: Send,
     F: Fn(&Page, &GrayImage) -> T + Send + Sync,

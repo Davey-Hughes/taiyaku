@@ -57,7 +57,7 @@ its artwork until the same pass caught that too.
 
 ## What is built
 
-Five crates, 424 tests, plus 581 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 463 tests, plus 586 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
 and `vite` in `web/`. That list did not grow for L1: zoom is a CSS transform and
@@ -85,16 +85,35 @@ what each one measured. `check-all.sh` runs all twelve with `--nocapture`
 against an absolute, canonicalised `TAIYAKU_CORPUS`, so a green gate shows what
 each one measured, or says plainly that it did not run them at all.
 
-**A thirteenth test is gated on `TAIYAKU_CORPUS` and is deliberately not one of
-those twelve.** `crates/taiyaku-cli/src/geometry_experiment.rs` is L1's one-off
+**Two further tests are gated on `TAIYAKU_CORPUS` and are deliberately not among
+those twelve.** Both are one-off measurements rather than checks, and both are
+built the same way for the same reason.
+
+`crates/taiyaku-cli/src/region_experiment.rs` is L2a's: why the text-block
+detector fails, run against real pages. It prints, per sampled page, the
+component count, the fraction of components under 5px, the scale each of three
+candidate rules derives, the gap that follows, **how many blocks survive each of
+the four filters in order**, the largest block `MAX_BLOCK_AREA` discarded, and
+the axis flagged against the edition's true reading direction. It exists because
+the first version of this diagnosis was a throwaway program, discarded once
+`notes.md` was written — which left the survey's `regions:` lines reproducible
+and the diagnosis behind them not. It calls `detect.rs`'s own functions rather
+than copies of them, so nothing in it can drift from what `taiyaku regions`
+does; the discarded program copied them and needed a cross-check against the
+real command to show the copy was faithful. About seven seconds under
+`--release`. See `notes.md`, "The text-block detector, measured against four
+works, and why it does not work yet", which names the command that reprints
+every figure in it.
+
+`crates/taiyaku-cli/src/geometry_experiment.rs` is L1's one-off
 measurement of which derived transform a swap should map through, and it stays a
 measurement rather than becoming a check: it asserts only that it measured
 something — a non-empty sample, a search that found a minimum in every volume,
 every residual finite — so that a glob matching no volume cannot print an empty
 table and pass, which is the one failure a measurement must not have.
-`check-all.sh` filters on `corpus::`, so it does not reach this one and the
-twelve above are still twelve; it also wants `--release`, under which it takes
-about a minute against about forty without. Not promoting it was decided in
+`check-all.sh` filters on `corpus::`, so it reaches neither of these two and the
+twelve above are still twelve; this one also wants `--release`, under which it
+takes about a minute against about forty without. Not promoting it was decided in
 advance, by a rule fixed before the number existed (the L1 design's §4), and
 the rule's first branch fired. It also could not have been promoted as written:
 the transform it picked is TypeScript, so a Rust corpus check would re-measure
@@ -129,7 +148,7 @@ format cannot detect. The aligner and the server now derive it in one place, and
 a gated corpus check compares all 617 pages of the primary volume across the two
 paths.
 
-Eight commands:
+Nine commands:
 
 ```
 taiyaku align  <a-member>... -- <b-member>...   [--ltr] [--cache DIR] [--stats] [--write FILE [--title NAME] [--name-a KEY] [--name-b KEY] [--direct]] | --no-split-spreads [--stats]
@@ -140,6 +159,7 @@ taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT] [--stump-url 
 taiyaku inventory <root>                        [--min-pages N] [--pattern SPEC]
 taiyaku duplicates <copy>... -- <copy>...       [--against <member>...] [--cache DIR] [--ltr]
 taiyaku credits <member>...                     --sidecar FILE [--against EDITION] [--cache DIR] [--write]
+taiyaku regions <member>...                     --sidecar FILE [--write]
 ```
 
 `align` takes several members on either side, which is how one volume aligns
@@ -211,6 +231,25 @@ run of exactly 1 and the only run of length 2 or 3 is a volume's front matter.
 announcement, so precision across the corpus is four of five. That group prints
 no credit page at all. See `notes.md`, "A second group's habits, and what the
 bound is worth".
+
+`regions` keeps that discipline for a fourth question and is **the first command
+here whose answer is not yet good enough to use**. It proposes the text blocks
+of one edition — page by page, in page fractions, with the axis the text runs
+along — and writes them, under `--write`, to a sibling document
+`<stem>.regions.json` rather than into the sidecar: regions are per page, and an
+edition of 195 pages at a handful of blocks each is two orders of magnitude more
+JSON than a file whose first two design goals are human-readable and diffable.
+The document is the convention `<stem>.notes.json` and `taiyaku.stump.json`
+already use, and an L0 reader does not merely ignore it — it never fetches it.
+**Which block corresponds to which block on another edition is not stored**, and
+that is deliberate: it is derived at read time from the alignment, so a third
+edition costs one detection run rather than a re-pairing, a hand correction
+re-pairs for free, and no stored derivation can outlive what it derived from —
+which is O24's open failure mode. There is deliberately no `--cache`: the
+fingerprint cache holds hashes and dimensions rather than pixels, so it could
+not take effect, and a flag that cannot take effect is refused rather than
+ignored. `scripts/region-survey.sh` is its survey. What that survey found is
+below, under "What is known to be wrong or missing".
 
 ## What is settled
 
@@ -319,9 +358,60 @@ Linking their pages to the manga pages they came from is a different problem —
 sparse, unordered, cross-composition — and wants nearest-neighbour search with a
 margin threshold plus a crop-tolerant hash. Not the DP.
 
+**`taiyaku regions` proposes text blocks and does not reliably find them.** The
+command, the document format and the survey all work and are tested; the
+detector behind them does not clear the L2 design's own bar. Measured over nine
+editions of four works: `blocks_per_page` had to sit above 2 and **fails on all
+nine**, reaching 1.86 at best and 0.59 at worst, which is most pages returning
+nothing at all. The vertical/horizontal split does not reliably follow the
+edition either — one volume comes back backwards on **both** sides at once, its
+Japanese raw reading 71% horizontal while its English edition reads 66%
+vertical.
+
+**The cause is measured rather than guessed, and it is not the one that was
+predicted.** The scale every gap is built from, `stroke_scale`, is the median
+longer side over every ink component on the page — and 63% to 96% of those
+components are **under 5 pixels**: screentone dots, JPEG ringing, antialiasing
+fragments. So the scale collapses to 1–3px on pages 685–2147px wide and the
+smear gap to 4–6px. The blob still forms, but not because the gap is large:
+screentone packs ink densely enough that a few pixels of tolerance already lets
+`merge_along`'s transitive passes weld thousands of specks into one component
+spanning most of a page, which `MAX_BLOCK_AREA` then discards. On all eight
+sampled non-blank pages it discarded the largest thing on the page, covering
+33.6% to 96.6% of it.
+
+**A passing `median_area` is not evidence of health**, which is worth stating
+because it looks like it. `MAX_BLOCK_AREA` discards anything above 0.15 *before*
+the median is taken, so that check is satisfied by the backstop rather than by
+the detector finding text.
+
+**Computing the scale over a population that excludes sub-glyph noise was
+tried, twice, and neither attempt cleared the bar either.** L2A Task 9 fixed
+an acceptance rule before measuring anything — beat `all` on both
+`blocks_per_page` clearing 2 and the v/h split following the edition on both
+sides of one work — then measured two candidates against it over the same
+nine editions: `above-floor` (the median over components above a noise floor
+derived from the page's own size distribution) and `modal` (the mode of the
+size distribution rather than its median). `above-floor` is worse than `all`
+on `blocks_per_page` for 7 of 9 editions, four of them dropping to zero
+blocks across every sampled page; it overshoots past glyph size into art
+size, because excluding the noise floor does not isolate a second, glyph-sized
+population on most pages — there rarely is one — so the median of what is
+left is a mix of type and everything else that is not screentone. `modal`
+raises mean `blocks_per_page` from 0.84 to 1.02 but gets no edition newly
+above 2, and neither candidate reaches even one work with a correct v/h split
+on both sides, where `all` already reaches one (a fact this task also found:
+the brief that set the bar believed nothing did). Per the rule fixed before
+either candidate was measured, neither is promoted; the detector is
+unchanged, and the constants' doc comments still say "a starting value, not a
+measurement" because that is still true — this task measured the scale rule,
+not the five thresholds built on it. See `notes.md`, "The text-block
+detector, measured against four works, and why it does not work yet" and "The
+scale rule, tried three ways, and neither candidate clears the bar".
+
 ### Open items
 
-Thirty, each found by a whole-branch review, carried as a deferral,
+Thirty-three, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -331,7 +421,7 @@ each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
 visible act rather than a thing someone remembers. **Twenty-five are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25, O26, O27, O28, O29 and O30 — leaving five.**
+O21, O22, O25, O26, O27, O28, O29 and O30 — leaving eight.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -368,6 +458,9 @@ each is in the detail below; the table is what a reader scans.
 | O28 | [x] | A forward arrow on the last group's second slot moves backward | `pairing.ts::stepToGroup` | credits-panel arrow simulation |
 | O29 | [x] | A failed `--write` names a temp path the caller never typed | `atomic.rs::write` | O26's corpus drive |
 | O30 | [x] | A relative `TAIYAKU_CORPUS` skipped every standing check and reported `ok` | `corpus.rs::corpus`, `corpus.rs::corpus_root` | O26's corpus drive |
+| O31 | [ ] | The text-block axis is decided per page, where the design says per cluster — so a page cannot report vertical dialogue beside a horizontal SFX, and the survey's `v`/`h` figures are per-page decisions counted per block | `detect.rs::detect_page` | L2a whole-branch review |
+| O32 | [ ] | The `median_area` disqualifier cannot fire — `MAX_BLOCK_AREA` clamps every region under it before the median is taken | `detect.rs::detect_page`, `regions.rs::median_area` | L2a whole-branch review |
+| O33 | [ ] | Two of the five detection constants reject nothing in any test, so a computation bug in either would ship unseen | `detect.rs`, the `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` filters | L2a whole-branch review |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -783,6 +876,15 @@ worth fixing".
   **Still not closed:** the reopening condition stands, now at the tile
   cache's larger constant factor, and a library with many editions' filmstrips
   warmed at once is a case this one-edition run does not speak to.
+  **A third consumer looked likely and turned out not to be one.** `taiyaku
+  regions` decodes every page of an edition, which is exactly the shape of work
+  the fingerprint cache exists for, and the L2a design said it would cache under
+  `.taiyaku-cache/` keyed on the member's `sha256`. It does not, and takes no
+  `--cache` at all: such a cache would hold the same boxes the regions document
+  already holds, under the same key, in a second place that can disagree with
+  the first — which is the duplication O10 was closed to remove — and `--write`
+  is what makes a second run cheap. So the count of caches sharing that tree is
+  still two, and the flag is refused rather than accepted and ignored.
 
 **One deferral was carried rather than found** — O12, named while planning M1
 and M2, and now closed:
@@ -1555,6 +1657,53 @@ they agree; refusing to anchor on low-variance pages is unbuilt. See
 **Hub choice is declared, not measured.** `notes.md` argues the best hub is the one
 minimising total loss across spokes, and that every input to that decision is
 something an alignment already reports. A merge keeps whatever hub the file names.
+
+**Three came from L2a's whole-branch review** — O31 to O33, none blocking because
+the detector they describe does not work yet for reasons upstream of all three,
+and fixing any of them alone would sharpen an instrument that is measuring the
+wrong population:
+
+- **O31 — The axis is decided once per page, where the design says once per
+  cluster. Open.** `detect_page` calls `axis_of` over the whole page's
+  components, uses that single answer for its one `merge_along`, and stamps it
+  on every region. The design's §4 says the opposite, and §1 justifies storing
+  `axis` on a region on the grounds that "the clustering already knows it" —
+  which is not yet true of the code. **Three consequences, and the third is the
+  one that changes how existing evidence should be read.** A page carrying
+  vertical dialogue beside a horizontal SFX or narration line cannot report
+  both, which is the case the per-cluster rule exists for. The smear runs on
+  that one axis, so a page whose global axis resolves wrong is smeared wrong end
+  to end — a second plausible contributor to the measured failure that the
+  survey's own diagnosis does not name. And **the survey's `v=`/`h=` figures are
+  block counts of a per-page decision**, so the effective sample behind "5 of 9
+  nominally correct" is pages, not the 148–402 blocks the table shows: the
+  evidence is coarser than it reads. Shipped without being recorded as a
+  deviation, which the design now corrects in place.
+- **O32 — The `median_area` disqualifier cannot fire. Open.** The L2 design
+  names two absolute disqualifiers for a detector, one of them "median region
+  area > 0.15 of the page". `MAX_BLOCK_AREA` discards any block above 0.15
+  *before* a `Region` is constructed, and `median_area` is computed over the
+  regions that survive — so every region satisfies the bound by construction and
+  the median is clamped under it whatever the detector does. The survey reported
+  it passing on all nine editions while `blocks_per_page` failed on all nine,
+  which is how a check that measures nothing reads when everything is broken.
+  **What would close it:** taking the block-size check *before* the filter, over
+  the merged blocks as `merge_along` returns them. Until then L2b's promotion
+  rule has one live disqualifier rather than the two its wording implies, and
+  that is the reason this is tracked rather than left as a curiosity — it
+  governs a decision nobody has made yet.
+- **O33 — Two of the five detection constants reject nothing in any test.
+  Open.** `MIN_STROKES` and `MIN_INK` are each pinned by a fixture that reaches
+  them and is refused by them. `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` are
+  not: the panel-border and lone-speck fixtures are both rejected by
+  `MIN_STROKES` first, and the blocks that do survive sit at 0.015 against a
+  0.15 cap and 180 against a span of 40 — so a factor-of-several error in either
+  computation would ship green. Both were hand-checked and are correct today.
+  **One further trap worth recording rather than discovering later:**
+  `MIN_INK`'s own fixture merges at *exactly* the smear threshold, so a future
+  `SMEAR_K` below 2 leaves its strokes unmerged, rejected by `MIN_STROKES`
+  instead, and the test still passing while no longer touching the constant it
+  is named for.
 
 ## What comes next
 
@@ -2523,8 +2672,28 @@ rule where the keys are built.
 
 ### Later
 
-- **L2 text regions** — bubble pairing by transformed centroid, which L1's
-  `mapRect` now makes arithmetic rather than a matching problem.
+- **L2 text regions** — a reader points at a balloon on the raw and sees the
+  matching English one. **Stays here, and the line that used to describe it was
+  wrong twice.** It read:
+
+  > **L2 text regions** — bubble pairing by transformed centroid, which L1's
+  > `mapRect` now makes arithmetic rather than a matching problem.
+
+  It is right that the pairing is arithmetic now. It is wrong that a region is a
+  **bubble** — what serves both the pairing and a later text-selection pass is
+  the **text block** inside the balloon, since a balloon detector is blind to
+  the borderless narration manga uses constantly. And it is silent about
+  **detection**, which is the larger half of the work by a wide margin: nothing
+  in this repository detected anything on a page, and "pairing by transformed
+  centroid" presumes a centroid on each side to pair.
+  **L2a has since landed the half that is not detection** — the
+  `<stem>.regions.json` format in `taiyaku-core`, the `regions` command, and
+  `scripts/region-survey.sh` — and measured the half that is. The detector does
+  not yet clear the design's own bar, for a reason that is now measured; see
+  "What is known to be wrong or missing" above, and `notes.md`, "The text-block
+  detector, measured against four works, and why it does not work yet". What
+  remains before a reader sees anything is a detector whose scale is computed
+  over glyphs rather than over screentone, and then L2b's pairing.
 - **Art book linking**, if it is worth it — needs a different hash, and roughly one
   art book page in three has any manga counterpart at all.
 

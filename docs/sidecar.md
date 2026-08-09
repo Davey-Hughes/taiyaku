@@ -488,6 +488,25 @@ per-page transform, L2 adds matched text regions, and an L0-only reader consumes
 neither. Version bumps of `taiyaku` are reserved for changes that would make an
 old reader wrong rather than merely incomplete.
 
+*Corrected again on 2026-08-08, when L2a shipped.* "L2 adds matched text
+regions" is wrong about both halves and is kept rather than rewritten, because
+what it assumed is the part worth reading. **L2 adds nothing to this document at
+all.** Regions live in a sibling file, `<stem>.regions.json` — same directory,
+same stem, the convention `<stem>.notes.json` and `taiyaku.stump.json` already
+use — on grounds of size: they are per *page*, and one edition of 195 pages at a
+handful of blocks apiece is two orders of magnitude more JSON than a file whose
+first two design goals are human-readable and diffable in git. That is a
+stronger guarantee than this section gives, not a weaker one: an L0 reader does
+not merely ignore those keys, it never fetches the file.
+And they are not **matched**. Which block corresponds to which block of another
+edition is derived at read time from the alignment and stored nowhere, so a
+third edition costs one detection run rather than a re-pairing and a hand
+correction re-pairs for free — and no stored derivation can outlive what it was
+derived from, which is O24's open failure mode. The permission this section
+grants is what made the sibling file need no version bump, and it is equally
+what would let a stored pairing be added later if the derived one ever proves
+insufficient.
+
 *Corrected on 2026-08-08, when L1 shipped.* That sentence read "L1 **adds** a
 per-run or per-page transform", and as built it adds neither: the transform a
 swap maps the visible rect through is derived at read time from the two drawn

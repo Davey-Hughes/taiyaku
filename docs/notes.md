@@ -6596,3 +6596,373 @@ called `panel`. Turning that off leaves `C` listed while the key does nothing.
 It is the only module in today's registry with an off switch under another name;
 the fix if it grows is a contract field, not a list of per-module exceptions in
 the help module, which is the copy of a rule the whole file exists to avoid.
+
+## The text-block detector, measured against four works, and why it does not work yet
+
+`crates/taiyaku-cli/src/detect.rs` proposes text blocks behind `taiyaku
+regions`, ahead of L2's per-panel pairing. Its five constants — `SMEAR_K`,
+`MIN_STROKES`, `MAX_BLOCK_AREA`, `MIN_INK`, `MIN_BLOCK_STROKE_SPAN` — were
+written as starting values, each saying so in its own doc comment, to be
+settled by `scripts/region-survey.sh`. This section is that survey, run
+read-only (no `--write`, nothing touched under `corpus/`), and it does not
+settle them: the detector does not clear the L2 design's own bar, on every
+edition tried, and the doc comments below still say "a starting value, not a
+measurement" because that remains true. **No constant's value was changed by
+this section**, and neither was any of `detect.rs`'s logic — that is a
+decision for later, once there is something to decide between.
+
+### The survey ran over four works, not the corpus
+
+`corpus/` holds twelve settled `<series>-v<NN>` directories plus `incoming/`.
+Four were surveyed: `gotoubun-v01`, `kaguya-v01`, `oshinoko-v01`,
+`kobayashi-v01` — three series beyond the given one, raw and English both
+present for every one. **This is four works, not the corpus**; the other
+eight settled works and all of `incoming/` were not reached.
+
+Building even that subset ran into two facts about the corpus that bounded
+what a survey could reach before the detector's own quality entered into it
+at all:
+
+**Only two of the twelve settled works carry a `taiyaku.json`.**
+`gotoubun-v01` and `kaguya-v01`. `regions` identifies an edition by matching
+member digests against a sidecar; the other ten have no sidecar to match
+against, so no script — this one or a working one — can survey them as they
+stand. `oshinoko-v01` and `kobayashi-v01` got one for this survey the way this
+repository already builds one for unsidecared material: `taiyaku align
+--write` against the real corpus material, read-only, written to a scratch
+path rather than into `corpus/`.
+
+```
+taiyaku align "$PWD/corpus/oshinoko-v01/raw-mono" -- "$PWD/corpus/oshinoko-v01/en-mono"/*.cbz \
+  --title "Oshi no Ko v01" --write <scratch>/sidecars/oshinoko-v01.json
+# 6 runs | 216 whole pairings | 6 involving a spread half | 1 unmatched slots — sound
+
+taiyaku align "$PWD/corpus/kobayashi-v01/raw-mono" -- "$PWD/corpus/kobayashi-v01/en-mono"/*.cbz \
+  --title "Kobayashi-san Chi no Maid Dragon v01" --write <scratch>/sidecars/kobayashi-v01.json
+# 5 runs | 144 whole pairings | 0 involving a spread half | 2 unmatched slots — sound
+```
+
+**Outside `gotoubun`, every raw edition in this corpus is a directory of
+loose images, never a `.cbz`** — checked across all twelve settled works, not
+just the four surveyed. (`gotoubun-v01` is not the whole exception: `raw-mono`
+is a single `.cbz` for `gotoubun-v03` and `gotoubun-v08` too, the other two
+volumes this corpus holds.) `region-survey.sh`'s glob
+(`"$work/$edition"/*.cbz`) is written, correctly, to find only archives, so it
+cannot see these; it names them skipped rather than dropping them silently,
+exactly as designed. Left to run over the whole corpus unmodified, this script
+would report almost no raw editions at all outside gotoubun — a fact about
+the corpus's packaging, not about `regions`, but one that would have made a
+full run look far emptier than the detector's own performance explains. Each
+directory-packaged raw edition below was surveyed by a direct
+`taiyaku regions <directory> --sidecar <sidecar>` invocation instead — the
+same command the script issues, just not discovered by its glob. (One more
+instance of the same shape: `gotoubun-v01/en-color` and `raw-color` exist on
+disk but are not in `gotoubun-v01/taiyaku.json` either, so they were left out
+of the subset entirely — included, `regions` cannot identify them and the
+script hard-fails. `kaguya-v01` has the same gap and was not named here
+before: its sidecar holds only `en-fan` and `raw-mono`, so `en-mono` and
+`en-color` — both `.cbz` — exist on disk but could not be surveyed either. A
+work missing from the output is indistinguishable from a work with nothing to
+report, which is exactly the silence this section is written against, so it
+is named here rather than left implicit.)
+
+### The nine `regions:` lines
+
+```
+work=gotoubun-v01  regions: edition=raw-mono   pages=195 blocks=148 v=94  h=54  median_area=0.0713 blocks_per_page=0.76
+work=gotoubun-v01  regions: edition=en-mono    pages=187 blocks=348 v=269 h=79  median_area=0.0678 blocks_per_page=1.86
+work=gotoubun-v01  regions: edition=en-fan     pages=235 blocks=402 v=272 h=130 median_area=0.0515 blocks_per_page=1.71
+work=kaguya-v01    regions: edition=raw-mono   pages=213 blocks=293 v=168 h=125 median_area=0.0921 blocks_per_page=1.38
+work=kaguya-v01    regions: edition=en-fan     pages=226 blocks=347 v=169 h=178 median_area=0.0706 blocks_per_page=1.54
+work=oshinoko-v01  regions: edition=raw-mono   pages=223 blocks=172 v=87  h=85  median_area=0.0605 blocks_per_page=0.77
+work=oshinoko-v01  regions: edition=en-mono*   pages=226 blocks=329 v=74  h=255 median_area=0.0103 blocks_per_page=1.46
+work=kobayashi-v01 regions: edition=raw-mono   pages=146 blocks=272 v=79  h=193 median_area=0.0013 blocks_per_page=1.86
+work=kobayashi-v01 regions: edition=en-mono*   pages=146 blocks=86  v=57  h=29  median_area=0.0812 blocks_per_page=0.59
+```
+
+`*` — the two built sidecars name that edition after the archive's own file
+name (e.g. `oshi-no-ko----v01--2023`), not literally `en-mono`; relabelled
+here for readability, unchanged otherwise.
+
+**Against the L2 design's three checks:**
+
+- **`median_area` well under 0.15:** passes on all nine — max is kaguya
+  raw-mono's 0.0921. **This is not evidence of health.** `MAX_BLOCK_AREA`
+  already discards anything above 0.15 per block, before the median is ever
+  computed over what is left — so the check is satisfied by the filter that
+  is supposed to be the backstop, not by the detector finding text. The
+  diagnosis below is what a passing median was hiding.
+- **`blocks_per_page` above 2:** **fails on all nine editions**, across all
+  four works. The highest reached is 1.86, twice — gotoubun en-mono and
+  kobayashi raw-mono — both still well short.
+- **v/h follows the edition:** 5 of 9 nominally correct, but three of the
+  five are within a few points of even (kaguya raw-mono 57%v, kaguya en-fan
+  51%h, oshinoko raw-mono 51%v). Two are wrong with real margin: gotoubun
+  en-mono (77%v; English, should read h) and gotoubun en-fan (68%v). One work
+  is wrong on **both** sides at once, and inverted rather than merely
+  vertical-biased: kobayashi raw-mono comes back 71%h (Japanese, should read
+  v) while kobayashi en-mono comes back 66%v (English, should read h) — the
+  same volume, backwards both ways simultaneously.
+
+### The diagnosis
+
+The hypothesis under test, from the task that produced this section:
+`stroke_scale` takes the median longer side over *every* ink component on a
+page, most of a manga page's ink components are artwork rather than type, so
+the scale — and the smear gap built from it — tracks art rather than glyphs;
+strokes over-merge into a handful of enormous blocks; `MAX_BLOCK_AREA`
+discards them, which is exactly a page returning zero blocks; and a merge
+driven by artwork has no reading direction for `axis_of` to find.
+
+Tested with a throwaway Rust program (not part of this crate, discarded after
+this section was written) that copies `Bounds`, `otsu`, `components`,
+`stroke_scale`, `merge_along`, `axis_of` and the five constants **verbatim**
+from `detect.rs`, run against 9 real pages pulled from the surveyed
+editions — 3 each from gotoubun-v01 raw-mono, gotoubun-v01 en-mono,
+kobayashi-v01 raw-mono. It decodes the same way `fingerprint::decode_luma`
+does and prints every intermediate stage. Its final block count matched
+`taiyaku regions`'s own per-page stderr table on all 8 non-blank pages,
+which is the check that the copy is faithful rather than a plausible
+rewrite.
+
+| Page | Components | Under 5px | stroke_scale → gap | Final blocks | Largest thing `MAX_BLOCK_AREA` discarded |
+|---|---:|---|---|---:|---|
+| gotoubun-en p003 | 4,671 | 70% | 2px → 4px | **0** | 2147×2951 — **96.6%** of the page |
+| gotoubun-en p006 | 23,502 | 94% | 2px → 4px | 2, axis wrong (v) | 1962×1494 — 44.7% |
+| gotoubun-en p012 | 54,286 | 96% | 2px → 4px | 7, axis right (h) | 1856×1268 — 35.9% |
+| gotoubun-raw p008 | 749 | 63% | 3px → 6px | 1 | 650×500 — 46.3% |
+| gotoubun-raw p013 | 1,931 | 73% | 2px → 4px | 2 | 650×777 — 72.0% |
+| kobayashi-raw p000 | 2,574 | 23% (mode 20–40px, 44%) | **19px → 38px** | **25** | 1654×2112 — 33.6%, alongside 25 good blocks |
+| kobayashi-raw p001 | 1,336 | 87% | **1px → 2px** | 4, axis wrong (h) | 912×1368 — 39.3% |
+| kobayashi-raw p007 | 3,682 | 63% | 3px → 6px | 1 | 1363×1208 — 51.6% |
+
+(gotoubun-raw p001 is a genuine blank interstitial — min=max=255 across the
+whole page, 0 components, 0 blocks correctly. Not counted above; a 0-block
+page is not automatically a failure, and this one is the control that says
+so.)
+
+**The outcome the hypothesis predicts is confirmed on every one of the eight
+non-blank pages.** `MAX_BLOCK_AREA` discards at least one block on all eight,
+it is always the largest thing on the page, and it always covers a large
+fraction of it — 33.6% to 96.6%, the range the table above actually shows.
+Where nothing survives it, that is exactly a zero-block page: gotoubun-en p003
+merges to one block covering 96.6% of the page and it is the only block, so
+the page returns nothing. And the axis
+result is exactly as decoupled from real reading direction as predicted —
+gotoubun-en p006 and kobayashi-raw p001 each resolve to the wrong axis
+individually, which is the mechanism working as described, not noise around
+it: a merge dominated by artwork has nothing to do with which way a reader's
+eyes are supposed to move.
+
+**The mechanism as stated does not hold.** The hypothesis says the median
+gets pulled *up* to an art-sized scale. On 7 of these 8 pages what is
+actually driving `stroke_scale` is the opposite: 63% to 96% of the raw
+components are **under 5 pixels** — screentone dots, JPEG ringing,
+antialiasing fragments — which pulls the median *down*, to 1–3px, nowhere
+near either glyph size or "art scale." The resulting gap is 4–6px on pages
+685–2147px wide — checked against the pages actually sampled: gotoubun-raw's
+two are 685×1024, gotoubun-en's three are 2147×3056, and kobayashi-raw p001
+and p007 are close to 1468×2163. (kobayashi-raw p000, the one page that
+works, is 4852px wide and is not one of these seven.) The giant blob still
+forms at that tiny gap, but not because the gap is large: screentone and
+hatching pack ink specks densely enough that a few pixels of tolerance is
+already sufficient for `merge_along`'s repeated, transitive passes to weld
+thousands of them into one component spanning most of a panel or the whole
+page. Gap size is nearly
+beside the point once the texture is this dense — avoiding this would need a
+gap *smaller* than any measured here, not a bound on how large it gets.
+
+**The one page that works makes the same point from the other side.**
+kobayashi-raw p000 is the only sample where sub-5px specks are a minority
+(23%), and the largest single bucket — 1,125 of 2,574 components, 44% — sits
+at 20–40px, plausibly real glyph or line scale on a 4852px-wide scan.
+`stroke_scale` lands at 19px, the gap at 38px, and the detector works: 25 of
+27 candidate blocks survive, the axis is right, and the one thing
+`MAX_BLOCK_AREA` rejects (33.6% of the page) is discarded *alongside* the 25
+good blocks rather than in place of them — the filter doing exactly its
+documented job. The difference between this page and the other seven is not
+the filter. It is what `stroke_scale` was computed from.
+
+**So: real, but mis-named.** The giant merge-driven blob and the axis noise
+are exactly what the hypothesis said they'd be, and they are what is holding
+`blocks_per_page` down and corrupting the axis split. But `stroke_scale`
+fails to track glyph size because fine print noise outnumbers everything
+else on most pages, not because artwork does — "most components are art" is
+the wrong noun for what eight of nine probed pages show; "most components are
+finer than any glyph" is closer, and the one page without that problem is the
+one page that works.
+
+### What this does not claim
+
+Four works of roughly a dozen settled ones, nine editions, nine pages picked
+by hand out of several hundred available across those editions. Not a random
+sample, and not the corpus. The two built sidecars exist only at a scratch
+path outside this repository — reproducing those two rows means rebuilding
+them with the `align --write` commands above. `SMEAR_K`, `MIN_STROKES`,
+`MAX_BLOCK_AREA`, `MIN_INK` and `MIN_BLOCK_STROKE_SPAN` are exactly as they
+were before this section: starting values, not measurements, and their doc
+comments still say so because rewriting them to claim otherwise would be the
+"a lie" `l2a-task-6-brief.md` itself warns against. What this section adds is
+not settled constants — it is a specific, page-level account of why the
+values in place today cannot be settled by tuning them: the failure is
+upstream, in what `stroke_scale` measures, not in where its multiplier or its
+filters happen to sit.
+
+## The scale rule, tried three ways, and neither candidate clears the bar
+
+L2A Task 9 followed directly from the diagnosis above: `stroke_scale` takes
+the median longer side over *every* ink component, and on most sampled pages
+that population is 51%–99% screentone dots, JPEG ringing and antialiasing
+fragments under 5px, so the median lands nowhere near glyph size. The task
+fixed its acceptance rule before measuring anything — the discipline §6 of
+the design states — and named two candidates to try against today's `all`:
+
+- **`above-floor`** — the median longer side over components above a noise
+  floor derived from the page's own distribution, not a fixed pixel count.
+- **`modal`** — the mode of the component-size distribution rather than its
+  median.
+
+**A candidate is promoted only if it beats `all` on both**, measured over the
+same nine editions the original survey covered: `blocks_per_page` clears 2
+(the design's own bar), and the v/h split follows the edition — a Japanese
+raw majority-vertical and an English edition majority-horizontal — on both
+editions of at least one work. `median_area` is deliberately excluded, for
+the reason the brief gives: `MAX_BLOCK_AREA` already discards anything above
+0.15 before a region is constructed, so a passing median has never been
+evidence of anything.
+
+### What each candidate computes
+
+Both live in `crates/taiyaku-cli/src/detect.rs`, `#[cfg(test)]`-gated —
+neither is called by `detect_page`, so neither reaches the shipped binary —
+and both are exercised by `region_experiment.rs`, extended to run all three
+rules over the same strokes on the same 90 sampled pages (10 per edition, the
+same nine editions and the same sample the original survey used) so the
+comparison is like-for-like:
+
+- **`stroke_scale_above_floor`** buckets component longer-sides by
+  `log2(size)` (25 buckets covers any real scan) and runs the same
+  variance-maximising split `otsu` uses — restated rather than shared, since
+  `otsu` is specialised to a 256-bin luma histogram — over that histogram
+  instead of over pixel luma. The floor is the top of the split's lower
+  bucket; the scale is the median longer side of whatever clears it, falling
+  back to `stroke_scale` itself when nothing does (one population, nothing to
+  separate).
+- **`stroke_scale_modal`** is the plain mode of the exact pixel sizes — no
+  bucketing, no attempt to separate a noise population first, ties broken
+  toward the smaller size for a deterministic answer.
+
+### The measurement
+
+```
+TAIYAKU_CORPUS="$PWD/corpus" cargo test -p taiyaku-cli region_experiment --release -- --nocapture
+```
+
+| edition | all b/p | above-floor b/p | modal b/p | all scale | above-floor scale | modal scale |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| gotoubun-v01/raw-mono | 0.60 | 0.10 | 1.40 | 3px | 9px | 1px |
+| gotoubun-v01/en-mono | 2.50 | 2.50 | 2.50 | 2px | 2px | 2px |
+| gotoubun-v01/en-fan | 0.60 | 0.20 | 1.20 | 2px | 12px | 1px |
+| kaguya-v01/raw-mono | 0.70 | 0.00 | 0.70 | 2px | 8px | 1px |
+| kaguya-v01/en-fan | 0.40 | 0.00 | 0.40 | 2px | 7px | 1px |
+| oshinoko-v01/raw-mono | 0.70 | 0.00 | 1.30 | 5px | 23px | 2px |
+| oshinoko-v01/en-mono | 1.40 | 0.70 | 1.00 | 2px | 12px | 1px |
+| kobayashi-v01/raw-mono | 0.20 | 0.00 | 0.20 | 2px | 15px | 1px |
+| kobayashi-v01/en-mono | 0.50 | 0.20 | 0.50 | 2px | 7px | 2px |
+| **min / mean** | **0.20 / 0.84** | **0.00 / 0.41** | **0.20 / 1.02** | | | |
+
+(`b/p` is `blocks_per_page` over the 10-page sample; `scale` is the median
+`stroke_scale` the rule computed over that sample's pages that had one.)
+
+**`blocks_per_page` clears 2:** on none of the nine editions, under any of
+the three rules. `all` and `modal` both clear it on exactly the one edition
+that already cleared it before this task — gotoubun-v01/en-mono, 2.50 both
+ways, because that edition's component counts (46,731–170,231 per sampled
+page, 93%–99% under 5px) are so overwhelmingly noise-dominated that both
+candidates' derived scale coincides with `all`'s (2px in every case). Outside
+that one edition, `modal` raises `blocks_per_page` on 3 of 8 remaining
+editions and ties on 4, reaching a best of 1.40 — better than `all`'s
+comparable best of 0.70, but not within reach of 2. `above-floor` is worse on
+7 of 8: four editions (kaguya-v01 both editions, oshinoko-v01/raw-mono,
+kobayashi-v01/raw-mono) return **zero blocks across all ten sampled pages**,
+something none of the other two rules does anywhere.
+
+**The v/h split follows the edition on both sides of one work:** `all`
+manages it on one, oshinoko-v01 (raw-mono 7v/0h, en-mono 2v/12h, in this
+sample) — which is itself worth flagging: the L2A Task 9 brief states this
+"is what nothing manages today," but by this measurement `all` already does,
+on this sample, before either candidate touches anything. (The original
+survey's full-population figures, not the sampled ones, showed the same
+edition and kaguya-v01 both nominally correct on both sides, just barely —
+`notes.md`'s "The text-block detector..." section already named those two as
+"within a few points of even," which a 10-page sample is exactly narrow
+enough to flip; kaguya-v01/en-fan does flip here, from 51%h over the full
+edition to 100%v over this sample.) Neither candidate reaches even one work:
+`above-floor` finds zero, `modal` finds zero — a regression from `all`, not
+an improvement, on the one work `all` already had.
+
+### Why `above-floor` overshoots
+
+The candidate's own median scale is the tell: 7px to 23px, against `all`'s
+2px to 5px on the same pages — not the fixed-fraction-of-page-width kind of
+wrong `stroke_scale`'s own doc comment guards against, but still four to
+eleven times larger. Excluding the noise floor does not isolate a clean
+glyph population, because on all but one of the nine sampled pages in the
+original hand-picked diagnosis (`kobayashi-v01/raw-mono` page 0) there never
+was a second, glyph-sized mode to isolate — "everything above the noise" is
+itself a continuum running from small type up through panel lines, character
+outlines and screentone clumps, and the median over that mixed population
+lands well above true glyph size. A larger `stroke_scale` means a
+proportionally larger smear gap (`SMEAR_K * scale`) and a stricter
+`MIN_BLOCK_STROKE_SPAN` floor at the same time, and the net effect on this
+corpus is the same failure the original diagnosis described — most of a page
+welding into one blob `MAX_BLOCK_AREA` discards — reached from the opposite
+direction: not because the scale collapsed toward the noise, but because
+excluding the noise pushed it past glyph size into art size. `modal` avoids
+this because it does not try to separate a population at all; it just picks
+the single most common exact size, which on this corpus is consistently at
+or near the noise cluster's own size (1px on 6 of 9 editions) — closer to
+`stroke_scale`'s own failure mode than an escape from it, but the resulting
+*smaller* gap happens to weld fewer components together per pass, which is
+why its `blocks_per_page` improves on most editions without the axis split
+improving at all.
+
+### The outcome
+
+**Neither candidate beats `all` on both checks, so neither is promoted.**
+`above-floor` is worse than `all` on `blocks_per_page` on 7 of 9 editions
+(4 of those to zero) and finds no work with a correct v/h split on both
+sides. `modal` raises the mean `blocks_per_page` from 0.84 to 1.02 but gets
+no edition newly above 2 and, like `above-floor`, finds no work with a
+correct v/h split on both sides — a regression from `all`'s one. Per the
+brief's own rule, this is the task working rather than failing: `all` stays
+exactly as written, `detect_page`'s behaviour is unchanged, and the five
+constants' doc comments still say "a starting value, not a measurement"
+because Task 9 measured the scale rule, not them. `stroke_scale_above_floor`
+and `stroke_scale_modal` stay in `detect.rs`, `#[cfg(test)]`-gated so neither
+reaches the binary, as the record of what was tried and the instrument that
+can re-measure a third candidate without a fourth rewrite of the harness.
+
+**Re-run it rather than taking this table's word**, which is the whole reason
+the harness is in-tree rather than thrown away like the one before it:
+
+```sh
+TAIYAKU_CORPUS="$PWD/corpus" cargo test -p taiyaku-cli region_experiment \
+  --release -- --nocapture
+```
+
+About eight seconds, and it prints every figure above — per page, per rule:
+component count, the fraction under 5px, the scale each rule derives, the gap,
+**blocks surviving each of the four filters in order**, the largest block
+`MAX_BLOCK_AREA` discarded, and the axis flagged against the edition's true
+reading direction. Absolute `TAIYAKU_CORPUS`, per O30.
+
+*One correction to the rule as it was written.* The promotion rule said a
+correct v/h split on both editions of one work is "what nothing manages today".
+That is wrong: `all` already manages it on `oshinoko-v01`, which this survey's
+own earlier section had recorded as nominally correct while noting it sits
+within a few points of even. The error did not change the outcome — neither
+candidate reaches even one work — but a promotion rule that misstates the
+baseline it is measured against is worth correcting rather than quietly
+restating, and both candidates *losing* that work is a sharper result than the
+rule as written could have expressed.

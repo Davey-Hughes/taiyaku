@@ -77,6 +77,11 @@ taiyaku verify raw-v01.cbz -- en-v01.cbz --out report.html
 # staff credits — rather than the work? prints; --write puts them in the sidecar
 taiyaku credits en-fan-c*.cbz --sidecar taiyaku.json
 
+# where is the text on each page? prints; --write puts the blocks in a sibling
+# <stem>.regions.json. it does not yet find them reliably — see docs/status.md,
+# "What is known to be wrong or missing"
+taiyaku regions raw-v01.cbz --sidecar taiyaku.json
+
 # reading raw page 47, which English page is in front of you?
 taiyaku lookup taiyaku.json raw en 47
 

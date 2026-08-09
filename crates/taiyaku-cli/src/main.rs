@@ -19,6 +19,7 @@ mod cache;
 #[cfg(test)]
 mod corpus;
 mod credits;
+mod detect;
 mod duplicates;
 mod fingerprint;
 // A one-off measurement rather than a shipped command, and gated on
@@ -27,6 +28,12 @@ mod fingerprint;
 #[cfg(test)]
 mod geometry_experiment;
 mod inventory;
+mod regions;
+// A one-off measurement rather than a shipped command, gated on
+// `TAIYAKU_CORPUS` exactly as `corpus` and `geometry_experiment` are — so it
+// is declared the same way, and no part of it is compiled into the binary.
+#[cfg(test)]
+mod region_experiment;
 mod report;
 mod signature;
 mod stats;
@@ -56,6 +63,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("duplicates") => duplicates::command(&args[1..]),
         Some("inventory") => inventory::command(&args[1..]),
         Some("credits") => credits::command(&args[1..]),
+        Some("regions") => regions::command(&args[1..]),
         Some(other) => Err(format!("unknown command `{other}`")),
         None => {
             println!("taiyaku {}", env!("CARGO_PKG_VERSION"));
@@ -77,6 +85,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 "       taiyaku credits <member>... --sidecar FILE [--against EDITION] \
                  [--cache DIR] [--write]"
             );
+            println!("       taiyaku regions <member>... --sidecar FILE [--write]");
             println!();
             println!("align options: --ltr --stats --cache DIR --write FILE --title NAME");
             println!("               --name-a KEY --name-b KEY --direct --no-split-spreads");
@@ -173,6 +182,26 @@ pub(crate) fn option_value<'a>(
         Some(value) => Ok(Some(value.as_str())),
         None => Err(format!("{flag} needs {expects}, and nothing followed it")),
     }
+}
+
+/// Which edition of `doc` is made of exactly these members, by content.
+///
+/// Content, not paths: `edition_of` compares the sorted sha256 set, the idiom
+/// `merge_spoke`'s own guard states — a renamed but byte-identical archive is
+/// still this edition. Shared by `credits` and `regions`, which ask the same
+/// question and must not drift on the answer or on how it is worded.
+pub(crate) fn edition_of_digests(
+    doc: &Sidecar,
+    sidecar: &str,
+    digests: &[String],
+) -> Result<String, String> {
+    doc.edition_of(digests).map(str::to_string).ok_or_else(|| {
+        format!(
+            "no edition of `{sidecar}` is made of these {} members.\nlooked for: {}",
+            digests.len(),
+            digests.join(", ")
+        )
+    })
 }
 
 /// Refuse any `--`-prefixed argument this command does not have a flag for.

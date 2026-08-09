@@ -227,23 +227,6 @@ fn table(rows: &[Row]) -> String {
     out
 }
 
-/// Which edition of `doc` these members' digests are, refusing by name where
-/// none is.
-///
-/// A thin wrapper over `Sidecar::edition_of` so the refusal — naming the
-/// sidecar and every digest that found no home — can be tested without an
-/// archive in sight: `edition_of` only ever compares the sorted `sha256` set,
-/// and a fabricated digest string compares exactly the way a real one does.
-fn edition_of_digests(doc: &Sidecar, sidecar: &str, digests: &[String]) -> Result<String, String> {
-    doc.edition_of(digests).map(str::to_string).ok_or_else(|| {
-        format!(
-            "no edition of `{sidecar}` is made of these {} members.\nlooked for: {}",
-            digests.len(),
-            digests.join(", ")
-        )
-    })
-}
-
 /// A spoke uses the hub; the hub has to be told.
 ///
 /// Extracted from `command` so the one case with no honest default — the
@@ -478,7 +461,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
     // the idiom `merge_spoke`'s own guard states. A renamed but byte-identical
     // archive is still this edition.
     let digests: Vec<String> = fingerprinted.iter().map(|(sha, _)| sha.clone()).collect();
-    let edition = edition_of_digests(&doc, sidecar, &digests)?;
+    let edition = crate::edition_of_digests(&doc, sidecar, &digests)?;
     let counterpart = resolve_counterpart(&doc, &edition, against)?;
 
     let (rows, line, pages) = classify(&doc, &edition, &counterpart, &fingerprinted)?;
@@ -945,8 +928,8 @@ mod tests {
     #[test]
     fn no_matching_edition_is_refused_by_name() {
         let doc = one_edition("fan", "c1");
-        let err =
-            edition_of_digests(&doc, "taiyaku.json", &["zzz".to_string()]).expect_err("refuses");
+        let err = crate::edition_of_digests(&doc, "taiyaku.json", &["zzz".to_string()])
+            .expect_err("refuses");
         assert!(
             err.contains("taiyaku.json") && err.contains("zzz"),
             "the refusal must name the sidecar and the digest it could not place: {err}"

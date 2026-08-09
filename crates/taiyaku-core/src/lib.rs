@@ -9,12 +9,16 @@
 //! hashes, so it is portable and lives here alongside the lookup.
 
 mod credits;
+mod regions;
 mod route;
 mod sidecar;
 mod slot;
 mod solve;
 
 pub use credits::{UnpairedRun, unpaired_runs};
+pub use regions::{
+    Axis, Region, RegionDoc, RegionEdition, RegionMember, VERSION as REGIONS_VERSION,
+};
 pub use route::{Route, Via, invert, resolve, route};
 pub use sidecar::{
     Alignment, Anchor, ChapterAt, Corrected, Edition, Member, Merged, NotCorrected, Quality,
