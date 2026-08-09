@@ -26,9 +26,21 @@
 //! than about one: the search fingerprints roughly 1.4 million crops, each a
 //! Lanczos3 resize, and an unoptimised `image` is two orders of magnitude
 //! slower at that than an optimised one. Both were run; the figures below and
-//! in `docs/notes.md` are from the release build. This is a one-off, so the
-//! usual reason to keep a check in the debug profile — that `check-all.sh`
-//! runs it — does not apply, and `check-all.sh` does not run it.
+//! in `docs/notes.md` are from the release build.
+//!
+//! **`check-all.sh` does run this, and that sentence used to say it does not.**
+//! The gate's *corpus* job filters on `corpus::` and so misses this module —
+//! which is what the old wording was reaching for — but the gate also exports
+//! `TAIYAKU_CORPUS` before its unfiltered `cargo test --workspace`, so with a
+//! corpus present this test runs there, in the **debug** profile, at the forty
+//! minutes described above. Measured rather than reasoned about: a local gate
+//! run with a corpus was killed at 1h09m still inside this one test. CI is
+//! unaffected — it has no corpus, so this skips — so the cost falls entirely
+//! on whoever runs the gate locally, which is the person the script is for.
+//! Left as it is rather than filtered out, because a one-off measurement that
+//! silently stops being run is the failure this module's own assertions exist
+//! to prevent; run `scripts/check-all.sh` without `TAIYAKU_CORPUS` for the
+//! CI-equivalent pass and re-run the corpus job on its own.
 //!
 //! **What it found, so this header is not just a description of a method.**
 //! Over 284 settled slots across all twelve corpus volumes, the best map's

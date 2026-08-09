@@ -57,12 +57,12 @@ its artwork until the same pass caught that too.
 
 ## What is built
 
-Five crates, 463 tests, plus 586 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 475 tests, plus 586 in `web/`'s TypeScript, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
 and `vite` in `web/`. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Twelve of the 424 are standing checks gated on
+`rayon` exactly as `align` already did. Twelve of the 475 are standing checks gated on
 `TAIYAKU_CORPUS` — nine in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
@@ -94,7 +94,13 @@ detector fails, run against real pages. It prints, per sampled page, the
 component count, the fraction of components under 5px, the scale each of three
 candidate rules derives, the gap that follows, **how many blocks survive each of
 the four filters in order**, the largest block `MAX_BLOCK_AREA` discarded, and
-the axis flagged against the edition's true reading direction. It exists because
+the axis flagged against the edition's true reading direction — and, since the
+measurement below that asked what the one edition clearing the bar was actually
+finding, **what every surviving block is made of**: its size, how many
+components it holds, how many of those are under 5px against how many of the
+page's are, and their median size, plus the page's own pixel dimensions, the
+smear gap as a fraction of them, the largest component *before* any smearing,
+and what each of the four filters rejected across the whole sample. It exists because
 the first version of this diagnosis was a throwaway program, discarded once
 `notes.md` was written — which left the survey's `regions:` lines reproducible
 and the diagnosis behind them not. It calls `detect.rs`'s own functions rather
@@ -102,8 +108,10 @@ than copies of them, so nothing in it can drift from what `taiyaku regions`
 does; the discarded program copied them and needed a cross-check against the
 real command to show the copy was faithful. About seven seconds under
 `--release`. See `notes.md`, "The text-block detector, measured against four
-works, and why it does not work yet", which names the command that reprints
-every figure in it.
+works, and why it does not work yet", "The scale rule, tried three ways, and
+neither candidate clears the bar", and "The edition that clears the bar is the
+one finding no text" — the last of which names the command that reprints every
+figure in it.
 
 `crates/taiyaku-cli/src/geometry_experiment.rs` is L1's one-off
 measurement of which derived transform a swap should map through, and it stays a
@@ -409,19 +417,76 @@ not the five thresholds built on it. See `notes.md`, "The text-block
 detector, measured against four works, and why it does not work yet" and "The
 scale rule, tried three ways, and neither candidate clears the bar".
 
+**Nor is a passing `blocks_per_page` evidence of health, and that is the
+sharper of the two.** The diagnosis above had a hole in it — the noisiest
+edition sampled, `gotoubun-v01/en-mono` at 93%–99% of components under 5px, is
+the *only* one of the nine to clear the design's bar, at 2.50, which the
+screentone-welding account predicts should fail worst of all. Rather than start
+a redesign on a mechanism that could not explain its own outlier, the same
+harness was asked what that edition's surviving blocks are made of rather than
+how many there are. **The median one holds 1,877 components whose median longer
+side is 2 pixels**, on a 2147×3056 page — the same material as the page around
+it, which is 97.6% sub-5px. 23 of the 25 are tagged with the wrong axis.
+Meanwhile the edition whose blocks are made of markedly coarser components —
+`oshinoko-v01/en-mono`, 12 of 14, correctly horizontal — scores 1.40 and
+**fails** the bar. The two rank opposite ways under the count and under the
+composition, so `blocks_per_page` cannot be the acceptance rule for whatever
+replaces the detector.
+
+**Ten of those blocks were then cropped and looked at, which corrected the
+account of them.** Statistics alone had them down as fields of screentone;
+they are **whole panels** — art, tone and the dialogue together — so the
+detector on this edition is finding panels rather than text blocks. That
+explains every figure at once: a panel sits comfortably under
+`MAX_BLOCK_AREA`, so 2.50 `blocks_per_page` is roughly panels per page; a
+panel has no reading direction, so the axis is wrong; a panel's components are
+its screentone, so the median is 2px. One block of the six examined there is a
+clean caption box. The same page also shows the opposite failure — seven
+"blocks" that are vertical slices of one word — so one edition at one gap both
+over-merges panels and under-merges lettering. `oshinoko-v01/en-mono`'s, by
+contrast, were seen to be a title logo, a credits line and a caption box, plus
+one panel. See `notes.md` for the table and for what ten blocks of 76 does and
+does not establish.
+
+**Why the noisiest edition scores best is the mechanism correction.** Not that
+it escapes the welding — that it welds at a proportionally finer gap. The
+noise-collapsed 2px scale gives the same ~4px gap everywhere, but on a page 3.1×
+wider than `gotoubun-v01/raw-mono`'s that is **1.9‰ of page width against
+5.8‰–14.6‰**. Where the coarser relative gap welds a page into one over-large
+blob and `MAX_BLOCK_AREA` throws the whole page away, the finer one chops the
+same screentone field into several *mid-sized* fragments, each under 0.15 of
+the page — and `MAX_BLOCK_AREA` is the only filter with an opinion about size.
+The edition scores best because its noise is cut into pieces the right size to
+pass.
+
+**Two further things about the mechanism were wrong and are now measured.**
+First, the page-spanning blob is not always built by the smear: on **47 of the
+89** sampled pages where `MAX_BLOCK_AREA` discarded something, the thing
+discarded was already one connected component before `merge_along` ran at all —
+7 of 10 on `gotoubun-v01/en-mono`, equal to the printed decimal. Denoising the
+population that feeds `stroke_scale` cannot reach those pages; only changing
+what `components` returns can, which bears directly on the route out of here.
+Second, **`MIN_INK` has never rejected a block** — 0 blocks on 0 of 90 pages,
+against `MAX_BLOCK_AREA`'s 166 on 89 — because it sums overlapping bounding
+boxes, so 61 of the 76 surviving blocks score *above* 1.0 against a floor of
+0.05. `MAX_BLOCK_AREA` is not the backstop the design calls it; it is doing
+essentially all the filtering. That is O34. See `notes.md`, "The edition that
+clears the bar is the one finding no text".
+
 ### Open items
 
-Thirty-three, each found by a whole-branch review, carried as a deferral,
+Thirty-four, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
-produced against the corpus, turned up by designing the fix for another one, or
+produced against the corpus, turned up by designing the fix for another one,
+turned up by checking a diagnosis against the one case it did not explain, or
 turned up by simulating the reader from every position it can hold, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
 visible act rather than a thing someone remembers. **Twenty-five are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25, O26, O27, O28, O29 and O30 — leaving eight.**
+O21, O22, O25, O26, O27, O28, O29 and O30 — leaving nine.**
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -460,7 +525,8 @@ each is in the detail below; the table is what a reader scans.
 | O30 | [x] | A relative `TAIYAKU_CORPUS` skipped every standing check and reported `ok` | `corpus.rs::corpus`, `corpus.rs::corpus_root` | O26's corpus drive |
 | O31 | [ ] | The text-block axis is decided per page, where the design says per cluster — so a page cannot report vertical dialogue beside a horizontal SFX, and the survey's `v`/`h` figures are per-page decisions counted per block | `detect.rs::detect_page` | L2a whole-branch review |
 | O32 | [ ] | The `median_area` disqualifier cannot fire — `MAX_BLOCK_AREA` clamps every region under it before the median is taken | `detect.rs::detect_page`, `regions.rs::median_area` | L2a whole-branch review |
-| O33 | [ ] | Two of the five detection constants reject nothing in any test, so a computation bug in either would ship unseen | `detect.rs`, the `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` filters | L2a whole-branch review |
+| O33 | [ ] | Two of the five detection constants reject nothing in any test, so a computation bug in either would ship unseen — *the gap is in the tests and stays open; against the corpus `MAX_BLOCK_AREA` fires on 89 of 90 pages and `MIN_BLOCK_STROKE_SPAN` on 1* | `detect.rs`, the `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` filters | L2a whole-branch review |
+| O34 | [ ] | `MIN_INK` cannot reject anything on real material — it sums overlapping stroke bounding boxes, so 61 of 76 surviving blocks score above 1.0 against a floor of 0.05, and it rejected 0 blocks on 0 of 90 sampled pages | `detect.rs::detect_page`, the `MIN_INK` filter | the survivor-composition measurement |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -1704,6 +1770,37 @@ wrong population:
   `SMEAR_K` below 2 leaves its strokes unmerged, rejected by `MIN_STROKES`
   instead, and the test still passing while no longer touching the constant it
   is named for.
+  **The corpus has since been asked the same question, and it answers a
+  different one.** Over 90 sampled pages `MAX_BLOCK_AREA` rejects 166 blocks on
+  89 of them and `MIN_BLOCK_STROKE_SPAN` rejects 2 blocks on 1 — so the two
+  constants this item names are not inert in practice, `MAX_BLOCK_AREA` least
+  of all, and the gap it describes is genuinely in the tests rather than in the
+  behaviour. It stays open on those terms. What the same measurement did find
+  inert is the constant this item lists as *pinned*: `MIN_INK` rejected nothing,
+  on any page. That is O34.
+
+**One came from asking a diagnosis about the case it did not explain** — O34,
+found by the measurement that answered why the noisiest edition was the only
+one clearing the detector's bar, and not blocking for the same reason O31 to
+O33 are not:
+
+- **O34 — `MIN_INK` cannot reject anything on real material. Open.** It is
+  written as a floor of 0.05 on a block's ink over its own area, and its
+  "ink" is the summed **bounding-box** area of the strokes inside — which its
+  own doc comment already flags as looser than true coverage. Measured, that
+  looseness is total: across the 76 blocks that survived all four filters on
+  90 sampled pages, the ratio runs 0.38 to 1.89, **61 of the 76 exceed 1.0**,
+  and the filter rejected 0 blocks on 0 pages. Strokes overlap, so summing
+  their boxes double-counts paper as ink — and the dense screentone fields
+  this filter would be wanted for score 1.03 to 1.29, twenty times the floor,
+  rather than anywhere near it. The consequence is not that a wrong block gets
+  through today (the filtering is being done by `MAX_BLOCK_AREA`, which fires
+  on 89 of 90 pages, and `MIN_STROKES`, which fires on 21), it is that a
+  redesign counting on four backstops has two that do anything.
+  **What would close it:** either a true ink count, which needs pixel access
+  `components` does not currently hand back, or removing the filter and saying
+  so. Both are decisions for the detector's redesign rather than now, which is
+  why this is tracked rather than fixed — the same reasoning O31 and O32 carry.
 
 ## What comes next
 
@@ -2219,25 +2316,40 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the five open items tabled above — four of them found by a
+What remains: the nine open items tabled above — seven of them found by a
 whole-branch review, now that O1 (found by one, closed by removing the round
 trip its own entry was arguing about), O12 (carried rather than found), O14
 (found by one, closed by M5b), O26 (found by one, closed on its own branch),
 O28 (found by walking the reader through every position it can hold, closed on
 its own branch) and O29 (found by driving O26's own fix against the corpus,
-closed the same way) are all out of the count, with one exception: O23,
+closed the same way) are all out of the count. Two are the exceptions: O23,
 turned up by measuring what a new surface produced against the corpus rather
-than by reviewing a branch. **Every milestone M5 named has now shipped.**
+than by reviewing a branch, and O34, turned up by asking a diagnosis about the
+one case it could not explain. **Every milestone M5 named has now shipped.**
 
-**Four of the five that remain wait on evidence rather than on code**, which
-is worth stating plainly now that the one item with a code-shaped exit has
-taken it: O6 needs an art book with a legitimate reason to be in a sidecar,
+*This paragraph said "the five open items" until 2026-08-08, having missed
+O31, O32 and O33 when L2a landed them and O34 when the detector measurement
+opened it — the exact drift the open-items ritual warns the count word is
+prone to.*
+
+**Four of the nine wait on evidence rather than on code**, which is worth
+stating plainly now that the one item with a code-shaped exit has taken it:
+O6 needs an art book with a legitimate reason to be in a sidecar,
 O9 a client issuing concurrent requests for one key, O11 archives replaced
 often enough for the cache to matter, and O23 a work corrected enough times
 in real reading to say whether the verdict misleads. O24 is the odd one —
 not evidence but a decision, about what a merge owes an edge it did not
 solve, and no corpus document has yet had a `--direct` edge and a re-solve
 in it.
+
+**The remaining four are the detector's**, and they are held together rather
+than picked off: O31 (the axis is per page where the design says per cluster),
+O32 (the `median_area` disqualifier cannot fire), O33 (two constants reject
+nothing in any test) and O34 (`MIN_INK` rejects nothing on the corpus either).
+Each would sharpen an instrument that is measuring the wrong population, so
+none is worth fixing before the detector is redesigned — and what that
+redesign has to account for is now measured rather than assumed: see the two
+mechanism corrections under "What is known to be wrong or missing".
 
 ### 4. Skipping scanlation credit pages — shipped
 

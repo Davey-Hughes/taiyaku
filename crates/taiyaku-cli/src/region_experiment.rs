@@ -39,9 +39,15 @@
 //! flood-fill over every pixel of a full-resolution scan, run twice per
 //! sampled page (once for the staged pipeline below, once more inside
 //! `detect_page` itself, for the cross-check), and an unoptimised build pays
-//! for that twice over. `check-all.sh` does not run this module either, for
-//! the same reason it does not run `geometry_experiment`: `check-all.sh`
-//! filters on `corpus::`, and this module is deliberately not named that way.
+//! for that twice over. **`check-all.sh` does run this module, and this
+//! paragraph used to say it does not** — see `geometry_experiment.rs`'s header
+//! for the measured account of the same mistake. In short: the gate's *corpus*
+//! job filters on `corpus::` and so misses this module, which is what the old
+//! wording meant, but the gate also exports `TAIYAKU_CORPUS` before its
+//! unfiltered `cargo test --workspace`, so with a corpus present this runs
+//! there in the debug profile. It costs about a minute, against
+//! `geometry_experiment`'s forty, so this one is not what makes a local gate
+//! run slow.
 //!
 //! **Nine editions, named rather than globbed** — the same four works
 //! `region-survey.sh` covered (`gotoubun-v01`, `kaguya-v01`, `oshinoko-v01`,
@@ -86,6 +92,22 @@
 //! is unchanged, so this module's own "what it found" paragraph above — all
 //! of it computed under `ScaleRule::All` — is still exactly what
 //! `taiyaku regions` does today.
+//!
+//! **It was extended once more before any redesign, for a hole in the
+//! diagnosis rather than for a new candidate.** Every figure above is a
+//! *count* of blocks, and a count cannot say what a block holds. That mattered
+//! because the one edition of the nine ever to clear the design's
+//! `blocks_per_page` bar — `gotoubun-v01/en-mono`, 2.50 — is also the noisiest
+//! sampled, at 93%–99% of its components under `TINY_STROKE`, which is
+//! precisely the edition the screentone-welding account predicts should fail
+//! worst. So this module now also reports, for every block that clears all
+//! four filters, what it is made of (`SurvivorDiag`), the page's own pixel
+//! dimensions and the smear gap as a fraction of them, the largest single
+//! component *before* any smearing, and what each of the four filters rejected
+//! over the whole sample. It answered the question and corrected the mechanism
+//! in two places; see `docs/notes.md`, "The edition that clears the bar is the
+//! one finding no text", for the account, and O34 for what it opened.
+//! `detect_page` is still unchanged and no constant moved.
 
 use std::path::{Path, PathBuf};
 
@@ -212,14 +234,75 @@ fn area_fraction(block: &Bounds, page_area: f64) -> f64 {
     (f64::from(block.width()) * f64::from(block.height())) / page_area
 }
 
+/// The median longer side over a set of components — `stroke_scale`'s own
+/// quantity, computed over an arbitrary subset rather than a whole page.
+///
+/// Restated rather than shared: `detect::stroke_scale` takes `&[Bounds]` and
+/// `strokes_in` hands back `Vec<&Bounds>`, so calling it would mean copying
+/// every contained stroke into a fresh `Vec` on pages that carry 170,000 of
+/// them. The quantity is a median of `longer()`, which is bookkeeping in the
+/// same sense `strokes_in` is, not a second copy of the detector's heuristic.
+fn median_longer(strokes: &[&Bounds]) -> Option<u32> {
+    if strokes.is_empty() {
+        return None;
+    }
+    let mut sides: Vec<u32> = strokes.iter().map(|s| s.longer()).collect();
+    sides.sort_unstable();
+    Some(sides[sides.len() / 2])
+}
+
+/// What one block that cleared all four filters is made of.
+///
+/// The four filters answer "how many blocks" and nothing about what they hold,
+/// which is exactly the hole the `gotoubun-v01/en-mono` result opened: that
+/// edition is the noisiest sampled — 93%–99% of its components under
+/// `TINY_STROKE` — and the only one of the nine to clear the design's
+/// `blocks_per_page` bar, which the screentone-welding account predicts should
+/// fail worst of all. A count cannot tell a balloon of type from a patch of
+/// screentone that happened to survive; this can.
+struct SurvivorDiag {
+    /// Fraction of the page — what `median_area` is taken over.
+    area: f64,
+    width: u32,
+    height: u32,
+    /// Components wholly inside it — the same population `MIN_STROKES`
+    /// counted and `MIN_INK` summed.
+    strokes: usize,
+    /// Fraction of those components whose longer side is under
+    /// `TINY_STROKE`. Against the whole page's own `tiny_fraction`, this is
+    /// what says whether a surviving block is made of different material than
+    /// the page around it or of exactly the same noise.
+    tiny_fraction: f64,
+    /// Median longer side of those components, in pixels — the block's own
+    /// stroke scale, against the page-wide one `stroke_scale` computed.
+    median_stroke: Option<u32>,
+    /// Summed stroke bounding-box area over block area — the ratio `MIN_INK`
+    /// is compared against. See `MIN_INK`'s doc comment for what it does and
+    /// does not establish.
+    ink: f64,
+}
+
 /// What happened to one page under one scale rule, with every intermediate
 /// count `detect_page` itself throws away kept.
 struct PageDiag {
     page: usize,
     rule: ScaleRule,
+    /// The page's own pixel dimensions. Kept because the corpus spans an
+    /// eightfold range of them for editions of the same work — the fact
+    /// `stroke_scale`'s doc comment gives for why the gap is stroke-relative
+    /// — and because a gap in pixels means nothing without them.
+    width: u32,
+    height: u32,
     components: usize,
     /// Fraction of `components` whose longer side is under `TINY_STROKE`.
     tiny_fraction: f64,
+    /// The largest single component's bounding box as a fraction of the page,
+    /// **before any smearing**. `largest_area_discarded` below is measured
+    /// after `merge_along`, so it cannot tell a page the smear welded together
+    /// from a page that arrived welded — a scan downsampled far enough that
+    /// screentone is no longer separable dots binarises into large connected
+    /// fields, and then there is nothing for a gap of any size to do.
+    largest_component: f64,
     stroke_scale: Option<u32>,
     gap: Option<u32>,
     axis: Option<Axis>,
@@ -232,9 +315,10 @@ struct PageDiag {
     /// page — `None` when nothing reached that filter, or nothing that did
     /// was over the limit.
     largest_area_discarded: Option<f64>,
-    /// Area, as a fraction of the page, of every block that survived all four
-    /// filters — what an edition-level median area is taken over.
-    final_areas: Vec<f64>,
+    /// Every block that survived all four filters, with what it is made of —
+    /// what an edition-level median area is taken over, and what says whether
+    /// a surviving block is type or a patch of the same noise as the page.
+    survivors: Vec<SurvivorDiag>,
     /// `detect_page(page).len()`, computed independently of the staged
     /// pipeline above — the cross-check the module header names. Only
     /// meaningful for `ScaleRule::All`, the rule `detect_page` actually
@@ -276,6 +360,10 @@ fn diagnose_from_strokes(
         0 => 0.0,
         n => tiny as f64 / n as f64,
     };
+    let largest_component = strokes
+        .iter()
+        .map(|s| area_fraction(s, page_area))
+        .fold(0.0, f64::max);
     let detect_page_len = match rule {
         ScaleRule::All => Some(detect::detect_page(page).len()),
         ScaleRule::AboveFloor | ScaleRule::Modal => None,
@@ -285,14 +373,17 @@ fn diagnose_from_strokes(
         return PageDiag {
             page: index,
             rule,
+            width,
+            height,
             components,
             tiny_fraction,
+            largest_component,
             stroke_scale: None,
             gap: None,
             axis: None,
             stages: [0; 5],
             largest_area_discarded: None,
-            final_areas: Vec::new(),
+            survivors: Vec::new(),
             detect_page_len,
         };
     };
@@ -337,22 +428,48 @@ fn diagnose_from_strokes(
         })
         .collect();
     let stage4 = after_ink.len();
-    let final_areas: Vec<f64> = after_ink
+    let survivors: Vec<SurvivorDiag> = after_ink
         .iter()
-        .map(|b| area_fraction(b, page_area))
+        .map(|b| {
+            let inside = strokes_in(strokes, b);
+            let area = f64::from(b.width()) * f64::from(b.height());
+            let ink: u64 = inside
+                .iter()
+                .map(|s| u64::from(s.width()) * u64::from(s.height()))
+                .sum();
+            let tiny = inside.iter().filter(|s| s.longer() < TINY_STROKE).count();
+            SurvivorDiag {
+                area: area_fraction(b, page_area),
+                width: b.width(),
+                height: b.height(),
+                strokes: inside.len(),
+                tiny_fraction: match inside.len() {
+                    0 => 0.0,
+                    n => tiny as f64 / n as f64,
+                },
+                median_stroke: median_longer(&inside),
+                ink: match area {
+                    0.0 => 0.0,
+                    a => ink as f64 / a,
+                },
+            }
+        })
         .collect();
 
     PageDiag {
         page: index,
         rule,
+        width,
+        height,
         components,
         tiny_fraction,
+        largest_component,
         stroke_scale: Some(scale),
         gap: Some(gap),
         axis: Some(axis),
         stages: [stage0, stage1, stage2, stage3, stage4],
         largest_area_discarded,
-        final_areas,
+        survivors,
         detect_page_len,
     }
 }
@@ -426,12 +543,17 @@ fn measure_edition(
 /// the L2A Task 9 brief for why) but is kept in the printed tables because it
 /// is what `notes.md`'s existing nine-line table already reports.
 fn median_final_area<'a>(rows: impl Iterator<Item = &'a PageDiag>) -> f64 {
-    let mut areas: Vec<f64> = rows.flat_map(|r| r.final_areas.iter().copied()).collect();
-    if areas.is_empty() {
-        return 0.0;
+    median_f64(rows.flat_map(|r| r.survivors.iter().map(|s| s.area))).unwrap_or(0.0)
+}
+
+/// Median of a sequence of finite figures, or `None` when it is empty.
+fn median_f64(values: impl Iterator<Item = f64>) -> Option<f64> {
+    let mut values: Vec<f64> = values.collect();
+    if values.is_empty() {
+        return None;
     }
-    areas.sort_by(f64::total_cmp);
-    areas[areas.len() / 2]
+    values.sort_by(f64::total_cmp);
+    Some(values[values.len() / 2])
 }
 
 /// One edition's figures under one scale rule — the same shape
@@ -525,13 +647,16 @@ fn region_experiment_reproduces_the_filter_pipeline() {
         measured.len()
     );
     println!(
-        "{:<24} {:>4} {:>7} {:>8} {:>6} {:>5} {:>15} {:>9} {:<10}",
+        "{:<24} {:>4} {:>11} {:>7} {:>8} {:>6} {:>5} {:>7} {:>7} {:>15} {:>9} {:<10}",
         "edition",
         "pg",
+        "page px",
         "comps",
         "under5px",
         "scale",
         "gap",
+        "gap/w‰",
+        "biggest",
         "stages 0>1>2>3>4",
         "max-area",
         "axis"
@@ -550,18 +675,208 @@ fn region_experiment_reproduces_the_filter_pipeline() {
                 None => "-".to_string(),
             };
             println!(
-                "{:<24} {:>4} {:>7} {:>7.0}% {:>6} {:>5} {:>15} {:>8} {axis_note}",
+                "{:<24} {:>4} {:>11} {:>7} {:>7.0}% {:>6} {:>5} {:>7} {:>6.1}% {:>15} {:>8} {axis_note}",
                 format!("{}/{}", e.work, e.edition),
                 row.page,
+                format!("{}x{}", row.width, row.height),
                 row.components,
                 row.tiny_fraction * 100.0,
                 row.stroke_scale
                     .map_or_else(|| "-".to_string(), |s| s.to_string()),
                 row.gap.map_or_else(|| "-".to_string(), |g| g.to_string()),
+                row.gap.map_or_else(
+                    || "-".to_string(),
+                    |g| format!("{:.1}", f64::from(g) * 1000.0 / f64::from(row.width))
+                ),
+                row.largest_component * 100.0,
                 stages,
                 row.largest_area_discarded
                     .map_or_else(|| "-".to_string(), |f| format!("{:.1}%", f * 100.0)),
             );
+        }
+    }
+
+    // What the four filters cannot say, and the reason this section exists: a
+    // block count answers "how many" and nothing about what they hold. Both
+    // tables below are over the blocks that cleared all four filters under
+    // today's rule — the first summarised per edition, the second block by
+    // block, all 9 editions and no second sampling decision.
+    //
+    // `pg under5` beside `under5px` is the comparison the whole section is
+    // for: a block made of the same sub-`TINY_STROKE` material as the page
+    // around it is a patch of screentone that survived, and a block made of
+    // markedly coarser components than its page is type. A count cannot tell
+    // those apart and `blocks_per_page` is a count.
+    println!("\n-- what survives, per edition (rule=all): medians over surviving blocks --");
+    println!(
+        "{:<24} {:>6} {:>11} {:>7} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8} {:>7}",
+        "edition",
+        "blocks",
+        "page px",
+        "gap/w‰",
+        "biggest",
+        "of page",
+        "strokes",
+        "under5px",
+        "pg und5",
+        "med str",
+        // Survivors whose own median component is not itself under
+        // `TINY_STROKE` — the blocks that are made of coarser material than
+        // the noise around them. Counted against `TINY_STROKE`, which this
+        // module already defines and the `under5px` columns already use,
+        // rather than against a fresh threshold: a second unmeasured constant
+        // is exactly what a measurement taken before a redesign exists to
+        // avoid.
+        "coarse"
+    );
+    for e in &measured {
+        let rows: Vec<&PageDiag> = e.rule_rows(ScaleRule::All).collect();
+        let survivors: Vec<&SurvivorDiag> = rows.iter().flat_map(|r| r.survivors.iter()).collect();
+        let show = |v: Option<f64>, unit: &str| match v {
+            Some(v) => format!("{v:.1}{unit}"),
+            None => "-".to_string(),
+        };
+        let coarse = survivors
+            .iter()
+            .filter(|s| s.median_stroke.is_some_and(|m| m >= TINY_STROKE))
+            .count();
+        println!(
+            "{:<24} {:>6} {:>11} {:>7} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8} {:>4}/{}",
+            format!("{}/{}", e.work, e.edition),
+            survivors.len(),
+            format!(
+                "{}x{}",
+                median_f64(rows.iter().map(|r| f64::from(r.width))).unwrap_or(0.0) as u32,
+                median_f64(rows.iter().map(|r| f64::from(r.height))).unwrap_or(0.0) as u32,
+            ),
+            show(
+                median_f64(
+                    rows.iter()
+                        .filter_map(|r| r.gap.map(|g| f64::from(g) * 1000.0 / f64::from(r.width)))
+                ),
+                ""
+            ),
+            show(
+                median_f64(rows.iter().map(|r| r.largest_component * 100.0)),
+                "%"
+            ),
+            show(median_f64(survivors.iter().map(|s| s.area * 100.0)), "%"),
+            show(median_f64(survivors.iter().map(|s| s.strokes as f64)), ""),
+            show(
+                median_f64(survivors.iter().map(|s| s.tiny_fraction * 100.0)),
+                "%"
+            ),
+            show(
+                median_f64(rows.iter().map(|r| r.tiny_fraction * 100.0)),
+                "%"
+            ),
+            show(
+                median_f64(
+                    survivors
+                        .iter()
+                        .filter_map(|s| s.median_stroke.map(f64::from))
+                ),
+                "px"
+            ),
+            coarse,
+            survivors.len(),
+        );
+    }
+
+    // Which of the four filters actually rejects anything on real material,
+    // summed over the whole sample. O32 and O33 record that two of the five
+    // constants reject nothing in any *test*; this says what they do against
+    // the corpus, which is the question a redesign has to answer before it
+    // moves any of them.
+    println!("\n-- what each filter rejected, over all sampled pages (rule=all) --");
+    let all_rows: Vec<&PageDiag> = measured
+        .iter()
+        .flat_map(|e| e.rule_rows(ScaleRule::All))
+        .collect();
+    for (i, name) in [
+        "MIN_STROKES",
+        "MIN_BLOCK_STROKE_SPAN",
+        "MAX_BLOCK_AREA",
+        "MIN_INK",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let rejected: usize = all_rows
+            .iter()
+            .map(|r| r.stages[i].saturating_sub(r.stages[i + 1]))
+            .sum();
+        let pages = all_rows
+            .iter()
+            .filter(|r| r.stages[i] > r.stages[i + 1])
+            .count();
+        println!(
+            "{name:<24} rejected {rejected:>5} blocks, on {pages:>2} of {} pages",
+            all_rows.len()
+        );
+    }
+
+    // Whether `merge_along` is what builds the page-spanning blob, or whether
+    // it arrives already built. `notes.md`'s diagnosis says the former — "a
+    // few pixels of tolerance already lets `merge_along`'s transitive passes
+    // weld thousands of specks into one component spanning most of a page" —
+    // and that is testable by comparing the largest block the smear produced
+    // against the largest component that existed before it ran.
+    let welded_before: usize = all_rows
+        .iter()
+        .filter(|r| {
+            r.largest_area_discarded
+                .is_some_and(|d| (d - r.largest_component).abs() < 0.01)
+        })
+        .count();
+    let discarded_pages = all_rows
+        .iter()
+        .filter(|r| r.largest_area_discarded.is_some())
+        .count();
+    println!(
+        "\nof the {discarded_pages} pages where MAX_BLOCK_AREA discarded something, the largest \
+         thing discarded was\nalready one connected component before any smearing on \
+         {welded_before} of them (within 1 point of page area)"
+    );
+
+    println!(
+        "\n-- every block that cleared all four filters (rule=all), and what it is made of --"
+    );
+    println!(
+        "{:<24} {:>4} {:>11} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8} {:<10}",
+        "edition",
+        "pg",
+        "block px",
+        "of page",
+        "strokes",
+        "under5px",
+        "pg under5",
+        "med str",
+        "ink",
+        "axis"
+    );
+    for e in &measured {
+        for row in e.rule_rows(ScaleRule::All) {
+            for s in &row.survivors {
+                let axis_note = match row.axis {
+                    Some(a) if a == e.expected_axis => format!("{a:?}"),
+                    Some(a) => format!("{a:?} WRONG"),
+                    None => "-".to_string(),
+                };
+                println!(
+                    "{:<24} {:>4} {:>11} {:>7.1}% {:>8} {:>7.0}% {:>8.0}% {:>6}px {:>7.2} {axis_note}",
+                    format!("{}/{}", e.work, e.edition),
+                    row.page,
+                    format!("{}x{}", s.width, s.height),
+                    s.area * 100.0,
+                    s.strokes,
+                    s.tiny_fraction * 100.0,
+                    row.tiny_fraction * 100.0,
+                    s.median_stroke
+                        .map_or_else(|| "-".to_string(), |m| m.to_string()),
+                    s.ink,
+                );
+            }
         }
     }
 
@@ -703,10 +1018,46 @@ fn region_experiment_reproduces_the_filter_pipeline() {
                         row.rule.label()
                     );
                 }
-                for area in &row.final_areas {
+                assert!(
+                    row.largest_component.is_finite(),
+                    "{}/{} page {} rule={}: largest_component is not finite",
+                    e.work,
+                    e.edition,
+                    row.page,
+                    row.rule.label()
+                );
+                // The survivor profile has to cover exactly the blocks the
+                // staged pipeline says survived, or the table it prints is
+                // describing a different set of blocks than the counts above
+                // it — the same bookkeeping-not-quality assertion as the
+                // `detect_page_len` check below.
+                assert_eq!(
+                    row.survivors.len(),
+                    row.stages[4],
+                    "{}/{} page {} rule={}: {} survivors profiled against {} surviving blocks",
+                    e.work,
+                    e.edition,
+                    row.page,
+                    row.rule.label(),
+                    row.survivors.len(),
+                    row.stages[4]
+                );
+                for s in &row.survivors {
                     assert!(
-                        area.is_finite(),
-                        "{}/{} page {} rule={}: a surviving block's area is not finite",
+                        s.area.is_finite() && s.tiny_fraction.is_finite() && s.ink.is_finite(),
+                        "{}/{} page {} rule={}: a surviving block's profile is not finite",
+                        e.work,
+                        e.edition,
+                        row.page,
+                        row.rule.label()
+                    );
+                    // A block reached `MIN_STROKES` to get here, so it holds
+                    // components and therefore has a median size. `None` here
+                    // would mean `strokes_in` disagreed with the filter that
+                    // admitted the block.
+                    assert!(
+                        s.median_stroke.is_some(),
+                        "{}/{} page {} rule={}: a surviving block holds no strokes",
                         e.work,
                         e.edition,
                         row.page,
@@ -783,10 +1134,57 @@ mod tests {
         assert_eq!(diag.axis, Some(Axis::Vertical));
         assert!(diag.stroke_scale.is_some());
         assert!(diag.gap.is_some());
-        assert_eq!(diag.final_areas.len(), 1);
+        assert_eq!(diag.survivors.len(), 1);
         assert!(
             diag.largest_area_discarded.is_none(),
             "nothing else to discard"
+        );
+    }
+
+    /// The survivor profile describes the block it came from, not the page.
+    ///
+    /// The fixture is six 20x20 marks in a column on a 400x600 page: the one
+    /// surviving block holds exactly those six, none of them under
+    /// `TINY_STROKE`, and its area is the column's rather than the page's.
+    /// Without this, `SurvivorDiag` could be summing over the whole page and
+    /// the corpus tables would look plausible while measuring nothing local.
+    #[test]
+    fn a_survivor_is_profiled_from_its_own_strokes() {
+        let diag = diagnose(&page_with_a_column(), 0);
+        let [survivor] = &diag.survivors[..] else {
+            panic!("one block, got {}", diag.survivors.len());
+        };
+        assert_eq!(survivor.strokes, 6, "the six marks, and nothing else");
+        assert_eq!(survivor.tiny_fraction, 0.0, "a 20px mark is not tiny");
+        assert_eq!(survivor.median_stroke, Some(20));
+        // Six marks 20px tall on a 30px pitch: y0=40 to y1=209, so 170 tall.
+        assert_eq!((survivor.width, survivor.height), (20, 170));
+        assert!(
+            survivor.area < 0.02,
+            "the column's area, not the page's: {}",
+            survivor.area
+        );
+        assert!(
+            (survivor.ink - 6.0 * 400.0 / (20.0 * 170.0)).abs() < 1e-9,
+            "six 20x20 marks over the block's own box: {}",
+            survivor.ink
+        );
+    }
+
+    /// The largest raw component is measured before the smear, so a page whose
+    /// ink arrives already welded is distinguishable from one the gap welded.
+    #[test]
+    fn the_largest_component_is_measured_before_any_smear() {
+        // One mark spanning a quarter of the page, plus the column above it.
+        let page = GrayImage::from_fn(400, 600, |x, y| {
+            let bar = (0..200).contains(&x) && (300..600).contains(&y);
+            image::Luma([if bar { 0 } else { 255 }])
+        });
+        let diag = diagnose(&page, 0);
+        assert!(
+            (diag.largest_component - 0.25).abs() < 1e-9,
+            "a 200x300 bar on a 400x600 page is a quarter of it: {}",
+            diag.largest_component
         );
     }
 

@@ -6966,3 +6966,326 @@ candidate reaches even one work — but a promotion rule that misstates the
 baseline it is measured against is worth correcting rather than quietly
 restating, and both candidates *losing* that work is a sharper result than the
 rule as written could have expressed.
+
+## The edition that clears the bar is the one finding no text
+
+The two sections above leave a hole, and it is the kind that becomes a second
+unmeasured constant if a redesign is started on top of it. The
+screentone-welding account says the detector fails because fine noise
+outnumbers type, collapsing `stroke_scale` toward 1–3px and letting
+`merge_along` weld a page into one blob `MAX_BLOCK_AREA` discards. Read
+straight, that predicts the noisiest edition should fail worst. The noisiest
+edition sampled is `gotoubun-v01/en-mono`, at 93%–99% of its components under
+5px — and it is the **only one of the nine to clear the design's
+`blocks_per_page` bar**, at 2.50 against a bar of 2, under all three scale
+rules. Every figure either section reports is a *count* of blocks, and a
+count cannot say what a block holds.
+
+So, before any redesign: same harness, same nine editions, same 90 pages, ask
+what its surviving blocks have that `gotoubun-v01/raw-mono`'s do not. About
+seven seconds.
+
+### What was added to measure it
+
+`region_experiment.rs` now reports, alongside the counts it already had:
+
+- **`SurvivorDiag`** — for every block clearing all four filters: its pixel
+  size, its area, how many components it contains, what fraction of *those*
+  are under `TINY_STROKE`, their median longer side, and its ink ratio. The
+  page's own `under5px` is printed beside each, because the comparison is the
+  measurement: a block made of the same material as the page around it is a
+  patch of screentone that survived, and a block made of markedly coarser
+  components is type.
+- **the page's pixel dimensions, and the smear gap as a fraction of them**
+  (`gap/w‰`). A gap in pixels means nothing without the page it sits on.
+- **the largest single component before any smearing** (`biggest`), against
+  the largest block `MAX_BLOCK_AREA` discarded after it. This is what
+  distinguishes a page the smear welded from a page that arrived welded.
+- **what each of the four filters rejected**, summed over all 90 pages.
+
+`detect_page` is unchanged, no constant moved, and the only threshold used to
+classify anything is `TINY_STROKE`, which this module already defined and its
+existing `under5px` columns already used. A measurement taken to avoid
+acquiring a second unmeasured constant must not acquire one.
+
+### The answer, per edition
+
+```
+edition                  blocks     page px  gap/w‰  biggest  of page  strokes  under5px  pg und5  med str  coarse
+gotoubun-v01/raw-mono         6    685x1024     8.8    40.6%    10.5%     92.0     42.4%    63.1%    6.0px     5/6
+gotoubun-v01/en-mono         25   2147x3056     1.9    50.0%     5.2%   1877.0     90.4%    97.6%    2.0px    9/25
+gotoubun-v01/en-fan           6   1070x1600     3.7    38.1%     5.5%    343.0     85.8%    88.0%    2.0px     2/6
+kaguya-v01/raw-mono           7    844x1200     4.7    39.9%    10.7%    582.0     63.8%    82.9%    3.0px     1/7
+kaguya-v01/en-fan             4    863x1250     4.6    73.5%    10.7%    610.0     91.8%    84.8%    4.0px     1/4
+oshinoko-v01/raw-mono         7   1521x2160     6.6    46.5%    11.3%    114.0     50.5%    50.4%    4.0px     3/7
+oshinoko-v01/en-mono         14    900x1350     4.4    37.4%     7.3%     46.0     10.9%    76.9%   19.0px   12/14
+kobayashi-v01/raw-mono        2   1468x2166     2.7    39.2%    13.4%    266.0     77.4%    77.4%   23.0px     1/2
+kobayashi-v01/en-mono         5   2145x3056     1.9    28.3%    13.0%   1180.0     85.6%    96.2%    2.0px     2/5
+```
+
+Medians over surviving blocks. `coarse` counts the survivors whose own median
+component reaches `TINY_STROKE` — blocks made of something other than the noise.
+
+**The median surviving block of `gotoubun-v01/en-mono` holds 1,877 components
+whose median longer side is 2 pixels, on a 2147×3056 page.** A balloon of
+English type at that resolution is tens of glyphs at tens of pixels. Two
+thousand 2px specks is screentone.
+
+Block by block, its 25 divide on the one threshold this module already had —
+whether the block's own median component reaches `TINY_STROKE` — and the two
+sides of that split do not resemble each other:
+
+- **16 of 25** hold 280 to 14,556 components at 78%–99% under 5px, median
+  contained component 1–3px, against pages that are 96%–99% under 5px. Same
+  material as the page. The largest is 913×990px holding 14,556 components.
+- **9 of 25** are coarse, and **7 of those 9 are on one page**: page 102's
+  17×66 to 23×76px marks, 4–5 components each, median 17–22px, each 0.0% of
+  the page.
+- **The remaining 2 of those 9** are page 158's 583×323 block (18 components,
+  0% tiny, median 25px) and page 177's 396×488 (60 components, 0% tiny,
+  median 35px).
+
+### What the pixels said, and the noun this section had wrong
+
+The paragraphs above were written from component statistics alone, and a first
+draft of this section named the 16 "dense fields of tone" and the 7 "captions
+or page numbers". Both nouns were wrong, and it took ten minutes with
+`taiyaku regions --write` against a scratch sidecar and a cropping script to
+find that out — which is the same shape of error the original diagnosis made
+when it said "most components are art" and the measurement answered "most
+components are finer than any glyph". The statistic was right both times. What
+it was a statistic *of* was not.
+
+Ten blocks were cropped from the source archives at the fractions
+`taiyaku regions` itself wrote, and looked at:
+
+| block | the statistic | what it is |
+| --- | --- | --- |
+| gotoubun p27 b1, 913×990 | 14,556 comps, 98% tiny | a whole **panel** — two characters, speed lines, four text boxes |
+| gotoubun p83 b1, 1119×578 | 13,203 comps, 96% tiny | a whole **panel** — a stairwell, screentone, three balloons |
+| gotoubun p139 b1, 1253×694 | 13,441 comps, 99% tiny | a whole **panel** — a figure on a bench, tone, one balloon |
+| gotoubun p158 b2, 582×323 | 18 comps, 25px | a **panel** — one balloon plus a black silhouette |
+| gotoubun p177 b0, 396×488 | 60 comps, 35px | a **caption box**, cleanly bounded — the one clean text region seen |
+| gotoubun p102 b3, 16×82 | 4 comps, 17px | a **letter fragment**, a vertical slice of one word |
+| oshinoko p214 b0, 669×137 | 15 comps, 109px | the **title logo** |
+| oshinoko p214 b1, 604×67 | 25 comps, 21px | a **credits line**, "Aka Akasaka × Mengo Yokoyari" |
+| oshinoko p101 b0, 735×120 | 46 comps, 19px | a **caption box**, two lines of English |
+| oshinoko p78 b0, 217×460 | 79 comps, 19px | a **panel** — one balloon plus art |
+
+**The detector is not finding text blocks. On this edition it is finding
+panels.** That is a sharper statement of the same failure and it explains every
+figure at once: a panel on a multi-panel page is comfortably under
+`MAX_BLOCK_AREA`'s 0.15, so `blocks_per_page` 2.50 is roughly panels per page
+rather than balloons per page; a panel has no reading direction, so the axis is
+wrong on 9 of 10 pages; a panel's component population is its screentone, so
+the median contained component is 2px; and a panel is 5.2% of a page, which is
+the median area reported. The blocks are not patches of tone that happened to
+survive — they are panels that swallowed the dialogue along with everything
+else.
+
+**The same page shows the opposite failure too.** Page 102's seven "coarse"
+blocks are not captions. They are vertical slices of a single piece of display
+text — 16×82px of one word — so the same edition at the same gap over-merges
+whole panels and under-merges one line of lettering. Both are wrong, in
+opposite directions, on one page.
+
+**The counter-example survives the check and needs one qualification.** Of the
+four `oshinoko-v01/en-mono` blocks looked at, three are cleanly bounded text —
+a logo, a credits line, a caption box — and the fourth is a panel. So that
+edition is not uniformly finding text either; it is finding text far more often
+than `gotoubun-v01/en-mono`, which finds it once in the six examined.
+
+**And the discriminator needs its own qualification, now that it has been
+checked against pixels rather than only against itself.** A coarse in-block
+median does separate panel-blocks from everything else — 3 of 3 fine-median
+blocks are panels, and no coarse-median block is one of the giant welds. But
+"coarse" alone does not mean text: page 102's letter fragments are coarse by
+median and are sub-glyph by every other measure. Component *count* is what
+separates those — 4 to 5 for a fragment against 18 to 60 for a caption box.
+Neither figure is proposed here as a constant; what this establishes is that a
+promotion rule needs at least two of them and that `blocks_per_page` is neither.
+
+**And the axis says the same thing independently.** 23 of those 25 blocks are
+tagged `Vertical` on an English edition — wrong on 9 of the 10 sampled pages.
+The one edition that clears the count bar is the one that gets the direction
+most wrong. That holds even where the block *is* text: page 177's caption box
+is eight lines of horizontal English and is tagged `Vertical`.
+
+### The counter-example is the edition that fails the bar
+
+`oshinoko-v01/en-mono` scores 1.40 `blocks_per_page`, below the bar, and its
+survivors are the healthiest in the corpus: median 46 components at 10.9%
+tiny, median contained component 19px, against a page 76.9% tiny — **12 of its
+14 blocks coarse**. Their shapes read as English typesetting: 669×138,
+605×68, 384×38, 232×38, 736×120, 817×112. 12 of the 14 are tagged
+`Horizontal`, correctly. And `oshinoko-v01` is exactly the one work whose v/h
+split `all` already gets right on both sides.
+
+So the two editions are ordered *opposite* ways by the count and by the
+composition. Nothing about `blocks_per_page` sees that.
+
+### Why the noisiest edition scores best, which is the mechanism correction
+
+Not that it escapes the welding. That it welds at a proportionally finer gap.
+
+`gotoubun-v01/en-mono` derives the same noise-collapsed 2px scale as everything
+else, giving the same 4px gap — but on a page 3.1× wider than
+`gotoubun-v01/raw-mono`'s. As a fraction of page width that is **1.9‰ against
+5.8‰–14.6‰**, up to 7.7× finer. Where raw-mono's proportionally coarse gap
+welds a page into a single over-large blob and `MAX_BLOCK_AREA` throws the
+whole page away — 6 of its 10 sampled pages return zero blocks — en-mono's
+finer relative gap chops the same screentone field into *several mid-sized*
+fragments, each under 0.15 of the page.
+
+`MAX_BLOCK_AREA` is the only filter with an opinion about size, and mid-sized
+noise is exactly what it is not looking for. The edition scores best because
+its noise is cut into pieces the right size to pass, not because more of its
+text is found.
+
+**The relative gap explains the composition, and it does not on its own
+explain the count.** The two finest-gap editions in the corpus are
+`gotoubun-v01/en-mono` and `kobayashi-v01/en-mono`, both at 1.9‰ on the same
+2145×3056-class material, and they are also the two whose survivors are most
+made of noise — 90.4% and 85.6% of contained components under 5px, medians of
+1,877 and 1,180 components a block. That much the gap accounts for. But they
+score 2.50 and 0.50 `blocks_per_page`, and nothing measured here says why:
+`gotoubun-v01/en-mono` simply arrives at `MAX_BLOCK_AREA` with more mid-sized
+fragments per page — 1 to 6 with a median of 5, plus 91 on page 102 — where
+`kobayashi-v01/en-mono` arrives with 1 to 4, median 3. A finer relative gap is
+what makes surviving-block-shaped noise *possible*; how much of it a given page
+produces is not settled by this measurement, and claiming otherwise would be
+the one-cause story this section exists to take apart.
+
+(Two of `gotoubun-v01/en-mono`'s ten sampled pages are 4294×3056 — joined
+spreads, at 0.9‰ — and both return zero blocks, so they are not what carries
+the 2.50. The eight single pages are the 1.9‰ figure quoted above.)
+
+### Half the blobs were never welded by the smear
+
+Comparing `biggest` — the largest single connected component, before
+`merge_along` runs — against the largest block `MAX_BLOCK_AREA` discarded:
+
+```
+of the 89 pages where MAX_BLOCK_AREA discarded something, the largest thing
+discarded was already one connected component before any smearing on 47 of
+them (within 1 point of page area)
+```
+
+On `gotoubun-v01/en-mono` it is **7 of 10**, and on those seven the two figures
+are equal to the printed decimal: 91.9/91.9, 53.4/53.4, 23.0/23.0, 68.6/68.6,
+34.4/34.4, 50.0/50.0, 44.9/44.9.
+
+The section above says "screentone packs ink densely enough that a few pixels
+of tolerance is already sufficient for `merge_along`'s repeated, transitive
+passes to weld thousands of them into one component spanning most of a panel
+or the whole page." On about half the corpus that is not what happened. The
+page-spanning component came out of `otsu` and `components` already formed,
+and no gap — including a gap of zero — would have prevented it. That is a
+genuine hole in the stated mechanism and it bears directly on the
+denoise-before-labelling route: **denoising the component population that
+feeds `stroke_scale` cannot touch a blob that exists before the scale is ever
+computed.** Reaching those pages means changing what `components` returns.
+
+The sentence stands for the other half — 42 of 89 pages, where the discarded
+block is materially larger than any single component that preceded it, so the
+smear did build it.
+
+### One of the four filters is the detector, and one has never fired
+
+```
+MIN_STROKES              rejected   121 blocks, on 21 of 90 pages
+MIN_BLOCK_STROKE_SPAN    rejected     2 blocks, on  1 of 90 pages
+MAX_BLOCK_AREA           rejected   166 blocks, on 89 of 90 pages
+MIN_INK                  rejected     0 blocks, on  0 of 90 pages
+```
+
+**`MIN_INK` has never rejected anything.** Measured ink ratios across all 76
+surviving blocks run 0.38 to 1.89 against a floor of 0.05 — 7.6× to 38× it —
+and 61 of the 76 exceed 1.0, which is the constant's own doc comment made
+numeric: it sums stroke *bounding boxes*, which overlap heavily, so a block of
+dense fine components scores far above 1.0 while covering nothing like that
+much paper. As written it cannot fire on this material.
+
+`MIN_BLOCK_STROKE_SPAN` fires twice in 90 pages. `MAX_BLOCK_AREA` fires on 89
+of 90 — it is not a backstop, it is the detector. That sharpens O33, which
+records that `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` reject nothing *in
+any test*: against the corpus the dead one is `MIN_INK`, which O33 does not
+name, and `MAX_BLOCK_AREA` is the opposite of dead. O34 is opened for
+`MIN_INK`; O33 is annotated rather than closed, because the gap it names is in
+the tests and this measurement is not one.
+
+### What this changes for the redesign, which is the point of running it first
+
+**`blocks_per_page` cannot be the acceptance bar on its own.** The only
+edition that has ever cleared it clears it with screentone fragments, and the
+edition whose blocks are most plausibly text fails it. A promotion rule stated
+in `blocks_per_page` would promote a candidate for cutting noise into
+better-sized pieces, and the fixed-before-measuring discipline that saved Task
+9 does not help if the thing fixed in advance is the wrong quantity.
+
+What separates the two cases is already in hand and cost no new threshold to
+measure: the block's own median component against `TINY_STROKE`, and against
+its page's. 12/14 for the edition that looks right, 9/25 — 7 of them on one
+page — for the edition that scores best. Whether a detector should *filter* on
+that, and at what value, is a redesign decision and is not made here; what is
+established is that a rule stated in counts alone cannot see the difference.
+
+Nothing was redesigned here and nothing was tuned. `detect_page` is byte for
+byte what it was, all five constants still say "a starting value, not a
+measurement", and the denoise-before-labelling route is still the indicated
+one — with a mechanism that now accounts for the edition that contradicted it
+and for the half of the corpus where the blob predates the smear.
+
+### What this does not claim
+
+The same 90 pages as the section above, from the same nine editions of four
+works, sampled the same way — not the corpus, not random.
+
+**Ten blocks were looked at, out of 76.** Six from `gotoubun-v01/en-mono` (of
+25) and four from `oshinoko-v01/en-mono` (of 14); nothing from the other seven
+editions, and nothing from any raw edition. They were not chosen randomly
+either: they were picked to span the statistic — the three largest
+component counts, the two coarsest medians, one of the seven small blocks on
+page 102 — so they test the reading at its extremes rather than sample it.
+"Panel" and "text region" are what those ten are; the other 66 are still read
+off component statistics, and the claim that the 16 fine-median blocks are all
+panels rests on three of them having been seen.
+
+What does not rest on inference is the ordering, which was the question: the
+two editions rank opposite ways under the count and under the composition, the
+composition ranking agrees with the axis result and the count ranking does not,
+and the edition that clears the bar was seen to be finding panels while the
+edition that fails it was seen to be finding caption boxes.
+
+An earlier draft of this section claimed "no page was looked at" and named the
+16 blocks "fields of tone" on the strength of that. Looking cost about ten
+minutes and changed the noun; it is recorded here rather than quietly fixed
+because the measurement was *right* and its description was wrong, which is the
+failure mode this whole line of work keeps finding.
+
+Re-run it rather than taking the tables' word:
+
+```sh
+TAIYAKU_CORPUS="$PWD/corpus" cargo test -p taiyaku-cli region_experiment \
+  --release -- --nocapture
+```
+
+About seven seconds, and it prints every figure above.
+
+**The crops are reproducible too, and need nothing added to this repository.**
+`taiyaku regions --write` puts a `<stem>.regions.json` beside its *sidecar*, so
+copying the sidecar to a scratch path keeps every write out of `corpus/`, which
+is the discipline the rest of this file follows for corpus material:
+
+```sh
+cp corpus/gotoubun-v01/taiyaku.json /tmp/scratch/gotoubun-v01.json
+taiyaku regions "$PWD/corpus/gotoubun-v01/en-mono"/*.cbz \
+  --sidecar /tmp/scratch/gotoubun-v01.json --write
+```
+
+That run reprints this section's `regions:` line exactly — 348 blocks, v=269,
+h=79, `blocks_per_page` 1.86 — and the document it writes carries every block's
+`x`/`y`/`w`/`h` in page fractions, which is all a crop needs.
+`oshinoko-v01` has no sidecar in the corpus and wants the `align --write` from
+"The survey ran over four works" first; that command still reports the 6 runs
+and 216 whole pairings recorded there.

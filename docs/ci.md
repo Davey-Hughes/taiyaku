@@ -44,6 +44,33 @@ The corpus checks are the one thing the script measures that the forge cannot,
 since CI has no corpus. Everything else runs in both places — with one
 exception.
 
+**Setting `TAIYAKU_CORPUS` costs far more than the corpus job itself, and two
+source files claimed otherwise until 2026-08-08.** The script exports
+`TAIYAKU_CORPUS` before its `test` job, and that job is an *unfiltered*
+`cargo test --workspace --all-features` — the `corpus::` filter belongs to the
+separate corpus job below it. So a local gate run with a corpus present also
+runs the two one-off measurement modules, `geometry_experiment` and
+`region_experiment`, in the **debug** profile. `geometry_experiment`
+fingerprints roughly 1.4 million Lanczos3 crops: about a minute under
+`--release` and about forty without. Measured rather than estimated — a gate
+run was killed at **1h09m** still inside that one test.
+`region_experiment` costs about a minute there and is not the problem. Both
+modules' headers said `check-all.sh` "does not run this", reaching for the
+`corpus::` filter and missing the job above it; both are corrected.
+CI is unaffected, having no corpus. For a fast pass that mirrors CI exactly,
+run the script *without* the variable and take the corpus job separately:
+
+```sh
+env -u TAIYAKU_CORPUS scripts/check-all.sh
+TAIYAKU_CORPUS="$PWD/corpus" cargo test --workspace --all-features corpus:: \
+  -- --nocapture --test-threads=1
+```
+
+The two modules are deliberately not filtered out of the `test` job: a one-off
+measurement that silently stops being compiled and run is a worse failure than
+a slow gate, and the release-profile invocation each module's header names is
+how they are meant to be run on purpose.
+
 **`npm ci` is not mirrored, and that is a real gap rather than an oversight.**
 CI runs it to build the job's `node_modules` from nothing; locally it would
 delete a working install and rebuild it on every gate run. What that costs is
