@@ -8010,7 +8010,7 @@ while its neighbour spans the group, `onShown` reporting what is drawn, and both
 halves of a pair presenting inside one frame.
 
 **Kept small and kept out of CI.** A browser project needs a downloaded
-Chromium, and this CI has no cache to keep one in, so `npm run test` stays the
+Chromium, and this CI has no cache to keep one in, so `pnpm -C web run test` stays the
 `node` project alone — exactly what the forge runs — and `test:browser` is a
 separate script `check-all.sh` runs locally, naming itself as unmeasured when
 the browser is absent. The browser tests are for the properties nothing else can

@@ -10,7 +10,7 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 | `lint` | `cargo fmt --check`, `cargo clippy -D warnings` |
 | `test` | `cargo test --workspace` |
 | `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown`, builds the browser package with `wasm-pack`, and runs `scripts/smoke-wasm.mjs` against the compiled module |
-| `web` | `npm ci`, `biome check` (formatting **and** lint), `tsc -b` typecheck, `vitest run` in `web/` |
+| `web` | `pnpm install --frozen-lockfile`, `biome check` (formatting **and** lint), `tsc -b` typecheck, `vitest run` in `web/` |
 
 The `wasm` job is the one worth keeping even when it feels redundant. The design
 depends on the core being shareable between the browser reader and a future
@@ -37,7 +37,7 @@ that refuses to print a bare `all green` when anything was skipped:
 all green, except NOT MEASURED:
   - standing corpus checks (TAIYAKU_CORPUS unset)
   - the wasm job (--no-wasm)
-  - the web job (web/node_modules absent — run `npm --prefix web ci`)
+  - the web job (web/node_modules absent — run `pnpm -C web install`)
 ```
 
 The corpus checks are the one thing the script measures that the forge cannot,
@@ -118,13 +118,25 @@ it. The local gate and CI therefore run the same `test` job in the same profile,
 and the mirror in `scripts/check-all.sh` holds exactly — the release profile
 appears only in the corpus job, which is the one thing CI does not have.
 
-**`npm ci` is not mirrored, and that is a real gap rather than an oversight.**
-CI runs it to build the job's `node_modules` from nothing; locally it would
-delete a working install and rebuild it on every gate run. What that costs is
-the one property `npm ci` checks that `lint`, `typecheck` and `test` do not:
-that `package.json` and `package-lock.json` agree. A lockfile that has drifted
-out of sync passes `check-all.sh` and fails the forge. Run
-`npm --prefix web ci` yourself after changing dependencies.
+**The lockfile check *is* mirrored, and until 2026-08-09 it was not.** This
+document used to carry that as a permanent gap: CI's install builds
+`node_modules` from nothing, while running the same command locally would
+delete a working install and rebuild it on every gate run, so the one property
+it checks — that `package.json` and the lockfile agree — went unchecked, and a
+drifted lockfile passed `check-all.sh` to fail the forge.
+
+pnpm closes it, because it has a command that is that check and nothing else:
+`pnpm -C web install --frozen-lockfile --lockfile-only` verifies the lockfile
+satisfies `package.json` without touching `node_modules`. **Measured across
+three consecutive runs: 249ms, 239ms and 237ms.** Verified by adding a
+dependency the lockfile had never seen — the gate was green before the step
+existed and failed after it, naming the package:
+
+    specifiers in the lockfile don't match specifiers in package.json:
+    * 1 dependencies were added: is-odd@^3.0.1
+
+It is run directly rather than piped, because a pipe masks the exit code — which
+was caught while writing the probe, and is exactly how a gate stops gating.
 
 ## Formatting, and the tool that checks it
 
@@ -134,9 +146,9 @@ was measured rather than assumed: a deliberately mangled exported function
 The Rust half has always been checked — `cargo fmt --all -- --check` exits 1 on
 mangled Rust, also measured — so the gap was one-sided and nothing said so.
 
-`biome` now covers both halves of the `web` job's first step: `npm run lint` is
-`biome check ./src`, which is formatting *and* lint in one command, so the CI
-step needed no change. `oxlint` is gone, along with `.oxlintrc.json`.
+`biome` now covers both halves of the `web` job's first step: `pnpm -C web run
+lint` is `biome check ./src`, which is formatting *and* lint in one command, so
+the CI step needed no change. `oxlint` is gone, along with `.oxlintrc.json`.
 
 **The config file is `biome.jsonc`, and the extension is load-bearing.** A
 `biome.json` containing comments is silently discarded — biome falls back to its
@@ -198,7 +210,7 @@ state the section below describes.
 
 ## The `web` job
 
-`web` runs on `node:22-bookworm`, not one of the dual-toolchain images below,
+`web` runs on `node:26-bookworm`, not one of the dual-toolchain images below,
 and that is the point. Everything the job tests is pure TypeScript: the
 reading model sits behind a `Resolver` interface, and only `resolver.ts`
 imports `taiyaku-wasm` **as a value** — no test imports `resolver.ts` at all,
@@ -214,9 +226,84 @@ below does that work instead, once, in a container that already has Rust.
 `typecheck` checks that file against no real types at all here, so a call in
 `wasmResolver` that no longer matches the generated `.d.ts` (a renamed method,
 a changed argument) goes green in `web` regardless of what `wasm` catches.
-That risk is carried by `npm run build` after `./scripts/build-wasm.sh`
+That risk is carried by `pnpm -C web run build` after `./scripts/build-wasm.sh`
 locally — the one discipline this project still asks of a human rather than
 a gate. Revisit if that discipline slips.
+
+**Node 26 is Current, not LTS, and that was chosen rather than defaulted into.**
+Per `nodejs/Release`'s own schedule, 26 goes LTS on 2026-10-28 and reaches EOL
+on 2029-04-30; 24 has been Active LTS since 2025-10-28. Taking 26 means some
+weeks on a Current release, bought against local and CI staying close — this
+development machine runs 26.7.0, and skew between a developer's node and the
+gate's is the kind of gap that hides a defect until the forge finds it. That
+agreement is not exact for this job, though: `node:26-bookworm` (above) is a
+floating tag, so the image can pick up 26.8.0 or later without this document
+or `ci.yml` changing, and nothing pins the `web` job to 26.7.0 the way the
+`wasm` job's own node install does. Exact agreement holds only there — see
+that job's section below.
+
+**Three places name a Node version, and nothing keeps them in step.**
+`.node-version` at the repository root says `26`; the `web` job's image
+floats at `node:26-bookworm`; the `wasm` job hardcodes `26.7.0` twice, in the
+download URL and the symlink target (see `ci.yml`'s comment on that step).
+`.node-version` is read by nothing in this repository — no document, script
+or workflow references it — so it is not a single stated source for the pin,
+only a fourth place that can drift from the other three. Bump all of them
+together if any one moves, the same discipline `ci.yml` already asks of
+`wasm-pack`'s version.
+
+**The `wasm` job was on Node 18 and nothing said so.** It installed node with
+`apt-get install -y nodejs`, and Debian bookworm's `nodejs` package is
+`18.20.4+dfsg-1~deb12u2` — confirmed against Debian's own package index. So the
+only thing anywhere that *executes* the compiled module ran on a different major
+from every other job. That was not a decision; it is what `apt-get` happened to
+ship. It now fetches a checksummed 26.7.0 tarball, the same prebuilt-binary
+approach this job already takes for `wasm-pack`. **Guess, not measurement:** the
+larger download should be roughly a wash against `apt-get`'s recorded 20–30s,
+but no runner was reachable to time it. Confirm against a real run.
+
+## The typecheck, and the compiler that stopped being JavaScript
+
+`"typecheck": "tsc -b"` is unchanged from the TypeScript 6 era and that is the
+point: in TypeScript 7, `tsc` **is** the native compiler. Verified rather than
+taken on trust — `typescript@7.0.2` declares exactly one bin, `tsc`, which
+dispatches through `optionalDependencies` to a platform package that is a
+statically linked Go ELF binary. There is no `tsgo` bin in the package; that
+name belonged to `@typescript/native-preview`, the preview channel that carried
+the port before 7.0 shipped. The package size says the same from the other
+side: 24.3 MB unpacked at 6.0.2 against 2.5 MB at 7.0.2.
+
+Measured against this repository's own `tsconfig.app.json` and
+`tsconfig.node.json`, cold each time with `node_modules/.tmp` removed between
+runs, TS 7 twice rather than once:
+
+| | wall | CPU |
+| --- | ---- | --- |
+| TS 6.0.3 | 1.511s | 3.19s |
+| TS 7.0.2 (run 1) | 0.164s | 0.93s |
+| TS 7.0.2 (run 2) | 0.166s | 0.99s |
+
+A full typecheck in under two tenths of a second invites the suspicion that
+nothing ran, so that was checked too: injecting `export const probe: number =
+"not a number"` into `web/src` made both compilers fail at the identical
+position with the identical code, `TS2322`. Project references, `tsc -b`
+build mode, `moduleResolution: bundler`, `verbatimModuleSyntax`,
+`erasableSyntaxOnly` and `allowImportingTsExtensions` all work on the native
+port.
+
+**One behavioural difference, recorded rather than glossed:** on type errors
+TS 6 exits `2` and TS 7 exits `1`. Both are non-zero so no gate changes, but
+anything that ever tests for a specific code would break.
+
+**One thing this migration found, unasked.** `pnpm -C web outdated` reported
+nothing behind, but `pnpm -C web update --latest` bumped four packages anyway —
+`vite`, `@vitejs/plugin-react`, `@types/react` and `@types/react-dom`, each one
+patch release ahead of what `outdated` had just called current, all still
+inside their existing caret ranges. `typescript`, `@types/node` and the
+`taiyaku-wasm` `link:` protocol were checked afterward and confirmed
+untouched, since `update --latest` does not distinguish a dependency pinned on
+purpose from one merely unpinned. A reader who runs `pnpm outdated` alone to
+decide whether an update is needed should not trust a clean result on its own.
 
 ## Running the compiled module in CI
 
@@ -227,18 +314,23 @@ codegen break, and `scripts/smoke-wasm.mjs` was a one-line command nobody but
 a human ran. The `wasm` job now closes that: after the two `cargo build`
 steps above (unchanged, and still the fast fail-fast check that the core and
 the binding compile for `wasm32-unknown-unknown` at all), three more steps
-install `node` via `apt-get`, fetch a prebuilt `wasm-pack` release binary,
-build the real npm package with `./scripts/build-wasm.sh`, and run
-`node scripts/smoke-wasm.mjs` against it — the same two commands a developer
-runs locally, unmodified for CI.
+fetch and unpack a checksummed `node` tarball, fetch a prebuilt `wasm-pack`
+release binary, build the real npm package with `./scripts/build-wasm.sh`,
+and run `node scripts/smoke-wasm.mjs` against it — the same two commands a
+developer runs locally, unmodified for CI.
 
-**Why `apt-get`, not a dual-toolchain image.** Reusing the `wasm` job's
-existing `rust:1-bookworm` container and installing `node` into it is cheaper
-than switching to `cimg/rust:1.97-node` or `catthehacker/ubuntu:rust-latest`
+**Why a tarball fetch, not a dual-toolchain image.** Reusing the `wasm` job's
+existing `rust:1-bookworm` container and dropping a `node` binary into it is
+cheaper than switching to `cimg/rust:1.97-node` or `catthehacker/ubuntu:rust-latest`
 (see the image table below): those cost 200 MB–500 MB more and, per that
-table's own probe, five minutes of cold image pull, against `apt-get
-install`'s cost of roughly the same 20–30 seconds the caching section below
-already charges to the identical command.
+table's own probe, five minutes of cold image pull. Measured directly on this
+development machine, not the runner (whose network this task could not
+reach): fetching `node-v26.7.0-linux-x64.tar.xz` (33.5 MB), verifying its
+checksum against the value pinned in `ci.yml`, and extracting it took
+**1.4–1.6 seconds** across three runs. That is not a runner figure, but it is
+well under the 200 MB–500 MB / five-minute cost of the alternative, so the
+conclusion — stay in this container — does not turn on closing that gap
+precisely.
 
 **Why a curl'd binary, not `cargo install wasm-pack`.** Measured directly:
 `cargo install wasm-pack --locked` is a multi-minute compile of a tool this
@@ -258,35 +350,55 @@ force it. Upstream (`wasm-pack`'s own source and documentation) confirms the
 same download-on-first-use behaviour applies to `wasm-opt`, but that half is
 inferred rather than measured.
 
-**What was measured versus inferred.** The `wasm-pack` download, and a full
+**What was measured versus inferred.** The node tarball fetch (curl,
+checksum, extract), the `wasm-pack` download, and a full
 `./scripts/build-wasm.sh` run with that download's binary and a cleared
-`wasm-pack` tool cache, were both measured directly on this development
-machine — fast on its network (well under a second for the binary; a few
-seconds for the full build including a fresh `wasm-bindgen-cli` fetch) but
-not representative of the Forgejo runner's hardware or network, which this
-task could not reach to measure directly (no local `docker` access to
-replicate `rust:1-bookworm` here, and pushing a probe branch was out of
-scope). The `apt-get install nodejs` cost is carried over from this same
-document's existing, already-recorded figure for the identical command
-(below) rather than re-measured. Taking the dominant cost (`apt-get`, ~20–30s)
-plus the small ones measured here (binary fetches, low single-digit seconds;
-the smoke script itself, well under a second) puts the `wasm` job's total
-addition at roughly **30–60 seconds** — a real but modest fraction of a
-pipeline whose slowest job, before this change, was well under a minute.
-Confirm against an actual run once one exists; nothing here has watched this
-workflow execute on the real runner.
+`wasm-pack` tool cache, were all measured directly on this development
+machine — fast on its network (1.4–1.6s for the node tarball, above; well
+under a second for the `wasm-pack` binary; a few seconds for the full build
+including a fresh `wasm-bindgen-cli` fetch) but not representative of the
+Forgejo runner's hardware or network, which this task could not reach to
+measure directly (no local `docker` access to replicate `rust:1-bookworm`
+here, and pushing a probe branch was out of scope).
 
-**The `file:` dependency and a fresh clone.** `web/package.json` depends on
-`taiyaku-wasm` via `"file:../crates/taiyaku-wasm/pkg"`, and `pkg/` is
+**The previous total here is retracted, not adjusted.** This section used to
+put the job's addition at roughly 30–60 seconds by taking `apt-get install
+nodejs`'s recorded ~20–30s as the dominant term and adding the smaller,
+measured pieces to it. `apt-get` was removed from this job, not merely slowed
+down or sped up, so there is no dominant-cost figure left to build that
+total on — and quietly substituting this development machine's 1.4–1.6s
+would smuggle a non-representative number into what read as a runner
+estimate. So: the small pieces above are measured, the node fetch's shape (one
+~33.5 MB download, checksummed, then extracted) is known, and the `wasm`
+job's total wall-clock addition on the actual runner is **unmeasured**.
+Confirm against an actual run before writing a new figure here; nothing here
+has watched this workflow execute on the real runner.
+
+**The `link:` dependency and a fresh clone.** `web/package.json` depends on
+`taiyaku-wasm` via `"link:../crates/taiyaku-wasm/pkg"`, and `pkg/` is
 gitignored — it does not exist in a clone that has only ever run `git fetch`.
-This was verified rather than assumed: cloning the repository fresh (so
-`crates/taiyaku-wasm/pkg/` is absent entirely) and running `npm ci` inside
-`web/` succeeds anyway. `npm ci` resolves a `file:` entry by creating a symlink
-at `node_modules/taiyaku-wasm` pointing at the target path — dangling, in this
-case — without reading or validating anything at the far end. `npm run build`,
-`npm run typecheck` and `npm run test` then all pass, because nothing
-reachable from any of them *requires* that symlink to resolve. No
-`optionalDependencies` fallback was needed.
+This is verified rather than assumed, and it was re-verified when the package
+manager changed rather than carried over: cloning the repository fresh (so
+`crates/taiyaku-wasm/pkg/` is absent entirely) and running
+`pnpm -C web install --frozen-lockfile` succeeds anyway, creating a dangling
+symlink at `node_modules/taiyaku-wasm` without reading or validating anything
+at the far end. `pnpm -C web run build`, `typecheck` and `test` then all pass,
+because nothing reachable from any of them *requires* that symlink to resolve.
+No `optionalDependencies` fallback was needed.
+
+**Why `link:` and not `file:`, which is what npm used.** Two measurements, both
+against pnpm 11.3.0. First, `file:` does not survive the fresh clone at all —
+it fails with `ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND` where `npm ci` was content to
+dangle. Second, and worse, `file:` *with* the target present resolves to a
+hard-linked **copy** in pnpm's store rather than a symlink. Shared inodes make
+an in-place edit show through, which makes it look harmless; it is not, because
+`scripts/build-wasm.sh` deletes and regenerates `pkg/`, and new files get new
+inodes. Simulating exactly that, `web/node_modules/taiyaku-wasm` still served
+the **pre-rebuild** file. A developer who rebuilt the binding and reran the gate
+would have been testing against the previous build with nothing announcing it.
+`link:` is a live symlink and has neither problem. It is pnpm-specific and not
+resolvable by other package managers, which costs nothing here: `web` is
+`"private": true` and is never published.
 
 **`typecheck` walks into `resolver.ts` without needing it to resolve.**
 `tsc -b` type-checks every file `tsconfig.app.json` includes, and `resolver.ts`
@@ -361,9 +473,10 @@ minutes, or when artifact upload is wanted for the `verify` reports.
 
 **Two things have been added since those figures were taken, and neither has
 been timed on the runner.** The `web` job is a fourth job that did not exist
-then, and the `wasm` job has grown three steps — the `apt-get` node install, the
-`wasm-pack` fetch and the package build plus smoke run — estimated above at
-roughly 30–60 seconds and never confirmed against an actual run. So the 17s
+then, and the `wasm` job has grown three steps — the node tarball fetch, the
+`wasm-pack` fetch and the package build plus smoke run — with no total
+estimate above any more (the figure that used to stand there leaned on
+`apt-get`'s cost, which this job no longer pays; see above). So the 17s
 figure is certainly low and the "under a minute" conclusion is no longer
 measured, only inherited. It is left standing because the *decision* it supports
 — do not add caching yet — does not turn on the difference, and replacing a
@@ -376,9 +489,12 @@ Two options exist that do not need an action at all, neither yet tested:
   the target directory across runs. Pure workflow YAML. The risk is that
   `act_runner` gates mounts behind `container.valid_volumes`, which denies by
   default, so it may need a runner config change.
-- **`apt-get install -y nodejs` as the first step**, after which JavaScript
-  actions work for the rest of the job, since the runner only needs a node when
-  it reaches the action. The apt install costs most of what caching would save.
+- **Installing a throwaway node as the first step**, via the container's own
+  package manager rather than a pinned tarball — this path needs *a* node, not
+  a specific version, so the fastest available install is fine. JavaScript
+  actions then work for the rest of the job, since the runner only needs a
+  node when it reaches the action. That install costs most of what caching
+  would save.
 
 ## Images carrying both Rust and node
 

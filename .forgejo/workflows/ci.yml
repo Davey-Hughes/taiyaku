@@ -80,9 +80,10 @@ jobs:
   # The last three steps close a gap docs/ci.md used to document as permanent:
   # nothing in CI ever executed the compiled module, so a codegen break in
   # `binding.rs` (as against the conversion drift `cargo test -p taiyaku-wasm`
-  # already catches) went green. `node` is installed with `apt-get` rather than
-  # by switching to a dual-toolchain image, per the cost comparison recorded in
-  # docs/ci.md; `wasm-pack` is fetched as a prebuilt release binary rather than
+  # already catches) went green. `node` is fetched as a checksummed tarball and
+  # unpacked into this container rather than installed by switching to a
+  # dual-toolchain image, per the cost comparison recorded in docs/ci.md;
+  # `wasm-pack` is fetched as a prebuilt release binary rather than
   # `cargo install`ed, since the latter is a multi-minute compile for a tool
   # this job only runs, never links against.
   wasm:
@@ -107,7 +108,25 @@ jobs:
       - name: Build the binding for wasm
         run: cargo build -p taiyaku-wasm --target wasm32-unknown-unknown --all-features
       - name: Install node
-        run: apt-get update && apt-get install -y --no-install-recommends nodejs
+        # Debian bookworm's `nodejs` package is 18.20.4, so this step used to
+        # run the smoke test on Node 18 while the `web` job ran 22 — not a
+        # decision, just what `apt-get` happened to ship. A prebuilt tarball
+        # pins it to the same 26.7.0 everything else uses, following the
+        # precedent this job already sets for `wasm-pack`. The checksum is
+        # from nodejs.org's own SHASUMS256.txt for this file.
+        #
+        # Three places name a Node version and nothing keeps them in step:
+        # this pin (below, twice — the download URL and the symlink target),
+        # the `web` job's `node:26-bookworm` image tag above, and
+        # `.node-version` at the repository root, which nothing reads. Bump
+        # all three together if any of them drifts.
+        run: |
+          curl -fsSL -o /tmp/node.tar.xz \
+            https://nodejs.org/dist/v26.7.0/node-v26.7.0-linux-x64.tar.xz
+          echo "982aa24dd8be4c889c6a8ab337ddff3b0896645b20f4239356e80552c16277ee  /tmp/node.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/node.tar.xz -C /opt
+          ln -s /opt/node-v26.7.0-linux-x64/bin/node /usr/local/bin/node
+          node --version
       - name: Install wasm-pack
         # A prebuilt release binary, fetched and verified to resolve rather
         # than guessed at (see docs/ci.md). Bump the version here and in
@@ -134,7 +153,7 @@ jobs:
   web:
     runs-on: docker
     container:
-      image: node:22-bookworm
+      image: node:26-bookworm
     steps:
       - name: Checkout
         env:
@@ -146,11 +165,17 @@ jobs:
           git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
           git fetch -q --depth 1 origin "$FORGEJO_REF"
           git checkout -q FETCH_HEAD
+      - name: Install pnpm
+        # `pnpm/action-setup` is a JavaScript action, and this workflow's
+        # opening comment records the measured finding that `container:` plus
+        # any JS action dies before its first step on this runner. A global
+        # npm install needs nothing from the image and cannot hit that.
+        run: npm i -g pnpm@11.3.0
       - name: Install
-        run: npm --prefix web ci
+        run: pnpm -C web install --frozen-lockfile
       - name: Lint
-        run: npm --prefix web run lint
+        run: pnpm -C web run lint
       - name: Typecheck
-        run: npm --prefix web run typecheck
+        run: pnpm -C web run typecheck
       - name: Test
-        run: npm --prefix web run test
+        run: pnpm -C web run test

@@ -83,7 +83,7 @@ and `vite` in `web/`. The six run under Vitest's browser mode over Playwright's
 Chromium, and cover only what no Node environment can answer: `jsdom` has no
 layout engine and no real `HTMLImageElement.decode()`, and every defect the page
 area has shipped was one or the other. They are **not** a CI job — a cacheless
-CI would download a browser on every run — so `npm run test` stays the `node`
+CI would download a browser on every run — so `pnpm -C web run test` stays the `node`
 project alone and `check-all.sh` runs the browser one locally, naming it
 unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
@@ -296,6 +296,21 @@ fingerprint cache holds hashes and dimensions rather than pixels, so it could
 not take effect, and a flag that cannot take effect is refused rather than
 ignored. `scripts/region-survey.sh` is its survey. What that survey found is
 below, under "What is known to be wrong or missing".
+
+- **The web toolchain is pnpm, Node 26 and TypeScript 7** (2026-08-09). A
+  toolchain branch that touched no Rust and no reader behaviour. Three things
+  came out of it worth keeping: pnpm rejects the gitignored `file:` dependency
+  outright and resolves it to a stale hard-linked copy when it does not, so the
+  protocol is `link:`; the `wasm` job had been running the compiled module on
+  Node 18 because that is what Debian bookworm ships, against 22 everywhere
+  else; and `check-all.sh` now checks that `package.json` and the lockfile
+  agree — measured across three runs at 249ms, 239ms and 237ms, a gap
+  `docs/ci.md` had carried as permanent. TypeScript 7's `tsc` is a Go binary,
+  which took the typecheck from 1.511s wall (3.19s CPU) to 0.164s and 0.166s
+  across two runs (0.93s and 0.99s CPU), with no script change. bun was
+  measured against, not merely dismissed: the whole JavaScript gate is about
+  2.5 seconds, so there is no runtime budget to recover, and the one place a
+  faster engine could apply is vitest, which bun cannot run in browser mode.
 
 ## What is settled
 
@@ -2937,21 +2952,33 @@ mismatched pair said nothing at all.
   against the sidecar the way the Stump cache already does, would remove the
   surprise.
 
-- **Move `web/` from npm to pnpm.** Decided while adding the browser test
-  project, and deliberately not done in the same branch: it touches the
+- **Move `web/` from npm to pnpm. Shipped 2026-08-09** on
+  `toolchain-pnpm-node26-ts7`; `docs/ci.md` is the record now, this entry is
+  kept as the decision that opened it. Decided while adding the browser test
+  project, and deliberately not done in the same branch: it touched the
   lockfile, `.forgejo/workflows/ci.yml`'s `npm ci`, every `npm --prefix web`
-  call in `scripts/check-all.sh`, and the docs that name them — none of which
-  has anything to do with the reader. It also has to be stacked rather than
-  parallel, since the lockfile it produces must already contain the browser
+  call in `scripts/check-all.sh`, and the docs that named them — none of which
+  had anything to do with the reader. It also had to be stacked rather than
+  parallel, since the lockfile it produces had to already contain the browser
   dependencies.
-  **Two things to check rather than assume.** `taiyaku-wasm` is a `file:`
-  dependency on the gitignored, generated `crates/taiyaku-wasm/pkg`, and
-  `vite.config.ts` widens `server.fs.allow` to exactly that directory —
-  pnpm's symlinked layout resolves such a dependency differently from npm's
-  flat one, so the wasm import and the dev server's allowlist both want
-  verifying rather than trusting. And CI's `node:22-bookworm` has no pnpm; it
-  would come from `corepack`, which is present in Node 22 but not enabled by
-  default.
+  **Two things were flagged to check rather than assume, and both were.**
+  `taiyaku-wasm` was a `file:` dependency on the gitignored, generated
+  `crates/taiyaku-wasm/pkg`, and `vite.config.ts` widens `server.fs.allow` to
+  exactly that directory — pnpm's symlinked layout does resolve such a
+  dependency differently from npm's flat one: `file:` does not survive a
+  fresh clone under pnpm at all, which is why the protocol shipped as `link:`
+  instead (`docs/ci.md`, "Why `link:` and not `file:`, which is what npm
+  used"). And the image running CI's `web` job had no pnpm; it ships as
+  `npm i -g pnpm@11.3.0` in a step of its own rather than through `corepack`,
+  which shipped with Node 22 but not enabled by default. Whether
+  `node:26-bookworm` still carries it was recorded as unmeasurable — no local
+  docker to check the image, per the design document's §10, "What could not
+  be measured." It is not merely unmeasured: this machine's own Node 26.7.0
+  install has no `corepack` on `PATH` (`command -v corepack` returns
+  nothing), so the parenthetical this sentence used to carry — "and is in
+  Node 26" — was wrong, not just unverified. A later branch reaching for
+  `corepack enable` in place of `npm i -g pnpm@11.3.0` on the strength of
+  that sentence would die on the `web` job the same way.
 
 - **Fall back to another edition where this one has no page, marked as such.**
   The reader shows `Gap` when the edition being read has no counterpart for the

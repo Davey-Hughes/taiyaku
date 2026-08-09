@@ -100,19 +100,25 @@ TAIYAKU_STUMP_URL=https://stump.example TAIYAKU_STUMP_KEY=… \
 #   http://<host>:8484/opds/v1.2/catalog
 ```
 
-To read in the browser, build the WebAssembly binding once, then run the reader
-against `serve`. The binding is generated and gitignored, so `npm ci` needs it to
-exist first:
+To read in the browser, build the WebAssembly binding first, then run the reader
+against `serve`. The binding is generated and gitignored, but install order does
+not decide whether `taiyaku-wasm` resolves: `taiyaku-wasm` is a `link:` symlink,
+and pnpm creates it whether or not `pkg/` exists yet, dangling until it does. The
+symlink is live — it reads through to whatever `pkg/` holds at the moment
+something follows it, not to whatever was there when it was created. Build first
+anyway, because `pnpm run dev` and `pnpm run build` follow that symlink as soon as
+they start: `pkg/` needs to hold the real package by then, not by the time
+`pnpm install` ran — see `web/README.md`, "The WASM dependency":
 
 ```sh
 ./scripts/build-wasm.sh          # generates crates/taiyaku-wasm/pkg
-npm --prefix web ci
+pnpm -C web install --frozen-lockfile
 
 taiyaku serve taiyaku.json --addr 127.0.0.1:8080
-npm --prefix web run dev         # http://localhost:5173
+pnpm -C web run dev              # http://localhost:5173
 ```
 
-`npm run dev` proxies `/api` and `/opds` through to `serve` rather than the server
+`pnpm -C web run dev` proxies `/api` and `/opds` through to `serve` rather than the server
 enabling CORS — CORS would be a production-facing change made for a development
 convenience. The proxy target defaults to `http://127.0.0.1:8080`, which is why the
 `--addr` above is 8080 and not the 8484 used earlier on this page; set
@@ -209,10 +215,16 @@ routine. It prints what it did **not** measure as its last line rather than a ba
 skipped corpus, a missing `wasm-pack` or an absent `web/node_modules` is stated rather than assumed
 away.
 
-One thing it does not mirror: CI's `npm ci`. Running that locally would delete a working
-`node_modules` on every gate run, so the script checks the three commands after it instead. What
-that costs is the lockfile check — `package.json` and `package-lock.json` drifting apart passes
-here and fails the forge. Run `npm --prefix web ci` yourself after changing dependencies.
+The lockfile check is mirrored too: `pnpm -C web install --frozen-lockfile --lockfile-only`
+verifies `package.json` and the lockfile agree without touching `node_modules` — measured at
+roughly 240ms, cheap enough to run on every pass (unless `--no-web` skips the job outright). It
+runs ahead of the `web/node_modules` check, not inside it, so a fresh clone still gets it — that
+is exactly the state where drift is likeliest to have gone unnoticed. Before the move to pnpm this
+was the one gap: the equivalent `npm ci` would have deleted a working `node_modules` on every gate
+run, so `package.json` and the lockfile drifting apart passed here and failed the forge, and a
+developer had to run the check by hand after changing dependencies. pnpm has a command that does
+only the check and nothing else, which is what closed it. See `docs/ci.md` for the measurement and
+how it was verified.
 
 The forge enforces the shape that used to be a local script's job: merges are squash-only, so a PR
 cannot produce a merge commit or a string of fixup commits on `main`, and the branch is deleted on

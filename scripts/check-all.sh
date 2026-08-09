@@ -181,37 +181,49 @@ else
 fi
 
 # --- the `web` job ---
-# The job this script did not have until 2026-08-07. `npm run lint` is `biome check ./src`, which is
-# formatting *and* lint in one command — see `docs/ci.md`, "Formatting, and the tool that checks it".
+# The job this script did not have until 2026-08-07. `pnpm -C web run lint` is `biome check ./src`,
+# which is formatting *and* lint in one command — see `docs/ci.md`, "Formatting, and the tool that
+# checks it".
 #
-# **`npm ci` is deliberately not run, and that is a real gap rather than an oversight.** CI runs it
-# to build the job's `node_modules` from nothing; here it would delete a working install and rebuild
-# it on every gate run. What that costs is the one thing `npm ci` checks that the three commands
-# below do not: that `package.json` and `package-lock.json` agree. A lockfile that has drifted out
-# of sync passes this script and fails the forge. Run `npm --prefix web ci` yourself after changing
-# dependencies.
+# **The lockfile *is* checked here, and it did not used to be.** `docs/ci.md` carried this as a
+# permanent gap: CI's install builds `node_modules` from nothing, while running the same command
+# locally would delete a working install and rebuild it on every gate run — so the one property it
+# checks, that `package.json` and the lockfile agree, went unchecked and a drifted lockfile passed
+# this script and failed the forge. pnpm has a command for exactly that check and nothing else:
+# `--lockfile-only` verifies the lockfile satisfies `package.json` without touching `node_modules`.
+# Measured at roughly 240ms. It is run directly rather than piped, because a pipe would mask its
+# exit code.
+#
+# It runs ahead of the `web/node_modules` guard below, deliberately. It needs no install, and a
+# fresh clone — no `node_modules` yet — is exactly the state where drift is likeliest to have gone
+# unnoticed. It used to sit inside that guard, which meant a fresh clone skipped the one check most
+# able to catch a mismatch it introduced.
 if [ "$no_web" -eq 1 ]; then
   note_skip "the web job (--no-web)"
-elif [ ! -d web/node_modules ]; then
-  note_skip "the web job (web/node_modules absent — run \`npm --prefix web ci\`)"
 else
-  run npm --prefix web run lint
-  run npm --prefix web run typecheck
-  run npm --prefix web run test
+  run pnpm -C web install --frozen-lockfile --lockfile-only
 
-  # --- the browser tests, which are not a CI job ---
-  # `npm run test` is the `node` project alone, which is exactly what the forge
-  # runs: a browser project would need a Chromium download on every CI run, and
-  # CI has no cache to keep one in. So these are local-only, and named here when
-  # they cannot run rather than passed over.
-  #
-  # They exist for what a Node environment cannot answer: `jsdom` has no layout
-  # engine and no real `HTMLImageElement.decode()`, and every defect this reader
-  # has shipped in the page area was visual. See `web/src/PageView.browser.test.tsx`.
-  if [ ! -d "${HOME}/.cache/ms-playwright" ]; then
-    note_skip "the browser tests (no Chromium — run \`npx --prefix web playwright install chromium\`)"
+  if [ ! -d web/node_modules ]; then
+    note_skip "the rest of the web job (web/node_modules absent — run \`pnpm -C web install\`)"
   else
-    run npm --prefix web run test:browser
+    run pnpm -C web run lint
+    run pnpm -C web run typecheck
+    run pnpm -C web run test
+
+    # --- the browser tests, which are not a CI job ---
+    # `pnpm -C web run test` is the `node` project alone, which is exactly what the
+    # forge runs: a browser project would need a Chromium download on every CI run,
+    # and CI has no cache to keep one in. So these are local-only, and named here
+    # when they cannot run rather than passed over.
+    #
+    # They exist for what a Node environment cannot answer: `jsdom` has no layout
+    # engine and no real `HTMLImageElement.decode()`, and every defect this reader
+    # has shipped in the page area was visual. See `web/src/PageView.browser.test.tsx`.
+    if [ ! -d "${HOME}/.cache/ms-playwright" ]; then
+      note_skip "the browser tests (no Chromium — run \`pnpm -C web exec playwright install chromium\`)"
+    else
+      run pnpm -C web run test:browser
+    fi
   fi
 fi
 
