@@ -9,7 +9,14 @@ import {
   putNotes,
   putProgress,
 } from './api'
+import {
+  alignedBreaksCached,
+  emptyBreaksCache,
+  pairingBreaks,
+  type DerivedBreaksCache,
+} from './alignedPairs'
 import { PageAnnotations } from './Annotations'
+import { pageBoxLongEdge, requestedLongEdge } from './pageSize'
 import { Chrome } from './Chrome'
 import {
   describePosition,
@@ -17,6 +24,7 @@ import {
   spanOf,
   type Pending,
 } from './correction'
+import { createCohort, type Cohort } from './cohort'
 import { createDecodeQueue, decodeTo, type DecodeQueue } from './decode'
 import { debounce, type Debounced } from './debounce'
 import {
@@ -66,7 +74,7 @@ import {
   type HelpPrefs,
 } from './modules/help'
 import { motionModule } from './modules/motion'
-import { prefetchModule, window as prefetchWindow } from './modules/prefetch'
+import { groupWindow, prefetchModule } from './modules/prefetch'
 import {
   chapterReadout,
   gapHealth,
@@ -571,6 +579,34 @@ function App() {
     setPrefetchQueue(createDecodeQueue(prefetchPrefs.maxConcurrent))
   }, [prefetchPrefs.maxConcurrent])
 
+  // What makes `two` mode's pair appear as a pair. Every `PageView` decodes
+  // through `swapQueue` and presents through this, so the halves of a turn
+  // become visible in one frame instead of one at a time — see `cohort.ts` for
+  // the measurement that put it here and for why one shared instance is right
+  // rather than one per group. Built once and never rebuilt: unlike the queues
+  // above it has no setting to track, since a cohort's membership is decided by
+  // when its members join rather than by any number a reader can tune.
+  const [pageCohort] = useState<Cohort>(() => createCohort())
+
+  // What the two cells of `two` mode are actually drawing, reported by each
+  // `PageView` as it presents. The *geometry* below is derived from this rather
+  // than from `current`, and that is the whole of the fix for the flicker: a
+  // keypress moves state at once while a cell's picture waits for its decode,
+  // so a layout keyed on state flapped between one wide page and two half-width
+  // ones — measured at three changes in 114 ms during a flick, with the artwork
+  // never changing at all. `cellsFor` gives both cells the same URL exactly
+  // when a group is `wide` (a joined spread's two slots share one page, a solo
+  // slot is mirrored into the second cell), so "both cells are drawing the same
+  // source" *is* wide, read off the screen instead of predicted.
+  const [drawnSrcs, setDrawnSrcs] = useState<{
+    first?: string
+    second?: string
+  }>({})
+  const showFirst = (src: string) =>
+    setDrawnSrcs((was) => (was.first === src ? was : { ...was, first: src }))
+  const showSecond = (src: string) =>
+    setDrawnSrcs((was) => (was.second === src ? was : { ...was, second: src }))
+
   // The keydown effect below subscribes once, after load (see its own comment),
   // so its closure's `session` is frozen at that instant — reading a module
   // key's action (currently just direction's `d`) needs the edition
@@ -607,6 +643,13 @@ function App() {
   // breaks. An arrow steps by group rather than by slot (`pairing.ts`'s
   // `stepToGroup`), and only this component knows what the groups are.
   const groupedRef = useRef<Group[]>(undefined)
+
+  // The memo behind `derivedBreaks` below, which cannot be a `useMemo`: hooks
+  // have to sit above this component's `if (!session) return null`, and every
+  // input that derivation takes is bound below it. Held rather than recomputed
+  // because the walk is a wasm call per hub slot — see `alignedBreaksCached`,
+  // where the caching rule lives so it can be tested.
+  const alignedBreaksRef = useRef<DerivedBreaksCache>(emptyBreaksCache())
 
   // The credits preferences, for the keydown handler — which subscribes once
   // at load and so cannot see `prefsMap`. Assigned during render like
@@ -1441,18 +1484,56 @@ function App() {
     if (!current || mode === 'scroll' || !prefetchPrefs.enabled) return
     const shownNow = display(current.state, current.resolver)
     if (shownNow.kind !== 'at') return
-    const total = current.resolver.slotCount(shownNow.edition) ?? 0
-    const targets = prefetchWindow(
+    // Groups, not slots — see `groupWindow`'s own doc for the measurement.
+    // `groupedRef` is the grouping already on screen, assigned during render for
+    // exactly this reason: an effect reading a stale one would warm the pages of
+    // a layout the reader has left.
+    //
+    // **Always set by the time this runs, so there is no fallback.** This
+    // branch used to reach for the slot-space `window` "before any grouping has
+    // been assigned", which cannot happen: the effect returns above unless
+    // `sessionRef.current` is set, and that ref is only written by an effect
+    // belonging to a commit whose render got past `if (!session) return null` —
+    // the same render that assigns `groupedRef`. The dead branch went when a
+    // review asked what in this change had stopped being reachable.
+    const grouping = groupedRef.current
+    if (!grouping) return
+    const targets = groupWindow(
+      grouping,
       shownNow.slot,
-      total,
       prefetchPrefs.ahead,
       prefetchPrefs.behind,
     )
+    // The position this window is *for*, captured so each job can ask whether
+    // it still matters when the queue reaches it. Under a flick this effect
+    // fires once per group crossed, so without the check the queue works
+    // through every intermediate position's neighbours — fetching and decoding
+    // pages for somewhere the reader left several turns ago, while the page
+    // they are actually on waits. The same defect `presentWhenDecoded` closes
+    // for the swap path (see `decode.ts`), on the other queue.
+    //
+    // Strict equality on the slot, not proximity: a window built for a position
+    // the reader has left is worthless whatever the distance, because the
+    // position they moved *to* has already queued its own window through this
+    // same effect. Nothing is lost by dropping the old one.
+    const queuedFor = { edition: shownNow.edition, slot: shownNow.slot }
+    const superseded = () => {
+      const now = sessionRef.current
+      if (!now) return true
+      const at = display(now.state, now.resolver)
+      return (
+        at.kind !== 'at' ||
+        at.edition !== queuedFor.edition ||
+        at.slot !== queuedFor.slot
+      )
+    }
     for (const slot of targets) {
       const position = current.resolver.slotAt(shownNow.edition, slot)
       if (!position) continue
       const url = pageUrl(current.work, shownNow.edition, position.page)
-      void prefetchQueue.run(() => decodeTo(new Image(), url))
+      void prefetchQueue.run(() =>
+        superseded() ? Promise.resolve() : decodeTo(new Image(), url),
+      )
     }
   }, [
     mode,
@@ -1981,6 +2062,13 @@ function App() {
       ? { ...annotationsPrefs, reveal: true }
       : annotationsPrefs
 
+  // `editions[0]` is the hub — `orderedEditions` (`session.ts`) always places
+  // it first, and `Session.editions` is built from exactly that. Bound here,
+  // above the grouping, rather than beside the readouts further down where it
+  // used to sit alone: `alignedBreaks` needs it too, and two bindings of one
+  // fixed value is one more place for them to disagree.
+  const hub = editions[0]
+
   const slots = allSlots(resolver, shown.edition)
   // `shown.edition` — not `state.viewing` directly, though they're always
   // equal (see `reading.ts`'s `Display`) — because this is the edition the
@@ -2011,6 +2099,22 @@ function App() {
   const skippedSlots = creditsPrefs.skip
     ? skippedApartFrom(creditSlotsIn(slots, creditPages), slots, at?.slot)
     : EMPTY_SLOTS
+  // Where this edition has to restart its pairing so the pairs it draws are the
+  // hub's, mapped across — see `alignedPairs.ts` for the measurement that put
+  // it here and for the solo groups it costs. Cached through a ref rather than
+  // `useMemo` because every hook in this component has to sit above the
+  // `if (!session) return null` far above, and all four of these are bound
+  // below it; `alignedBreaksCached` is that memo written out, with tests.
+  // `effectiveReading` is this edition's, which `groups` does not read; it is
+  // threaded rather than dropped so that a grouping rule which does start
+  // reading it cannot silently get the wrong one here.
+  const derivedBreaks = alignedBreaksCached(
+    alignedBreaksRef.current,
+    resolver,
+    hub,
+    shown.edition,
+    effectiveReading,
+  )
   // One grouping, three surfaces: this array is what the page area draws,
   // what `groupedRef` gives the arrow keys, and what `Chrome` hands the
   // filmstrip. Passing `skippedSlots` into `groups` rather than filtering its
@@ -2021,7 +2125,7 @@ function App() {
     slots,
     mode,
     effectiveReading,
-    regroupPrefs.breaks[shown.edition] ?? [],
+    pairingBreaks(regroupPrefs.breaks[shown.edition] ?? [], derivedBreaks),
     skippedSlots,
   )
   // Assigned during render rather than in an effect: the keydown handler must
@@ -2087,10 +2191,6 @@ function App() {
   // Named before the write, not after it: the 1:1 rule means this slot loses
   // its counterpart, and nothing undoes a correction short of making another.
   const displaced = pending && displacedBy(pending, resolver)
-
-  // `editions[0]` is the hub — `orderedEditions` (`session.ts`) always
-  // places it first, and `Session.editions` is built from exactly that.
-  const hub = editions[0]
 
   // The four readout lines, computed here from `modules/readouts.ts`'s pure
   // functions and handed to `Chrome` as plain strings — see that module for
@@ -2223,8 +2323,25 @@ function App() {
   // `pageUrl` takes a page index, not a slot index — they diverge from the
   // first joined spread onward, so every slot is converted through the
   // `Resolver`-derived `slots` array before it reaches a URL.
+  // How large a page to ask for — `pageSize.ts` holds the rule and the
+  // measurement behind it. `1 / view.w` is the magnification: `view` is a
+  // normalised rect over the group, so fit-whole (`WHOLE`, `w: 1`) is 1x and a
+  // rect a quarter as wide is 4x. Once magnification wants more pixels than the
+  // ladder offers this answers `undefined`, which asks for the original — so
+  // zoom is sharp without a separate branch for it.
+  //
+  // Computed at render from values that already trigger one: `viewportWidth`
+  // is state updated on resize, `mode` and `view` are state. `innerHeight` is
+  // read directly rather than tracked, since every resize that changes it
+  // changes `viewportWidth` too on any real window manager, and a height-only
+  // change costs at most one rung until the next render.
+  const pageLongEdge = requestedLongEdge(
+    pageBoxLongEdge(viewportWidth, window.innerHeight, mode),
+    window.devicePixelRatio,
+    1 / view.w,
+  )
   const pageAt = (slot: number) =>
-    pageUrl(work, shown.edition, slots[slot].page)
+    pageUrl(work, shown.edition, slots[slot].page, pageLongEdge)
   // 1-based — `alt` text is read by a person (directly, or by a screen
   // reader), the same category `Gap`'s page numbers below fall into, so it
   // gets the same conversion at the same kind of boundary: the internal,
@@ -2613,6 +2730,7 @@ function App() {
           alt={altAt(slot)}
           buffered={buffered}
           decodeQueue={swapQueue}
+          cohort={pageCohort}
           fit={fitPrefs}
         />
       )
@@ -2631,7 +2749,32 @@ function App() {
     // `src`/layout props, lets React reconcile by position instead — see
     // `docs/notes.md`'s two-page flicker measurement for the before and
     // after this made.
-    const { wide, first, second } = cellsFor(group, effectiveReading)
+    const {
+      wide,
+      alone: targetAlone,
+      first,
+      second,
+    } = cellsFor(group, effectiveReading)
+    // **Two different questions, and only one of them follows the pixels.**
+    //
+    // `wide` — does the drawn page span both cells — is true for a joined
+    // spread and nothing else. It is taken from the target rather than from
+    // what is on screen because it is a fact about the *page*, not about how
+    // far a decode has got: a spread is one double-width image whichever
+    // generation is showing, and reading it off the drawn sources would make
+    // a mid-flick coincidence (two cells briefly holding one URL) resize the
+    // artwork.
+    //
+    // `alone` — is the second cell showing a real second page or a mirror of
+    // the first — is what governs whether that cell is *visible*, and that
+    // does follow the pixels. `cellsFor` mirrors the first slot into the
+    // second exactly when a group has one page, so "both cells are drawing
+    // the same source" is the same question asked of the screen. Keying it on
+    // the target instead is what made the layout flap: state moves on the
+    // keypress, the pictures wait for their decode.
+    const drawnBoth =
+      drawnSrcs.first !== undefined && drawnSrcs.second !== undefined
+    const alone = drawnBoth ? drawnSrcs.first === drawnSrcs.second : targetAlone
     return (
       <div key={key} style={{ display: 'flex', width: '100%', height: '100%' }}>
         <div
@@ -2644,7 +2787,7 @@ function App() {
             // single drawn page centres in and shifts it `gap / 4` off centre —
             // measured at 10px with `gap: 40` in a 1385px area. A joined spread
             // or a solo slot has no seam to open.
-            ...(wide ? {} : seamStyle(fitPrefs, 'first')),
+            ...(alone ? {} : seamStyle(fitPrefs, 'first')),
           }}
         >
           {/*
@@ -2663,6 +2806,8 @@ function App() {
             alt={altAt(first)}
             buffered={buffered}
             decodeQueue={swapQueue}
+            cohort={pageCohort}
+            onShown={showFirst}
             fit={fitPrefs}
             hug={hugFor(group, first)}
           />
@@ -2679,24 +2824,31 @@ function App() {
           `decode.ts` already handles, not a fresh mount with nothing
           decoded yet.
 
-          `PageView`'s decode gate is per instance: this cell and the one
-          beside it each run `presentWhenDecoded` independently, so an
-          ordinary pair's two halves can present at different times — one
-          new half beside one old half for as long as the slower of the two
-          takes to decode. Neither half is ever blank or half-painted on its
-          own; simultaneity across the pair is simply not something this
-          build guarantees. Left independent deliberately rather than gated
-          together: gating would mean the *faster* half always waits on the
-          *slower* one, adding latency to the common case for a mismatch
-          nothing has measured a reader noticing — particularly now that the
-          swap/prefetch queue split above keeps either half's decode from
-          being starved. A measurement showing otherwise is the reason to
-          revisit this, not a guess made ahead of one.
+          `PageView`'s decode gate is per instance, and that used to be the
+          whole story: this cell and the one beside it each ran
+          `presentWhenDecoded` independently, so an ordinary pair's two halves
+          presented at different times — one new half beside one old half for
+          as long as the slower of the two took to decode. The comment here
+          argued for leaving it that way, on the grounds that gating would make
+          the faster half wait on the slower one "for a mismatch nothing has
+          measured a reader noticing", and named a measurement as the thing
+          that should overturn it. **A reader noticed, and the measurement
+          agreed with them:** a median 89.7 ms between the two cells at a slow
+          reading pace, 158.4 ms at worst, every one of eight turns tearing by
+          more than a frame, and 213.8 ms median under a flick. Both cells now
+          present through `pageCohort` (`cohort.ts`), which holds the first
+          decode that settles until the other has settled too, so a turn
+          changes both halves in one frame. The latency the old comment was
+          protecting is genuinely paid — and it was always being paid anyway,
+          by the half the reader was still looking at.
         */}
         <div
           style={
             wide
-              ? {
+              ? // A joined spread: collapse this cell so the one image spans the
+                // whole group, which is the only way to draw a page that really
+                // is twice as wide.
+                {
                   flex: '0 0 0',
                   width: 0,
                   minWidth: 0,
@@ -2707,16 +2859,27 @@ function App() {
                   flex: 1,
                   minWidth: 0,
                   height: '100%',
-                  ...seamStyle(fitPrefs, 'second'),
+                  // Keeps its width while merely `alone`, and that is the whole
+                  // of the low-speed flicker fix: an unpartnered page is an
+                  // ordinary page, so the group stays two cells wide and only
+                  // this half goes empty. Collapsing here — which is what
+                  // conflating `alone` with `wide` did — let the first cell
+                  // flex to full width and back on consecutive turns wherever
+                  // the aligned pairing left a page without a partner.
+                  ...(alone
+                    ? { visibility: 'hidden' as const }
+                    : seamStyle(fitPrefs, 'second')),
                 }
           }
-          aria-hidden={wide || undefined}
+          aria-hidden={alone || undefined}
         >
           <PageView
             src={pageAt(second)}
             alt={altAt(second)}
             buffered={buffered}
             decodeQueue={swapQueue}
+            cohort={pageCohort}
+            onShown={showSecond}
             fit={fitPrefs}
             hug={hugFor(group, second)}
           />

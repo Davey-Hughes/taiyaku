@@ -188,8 +188,26 @@ export function correctionTiles(slots: Position[]): Group[] {
 
 /** Which two fixed screen positions a two-page group's slots render into — see `cellsFor`. */
 export interface Cells {
-  /** Whether `first` should render full width with `second` collapsed (a joined spread or a solo slot with no pairing partner) rather than the two rendering at equal, half width (an ordinary pair). */
+  /**
+   * Whether `first` should render full width with `second` collapsed, rather
+   * than the two rendering at equal, half width.
+   *
+   * **True only for a joined spread**, which genuinely is one double-width
+   * image and cannot be drawn any other way. A slot that is merely *alone* —
+   * no pairing partner, because a break or a skipped neighbour left it
+   * unpartnered — is an ordinary page and keeps an ordinary cell, with the
+   * other left empty. See `cellsFor` for what conflating the two cost.
+   */
   wide: boolean
+  /**
+   * Whether `second` names a real second slot or is `first` mirrored into it.
+   *
+   * `App.tsx` hides the cell either way; this is what tells it apart from a
+   * pair, now that `wide` no longer does. A mirrored cell is drawing the same
+   * URL as its neighbour, which is why it must not also be *counted* as a page
+   * on screen.
+   */
+  alone: boolean
   first: number
   second: number
 }
@@ -237,11 +255,24 @@ export interface Cells {
  * `App.tsx`'s original spread rendering did.
  */
 export function cellsFor(group: Group, reading: 'rtl' | 'ltr'): Cells {
-  const wide = group.spread === true || group.slots.length === 1
+  const spread = group.spread === true
+  const alone = spread || group.slots.length === 1
   const [a, b = a] = group.slots
-  if (wide) return { wide: true, first: a, second: b }
+  // **`wide` is the spread alone, and separating it from `alone` is what
+  // stopped the layout flickering.** Both used to collapse the second cell and
+  // draw one full-width page, which is right for a spread — it is one image
+  // twice as wide — and wrong for a page that merely has no partner. The
+  // aligned pairing (`alignedPairs.ts`) produces a handful of those per
+  // volume, four in `gotoubun-v01`'s `en-mono` and clustered near the front
+  // matter, so reading across them collapsed the layout to one wide page and
+  // back on consecutive turns. Measured at 700 ms per turn: `2/1`, `3 [wide]`,
+  // `4 [wide]`, `5 [wide]`, `7/6` — three consecutive full-width frames, one a
+  // real spread and two only unpartnered. An unpartnered page now keeps its
+  // own cell and leaves the other empty, so the geometry changes at genuine
+  // spreads and nowhere else.
+  if (alone) return { wide: spread, alone: true, first: a, second: b }
   const [first, second] = reading === 'rtl' ? [b, a] : [a, b]
-  return { wide: false, first, second }
+  return { wide: false, alone: false, first, second }
 }
 
 /**
@@ -272,6 +303,18 @@ export function cellOf(
   slot: number,
 ): Cell {
   const cells = cellsFor(group, reading)
+  // **`wide`, not `alone`, and the distinction is geometric rather than
+  // linguistic.** `Cell` is consumed by `viewport.ts`'s `cellBox`, where
+  // `'only'` means *the page fills the group* — it returns `WHOLE`. That is
+  // true of a joined spread and, since an unpartnered page stopped spanning
+  // the group, false of one: it occupies the first cell, half the width.
+  //
+  // An earlier version of this keyed on `alone` and reasoned that an
+  // unpartnered page "is still the only page in the group, and `'only'` is what
+  // says so". That is the wrong sense of the word for this consumer: a zoom on
+  // such a page would have been mapped against the whole group while the page
+  // covered half of it, putting a swap's rect about twice as far across as it
+  // belonged. Caught in review of the change that introduced it.
   if (cells.wide) return 'only'
   return cells.first === slot ? 'first' : 'second'
 }

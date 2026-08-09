@@ -39,15 +39,16 @@
 //! flood-fill over every pixel of a full-resolution scan, run twice per
 //! sampled page (once for the staged pipeline below, once more inside
 //! `detect_page` itself, for the cross-check), and an unoptimised build pays
-//! for that twice over. **`check-all.sh` does run this module, and this
-//! paragraph used to say it does not** — see `geometry_experiment.rs`'s header
-//! for the measured account of the same mistake. In short: the gate's *corpus*
-//! job filters on `corpus::` and so misses this module, which is what the old
-//! wording meant, but the gate also exports `TAIYAKU_CORPUS` before its
-//! unfiltered `cargo test --workspace`, so with a corpus present this runs
-//! there in the debug profile. It costs about a minute, against
-//! `geometry_experiment`'s forty, so this one is not what makes a local gate
-//! run slow.
+//! for that twice over. **`check-all.sh` does not run this module** — see
+//! `geometry_experiment.rs`'s header, which carries the full account of a
+//! sentence that has now been each answer once. In short: the gate's *corpus*
+//! job filters on `corpus::` and so misses this module; for a while the gate
+//! also exported `TAIYAKU_CORPUS` before its unfiltered
+//! `cargo test --workspace` and so ran it there in debug anyway, at about a
+//! minute; the `test` job now runs with that variable removed and this is out
+//! of the gate again. This one was never what made a local gate run slow —
+//! `geometry_experiment`'s forty minutes were — but both left by the same
+//! change.
 //!
 //! **Nine editions, named rather than globbed** — the same four works
 //! `region-survey.sh` covered (`gotoubun-v01`, `kaguya-v01`, `oshinoko-v01`,

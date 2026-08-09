@@ -16,8 +16,26 @@ const seg = (s: string) => encodeURIComponent(s)
  * the first spread. A caller holding a slot must convert first, via
  * `Resolver.slotAt(edition, slot).page`. Same goes for `thumbUrl` below.
  */
-export const pageUrl = (work: string, edition: string, index: number) =>
-  `/api/works/${seg(work)}/${seg(edition)}/pages/${index}`
+/**
+ * `longEdge` asks the server to fit the page inside that many pixels — see
+ * `pageSize.ts` for how the reader chooses one and why. Omitted means the
+ * member's own bytes at full size, which is what zoom asks for and what every
+ * caller wanting the original keeps getting.
+ *
+ * The parameter is part of the URL rather than a header, so the browser's own
+ * cache keys on it: two sizes of one page are two cache entries, which is what
+ * lets a zoom-in and a zoom-out both be instant on a page already fetched at
+ * both sizes.
+ */
+export const pageUrl = (
+  work: string,
+  edition: string,
+  index: number,
+  longEdge?: number,
+) => {
+  const path = `/api/works/${seg(work)}/${seg(edition)}/pages/${index}`
+  return longEdge === undefined ? path : `${path}?w=${longEdge}`
+}
 
 export const thumbUrl = (work: string, edition: string, index: number) =>
   `${pageUrl(work, edition, index)}/thumb`

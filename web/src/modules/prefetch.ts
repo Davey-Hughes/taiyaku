@@ -17,17 +17,42 @@ export interface PrefetchPrefs {
 export const prefetchModule: ReaderModule<PrefetchPrefs> = {
   id: 'prefetch',
   label: 'Prefetch',
-  // Asymmetric toward the forward direction deliberately: `ArrowRight`
-  // (`keys.ts`'s `{ kind: 'step', by: 1 }`) is the common case a reader
-  // presses far more often than `ArrowLeft`, and `window`'s slot space is
-  // always physical page order regardless of `rtl`/`ltr` (see its own doc) —
-  // an edition read right-to-left still steps forward by increasing slot
-  // index, so "ahead" here means the same thing for every edition. `ahead:
-  // 2` covers a fast flick's next keypress with one slot of headroom;
-  // `behind: 1` only needs to cover a single reversal, since `window`'s own
-  // "both zero" test is what actually turns the module off, not either
-  // depth alone.
-  defaults: { enabled: true, ahead: 2, behind: 1, maxConcurrent: 3 },
+  // **One turn each way, and reaching further makes the reader slower.** These
+  // count *groups* now (`groupWindow` below), so `ahead: 1` is the next thing
+  // that will be drawn rather than the next slot — which in `two` mode is what
+  // `ahead: 2` used to half-cover, reaching the next pair's first slot and
+  // stopping short of its second.
+  //
+  // The depths came down when the unit changed, and that is a measurement
+  // rather than arithmetic. A decoded `en-mono` page is 2147×3056×4 ≈ 26 MB,
+  // and a joined spread twice that, so a wide window churns the browser's own
+  // decoded-bitmap cache and evicts the pages the reader is about to arrive
+  // at — prefetch competing with itself. Measured in the browser against
+  // `gotoubun-v01` `en-mono`, keypress to both halves on screen, 20 turns per
+  // setting:
+  //
+  // | window | median | p90 | worst | turns over 100 ms |
+  // | ------ | -----: | --: | ----: | ----------------: |
+  // | `ahead: 2, behind: 1` — 6 slots | 14 ms | 232 ms | 335 ms | 29% |
+  // | `ahead: 1, behind: 0` — 2 slots |  4 ms | 125 ms | 182 ms | 10% |
+  // | `ahead: 1, behind: 1` — 4 slots |  4 ms |  70 ms | 216 ms |  5–20% |
+  //
+  // The same effect from the other side: raising `maxConcurrent` from 3 to 6,
+  // so more of that window decodes at once, made it *worse* (5 slow turns in 16
+  // against 3 in 14) rather than better. More decode in flight is more
+  // eviction, not more readiness.
+  //
+  // `behind: 1` rather than `0`, though the two measure alike forward: a
+  // reversal is the single most likely correction after a forward press, and
+  // the run above that reversed every fourth turn is the one `behind` exists
+  // for. `window`'s own "both zero" test is what actually turns the module off,
+  // not either depth alone.
+  //
+  // Direction does not enter into it. `keys.ts` reports `ArrowRight` as
+  // `{ kind: 'step', by: 1 }` whatever the work's reading direction, and slot
+  // space is always physical page order, so "ahead" means higher indices for
+  // every edition.
+  defaults: { enabled: true, ahead: 1, behind: 1, maxConcurrent: 3 },
 }
 
 /**
@@ -77,4 +102,80 @@ export function window(
     if (distance <= ahead && after < total) result.push(after)
   }
   return result
+}
+
+/** The shape `groupWindow` needs from `pairing.ts`'s `Group` — its slots, and nothing else. */
+export interface SlotGroup {
+  slots: number[]
+}
+
+/**
+ * The same window, counted in **groups** rather than slots: every slot of the
+ * `ahead` groups after the reader's and the `behind` groups before it, nearest
+ * group first, with the group they are standing in left out.
+ *
+ * **`window` above counts the wrong unit in `two` mode, and that is a defect a
+ * reader felt rather than a refinement.** An arrow steps by what is *drawn* —
+ * `pairing.ts`'s `stepToGroup` — and in `two` mode a group is two slots, so a
+ * slot-space window centred on the group's first slot reaches the next group's
+ * first half and stops one short of its second. Measured on `gotoubun-v01`
+ * `en-mono` with the shipped defaults (`ahead: 2, behind: 1`), watching
+ * `PerformanceObserver` resource entries: **every forward turn requested exactly
+ * one page only after the keypress**, and it was the second half of the group
+ * being turned to, every time — 16,17 then 18,19 then 20,21 then 22,23, cold on
+ * 17, 19, 21, 23. Median time from keypress to the pair on screen was 110 ms
+ * against 9–14 ms for a turn whose pages were both warm.
+ *
+ * That one cold half is also where the *first* complaint about this reader came
+ * from. Before `cohort.ts` the warm half painted immediately and the cold one
+ * arrived ~90 ms later, which is precisely the tear that was measured and fixed;
+ * gating the pair together turned the same missing fetch into a wait instead. One
+ * defect, two symptoms, and prefetching the whole group is the end of both.
+ *
+ * `single` and `scroll` put one slot per group, so this is identical to `window`
+ * there and the defaults keep their old meaning. In `two` mode `ahead: 2` now
+ * means two *turns* ahead rather than one turn and one orphaned half, which is
+ * what the module's own doc above always claimed it meant.
+ *
+ * Nearest-first by the same interleaving `window` uses and for the same reason —
+ * behind before ahead at each tier, since a reversal is the likeliest correction
+ * right after a forward press — except that the tiers are groups, so each one
+ * contributes all of its slots at once. A group is drawn as a unit and is
+ * useless half-fetched, which is the whole point.
+ *
+ * The reader's own group is excluded entirely, not just the slot they are
+ * standing on: in `two` mode both of its slots are already on screen.
+ *
+ * A `slot` no group holds returns nothing. That is unreachable as the reader is
+ * wired — `modules/credits.ts`'s `skippedApartFrom` guarantees every position a
+ * reader can hold is in some group, the same invariant `stepToGroup` leans on —
+ * and answering with an empty window rather than guessing a group keeps a
+ * prefetch miss from becoming a fetch of the wrong pages.
+ */
+export function groupWindow(
+  groups: SlotGroup[],
+  slot: number,
+  ahead: number,
+  behind: number,
+): number[] {
+  const here = groups.findIndex((group) => group.slots.includes(slot))
+  if (here === -1) return []
+
+  const result: number[] = []
+  const depth = Math.max(ahead, behind)
+  for (let distance = 1; distance <= depth; distance += 1) {
+    if (distance <= behind) {
+      const before = groups[here - distance]
+      if (before) result.push(...before.slots)
+    }
+    if (distance <= ahead) {
+      const after = groups[here + distance]
+      if (after) result.push(...after.slots)
+    }
+  }
+  // A joined spread's two slots share one URL, and `cellsFor` mirrors a solo
+  // group's single slot into both cells, so the same slot can legitimately
+  // arrive twice across neighbouring groups. Fetching it twice is harmless but
+  // spends a concurrency slot that a further-out group could have used.
+  return [...new Set(result)]
 }

@@ -149,3 +149,7 @@ scratch/
 # artefact of a crate in this repository; committing it would be a second
 # source of truth for what the binding does.
 crates/taiyaku-wasm/pkg/
+
+# Vitest browser mode writes a screenshot beside a test when it fails. Useful
+# while debugging, never source.
+web/src/__screenshots__/

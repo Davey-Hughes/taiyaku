@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{Path as AxPath, State},
+    extract::{Path as AxPath, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -109,8 +109,19 @@ pub(crate) fn locate_member(
 ///
 /// Quoted, per RFC 9110 §8.8.3: an `ETag`'s value is a `quoted-string`, not
 /// a bare token.
-pub(crate) fn page_etag(sha256: &str, offset: u32) -> String {
-    format!("\"{sha256}-p{offset}\"")
+/// **The requested long edge is part of the tag**, and leaving it out would be
+/// the subtle way to break this. One page now has as many representations as a
+/// reader has viewport sizes; a tag naming only the member and offset would let
+/// a client that cached the 1024px version be answered `304` when it later
+/// asked for 2048, and go on drawing the small one — a page that looks soft for
+/// a day with nothing to point at. `None` is the full-size request and keeps
+/// the tag it always had, so a client holding a page cached before this
+/// existed still validates against it.
+pub(crate) fn page_etag(sha256: &str, offset: u32, long_edge: Option<u32>) -> String {
+    match long_edge {
+        Some(edge) => format!("\"{sha256}-p{offset}-r{edge}\""),
+        None => format!("\"{sha256}-p{offset}\""),
+    }
 }
 
 /// Whether a request's `If-None-Match` already names `tag`.
@@ -326,18 +337,52 @@ async fn get_sidecar(
         .into_response()
 }
 
+/// The optional `?w=` on a page request: the long edge, in device pixels, the
+/// reader intends to draw this page within.
+///
+/// **Why the server resizes at all.** Measured in the browser against
+/// `gotoubun-v01`'s `en-mono` — 2147×3056, 6.56 megapixels — drawn into a
+/// 693×475 box: the decode alone costs 74.5 ms and the decoded bitmap is
+/// 26.2 MB, for twenty times the pixels that reach the screen. The same page
+/// fitted to 700px decodes in 4.3 ms and holds 2.8 MB. Both halves matter: the
+/// decode is what a page turn waits on, and the bitmap is what the browser
+/// evicts under memory pressure, which is what made an occasional turn cost
+/// hundreds of milliseconds rather than single digits.
+///
+/// A query parameter rather than a separate route, unlike `get_thumb`: a tile
+/// is a different *thing* — always JPEG, cropped for a strip, no validator —
+/// where this is the same page at a different size, wanting the same
+/// `If-None-Match` fast path and the same freshness. Absent `w` is the original
+/// bytes, byte for byte, which is what `zoom` asks for and what every client
+/// written before this parameter existed keeps getting.
+#[derive(Debug, serde::Deserialize)]
+struct PageQuery {
+    w: Option<u32>,
+}
+
 async fn get_page(
     State(state): State<Arc<ServeState>>,
     // `String` rather than `u32`, so a malformed index is refused by
     // `page_index` in this server's own words rather than by axum's `Path`
     // rejection in terms of a Rust type — O5.
     AxPath((id, edition, raw)): AxPath<(String, String, String)>,
+    Query(query): Query<PageQuery>,
     headers: HeaderMap,
 ) -> Response {
     let index = match page_index(&raw, &edition) {
         Ok(index) => index,
         Err(refusal) => return refusal.into_response(),
     };
+    // Clamped rather than refused. A width outside the sensible range is a
+    // client bug or a hand-typed URL, and the useful answer to both is the
+    // page — at the nearest size this server will make — rather than a 400 that
+    // leaves the reader with a blank cell. Zero and one are treated as absent,
+    // since `fit_at` would answer `None` for them anyway once no real page is
+    // that small.
+    let long_edge = query
+        .w
+        .filter(|edge| *edge > 1)
+        .map(|edge| edge.min(crate::cover::MAX_FIT_LONG_EDGE));
 
     // O1: the validator comes from what the sidecar already holds in
     // memory — the member's recorded `sha256` and this page's offset within
@@ -354,7 +399,7 @@ async fn get_page(
         Ok(pair) => pair,
         Err(message) => return not_found(message),
     };
-    let tag = page_etag(&sha256, offset);
+    let tag = page_etag(&sha256, offset, long_edge);
     if if_none_match_hits(&headers, &tag) {
         return not_modified(&tag, Some(PAGE_CACHE_CONTROL));
     }
@@ -364,11 +409,33 @@ async fn get_page(
     // corpus holds pages of 430 MB — with the prefetching the filmstrip and
     // swap both need, one reader would occupy several of them.
     //
+    // Resizing blocks harder still — it decodes — so it belongs on this same
+    // thread rather than in a second `spawn_blocking` behind it. A cache hit
+    // never reaches the fetch at all: `cached_or_generated_page` reads the
+    // cached file first, and only a miss pays for the member.
+    //
     // `PageSource` stays synchronous deliberately. The boundary belongs here,
     // where there is exactly one of it, rather than in each implementation.
     let fetched = tokio::task::spawn_blocking(move || {
         let found = state.work_or_missing(&id)?;
-        state.page(found, &edition, index)
+        let Some(edge) = long_edge else {
+            return state.page(found, &edition, index);
+        };
+        let dir = state.thumb_cache_dir();
+        let fitted = crate::cover::cached_or_generated_page(&dir, &sha256, offset, edge, || {
+            state.page(found, &edition, index).map(|p| p.bytes)
+        })?;
+        match fitted {
+            // `fit_at` always writes JPEG, and says so rather than echoing
+            // whatever the archive held.
+            Some(bytes) => Ok(crate::source::ServedPage {
+                bytes,
+                content_type: "image/jpeg".to_string(),
+            }),
+            // Already within the requested edge: the original bytes are the
+            // right answer, so this costs one header parse and no resize.
+            None => state.page(found, &edition, index),
+        }
     })
     .await;
 
@@ -1495,6 +1562,152 @@ mod tests {
             body.is_empty(),
             "a 304 must carry no body — that is the entire point of sending one"
         );
+    }
+
+    /// The reading-size parameter, over a fixture page of 16x16: `?w=8` is
+    /// smaller than the page and must resize, and the output is declared JPEG
+    /// whatever the archive held (this fixture holds PNG).
+    #[tokio::test]
+    async fn a_width_smaller_than_the_page_resizes_it_and_declares_jpeg() {
+        let state = crate::test_support::state_with_real_pages();
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::get("/api/works/w/a/pages/0?w=8")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/jpeg");
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let decoded = image::load_from_memory(&body).expect("a decodable image");
+        assert_eq!(
+            (decoded.width().max(decoded.height())),
+            8,
+            "the long edge must be what was asked for"
+        );
+    }
+
+    /// The half that makes this safe on every edition: a page already within
+    /// the requested edge is handed back untouched rather than re-encoded, so
+    /// asking for a size no larger than the source costs nothing and loses no
+    /// quality. On the real corpus this is `raw-mono` and `en-fan`, which are
+    /// frequently smaller than a viewport asks for.
+    #[tokio::test]
+    async fn a_width_larger_than_the_page_serves_the_original_bytes_untouched() {
+        let state = crate::test_support::state_with_real_pages();
+        let app = build_router(state);
+
+        let plain = app
+            .clone()
+            .oneshot(
+                Request::get("/api/works/w/a/pages/0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let plain_type = plain.headers()[header::CONTENT_TYPE].clone();
+        let plain_bytes = axum::body::to_bytes(plain.into_body(), 1 << 20)
+            .await
+            .unwrap();
+
+        let wide = app
+            .oneshot(
+                Request::get("/api/works/w/a/pages/0?w=700")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wide.status(), StatusCode::OK);
+        assert_eq!(wide.headers()[header::CONTENT_TYPE], plain_type);
+        let wide_bytes = axum::body::to_bytes(wide.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert_eq!(
+            wide_bytes, plain_bytes,
+            "a page already small enough must not be re-encoded"
+        );
+    }
+
+    /// The trap this parameter introduces. One page now has a representation
+    /// per size, so a tag that named only the member and offset would let a
+    /// client holding the small one be answered 304 for the large one and go
+    /// on drawing a soft page with nothing to point at.
+    #[tokio::test]
+    async fn a_validator_from_one_size_does_not_satisfy_a_request_for_another() {
+        let state = crate::test_support::state_with_real_pages();
+        let app = build_router(state);
+
+        let small = app
+            .clone()
+            .oneshot(
+                Request::get("/api/works/w/a/pages/0?w=8")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let small_tag = small.headers()[header::ETAG].clone();
+
+        let full = app
+            .clone()
+            .oneshot(
+                Request::get("/api/works/w/a/pages/0")
+                    .header(header::IF_NONE_MATCH, small_tag.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            full.status(),
+            StatusCode::OK,
+            "the full-size page must not be short-circuited by a resized page's tag"
+        );
+        assert_ne!(full.headers()[header::ETAG], small_tag);
+
+        // And the same size still validates, so the parameter has not cost the
+        // conditional request that O1 shipped.
+        let again = app
+            .oneshot(
+                Request::get("/api/works/w/a/pages/0?w=8")
+                    .header(header::IF_NONE_MATCH, small_tag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    /// A width outside the sensible range is clamped rather than refused: a
+    /// hand-typed URL or a client bug should still draw a page. The ceiling is
+    /// what stops one cache entry per pixel value.
+    #[tokio::test]
+    async fn an_absurd_width_is_clamped_rather_than_refused() {
+        let state = crate::test_support::state_with_real_pages();
+        let app = build_router(state);
+
+        for query in ["?w=0", "?w=1", "?w=999999", "?w=4096"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get(format!("/api/works/w/a/pages/0{query}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "for {query}");
+        }
     }
 
     /// A validator naming a *different* page must not short-circuit this

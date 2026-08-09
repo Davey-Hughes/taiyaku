@@ -86,6 +86,131 @@ fn keyed_path(dir: &Path, sha256: &str, long_edge: u32, format_version: u32) -> 
     dir.join(format!("{sha256}-{long_edge}v{format_version}.jpg"))
 }
 
+/// Where a **reading-sized** page is cached — one per member, offset and long
+/// edge.
+///
+/// Distinct from `thumb_cache_path` by the `r` in the name rather than by the
+/// size alone: a tile and a reading page could in principle be asked for at the
+/// same long edge, and two different outputs sharing one path is the one
+/// failure a content-addressed cache must not have. A tile is cropped to a
+/// strip's proportions in the reader; this is the whole page.
+pub fn page_cache_path(dir: &Path, sha256: &str, offset: u32, long_edge: u32) -> PathBuf {
+    dir.join(format!(
+        "{sha256}-p{offset}-r{long_edge}v{PAGE_FORMAT_VERSION}.jpg"
+    ))
+}
+
+/// `FORMAT_VERSION`'s counterpart for reading-sized pages, versioned separately
+/// so a change to how a *page* is produced does not throw away every cover and
+/// tile in a large library, or the reverse. Bumped when the resize filter moved
+/// off `thumbnail`'s sampler — see `fit_at`.
+const PAGE_FORMAT_VERSION: u32 = 2;
+
+/// The largest long edge this server will resize to.
+///
+/// A ceiling on what a client can ask for, so a hand-edited or hostile `?w=`
+/// cannot fill the cache directory with one entry per pixel value. `web/`'s own
+/// ladder tops out well below this; the bound exists for requests that did not
+/// come from it.
+pub const MAX_FIT_LONG_EDGE: u32 = 4096;
+
+/// Fit a page inside `long_edge`, or say that it already fits.
+///
+/// **`None` means "serve the original bytes", and it is the answer that makes
+/// this safe to apply to every edition.** A page whose long edge is already
+/// within the request is returned untouched rather than re-encoded: re-encoding
+/// it would cost quality for no pixels gained, and on this corpus `raw-mono`
+/// (685×1024) and `en-fan` (1114×1600) are frequently already smaller than what
+/// a reader's viewport asks for.
+///
+/// The check reads the image header only — `into_dimensions` parses the SOF
+/// marker and stops, where `decode` would rasterise the whole frame — so
+/// deciding costs microseconds against the ~75 ms a full decode of this
+/// corpus's largest pages takes. That is what lets the decision be made per
+/// request without a cache entry to remember it in.
+///
+/// Always JPEG on the resize path, for `thumbnail_at`'s reason: one declared
+/// content type rather than whatever the archive happened to hold.
+pub fn fit_at(page: &[u8], long_edge: u32) -> Result<Option<Vec<u8>>, String> {
+    // Two readers, and the second is not waste. `into_dimensions` consumes the
+    // one it is called on, and it is what makes the cheap path cheap: it stops
+    // at the frame header, so a page that already fits costs microseconds and no
+    // decode at all. Only a page that genuinely needs resizing pays for a second
+    // header parse, which is nothing beside the decode that follows it.
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(page))
+        .with_guessed_format()
+        .map_err(|e| format!("fit: undecodable page: {e}"))?;
+    reader.limits(limits);
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|e| format!("fit: unreadable dimensions: {e}"))?;
+    if width.max(height) <= long_edge {
+        return Ok(None);
+    }
+
+    // **Not `thumbnail`'s sampler, and the filter is the reason.** `image`
+    // documents it as "a fast integer algorithm where each source pixel
+    // contributes to exactly one target pixel… may give aliasing artifacts" —
+    // the right trade for a 512px cover and the wrong one for the page a reader
+    // is looking at, since manga is screentone and thin ink, the two things
+    // that alias worst. Reducing 2147px to 768px through each differs at
+    // **25.3 dB PSNR**, with the hatching visibly broken up on the fast path.
+    //
+    // `CatmullRom` rather than `Lanczos3`: both cost the same here (about 5 ms
+    // on a 100 ms generation, measured), and Lanczos rings on high-contrast
+    // edges — every panel border and every letter on the page. A little
+    // softness is a better failure than haloed ink.
+    let decoded = decode_limited(page, "fit")?;
+    let scaled = decoded.resize(
+        long_edge,
+        long_edge,
+        image::imageops::FilterType::CatmullRom,
+    );
+    Ok(Some(encode_jpeg(scaled, "fit")?))
+}
+
+/// Read a cached reading-sized page, or make one and cache it.
+///
+/// `None` from `fit_at` is passed straight through and **nothing is cached**:
+/// the correct output for that request is the member's own bytes, which the
+/// caller already has and which no cache could hold more cheaply than the
+/// archive does. A per-request header parse is the price, and it is
+/// microseconds.
+///
+/// Shares `GENERATION_LIMIT` with covers and tiles rather than taking a bound
+/// of its own. All three do the same expensive thing — decode a page at up to
+/// `MAX_DECODE_ALLOC` — so one budget over all of them is what actually bounds
+/// peak memory; separate budgets would each be safe alone and add up to
+/// something that is not.
+pub fn cached_or_generated_page(
+    dir: &Path,
+    sha256: &str,
+    offset: u32,
+    long_edge: u32,
+    page: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> Result<Option<Vec<u8>>, String> {
+    let path = page_cache_path(dir, sha256, offset, long_edge);
+    if let Ok(found) = std::fs::read(&path) {
+        return Ok(Some(found));
+    }
+    let generated = {
+        let _permit = GENERATION_LIMIT.acquire();
+        fit_at(&page()?, long_edge)?
+    };
+    let Some(bytes) = generated else {
+        return Ok(None);
+    };
+    if std::fs::create_dir_all(dir).is_ok() {
+        // Discarded for `at_path`'s reason: the page was generated and the
+        // reader gets it, so a cache that cannot be written is slow rather
+        // than broken.
+        let _ = crate::atomic::write(&path, &bytes, "jpg");
+    }
+    Ok(Some(bytes))
+}
+
 /// How many cover generations — fetching a page and decoding it — may run at
 /// once.
 ///
@@ -157,6 +282,43 @@ impl Drop for SemaphoreGuard<'_> {
 
 static GENERATION_LIMIT: Semaphore = Semaphore::new(MAX_CONCURRENT_GENERATIONS);
 
+/// Decode a page with this crate's allocation ceiling in force.
+///
+/// `image::load_from_memory` takes no `Limits`, so it inherits the crate's
+/// 512 MB default and rejects this corpus's largest pages outright. Building an
+/// `ImageReader` and setting limits explicitly — exactly as
+/// `fingerprint.rs::decode_luma` does — is what raises that ceiling without
+/// removing it.
+///
+/// `what` names the caller in the error, so a failure says whether a cover, a
+/// tile or a reading page could not be read.
+fn decode_limited(page: &[u8], what: &str) -> Result<image::DynamicImage, String> {
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(page))
+        .with_guessed_format()
+        .map_err(|e| format!("{what}: undecodable page: {e}"))?;
+    reader.limits(limits);
+    reader
+        .decode()
+        .map_err(|e| format!("{what}: undecodable page: {e}"))
+}
+
+/// Encode as JPEG, whatever came in.
+///
+/// Always JPEG: an OPDS entry declares one type per link and a client is
+/// entitled to believe it, so emitting whatever the page happened to be would
+/// make that declaration a guess. The reading-page route declares the same for
+/// the same reason.
+fn encode_jpeg(image: image::DynamicImage, what: &str) -> Result<Vec<u8>, String> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    image
+        .into_rgb8()
+        .write_to(&mut out, image::ImageFormat::Jpeg)
+        .map_err(|e| format!("{what}: encoding: {e}"))?;
+    Ok(out.into_inner())
+}
+
 /// Shrink a page into a cover.
 ///
 /// Always JPEG, whatever came in: an OPDS entry declares one type per link and
@@ -172,27 +334,11 @@ pub fn thumbnail(page: &[u8]) -> Result<Vec<u8>, String> {
 /// always-JPEG rule and a different size. One decoder rather than two, so a
 /// change to the limits cannot reach covers and miss tiles.
 pub fn thumbnail_at(page: &[u8], long_edge: u32) -> Result<Vec<u8>, String> {
-    // `image::load_from_memory` — the previous, simpler form of this — takes
-    // no `Limits`, so it inherits the crate's 512 MB default and rejects this
-    // corpus's largest pages outright. Building an `ImageReader` and setting
-    // limits explicitly, exactly as `fingerprint.rs::decode_luma` does, is
-    // what raises that ceiling without removing it.
-    let mut limits = image::Limits::default();
-    limits.max_alloc = Some(MAX_DECODE_ALLOC);
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(page))
-        .with_guessed_format()
-        .map_err(|e| format!("cover: undecodable page: {e}"))?;
-    reader.limits(limits);
-    let decoded = reader
-        .decode()
-        .map_err(|e| format!("cover: undecodable page: {e}"))?;
-    let scaled = decoded.thumbnail(long_edge, long_edge);
-    let mut out = std::io::Cursor::new(Vec::new());
-    scaled
-        .into_rgb8()
-        .write_to(&mut out, image::ImageFormat::Jpeg)
-        .map_err(|e| format!("cover: encoding: {e}"))?;
-    Ok(out.into_inner())
+    let decoded = decode_limited(page, "cover")?;
+    // `thumbnail`'s own fast sampler, kept for covers and tiles: at 512px and
+    // 160px its aliasing is invisible and it is the cheaper of the two. A page
+    // a reader actually looks at goes through `fit_at` instead, which says why.
+    encode_jpeg(decoded.thumbnail(long_edge, long_edge), "cover")
 }
 
 /// Read a cached cover, or make one and cache it.

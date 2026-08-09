@@ -2,12 +2,47 @@
 # The local mirror of CI (.forgejo/workflows/ci.yml). Run it yourself before pushing a branch —
 # nothing runs it for you, and the forge runs the same four jobs after the push rather than before.
 #
-#   scripts/check-all.sh             # everything CI runs
-#   scripts/check-all.sh --no-wasm   # skip the whole `wasm` job
-#   scripts/check-all.sh --no-web    # skip the whole `web` job
+#   scripts/check-all.sh                 # everything CI runs, plus the corpus checks
+#   scripts/check-all.sh --no-wasm       # skip the whole `wasm` job
+#   scripts/check-all.sh --no-web        # skip the whole `web` job
+#   scripts/check-all.sh --corpus-debug  # corpus checks in debug — see "Two profiles" below
+#
+# The `web` job additionally runs a small **browser** test project that CI does
+# not: it needs a downloaded Chromium, which a cacheless CI would fetch on every
+# run. It covers what no Node environment can — real layout and a real image
+# decode — and is named as unmeasured when the browser is absent.
 #
 # The point of this file is that the local gate and the CI gate cannot drift: CI's four jobs are
 # reproduced here in the same order with the same flags. When a job changes there, change it here.
+#
+# --- Two profiles, and which one measures what -------------------------------
+#
+# **Debug: every unit test, and it is the only pass that has overflow checks.** Integer overflow
+# panics and `debug_assert!` exist only under `debug_assertions`, and this repository has two of the
+# latter that matter — `PageRange::new`'s "page range must not be inverted" and `Run::paired`'s
+# equal-length check, both in `taiyaku-core/src/lib.rs`. The `test` job below runs the whole
+# workspace in debug and is what exercises them. It costs **4.4 seconds**.
+#
+# **Release: the standing corpus checks.** Those decode and fingerprint real pages — one compares
+# 2,427 pairs, another 617 — and `image` in debug is roughly two orders of magnitude slower. They
+# are not a CI job (CI has no corpus), so nothing about the mirror above depends on their profile.
+# **6.9 seconds** warm; about 1:13 the first time, since `[profile.release]` here is `lto = "thin"`
+# with `codegen-units = 1`.
+#
+# **This used to run the corpus checks twice, both times in debug, and that is why nobody could
+# finish the gate.** `TAIYAKU_CORPUS` is exported at the top of this file, so the `test` job
+# inherited it and ran all fifteen standing checks itself; the dedicated pass below then ran them
+# again for their output. Measured before this change: over 25 minutes without reaching the second
+# pass. After: about 11 seconds for both, warm. The `test` job now runs with the variable removed
+# from its environment, which also makes it a *truer* mirror of CI than it was — CI has no corpus
+# and has always skipped them.
+#
+# **What the default run does not measure**, named here and again where it happens: the corpus
+# checks in release have no overflow checks and neither `debug_assert` above fires, so those two
+# invariants are exercised by the unit tests and not over real material. `--corpus-debug` runs that
+# pass in debug instead. It is slow — that is the whole reason it is not the default — so it is a
+# thing to run when touching `PageRange`, `Run::paired`, or arithmetic on page and slot indices,
+# rather than every time.
 #
 # It said "three jobs" until 2026-08-07 and reproduced three, while CI had grown a fourth — the
 # `web` job, running biome, `tsc -b` and vitest over `web/`. So a TypeScript change could take this
@@ -26,11 +61,13 @@ cd "$(git rev-parse --show-toplevel)"
 # gate that quietly covers less than it claims.
 no_wasm=0
 no_web=0
+corpus_debug=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --no-wasm) no_wasm=1 ;;
-    --no-web)  no_web=1 ;;
-    *)         echo "error: unknown argument: $1" >&2; exit 2 ;;
+    --no-wasm)      no_wasm=1 ;;
+    --no-web)       no_web=1 ;;
+    --corpus-debug) corpus_debug=1 ;;
+    *)              echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
@@ -74,7 +111,14 @@ run cargo fmt --all -- --check
 run cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # --- the `test` job ---
-run cargo test --workspace --all-features
+# **`TAIYAKU_CORPUS` is removed from this one's environment**, which is the difference between a
+# gate that finishes and one nobody runs — see "Two profiles" at the top. It is also the more
+# faithful mirror: CI has no corpus, so this is what CI actually executes. The standing checks are
+# not lost, they move to the pass below, which is where their output was already being read from.
+#
+# Debug, deliberately and not merely by default: this is the only pass with overflow checks and
+# `debug_assert!` compiled in.
+run env -u TAIYAKU_CORPUS cargo test --workspace --all-features
 
 # --- the standing corpus checks ---
 # Not a CI job: CI has no corpus, so these skip there and are the one thing this script measures
@@ -86,7 +130,16 @@ run cargo test --workspace --all-features
 if [ -n "${TAIYAKU_CORPUS:-}" ]; then
   # Already validated and made absolute at the top of this file.
   echo; echo "==> corpus: ${TAIYAKU_CORPUS}"
-  run cargo test --workspace --all-features corpus:: -- --nocapture --test-threads=1
+  if [ "$corpus_debug" -eq 1 ]; then
+    echo "==> profile: debug (--corpus-debug) — overflow checks and debug_assert! are live, and this is slow"
+    run cargo test --workspace --all-features corpus:: -- --nocapture --test-threads=1
+  else
+    # The second naming the header promised. A reader who scrolled past the top of this file still
+    # sees, right next to the checks themselves, which invariants this pass cannot fail on.
+    echo "==> profile: release — no overflow checks, and PageRange/Run's debug_assert!s do not fire"
+    echo "    over corpus material; pass --corpus-debug for those. The unit tests above cover them."
+    run cargo test --workspace --all-features --release corpus:: -- --nocapture --test-threads=1
+  fi
 else
   note_skip "standing corpus checks (TAIYAKU_CORPUS unset)"
 fi
@@ -145,6 +198,21 @@ else
   run npm --prefix web run lint
   run npm --prefix web run typecheck
   run npm --prefix web run test
+
+  # --- the browser tests, which are not a CI job ---
+  # `npm run test` is the `node` project alone, which is exactly what the forge
+  # runs: a browser project would need a Chromium download on every CI run, and
+  # CI has no cache to keep one in. So these are local-only, and named here when
+  # they cannot run rather than passed over.
+  #
+  # They exist for what a Node environment cannot answer: `jsdom` has no layout
+  # engine and no real `HTMLImageElement.decode()`, and every defect this reader
+  # has shipped in the page area was visual. See `web/src/PageView.browser.test.tsx`.
+  if [ ! -d "${HOME}/.cache/ms-playwright" ]; then
+    note_skip "the browser tests (no Chromium — run \`npx --prefix web playwright install chromium\`)"
+  else
+    run npm --prefix web run test:browser
+  fi
 fi
 
 echo

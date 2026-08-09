@@ -148,6 +148,7 @@ describe('cellsFor', () => {
   it('splits an ordinary pair into two equal-width cells, ltr in slot order', () => {
     expect(cellsFor({ slots: [2, 3] }, 'ltr')).toEqual({
       wide: false,
+      alone: false,
       first: 2,
       second: 3,
     })
@@ -156,6 +157,7 @@ describe('cellsFor', () => {
   it('reverses an ordinary pair for rtl', () => {
     expect(cellsFor({ slots: [2, 3] }, 'rtl')).toEqual({
       wide: false,
+      alone: false,
       first: 3,
       second: 2,
     })
@@ -164,6 +166,7 @@ describe('cellsFor', () => {
   it('puts a joined spread wide in the first cell, with its real second half mirrored into the second', () => {
     expect(cellsFor({ slots: [4, 5], spread: true }, 'ltr')).toEqual({
       wide: true,
+      alone: true,
       first: 4,
       second: 5,
     })
@@ -172,14 +175,23 @@ describe('cellsFor', () => {
   it('does not reorder a spread for rtl — it has no left/right to reorder', () => {
     expect(cellsFor({ slots: [4, 5], spread: true }, 'rtl')).toEqual({
       wide: true,
+      alone: true,
       first: 4,
       second: 5,
     })
   })
 
-  it('mirrors a solo slot (no pairing partner) into both cells, wide', () => {
+  // **Contract changed with the low-speed flicker fix.** This used to expect
+  // `wide: true` — an unpartnered page drawn across the whole group, exactly as
+  // a joined spread is. It is not a spread: it is an ordinary page that happens
+  // to have no partner, and drawing it full width collapsed the layout and
+  // expanded it again on consecutive turns wherever the aligned pairing left
+  // one. It keeps its own cell now; `alone` is what tells `App.tsx` the other
+  // one holds nothing but a mirror.
+  it('mirrors a solo slot (no pairing partner) into both cells, but is not wide', () => {
     expect(cellsFor({ slots: [7] }, 'ltr')).toEqual({
-      wide: true,
+      wide: false,
+      alone: true,
       first: 7,
       second: 7,
     })
@@ -187,7 +199,8 @@ describe('cellsFor', () => {
 
   it('mirrors a solo slot the same way regardless of reading direction', () => {
     expect(cellsFor({ slots: [7] }, 'rtl')).toEqual({
-      wide: true,
+      wide: false,
+      alone: true,
       first: 7,
       second: 7,
     })
@@ -202,8 +215,19 @@ describe('cellsFor', () => {
     // types at this position.
     const pair = cellsFor({ slots: [2, 3] }, 'ltr')
     const spread = cellsFor({ slots: [4, 5], spread: true }, 'ltr')
-    expect(pair).toEqual({ wide: false, first: 2, second: 3 })
-    expect(spread).toEqual({ wide: true, first: 4, second: 5 })
+    expect(pair).toEqual({ wide: false, alone: false, first: 2, second: 3 })
+    expect(spread).toEqual({ wide: true, alone: true, first: 4, second: 5 })
+  })
+
+  // The property the split exists for: crossing an unpartnered page must not
+  // change how wide the drawn page is, because that is what the reader sees as
+  // the layout jumping.
+  it('draws an unpartnered page at the same width as a paired one, so crossing it changes no geometry', () => {
+    expect(cellsFor({ slots: [7] }, 'ltr').wide).toBe(
+      cellsFor({ slots: [2, 3] }, 'ltr').wide,
+    )
+    // A real spread is the one thing that does change it.
+    expect(cellsFor({ slots: [4, 5], spread: true }, 'ltr').wide).toBe(true)
   })
 })
 
@@ -228,8 +252,19 @@ describe('cellOf', () => {
     expect(cellOf(spread, 'rtl', 4)).toBe('only')
   })
 
-  it('is `only` for a solo slot with no pairing partner', () => {
-    expect(cellOf({ slots: [7] }, 'rtl', 7)).toBe('only')
+  // **Contract changed, and the old expectation was a real geometry bug.**
+  // This asserted `'only'` for an unpartnered page. `viewport.ts`'s `cellBox`
+  // reads `'only'` as *the page fills the group* and returns `WHOLE`; since an
+  // unpartnered page keeps its own half-width cell, that mapped a zoom rect
+  // against twice the width the page actually covers. `'only'` is the joined
+  // spread alone.
+  it('is `first` for an unpartnered page, which occupies one cell rather than the group', () => {
+    expect(cellOf({ slots: [7] }, 'rtl', 7)).toBe('first')
+    expect(cellOf({ slots: [7] }, 'ltr', 7)).toBe('first')
+  })
+
+  it('is still `only` for a joined spread, which does fill the group', () => {
+    expect(cellOf({ slots: [4, 5], spread: true }, 'rtl', 4)).toBe('only')
   })
 })
 

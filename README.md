@@ -196,9 +196,10 @@ commit**, through a **pull request**. `main` is protected: it does not accept a 
 PR is the only way in.
 
     git switch -c my-change
-    scripts/check-all.sh            # the local mirror of CI — all four jobs
-    scripts/check-all.sh --no-wasm  # same, skipping the wasm job
-    scripts/check-all.sh --no-web   # same, skipping the web job
+    scripts/check-all.sh                # the local mirror of CI — all four jobs
+    scripts/check-all.sh --no-wasm      # same, skipping the wasm job
+    scripts/check-all.sh --no-web       # same, skipping the web job
+    scripts/check-all.sh --corpus-debug # corpus checks in debug, for overflow checks
     git push -u origin my-change
     tea pr create                   # or open it in the web UI
 

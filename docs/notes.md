@@ -7289,3 +7289,741 @@ h=79, `blocks_per_page` 1.86 — and the document it writes carries every block'
 `oshinoko-v01` has no sidecar in the corpus and wants the `align --write` from
 "The survey ran over four works" first; that command still reports the 6 runs
 and 216 whole pairings recorded there.
+
+## Two pages that arrive together, and a pairing that agrees across editions
+
+Two reader complaints about `two` mode, raised from real reading on
+`corpus/gotoubun-v01` and grouped here because both turn out to be the same
+kind of defect: a rule that was correct about one page at a time and had never
+been asked about two.
+
+- "When seeing 2 pages at a time, especially with larger images, they don't
+  show up at the exact same time when scrolling and it's distracting."
+- "The editions don't always line up exactly. There's some pages pretty early
+  on in particular where the english official and english fan subbed get off by
+  1 page."
+
+Everything below was measured against `corpus/gotoubun-v01`, served by
+`taiyaku serve` from a scratch sidecar with absolute member paths, behind Vite's
+`preview` proxy on the production bundle — so the numbers are minified-build
+numbers, not dev-server ones.
+
+### The halves were never gated together, and the old comment said so
+
+`decode.ts`'s gate is per image and always was: `presentWhenDecoded` holds one
+`src` until it has decoded. `App.tsx` carried a comment stating plainly that
+`two` mode's cells "each run `presentWhenDecoded` independently, so an ordinary
+pair's two halves can present at different times", and arguing for leaving it —
+gating would make the faster half wait on the slower one "for a mismatch nothing
+has measured a reader noticing". It named the thing that should overturn it:
+"a measurement showing otherwise is the reason to revisit this, not a guess made
+ahead of one."
+
+**The measurement, taken with a `MutationObserver` on both cells' `src`
+attributes**, with the cache warm and prefetch on, `gotoubun-v01` `en-mono`:
+
+| Pace | Turns | Median gap | Worst | Turns tearing by >1 frame |
+| ---- | ----: | ---------: | ----: | ------------------------: |
+| 700 ms between turns | 8 | 89.7 ms | 158.4 ms | 8 of 8 |
+| 120 ms between turns | 12 | 213.8 ms | 1276.7 ms | 4 of 4 measured |
+
+Not a rare race: **every turn tore**, and the smallest gap measured at a slow
+pace was 51.2 ms, over three frames. The complaint's "worse when going fast" is
+in the second row, where one pair took 1.28 s to close.
+
+`cohort.ts` is the fix — a barrier over decode jobs, running the existing queue
+*inside* it so the concurrency cap still governs the decodes and the barrier
+only governs when their results are shown. **Membership closes at the end of the
+current task rather than on a count**, because nothing knows in advance how many
+images a turn will change: React flushes a commit's effects in one synchronous
+pass, so both cells' `useEffect` bodies join before the deferred close can fire,
+and a turn that changes only one cell forms a cohort of one. `defer` is a
+parameter so a test can close it by hand.
+
+Re-measured through the same observer, after: **0.0 ms on all 8 slow turns and
+all 3 fast ones**, 0 tearing by more than a frame. Both halves land in one
+commit, so they land in one paint.
+
+The latency the old comment was protecting is real and is now paid — a pair
+appears when its slower half is ready. It was always being paid: the reader was
+looking at the slower half's old page for exactly that long either way.
+
+### The "off by 1" is the pairing parity, not the aligner
+
+The obvious reading of the second complaint is an alignment defect, so that was
+checked first, and it is not one.
+
+**The aligner is clean.** A shift test over every paired slot of every alignment
+— score the pairing the solver chose against the same `from` slot's score
+against `to ± 1` — was run over 12 alignments across 9 volumes and 4 series,
+built with `align --write` into a `taiyaku.check.json` beside each volume so no
+existing sidecar was touched. **Zero pairings are improvable.** The first
+version of that scan reported four (`gotoubun` v01/v03/v08 at raw slot 193,
+`kaguya-v03` at 208), all with large margins — 0.762 against 0.891 and the
+like — and every one dissolved on adding the one-to-one constraint the scan had
+been missing: at a volume's tail several near-identical end pages all match one
+`to` page strongly, the solver gives it to whichever scores highest, and the
+loser then looks improvable against a slot that is already taken. A scan that
+does not model the constraint the thing it is auditing is built on reports its
+absence as a defect.
+
+**The defect is in `pairing.ts`.** `groups` anchors `two` mode's pairing at slot
+0 of whatever edition it is handed, and nothing carried that choice across a
+swap. Editions disagree about how many pages precede the story, and every joined
+spread present in one and not the other flips the relative parity again from
+there on — so the same reading position drew `(n-1, n)` in one edition and
+`(n, n+1)` in the next. One page on screen was right, the other was its
+neighbour. Simulating `groups` and the sidecar's routes over every ordered pair
+of `gotoubun-v01`'s three editions:
+
+| Route | Groups compared | Pair survives the swap |
+| ----- | --------------: | ---------------------: |
+| `raw-mono` → `en-mono` | 97 | 2 |
+| `en-mono` → `raw-mono` | 97 | 1 |
+| `raw-mono` → `en-fan` | 96 | 72 |
+| `en-fan` → `raw-mono` | 98 | 74 |
+| `en-mono` → `en-fan` | 94 | 25 |
+| `en-fan` → `en-mono` | 98 | 32 |
+
+206 of 580. The two English editions — the pair a reader is likeliest to
+compare, and the one the complaint names — are torn on roughly seven groups in
+ten, and *intermittently*, which is why it read as "some pages pretty early on"
+rather than as a constant offset: `en-mono` is out of phase with the hub almost
+everywhere, `en-fan` in stretches, so the two agree exactly where those
+stretches coincide.
+
+Confirmed in the browser before anything was built, by reading the drawn page
+indices out of the DOM at one position: `raw-mono` drew pages 24–25, `en-fan`
+drew 62–63 (their exact counterparts) and `en-mono` drew 23–24, where 22–23 is
+what the alignment says.
+
+### Deriving the parity from the hub — the first rule, and why it was not enough
+
+*Kept as written, because the reader found its limit within the hour and the
+limit is the interesting part. The rule that ships is the section after this
+one.*
+
+`alignedPairs.ts` computes the hub's own grouping, maps each group through the
+alignment, and takes the slot each lands on as a position where that edition
+must open a pair. Those go in as more of `groups`' existing `breaks` — the
+`regroup` module's parity marks — so the grouping itself needed no new
+mechanism.
+
+**The hub and not the authority**: `ReadingState.authority` moves to whichever
+edition the reader last navigated in, so deriving from it would re-group every
+other edition whenever the reader turned a page somewhere new. The hub is fixed
+by the sidecar and every alignment is stored against it.
+
+Same simulation, after: **572 of 598**, and with all five editions of
+`gotoubun-v01` in the document, 1918 of 1992. `oshinoko-v03` goes 172/521 to
+554/573.
+
+**The cost, stated rather than buried.** Every position where the parity
+genuinely has to change costs one group drawn alone, because that is what
+restarting a pair means. On `gotoubun-v01` that is 14 solo groups added to
+`en-mono`'s 104 and 8 to `en-fan`'s, clustered at the front matter and the
+joined spreads, and a reader who never swaps pays it too. It was taken
+deliberately over the alternative: a solo page says "there is nothing here to
+pair this with", where a silently mismatched pair said nothing at all.
+
+Confirmed in the browser on the built bundle, walking forward and reading all
+three editions at each position. At the position measured above, `raw-mono`
+8–9 now draws against `en-mono` 6–7 and `en-fan` 46–47 — the alignment's own
+answer, in all three.
+
+### The reader found the 4% that was left, at one press
+
+"There's still some mis-alignments, like slot 48, p46." `en-mono` slot 48 is
+page 46's right half — the rule above scored 96%, and this is what the other 4%
+looks like from a chair.
+
+**The hub cannot follow a boundary only a spoke has.** `en-mono` joins pages 45
+and 46 back to back, which the raw carries as four ordinary pages. A joined
+spread is one image, so `groups` gives it its own group unconditionally and no
+break can halve it — meaning `en-mono` slots 46–47 and 48–49 are each one group
+whatever the derivation says. Their counterparts are raw slots 47–48 and 49–50.
+But the rule above derives breaks for *spokes only* and leaves the hub on its
+natural parity, where raw pairs `(46,47)` and `(48,49)`: slots 47 and 48 sit in
+different raw groups, so **no raw group is the counterpart of that spread.**
+Standing on it and swapping drew raw 47–48 where 48–49 was right, and again one
+group later. Read straight off the reader:
+
+| `en-mono` group | raw drawn | raw correct |
+| --------------- | --------- | ----------- |
+| page 45 spread, slots 46–47 | 47, 48 | **48, 49** |
+| page 46 spread, slots 48–49 | 49, 50 | **50, 51** |
+
+**Pair boundaries are a property of the work, not of an edition** — which is the
+sentence the first rule was missing. Wherever *any* edition joins a spread, that
+is a boundary the work has, and every other edition has to honour it or it
+cannot draw the counterpart pair. So: collect each edition's forced boundaries
+(a spread's first half, and the slot after it), map them into the hub's slot
+space, union them, group the hub with *those*, and derive every edition —
+**the hub included** — from that one grouping.
+
+**Better on both axes, which is not what a fix for a corner case usually
+does.** Across eleven volumes in four series:
+
+| Volume | anchored per edition | hub-derived | unioned |
+| ------ | -------------------: | ----------: | ------: |
+| `gotoubun-v01`, five editions | 42% | 96% | **99%** |
+| `gotoubun-v03` | 42% | 97% | **98%** |
+| `gotoubun-v08` | 2% | 93% | **100%** |
+| `kobayashi-v08` | 1% | 99% | **100%** |
+| `kaguya-v08` | 1% | 100% | 100% |
+| `oshinoko-v08` | 98% | 100% | 100% |
+| `kaguya-v01` | 69% | 99% | 99% |
+| `kaguya-v03` | 99% | 100% | 100% |
+| `kobayashi-v03` | 1% | 99% | 99% |
+| `oshinoko-v03` | 33% | 97% | 97% |
+
+Never worse, strictly better on five. **And it needs fewer solo groups to do
+it**, because the hub can now move rather than every spoke bending around it:
+`gotoubun-v01`'s `en-mono` goes 14 → 4, `en-fan` 12 → 6, and `gotoubun-v08`'s
+`en-mono` 16 → 2. The cost paragraph above is superseded by that: what a reader
+who never swaps pays is 4 solo groups in `en-mono`'s 104, not 14.
+
+Confirmed in the browser at the position reported. Both spreads now answer with
+the raw pair the alignment names, and `en-fan` 87–88 alongside.
+
+**What the first rule got right, and why it is still most of this.** Deriving a
+grouping from the alignment and feeding it in as `groups`' existing `breaks` is
+unchanged; so is the choice of the hub over `authority`. What changed is one
+step — the hub is grouped from the unioned boundaries rather than from its own
+parity — and `alignedBreaks` then treats the hub as an edition like any other
+rather than as the fixed point. A rule with a fixed point that cannot move is
+what left the 4%.
+
+### Reproducing both
+
+The decode measurement needs a browser; the two simulations do not, and read
+the fingerprint cache rather than decoding anything:
+
+```sh
+./target/release/taiyaku align corpus/gotoubun-v01/raw-mono/*.cbz \
+  -- corpus/gotoubun-v01/en-mono/*.cbz --cache corpus/gotoubun-v01/.taiyaku-cache
+```
+
+populates `.taiyaku-cache` for a pair; with the cache warm, the shift scan and
+the parity simulation are arithmetic over `taiyaku.json` and those hashes.
+`web/src/alignedPairs.test.ts` pins the derivation itself, and
+`web/src/cohort.test.ts` the barrier.
+
+## Why page turns were slow, and the two things that were not the cause
+
+Reported as "switching pages sometimes seems slow", on `gotoubun-v01` `en-mono`
+in `two` mode. Measured keypress-to-both-halves-on-screen in the browser against
+the production bundle: **median 110 ms, p90 199 ms, worst 271 ms**, with the
+first few turns of a run at 9–14 ms and everything after that far worse.
+
+### The cause: prefetch counted slots where the reader steps by groups
+
+`modules/prefetch.ts`'s `window` reaches `ahead` slots forward and `behind`
+back. An arrow steps by what is *drawn* — `pairing.ts`'s `stepToGroup` — and in
+`two` mode a group is two slots. Standing on group `[8, 9]` with the shipped
+`ahead: 2`, the window named slots 7, 9 and 10; the next group is `[10, 11]`, so
+**slot 11 was never prefetched**. Watched on the wire with a
+`PerformanceObserver` over resource entries, every forward turn requested
+exactly one page only after the keypress, and it was the second half of the
+group being turned to, every time:
+
+| from | to | requested after the keypress |
+| ---- | -- | ---------------------------- |
+| 14, 15 | 16, 17 | 17 |
+| 16, 17 | 18, 19 | 19 |
+| 18, 19 | 20, 21 | 21 |
+| 20, 21 | 22, 23 | 23 |
+
+**It is the same defect as the tearing complaint.** Before `cohort.ts` the warm
+half painted at once and the cold one arrived ~90 ms later, which is exactly the
+89.7 ms median tear that was measured and fixed; gating the pair together turned
+one missing fetch into a wait instead of a tear. `groupWindow` reaches whole
+groups and closes both: median 110 ms → **14 ms**.
+
+### Reaching further then made it worse, which is the interesting half
+
+`groupWindow` with the old depths reaches 6 slots (2 groups ahead, 1 behind)
+where `window` reached 3, and a tail appeared: p90 232 ms, worst 335 ms, 29% of
+turns over 100 ms. A decoded `en-mono` page is 2147×3056×4 ≈ **26 MB**, and a
+joined spread twice that, so a wide window churns the browser's own
+decoded-bitmap cache and evicts the pages the reader is about to arrive at.
+**Prefetch competing with itself.** Twenty turns per setting:
+
+| window | median | p90 | worst | over 100 ms |
+| ------ | -----: | --: | ----: | ----------: |
+| `ahead: 2, behind: 1` — 6 slots | 14 ms | 232 ms | 335 ms | 29% |
+| `ahead: 1, behind: 0` — 2 slots |  4 ms | 125 ms | 182 ms | 10% |
+| `ahead: 1, behind: 1` — 4 slots |  4 ms |  70 ms | 216 ms | 5–20% |
+
+The same effect from the other side: raising `maxConcurrent` from 3 to 6 made it
+*worse* (5 slow turns in 16 against 3 in 14), not better. More decode in flight
+is more eviction, not more readiness. The defaults are now one group each way.
+
+### Two hypotheses that were wrong, and one dependency that was backed out
+
+Kept because each was plausible, each was tested, and each failed.
+
+**Retaining the prefetched images does not retain their bitmaps.** Prefetch
+decodes into a throwaway `Image()` that is garbage once `decode()` settles, so
+the obvious fix was an LRU of live references. Measured: decode 26 pages, then
+re-decode the first — **72.5 ms with no references held, 160.4 ms holding all
+26**. Chrome keeps the encoded bytes and discards the raster for a detached
+image regardless, and 26 × 26 MB of retained elements only added pressure.
+Mounting the image in the DOM instead (2px, near-transparent, not
+`display: none`) measured 82.7 ms against 88.4 ms detached — no retention there
+either.
+
+**Progressive JPEG is the real decode cost, and transcoding is still not worth
+it.** `en-mono` ships progressive; `en-fan` and `raw-mono` are baseline, which
+is why only that edition felt slow. Decode, bytes already cached:
+
+| encoding | pixels | median decode |
+| -------- | -----: | ------------: |
+| progressive, as released | 6.6 MP | 76.7 ms |
+| the same image, baseline | 6.6 MP | 26.4 ms |
+| baseline, downscaled to 1024 wide | 1.5 MP | 20.7 ms |
+
+Resolution is the minor factor — 4.4× fewer pixels saves 6 ms where dropping
+progressive saves 50. A lossless `jpegtran`-style transform was built against
+`turbojpeg` (`mozjpeg`'s safe API is pixel-level only, and this workspace sets
+`unsafe_code = "forbid"`), and **backed out**. Three reasons, in order: the
+transform costs a **median 86 ms** in process over 24 real pages — more than the
+50 ms it saves — so it needs a disk cache plus a cold-path policy or the first
+read of every page gets *slower*; it needs `libturbojpeg` in CI; and Komga,
+which is the comparison that prompted this, does not do it at all — it "passes
+the raw image data without decoding" when the client can decode the format, so
+it serves the identical bytes and pays the identical decode.
+
+What is left is a tail: with the narrow window the median turn is 4 ms and a few
+turns in twenty still cost 100–300 ms, when the browser has evicted a 26 MB
+bitmap. That is a property of large progressive scans, and no client-side
+arrangement measured here changes it.
+
+## A fast flick did work it had already thrown away
+
+"Performance switching pages fast still seems kinda bad on the large image
+edition — but maybe I'm just trying to switch too fast." Not too fast: a real
+defect, and one the reader had already half-diagnosed as "the prefetch just
+catches up".
+
+**Two wrong readings on the way to it, both from the measurement rather than
+the code.** The first burst test polled for the display to go quiet and gave up
+after 500 ms of no change, which under a flick exits *before* the first repaint
+— so it read a mid-flick frame as final and reported that sixteen presses had
+advanced three pages. That looked like dropped keypresses. Reading the position
+the reader had actually committed settled it: sixteen presses at 25 ms advanced
+the state **29 slots** and the display **28 pages**. Nothing was dropped, and
+the second reading — that the display merely lagged — was right.
+
+**What the lag was.** A sixteen-press flick lands on one group: **two pages**.
+It requested **twenty-nine** — every page from 3 to 31 — and twenty-one of those
+requests were issued *after* the reader had stopped pressing. `decode.ts` asked
+`stale()` only once the decode had finished, to decide whether to *show* the
+result; nothing asked before starting one. So every superseded frame was fetched
+in full (1.8 MB) and decoded in full (~77 ms) before the queue reached the page
+the reader was looking at. Catch-up after the last keypress: **1595 ms** at
+25 ms/press, **708 ms** at 60 ms. `raw-mono` measured 0 ms at the same rates,
+because pages that decode in 8–12 ms never queue up in the first place — which
+is why only the large edition felt broken.
+
+**The fix is where the question is asked, not a new mechanism.** `stale` moves
+inside the job, so it is answered when the queue *reaches* the work rather than
+when it was enqueued — at enqueue time nothing is ever stale. A superseded job
+resolves immediately and never calls `makeImage`, so it costs neither the decode
+nor the fetch: `decodeTo` is what assigns `src`, and no assignment means no
+request. No signature changed.
+
+The prefetch effect needed the same thing for the same reason and did not have
+it at all: it fires once per group crossed, so a flick queues a fresh window per
+intermediate position. Each job now compares against the position it was queued
+for and drops if the reader has moved — strict equality rather than proximity,
+since the position they moved *to* has already queued its own window through the
+same effect, so nothing is lost.
+
+| | before | swap queue fixed | both fixed |
+| ---------------------------- | -----: | ---------------: | ---------: |
+| catch-up, 16 presses @ 25 ms | 1595 ms | 586 ms | **524 ms** |
+| catch-up, 12 presses @ 60 ms |  708 ms | 378 ms | **383 ms** |
+| pages fetched (2 needed)     |      29 |     29 |     **17** |
+
+Ordinary reading is unregressed and its tail is better: median 5 ms, p90 17 ms,
+against a median 4 ms and p90 282 ms before. The seventeen remaining requests
+are windows already in flight when the reader moved; `<img>.decode()` cannot be
+aborted without discarding the bytes it has, so those are not reclaimable
+without a different mechanism.
+
+**What this deliberately does not change.** The screen still holds the outgoing
+page through a flick and then jumps once, rather than flipping through every
+page crossed. That is `decode.ts`'s own rule — a fast flick's intermediate
+targets never flash onto screen after the reader has moved past them — and it is
+why the fix shortens the wait rather than filling it.
+
+## Twenty times the pixels, and the sluggishness that survived three fixes
+
+"The large images still seem sluggish to me" — after the pairing, the group
+window and the stale-job fixes had each measurably helped. They had, and the
+reader was still right, because none of them touched the actual cost.
+
+**The measurement that had been missing all along is one line.** The `<img>`
+elements report `naturalWidth`/`naturalHeight` against the box they are drawn
+into:
+
+```
+natural 2147x3056   drawn 693x475
+```
+
+6.56 megapixels fetched and decoded to fill 0.33 — **twenty times the pixels
+that reach the screen**, in a 1385×512 window at `devicePixelRatio` 1. There is
+no display on which those pixels are visible.
+
+**And it reverses what this file recorded earlier.** The progressive-JPEG
+section above concluded that resolution was the minor factor — that dropping
+progressive saved 50 ms where downscaling saved 6. That came from a noisy run
+which put a 1024-wide decode at 20.7 ms. Measured cleanly, with the bytes cached
+so the timing is decode alone:
+
+| fetched at | pixels | decode | decoded bitmap |
+| ---------- | -----: | -----: | -------------: |
+| 2147, progressive (as released) | 6.56 MP | 74.5 ms | 26.2 MB |
+| 2147, baseline | 6.56 MP | 26.5 ms | 26.2 MB |
+| 1600 | 3.64 MP | 14.9 ms | 14.6 MB |
+| 1024 | 1.49 MP | 7.3 ms | 6.0 MB |
+| 700 | 0.70 MP | 4.3 ms | 2.8 MB |
+
+Full → 1024 is 10×; progressive → baseline is 2.8×. **Resolution is the
+dominant factor and the earlier entry had the ranking backwards**, which is what
+sent that work toward a transcode that was then backed out. The transcode's own
+verdict stands — it costs more than it saves — but the reasoning that reached
+for it was wrong twice over.
+
+**The bitmap column is the other half, and it closes the tail nobody had
+closed.** The residual "a few turns in twenty at 100–300 ms" recorded above is
+the browser evicting 26 MB bitmaps under pressure. At 2.8 MB they are not worth
+evicting, so those turns stop happening rather than becoming rarer — which is
+why this fixes something three previous passes could only mitigate.
+
+### What shipped
+
+`?w=` on the page route, and `pageSize.ts` deciding what to ask for.
+
+**Never upscale**: `fit_at` reads the image *header* only — `into_dimensions`
+parses to the SOF marker and stops — and hands back `None` when the page is
+already within the requested edge, so the original bytes are served untouched
+and nothing is cached. Verified byte-identical on `raw-mono` (685×1024) at
+`?w=1024` and `?w=2048`. That is what makes the parameter safe to apply to every
+edition rather than only the large one: on this corpus `raw-mono` and `en-fan`
+are frequently already smaller than a viewport asks for, and re-encoding them
+would cost quality for no pixels gained.
+
+**The long edge is in the `ETag`.** One page now has a representation per size,
+and a tag naming only member and offset would let a client holding the 1024px
+version be answered `304` when it asked for 2048 — a page that looks soft for a
+day with nothing to point at. The full-size request keeps the tag it always had,
+so a client that cached a page before this existed still validates.
+
+**A ladder, not the exact size** — 512/768/1024/1536/2048/3072 — because the
+server caches one file per (member, page, long edge) and a reader dragging a
+window edge would otherwise mint an entry per pixel of width.
+
+**Zoom needs no branch of its own.** Magnification multiplies the pixels wanted;
+once that exceeds the top rung, `requestedLongEdge` answers `undefined` and the
+original is fetched. One rule covers fit-whole, a nudge above 1×, and L1's 8×,
+and a page fetched for fit-whole can never be what a zoom draws from.
+
+### Measured after, in the reader
+
+| | before any of this | after prefetch + stale fixes | after resize |
+| ----------------- | ----: | ----: | ----: |
+| steady median     | 110 ms | 4 ms | 10 ms |
+| steady p90        | 199 ms | 282 ms | **15 ms** |
+| steady worst      | 271 ms | 335 ms | **35 ms** |
+| turns over 100 ms | most | ~20% | **0 of 18** |
+| flick catch-up    | — | 524 ms | **283 ms** |
+
+The median moved 4 → 10 ms and that is the trade, taken deliberately:
+consistently 10 ms beats usually-4-and-sometimes-300. Bytes on the wire fall
+with it — `en-mono` page 60 is 1,783,784 bytes at full size and 105,139 at
+`?w=768`.
+
+**One cost is real and not yet paid down.** The first read of a page at a new
+size costs the server a decode and resize — measured at a 157 ms median across a
+cold pass, against 10 ms warm — so a volume opened for the first time is slower
+until its cache fills. Prefetch reaching one group ahead covers ordinary
+reading, since generation is faster than a reader turns pages; a fast flick
+through cold pages is not covered. Pre-warming a work's window on load would
+close it and is not built.
+
+## The flicker was the layout running ahead of the pixels
+
+Reported alongside the flick complaint: "there's also some flickering, and the
+page that we were on when flicking fast seems to linger". Two different things,
+and only the first is fixed here.
+
+Sampling the page area every 16 ms through a sixteen-press flick showed the
+artwork sitting still on pages 1–2 for the whole flick while the **cell
+geometry** changed three times in 114 ms — one wide cell, two half-width cells,
+one, two. **Zero blank frames** at any point, so nothing was half-drawn; the
+frame around the pictures was flapping.
+
+The cause is that the two follow different clocks. A keypress moves
+`ReadingState` at once, so `grouped`, `current` and therefore
+`cellsFor(current)`'s `wide` all change on the press — while each cell's picture
+waits for `decode.ts`'s gate. Crossing a solo group (the aligned pairing adds
+four to `en-mono`) collapses the layout to one wide cell and back, per press,
+under artwork that has not moved.
+
+**`wide` is readable off the screen rather than predicted**, which is what makes
+the fix small. `cellsFor` hands both cells the same URL exactly when a group is
+wide — a joined spread's two slots share one page, and a solo slot is mirrored
+into the second cell — so "both cells are drawing the same source" *is* wide.
+`PageView` now reports what it is actually drawing (`onShown`), `App.tsx` holds
+those two strings, and the geometry compares them. No new gate, no added
+latency: the layout simply stops running ahead. The target's own `wide` is still
+used for the first render, before either cell has reported anything.
+
+Measured on the same flick, before and after:
+
+| | layout changes | frames drawn |
+| - | -------------: | ------------ |
+| before | 3 | `[0]/1  [2,1]/2  [2]/1  [2,1]/2  [29,28]/2` |
+| after  | 1 | `[0]/1  [2,1]/2  [29,28]/2` |
+
+**The linger is untouched and is a different problem.** The screen still holds
+one spread through the flick and then jumps, because `decode.ts` deliberately
+never shows a frame the reader has already moved past. Showing them needs a
+monotonic ordering `presentWhenDecoded` does not have — it compares opaque `src`
+strings and can only tell "current" from "not current", never "newer" from
+"older". Two attempts at relaxing it without that ordering are recorded as
+failures: skipping only when work is queued behind changed nothing on screen
+(presentation is gated separately), and relaxing the presentation gate too broke
+four tests outright, because `unboundedDecodeQueue` reports no pending work and
+a three-deep queue settles out of order — so a stale page could paint over a
+newer one.
+
+**Not covered by a test.** `App.tsx` is Vitest-unreachable, so the evidence is
+the browser measurement above.
+
+## Showing the pages go by, and the guarantee it costs
+
+The other half of the flicker report — "the page that we were on when flicking
+fast seems to linger and it's confusing". The linger was real: a sixteen-press
+flick drew **three** frames, holding one spread for the whole flick and then
+jumping twenty-seven pages.
+
+That was `decode.ts` working as designed. `stale()` was asked twice: once at
+dequeue, to skip decoding a frame the reader had passed, and once at the end, to
+refuse to *show* one. Under a flick every settled frame is superseded — the
+reader pressed again while it decoded — so both tests said no to everything
+except the last.
+
+**Two failed attempts came first, and both are worth recording.** Relaxing only
+the dequeue test changed nothing on screen, because presentation is gated
+separately; it merely added back the wasted decodes the skip had removed. Then
+relaxing the presentation test as well broke four tests immediately, and
+rightly: `presentWhenDecoded` compares opaque `src` strings, so it can tell
+"current" from "not current" but never "newer" from "older" — and with a
+three-deep queue settling out of order, a frame the reader had passed could
+paint *over* one they had not. A code comment asserting it "can only ever draw
+something newer" was written and was false.
+
+**What was missing was an ordering, and it cannot live in `decode.ts`.** Only
+`PageView` knows the sequence its own `src` took. It now numbers each attempt
+and drops any decode that finishes after a newer one has already been drawn;
+`presentWhenDecoded` reports whether it actually decoded (a skipped job has no
+image to show) and otherwise presents whatever it produced. The dequeue test
+became `stale() && queue.pending() > 0`: superseded is not on its own a reason
+to skip — newer work already waiting is. That is self-tuning, which is the part
+worth keeping. At reading size a page decodes in ~10 ms and the queue drains
+about as fast as a reader can press, so most frames get through; zoomed to full
+resolution a decode is ~75 ms, the queue stays backed up, and the same test
+skips nearly everything.
+
+Measured on the same sixteen-press flick:
+
+| | before | after |
+| ------------------------ | -----: | ----: |
+| frames drawn             | 3 | **10** |
+| linger after last press  | ~250 ms | **221 ms** |
+| blank frames             | 0 | 0 |
+| tear between the halves  | 0.0 ms | 0.0 ms (max 0.0 over 12 turns) |
+
+Pages travel past — `0, 2/1, 3, 4/3, 7/6, 11/6, 13/12, 17/12, 25/24, 29/28` —
+instead of one spread holding and jumping.
+
+**The cost is a real weakening of the pair guarantee, and it is not
+hypothetical.** A superseded half is now drawn when nothing newer is queued, so
+a pair whose two cells decide differently can briefly show two generations at
+once: `11/6` and `17/12` above are exactly that. In an ordinary turn both cells
+change together, join one cohort and decode together, so they stay in lockstep —
+measured at 0.0 ms apart across twelve turns — but the guarantee is now "they
+move together in practice" rather than "they cannot do otherwise". Two of
+`decode.test.ts`'s assertions were rewritten to state the weaker contract rather
+than deleted, so the change is visible to the next reader.
+
+**And the property that keeps it safe has no test.** The ordering guard lives in
+`PageView`, which Vitest cannot reach, so "never draw older over newer" rests on
+the browser measurement above. `decode.ts`'s own tests now pin a weaker contract
+than they did.
+
+## The flicker that was left, and the two things `wide` had been meaning
+
+With a flick showing pages go by, a slower pass turned the remaining flicker up:
+"it's apparent at low speeds". The obvious reading was that showing intermediate
+frames had introduced it, and the obvious fix a speed threshold — flip between
+the two behaviours depending on how fast the reader is pressing. Both were
+wrong, and measuring said so before anything was built.
+
+Sampled every 8 ms at 700 ms per turn: **zero mixed-pair frames**, so the two
+cells were not disagreeing. What the timeline showed instead was three
+consecutive full-width frames — `2/1`, `3 [wide]`, `4 [wide]`, `5 [wide]`,
+`7/6`. Those are real groups. `en-mono` joins page 4 as a spread, and pages 3
+and 5 are *unpartnered* — the aligned pairing's parity cost, four such pages in
+this volume and clustered near the front matter. Reading across them collapsed
+the layout to one wide page and expanded it again, turn after turn. **The same
+frames appear whichever presentation rule is in force**, so a fast/slow hybrid
+could not have touched it.
+
+**`cellsFor` was answering one question that was really two.**
+
+```ts
+const wide = group.spread === true || group.slots.length === 1
+```
+
+A joined spread *is* one image twice as wide and has to span the group. A page
+that is merely alone is an ordinary page that happens to have no partner, and
+drawing it full width is a choice — the one that made the geometry jump. The
+two are now separate: `wide` is the spread alone, and `alone` says whether the
+second cell holds a real page or a mirror of the first. An unpartnered page
+keeps its own cell and leaves the other empty.
+
+They also follow different clocks, which is the part worth keeping. `wide` is
+taken from the target group, because it is a fact about the page rather than
+about how far a decode has got — reading it off the screen would let two cells
+briefly holding one URL mid-flick resize the artwork. `alone` is read off the
+drawn sources, because that is what governs whether a cell is *visible*, and a
+layout keyed on state flaps ahead of the pictures.
+
+Measured across ten turns at reading pace, by the drawn width of the first cell:
+
+| frame | before | after |
+| ----- | -----: | ----: |
+| `2/1` | 693 | 693 |
+| `3`   | **1385** | 693 |
+| `4` (a real spread) | 1385 | 1385 |
+| `5`   | **1385** | 693 |
+| `7/6` | 693 | 693 |
+
+Two geometry changes over ten turns, both at page 4, both correct. A fast flick
+is unchanged: eleven frames going by, two width changes, both at the spread.
+
+**What it costs** is a blank half beside an unpartnered page rather than an
+enlarged one — four pages per volume in this edition.
+
+**One process note, because the failure was silent.** Adding the test for this
+introduced a stray `})` that closed the `cellsFor` block early. Vitest printed
+`591 passed` and no failing assertion while **52 tests had stopped running**;
+only the `Test Files 1 failed` line gave it away. A green count is not evidence
+that the tests ran — the file count is the thing to read.
+
+## Two review findings, and a guarantee put back
+
+A review of the whole branch, after the reader had signed off on how it felt.
+Two real defects, both introduced by this work, and one weakening that turned
+out to be avoidable.
+
+### An unpartnered page was claiming the whole group
+
+Splitting `wide` from `alone` left `cellOf` answering `'only'` for both. That
+reads as English — an unpartnered page *is* the only page in its group — and it
+is the wrong sense of the word for the one consumer: `viewport.ts`'s `cellBox`
+takes `'only'` to mean *the page fills the group* and returns `WHOLE`. True of a
+joined spread; false of an unpartnered page the moment it stopped spanning the
+group and kept its own half-width cell. A zoom on such a page would have been
+mapped against twice the width it covers, putting a swap's rect about that far
+across. `'only'` is the spread alone now, and the test that asserted otherwise
+is renamed rather than edited, so the change is visible.
+
+### The resize filter was a cover's, not a reader's
+
+`fit_at` reused `thumbnail_at`, and `image`'s `thumbnail` is documented as "a
+fast integer algorithm where each source pixel contributes to exactly one target
+pixel… may give aliasing artifacts". That is the right trade for a 512px cover
+and the wrong one for the page a reader is looking at — manga is screentone and
+thin ink, the two things that alias worst. Reducing `en-mono`'s 2147px page to
+768px through it and through a proper filter differ at **25.3 dB PSNR**, with
+the hatching visibly broken up on the fast path.
+
+`CatmullRom` rather than `Lanczos3`: measured at about **5 ms on a 100 ms
+generation**, so the choice is nearly free, and Lanczos rings on high-contrast
+edges — every panel border and every letter on the page. Reading pages got their
+own `PAGE_FORMAT_VERSION` so changing this does not throw away every cover and
+tile in a library.
+
+### The pair guarantee did not have to stay weak
+
+Showing a flick's intermediate frames had cost the guarantee that a two-page
+turn's halves move together: each cell decided independently whether its decode
+was still worth doing, so two cells asking moments apart could answer
+differently and the pair would show two generations at once. Measured before:
+frames `11/6` and `17/12` in a single flick.
+
+The fix is to ask once. `cohort.ts` hands each job a `CohortMember` whose
+`decideOnce` evaluates on the first member to ask and memoises for the rest, so
+both halves of a turn skip together or decode together. Measured after: **zero
+split-generation frames**, the same ten frames going by, tearing still 0.0 ms
+median across twelve turns. The guarantee is back to "cannot do otherwise"
+rather than "does not in practice", at no cost to the flick.
+
+Two `decode.test.ts` assertions became unreachable — they constructed exactly
+the split the fix prevents — and were replaced by tests that pin the shared
+decision directly.
+
+### And the untestable guard was extracted
+
+The ordering that keeps a flick safe — never draw a decode older than what is
+already drawn — lived inside `PageView`, which Vitest cannot reach, so the one
+property protecting it rested on a browser measurement. It is `ordering.ts` now,
+with tests for the case that matters: a queue running three decodes at once
+settles them in whatever order the browser finishes, so a flick landing on page
+29 must not be overwritten by page 21 arriving afterwards.
+
+## Testing the part that had no tests
+
+The whole two-page mechanism rests on properties no test in this repository
+could see. `App.tsx` and `PageView` need a DOM; every existing test is
+deliberately DOM-free — `decode.ts`'s own header says "no DOM, no `jsdom`" — so
+the rules were covered and the assembly was not. Every defect this work shipped
+and then fixed was in the assembly, and every one was caught by a person
+looking at the screen.
+
+**`jsdom` would not have closed it**, which is why the obvious answer was the
+wrong one. It has no layout engine — `getBoundingClientRect` returns zeroes —
+and no real `HTMLImageElement.decode()`. The flicker was cell widths; the tear
+was two decodes landing at different times; the sluggishness was a decode. All
+three are exactly what a headless DOM cannot answer.
+
+So the `browser` project: Vitest 4's own browser mode over Playwright's
+Chromium, holding six tests that cover what nothing else can — a real decode
+resolving before a page is drawn, the outgoing page surviving a source that can
+never decode, two cells taking equal width in a flex row, one collapsing to zero
+while its neighbour spans the group, `onShown` reporting what is drawn, and both
+halves of a pair presenting inside one frame.
+
+**Kept small and kept out of CI.** A browser project needs a downloaded
+Chromium, and this CI has no cache to keep one in, so `npm run test` stays the
+`node` project alone — exactly what the forge runs — and `test:browser` is a
+separate script `check-all.sh` runs locally, naming itself as unmeasured when
+the browser is absent. The browser tests are for the properties nothing else can
+see, not for duplicating the 654 tests that already run in milliseconds.
+
+**Two setup traps, both caught by the tools rather than by reasoning.**
+`browser.provider` takes a factory in Vitest 4.1, not the string every older
+example shows — refused outright, with the error naming the fix. And
+`vite.config.ts` must import `defineConfig` from `vitest/config` rather than
+`vite`, or the `test` key is a type error; since `tsc -b` typechecks that file,
+the wrong import fails the build rather than silently ignoring the block.
+
+A third was caught only by reading the output: React logged "the current testing
+environment is not configured to support `act`" while the tests passed anyway.
+`act` was not flushing effects, so a test could have passed by observing state
+React had not committed. `browser-setup.ts` sets `IS_REACT_ACT_ENVIRONMENT`.

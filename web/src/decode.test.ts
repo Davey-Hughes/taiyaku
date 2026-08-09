@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import { createCohort } from './cohort'
 import {
   createDecodeQueue,
   decodeTo,
   presentWhenDecoded,
+  unboundedDecodeQueue,
   type Decodable,
 } from './decode'
 
@@ -218,7 +220,13 @@ describe('presentWhenDecoded', () => {
     expect(shown).toBe('new.jpg')
   })
 
-  it('discards a decode that a later request has already superseded', async () => {
+  // **Contract changed with the flick work.** This used to assert that a
+  // superseded decode is never shown. Ordering now lives in the caller —
+  // `PageView` drops anything older than what it is already drawing — so this
+  // function presents whatever it decoded and the reader sees pages go by
+  // during a flick instead of one frozen spread. What it must still never do is
+  // present a job it *skipped*, which the tests below pin.
+  it('presents a decode a later request superseded, leaving ordering to the caller', async () => {
     const d = deferred<void>()
     const queue = createDecodeQueue(1)
     let shown = 'old.jpg'
@@ -233,7 +241,175 @@ describe('presentWhenDecoded', () => {
     )
     d.resolve()
     await p
-    expect(shown).toBe('old.jpg')
+    expect(shown).toBe('stale.jpg')
+  })
+
+  // The flick case. A job that has gone stale by the time the queue reaches it
+  // must cost nothing — not the decode, and not the fetch that assigning `src`
+  // would trigger. Measured before this: sixteen presses needing two pages
+  // requested twenty-nine, twenty-one of them after the reader had stopped.
+  it('never touches a superseded source that newer work is waiting behind, so a passed-over page costs no fetch and no decode', async () => {
+    const queue = createDecodeQueue(1)
+    const first = deferred<void>()
+    const built: string[] = []
+    const makeImage = (label: string) => () => {
+      built.push(label)
+      return fakeImage(() =>
+        label === 'held' ? first.promise : Promise.resolve(),
+      )
+    }
+
+    // Occupies the queue's single slot.
+    void presentWhenDecoded(
+      makeImage('held'),
+      queue,
+      'held.jpg',
+      () => false,
+      () => {},
+    )
+    // Queued behind it and superseded before it runs — with a third job
+    // waiting behind *it*, which is what makes drawing it pointless.
+    const skipped = presentWhenDecoded(
+      makeImage('passed-over'),
+      queue,
+      'passed-over.jpg',
+      () => true,
+      () => {},
+    )
+    void presentWhenDecoded(
+      makeImage('newest'),
+      queue,
+      'newest.jpg',
+      () => false,
+      () => {},
+    )
+
+    expect(built).toEqual(['held'])
+    first.resolve()
+    await skipped
+    // `passed-over` never built an image, so it never assigned a `src` and
+    // never asked the network for anything. `newest` did.
+    expect(built).toEqual(['held', 'newest'])
+  })
+
+  // The other half, and the one that makes a flick visible: a superseded frame
+  // with nothing waiting behind it is still the freshest picture that exists,
+  // so it is decoded and shown.
+  it('decodes and presents a superseded source when nothing newer is waiting', async () => {
+    const queue = createDecodeQueue(1)
+    const shown: string[] = []
+    await presentWhenDecoded(
+      () => fakeImage(() => Promise.resolve()),
+      queue,
+      'passed-over.jpg',
+      () => true,
+      (src) => shown.push(src),
+    )
+    expect(shown).toEqual(['passed-over.jpg'])
+  })
+
+  it('settles a skipped job rather than leaving its caller waiting forever, and shows nothing for it', async () => {
+    const queue = createDecodeQueue(1)
+    const held = deferred<void>()
+    void queue.run(() => held.promise)
+    let presented = false
+    const skipped = presentWhenDecoded(
+      () => fakeImage(() => Promise.resolve()),
+      queue,
+      'gone.jpg',
+      () => true,
+      () => {
+        presented = true
+      },
+    )
+    // Newer work behind it, so it is skipped rather than drawn.
+    void queue.run(() => Promise.resolve())
+    held.resolve()
+    await expect(skipped).resolves.toBeUndefined()
+    // A skipped job pointed no image at anything, so presenting its `src` would
+    // show an undecoded source.
+    expect(presented).toBe(false)
+  })
+
+  // **This scenario is no longer reachable, which is the point.** It used to
+  // put one skipped member and one decoded member in a single cohort — the
+  // shape that let a pair show two generations at once. `decideOnce` makes the
+  // skip/decode call once per cohort, so both halves of a turn now take the
+  // same path. The test that follows pins that directly.
+  it('gives every member of a cohort the same skip decision, so a pair cannot split', async () => {
+    const cohort = createCohort()
+    const shown: string[] = []
+    const busy = createDecodeQueue(1)
+    const holding = deferred<void>()
+    void busy.run(() => holding.promise)
+
+    // Both halves of one turn, both superseded, with newer work queued behind.
+    const left = presentWhenDecoded(
+      () => fakeImage(() => Promise.resolve()),
+      busy,
+      'left.jpg',
+      () => true,
+      (src) => shown.push(src),
+      cohort,
+    )
+    const right = presentWhenDecoded(
+      () => fakeImage(() => Promise.resolve()),
+      busy,
+      'right.jpg',
+      () => true,
+      (src) => shown.push(src),
+      cohort,
+    )
+    void busy.run(() => Promise.resolve())
+    holding.resolve()
+
+    await Promise.all([left, right])
+    // Both skipped, or both drawn — never one of each.
+    expect(shown.length === 0 || shown.length === 2).toBe(true)
+  })
+
+  it('decides once even when the two members would answer differently on their own', async () => {
+    const cohort = createCohort()
+    const shown: string[] = []
+    const busy = createDecodeQueue(1)
+    const holding = deferred<void>()
+    void busy.run(() => holding.promise)
+
+    // One half superseded, the other not — the split that used to tear.
+    const stale = presentWhenDecoded(
+      () => fakeImage(() => Promise.resolve()),
+      busy,
+      'stale.jpg',
+      () => true,
+      (src) => shown.push(src),
+      cohort,
+    )
+    const fresh = presentWhenDecoded(
+      () => fakeImage(() => Promise.resolve()),
+      busy,
+      'fresh.jpg',
+      () => false,
+      (src) => shown.push(src),
+      cohort,
+    )
+    void busy.run(() => Promise.resolve())
+    holding.resolve()
+
+    await Promise.all([stale, fresh])
+    expect(shown.length === 0 || shown.length === 2).toBe(true)
+  })
+
+  it('still decodes a job that is current when the queue reaches it', async () => {
+    const queue = createDecodeQueue(1)
+    const shown: string[] = []
+    await presentWhenDecoded(
+      () => fakeImage(() => Promise.resolve()),
+      queue,
+      'wanted.jpg',
+      () => false,
+      (src) => shown.push(src),
+    )
+    expect(shown).toEqual(['wanted.jpg'])
   })
 
   it('creates a fresh image per call, so two overlapping requests never fight over one src', async () => {
@@ -265,5 +441,100 @@ describe('presentWhenDecoded', () => {
     expect(made).toHaveLength(2)
     expect(made[0]?.src).toBe('a.jpg')
     expect(made[1]?.src).toBe('b.jpg')
+  })
+
+  // `two` mode's pair, at the seam `PageView` actually uses. The old behaviour
+  // — each half presenting the moment its own decode settled — is what a
+  // reader reported as the halves not arriving together, measured at a median
+  // 89.7 ms apart in the browser; see `cohort.ts`.
+  it('holds a decoded page until the page beside it has decoded too, when both share a cohort', async () => {
+    const cohort = createCohort()
+    const fast = deferred<void>()
+    const slow = deferred<void>()
+    const shown: string[] = []
+
+    const left = presentWhenDecoded(
+      () => fakeImage(() => fast.promise),
+      unboundedDecodeQueue,
+      'left.jpg',
+      () => false,
+      (src) => shown.push(src),
+      cohort,
+    )
+    const right = presentWhenDecoded(
+      () => fakeImage(() => slow.promise),
+      unboundedDecodeQueue,
+      'right.jpg',
+      () => false,
+      (src) => shown.push(src),
+      cohort,
+    )
+
+    fast.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(shown).toEqual([])
+
+    slow.resolve()
+    await Promise.all([left, right])
+    expect(shown).toEqual(['left.jpg', 'right.jpg'])
+  })
+
+  it('still presents a lone page in a cohort, so single mode pays no barrier', async () => {
+    const cohort = createCohort()
+    const only = deferred<void>()
+    const shown: string[] = []
+    const p = presentWhenDecoded(
+      () => fakeImage(() => only.promise),
+      unboundedDecodeQueue,
+      'only.jpg',
+      () => false,
+      (src) => shown.push(src),
+      cohort,
+    )
+    only.resolve()
+    await p
+    expect(shown).toEqual(['only.jpg'])
+  })
+
+  // **This guarantee was weakened by the flick work, deliberately, and the
+  // weakening is the cost of showing pages go by.** It used to read "does not
+  // present a half the reader has moved past". A superseded half is now drawn
+  // when nothing newer is queued, so a pair whose two cells make that decision
+  // differently can briefly show two generations at once. In a real turn both
+  // cells change together, join one cohort and decode together, so they move in
+  // lockstep; this is reachable only when one cell's job is skipped and its
+  // partner's is not. Measured in the browser rather than assumed — see
+  // `docs/notes.md`.
+  it('presents both halves of a cohort once it releases, superseded or not', async () => {
+    const cohort = createCohort()
+    const fast = deferred<void>()
+    const slow = deferred<void>()
+    const shown: string[] = []
+    let staleLeft = false
+
+    const left = presentWhenDecoded(
+      () => fakeImage(() => fast.promise),
+      unboundedDecodeQueue,
+      'left.jpg',
+      () => staleLeft,
+      (src) => shown.push(src),
+      cohort,
+    )
+    const right = presentWhenDecoded(
+      () => fakeImage(() => slow.promise),
+      unboundedDecodeQueue,
+      'right.jpg',
+      () => false,
+      (src) => shown.push(src),
+      cohort,
+    )
+
+    fast.resolve()
+    staleLeft = true
+    slow.resolve()
+    await Promise.all([left, right])
+    expect(shown).toEqual(['left.jpg', 'right.jpg'])
   })
 })

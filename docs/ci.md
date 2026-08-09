@@ -44,32 +44,79 @@ The corpus checks are the one thing the script measures that the forge cannot,
 since CI has no corpus. Everything else runs in both places — with one
 exception.
 
-**Setting `TAIYAKU_CORPUS` costs far more than the corpus job itself, and two
-source files claimed otherwise until 2026-08-08.** The script exports
-`TAIYAKU_CORPUS` before its `test` job, and that job is an *unfiltered*
+## Two profiles, and the gate that took an hour
+
+**Setting `TAIYAKU_CORPUS` used to cost far more than the corpus job itself.**
+The script exports it before the `test` job, and that job is an *unfiltered*
 `cargo test --workspace --all-features` — the `corpus::` filter belongs to the
-separate corpus job below it. So a local gate run with a corpus present also
-runs the two one-off measurement modules, `geometry_experiment` and
-`region_experiment`, in the **debug** profile. `geometry_experiment`
-fingerprints roughly 1.4 million Lanczos3 crops: about a minute under
-`--release` and about forty without. Measured rather than estimated — a gate
-run was killed at **1h09m** still inside that one test.
-`region_experiment` costs about a minute there and is not the problem. Both
-modules' headers said `check-all.sh` "does not run this", reaching for the
-`corpus::` filter and missing the job above it; both are corrected.
-CI is unaffected, having no corpus. For a fast pass that mirrors CI exactly,
-run the script *without* the variable and take the corpus job separately:
+separate corpus job below it. So a local gate run with a corpus present ran all
+fifteen standing checks twice, both times in **debug**, and ran the two one-off
+measurement modules as well. `geometry_experiment` fingerprints roughly 1.4
+million Lanczos3 crops: about a minute under `--release`, about forty without.
+Measured rather than estimated — one gate run was killed at **1h09m** still
+inside that single test, and another at over 25 minutes without reaching the
+second corpus pass.
 
-```sh
-env -u TAIYAKU_CORPUS scripts/check-all.sh
-TAIYAKU_CORPUS="$PWD/corpus" cargo test --workspace --all-features corpus:: \
-  -- --nocapture --test-threads=1
-```
+**Fixed by giving the two jobs the profiles they each want**, rather than by
+documenting a workaround:
 
-The two modules are deliberately not filtered out of the `test` job: a one-off
-measurement that silently stops being compiled and run is a worse failure than
-a slow gate, and the release-profile invocation each module's header names is
-how they are meant to be run on purpose.
+- The `test` job runs `env -u TAIYAKU_CORPUS cargo test --workspace
+  --all-features`. Removing the variable drops the corpus checks and both
+  experiment modules, and makes the job a *truer* mirror of CI, which has no
+  corpus and never ran any of them. **4.4 seconds.**
+- The corpus job runs `--release`. It is not a CI job, so the mirror above does
+  not depend on its profile. **6.9 seconds** warm; about 1:13 the first time,
+  since `[profile.release]` is `lto = "thin"` with `codegen-units = 1`.
+
+The whole gate — all four jobs plus the corpus — now takes about **15 seconds**
+warm.
+
+**What that gives up, and how to get it back.** Integer overflow panics and
+`debug_assert!` are compiled only under `debug_assertions`, and this repository
+has two of the latter that matter: `PageRange::new`'s "page range must not be
+inverted" and `Run::paired`'s equal-length check, both in
+`taiyaku-core/src/lib.rs`. The debug `test` job exercises both through the unit
+tests; the release corpus job cannot fail on either over real material.
+`scripts/check-all.sh --corpus-debug` runs that pass in debug instead — worth
+doing when touching `PageRange`, `Run::paired`, or arithmetic on page and slot
+indices, and not otherwise. The script says which profile the corpus job used,
+right above the run, so a reader does not have to remember this page.
+
+The two experiment modules are still not filtered out of the test target: a
+one-off measurement that silently stops being *compiled* is the failure their own
+assertions exist to prevent. What changed is the gate's environment, not their
+gating — each module's header names the release-profile command it is meant to
+be run with.
+
+**CI stays in debug, and that was measured rather than assumed.** The obvious
+next step after the split above is to make CI match — the local corpus job got
+much faster under `--release`, so why not the forge. It is the wrong move here,
+for three reasons that are properties of *this* CI rather than of release builds
+in general:
+
+- **There is no cache.** Every job above clones with `git init` and a `--depth 1`
+  fetch into a fresh container, so every run compiles the workspace from
+  nothing. There is no warm second run for a release profile to pay off across.
+- **There is no corpus.** CI's `test` job runs the unit suite alone — 4.4
+  seconds in debug. The tests release actually speeds up are the fifteen
+  standing corpus checks, and CI skips every one.
+- **`[profile.release]` is tuned for the aligner, not for compiling.**
+  `lto = "thin"` with `codegen-units = 1` is the slowest configuration to build,
+  across an `axum`/`tokio` tree.
+
+Measured cold, with an empty `CARGO_TARGET_DIR`, which is CI's condition on
+every run:
+
+| Profile | `cargo test --workspace --all-features --no-run` |
+| ------- | ----------------------------------------------: |
+| debug   | 22.5 s |
+| release | 1 m 26.3 s |
+
+So release would cost CI about 64 extra seconds per run to save a 4.4-second
+test suite, and give up overflow checks and both `debug_assert!`s while doing
+it. The local gate and CI therefore run the same `test` job in the same profile,
+and the mirror in `scripts/check-all.sh` holds exactly — the release profile
+appears only in the corpus job, which is the one thing CI does not have.
 
 **`npm ci` is not mirrored, and that is a real gap rather than an oversight.**
 CI runs it to build the job's `node_modules` from nothing; locally it would

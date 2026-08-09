@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { noCohort, type Cohort } from './cohort'
+import { createOrdering, type Ordering } from './ordering'
 import {
   presentWhenDecoded,
   unboundedDecodeQueue,
@@ -88,6 +90,21 @@ export interface PageViewProps {
   decodeQueue?: DecodeQueue
   /** Builds the off-screen probe image a swap decodes into before presenting — a real, detached `<img>` by default (`newImage`, above); a future test of this component would hand in a fake, the same seam `decode.test.ts` already exercises directly against `presentWhenDecoded`. */
   makeImage?: ImageFactory
+  /** Presents this page in the same frame as every other `PageView` whose `src` changed in the same commit — `two` mode's pair, in practice. `App.tsx` builds one instance and hands it to every cell, so the two halves of a spread stop appearing one after the other; see `cohort.ts` for the measurement and for why membership is decided by tick rather than by count. Ignored when `buffered` is false. Defaults to `noCohort`, which is what this component did before the barrier existed. */
+  cohort?: Cohort
+  /**
+   * Called with the source this cell is actually drawing, whenever that
+   * changes — including the first render, and including the unbuffered path
+   * where it is simply `src`.
+   *
+   * Exists so `App.tsx` can derive the *geometry* of a two-page group from what
+   * is on screen rather than from where the reader has moved to. Those two
+   * diverge under a fast flick — state moves per keypress, a cell's picture
+   * waits for its decode — and the visible result was the cell widths
+   * oscillating between one wide page and two half-width ones three times in
+   * 114 ms while the artwork sat still. Reported as flickering.
+   */
+  onShown?: (src: string) => void
   /**
    * Page geometry. Defaults to `fitModule.defaults` so this component still
    * works standalone — the same reason `decodeQueue` defaults to an uncapped
@@ -135,6 +152,8 @@ export function PageView({
   buffered,
   decodeQueue,
   makeImage,
+  cohort,
+  onShown,
   fit,
   hug,
 }: PageViewProps) {
@@ -143,6 +162,12 @@ export function PageView({
   // time, not at call time — see that function's own doc for why a captured
   // value would be the wrong check.
   const latestRef = useRef(src)
+  // Which of this instance's requests may be drawn — `ordering.ts` holds the
+  // rule and its tests. One per instance, created once: two cells must not
+  // share a counter, or one cell's progress would drop the other's frames.
+  const orderRef = useRef<Ordering>(undefined)
+  if (orderRef.current === undefined) orderRef.current = createOrdering()
+  const order = orderRef.current
 
   // `shown` deliberately does not join this array: it changes as a *result*
   // of this effect (via `setShown` below, once a decode settles), and
@@ -163,16 +188,39 @@ export function PageView({
       return
     }
     if (src === shown) return
+    // The number this attempt occupies among this instance's own `src` changes
+    // — the only thing that can order two finished decodes. See `ordering.ts`
+    // for why `decode.ts` cannot do it and what goes wrong without it.
+    const attempt = order.next()
+    // Joining the cohort happens here, inside the effect body, which is what
+    // puts both cells of a pair in the same one: React flushes a commit's
+    // effects in one synchronous pass, so the sibling's `run` call lands before
+    // `cohort.ts`'s deferred close can fire. Returning above — on `src ===
+    // shown`, or unbuffered — deliberately joins nothing: a cell whose page did
+    // not change has nothing to present and must not make the cell beside it
+    // wait on a decode that will never start.
     void presentWhenDecoded(
       makeImage ?? newImage,
       decodeQueue ?? unboundedDecodeQueue,
       src,
       () => latestRef.current !== src,
-      setShown,
+      // Monotonic: a decode that finished after a newer one was already drawn
+      // is dropped. Everything else is shown, superseded or not, which is what
+      // makes a fast flick flip through pages rather than hold one spread and
+      // jump.
+      (ready) => order.inOrder(attempt, ready, setShown),
+      cohort ?? noCohort,
     )
   }, [src, buffered])
 
   const displayed = buffered ? shown : src
+  // Reported after render rather than during it, so a parent setting state in
+  // response cannot re-enter this component's render. `displayed` is what the
+  // `<img>` below is given, so this is exactly what is on screen.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `onShown` is a fresh closure on every parent render; depending on it would fire this effect every render rather than only when the drawn source changes.
+  useEffect(() => {
+    onShown?.(displayed)
+  }, [displayed])
   // Cheap and derived from a prop plus a constant, so computed on every
   // render rather than memoised — the same call `App.tsx` makes for every
   // `sliceFor` read, per that file's own doc on why.

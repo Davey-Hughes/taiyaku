@@ -1,3 +1,5 @@
+import { noCohort, type Cohort } from './cohort'
+
 /**
  * The subset of `HTMLImageElement` this module needs to decode a page
  * off-screen before presenting it: a writable `src` and `decode()`, the
@@ -37,6 +39,15 @@ export async function decodeTo(image: Decodable, src: string): Promise<void> {
 /** A cap on how many `decodeTo` calls run at once — see `createDecodeQueue`. */
 export interface DecodeQueue {
   run<T>(job: () => Promise<T>): Promise<T>
+  /**
+   * How many jobs are waiting for a slot, not counting those running.
+   *
+   * One caller, one question: `presentWhenDecoded` asks whether newer work is
+   * already queued behind a superseded job. Zero means this job is still the
+   * freshest thing asked for and decoding it is worthwhile; above zero means it
+   * would be obsolete before it appeared.
+   */
+  pending(): number
 }
 
 /**
@@ -82,6 +93,7 @@ export function createDecodeQueue(max: number): DecodeQueue {
   }
 
   return {
+    pending: () => pending.length,
     run<T>(job: () => Promise<T>): Promise<T> {
       return new Promise<T>((resolve, reject) => {
         pending.push(() => {
@@ -146,6 +158,44 @@ export function createDecodeQueue(max: number): DecodeQueue {
  * reused, so two overlapping requests (the ordinary case mid-flick, before
  * the cap in `queue` even matters) each decode into their own image instead
  * of one clobbering the other's `src` while its decode is still pending.
+ *
+ * **`stale` is asked twice, and the first time is what makes a fast flick
+ * survivable.** It was only ever asked at the end — "has the reader moved on
+ * while this decoded?" — which decides whether to *show* a finished decode and
+ * does nothing about starting one nobody wants. Under a flick that is most of
+ * the work: measured in the browser on `gotoubun-v01` `en-mono`, sixteen
+ * presses 25 ms apart need **two** pages and requested **twenty-nine** — every
+ * page from 3 to 31 — with twenty-one of those requests issued *after* the
+ * reader had already stopped pressing. Each one fetched 1.8 MB and spent ~77 ms
+ * decoding a page that was discarded on arrival, while the page the reader was
+ * actually looking at waited its turn behind them: **1595 ms** to catch up,
+ * against 0 ms on `raw-mono`, whose pages decode fast enough never to queue.
+ *
+ * Asking inside the job rather than before `queue.run` is the whole point: the
+ * question has to be answered when the queue *reaches* this job, not when it
+ * was enqueued, because at enqueue time it is never stale. A job that has gone
+ * stale by then resolves immediately and never touches `makeImage`, so it costs
+ * neither the decode nor the fetch — `decodeTo` is what assigns `src`, and no
+ * assignment means no request.
+ *
+ * Skipped jobs still resolve rather than hanging, so `cohort` releases and the
+ * `.then` below runs — where the second `stale` check finds the same answer and
+ * presents nothing. One superseded request, two chances to notice, and the
+ * expensive half is the one that is now skipped.
+ *
+ * **`cohort` is what makes two of these present together**, and it is the one
+ * guarantee this function did not used to offer: the gate above is per call, so
+ * `two` mode's pair each presented as its own decode settled. Running the queue
+ * *inside* the cohort rather than the other way round is what keeps the two
+ * jobs doing different things — the queue still caps how many decodes are in
+ * flight, the cohort only holds back the presentation of the ones that have
+ * finished. See `cohort.ts` for the measurement that put it here and for why
+ * membership closes on a tick rather than a count. Defaults to `noCohort`, so a
+ * caller that has not been threaded one behaves exactly as before.
+ *
+ * `stale` is still checked after the barrier, not before it, for the same
+ * reason it was always checked late: the question is whether this request is
+ * current at the moment it would be shown.
  */
 export function presentWhenDecoded(
   makeImage: ImageFactory,
@@ -153,17 +203,57 @@ export function presentWhenDecoded(
   src: string,
   stale: () => boolean,
   present: (src: string) => void,
+  cohort: Cohort = noCohort,
 ): Promise<void> {
-  const image = makeImage()
-  return queue
-    .run(() => decodeTo(image, src))
-    .then(() => {
-      if (!stale()) present(src)
+  return cohort
+    .run((member) =>
+      queue.run(async () => {
+        // Asked at the moment the queue reaches this job, which under a flick
+        // may be long after it was enqueued. See the doc above for why the
+        // question cannot be answered earlier.
+        //
+        // **Superseded is not on its own a reason to skip** — whether newer
+        // work is already waiting is. A superseded job with an empty queue
+        // behind it is still the freshest frame that exists, and decoding it is
+        // what lets a flick show pages going by instead of holding one spread
+        // and jumping. With newer work queued it would be obsolete before it
+        // appeared, and the decode is pure cost.
+        //
+        // Self-tuning: at reading size a page decodes in ~10 ms, the queue
+        // drains about as fast as a reader can press, and most frames get
+        // through. Zoomed to full resolution a decode is ~75 ms, the queue
+        // stays backed up, and the same test skips nearly everything.
+        // Decided once per cohort, not once per cell. Two halves of one turn
+        // asking this question moments apart could otherwise get different
+        // answers — one skipping while the other decodes — and the pair would
+        // show two generations at once. `decideOnce` makes them skip together
+        // or decode together, which is what turns "they move together in
+        // practice" back into "they cannot do otherwise".
+        if (member.decideOnce(() => stale() && queue.pending() > 0))
+          return false
+        await decodeTo(makeImage(), src)
+        return true
+      }),
+    )
+    .then((decoded) => {
+      // Only a job that actually decoded has anything to show; a skipped one
+      // would hand `present` a source no image was ever pointed at.
+      //
+      // **`stale` deliberately does not gate this**, which is the change that
+      // makes a flick visible. Ordering is `present`'s responsibility now:
+      // `PageView` hands in a callback that ignores anything older than what it
+      // is already drawing, so a frame the reader has moved past can be shown
+      // *on the way* and can never paint over a newer one. That guard belongs
+      // there rather than here, because ordering needs a sequence and this
+      // function only ever sees opaque `src` strings.
+      if (decoded) present(src)
     })
 }
 
 /** A `DecodeQueue` that runs every job immediately, uncapped — `PageView.tsx`'s fallback when no shared queue is handed in, so the component works standalone without forcing every caller to construct one. */
 export const unboundedDecodeQueue: DecodeQueue = {
+  /** Nothing ever waits here, so no job is ever superseded with newer work behind it: every frame is worth decoding. */
+  pending: () => 0,
   run<T>(job: () => Promise<T>): Promise<T> {
     return job()
   },

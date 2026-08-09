@@ -1,5 +1,10 @@
 import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vite'
+import { playwright } from '@vitest/browser-playwright'
+// `vitest/config`'s `defineConfig`, not `vite`'s: the `test` key below is
+// Vitest's extension to the Vite config, and `vite`'s own type does not know
+// it — `tsc -b` typechecks this file, so the wrong import is a build failure
+// rather than a silently ignored block.
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 // taiyaku-wasm is a `file:` dependency, linked into node_modules from
@@ -17,6 +22,52 @@ const wasmPkgDir = fileURLToPath(new URL('../crates/taiyaku-wasm/pkg', import.me
 // keeps deliberately, so a native shell can use the same API.
 export default defineConfig({
   plugins: [react()],
+  // **Two test projects, because two different questions need two different
+  // environments.**
+  //
+  // `node` is every existing test: pure TypeScript with no DOM, which is why
+  // `decode.ts` and friends were written to be importable without one. Fast,
+  // and the overwhelming majority.
+  //
+  // `browser` exists for what a Node environment cannot answer at all. The
+  // defects this reader has actually shipped were visual — cell widths flapping
+  // under still artwork, a pair tearing, a page drawn at the wrong size — and
+  // `jsdom` has no layout engine, so `getBoundingClientRect` there returns
+  // zeroes and none of it is observable. It also has no real
+  // `HTMLImageElement.decode()`, which is the seam the whole page-turn
+  // mechanism is built on. A real browser has both.
+  //
+  // Kept deliberately small: browser tests are slow and need a downloaded
+  // Chromium, so they cover the properties nothing else can see rather than
+  // duplicating what the `node` project already pins.
+  test: {
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'node',
+          include: ['src/**/*.test.ts'],
+          exclude: ['src/**/*.browser.test.*'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'browser',
+          include: ['src/**/*.browser.test.tsx'],
+          setupFiles: ['./src/browser-setup.ts'],
+          browser: {
+            enabled: true,
+            // A factory, not a string: `browser.provider` changed shape in
+            // Vitest 4.1 and the string form is refused outright.
+            provider: playwright(),
+            headless: true,
+            instances: [{ browser: 'chromium' }],
+          },
+        },
+      },
+    ],
+  },
   server: {
     fs: {
       allow: ['.', wasmPkgDir],

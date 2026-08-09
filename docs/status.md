@@ -55,12 +55,39 @@ seam's design closed the gap on the wrong element and a measurement said so, and
 closing it introduced a regression that put every annotation marker 376px from
 its artwork until the same pass caught that too.
 
+**Two more came from reading in two-page mode, and both were rules that were
+right about one page and had never been asked about two.** A pair's halves each
+appeared as its own decode settled — measured at a median 89.7 ms apart, every
+turn tearing — and they now present together through one barrier. And the two
+editions on either side of a swap drew pairs one page out of phase, because
+pairing was anchored at slot 0 of each edition independently. **Pair boundaries
+are now a property of the work rather than of an edition**: wherever any edition
+joins a spread, that boundary is mapped into the hub's slot space, unioned with
+every other edition's, and every edition — the hub included — takes its pairing
+from the one grouping that results. Swaps that keep the pair intact go from 206
+of 580 to 581 of 590. §8 below is the record, and it has two parts worth
+reading. What the defect was *not*: the obvious diagnosis was an alignment
+error, and a shift test over 12 alignments in 9 volumes says the aligner has
+none — after the scan itself was corrected for the one-to-one constraint that
+had made four volume tails look broken. And what the first fix missed: deriving
+only the *spokes* from the hub scored 96% and left the hub unable to follow a
+boundary only a spoke has, which a reader found at one press.
+
 ## What is built
 
-Five crates, 475 tests, plus 586 in `web/`'s TypeScript, no dependencies beyond
+Five crates, 475 tests, plus 654 in `web/`'s TypeScript and six more in a
+**browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
-and `vite` in `web/`. That list did not grow for L1: zoom is a CSS transform and
+and `vite` in `web/`. The six run under Vitest's browser mode over Playwright's
+Chromium, and cover only what no Node environment can answer: `jsdom` has no
+layout engine and no real `HTMLImageElement.decode()`, and every defect the page
+area has shipped was one or the other. They are **not** a CI job — a cacheless
+CI would download a browser on every run — so `npm run test` stays the `node`
+project alone and `check-all.sh` runs the browser one locally, naming it
+unmeasured when the browser is absent. That adds `@vitest/browser`,
+`@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
+the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
 `rayon` exactly as `align` already did. Twelve of the 475 are standing checks gated on
 `TAIYAKU_CORPUS` — nine in `crates/taiyaku-cli/src/corpus.rs` and three in
@@ -83,7 +110,14 @@ is reachable by classifying the wrong four; see §4 below. The remaining six run
 duplicate resolution over real duplicate sets and are listed in §2 below with
 what each one measured. `check-all.sh` runs all twelve with `--nocapture`
 against an absolute, canonicalised `TAIYAKU_CORPUS`, so a green gate shows what
-each one measured, or says plainly that it did not run them at all.
+each one measured, or says plainly that it did not run them at all. **It runs
+them under `--release`**, and its `test` job runs with `TAIYAKU_CORPUS` removed
+from the environment so they run once rather than twice — the whole gate is
+about 15 seconds warm, against a run that was killed at 1h09m before that split.
+The debug profile is the only one with overflow checks and `debug_assert!`, so
+the unit tests are what exercise those and `--corpus-debug` puts the corpus
+checks back under them; `docs/ci.md`, "Two profiles, and the gate that took an
+hour", is the record.
 
 **Two further tests are gated on `TAIYAKU_CORPUS` and are deliberately not among
 those twelve.** Both are one-off measurements rather than checks, and both are
@@ -119,8 +153,12 @@ measurement rather than becoming a check: it asserts only that it measured
 something — a non-empty sample, a search that found a minimum in every volume,
 every residual finite — so that a glob matching no volume cannot print an empty
 table and pass, which is the one failure a measurement must not have.
-`check-all.sh` filters on `corpus::`, so it reaches neither of these two and the
-twelve above are still twelve; this one also wants `--release`, under which it
+`check-all.sh` reaches neither of these two — its corpus job filters on
+`corpus::`, and its `test` job now runs with `TAIYAKU_CORPUS` removed from the
+environment — so the twelve above are still twelve. That second half is new:
+until 2026-08-08 the `test` job inherited the variable and ran both of these in
+**debug**, which is how a gate run came to be killed at 1h09m inside
+`geometry_experiment` alone. This one also wants `--release`, under which it
 takes about a minute against about forty without. Not promoting it was decided in
 advance, by a rule fixed before the number existed (the L1 design's §4), and
 the rule's first branch fired. It also could not have been promoted as written:
@@ -2782,7 +2820,172 @@ in `localStorage` was already under `taiyaku.prefs.*`; what was missing was
 anything stopping the next value from not being, and `prefs.ts` now states that
 rule where the keys are built.
 
+### 8. Two-page mode: halves that arrive together, and a pairing that agrees across editions — shipped
+
+Two complaints from real reading, both about `two` mode, and both the same kind
+of defect: a rule that was right about one page and had never been asked about
+two. `notes.md`, "Two pages that arrive together, and a pairing that agrees
+across editions", is the record.
+
+**The halves presented one at a time, and the code said so.** `decode.ts`'s gate
+is per image, so each cell showed its page the moment its own decode settled.
+`App.tsx` carried a comment stating exactly that, arguing for leaving it — "a
+mismatch nothing has measured a reader noticing" — and naming a measurement as
+the thing that should overturn it. **A reader noticed, and the measurement
+agreed with them**: with a warm cache on the production bundle, a median 89.7 ms
+between the two cells at a slow reading pace, 158.4 ms at worst, and **every one
+of eight turns tearing by more than a frame**; flicking took the median to
+213.8 ms and the worst case to 1.28 s. `cohort.ts` is a barrier that holds the
+first decode until the other settles, with the decode queue nested *inside* it
+so the concurrency cap still governs the decodes and the barrier governs only
+when they are shown. **Membership closes on a tick rather than a count**, since
+nothing knows in advance how many images a turn will change; a turn that changes
+one cell forms a cohort of one. Re-measured the same way: **0.0 ms, on every
+turn**.
+
+**The "off by 1" between editions was not the aligner.** That was checked first
+and comes back clean: a shift test over every paired slot of 12 alignments
+across 9 volumes and 4 series — score the pairing the solver chose against the
+same slot's score against `to ± 1` — finds **zero improvable pairings**. Its
+first version reported four, all at volume tails with large margins, and every
+one dissolved on adding the one-to-one constraint the scan itself had been
+missing: several near-identical end pages match one `to` page, the solver gives
+it to the highest scorer, and the loser then looks improvable against a slot
+already taken.
+
+**It was `pairing.ts`.** `groups` anchors `two` mode's pairing at slot 0 of
+whichever edition it is handed, and nothing carried that across a swap — so the
+same reading position drew `(n-1, n)` in one edition and `(n, n+1)` in the next,
+one page right and the other its neighbour. Over every ordered pair of
+`gotoubun-v01`'s three editions, **206 of 580 swaps kept the pair intact**, and
+between the two English editions — the pair the complaint names — roughly seven
+groups in ten were torn. Intermittently, which is why it read as "some pages
+pretty early on" rather than a constant offset. `alignedPairs.ts` derives a
+grouping from the alignment and feeds it in as more of `groups`' existing
+`breaks`, so the grouping itself needed no new mechanism. **The hub and not the
+authority** as the space it is derived in, because `authority` follows wherever
+the reader last navigated and would re-group every other edition when they
+turned a page.
+
+**The first version of that rule shipped, and the reader broke it in one press
+— which is the part worth keeping.** It derived the *spokes* from the hub and
+left the hub on its own parity: 572 of 598, 96%. Then "there's still some
+mis-alignments, like slot 48, p46". A joined spread is one image, so `groups`
+gives it its own group and no break can halve it — and `en-mono` joins pages 45
+and 46 back to back where the raw carries four ordinary pages. Their
+counterparts are raw slots 47–48 and 49–50, but raw's untouched parity pairs
+`(46,47)` and `(48,49)`, so **no raw group was the counterpart of that spread**
+and the swap drew one page out either side of it. A rule with a fixed point that
+cannot move is what left the 4%.
+
+**Pair boundaries are a property of the work, not of an edition.** Wherever
+*any* edition joins a spread, that is a boundary the work has; those are mapped
+into the hub's slot space, unioned, and every edition — the hub included — takes
+its pairing from the one grouping that results. Measured across eleven volumes
+in four series it is **never worse than the spokes-only rule and strictly better
+on five**: `gotoubun-v01` 96% → **99%**, `gotoubun-v08` 93% → **100%**,
+`kobayashi-v08` 99% → **100%**, and 581 of 590 on the three-edition document the
+complaint came from.
+
+**A third complaint came out of the same corner, and two of its obvious causes
+were wrong.** "Switching pages sometimes seems slow": median 110 ms from
+keypress to both halves. `modules/prefetch.ts` reached `ahead` *slots* where an
+arrow steps by *groups*, so in `two` mode the next group's second half was never
+prefetched — measured on the wire as exactly one page requested after the
+keypress on every forward turn. That is the same missing fetch as the tearing
+above; gating the pair had turned it from a tear into a wait. `groupWindow`
+reaches whole groups: **110 ms → 14 ms**. Widening the window then reintroduced
+a tail, and the reason is the interesting part — a decoded page is ~26 MB, a
+joined spread twice that, so a wide window evicts the pages the reader is
+arriving at. **Prefetch was competing with itself**, confirmed from the other
+side by raising `maxConcurrent`, which made it worse. The defaults are now one
+group each way: **median 4 ms**. What survives is a tail of a few turns in
+twenty at 100–300 ms, when the browser has evicted a bitmap.
+
+**Two dead ends are recorded rather than dropped.** Retaining the prefetched
+images does not retain their bitmaps — 72.5 ms with no references held against
+160.4 ms holding twenty-six, since Chrome discards the raster for a detached
+image either way. And progressive JPEG is the genuine decode cost — `en-mono`
+ships progressive at 76.7 ms against 26.4 ms for the identical image as
+baseline, where downscaling to a quarter of the pixels saves only 6 ms — but a
+lossless transform was built against `turbojpeg` and **backed out**: it costs a
+median 86 ms in process, more than the 50 ms it saves, so it needs a cache and a
+cold-path policy or the first read of every page gets slower; it needs
+`libturbojpeg` in CI; and Komga, the comparison that prompted it, passes JPEG
+through untouched and pays the same decode.
+
+**What it costs is a page drawn alone, and it is not hidden** — but it costs
+less than the rule it replaced, because the hub can now move rather than every
+spoke bending around it. Each position where the parity genuinely has to change
+costs one solo group: 4 added to `en-mono`'s 104 on `gotoubun-v01` where the
+first rule needed 14, 2 to `en-fan`'s where it needed 12, and `gotoubun-v08`'s
+`en-mono` 16 → 2. A reader who never swaps pays that too. Taken deliberately: a
+solo page says there is nothing here to pair this with, where a silently
+mismatched pair said nothing at all.
+
 ### Later
+
+- **The page cache follows the working directory, and now that costs more.**
+  `ServeState`'s `cache_dir` defaults to the *relative* `.taiyaku-cache/covers`,
+  so where a cache lands depends on where `taiyaku serve` was launched from.
+  That was cheap while the cache held covers and tiles; since `?w=` it holds
+  every reading-size page, so starting the server from a different directory
+  silently produces a second cache and regenerates a whole volume at ~126 ms a
+  page. Found by noticing 120 MB of pages under `web/` after a session that had
+  launched `serve` from there. Gitignored, so nothing can be committed, and
+  harmless beyond the wasted work — but an absolute default, or resolving it
+  against the sidecar the way the Stump cache already does, would remove the
+  surprise.
+
+- **Move `web/` from npm to pnpm.** Decided while adding the browser test
+  project, and deliberately not done in the same branch: it touches the
+  lockfile, `.forgejo/workflows/ci.yml`'s `npm ci`, every `npm --prefix web`
+  call in `scripts/check-all.sh`, and the docs that name them — none of which
+  has anything to do with the reader. It also has to be stacked rather than
+  parallel, since the lockfile it produces must already contain the browser
+  dependencies.
+  **Two things to check rather than assume.** `taiyaku-wasm` is a `file:`
+  dependency on the gitignored, generated `crates/taiyaku-wasm/pkg`, and
+  `vite.config.ts` widens `server.fs.allow` to exactly that directory —
+  pnpm's symlinked layout resolves such a dependency differently from npm's
+  flat one, so the wasm import and the dev server's allowlist both want
+  verifying rather than trusting. And CI's `node:22-bookworm` has no pnpm; it
+  would come from `corepack`, which is present in Node 22 but not enabled by
+  default.
+
+- **Fall back to another edition where this one has no page, marked as such.**
+  The reader shows `Gap` when the edition being read has no counterpart for the
+  slot — an honest answer, and a missed opportunity. The alignment already
+  knows which *other* editions do hold that page: `route` will answer for any
+  pair, and `nearest.ts` already scans for the closest paired slot. So instead
+  of a page that is simply absent, the reader could draw the counterpart from
+  whichever edition has one — the raw, the fan release, a colour edition — with
+  the substitution **marked** rather than silent, in the same spirit as the
+  `via` field distinguishing a direct answer from a composed one.
+  **This is arguably the whole point of the alignment**: a reader following a
+  story should not lose a page because the edition they happen to be in dropped
+  it, and no single-edition reader can offer that. It wants a setting rather
+  than a default — a reader comparing translations may want to *see* that a
+  page is missing — and it wants the marking designed properly, since a page
+  silently drawn from another edition would be worse than a gap. Raised while
+  reviewing the two-page work, where the four solo groups the aligned pairing
+  produces are the same fact seen from the other side.
+
+- **Pre-warm a work's page sizes on load.** Since `?w=` shipped, the first read
+  of a page at a given size costs the server a decode and a resize —
+  **126 ms median generation against 10 ms warm**, measured over 235 real
+  generations. Prefetch reaching one group ahead covers ordinary reading, since
+  generation is faster than a reader turns pages; a fast flick through cold
+  pages is not covered, and neither is the first page of a session.
+  **Deliberately not built**, and the reason is a hazard rather than effort:
+  resizing runs behind `cover.rs`'s two-permit `GENERATION_LIMIT`, shared with
+  covers and tiles, so a warm pass would occupy both permits and the reader's
+  *own* cold page would queue behind it — making the case it was meant to fix
+  worse. Any attempt needs to answer that first: a separate low-priority permit,
+  or warming only while the reader is idle. It must also fetch without decoding,
+  or it re-creates the bitmap-eviction problem `pageSize.ts` exists to remove.
+  Client-driven, too — the server does not know a viewport and would have to
+  guess a rung or generate all six.
 
 - **L2 text regions** — a reader points at a balloon on the raw and sees the
   matching English one. **Stays here, and the line that used to describe it was

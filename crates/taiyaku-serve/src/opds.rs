@@ -280,7 +280,12 @@ async fn stream_page(
         Ok(pair) => pair,
         Err(e) => return missing(e),
     };
-    let tag = crate::routes::page_etag(&sha256, offset);
+    // `None`: the OPDS stream serves the member's own bytes at full size and
+    // takes no `?w=`. A reading client fetching through this feed is not the
+    // browser reader and has no viewport this server knows about, so there is
+    // nothing to fit to — and the tag it validates against stays the one it
+    // has always been.
+    let tag = crate::routes::page_etag(&sha256, offset, None);
     if crate::routes::if_none_match_hits(&headers, &tag) {
         return crate::routes::not_modified(&tag, Some(crate::routes::PAGE_CACHE_CONTROL));
     }

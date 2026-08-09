@@ -28,19 +28,25 @@
 //! slower at that than an optimised one. Both were run; the figures below and
 //! in `docs/notes.md` are from the release build.
 //!
-//! **`check-all.sh` does run this, and that sentence used to say it does not.**
-//! The gate's *corpus* job filters on `corpus::` and so misses this module —
-//! which is what the old wording was reaching for — but the gate also exports
-//! `TAIYAKU_CORPUS` before its unfiltered `cargo test --workspace`, so with a
-//! corpus present this test runs there, in the **debug** profile, at the forty
-//! minutes described above. Measured rather than reasoned about: a local gate
-//! run with a corpus was killed at 1h09m still inside this one test. CI is
-//! unaffected — it has no corpus, so this skips — so the cost falls entirely
-//! on whoever runs the gate locally, which is the person the script is for.
-//! Left as it is rather than filtered out, because a one-off measurement that
-//! silently stops being run is the failure this module's own assertions exist
-//! to prevent; run `scripts/check-all.sh` without `TAIYAKU_CORPUS` for the
-//! CI-equivalent pass and re-run the corpus job on its own.
+//! **`check-all.sh` does not run this — and this paragraph has now said each
+//! answer once, so the reasoning matters more than the verdict.** It first said
+//! "does not", reaching for the gate's *corpus* job, which filters on `corpus::`
+//! and so misses this module. That was corrected on 2026-08-08 to "does": the
+//! gate exported `TAIYAKU_CORPUS` before its *unfiltered*
+//! `cargo test --workspace`, so with a corpus present this ran there in the
+//! **debug** profile, at the forty minutes above — measured, not reasoned
+//! about, by a local gate run killed at 1h09m still inside this one test.
+//! **That is fixed at the source rather than described again**: the `test` job
+//! now runs with the variable removed from its environment
+//! (`run env -u TAIYAKU_CORPUS …`), which both drops this module back out of
+//! the gate and makes that job a truer mirror of CI, which has no corpus and
+//! never ran it. So the gate is fast and this stays a one-off measurement, run
+//! by the command at the top of this header when someone means to run it.
+//!
+//! The module is still not filtered out of the test target, and that is the
+//! part worth keeping: a one-off measurement that silently stops being
+//! *compiled* is the failure its own assertions exist to prevent. What changed
+//! is the gate's environment, not this module's gating.
 //!
 //! **What it found, so this header is not just a description of a method.**
 //! Over 284 settled slots across all twelve corpus volumes, the best map's
