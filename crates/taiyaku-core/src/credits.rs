@@ -318,6 +318,125 @@ mod tests {
         );
     }
 
+    /// The stored alignment is directed, and only one side's spans address
+    /// the edition being examined. Picking the wrong side reports another
+    /// edition's gaps under this edition's page numbers — a wrong answer that
+    /// looks entirely well-formed. The fixture asks the same question from
+    /// both ends of one edge and requires the two answers to differ.
+    ///
+    /// Every other test in this module examines the edge's `to` side, which
+    /// is what the CLI does; nothing had ever asked the `from` side, so the
+    /// arm of the match that answers it could be deleted outright.
+    #[test]
+    fn each_end_of_a_directed_edge_reports_its_own_gaps() {
+        // One edge, `raw` -> `en`, and one run: raw slots 0-3 pair with en
+        // slots 2-5. So raw's last two pages are unreached, and en's first two
+        // and last two are — different pages, in different page spaces, out of
+        // the same stored run.
+        let text = r#"{
+          "taiyaku": 1,
+          "work": { "title": "W", "reading": "rtl" },
+          "editions": {
+            "raw": {
+              "label": "raw",
+              "members": [{ "path": "r.cbz", "sha256": "r0", "pages": 6 }],
+              "spreads": []
+            },
+            "en": {
+              "label": "en",
+              "members": [{ "path": "e.cbz", "sha256": "e0", "pages": 8 }],
+              "spreads": []
+            }
+          },
+          "hub": "raw",
+          "alignments": [
+            { "from": "raw", "to": "en", "by": "solver",
+              "runs": [{"a":"0-3","b":"2-5"}] }
+          ]
+        }"#;
+        let sidecar = Sidecar::from_json(text).expect("fixture parses");
+
+        let forward = unpaired_runs(&sidecar, "raw", "en").expect("edge exists");
+        let backward = unpaired_runs(&sidecar, "en", "raw").expect("same edge, other end");
+
+        // Named exactly, because differing is not enough. `assert_ne!` alone
+        // holds under a full orientation swap — with `mine_is_a` inverted,
+        // `forward` becomes 0..2 and `backward` 4..8, which are still two
+        // different answers. An upper bound on `pages.end` does not help
+        // either: the arithmetic mutants only ever lower it. So both sides
+        // are pinned to the exact runs the fixture implies, in both index
+        // spaces where a wrong orientation would show.
+        assert_eq!(forward.len(), 1, "{forward:?}");
+        assert_eq!(forward[0].pages, 4..6, "raw's own last two pages");
+        assert_eq!(forward[0].slots, 4..6);
+        assert_eq!(backward.len(), 2, "{backward:?}");
+        assert_eq!(backward[0].pages, 0..2, "en's own first two pages");
+        assert_eq!(backward[0].slots, 0..2);
+        assert_eq!(backward[1].pages, 6..8, "and its own last two");
+        assert_eq!(backward[1].slots, 6..8);
+    }
+
+    /// A run of unpaired pages stops at a member boundary, and the member
+    /// test is the whole reason this function exists rather than a complement
+    /// over the slot set. With `||` a credits page at the end of one chapter
+    /// file and another at the start of the next merge into a single run that
+    /// spans a boundary no reader can see.
+    ///
+    /// The member sizes are chosen so the two tests disagree. `c1`'s run ends
+    /// at local index 2 and `c2`'s begins at local index 2, so the local test
+    /// alone says "adjacent" while the member test says "different file" — and
+    /// with `||` the disagreement resolves the wrong way. The uneven fixture
+    /// above cannot show this: there the local indices happen to disagree too,
+    /// so either operator splits.
+    #[test]
+    fn an_unpaired_run_stops_at_a_member_boundary() {
+        // A two-chapter fan release with a credits card at the end of each
+        // chapter: `en` page 1 is c1's last, pages 4 and 5 are c2's last two.
+        let text = r#"{
+          "taiyaku": 1,
+          "work": { "title": "W", "reading": "rtl" },
+          "editions": {
+            "raw": {
+              "label": "raw",
+              "members": [{ "path": "r.cbz", "sha256": "r0", "pages": 6 }],
+              "spreads": []
+            },
+            "en": {
+              "label": "en",
+              "members": [
+                { "path": "c1.cbz", "sha256": "c1", "pages": 2 },
+                { "path": "c2.cbz", "sha256": "c2", "pages": 4 }
+              ],
+              "spreads": []
+            }
+          },
+          "hub": "raw",
+          "alignments": [
+            { "from": "raw", "to": "en", "by": "solver",
+              "runs": [{"a":"0","b":"0"},{"a":"1"},{"a":"2-3","b":"2-3"},{"a":"4-5"}] }
+          ]
+        }"#;
+        let sidecar = Sidecar::from_json(text).expect("fixture parses");
+
+        let runs = unpaired_runs(&sidecar, "en", "raw").expect("edge exists");
+
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        assert_ne!(runs[0].member, runs[1].member);
+        // The exclusive ends: a one-page run ends one past its start.
+        assert_eq!(runs[0].pages.end, runs[0].pages.start + 1);
+        assert_eq!(runs[0].local.end, runs[0].local.start + 1);
+        assert!(runs[0].at_member_end, "{runs:?}");
+        // The second run is two pages, so it is the one that exercises the
+        // extension arm. Both of its index spaces are stated, because the
+        // exclusive end of an extended run is arithmetic no other test reads:
+        // the existing ones assert `local` and let `pages` and `slots` pass
+        // unread.
+        assert_eq!(runs[1].pages, 4..6, "{runs:?}");
+        assert_eq!(runs[1].slots, 4..6, "{runs:?}");
+        assert_eq!(runs[1].local, 2..4, "{runs:?}");
+        assert!(runs[1].at_member_end, "{runs:?}");
+    }
+
     #[test]
     fn an_edition_the_document_does_not_have_is_refused_by_name() {
         let doc = two_members(r#"[{"a":"0-7","b":"0-7"}]"#);

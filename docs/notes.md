@@ -8027,3 +8027,176 @@ A third was caught only by reading the output: React logged "the current testing
 environment is not configured to support `act`" while the tests passed anyway.
 `act` was not flushing effects, so a test could have passed by observing state
 React had not committed. `browser-setup.ts` sets `IS_REACT_ACT_ENVIRONMENT`.
+
+## The mutation baseline, and the minus sign nothing was testing
+
+`env -u TAIYAKU_CORPUS cargo mutants --gitignore=true --test-tool=nextest`,
+against the CI-visible suite, measured on this machine on 2026-08-10:
+**1,660 mutants in 43 minutes — 1,149 caught, 346 missed, 136 unviable, 29
+timed out.** Of 1,524 viable mutants, 75.4% were caught.
+
+| crate | mutants | caught | missed |
+| ----- | ------- | ------ | ------ |
+| `taiyaku-cli` | 752 | 478 | 217 |
+| `taiyaku-core` | 460 | 370 | 47 |
+| `taiyaku-serve` | 304 | 217 | 52 |
+| `taiyaku-read` | 93 | 56 | 17 |
+| `taiyaku-wasm` | 51 | 28 | 13 |
+
+`taiyaku-core`'s 47 are concentrated rather than spread evenly across the
+crate:
+
+| file | survivors |
+| ---- | --------- |
+| `solve.rs` | 26 |
+| `sidecar.rs` | 11 |
+| `credits.rs` | 7 |
+| `slot.rs` | 2 |
+| `lib.rs` | 1 |
+
+**The estimate this replaces was wrong twice over, not once.** The plan
+recorded after PR #37 guessed "maybe 1,000+ mutants at 10–30s each (hours)"
+for the Rust half. The count came in at 1,660 against that open-ended floor,
+and the per-mutant cost was an order of magnitude too high. Both errors trace
+to the same fact: the whole workspace suite is 526 tests in 1.9 s under
+`cargo nextest run --workspace --all-features`, so almost none of a mutant's
+≈1.6 s average cost is the test run — it is the incremental rebuild the
+estimate did not account for. Forty-three minutes is a coffee break, not the
+"hours" that had been budgeted.
+
+**The finding, and it is one character wide.** In `solve::solve`, the line that
+initialises the score table's first column — `solve.rs:188` as the tool named it
+on the day, and `solve.rs:210` after this branch's own tests moved it, which is
+why the symbol is the durable name and the coordinate is only a receipt —
+reads `-(i as f32) * GAP_PENALTY`, the cost of reaching that cell having
+skipped `i` pages of A. Deleting the unary minus turns that penalty into a
+bonus, and all 526 CI-visible tests still pass — nothing in the suite prefers a
+short gap to a long one. Applied by hand and run
+against the twelve standing corpus checks under `--release`, exactly one
+fails:
+
+    11 passed; 1 failed  (15.6s)
+    failures:
+        corpus::composing_through_the_hub_agrees_with_a_direct_solve
+
+So the arithmetic *is* verified — by one check, running against real material
+on a NAS this repository's CI cannot reach, and by nothing CI runs. Eleven of
+the twelve corpus checks are indifferent to the mutation, and every test the
+forge executes is indifferent to it too.
+
+**`solve.rs` was not picked because it looked unusually bad.** It missed 19%
+of its own viable mutants, against 23% for the workspace as a whole, so the
+file this branch spends most of its effort on is representative of the
+baseline rather than an outlier chosen to make a dramatic example.
+
+The triage of the 47 survivors themselves follows below; `docs/status.md`
+tracks what remains of the workspace's other 299, measured but not addressed.
+
+## The 47, killed — and what the fixtures got wrong
+
+**Re-measured after the work: 458 mutants, 411 caught, 3 missed, 38 unviable,
+6 timed out.** Against the baseline's 460 / 370 / 47 / 38 / 5, in the same
+buckets. The figure is the union of two runs rather than one: a package-scoped
+run was interrupted at 412 of 458, having finished `credits.rs`, `lib.rs`,
+`sidecar.rs` and `slot.rs`, and the three files it had not — `regions.rs`,
+`route.rs` and `solve.rs` — were then run in full as 170 more. The union is
+stated here because a number assembled from two runs and a number from one are
+not the same claim; the two ledgers are consistent, and `solve.rs`'s share of
+it agrees with the two independent file-scoped runs taken while the work was
+being done.
+
+| | baseline | after |
+| ---- | -------: | ----: |
+| mutants | 460 | 458 |
+| caught | 370 | **411** |
+| missed | **47** | **3** |
+| unviable | 38 | 38 |
+| timed out | 5 | 6 |
+| caught, of viable | 87.7% | **97.9%** |
+
+Two mutants disappeared rather than dying, and that is a real result rather
+than an accounting quirk: `percentile`'s clamp turned out to be unreachable —
+`at` is already bounded by `len - 1` for any `fraction` in `0.0..=1.0`, so
+`values[at.min(values.len() - 1)]` could never bind — and deleting dead code
+removes its mutants along with it. The timeout count rose by one because a
+test written for the traceback converted `solve.rs`'s `j -= 1` → `/=` in the
+`SkipB` arm from `MISSED` to `TIMEOUT`. That is better verification and a
+standing cost of about 21 s on every future run of the file — the two timeouts
+now cost 20.5 s and 21.5 s against the tool's auto-selected 20 s bound, so the
+increment is one of them, not their total. See `docs/status.md`, O39, for why a
+hang is not as good as a failure here.
+
+**The headline mutant no longer survives anything.** Deleting the unary minus
+that made the gap penalty a bonus now fails a test the forge runs —
+`a_weak_opening_pair_beats_gapping_both_sides`, which is its sole killer, and
+which also kills the same deletion on the first *row* rather than the first
+column. Before this branch that mutation passed all 526 CI-visible tests and
+failed exactly one corpus check, on 26 GB of material held on a NAS. That
+transfer is the whole point of the branch: the arithmetic is verified in the
+same place everything else is.
+
+**And the suite is still fast, which was the binding constraint.** 552 tests in
+0.76 s under `cargo nextest run --workspace --all-features`, against 526 in
+1.9 s before — 26 tests added and the wall clock went *down*, because the
+baseline figure was taken on a colder target. The coverage job runs this suite,
+so a fixture that needed real material or a large table would have cost more
+than the survivors were worth; none does.
+
+**All three survivors are equivalent mutants, and each carries its argument.**
+
+`sidecar.rs:1052:46`, `||` → `&&` in `Sidecar::trust`. With exactly one of
+`from`/`to` unknown, `from != to`, so the identity short-circuit is out and
+every remaining path runs through `quality_of(·, unknown)`. `edge_between` only
+matches an alignment whose endpoint *pair* is exactly `{from, to}`, so any edge
+it returns has the unknown name as an endpoint, and `runs_of` does
+`editions.get(&alignment.from)?` / `.get(&alignment.to)?` and returns `Err`,
+which `.ok()?` turns into `None`. Both hub legs die the same way. This is
+equivalence over the whole input domain of a public function, not over the
+inputs its current callers happen to supply — the stronger of the two kinds. It
+stops being equivalent the moment `quality_of` can answer without both
+endpoints resolving.
+
+`solve.rs:119:18` and `:122:25`, `>` → `>=` in `calibrate`'s best/runner-up
+loop. The loop maintains `row_second <= row_best`, so on an exact tie both
+forms end at `(s, s)`; line 122's `>=` only ever rewrites `row_second` with the
+value it already holds. **The plan's stated reason for expecting these two to
+be killable was wrong** — it claimed `>=` "would let the runner-up overwrite
+the best or itself and report a margin that is not zero", and the overwrite
+writes the same number back. The argument does not even need the float clause
+that was first offered with it: `row_second`'s only consumers are
+`row_best - row_second` and `is_finite()`, and neither can tell `+0.0` from
+`-0.0`. NaN would not separate them either, since NaN fails `>` and `>=` alike.
+
+**Six of the plan's own fixtures passed against unmutated code and could not
+tell the mutant from the original.** That is the finding worth keeping, because
+every one of them would have shipped as a green test that verified nothing —
+which is the exact defect this branch exists to remove. They were caught only
+because the plan required each test to be watched failing against a
+hand-applied mutation rather than merely passing:
+
+- the all-landscape `spread_flags` fixture — all six aspects sit inside
+  `is_spread`'s `1.7..=2.8` band under both the median baseline and the
+  narrowest-page one, so `/` and `%` give the same answer;
+- the directed-edge `unpaired_runs` fixture — `pages.end <= N` is an upper
+  bound and the arithmetic mutants only ever lower it, while `assert_ne!`
+  survives a full orientation swap;
+- the member-boundary fixture — a member's first page has local index 0 and the
+  previous run's `local.end` is never 0, so `&&` and `||` take the same arm;
+- the leading-gap fixture — a gap *bonus* rescores the winning path rather than
+  changing it, so the headline mutant survives it;
+- the below-the-floor fixture — an A-only tail leaves no B page to pair it to,
+  so `- floor` → `+ floor` changes nothing;
+- the `compress` fixture — gaps split by a paired run never enter the
+  `(None, None)` arm the guard lives in.
+
+And a seventh, which is the same failure in a different disguise: the
+`parse_slot` test rejects `""`, `"L"`, `"12a"` and `"a12"`, and every one of
+those is rejected by `digits.parse()` anyway, so the guard could be inverted and
+the test still passed. The string that discriminates is `"+12"`, because
+`u32::from_str` accepts a leading `+`.
+
+One more is worth recording for the opposite reason. The oblong-matrix fixture
+was written specifically to pin the score table's stride and **does not kill
+either stride mutant**; the leading-gap fixture kills both. A test can be aimed
+at one thing, hit nothing, and still look like coverage of the thing it was
+named for.

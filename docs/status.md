@@ -581,21 +581,44 @@ boxes, so 61 of the 76 surviving blocks score *above* 1.0 against a floor of
 essentially all the filtering. That is O34. See `notes.md`, "The edition that
 clears the bar is the one finding no text".
 
+**Mutation testing found 346 survivors across the workspace. `taiyaku-core`'s
+47 are closed; the other 299 are measured and open.** `env -u TAIYAKU_CORPUS
+cargo mutants --gitignore=true --test-tool=nextest` ran 1,660 mutants in 43
+minutes on 2026-08-10: 1,149 caught, 346 missed, 136 unviable, 29 timed out —
+75.4% of 1,524 viable mutants caught. `taiyaku-core`'s 47 were concentrated in
+five files — `solve.rs` 26, `sidecar.rs` 11, `credits.rs` 7, `slot.rs` 2,
+`lib.rs` 1 — and re-measuring the crate after the work gives **458 mutants,
+411 caught, 3 missed, 38 unviable, 6 timed out: 97.9% of viable caught against
+87.7% before.** All three remaining survivors are equivalent mutants carrying
+their arguments, and both figures that moved outside the survivor count have
+reasons rather than noise: two mutants disappeared because `percentile`'s
+clamp turned out to be unreachable and was deleted, and one more became a
+timeout because a new traceback test made a mutant hang rather than lie.
+`notes.md`, "The mutation baseline, and the minus sign nothing was testing"
+and "The 47, killed — and what the fixtures got wrong", has the full record,
+including the gap penalty in `solve::solve`'s first column that could be turned
+into a bonus
+with all 526 CI-visible tests still passing, and the six planned fixtures that
+passed while discriminating nothing. The other four crates are measured but
+not addressed: `taiyaku-cli` 217, `taiyaku-serve` 52, `taiyaku-read` 17,
+`taiyaku-wasm` 13.
+
 ### Open items
 
-Thirty-seven, each found by a whole-branch review, carried as a deferral,
+Thirty-nine, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
 produced against the corpus, turned up by designing the fix for another one,
 turned up by checking a diagnosis against the one case it did not explain,
-turned up by simulating the reader from every position it can hold, or turned
-up by reading a file closely enough to write tests for it, and
+turned up by simulating the reader from every position it can hold, turned
+up by reading a file closely enough to write tests for it, or turned up while
+reading the code around a line a tool had pointed at, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
 visible act rather than a thing someone remembers. **Twenty-eight are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25, O26, O27, O28, O29, O30, O35, O36 and O37 — leaving nine.**
+O21, O22, O25, O26, O27, O28, O29, O30, O35, O36 and O37 — leaving eleven.**
 
 Three of those closed the same day they opened, which the "judged not worth
 blocking on" framing above does not fit: O35, O36 and O37 were found by the
@@ -646,6 +669,8 @@ each is in the detail below; the table is what a reader scans.
 | O35 | [x] | A `PUT` response with no `ETag` turns every later note write into a silent no-op — the same "write without a validator" hole the 412 path was fixed for, left open on the response path — *closed on the branch that found it (178f3e5): the guard became `writeGate` with three arms — `wait` (no document, the only silent one), `refuse` (document but no validator, carrying a notice), `write` — after the correct-behaviour test was watched failing against a faithful port* | `api.ts::putNotes`, `App.tsx::writeNotes`'s `notesEtag === undefined` guard | coverage-gate reading |
 | O36 | [x] | The two write debounces are never cancelled on unmount, so an unmounted `App` can still `PUT` up to 700 ms later — *a two-line fix, not an impossibility: `useFlushOnHide`'s cleanup already exists and `debounce` already exposes `cancel()`* — *closed on the branch that found it (4303dee): `useFlushOnHide`'s cleanup now flushes both, decided per call site: cancelling `writeProgress` drops the last page turn, cancelling `saveNotes` destroys up to 700 ms of prose that exists nowhere else* | `App.tsx`'s `writeProgress`/`saveNotes` handles, `hooks.ts::useFlushOnHide` | coverage-gate reading |
 | O37 | [x] | `reviewNotes`'s doc comment describes an arm of `toggleReview` no key can reach — it claims `a` closes the editor mid-edit, which `keyplan.ts` refuses; the code is right and the comment is wrong — *closed on the branch that found it (f4047b7): corrected, and the same wrong claim in `notes.ts` with it in `7cab6ec`* | `App.tsx::reviewNotes`'s doc comment | coverage-gate reading |
+| O38 | [ ] | `unpaired_runs` counts a gap run's own `a` span as "mentioned", so asking the `from` side of an edge which of its pages have no counterpart answers `[]` for pages that demonstrably have none — reachable today as `taiyaku credits --edition <hub> --against <spoke>`, which prints zero candidates | `credits.rs::unpaired_runs`, the `true => Some(run.a)` arm | the Task 7 mutation review, by probe |
+| O39 | [ ] | Nothing bounds a test's runtime, so a regression that stops a loop terminating hangs the forge instead of failing it — there is no `.config/nextest.toml`, no `timeout-minutes` in `ci.yml`, and CI does not run nextest at all but `cargo llvm-cov` over `cargo test` | `.forgejo/workflows/ci.yml`'s `test` job; no nextest config exists to name | the Tasks 2-6 mutation review |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -2031,6 +2056,76 @@ and not fix.
   somewhere else, which is the argument for grepping the sentence rather than
   editing the line.
 
+**O38 and O39 came from the mutation branch, and neither is a mutant.** Both
+were found *beside* the survivors rather than among them: one by a reviewer
+declining to take a claim on trust and writing a probe instead, the other by a
+reviewer asking what a survivor's disposition would mean if it ever happened in
+CI. That is worth recording because it is not what mutation testing is
+advertised to do. The tool finds unverified lines; what actually surfaced these
+two was a person reading the code around a line the tool had pointed at.
+
+- **O38 — `unpaired_runs` treats a gap run's own pages as covered. Open.** The
+  function answers "which pages of `edition` does the alignment against
+  `against` never reach", and it builds that answer by collecting every page
+  any run mentions and complementing it. The collection is unconditional:
+
+      let range = match mine_is_a {
+          true => Some(run.a),
+          false => run.b,
+      };
+
+  The `false` arm is right by construction — a gap run has no `b`, so `run.b`
+  is `None` and the gap's pages stay uncollected. The `true` arm is wrong for
+  exactly the same case: a gap run's `a` span is precisely the pages that have
+  *no* counterpart, and marking them "mentioned" is the opposite of what the
+  function is for. Demonstrated rather than argued, on a two-member fixture
+  whose middle run is `{"a":"3"}` with no `b`: the `to` side reports
+  `[UnpairedRun { pages: 3..4, … }]` and the `from` side reports `[]`.
+  **Reachable today.** `main.rs:1268` stores edges as `from: a_name`, defaulting
+  to `sidecar.hub`, so stored edges run hub→spoke; `credits.rs:246` lets
+  `--against` bypass the hub refusal, and `credits.rs:299` then calls
+  `unpaired_runs(doc, edition, counterpart)`. So `taiyaku credits --edition
+  <hub> --against <spoke>` takes the defective arm and prints zero candidates
+  for a volume that has them.
+  **Why it is open rather than fixed:** the branch that found it was a test-only
+  branch, and this is a behaviour change. The fix is one expression —
+  `run.b.map(|_| run.a)` — but it wants its own commit and its own corpus drive,
+  because "prints nothing" is the failure mode that hides how long it has been
+  wrong. It fails silently in the found-nothing direction, corrupts no stored
+  document, and no current caller in the corpus checks hits it, which is why it
+  was judged not worth blocking the branch on.
+  **What would close it:** the one-expression fix, a test built from the probe's
+  own fixture, and a run of `credits --edition <hub>` against a real work to
+  confirm the candidates appear.
+
+- **O39 — nothing bounds a test's runtime, so a hang is not a failure. Open.**
+  Mutation testing produced this one by accident. `cargo-mutants` reports a
+  mutant that stops a loop terminating as `TIMEOUT` rather than `MISSED`, in its
+  own bucket, and exits 3 — it is *not* counted as caught, though it is real
+  discrimination in the sense that the mutant cannot produce a silently wrong
+  alignment. Asking whether that disposition is good enough turned up the
+  gap: **there is no `.config/nextest.toml` anywhere in the repository, no
+  `timeout-minutes` in `.forgejo/workflows/ci.yml`, and CI does not run nextest
+  at all** — the `test` job runs `cargo llvm-cov`, which wraps `cargo test`. So
+  the auto-timeout that makes a hang legible locally exists only inside
+  `cargo-mutants`, and a regression of that shape reaching `main` would hang the
+  forge until the runner's own limit rather than fail it.
+  This branch takes `solve.rs` from one tracked timeout to two: a test added for
+  the traceback converted the `-=` → `/=` mutant in `solve`'s `SkipB` arm from
+  `MISSED` to `TIMEOUT`, which is an improvement in verification and a standing
+  cost of about 21 s on every future run of that file — measured at 20.5 s for
+  that mutant and 21.5 s for the one already there, against the tool's
+  auto-selected 20 s bound.
+  **Why it is open rather than fixed:** it is a CI change, and the branch that
+  found it changed no CI. It also wants a measured number rather than a guessed
+  one — the whole workspace suite is 552 tests in 0.76 s at this branch's head,
+  so a per-test bound is cheap to set, but the right value should come from the
+  slowest real test rather than from a round figure.
+  **What would close it:** a `.config/nextest.toml` with a `slow-timeout`
+  carrying `terminate-after`, or a `timeout-minutes` on the `test` job, chosen
+  against the measured slowest test and recorded the way the coverage
+  thresholds were.
+
 ## What comes next
 
 Roughly in order. All four are now settled — one closed by a measurement that
@@ -2545,7 +2640,7 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the nine open items tabled above — seven of them found by a
+What remains: the eleven open items tabled above — seven of them found by a
 whole-branch review, now that O1 (found by one, closed by removing the round
 trip its own entry was arguing about), O12 (carried rather than found), O14
 (found by one, closed by M5b), O26 (found by one, closed on its own branch),
@@ -2553,9 +2648,12 @@ O28 (found by walking the reader through every position it can hold, closed on
 its own branch), O29 (found by driving O26's own fix against the corpus, closed
 the same way) and O35, O36 and O37 (found by reading `web/src` closely enough to
 write tests for it, and closed on that same branch) are all out of the count.
-Two are the exceptions: O23, turned up by measuring what a new surface produced
-against the corpus rather than by reviewing a branch; and O34, turned up by
-asking a diagnosis about the one case it could not explain.
+Four are the exceptions: O23, turned up by measuring what a new surface produced
+against the corpus rather than by reviewing a branch; O34, turned up by asking a
+diagnosis about the one case it could not explain; and O38 and O39, turned up on
+the mutation branch beside its survivors rather than among them — one by a
+reviewer writing a probe instead of accepting a claim, the other by asking what
+a survivor's disposition would mean if it ever reached CI.
 **Every milestone M5 named has now shipped.**
 
 *This paragraph said "the five open items" until 2026-08-08, having missed
@@ -2566,7 +2664,7 @@ and stayed at twelve after that same branch closed all three — the third time
 the word has drifted, and this time it was caught by a reviewer counting the
 table's rows against its own preamble rather than by the ritual.*
 
-**Four of the nine wait on evidence rather than on code**, which is worth
+**Four of the eleven wait on evidence rather than on code**, which is worth
 stating plainly now that the one item with a code-shaped exit has taken it:
 O6 needs an art book with a legitimate reason to be in a sidecar,
 O9 a client issuing concurrent requests for one key, O11 archives replaced
@@ -2575,6 +2673,11 @@ in real reading to say whether the verdict misleads. O24 is the odd one —
 not evidence but a decision, about what a merge owes an edge it did not
 solve, and no corpus document has yet had a `--direct` edge and a re-solve
 in it.
+
+**Two came from the mutation branch and are unrelated to each other**: O38, a
+real defect in `unpaired_runs` that no test covered because the branch that
+found it was a test-only branch, and O39, the absence of any bound on a test's
+runtime. Both are recorded above.
 
 **The remaining four are the detector's**, and they are held together rather
 than picked off: O31 (the axis is per page where the design says per cluster),

@@ -243,6 +243,18 @@ mod tests {
         assert_eq!(PageRange::new(7, 7).len(), 1);
     }
 
+    /// `PageRange` is inclusive, so `new(4, 4)` is one page, not zero. The
+    /// method exists because `len` does and clippy pairs them; it is a
+    /// constant, and a constant with no test is a constant that can be
+    /// flipped without anything noticing.
+    #[test]
+    fn an_inclusive_page_range_is_never_empty() {
+        assert!(!PageRange::new(4, 4).is_empty());
+        assert_eq!(PageRange::new(4, 4).len(), 1);
+        assert!(!PageRange::new(0, 209).is_empty());
+        assert_eq!(PageRange::new(0, 209).len(), 210);
+    }
+
     /// The ordinary correction: one slot in the middle of a long run is
     /// asserted to pair with a different slot, so the run splits around it.
     #[test]

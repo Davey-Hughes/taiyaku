@@ -1524,6 +1524,15 @@ mod tests {
                     .push(a_start + offset);
             }
         }
+        // `claimed == distinct` is satisfied by a run list that pairs nothing
+        // at all, so a merge that evicted every piece it should have kept
+        // would pass this helper while failing the thing it stands for. The
+        // callers all merge alignments that pair most of a volume.
+        assert!(
+            !owners.is_empty(),
+            "no run in this list claims a target slot, so 1:1 on the b side is vacuously \
+             true and this helper is asserting nothing: {runs:?}"
+        );
         let claimed: usize = owners.values().map(Vec::len).sum();
         let distinct = owners.len();
         let violations: Vec<String> = owners
@@ -1626,6 +1635,104 @@ mod tests {
         assert_eq!(
             route(&s, "b", "c").map(|r| r.via),
             Some(Via::Hub("a".into()))
+        );
+    }
+
+    /// A merge with nothing to carry stores the run list it was handed,
+    /// verbatim.
+    ///
+    /// `carried > 0` is what keeps the carrying path out of the way when
+    /// there is nothing to carry, and `>=` does not merely do that work
+    /// pointlessly. `carry_hand_runs` decomposes every run into slot indices
+    /// and rebuilds it, which is not the identity it looks like: `slot_index`
+    /// matches a half-less `Slot` against the **first** slot of that page, so
+    /// a span written `"0-4"` across a spread at page 4 comes back `"0-4R"` —
+    /// the same slots under a different name, in a format whose stated
+    /// purpose is to diff in git and be corrected by hand. On a run list whose
+    /// spans do not resolve at all it stops being cosmetic: the rebuild
+    /// aborts on `index`'s `expect`, where the path that was taken stores an
+    /// edge a later `runs_of` reports as unreadable.
+    ///
+    /// That this codebase's only caller happens to hand over spans
+    /// `entries_from_runs` wrote is a fact about today, not the contract.
+    /// `merge_spoke` is `pub`, `Alignment`'s fields are `pub`, and the doc
+    /// comment above `merge_spoke` says the rules live in the core precisely
+    /// because a browser reader writing a correction has to apply the same
+    /// ones.
+    #[test]
+    fn a_merge_with_nothing_to_carry_stores_the_run_list_it_was_handed() {
+        let mut s = Sidecar::from_json(
+            r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "a": {
+              "label": "A",
+              "members": [{ "path": "a.cbz", "sha256": "00", "pages": 10 }],
+              "spreads": [4]
+            }
+          },
+          "hub": "a",
+          "alignments": []
+        }"#,
+        )
+        .expect("parses");
+        // Page 4 of `a` is a joined spread, so `a` presents eleven slots for
+        // ten pages, and `"0-4"` names slots 0 to 4 — through page 4's right
+        // half, the first half under `rtl`. The second run picks up at the
+        // other half, and is already written the way this file would write
+        // it: only the first span has a shorter form that means the same
+        // thing.
+        let handed_over = vec![
+            RunEntry {
+                a: SlotSpan::parse("0-4").unwrap(),
+                b: Some(SlotSpan::parse("0-4").unwrap()),
+                margin: Some(0.42),
+                by: None,
+                note: None,
+            },
+            RunEntry {
+                a: SlotSpan::parse("4L-9").unwrap(),
+                b: Some(SlotSpan::parse("5-10").unwrap()),
+                margin: None,
+                by: None,
+                note: None,
+            },
+        ];
+        let from_side = s.editions["a"].clone();
+
+        let merged = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Hub,
+                &from_side,
+                "b",
+                edition_with_pages("b.cbz", "01", 11),
+                Alignment {
+                    from: "a".into(),
+                    to: "b".into(),
+                    by: Source::Solver,
+                    solver: None,
+                    quality: None,
+                    runs: handed_over.clone(),
+                },
+            )
+            .expect("a spoke with no stored edge has no hand runs to carry");
+
+        assert_eq!(merged, Merged::Added);
+        let spans: Vec<String> = s.alignments[0]
+            .runs
+            .iter()
+            .map(|e| e.a.to_string())
+            .collect();
+        assert_eq!(
+            spans,
+            ["0-4", "4L-9"],
+            "a merge that carries nothing must not rewrite the notation it was handed"
+        );
+        assert_eq!(
+            s.alignments[0].runs, handed_over,
+            "nor reorder the runs, nor drop what they carry"
         );
     }
 
@@ -1996,6 +2103,106 @@ mod tests {
         );
     }
 
+    /// The sibling of the test above, and what keeps that refusal narrow. The
+    /// refusal is about **hand** runs, not about orientation: a direct edge
+    /// stored `c` -> `b` whose runs are all the solver's holds nothing a
+    /// person decided, so re-solving the pair as `b` -> `c` has nothing to
+    /// misfile and must simply replace it.
+    ///
+    /// With `!=` the question becomes "does some run on this edge come from
+    /// something other than a hand", which every solver edge in every document
+    /// answers yes to — so re-solving a direct edge stored the other way round
+    /// would be refused forever, with a message about hand corrections that do
+    /// not exist.
+    #[test]
+    fn an_edge_stored_the_other_way_round_with_no_hand_runs_merges_rather_than_refusing() {
+        let mut s = two_edition();
+        s.editions.insert("c".into(), edition("c.cbz", "02"));
+        // Stored `c` -> `b`, the opposite orientation to the merge below, and
+        // solver runs throughout.
+        s.alignments.push(edge("c", "b"));
+        let stored = &s.alignments[1].runs;
+        assert!(
+            !stored.is_empty() && stored.iter().all(|e| e.by.is_none()),
+            "the fixture must hold runs, none of them hand-corrected — an empty run list \
+             satisfies `all` and asserts nothing"
+        );
+
+        let merged = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Direct,
+                &edition("b.cbz", "01"),
+                "c",
+                edition("c.cbz", "02"),
+                edge("b", "c"),
+            )
+            .expect("an edge with no hand runs on it has nothing to carry, so nothing to refuse");
+
+        assert_eq!(merged, Merged::Replaced);
+        assert_eq!(
+            s.alignments.len(),
+            2,
+            "the re-solved edge replaces the one stored the other way round"
+        );
+        assert_eq!(
+            (s.alignments[1].from.as_str(), s.alignments[1].to.as_str()),
+            ("b", "c"),
+            "and it is stored in the direction it was solved in"
+        );
+    }
+
+    /// Re-solving one edge replaces that edge and no other. A direct edge
+    /// leaving the spoke for a third edition — the kind `Sidecar::correct`
+    /// writes when a pair has no stored edge — is not part of this re-solve
+    /// and must still be in the document afterwards.
+    ///
+    /// The retain drops the pair in both orientations, which takes two
+    /// endpoint comparisons each. With `!=` on the last of them the second
+    /// clause reads "drop every edge that starts at the spoke and does **not**
+    /// end at the hub", so `b` -> `c` is deleted by a call that was asked to
+    /// re-solve `a` -> `b`. Nothing reports it: the count of alignments is
+    /// never asserted by the merge itself, and the pair simply starts
+    /// resolving through the hub again.
+    #[test]
+    fn re_solving_the_hub_edge_leaves_the_spokes_edge_to_a_third_edition_alone() {
+        let mut s = two_edition();
+        s.editions.insert("c".into(), edition("c.cbz", "02"));
+        s.alignments.push(edge("b", "c"));
+        assert_eq!(route(&s, "b", "c").map(|r| r.via), Some(Via::Direct));
+
+        let merged = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Hub,
+                &edition("a.cbz", "00"),
+                "b",
+                edition("b.cbz", "01"),
+                edge("a", "b"),
+            )
+            .expect("an unchanged spoke merges");
+
+        assert_eq!(merged, Merged::Replaced);
+        assert_eq!(
+            s.alignments.len(),
+            2,
+            "only the `a` <-> `b` edge is being re-solved: {:?}",
+            s.alignments
+                .iter()
+                .map(|e| (e.from.as_str(), e.to.as_str()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            s.alignments.iter().any(|e| e.from == "b" && e.to == "c"),
+            "the spoke's own direct edge to a third edition must survive"
+        );
+        assert_eq!(
+            route(&s, "b", "c").map(|r| r.via),
+            Some(Via::Direct),
+            "and the pair must not quietly fall back to composing through the hub"
+        );
+    }
+
     /// `two_edition`'s fixture pairs `a` and `b` 1:1, so `carry_hand_runs`'s
     /// `b`-offset arithmetic is zero in every other test here — an off-by-one
     /// in the cast from a slot index to `b_slots` would still pass the whole
@@ -2100,6 +2307,125 @@ mod tests {
                 page: 30,
                 half: None
             })
+        );
+    }
+
+    /// The overlap test that decides which surviving pieces a hand run
+    /// evicts is two-sided: the hand run's target must both end at or after
+    /// this piece's first target and begin at or before its last. A hand run
+    /// whose target lies entirely before the piece overlaps nothing in it and
+    /// must leave it alone.
+    ///
+    /// `two_edition_offset` pairs `a` 0-29 with `b` 1-30, so `b` page 0 is the
+    /// one slot the stored run does not claim and a correction onto it
+    /// displaces nobody. Translated into a surviving piece's own source space
+    /// that target is *negative*, and with `||` the half of the test that is
+    /// still true admits it: the clamp then wraps the negative end through
+    /// `u32` into 4,294,967,295, the cut swallows the whole piece, and one
+    /// correction near the front of a volume leaves every other slot in it
+    /// pointing at nothing. Every other carry test here corrects onto a `b`
+    /// slot at or after the offset, where the clamp cannot wrap and the two
+    /// operators agree.
+    #[test]
+    fn a_hand_run_whose_target_precedes_a_piece_does_not_evict_it() {
+        let mut s = two_edition_offset();
+        s.correct(
+            "a",
+            "b",
+            Slot {
+                page: 5,
+                half: None,
+            },
+            Some(Slot {
+                page: 0,
+                half: None,
+            }),
+            None,
+        )
+        .expect("corrects");
+        let hand_before = s.alignments[0]
+            .runs
+            .iter()
+            .filter(|e| e.by == Some(Source::Hand))
+            .count();
+        assert_eq!(
+            hand_before, 1,
+            "b page 0 was claimed by nobody, so this correction displaced nobody"
+        );
+
+        let merged = s
+            .merge_spoke(
+                Direction::RightToLeft,
+                Anchor::Hub,
+                &edition_with_pages("a.cbz", "00", 30),
+                "b",
+                edition_with_pages("b.cbz", "01", 31),
+                Alignment {
+                    from: "a".into(),
+                    to: "b".into(),
+                    by: Source::Solver,
+                    solver: None,
+                    quality: None,
+                    runs: vec![RunEntry {
+                        a: SlotSpan::parse("0-29").unwrap(),
+                        b: Some(SlotSpan::parse("1-30").unwrap()),
+                        margin: None,
+                        by: None,
+                        note: None,
+                    }],
+                },
+            )
+            .expect("an unchanged spoke merges");
+        assert_eq!(merged, Merged::CarriedHandRuns(1));
+        assert_b_side_is_one_to_one(
+            &s.alignments[0].runs,
+            &s.editions["a"].slots(Direction::RightToLeft),
+            &s.editions["b"].slots(Direction::RightToLeft),
+        );
+
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 5),
+            Some(Slot {
+                page: 0,
+                half: None
+            }),
+            "the correction survives the re-solve"
+        );
+        // Both pieces the correction split the solved run into keep the +1
+        // offset they were solved with. Under `||` every one of these is
+        // `None`: the whole of each piece is treated as overlapping a target
+        // that lies before it.
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 0),
+            Some(Slot {
+                page: 1,
+                half: None
+            }),
+            "the first slot of the piece before the correction"
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 4),
+            Some(Slot {
+                page: 5,
+                half: None
+            }),
+            "and its last, right up against the hand run"
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 6),
+            Some(Slot {
+                page: 7,
+                half: None
+            }),
+            "the first slot of the piece after it"
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "b", 29),
+            Some(Slot {
+                page: 30,
+                half: None
+            }),
+            "and the far end of the volume"
         );
     }
 
@@ -2645,6 +2971,40 @@ mod tests {
         }
     }
 
+    /// A slot reference is digits, then an optional `L` or `R`, and the guard
+    /// rejects two different malformations: nothing left in front of the
+    /// suffix, and something in front of it that is not a number. Each is a
+    /// separate way of not being a page reference, so they are joined with
+    /// `||`; with `&&` a reference has to be both at once before it is
+    /// refused.
+    ///
+    /// `parse` is not the backstop that makes the second half redundant.
+    /// `u32::from_str` accepts a leading `+`, so `"+12"` would come back as
+    /// page 12 — a notation nothing in this codebase writes, silently
+    /// addressing a real page. The forms that do still fail there fail with
+    /// the wrong explanation, which is the message a person is given to work
+    /// from: `""` is not a page number out of range, it is not a page
+    /// reference at all.
+    #[test]
+    fn a_slot_reference_that_is_empty_or_not_numeric_is_refused() {
+        for bad in ["", "L", "R", "12a", "a12", "+12", "+12L", " 12"] {
+            let err = match parse_slot(bad) {
+                Ok(slot) => panic!("{bad:?} must not parse, and gave {slot:?}"),
+                Err(err) => err,
+            };
+            assert!(
+                err.contains("not a page reference"),
+                "{bad:?} was refused as {err:?}, which describes a different fault"
+            );
+        }
+
+        // And the forms that must still parse, or the guard is simply too
+        // strict rather than correct.
+        assert_eq!(parse_slot("12"), Ok(whole(12)));
+        assert_eq!(parse_slot("12L"), Ok(left(12)));
+        assert_eq!(parse_slot("0R"), Ok(right(0)));
+    }
+
     /// The block a reader needs in order to tell a worthless alignment from a
     /// good one. Measured: seven short unrelated pairings pair every page they
     /// have and are indistinguishable from a correct alignment on both
@@ -2874,6 +3234,46 @@ mod tests {
             "error should name both spans: {err}"
         );
         assert_eq!(sidecar.quality_of("a", "b"), None);
+    }
+
+    /// A missing endpoint is quoted together with the span it came from only
+    /// when the span says more than the endpoint does. `"20"` is already the
+    /// text a person would search the file for; `"0-20"` is not, and naming
+    /// only one of the two sends them looking for a string the file does not
+    /// contain — either "no slot `0-20`", which is not a slot anybody wrote,
+    /// or "no slot `20`" with nothing to say where in a 200-run document it
+    /// was written. Swapping the two arms is invisible to any assertion that
+    /// merely checks the failing slot is named, since both forms name it.
+    #[test]
+    fn a_missing_slot_is_quoted_with_its_span_only_when_the_span_says_more() {
+        const TEN_PAGES: &str = r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "a": { "label": "A", "members": [{ "path": "a.cbz", "sha256": "00", "pages": 10 }] },
+            "b": { "label": "B", "members": [{ "path": "b.cbz", "sha256": "01", "pages": 10 }] }
+          },
+          "hub": "a",
+          "alignments": [
+            { "from": "a", "to": "b", "by": "hand", "runs": [{ "a": "SPAN" }] }
+          ]
+        }"#;
+        let document =
+            |span: &str| Sidecar::from_json(&TEN_PAGES.replace("SPAN", span)).expect("parses");
+
+        let alone = document("20");
+        let wider = document("0-20");
+
+        assert_eq!(
+            alone.runs_of(&alone.alignments[0]).unwrap_err(),
+            "the source edition has no slot `20`",
+            "the span and the slot are the same text; saying it twice says nothing"
+        );
+        assert_eq!(
+            wider.runs_of(&wider.alignments[0]).unwrap_err(),
+            "the source edition has no slot `20` in span `0-20`",
+            "the endpoint that failed is not the text in the file, so both are named"
+        );
     }
 
     fn two_member_edition() -> Edition {
@@ -3137,6 +3537,53 @@ mod tests {
         assert_eq!(crate::resolve(&s, "en-mono", "raw-mono", 10), Some(at(20)));
     }
 
+    /// "This slot pairs with nothing", asked against an edge stored the other
+    /// way round, has to be turned round too: what the document gives up is
+    /// the pairing held by whichever slot of the *stored* source currently
+    /// reaches the slot the reader named. So the search is for the slot whose
+    /// counterpart **is** that one.
+    ///
+    /// With `!=` the search returns the first slot whose counterpart is
+    /// anything else — slot 0 of the document, in every alignment that pairs
+    /// its opening page — so a reader unpairing a page in the middle of the
+    /// volume would unpair the front cover instead, and the page they were
+    /// looking at would come back saying exactly what it said before.
+    #[test]
+    fn unpairing_a_slot_against_the_stored_direction_frees_the_slot_that_holds_it() {
+        let mut s = Sidecar::from_json(REAL).expect("parses");
+        // The stored edge is `raw-mono` -> `en-mono`; en page 40 is reached
+        // from raw slot 42, and the reader is looking the other way.
+        assert_eq!(crate::resolve(&s, "raw-mono", "en-mono", 42), Some(at(40)));
+
+        let what = s
+            .correct("en-mono", "raw-mono", at(40), None, None)
+            .expect("corrects");
+
+        assert_eq!(what, Corrected::Edge);
+        assert_eq!(
+            crate::resolve(&s, "en-mono", "raw-mono", 40),
+            None,
+            "the reader's own question must answer the way they asserted"
+        );
+        assert_eq!(
+            crate::resolve(&s, "raw-mono", "en-mono", 42),
+            None,
+            "and the slot that held en page 40 is the one that gave it up"
+        );
+        assert_eq!(
+            crate::resolve(&s, "raw-mono", "en-mono", 0),
+            Some(at(0)),
+            "no other slot is touched, least of all the first one"
+        );
+        let hands: Vec<String> = s.alignments[0]
+            .runs
+            .iter()
+            .filter(|e| e.by == Some(Source::Hand))
+            .map(|e| e.a.to_string())
+            .collect();
+        assert_eq!(hands, vec!["42".to_string()]);
+    }
+
     /// A pair with no stored edge resolves through the hub, so there is
     /// nothing to edit. The correction writes a direct edge seeded from the
     /// composition with the fix applied — which `sidecar.md` already sanctions
@@ -3165,6 +3612,49 @@ mod tests {
             crate::resolve(&s, "b", "c", 0),
             Some(at(0)),
             "the composed gap at the head is what the reader was correcting"
+        );
+    }
+
+    /// The edge a correction is about to rewrite is fetched by naming both of
+    /// its endpoints, because a star holds several edges that share one. Here
+    /// `a` -> `b` and `a` -> `c` both leave the hub, and with `||` the first
+    /// edge leaving `a` answers for both.
+    ///
+    /// The correction still lands on the right edge — `rewrite` looks its
+    /// position up again, with its own conjunction — but the runs it is
+    /// written *from* would be the other edge's. So correcting one slot of
+    /// `a` -> `c` would replace the whole of that edge with `a` -> `b`'s
+    /// alignment plus the fix, silently re-pointing every other slot in the
+    /// volume. The two fixtures disagree from their first slot on, which is
+    /// what makes that visible.
+    #[test]
+    fn correcting_one_edge_of_a_star_reads_that_edges_own_runs() {
+        let mut s = Sidecar::from_json(STAR_FOR_CORRECTION).expect("parses");
+        // `a` -> `c` starts at slot 2, so `a`'s first two slots have no
+        // counterpart there; `a` -> `b`, the other edge leaving `a`, pairs
+        // all thirty.
+        assert_eq!(crate::resolve(&s, "a", "c", 0), None);
+        assert_eq!(crate::resolve(&s, "a", "b", 0), Some(at(0)));
+
+        let what = s
+            .correct("a", "c", at(5), Some(at(10)), None)
+            .expect("corrects");
+
+        assert_eq!(what, Corrected::Edge);
+        assert_eq!(
+            crate::resolve(&s, "a", "c", 5),
+            Some(at(10)),
+            "the assertion lands"
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "c", 0),
+            None,
+            "and the edge is still `a` -> `c`, not `a` -> `b` with a fix on it"
+        );
+        assert_eq!(
+            crate::resolve(&s, "a", "c", 6),
+            Some(at(4)),
+            "the -2 offset of the edge that was corrected, not the other one's 0"
         );
     }
 
@@ -3273,6 +3763,57 @@ mod tests {
         );
     }
 
+    /// The margin carried onto a rebuilt run is matched on **both** spans,
+    /// because a margin is a measure of confidence in one exact pairing. A run
+    /// that keeps its source span but is pointed somewhere else is the case
+    /// the test above cannot reach: correcting slot 50 splits the run it lands
+    /// in, so nothing there keeps its `a` while changing its `b`, and `||`
+    /// finds no match either way.
+    ///
+    /// The first run of the real document is one slot wide, so correcting it
+    /// moves its target while its span stays `"0"`. With `||` it would then
+    /// inherit the 0.09 measured for the pairing it just lost, reporting a
+    /// hand decision as a solver measurement of a pairing nobody ever scored.
+    #[test]
+    fn a_run_pointed_at_a_new_target_does_not_inherit_the_old_targets_margin() {
+        let mut s = Sidecar::from_json(REAL).expect("parses");
+        assert_eq!(
+            (
+                s.alignments[0].runs[0].a.to_string(),
+                s.alignments[0].runs[0].margin
+            ),
+            ("0".to_string(), Some(0.09)),
+            "the fixture's first run must be one slot wide and carry a margin"
+        );
+
+        s.correct("raw-mono", "en-mono", at(0), Some(at(20)), None)
+            .expect("corrects");
+
+        let moved = s.alignments[0]
+            .runs
+            .iter()
+            .find(|e| e.a.to_string() == "0")
+            .expect("the corrected run keeps its one-slot span");
+        assert_eq!(
+            moved.b.map(|b| b.to_string()),
+            Some("20".to_string()),
+            "the fixture must actually move this run's target, or it asserts nothing"
+        );
+        assert_eq!(
+            moved.margin, None,
+            "0.09 was measured for raw 0 <-> en 0, a pairing this run no longer claims"
+        );
+        assert_eq!(
+            s.alignments[0]
+                .runs
+                .iter()
+                .find(|e| e.a.to_string() == "2-5")
+                .and_then(|e| e.margin),
+            Some(0.15),
+            "a run this correction did not touch keeps its figure"
+        );
+    }
+
     /// A hand correction has to survive the file being written and read back,
     /// or nothing else in this milestone means anything.
     #[test]
@@ -3355,6 +3896,76 @@ mod tests {
             matches!(itself, Err(NotCorrected::SameEdition(_))),
             "{itself:?}"
         );
+    }
+
+    /// A refused correction has to say why. The reader is pointing at a
+    /// filmstrip and this message is the whole feedback, so a `Display` that
+    /// writes nothing and returns `Ok` reaches them as an empty string —
+    /// indistinguishable from success at every call site that formats it, and
+    /// invisible to the route above, which matches on the variant.
+    ///
+    /// Every variant is listed rather than a representative few: a loop over
+    /// three of the five leaves two able to say nothing. A sixth added later
+    /// belongs in this list too.
+    #[test]
+    fn every_refusal_variant_shows_the_message_it_carries() {
+        let refusals = [
+            (
+                NotCorrected::NoSuchEdition("this document defines no edition named `en`".into()),
+                "this document defines no edition named `en`",
+            ),
+            (
+                NotCorrected::NoSuchSlot("`raw` has no slot `12L`".into()),
+                "`raw` has no slot `12L`",
+            ),
+            (
+                NotCorrected::SameEdition("an edition cannot be its own counterpart".into()),
+                "an edition cannot be its own counterpart",
+            ),
+            (
+                NotCorrected::NoPath("no path from `raw` to `en` in this document".into()),
+                "no path from `raw` to `en` in this document",
+            ),
+            (
+                NotCorrected::Unreadable(
+                    "the source edition span `9-2` starts after it ends".into(),
+                ),
+                "the source edition span `9-2` starts after it ends",
+            ),
+        ];
+
+        // The list above is maintained by hand, so a sixth variant would
+        // compile and go untested. This match has no wildcard: adding one
+        // stops the file compiling until it is named here, and the assertion
+        // then fails until it is added to the list as well.
+        let variant = |refusal: &NotCorrected| match refusal {
+            NotCorrected::NoSuchEdition(_) => "NoSuchEdition",
+            NotCorrected::NoSuchSlot(_) => "NoSuchSlot",
+            NotCorrected::SameEdition(_) => "SameEdition",
+            NotCorrected::NoPath(_) => "NoPath",
+            NotCorrected::Unreadable(_) => "Unreadable",
+        };
+        let mut listed: Vec<&str> = refusals.iter().map(|(r, _)| variant(r)).collect();
+        listed.sort_unstable();
+        assert_eq!(
+            listed,
+            [
+                "NoPath",
+                "NoSuchEdition",
+                "NoSuchSlot",
+                "SameEdition",
+                "Unreadable"
+            ],
+            "every variant the enum declares has to be exercised here"
+        );
+
+        for (refusal, expected) in &refusals {
+            assert_eq!(
+                &refusal.to_string(),
+                expected,
+                "{refusal:?} must reach the reader as the text it was given"
+            );
+        }
     }
 
     /// `correcting_a_stored_edge_rewrites_it_in_place` cannot pin `all` versus

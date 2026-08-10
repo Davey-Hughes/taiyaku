@@ -188,6 +188,91 @@ mod tests {
         assert!(spread_flags(&[]).is_empty());
     }
 
+    /// The baseline is the median aspect ratio, and the median index is
+    /// `len / 2`. Replacing it with `len % 2` picks index 0 or 1 — the two
+    /// narrowest pages — which on a real edition means the baseline is set by
+    /// whichever page was cropped tightest. The fixture needs six portrait
+    /// pages, because with three `/` and `%` agree.
+    #[test]
+    fn the_ordinary_page_is_the_median_and_not_the_narrowest() {
+        // Six portrait pages, one much narrower than the rest, plus one true
+        // spread at roughly twice the ordinary aspect.
+        let mut dims: Vec<(u32, u32)> = vec![
+            (700, 1400), // markedly narrow: 0.50
+            (1000, 1400),
+            (1010, 1400),
+            (1020, 1400),
+            (1030, 1400),
+            (1040, 1400),
+        ];
+        dims.push((2040, 1400)); // a joined spread of the ordinary page
+
+        let flags = spread_flags(&dims);
+
+        assert_eq!(
+            flags,
+            vec![false, false, false, false, false, false, true],
+            "the narrow page is not a spread and must not set the baseline"
+        );
+    }
+
+    /// The other branch: an edition published entirely as joined spreads has
+    /// no portrait page at all, so the baseline comes from halving the median
+    /// of every page. Same median-index hazard, different array.
+    ///
+    /// Both fixtures here are constructed rather than measured, because the
+    /// measured all-landscape edition — One Piece volume 1, 107 images within
+    /// six pixels of each other — cannot tell a median from a minimum. The
+    /// spread of aspects is the point of the fixture and not incidental to it:
+    /// with every page the same width, every index of the sorted array holds
+    /// the same number.
+    #[test]
+    fn an_all_landscape_edition_takes_its_baseline_from_the_halved_median() {
+        // Six landscape pages, all of them spreads of a roughly 0.75-aspect
+        // page. The widest is 1.45 times the narrowest, which is what makes
+        // the median distinguishable: taking the narrowest as the baseline
+        // puts the widest at 2.90 times it, past the upper bound.
+        let dims: Vec<(u32, u32)> = vec![
+            (1359, 1000),
+            (1400, 1000),
+            (1450, 1000),
+            (1500, 1000),
+            (1700, 1000),
+            (1970, 1000),
+        ];
+
+        let flags = spread_flags(&dims);
+
+        assert_eq!(flags, vec![true; 6]);
+
+        // The safety net, and it is here because the fixture above clears the
+        // bar by only 3.5% — 2.899 against an upper bound of 2.8. That margin
+        // is coupled to `is_spread`'s band: widen the band to 2.9 for some
+        // future wide-page case and the fixture above silently stops telling
+        // `/` from `%` while still passing. This one clears by 16% against the
+        // *lower* bound instead, so it fails differently and survives that.
+        //
+        // Two image sizes in one edition, both real — One Piece volume 1's
+        // 1524x1200 and Tongari volume 9's letterboxed 1920x1080. The median
+        // is 1.778, so an ordinary page of this edition is 0.889 wide and a
+        // 1.27 image is only 1.43 of them: wide, but not two pages. Under the
+        // narrowest-page baseline all six come out spreads instead.
+        let mixed: Vec<(u32, u32)> = vec![
+            (1524, 1200),
+            (1524, 1200),
+            (1524, 1200),
+            (1920, 1080),
+            (1920, 1080),
+            (1920, 1080),
+        ];
+
+        assert_eq!(
+            spread_flags(&mixed),
+            vec![false, false, false, true, true, true],
+            "a page well under twice the median is not a joined spread"
+        );
+    }
+
     /// Real measurements, all of them. The wide pages that are spreads and the
     /// wide page that is not have to come out on opposite sides of this.
     #[test]

@@ -16,6 +16,15 @@ taiyaku.json
 hashes/
 thumbs/
 
+# cargo-mutants scratch output. Always pass --output to keep it out of the
+# tree anyway; this is the second line of defence, not the first.
+mutants.out/
+
+# Agent scratch. `.claude/worktrees/` holds a full checkout per agent and
+# reached 7.4 GB on the branch that added this line — a `git add -A` away from
+# being staged, since nothing else here was ignoring it.
+.claude/
+
 # ---- macOS ------------------------------------------------------------------
 .DS_Store
 .AppleDouble

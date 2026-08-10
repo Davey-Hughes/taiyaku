@@ -1099,3 +1099,83 @@ separately on each job. It works, but costs a download per job. If that becomes
 annoying, either pin `channel` to the image's exact version and bump both
 together, or delete `rust-toolchain.toml` and let CI use the image toolchain as-is
 at the cost of local convenience.
+
+## Mutation testing
+
+`env -u TAIYAKU_CORPUS cargo mutants --gitignore=true --test-tool=nextest
+--output <dir>` is the invocation, and every flag on it earned its place by
+something breaking first.
+
+**`--gitignore=true` is not optional on this repository.** `cargo-mutants`
+copies the whole source tree into a scratch directory before mutating it, and
+does not honour `.gitignore` by default. `corpus/` is gitignored and is 26 GB
+of NAS-backed material, including archival TIFFs at 430 MB a page, and the
+first run without the flag died mid-copy:
+
+    Error: Failed to copy .../corpus/incoming/needles/colorwalk-comp2/cwc2-310.tif
+    Caused by: No space left on device (os error 28)
+
+Nothing in that message names the corpus or the ignore file, and the natural
+misreading is that the machine itself is short of disk — it is not; the copy
+filled a 31 GB `/tmp` before a single mutant was tested. `--gitignore=true`
+fixes it by making the scratch copy honour the same file `git` already does.
+
+**`env -u TAIYAKU_CORPUS`, for the reason "Two profiles, and the gate that
+took an hour" above already gives `cargo test`.** `cargo-mutants` rebuilds and
+reruns the test binary once per mutant, so leaving the variable set would run
+the standing corpus checks and the two one-off measurement modules —
+`geometry_experiment` among them — on every mutant a run tries, rather than
+once. The baseline in `docs/notes.md` was taken with the variable stripped.
+
+**Always pass `--output`, pointed outside the working tree.** `mutants.out/`
+is gitignored as a second line of defence, not the first — the flag is what
+actually keeps a run from writing its scratch copy beside the source it was
+copied from.
+
+**This is not a CI job and not a gate.** The numbers needed to size a
+threshold — how many survivors are genuine gaps against how many are
+equivalent mutants that cannot be killed by construction — did not exist
+before the baseline in `docs/notes.md` was measured, and a threshold picked
+before its baseline exists is a number chosen to be passed rather than one
+that means something. See
+`docs/superpowers/specs/2026-08-10-mutation-testing-and-pedantic-design.md`,
+§5, for the fuller argument: it is also why no `--in-diff` PR gate ships
+alongside this, since such a gate running the CI-visible suite would report
+`solve.rs`'s recurrence as unverified while staying silent about the one
+corpus check that actually verifies it.
+
+### Hand-mutation, and the two ways it lies
+
+Writing a test against a survivor needs the mutation applied by hand at least
+once, because **a new test passing proves nothing** — the code it tests was
+already correct, so a test that asserts nothing passes exactly as loudly as one
+that asserts the right thing. The only evidence is watching the test go red
+against the mutant. The branch that killed `taiyaku-core`'s survivors got a
+false answer from that procedure twice, in opposite directions, and both are
+cheap to defend against.
+
+**A mutation that did not land reports PASS.** One edit was written by a Python
+helper and was invisible to the `cargo` invocation in the same command: no
+`Compiling` line, a 0.02 s build, and a green run. Two processes in one command
+had disagreed about the file's contents. Read as evidence, that PASS says "the
+test cannot kill this mutant, so it must be equivalent" — and that is precisely
+the wrong conclusion that shipped in one agent's first report, on a mutant a
+reviewer then killed in twenty-five lines. So: apply the edit with `sed -i`,
+**`grep` the file afterwards to confirm it is there**, and check the run
+actually rebuilt.
+
+**A mutation left applied poisons everything measured after it.** A reviewer
+finished a hand-mutation pass, reported the tree restored and `md5`-verified,
+and left `carried >= 0` sitting in `sidecar.rs`. It was caught only because a
+later `git cherry-pick` refused to run against a dirty tree — two full-workspace
+suite runs before that had been measured against mutated source and had
+reported green. So: back the file up with `cp` and restore from the backup
+rather than trusting an inverse edit, and **check `git status` before believing
+any number**. Do not reach for `git checkout` or `git stash` to undo a
+mutation if anything else is running in the same tree.
+
+Both failures share a shape worth naming, because it is the same shape the
+whole technique exists to expose: a green result that means "nothing was
+tested" is indistinguishable from a green result that means "everything
+passed", unless something independent confirms the thing under test was
+actually there.
