@@ -1,4 +1,7 @@
 import type { ReaderModule } from '../module'
+import type { Mode } from '../pairing'
+import type { Display } from '../reading'
+import type { Position } from '../resolver'
 
 /**
  * How far ahead and behind the current slot to fetch, how many editions'
@@ -178,4 +181,88 @@ export function groupWindow(
   // arrive twice across neighbouring groups. Fetching it twice is harmless but
   // spends a concurrency slot that a further-out group could have used.
   return [...new Set(result)]
+}
+
+/** One page to warm: the slot, and the page index its URL is built from. */
+export interface PrefetchTarget {
+  slot: number
+  page: number
+}
+
+/**
+ * The pages either side of `at` worth warming, in `groupWindow`'s
+ * nearest-group-first order.
+ *
+ * **Empty in three states, and all three are answered here** rather than by
+ * three guards in a caller:
+ *
+ * - **Scroll mode.** Every group is already mounted there (see `PageView`'s
+ *   `buffered` doc), so "the slots around the current one" is not a meaningful
+ *   subset to warm ahead of the rest — the rest are either already requested or
+ *   deliberately deferred to `loading="lazy"`, and this would only fight that.
+ * - **Disabled**, which is this module's own on/off switch.
+ * - **A gap**, where there is nothing paired to prefetch around.
+ *
+ * `grouping` is the grouping already on screen rather than one derived here: an
+ * effect reading a stale one would warm the pages of a layout the reader has
+ * left. `undefined` — no grouping assigned yet — is empty for the same reason a
+ * gap is, and needs no fallback to slot-space `window`, which would warm the
+ * wrong unit in `two` mode.
+ *
+ * `slotAt` rather than a `Resolver`, so a test hands in a function and this
+ * module keeps taking no dependency on `resolver.ts` at all. A slot the
+ * resolver cannot place is skipped rather than guessed at: a prefetch miss is
+ * cheaper than a fetch of the wrong page.
+ */
+export function prefetchTargets(
+  grouping: SlotGroup[] | undefined,
+  at: Display,
+  prefs: PrefetchPrefs,
+  mode: Mode,
+  slotAt: (edition: string, index: number) => Position | undefined,
+): PrefetchTarget[] {
+  if (mode === 'scroll' || !prefs.enabled || !grouping) return []
+  if (at.kind !== 'at') return []
+  const targets: PrefetchTarget[] = []
+  for (const slot of groupWindow(
+    grouping,
+    at.slot,
+    prefs.ahead,
+    prefs.behind,
+  )) {
+    const position = slotAt(at.edition, slot)
+    if (!position) continue
+    targets.push({ slot, page: position.page })
+  }
+  return targets
+}
+
+/**
+ * Whether a window built for `queuedFor` still matters, asked when the queue
+ * reaches each job rather than when the job was made.
+ *
+ * Under a flick the window is rebuilt once per group crossed, so without this
+ * the queue works through every intermediate position's neighbours — fetching
+ * and decoding pages for somewhere the reader left several turns ago, while the
+ * page they are actually on waits. The same defect `presentWhenDecoded` closes
+ * for the swap path, on the other queue.
+ *
+ * Strict equality on the slot, not proximity: a window built for a position the
+ * reader has left is worthless whatever the distance, because the position they
+ * moved *to* has already queued its own window. Nothing is lost by dropping the
+ * old one.
+ *
+ * `undefined` — no session to ask — is superseded, which is what stops a queue
+ * draining into a reader that has gone.
+ */
+export function superseded(
+  queuedFor: { edition: string; slot: number },
+  now: Display | undefined,
+): boolean {
+  if (!now) return true
+  return (
+    now.kind !== 'at' ||
+    now.edition !== queuedFor.edition ||
+    now.slot !== queuedFor.slot
+  )
 }

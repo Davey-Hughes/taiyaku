@@ -19,36 +19,54 @@ import { PageAnnotations } from './Annotations'
 import { pageBoxLongEdge, requestedLongEdge } from './pageSize'
 import { Chrome } from './Chrome'
 import {
-  describePosition,
-  displacedBy,
-  spanOf,
+  applyLanded,
+  correctionView,
+  counterpartEdition,
+  counterpartPick,
+  submitCorrection,
+  type CorrectionPorts,
   type Pending,
 } from './correction'
+import { CorrectionBanner } from './CorrectionBanner'
 import { createCohort, type Cohort } from './cohort'
-import { createDecodeQueue, decodeTo, type DecodeQueue } from './decode'
+import { decodeTo } from './decode'
 import { debounce, type Debounced } from './debounce'
 import {
   canRedo,
   canUndo,
-  current as currentHistory,
   emptyHistory,
   record,
   redo,
+  stepHistory,
   undo,
   type History,
 } from './history'
 import { Gap } from './Gap'
+import { GroupView } from './GroupView'
+import {
+  useConstant,
+  useDecodeQueue,
+  useDrawnSrcs,
+  useFlushOnHide,
+  useLatest,
+  usePrefsMap,
+  useProgressWrite,
+  useReadingClock,
+  useScrollToCurrent,
+  useWindowWidth,
+} from './hooks'
 import { CreditsPanel } from './CreditsPanel'
 import { Help } from './Help'
 import { intentOf, isInteractivePress, isInteractiveTarget } from './keys'
-import { sliceFor } from './module'
+import { keyPlan } from './keyplan'
+import { changeSlice, fieldChanged, sliceFor, sliceReset } from './module'
 import {
   annotationsModule,
   NEW_INTENT,
   REDO_INTENT,
-  noteCountLine,
   REVEAL_INTENT,
   REVIEW_INTENT,
+  toggleReveal,
   UNDO_INTENT,
 } from './modules/annotations'
 import {
@@ -61,12 +79,12 @@ import {
 import {
   directionModule,
   effectiveDirection,
+  flipped,
   stepFor,
-  setOverride,
   TOGGLE_INTENT,
   type Direction,
 } from './modules/direction'
-import { fitModule, seamStyle, type ArtworkHug } from './modules/fit'
+import { fitModule, hugForCell, type ArtworkHug } from './modules/fit'
 import {
   enabledModules,
   helpModule,
@@ -74,17 +92,8 @@ import {
   type HelpPrefs,
 } from './modules/help'
 import { motionModule } from './modules/motion'
-import { groupWindow, prefetchModule } from './modules/prefetch'
-import {
-  chapterReadout,
-  gapHealth,
-  healthReadout,
-  nextTurns,
-  pagesPerMinute,
-  positionLine,
-  readoutsModule,
-  timeLine,
-} from './modules/readouts'
+import { prefetchModule, prefetchTargets, superseded } from './modules/prefetch'
+import { readoutLines, readoutsModule } from './modules/readouts'
 import { layoutModule } from './modules/layout'
 import { registry } from './modules/registry'
 import {
@@ -96,46 +105,74 @@ import { TOGGLE_INTENT as SETTINGS_TOGGLE_INTENT } from './modules/settings'
 import {
   IN_INTENT as ZOOM_IN_INTENT,
   OUT_INTENT as ZOOM_OUT_INTENT,
+  panStep,
+  swapMapKind,
   WHOLE_INTENT as ZOOM_WHOLE_INTENT,
+  wheelStep,
+  zoomable,
   zoomModule,
+  zoomStep,
   type ZoomPrefs,
 } from './modules/zoom'
 import { nearestPaired, type NearestOffer } from './nearest'
 import {
+  afterDelete,
+  anchorFrom,
+  anchorNote,
+  changeShown,
   editsToWrite,
   gestureFor,
+  GRAB_SLOP,
+  grabNote,
   listPlacement,
-  mergeOver,
-  moveRegion,
+  newNote,
+  NOTHING_OPEN,
+  nothingOpen,
   notesBySlot,
   notesHere,
+  openNote as openNoteInDraft,
   paintedBox,
-  pointAt,
   pointInSlot,
-  regionFromDrag,
+  pressTakesPan,
+  regionUnderDrag,
   reviewList,
+  sameNotes,
+  shownNote,
+  toggleReview,
+  visibleNotes,
   withoutNote,
+  type DragStart,
+  type Draft,
   type Note,
   type NoteHere,
   type NotesDoc,
   type Region,
   type ReviewEntry,
 } from './notes'
-import { NoteList } from './NoteList'
-import { NotePanel, type PanelMode } from './NotePanel'
-import { PageView } from './PageView'
 import {
-  cellOf,
-  cellsFor,
-  correctionTiles,
-  groups,
-  type Group,
-  type Mode,
-} from './pairing'
+  saveNotes as saveNotesDoc,
+  writeGate,
+  type NotesPorts,
+} from './notesWrite'
+import { NoteList } from './NoteList'
+import { NotePanel } from './NotePanel'
+import { cellOf, groups, type Group, type Mode } from './pairing'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
-import { display, navigate, restore, type ReadingState } from './reading'
+import { display, navigate } from './reading'
 import { Settings } from './Settings'
-import { withFieldValue } from './settingsPanel'
+import {
+  allSlots,
+  openFirstWork,
+  type Session,
+  type StartupPorts,
+} from './startup'
+import {
+  carrySwap,
+  frameOf,
+  swapStep,
+  type CarriedSwap,
+  type DrawnPage,
+} from './swapView'
 // This file must never become Vitest-reachable: `wasmResolver` imports
 // `resolver.ts` as a value, and that module's `taiyaku-wasm` import only
 // resolves once `./scripts/build-wasm.sh` has generated the gitignored
@@ -143,38 +180,16 @@ import { withFieldValue } from './settingsPanel'
 // (after that script has run) and break CI or a fresh clone (where it
 // hasn't) — see docs/ci.md's `web` job notes and the global no-resolver-in-
 // tests constraint.
+import { wasmResolver } from './resolver'
 import {
-  wasmResolver,
-  type Chapter,
-  type Position,
-  type Resolver,
-} from './resolver'
-import {
-  alignmentsOf,
   applyIntent,
-  initialPrevious,
-  orderedEditions,
   takeOffered,
   verdictFor,
-  type Alignment,
   type ReadingIntent,
 } from './session'
-import { nextColour } from './palette'
 import { cryptoRandom, ulid } from './ulid'
 import { Viewport } from './Viewport'
-import {
-  WHOLE,
-  clampRect,
-  mapView,
-  panBy,
-  wheelBy,
-  zoomAt,
-  type Cell,
-  type Drawn,
-  type Frame,
-  type MapKind,
-  type Rect,
-} from './viewport'
+import { WHOLE, clampRect, mapView, type Rect } from './viewport'
 
 /**
  * How long a burst of `navigate` calls (arrow-stepping, a filmstrip click, a
@@ -192,129 +207,50 @@ const PROGRESS_DEBOUNCE_MS = 400
  */
 const NOTES_DEBOUNCE_MS = 700
 
-/**
- * Whether two notes documents are the same, for history's sake.
- *
- * By serialised content rather than by reference: every write produces fresh
- * objects, so reference equality would record a step for a write that changed
- * nothing and leave undo needing two presses to do anything visible.
- */
-const sameNotes = (a: Note[], b: Note[]) =>
-  JSON.stringify(a) === JSON.stringify(b)
-
-/**
- * How near a marker counts as grabbing it, in page fractions — the space
- * `pointOn` below hands back, per `notes.ts`'s `Region`.
- *
- * A point has no area, so without this the only way to take hold of one would
- * be to hit an infinitely small spot. Roughly the radius `Annotations` draws a
- * pin at, so what a reader can grab is what they can see.
- */
-const GRAB_SLOP = 0.02
-
 /** One empty set rather than a fresh one per render, so nothing skipped stays cheap and referentially stable. */
 const EMPTY_SLOTS: Set<number> = new Set()
 
 /**
- * Which of `viewport.ts`'s derived transforms `onSwap: 'content'` maps
- * through.
- *
- * **A result, and it said this line was wrong.** It read `'letterbox'` until
- * 2026-08-08, on the guess that a letterbox "is centred by construction" — the
- * rule that took Tongari v09 from 98 runs to 7 — and that framing differences
- * between packagings arise the same way. The corpus says the reasoning was
- * sound about letterboxing and wrong about these editions: the shared artwork
- * is as tall as the taller page, and the wider one carries margin at its
- * sides, not its top and bottom.
- *
- * `docs/notes.md`, "Which derived transform maps a rect between editions", is
- * the measurement — 288 slots over twelve corpus volumes, `raw-mono` against
- * `en-mono` — and `mapRect`'s own doc carries the figures beside the
- * arithmetic. What `'pillarbox'` beat, in order: `'letterbox'`, which corrects
- * nothing on the axis that needs it and adds four times the error on the axis
- * that does not, so it loses to doing nothing at all; `'identity'`, which is
- * exactly right on the vertical and uncorrected on the horizontal, where
- * `'pillarbox'` cuts the median residual from 0.0296 of page width to 0.0195;
- * and `'reset'`, a half-page bound rather than a residual. None of the three
- * is what `mapView` corrects most visibly — that is the fit-whole letterbox
- * *inside* the page area, which `paintedIn` removes whichever one is chosen.
- *
- * Still the seam rather than the decision: had no candidate beaten throwing
- * the view away, the design's §4 promotion rule ships reset-on-swap, which is
- * a change to `modules/zoom.ts`'s `defaults.onSwap` and not to this constant.
+ * The width `auto` note-list placement assumes where there is no window to
+ * measure. A desktop width, so the fallback is the layout a reader on a real
+ * screen would get rather than the narrowest one.
  */
-const CONTENT_MAP: MapKind = 'pillarbox'
-
-/** A rect's own centre — where a keyboard zoom anchors, having no pointer to anchor on. */
-const centreOf = (rect: Rect) => ({
-  x: rect.x + rect.w / 2,
-  y: rect.y + rect.h / 2,
-})
+const NO_WINDOW_WIDTH = 1280
 
 /**
- * The natural size of the page `url` names, from the images the page area is
- * drawing right now.
- *
- * Matched by URL suffix rather than by threading slot identity down the tree,
- * the same rule `draftImage` and `PageAnnotations` already match by — `pageAt`
- * builds exactly this URL, and `two` mode draws two pages of which only one is
- * the slot being asked about.
- *
- * `undefined` covers three states that are one state for a caller: the page is
- * not on screen, or it is but has not decoded (`PageView`'s decode gate holds
- * the *outgoing* page's `src` on the element until the incoming one is ready,
- * so a swap pressed twice quickly genuinely has no frame to measure), or it
- * decoded to nothing. All three mean the transform cannot be computed, which
- * `mapView` and the design's §9 both answer by leaving the view alone.
+ * How often the reading-time estimate re-renders. 30s rather than every
+ * second: `modules/readouts.ts`'s `timeLine` never shows seconds, so anything
+ * finer would re-render for a change nobody could see.
  */
-function frameOf(host: HTMLElement, url: string): Frame | undefined {
-  const img = [...host.querySelectorAll('img')].find((candidate) =>
-    candidate.src.endsWith(url),
-  )
-  if (!img || img.naturalWidth <= 0 || img.naturalHeight <= 0) return undefined
-  return { w: img.naturalWidth, h: img.naturalHeight }
-}
+const READING_TICK_MS = 30_000
 
 /**
- * Enough of the sidecar to pick a work's first edition, its reading
- * direction and the verdict on a pair — `reading` is what `groups` needs to
- * know which side of a pair is drawn first, and `alignments` is what
- * `verdictFor` reads. Everything else (members, spreads, runs) stays the
- * aligner's business: the reader gets slots from the `Resolver`, below,
- * rather than deriving them here a second time.
+ * The two calls `notesWrite.ts` makes, bound once at module level rather than
+ * rebuilt per render: the object's identity never matters to `saveNotes`, but
+ * allocating one per render for a function called on a debounce would be
+ * noise in every profile of the editor.
  */
-interface SidecarShape {
-  work: { reading: Direction }
-  editions: Record<string, unknown>
-  hub: string
-  alignments: Alignment[]
+const NOTES_PORTS: NotesPorts = { put: putNotes, get: getNotes }
+
+/**
+ * The five reads a load makes, bound once at module level — the same reasoning
+ * `NOTES_PORTS` above carries, applied to a function called exactly once.
+ * `resolve` is `wasmResolver`, which `startup.ts` takes as a port rather than
+ * importing so that its own tests can run at all (Rule 1: nothing but this
+ * file value-imports `resolver.ts`).
+ */
+const CORRECTION_PORTS: CorrectionPorts = {
+  patch: patchAlignment,
+  sidecar: getSidecarWithEtag,
+  resolve: wasmResolver,
 }
 
-interface Session {
-  work: string
-  resolver: Resolver
-  /** The sidecar's fact about the work. `d` layers a per-edition override on top of this — see `effectiveDirection`. */
-  reading: Direction
-  /** Digit keys index into this, in display order — see `orderedEditions`. */
-  editions: string[]
-  /** Read once at load, for `verdictFor` — see `SidecarShape`. */
-  alignments: Alignment[]
-  state: ReadingState
-  /**
-   * What `toggle` returns to, when currently viewing the authority. Seeded
-   * at load via `session.ts`'s `initialPrevious`, never with `authority`
-   * itself — see the doc there for why that seed matters.
-   */
-  previous: string
-}
-
-/** Every slot of one edition, in order. `Resolver` has no bulk accessor. */
-function allSlots(resolver: Resolver, edition: string): Position[] {
-  const count = resolver.slotCount(edition) ?? 0
-  return Array.from(
-    { length: count },
-    (_, index) => resolver.slotAt(edition, index)!,
-  )
+const STARTUP_PORTS: StartupPorts = {
+  works: listWorks,
+  sidecar: getSidecarWithEtag,
+  resolve: wasmResolver,
+  progress: getProgress,
+  notes: getNotes,
 }
 
 /**
@@ -388,10 +324,10 @@ function App() {
   const [submitting, setSubmitting] = useState(false)
   // The keydown effect subscribes once at load, so its closure cannot see
   // this — same staleness `sessionRef` and `pendingRef` exist to route around.
-  const submittingRef = useRef(false)
-  useEffect(() => {
-    submittingRef.current = submitting
-  }, [submitting])
+  // `useLatest` (`hooks.ts`) is that mirror, written once and used six times
+  // here; the argument for why a listener frozen at subscription needs one is
+  // in its own doc.
+  const submittingRef = useLatest(submitting)
   // The sidecar's `ETag`, as of the last successful read or write — what a
   // correction's `If-Match` is checked against. Kept alongside `session`
   // rather than inside it: `session.resolver` is rebuilt from a correction's
@@ -429,48 +365,40 @@ function App() {
     emptyHistory<Note[]>([]),
   )
   const [notesNotice, setNotesNotice] = useState<string>()
-  // Which surface the note panel is showing, or none. `n` opens the editor on
-  // a fresh draft, a margin tab opens it on an existing note, `a` toggles the
-  // review list, `Escape` closes either.
-  const [panelMode, setPanelMode] = useState<PanelMode>()
-  // Every note this editing session has changed, keyed by id, and which of
-  // them the panel is showing.
+  // Which surface the note panel is showing, every note this editing session
+  // has changed, and which of them the panel is showing — one `useState`,
+  // because they are one thing: `notes.ts`'s `Draft`, whose eight transitions
+  // hold the rules that used to be written three setters at a time here. `n`
+  // opens the editor on a fresh note, a margin tab opens it on an existing
+  // one, `a` toggles the review list, `Escape` closes either.
   //
-  // A map rather than one draft, because the editor is an **edit mode**: while
-  // it is open every region on the page can be grabbed and moved, not only the
-  // one belonging to the note being typed into. Grabbing another note's box
-  // makes it the one on show, and the note you were on keeps its changes here
-  // rather than being discarded for having lost focus — so `Save` writes
-  // everything you touched, and nothing you did quietly goes missing because
-  // you reached for a different box.
-  const [edits, setEdits] = useState<Record<string, Note>>({})
-  const [currentId, setCurrentId] = useState<string>()
+  // Every transition is applied through the functional updater rather than
+  // from this render's value, which is what lets the keydown effect — frozen
+  // at load — reach the current draft without a mirror ref of its own.
+  const [editing, setEditing] = useState<Draft>(NOTHING_OPEN)
+  const { panel: panelMode, edits, currentId } = editing
   // The note the panel is showing. Derived rather than stored, so there is one
   // copy of every edit and no way for the shown note and the saved one to
   // disagree.
-  const draft = currentId ? edits[currentId] : undefined
+  const draft = shownNote(editing)
   /** Change the note on show, in place. */
   const editCurrent = (change: (note: Note) => Note) =>
-    setEdits((map) => {
-      if (!currentId || !map[currentId]) return map
-      const next = { ...map, [currentId]: change(map[currentId]) }
+    setEditing((open) => {
+      const next = changeShown(open, change)
+      // The same draft back means there was nothing on show to change, and a
+      // write scheduled for that would send the document as it already is.
+      if (next === open) return open
       // Scheduled here rather than in each caller, so no way of changing a
       // note can forget to save it — which, with no Save button, would mean a
       // change that quietly never happened.
-      scheduleSave(next)
+      scheduleSave(next.edits)
       return next
     })
 
   // The keydown effect subscribes once at load, so it cannot see these — the
   // same staleness `sessionRef` and `pendingRef` exist to route around.
-  const panelModeRef = useRef<PanelMode>(undefined)
-  useEffect(() => {
-    panelModeRef.current = panelMode
-  }, [panelMode])
-  const notesBusyRef = useRef(false)
-  useEffect(() => {
-    notesBusyRef.current = notesBusy
-  }, [notesBusy])
+  const panelModeRef = useLatest(panelMode)
+  const notesBusyRef = useLatest(notesBusy)
 
   // Every registered module's own preference slice, in one map keyed by
   // `ReaderModule.id` rather than one hand-declared `useState` per module.
@@ -481,29 +409,18 @@ function App() {
   // like `directionPrefs` and `regroupPrefs` used to be individually: there
   // is exactly one `work` for this component's lifetime (no work-switcher
   // exists yet), so there is nothing to reload against.
-  const [prefsMap, setPrefsMap] = useState<Record<string, object>>(() =>
-    Object.fromEntries(
-      registry
-        .all()
-        .map((mod) => [mod.id, loadPrefs(mod.id, mod.defaults as object)]),
-    ),
+  //
+  // Loading it once and persisting it on every change is `hooks.ts`'s
+  // `usePrefsMap` — including why the write is an effect rather than
+  // something `setPrefsMap`'s callers do (an updater must stay pure) and why
+  // it writes the whole map rather than the slice that moved. `registry` and
+  // the two storage calls are handed in, which is what lets that hook be
+  // tested without either.
+  const [prefsMap, setPrefsMap] = usePrefsMap(
+    registry.all(),
+    loadPrefs,
+    savePrefs,
   )
-  // Persisted via an effect rather than inline in `setPrefsMap`'s callers —
-  // several of them (the `d`/`b` handlers below) update this with a
-  // functional updater, and an updater must stay pure (React may invoke it
-  // more than once, e.g. under StrictMode), so the `savePrefs` side effect
-  // lives here instead, same reasoning `directionPrefs`'s effect used to
-  // carry alone. Writes every module's slice on any one module's change
-  // rather than diffing for the one that actually moved: `savePrefs` is a
-  // cheap `JSON.stringify` + `setItem` on a handful of small objects, so the
-  // simplicity of "persist the whole map, always" costs nothing measurable
-  // and cannot drift from which id actually changed the way a hand-maintained
-  // diff could.
-  useEffect(() => {
-    for (const mod of registry.all()) {
-      savePrefs(mod.id, prefsMap[mod.id] ?? (mod.defaults as object))
-    }
-  }, [prefsMap])
 
   // Typed reads of each module's own slice — `sliceFor` (`module.ts`)
   // restores the `P` a plain `Record<string, object>` can't carry, so every
@@ -512,15 +429,13 @@ function App() {
   // memoised: each is a cheap property lookup with a fallback, not a
   // computation worth caching.
   const mode = sliceFor(prefsMap, layoutModule).mode
+  // `changeSlice`, not a hand-written spread of the map and of the slice —
+  // `LayoutPrefs` has one field today, so writing it out would work and would
+  // be exactly the bug `direction.ts` extracted `setOverride` to prevent.
   const setMode = (next: Mode) =>
-    setPrefsMap((map) => ({
-      ...map,
-      // Spread rather than replace. `LayoutPrefs` has one field today, so this
-      // changes nothing — and it is exactly the bug `direction.ts` extracted
-      // `setOverride` to prevent, which is reason enough not to write the
-      // version that only works while the type stays small.
-      [layoutModule.id]: { ...sliceFor(map, layoutModule), mode: next },
-    }))
+    setPrefsMap((map) =>
+      changeSlice(map, layoutModule, (prefs) => ({ ...prefs, mode: next })),
+    )
   const directionPrefs = sliceFor(prefsMap, directionModule)
   const motionPrefs = sliceFor(prefsMap, motionModule)
   const readoutsPrefs = sliceFor(prefsMap, readoutsModule)
@@ -556,28 +471,13 @@ function App() {
   // defect for a different one (re-fetching from zero on every supersede).
   // Two independent, already-existing queues need no new capability at all.
   //
-  // Both lazily created once via `useState`'s initializer, then *rebuilt*
-  // whenever `prefetchPrefs.maxConcurrent` changes — the settings panel can
-  // now tune it live, and a queue whose cap was baked in at mount would make
-  // that one field the exception to "change a setting, confirm it takes
-  // effect" every other prefetch setting already satisfies (`ahead`/
-  // `behind`/`enabled` are read fresh at render or effect time below, with
-  // nothing cached). Rebuilding drops nothing already in flight: a job
-  // queued against the old instance keeps running under its old cap, and
-  // this only changes which instance the *next* `run` call goes to.
-  const [swapQueue, setSwapQueue] = useState<DecodeQueue>(() =>
-    createDecodeQueue(prefetchPrefs.maxConcurrent),
-  )
-  useEffect(() => {
-    setSwapQueue(createDecodeQueue(prefetchPrefs.maxConcurrent))
-  }, [prefetchPrefs.maxConcurrent])
-
-  const [prefetchQueue, setPrefetchQueue] = useState<DecodeQueue>(() =>
-    createDecodeQueue(prefetchPrefs.maxConcurrent),
-  )
-  useEffect(() => {
-    setPrefetchQueue(createDecodeQueue(prefetchPrefs.maxConcurrent))
-  }, [prefetchPrefs.maxConcurrent])
+  // Both built lazily and *rebuilt* whenever `prefetchPrefs.maxConcurrent`
+  // changes, which is `hooks.ts`'s `useDecodeQueue` — where the argument for
+  // rebuilding rather than baking the cap in at mount lives, along with what
+  // it costs. Two calls, because the two queues must be two instances; that
+  // they read the same setting is the setting's business, not the queue's.
+  const swapQueue = useDecodeQueue(prefetchPrefs.maxConcurrent)
+  const prefetchQueue = useDecodeQueue(prefetchPrefs.maxConcurrent)
 
   // What makes `two` mode's pair appear as a pair. Every `PageView` decodes
   // through `swapQueue` and presents through this, so the halves of a turn
@@ -598,33 +498,24 @@ function App() {
   // when a group is `wide` (a joined spread's two slots share one page, a solo
   // slot is mirrored into the second cell), so "both cells are drawing the same
   // source" *is* wide, read off the screen instead of predicted.
-  const [drawnSrcs, setDrawnSrcs] = useState<{
-    first?: string
-    second?: string
-  }>({})
-  const showFirst = (src: string) =>
-    setDrawnSrcs((was) => (was.first === src ? was : { ...was, first: src }))
-  const showSecond = (src: string) =>
-    setDrawnSrcs((was) => (was.second === src ? was : { ...was, second: src }))
+  //
+  // The record itself is `hooks.ts`'s `useDrawnSrcs` — including why a report
+  // that changes nothing hands back the same object. It stays `App` state
+  // rather than `GroupView`'s for the reason `drawGroup`'s doc gives below.
+  const [drawnSrcs, showDrawn] = useDrawnSrcs()
 
   // The keydown effect below subscribes once, after load (see its own comment),
   // so its closure's `session` is frozen at that instant — reading a module
   // key's action (currently just direction's `d`) needs the edition
   // currently being viewed, which changes on every swap. This ref is kept
-  // current across every render instead, the same role `writeProgressRef`/
-  // `restored` play for other state the effect can't close over live.
-  const sessionRef = useRef<Session>(undefined)
-  useEffect(() => {
-    sessionRef.current = session
-  }, [session])
+  // current across every render instead, the same role `restored` plays for
+  // other state the effect can't close over live.
+  const sessionRef = useLatest(session)
 
   // `Escape` has to read the *current* `pending` inside the same keydown
   // effect that only resubscribes on load (see its own comment below) — the
   // same staleness `sessionRef` exists to route around, for the same reason.
-  const pendingRef = useRef<Pending>(undefined)
-  useEffect(() => {
-    pendingRef.current = pending
-  }, [pending])
+  const pendingRef = useLatest(pending)
 
   // Whether the help overlay is open, for the same `Escape` branch and by the
   // same route. Kept in an effect rather than assigned during render like
@@ -632,10 +523,7 @@ function App() {
   // anything — the split `panelModeRef` above already draws, and for the same
   // reason: nothing recomputes this value, so a render that React discards has
   // nothing to recompute it back from.
-  const helpVisibleRef = useRef(false)
-  useEffect(() => {
-    helpVisibleRef.current = helpVisible
-  }, [helpVisible])
+  const helpVisibleRef = useLatest(helpVisible)
 
   // The grouping the page area is drawing right now, for the keydown effect —
   // which subscribes once at load and so cannot see `grouped`, computed below
@@ -692,9 +580,7 @@ function App() {
   // `Viewport` (the spec's scope decision), and a gap draws `Gap` in place of
   // the page area. Both read the same way at every use — there is nothing on
   // screen for a zoom, a pan or a swap's arithmetic to be about.
-  const drawnRef = useRef<
-    { url: string; cell: Cell; half?: 'L' | 'R'; hug: ArtworkHug } | undefined
-  >(undefined)
+  const drawnRef = useRef<DrawnPage | undefined>(undefined)
 
   // The page area itself, for the two things that genuinely need the box
   // rather than the image inside it: the wheel subscription (which must be
@@ -716,22 +602,12 @@ function App() {
   // measure; consumed by the effect below, once the incoming one has decoded.
   // `edition` is the one being *left*, which is what tells a swap that changed
   // nothing (a digit for the edition already showing) from one that did.
-  const swapRef = useRef<{ from: Drawn; edition: string } | undefined>(
-    undefined,
-  )
+  const swapRef = useRef<CarriedSwap | undefined>(undefined)
 
-  // The window's width, for `auto` note-list placement. A listener rather than
-  // a one-off read, because "is there room beside the page" stops being true
-  // the moment somebody resizes the window, and a list that only answered at
-  // load would crush the page until the next reload.
-  const [viewportWidth, setViewportWidth] = useState(() =>
-    typeof window === 'undefined' ? 1280 : window.innerWidth,
-  )
-  useEffect(() => {
-    const onResize = () => setViewportWidth(window.innerWidth)
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [])
+  // The window's width, for `auto` note-list placement — `hooks.ts`'s
+  // `useWindowWidth`, which is a listener rather than a one-off read for the
+  // reason that hook's own doc gives.
+  const viewportWidth = useWindowWidth(NO_WINDOW_WIDTH)
 
   // Where a region drag started. Declared here with the other refs, ahead of
   // the `if (!session) return null` below, because hooks must run in the same
@@ -749,22 +625,7 @@ function App() {
   const closeEditorRef = useRef<() => void>(() => undefined)
   const saveNotesRef = useRef<Debounced<[Note[]]> | null>(null)
 
-  const dragRef = useRef<{
-    x: number
-    y: number
-    el: HTMLImageElement
-    /**
-     * `draw` sweeps a new rectangle out from where the pointer went down.
-     * `move` slides the region that was already under it, keeping its size —
-     * `from` is what it looked like when the drag started, so the offset is
-     * always measured against that rather than accumulated frame by frame,
-     * which would drift.
-     */
-    intent: 'draw' | 'move'
-    from?: Region
-    /** Which note is being moved — not always the one the panel was showing when the drag began. */
-    noteId?: string
-  } | null>(null)
+  const dragRef = useRef<DragStart | null>(null)
   // Where the pointer was on the previous pan frame, in client pixels. A ref
   // rather than state and a *previous* position rather than the drag's origin:
   // `panBy` takes a delta and clamps, so each frame only needs the step since
@@ -776,65 +637,28 @@ function App() {
   // feedback is invisible, which is how the region gesture first shipped.
   const [dragging, setDragging] = useState<Region>()
 
+  // The five reads and the order they happen in are `startup.ts`'s
+  // `openFirstWork`, which is where the two `throw`s, the notes read's own
+  // `catch` and the empty-document fallback all live and can be tested. What
+  // is left here is the effect, the `cancelled` flag and five setters.
   useEffect(() => {
     let cancelled = false
-    async function load() {
-      const [work] = await listWorks()
-      if (!work) throw new Error('no works available')
-      const fetched = await getSidecarWithEtag(work)
-      const sidecar: SidecarShape = JSON.parse(fetched.json)
-      const editions = orderedEditions(
-        sidecar.hub,
-        Object.keys(sidecar.editions),
-      )
-      const [hub] = editions
-      if (!hub) throw new Error(`${work} defines no editions`)
-      const resolver = await wasmResolver(fetched.json)
-      // Stored progress if there is any, slot 0 of the hub if there is none —
-      // see `reading.ts`'s `restore`. Read after the resolver so a failure
-      // resolving the sidecar surfaces before a second request is made, and
-      // because `restore` now needs the resolver itself, to validate a
-      // stored slot still exists rather than trusting stale JSON outright.
-      const progress = await getProgress(work)
-      // Notes are read alongside progress rather than before it: neither
-      // depends on the other, and a work with no notes still answers a
-      // document, so there is no branch here. A failure reading them must not
-      // stop the reader from reading — a reader who cannot see their notes
-      // should still get their pages — so this catches on its own rather than
-      // letting the whole load effect reject.
-      const notes = await getNotes(work).catch((err: unknown) => {
-        console.error(err)
-        return undefined
+    openFirstWork(STARTUP_PORTS)
+      .then((opened) => {
+        // Logged whether or not this load was superseded, exactly as it was
+        // when the `catch` sat inside the load itself: a notes read that
+        // failed did so, and a teardown racing it does not make that untrue.
+        if (opened.notesError !== undefined) console.error(opened.notesError)
+        if (cancelled) return
+        setSession(opened.session)
+        setEtag(opened.etag)
+        setNotesDoc(opened.notes)
+        setNotesEtag(opened.notesEtag)
+        setNotesHistory(emptyHistory(opened.notes.notes))
       })
-      if (!cancelled) {
-        const state = restore(progress, hub, resolver)
-        setSession({
-          work,
-          resolver,
-          reading: sidecar.work.reading,
-          editions,
-          alignments: sidecar.alignments,
-          state,
-          // Not `hub`: seeding `previous` with the edition already being
-          // shown would make the first `Space` (and every one after it)
-          // compute a no-op target. `initialPrevious` seeds one step ahead
-          // in display order instead, so the first `Space` lands where the
-          // first `2` would.
-          previous: initialPrevious(editions, state.authority),
-        })
-        setEtag(fetched.etag)
-        // An empty document rather than `undefined` where the read failed, so
-        // the panel and the readout have something to count and a later
-        // successful write is still impossible — `saveNote` refuses without an
-        // `ETag`, which a failed read never produced.
-        setNotesDoc(notes?.doc ?? { work, notes: [] })
-        setNotesEtag(notes?.etag)
-        setNotesHistory(emptyHistory(notes?.doc.notes ?? []))
-      }
-    }
-    load().catch((err: unknown) => {
-      if (!cancelled) console.error(err)
-    })
+      .catch((err: unknown) => {
+        if (!cancelled) console.error(err)
+      })
     return () => {
       cancelled = true
     }
@@ -851,347 +675,228 @@ function App() {
     if (!session) return
     const { resolver, editions } = session
     function onKeyDown(event: KeyboardEvent) {
-      // `Escape` is not one of `intentOf`'s intents — it has nothing to do
-      // with reading, only with backing out of a correction — so it is
-      // checked directly, ahead of the dispatch below, and only while there
-      // is actually a `pending` to abandon. Unlike every other branch here,
-      // this deliberately does *not* stand down for a focused control: the
-      // tile a reader just clicked (`onPickCounterpart`) is itself a button,
-      // and `Escape` cancelling out of that click is exactly the case this
-      // exists for — gating it on `isInteractiveTarget` would make it fire
-      // everywhere except the one moment it matters most.
-      if (event.key === 'Escape') {
-        // The help overlay closes first, ahead of everything else here.
-        //
-        // **This is a departure, and a deliberate one:** neither the settings
-        // panel nor the credits panel closes on `Escape` — both are dismissed
-        // by pressing their own key again or by their Close button, and this
-        // one can be too. Matching them was the alternative and it is what
-        // "consistent" would have meant, but the panel this most resembles is
-        // the note panel a few lines below, which does close on `Escape`: a
-        // `role="dialog"` a reader has just opened over the page is the thing
-        // `Escape` means, and the plan's own browser check names it.
-        //
-        // First rather than last because closing this discards nothing, while
-        // every branch under it either abandons a correction or flushes a
-        // note. If both are open, spending the keypress on the one that costs
-        // nothing and can be reopened with `?` is the cheaper mistake.
-        //
-        // Not gated on `enabled`, unlike the toggle further down: a reader who
-        // switches the module off while the overlay is up would otherwise be
-        // left with a panel whose own keys have just gone inert.
-        if (helpVisibleRef.current) {
-          event.preventDefault()
-          setHelpVisible(false)
+      // Every guard is `keyplan.ts`'s, computed from the six mirror refs and
+      // the three derived ones assigned during render. `intentOf` and
+      // `isInteractiveTarget` are both pure, so calling them for every key
+      // rather than only inside the branch that used to need them costs a
+      // property read and buys one place where the decision is made.
+      const plan = keyPlan(
+        event.key,
+        intentOf(event, editions, registry.all()),
+        {
+          helpOpen: helpVisibleRef.current,
+          panel: panelModeRef.current,
+          correcting: pendingRef.current !== undefined,
+          submitting: submittingRef.current,
+          notesBusy: notesBusyRef.current,
+          onControl: isInteractiveTarget(event.target),
+          zoomable: zoomable(
+            zoomPrefsRef.current,
+            drawnRef.current !== undefined,
+          ),
+          creditsPanel: creditsPrefsRef.current.panel,
+          helpEnabled: helpPrefsRef.current.enabled,
+        },
+      )
+      if (!plan) return
+      if (plan.preventDefault) event.preventDefault()
+      switch (plan.action.kind) {
+        case 'close-help':
+          return setHelpVisible(false)
+        case 'close-editor':
+          return closeEditorRef.current()
+        case 'cancel-correction':
+          return cancelCorrection()
+        case 'toggle-chrome':
+          return setChromeVisible((visible) => !visible)
+        case 'begin-correction':
+          return beginCorrection()
+        case 'module':
+          return moduleKey(plan.action.intent)
+        case 'reading':
+          return readerIntent(plan.action.intent)
+        // The reader claims the key and prevents its default, and nothing
+        // happens — a `C` with the credits panel switched off, `=` with
+        // nothing drawn, `a` while a note write is on the wire. See
+        // `KeyAction`'s own doc for why this is not the same answer as
+        // `undefined`.
+        case 'inert':
           return
+      }
+    }
+    function cancelCorrection() {
+      setPending(undefined)
+      setCorrectionNotice(undefined)
+    }
+    /**
+     * Open correction mode on the slot being read.
+     *
+     * The three guards here are the two `keyplan.ts` names as unable to come
+     * with it — they dereference `sessionRef` and run `display()` against a
+     * live resolver, neither of which a plan taking flags can do — plus
+     * `counterpartEdition`'s own `undefined`.
+     */
+    function beginCorrection() {
+      const current = sessionRef.current
+      if (!current) return
+      const shown = display(current.state, current.resolver)
+      // No slot to correct while showing a gap — there is nothing on screen to
+      // name as `a`.
+      if (shown.kind !== 'at') return
+      const to = counterpartEdition(
+        current.state,
+        current.previous,
+        shown.edition,
+      )
+      if (to === undefined) return
+      const slots = allSlots(current.resolver, shown.edition)
+      setPending({ from: shown.edition, to, a: slots[shown.slot] })
+      setCorrectionNotice(undefined)
+      setChromeVisible(true) // the filmstrip is where a counterpart is picked
+    }
+    /** `d`: this edition the other way round. */
+    function flipDirection() {
+      const current = sessionRef.current
+      if (!current) return
+      const edition = current.state.viewing
+      const sidecarReading = current.reading
+      setPrefsMap((map) =>
+        changeSlice(map, directionModule, (prefs) =>
+          flipped(sidecarReading, prefs, edition),
+        ),
+      )
+    }
+    /**
+     * `b`: break the pairing here.
+     *
+     * Breaks are slots within the *viewed* edition's own space — the same
+     * space `groups` indexes into — so this is `shown.slot`, not `state.slot`,
+     * which is authority-space and only equal to it when nothing has been
+     * swapped. A gap has no slot to break on, so the key is inert there.
+     */
+    function breakPairingHere() {
+      const current = sessionRef.current
+      if (!current) return
+      const shown = display(current.state, current.resolver)
+      if (shown.kind !== 'at') return
+      setPrefsMap((map) =>
+        changeSlice(map, regroupModule, (prefs) =>
+          toggleEditionBreak(prefs, shown.edition, shown.slot),
+        ),
+      )
+    }
+    /**
+     * `n`: always a brand-new note, however many the slot already holds.
+     *
+     * This key used to *reopen* the note already there, which made a second
+     * note on a page impossible since nothing else creates one. The reasoning
+     * for reopening was to stop `n` pressed twice leaving duplicates, and it
+     * protected against nothing: a draft is not a note until it is written, so
+     * a second press only ever replaced an unsaved draft. Reopening an
+     * existing note is what its margin tab is for.
+     *
+     * Nothing is needed here to stop `n` replacing a draft mid-write: no
+     * module key reaches this at all while the editor is open (`keyPlan`'s
+     * `panel === 'edit'` refusal), so a reader has to close it first.
+     */
+    function startNote() {
+      const current = sessionRef.current
+      if (!current) return
+      const shown = display(current.state, current.resolver)
+      // A gap has no slot to annotate — there is nothing on screen to anchor
+      // to, the same reason `c` is inert there.
+      if (shown.kind !== 'at') return
+      // Minted here rather than inside the updater below: an updater must stay
+      // pure, and a clock and a random source are neither.
+      const id = ulid(Date.now(), cryptoRandom)
+      const now = new Date().toISOString()
+      setEditing((open) => newNote(open, shown, hereRef.current, id, now))
+      setNotesNotice(undefined)
+    }
+    /**
+     * `a`: the review list. Toggles, like `s` and `Tab` do — open it, or close
+     * it if it is what is already open.
+     *
+     * **It cannot reach a reader mid-edit, and this comment used to say it
+     * did.** `toggleReview` has a second arm, where `panel: 'edit'` becomes
+     * `'review'`, and no keypress gets to it: `keyplan.ts` returns no plan at
+     * all for anything but `Escape` while the editor is open, because the
+     * editor is a dialog that takes text and a keystroke there means the note.
+     * That is the behaviour a reader typing a note wants, so it is the comment
+     * that was wrong rather than the guard — the arm is reachable only by a
+     * caller that does not exist.
+     */
+    function reviewNotes() {
+      setEditing(toggleReview)
+      setNotesNotice(undefined)
+    }
+    /**
+     * A module's own key.
+     *
+     * A small explicit switch rather than a generic action table: each of
+     * these does something different enough with its key (a per-edition flip,
+     * a per-edition break, a rect step, a plain visibility toggle) that a
+     * table would need its own per-entry shape anyway. Every case is one call
+     * — the guards are `keyPlan`'s and the rules are their modules'.
+     */
+    function moduleKey(intent: string) {
+      switch (intent) {
+        case TOGGLE_INTENT:
+          return flipDirection()
+        case REGROUP_TOGGLE_INTENT:
+          return breakPairingHere()
+        case NEW_INTENT:
+          return startNote()
+        case REVEAL_INTENT:
+          return setPrefsMap((map) =>
+            changeSlice(map, annotationsModule, toggleReveal),
+          )
+        case UNDO_INTENT:
+          return stepBackRef.current()
+        case REDO_INTENT:
+          return stepForwardRef.current()
+        case REVIEW_INTENT:
+          return reviewNotes()
+        case SETTINGS_TOGGLE_INTENT:
+          return setSettingsVisible((visible) => !visible)
+        case PANEL_INTENT:
+          return setCreditsVisible((shown) => !shown)
+        case ZOOM_IN_INTENT: {
+          const zoom = zoomPrefsRef.current
+          return setView((rect) => zoomStep(rect, 'in', zoom))
         }
-        // The note panel closes on `Escape` too, but only where there is no
-        // correction to abandon: a reader mid-correction pressing `Escape`
-        // means the correction, which is the irreversible one.
-        if (!pendingRef.current && panelModeRef.current) {
-          // Not while a note write is on the wire, for the reason the
-          // correction branch below stands down: taking the panel away would
-          // tell the reader the note was abandoned while it is still going to
-          // land.
-          if (notesBusyRef.current) return
-          event.preventDefault()
-          // Flush, not drop. `Escape` used to mean "abandon this" back when a
-          // Save button decided what was kept; with writes landing on their
-          // own it means "I am finished here", and anything still in the
-          // debounce is a change the reader made. Undo is what abandons now.
-          closeEditorRef.current()
-          return
+        case ZOOM_OUT_INTENT: {
+          const zoom = zoomPrefsRef.current
+          return setView((rect) => zoomStep(rect, 'out', zoom))
         }
-        if (!pendingRef.current) return
-        // Not while the write is on the wire: taking the banner away here
-        // would tell the reader the correction was abandoned when it is
-        // still going to land. See `submitting`'s own doc above.
-        if (submittingRef.current) return
-        event.preventDefault()
-        setPending(undefined)
-        setCorrectionNotice(undefined)
-        return
-      }
-      // One dispatch path: every key — built-in or module-declared — passes
-      // through `intentOf`, which applies the modifier guard once. A module's
-      // own key (currently just direction's `d`) comes back as `{ kind:
-      // 'module', intent }` rather than a second, hand-matched branch here.
-      const intent = intentOf(event, editions, registry.all())
-      if (!intent) return
-      // **Nothing reaches the page while the note editor is open.** It is a
-      // dialog that takes text, so a keystroke means the note — whatever the
-      // browser currently thinks is focused. `isInteractiveTarget` below only
-      // stands down while focus is *in* a control, and a refused save or a
-      // stray click is enough to break that: measured, with a server rejecting
-      // a write, the editor stayed open holding the reader's text while focus
-      // sat on `<body>`, so typing opened the settings panel instead of
-      // writing the note. `Escape` is handled above this and still closes the
-      // editor; everything else belongs to the note until it does.
-      if (panelModeRef.current === 'edit') return
-      if (intent.kind === 'chrome') {
-        // `Tab`'s own default — focus movement — is left alone. Toggling the
-        // chrome is a side effect layered on top of the browser's own `Tab`
-        // handling, not a replacement for it; preventing it here is what
-        // made every focusable control (mode buttons, all of the
-        // filmstrip's tiles, `Gap`'s offered moves) mouse-only.
-        setChromeVisible((visible) => !visible)
-        return
-      }
-      if (intent.kind === 'correct') {
-        // Same interactive-target guard as the module branch below — a
-        // focused button's own keyboard activation should be the only thing
-        // that runs. Reads `sessionRef.current`, not the `session` this
-        // effect closed over at subscribe time, for the same reason the
-        // module cases below do: that closure is frozen at load and never
-        // sees a later swap or navigation.
-        if (isInteractiveTarget(event.target)) return
-        // Not while a correction is already on the wire — see `submitting`'s
-        // own doc above. Without this, `disabled={submitting}` blurs the
-        // just-clicked `Confirm` button the instant the write starts, so
-        // `isInteractiveTarget` no longer stands this handler down, and a
-        // `c` press mid-write would silently replace the pending correction
-        // the completion handler in `confirmCorrection` is about to resolve.
-        if (submittingRef.current) return
-        event.preventDefault()
-        const current = sessionRef.current
-        if (!current) return
-        const shown = display(current.state, current.resolver)
-        // No slot to correct while showing a gap — there is nothing on
-        // screen to name as `a`.
-        if (shown.kind !== 'at') return
-        // The counterpart to correct against: `state.authority` when the
-        // reader has swapped away from it (that swap is what they are
-        // comparing against), otherwise `previous` — the edition a `Space`
-        // would return to, and so the most recent "other" edition in view.
-        const to =
-          current.state.authority !== shown.edition
-            ? current.state.authority
-            : current.previous
-        if (to === shown.edition) return // nothing to correct against
-        const slots = allSlots(current.resolver, shown.edition)
-        setPending({ from: shown.edition, to, a: slots[shown.slot] })
-        setCorrectionNotice(undefined)
-        setChromeVisible(true) // the filmstrip is where a counterpart is picked
-        return
-      }
-      if (intent.kind === 'module') {
-        // Same interactive-target guard as the reader-intent branch below —
-        // a focused button's own keyboard activation should be the only
-        // thing that runs, whether the key belongs to the reader or a module.
-        if (isInteractiveTarget(event.target)) return
-        event.preventDefault()
-        // A small, explicit switch rather than a generic action table: three
-        // modules declare a key today, and each does something different
-        // enough with it (a per-edition flip, a per-edition break, a plain
-        // visibility toggle) that a table would need its own per-entry
-        // shape anyway. The next module to claim a key adds the next case.
-        switch (intent.intent) {
-          case TOGGLE_INTENT: {
-            const current = sessionRef.current
-            if (!current) return
-            const edition = current.state.viewing
-            const sidecarReading = current.reading
-            setPrefsMap((map) => {
-              const prefs = sliceFor(map, directionModule)
-              const flipped: Direction =
-                effectiveDirection(sidecarReading, prefs.override[edition]) ===
-                'rtl'
-                  ? 'ltr'
-                  : 'rtl'
-              return {
-                ...map,
-                [directionModule.id]: setOverride(prefs, edition, flipped),
-              }
-            })
-            break
-          }
-          case REGROUP_TOGGLE_INTENT: {
-            const current = sessionRef.current
-            if (!current) return
-            // Breaks are slots within the *viewed* edition's own space —
-            // the same space `groups` indexes into below — so this is
-            // `shown.slot`, not `state.slot`, which is authority-space and
-            // only equal to it when nothing has been swapped. A gap has no
-            // slot to break on, so the key is inert there.
-            const shown = display(current.state, current.resolver)
-            if (shown.kind !== 'at') return
-            setPrefsMap((map) => ({
-              ...map,
-              [regroupModule.id]: toggleEditionBreak(
-                sliceFor(map, regroupModule),
-                shown.edition,
-                shown.slot,
-              ),
-            }))
-            break
-          }
-          case NEW_INTENT: {
-            const current = sessionRef.current
-            if (!current) return
-            const shown = display(current.state, current.resolver)
-            // A gap has no slot to annotate — there is nothing on screen to
-            // anchor to, the same reason `c` is inert there.
-            if (shown.kind !== 'at') return
-            // Always a new note, however many the slot already holds. One
-            // note per panel is the ordinary case, and this key used to
-            // *reopen* the note already there instead — which made a second
-            // note on a page impossible, since nothing else creates one.
-            //
-            // The reasoning for reopening was to stop `n` pressed twice from
-            // leaving duplicates, and it protected against nothing: a draft is
-            // not a note until Save, so a second press only ever replaced an
-            // unsaved draft. What it cost was real. Reopening an existing note
-            // is what its margin tab is for.
-            //
-            // Nothing needed here to stop `n` replacing a draft mid-write:
-            // no key reaches this switch at all while the editor is open (see
-            // the guard at the dispatch above), so a reader has to close it
-            // first — which is also what stops a second press throwing away
-            // typing nobody asked to discard.
-            const now = new Date().toISOString()
-            const fresh: Note = {
-              id: ulid(Date.now(), cryptoRandom),
-              edition: shown.edition,
-              slot: shown.slot,
-              // The next colour nobody on this page is using, so two notes on
-              // one page come out different without a reader choosing — see
-              // `palette.ts`'s `nextColour`. Picked from what is on *this*
-              // page rather than the whole work, since telling one note from
-              // another only matters where they are drawn together.
-              color: nextColour(hereRef.current.map((h) => h.note.color)),
-              body: '',
-              created: now,
-              updated: now,
-            }
-            setEdits((map) => ({ ...map, [fresh.id]: fresh }))
-            setCurrentId(fresh.id)
-            setPanelMode('edit')
-            setNotesNotice(undefined)
-            break
-          }
-          case REVEAL_INTENT: {
-            setPrefsMap((map) => {
-              const prefs = sliceFor(map, annotationsModule)
-              return {
-                ...map,
-                [annotationsModule.id]: { ...prefs, reveal: !prefs.reveal },
-              }
-            })
-            break
-          }
-          case UNDO_INTENT: {
-            stepBackRef.current()
-            break
-          }
-          case REDO_INTENT: {
-            stepForwardRef.current()
-            break
-          }
-          case REVIEW_INTENT: {
-            // Toggles, like `s` and `Tab` do — and closes the editor if that
-            // is what is open, so `a` always means "show me the list" rather
-            // than sometimes meaning "swap panels" and sometimes "close".
-            if (notesBusyRef.current) return
-            setPanelMode((open) => (open === 'review' ? undefined : 'review'))
-            setNotesNotice(undefined)
-            break
-          }
-          case SETTINGS_TOGGLE_INTENT: {
-            // Unlike the two cases above, this needs nothing from the
-            // current session — it only shows or hides the panel, the same
-            // shape `Tab`'s `{ kind: 'chrome' }` branch above has, just
-            // reached through the module contract instead of a second
-            // hard-coded `Intent` kind (see `modules/settings.ts`).
-            setSettingsVisible((visible) => !visible)
-            break
-          }
-          case PANEL_INTENT: {
-            // Gated on the preference here rather than inside the component,
-            // so a reader who has switched the panel off pays no render and
-            // `C` is genuinely inert — which is what "Offer the panel that
-            // lists them" means.
-            if (!creditsPrefsRef.current.panel) return
-            setCreditsVisible((shown) => !shown)
-            break
-          }
-          // The three zoom keys share one guard and differ only in what they
-          // hand `zoomAt`. Gated on `drawnRef.current` as well as the
-          // preference, so they are inert exactly where the `Viewport` wrapper
-          // is not mounted or has nothing under it — scroll mode and a gap.
-          // Without that, `=` in scroll mode would silently zoom a rect nobody
-          // is drawing, and the reader would find it applied on their next
-          // switch back to single.
-          case ZOOM_IN_INTENT: {
-            const zoom = zoomPrefsRef.current
-            if (!zoom.enabled || !drawnRef.current) return
-            // A keyboard zoom has no pointer to anchor on, so it anchors on
-            // the rect's own centre — the one case where `zoomAt`'s doc's
-            // "zooming about the centre feels broken" does not apply, because
-            // there is no point the reader is aiming at for it to slide away
-            // from.
-            setView((rect) =>
-              zoomAt(rect, centreOf(rect), zoom.step, zoom.maxScale),
-            )
-            break
-          }
-          case ZOOM_OUT_INTENT: {
-            const zoom = zoomPrefsRef.current
-            if (!zoom.enabled || !drawnRef.current) return
-            setView((rect) =>
-              zoomAt(rect, centreOf(rect), 1 / zoom.step, zoom.maxScale),
-            )
-            break
-          }
-          case ZOOM_WHOLE_INTENT: {
-            if (!zoomPrefsRef.current.enabled || !drawnRef.current) return
-            setView(WHOLE)
-            break
-          }
-          case HELP_TOGGLE_INTENT: {
-            // One case for two keys, which is what one intent across `?` and
-            // `h` buys — see `modules/help.ts`. Gated on the preference here
-            // rather than inside `Help`, exactly as `PANEL_INTENT` above is
-            // and for its reason: switched off, both keys are genuinely inert
-            // and nothing renders.
-            if (!helpPrefsRef.current.enabled) return
-            setHelpVisible((shown) => !shown)
-            break
-          }
+        case ZOOM_WHOLE_INTENT: {
+          const zoom = zoomPrefsRef.current
+          return setView((rect) => zoomStep(rect, 'whole', zoom))
         }
-        return
+        case HELP_TOGGLE_INTENT:
+          return setHelpVisible((shown) => !shown)
       }
-      // A reader key belongs to the page, not to whatever a previous `Tab`
-      // happened to focus. Without this, tabbing onto a mode button and
-      // pressing Space to actually click it would also fire the edition
-      // toggle — not because two listeners raced, but because this
-      // window-level listener has no way to know a focused button is about
-      // to handle the very same keypress itself. Standing down leaves that
-      // button's own keyboard activation as the only thing that runs.
-      if (isInteractiveTarget(event.target)) return
-      event.preventDefault()
-      // What this keypress does to the view, decided **before** `setSession`
-      // rather than after it. A swap has to measure the outgoing page, and the
-      // only place that page is still on screen to be measured is here: React
-      // batches an event handler's updates and re-renders once it returns, so
-      // "after the state update" and "before it" are the same DOM either way —
-      // but only one of the two says so.
+    }
+    /**
+     * Space, an arrow or a digit.
+     *
+     * What the keypress does to the view is decided **before** `setSession`
+     * rather than after it. A swap has to measure the outgoing page, and the
+     * only place that page is still on screen to be measured is here: React
+     * batches an event handler's updates and re-renders once it returns, so
+     * "after the state update" and "before it" are the same DOM either way —
+     * but only one of the two says so.
+     */
+    function readerIntent(intent: ReadingIntent) {
       if (intent.kind === 'step') {
         // A turn carries both zoom and pan (spec §3) and re-clamps. Not a
         // mapping: same edition, same coordinate space.
         //
-        // **Idempotent as the code stands, and kept anyway.** `clampRect`'s
-        // own doc used to frame this as a rect carried from a pair onto a
-        // singleton addressing space that does not exist; it now retracts that
-        // sentence and dates the retraction, because it is true of a rect in
-        // *slot* space and not of one in group space, where the group is
-        // always the whole page-area box and a rect inside it stays inside it.
-        // This comment pointed at the old wording for four commits after it
-        // was withdrawn — the hazard of citing a neighbour's reasoning rather
-        // than restating it.
-        // Every producer of this state (`zoomAt`, `panBy`, `mapView`) already
-        // clamps, so this changes nothing today. It is here because the bound
-        // belongs to the state rather than to each producer's good manners,
-        // and a turn is where a rect that had drifted would first be visible.
+        // **Idempotent as the code stands, and kept anyway.** Every producer
+        // of this state (`zoomAt`, `panBy`, `mapView`) already clamps, so this
+        // changes nothing today. It is here because the bound belongs to the
+        // state rather than to each producer's good manners, and a turn is
+        // where a rect that had drifted would first be visible.
         setView(clampRect)
       } else {
         recordSwap()
@@ -1235,44 +940,35 @@ function App() {
      * reached the same way for a swap pressed faster than a page decodes.
      */
     function recordSwap() {
-      swapRef.current = undefined
       const drawn = drawnRef.current
       const host = pageAreaRef.current
-      const leaving = sessionRef.current?.state.viewing
-      if (!zoomPrefsRef.current.enabled || !drawn || !host || !leaving) return
-      const frame = frameOf(host, drawn.url)
-      if (!frame) return
-      swapRef.current = {
-        // `hug` too: the artwork is pulled to the seam in two-page mode, and
-        // a swap that measured it as centred was the one consumer of that
-        // fact still asking the wrong question — see `Drawn.hug`.
-        from: { frame, cell: drawn.cell, half: drawn.half, hug: drawn.hug },
-        edition: leaving,
-      }
+      // Which of the measurable states this is in is `swapView.ts`'s
+      // `carrySwap`; the only thing this can contribute is the measurement
+      // itself, off the images the page area happens to be drawing.
+      swapRef.current = carrySwap(
+        drawn,
+        host && drawn
+          ? frameOf(host.querySelectorAll('img'), drawn.url)
+          : undefined,
+        sessionRef.current?.state.viewing,
+        zoomPrefsRef.current.enabled,
+      )
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [session?.resolver, session?.editions])
 
-  // A ref rather than a module-level singleton or a `useState`: created once,
-  // on the first render, and its pending timer must survive every render in
-  // between rather than being replaced by a fresh, un-armed debounce on each
-  // one. `useRef(debounce(...))` would still only ever keep the first
-  // render's value, but it evaluates `debounce(...)` — allocating a fresh
-  // closure and timer variable — on every render regardless, since a `useRef`
-  // argument is not lazy the way `useState`'s initializer function is. The
-  // `if` below is the idiom for a ref whose initial value is itself worth not
-  // recomputing: every render after the first sees `current` already set and
-  // skips straight past it.
-  const writeProgressRef = useRef<Debounced<
-    [string, { edition: string; slot: number }]
-  > | null>(null)
-  if (writeProgressRef.current === null) {
-    writeProgressRef.current = debounce((work, position) => {
+  // Built once and kept, not a module-level singleton and not a `useState`:
+  // its pending timer must survive every render in between rather than being
+  // replaced by a fresh, un-armed debounce on each one. `hooks.ts`'s
+  // `useConstant` is that idiom, carrying the argument for why passing the
+  // built value straight to `useRef` is the wrong shape — and a test that
+  // watches it not rebuild.
+  const writeProgress = useConstant(() =>
+    debounce<[string, { edition: string; slot: number }]>((work, position) => {
       putProgress(work, position).catch((err: unknown) => console.error(err))
-    }, PROGRESS_DEBOUNCE_MS)
-  }
-  const writeProgress = writeProgressRef.current
+    }, PROGRESS_DEBOUNCE_MS),
+  )
 
   /**
    * Notes reach the server on their own, a moment after the last change.
@@ -1287,13 +983,11 @@ function App() {
    * position is a number and a note is prose — a reader pauses mid-sentence
    * and should not spend a round trip on it.
    */
-  const writeNotesRef = useRef<Debounced<[Note[]]> | null>(null)
-  if (writeNotesRef.current === null) {
-    writeNotesRef.current = debounce((notes: Note[]) => {
+  const saveNotes = useConstant(() =>
+    debounce<[Note[]]>((notes) => {
       void writeNotesLatestRef.current?.(notes)
-    }, NOTES_DEBOUNCE_MS)
-  }
-  const saveNotes = writeNotesRef.current
+    }, NOTES_DEBOUNCE_MS),
+  )
   saveNotesRef.current = saveNotes
   // `debounce` holds the callback it was built with for the life of the
   // component, and `writeNotes` closes over state that changes every render —
@@ -1304,159 +998,56 @@ function App() {
   )
 
   // A pending write must survive the tab going away, not just the session
-  // staying open. `visibilitychange` firing `hidden` is the modern, reliable
-  // signal for that — it fires on mobile when a tab is backgrounded or the
-  // app is switched away from, which is precisely where `beforeunload` is
-  // unreliable (many mobile browsers never fire it at all) and is
-  // increasingly discouraged since it also blocks the back/forward cache.
-  // `pagehide` is added alongside it, not instead of it, for the cases
-  // `visibilitychange` itself doesn't cover — some browsers route a direct
-  // close of a background tab through `pagehide` without a preceding
-  // `visibilitychange`. Either one flushing is enough to be safe, and both
-  // firing for the same close is not a double write: `Debounced.flush`
-  // clears the pending call the moment it sends, so whichever one runs
-  // second finds nothing left to flush.
-  useEffect(() => {
-    function onVisibilityChange() {
-      if (document.visibilityState === 'hidden') {
-        writeProgress.flush()
-        // A half-typed note is worth more than a page number, and it is the
-        // one thing here that cannot be recomputed from anything.
-        saveNotes.flush()
-      }
-    }
-    const onHide = () => {
-      writeProgress.flush()
-      saveNotes.flush()
-    }
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    window.addEventListener('pagehide', onHide)
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibilityChange)
-      window.removeEventListener('pagehide', onHide)
-    }
-  }, [writeProgress, saveNotes])
+  // staying open. Which two events say so, why both are subscribed rather
+  // than one, and why both firing for the same close is not a double write
+  // are all `hooks.ts`'s `useFlushOnHide`. Both of this component's debounced
+  // writers are handed to it; nothing else here holds a pending write.
+  useFlushOnHide(writeProgress, saveNotes)
 
   // Progress is written here, and only here — on a change to
   // `state.authority`/`state.slot`, which is exactly what `navigate` changes
   // and `swap` never does (`swap` only ever assigns `state.viewing`; see
-  // `reading.ts`). That makes this effect's dependency array the enforcement:
-  // a toggle or a digit press does not touch either dependency, so it cannot
-  // retrigger this effect, and there is no `if` here distinguishing the two —
-  // there is nothing to distinguish.
-  //
-  // The first time this effect runs with a `session` is the load effect's own
-  // `setSession`, restoring rather than navigating — writing back the exact
-  // position `getProgress` just returned would be a pointless `PUT` on every
-  // load, so `restored` skips exactly that one run and no other.
-  //
-  // Do not add `session` to this array to satisfy exhaustive-deps: `session`
-  // itself changes on every swap too (`swap` returns a new `{...state,
-  // viewing: to}` object), so depending on the whole session would fire this
-  // effect — and write progress — on every swap, not just every navigation.
-  // That is precisely the drift `docs/notes.md` warns about: a swap moving
-  // the reader one page per press, silently, with every test still green.
-  const restored = useRef(false)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: session changes on every swap too; adding it here would write progress on every swap, not just every navigation. See above.
-  useEffect(() => {
-    if (!session) return
-    if (!restored.current) {
-      restored.current = true
-      return
-    }
-    writeProgress(session.work, {
-      edition: session.state.authority,
-      slot: session.state.slot,
-    })
-  }, [
+  // `reading.ts`). The three fields are passed as scalars rather than as the
+  // session holding them, which is what makes that enforcement structural:
+  // there is no whole-session dependency for a later edit to reach for, and
+  // `hooks.ts`'s `useProgressWrite` carries both that argument and the
+  // skip-the-restoring-load rule, with tests over each.
+  useProgressWrite(
     session?.work,
     session?.state.authority,
     session?.state.slot,
     writeProgress,
-  ])
+  )
 
-  // The reading-time readout's raw material — `modules/readouts.ts`'s
-  // `nextTurns`/`timeLine`/`pagesPerMinute` do the actual arithmetic; this
-  // effect only decides *when* to call it. A separate effect from the
-  // progress-write one above, deliberately: that one's dependency array is
-  // load-bearing (must never gain `session`, must never fire on a swap)
-  // precisely because it has a side effect worth guarding, a network write;
-  // this one only appends to an in-memory ref, client-side only per the
-  // brief, so there is no redundant-write hazard to guard against.
-  //
-  // A `restored`-style skip on the *first* run is still needed here, though
-  // — measured live, not assumed: recording session-load itself as the first
-  // "turn" makes the interval between mount and the sidecar/wasm finishing
-  // to load look like a page turn, so the very first estimate this project
-  // renders was `~6m left` derived entirely from load latency, before a
-  // single arrow key had been pressed. `restoredTurn` tracks *whether* to
-  // skip; `nextTurns` — pure, and covered directly by `readouts.test.ts`,
-  // unlike this effect — is what actually skips.
-  //
-  // `session` deliberately does not join this array, the same as the
-  // progress-write effect's own array above and for a directly analogous
-  // reason: `session` changes identity on every swap too, and a swap is not
-  // a page turn — it does not even move `state.slot` (see `reading.ts`'s
-  // `swap`). Depending on the whole object would record one every time a
-  // reader merely peeked at another edition, inflating the pace with moves
-  // that were not reading at all.
-  const turnsRef = useRef<number[]>([])
-  const restoredTurn = useRef(false)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: session changes on every swap too, and a swap is not a page turn; see above.
-  useEffect(() => {
-    if (!session) return
-    const skip = !restoredTurn.current
-    restoredTurn.current = true
-    turnsRef.current = nextTurns(turnsRef.current, Date.now(), skip)
-  }, [session?.state.authority, session?.state.slot])
+  // The reading-time readout's raw material — when this session started, the
+  // page turns it has seen, and the 30s heartbeat that makes an estimate
+  // derived from them tick rather than only updating on the next turn. All
+  // three are `hooks.ts`'s `useReadingClock`, which is also where the
+  // measured reason for skipping the first run lives (`~6m left`, derived
+  // entirely from load latency, before a key had been pressed) and why only
+  // the authority's position reaches it — a swap is not a page turn.
+  const clock = useReadingClock(
+    session?.state.authority,
+    session?.state.slot,
+    READING_TICK_MS,
+  )
 
-  // `elapsedMs` (below, at render) is a plain subtraction against this, fixed
-  // once per page load — "session" means "since this reader opened the
-  // reader," not since the sidecar finished loading a moment later, so it is
-  // seeded eagerly rather than waiting on `session` to exist.
-  const sessionStartRef = useRef(Date.now())
-
-  // Nothing above re-renders on its own as time passes — `elapsedMs` and the
-  // remaining-time estimate are both computed fresh at render, from `Date.now()`
-  // against the refs above, but a ref changing never triggers a render. This
-  // is the heartbeat that makes the estimate actually tick rather than only
-  // updating on the next page turn. 30s rather than every second: the display
-  // itself is minute-granularity (`modules/readouts.ts`'s `timeLine` never
-  // shows seconds), so anything finer would re-render for a change nobody
-  // could see.
-  const [, tick] = useState(0)
-  useEffect(() => {
-    const id = setInterval(() => tick((t) => t + 1), 30_000)
-    return () => clearInterval(id)
-  }, [])
-
-  // Scroll mode mounts every group at once, so — unlike single/two mode,
-  // where only the current group is ever rendered — nothing else puts the
-  // reading position on screen. Without this, entering scroll mode at slot
-  // 150 shows slot 0, the top of the list. `currentGroupRef` is attached
-  // below to whichever rendered group is `currentIndex`'s, and this
-  // re-centers on it whenever the mode is scroll and the position changes.
+  // Scroll mode mounts every group at once, so nothing else puts the reading
+  // position on screen — `hooks.ts`'s `useScrollToCurrent`, which is where
+  // that argument and the `IntersectionObserver` this deliberately is *not*
+  // both live. The ref it hands back is attached below to whichever rendered
+  // group is `currentIndex`'s.
   //
-  // This is declared here, ahead of the `if (!session) return null` below,
-  // because hooks must run in the same order on every render — `currentIndex`
-  // itself is only computed after that guard, so the dependency array below
-  // reads the state it's derived from instead.
-  //
-  // Deliberately *not* the reverse: this does not write `state.slot` from
-  // where the reader scrolls to by hand. That needs an `IntersectionObserver`
-  // watching every mounted group, which is real work left to a later
-  // milestone — recorded in docs/status.md's "What M5a leaves open".
-  const currentGroupRef = useRef<HTMLDivElement>(null)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the three `session?.state.*` deps are triggers, not closure reads — the body touches only `mode` and a ref, and exists to re-scroll when the position changes. Removing them, which is what this rule suggests, would leave scroll mode never following the reader.
-  useEffect(() => {
-    if (mode !== 'scroll') return
-    currentGroupRef.current?.scrollIntoView({ block: 'start' })
-  }, [
+  // Called here, ahead of the `if (!session) return null` below, because
+  // hooks must run in the same order on every render — `currentIndex` itself
+  // is only computed after that guard, so this is passed the state it is
+  // derived from instead.
+  const currentGroupRef = useScrollToCurrent(
     mode,
     session?.state.authority,
     session?.state.slot,
     session?.state.viewing,
-  ])
+  )
 
   // Warms the browser's own cache for the slots `modules/prefetch.ts`'s
   // `window` names either side of wherever the reader is looking, so an
@@ -1481,58 +1072,37 @@ function App() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: the three `session?.state.*` deps are triggers, not closure reads — this effect reads `sessionRef.current` and exists to re-run the prefetch window when the position moves. Removing them, which is what this rule suggests, would prefetch once and never again.
   useEffect(() => {
     const current = sessionRef.current
-    if (!current || mode === 'scroll' || !prefetchPrefs.enabled) return
+    if (!current) return
     const shownNow = display(current.state, current.resolver)
-    if (shownNow.kind !== 'at') return
-    // Groups, not slots — see `groupWindow`'s own doc for the measurement.
-    // `groupedRef` is the grouping already on screen, assigned during render for
-    // exactly this reason: an effect reading a stale one would warm the pages of
-    // a layout the reader has left.
-    //
-    // **Always set by the time this runs, so there is no fallback.** This
-    // branch used to reach for the slot-space `window` "before any grouping has
-    // been assigned", which cannot happen: the effect returns above unless
-    // `sessionRef.current` is set, and that ref is only written by an effect
-    // belonging to a commit whose render got past `if (!session) return null` —
-    // the same render that assigns `groupedRef`. The dead branch went when a
-    // review asked what in this change had stopped being reachable.
-    const grouping = groupedRef.current
-    if (!grouping) return
-    const targets = groupWindow(
-      grouping,
-      shownNow.slot,
-      prefetchPrefs.ahead,
-      prefetchPrefs.behind,
+    // Which pages are worth warming — groups rather than slots, and empty in
+    // scroll mode, while disabled and in a gap — is `prefetchTargets`. What is
+    // left here is the queue, the URL and the session ref the window is read
+    // through. `groupedRef` is the grouping already on screen, assigned during
+    // render for exactly this reason: an effect reading a stale one would warm
+    // the pages of a layout the reader has left.
+    const targets = prefetchTargets(
+      groupedRef.current,
+      shownNow,
+      prefetchPrefs,
+      mode,
+      (edition, index) => current.resolver.slotAt(edition, index),
     )
+    // Nothing to warm. The `kind` test is `prefetchTargets`' own gap rule
+    // restated for the narrowing below rather than a second decision — a gap
+    // has no targets, so the first half of this is what actually returns.
+    if (targets.length === 0 || shownNow.kind !== 'at') return
     // The position this window is *for*, captured so each job can ask whether
-    // it still matters when the queue reaches it. Under a flick this effect
-    // fires once per group crossed, so without the check the queue works
-    // through every intermediate position's neighbours — fetching and decoding
-    // pages for somewhere the reader left several turns ago, while the page
-    // they are actually on waits. The same defect `presentWhenDecoded` closes
-    // for the swap path (see `decode.ts`), on the other queue.
-    //
-    // Strict equality on the slot, not proximity: a window built for a position
-    // the reader has left is worthless whatever the distance, because the
-    // position they moved *to* has already queued its own window through this
-    // same effect. Nothing is lost by dropping the old one.
+    // it still matters when the queue reaches it — `superseded`'s own doc has
+    // what that costs when nobody asks.
     const queuedFor = { edition: shownNow.edition, slot: shownNow.slot }
-    const superseded = () => {
+    const stale = () => {
       const now = sessionRef.current
-      if (!now) return true
-      const at = display(now.state, now.resolver)
-      return (
-        at.kind !== 'at' ||
-        at.edition !== queuedFor.edition ||
-        at.slot !== queuedFor.slot
-      )
+      return superseded(queuedFor, now && display(now.state, now.resolver))
     }
-    for (const slot of targets) {
-      const position = current.resolver.slotAt(shownNow.edition, slot)
-      if (!position) continue
-      const url = pageUrl(current.work, shownNow.edition, position.page)
+    for (const target of targets) {
+      const url = pageUrl(current.work, queuedFor.edition, target.page)
       void prefetchQueue.run(() =>
-        superseded() ? Promise.resolve() : decodeTo(new Image(), url),
+        stale() ? Promise.resolve() : decodeTo(new Image(), url),
       )
     }
   }, [
@@ -1592,37 +1162,21 @@ function App() {
       if (!drawnRef.current) return
       event.preventDefault()
       const box = host.getBoundingClientRect()
-      // A zero-sized box is an element mid-teardown, not a viewport, and
-      // dividing by it puts `NaN` into `at` — which `zoomAt` propagates into
-      // the rect, `Viewport` turns into `scale(NaN)`, and the reader sees the
-      // page vanish with no error anywhere. Task 1's review flagged that
-      // neither `clampRect` nor `fitRect` screens non-finite sizes; this is
-      // the boundary where DOM numbers enter, so it is the place to stop them
-      // rather than hardening every pure function against a caller that
-      // should not exist.
-      if (box.width <= 0 || box.height <= 0) return
-      // Proportional to the delta, and normalised across `deltaMode` first —
-      // `wheelBy`'s doc has the whole rule and names every constant it guesses
-      // at. What was here before was `deltaY < 0 ? step : 1 / step`, a full
-      // step per event whatever its size, which at the defaults let a single
-      // trackpad flick pin the view at `maxScale`.
-      const by = wheelBy(event, zoomPrefs.step)
-      setView((rect) =>
-        zoomAt(
-          rect,
-          // Where the pointer is over the *group*, which is what `zoomAt`
-          // anchors on — the page area's own fractions, mapped back through
-          // the rect currently on screen. Computed inside the updater rather
-          // than from a `view` this closure captured: two notches inside one
-          // React batch would otherwise both anchor against the rect before
-          // either of them, and the second would undo part of the first.
-          {
-            x: rect.x + ((event.clientX - box.left) / box.width) * rect.w,
-            y: rect.y + ((event.clientY - box.top) / box.height) * rect.h,
-          },
-          by,
-          zoomPrefs.maxScale,
-        ),
+      // The arithmetic is `modules/zoom.ts`'s `wheelStep`, including the
+      // zero-box guard its `undefined` answer carries — this only supplies the
+      // two DOM numbers. Called inside the updater rather than against a
+      // `view` this closure captured: two notches inside one React batch would
+      // otherwise both anchor against the rect before either of them, and the
+      // second would undo part of the first.
+      setView(
+        (rect) =>
+          wheelStep(
+            rect,
+            event,
+            { x: event.clientX, y: event.clientY },
+            box,
+            zoomPrefs,
+          ) ?? rect,
       )
     }
     host.addEventListener('wheel', onWheel, { passive: false })
@@ -1641,86 +1195,62 @@ function App() {
   // not bubble, but it does capture, so one listener on the page area hears
   // whichever of its images settles.
   //
-  // Every early return below clears the pending swap rather than leaving it to
-  // be applied against a later page. The one that does *not* is the case where
-  // the image simply has not arrived yet — that one waits, and its cleanup
-  // clears the swap only if a newer one has not already replaced it.
+  // Which of the four answers a carried swap is owed is `swapView.ts`'s
+  // `swapStep` — including the one that makes `done` a separate kind from
+  // `drop`, which is what stops a swap pressed faster than a page decodes from
+  // throwing away the newer swap's carry. What is left here is the two DOM
+  // reads it needs, the ref it clears, and the listener.
+  //
+  // `mode` is deliberately **absent** from the dependencies below. It is not
+  // what "the reader moved" means, and adding it would be worse than useless:
+  // while a swap is waiting this effect leaves a cleanup that clears
+  // `swapRef`, and React runs that cleanup *before* the re-run that would read
+  // it, so a mode switch would drop the swap rather than redo it. What that
+  // costs instead is handled by reading `drawnRef` fresh on every attempt
+  // rather than capturing it — `swapStep`'s own doc has that argument.
   //
   // biome-ignore lint/correctness/useExhaustiveDependencies: the three `session?.state.*` deps are triggers, not closure reads — they are what "the reader moved" means, and the body reads refs. Removing them, which is what this rule suggests, would leave a swap's geometry never finished.
   useEffect(() => {
-    const pending = swapRef.current
-    if (!pending) return
+    const carried = swapRef.current
+    if (!carried) return
     const host = pageAreaRef.current
-    // Nothing landed on: a swap into a gap draws `Gap` in place of the page
-    // area, and the design's §9 says the view is left untouched and restored
-    // when the reader swaps back — which is what dropping the pending swap
-    // here achieves, since the swap back has no outgoing page to measure
-    // either and so records nothing of its own.
-    //
-    // `session.state.viewing` equal to the edition being left is a swap that
-    // changed nothing — a digit for the edition already on screen. `swap`
-    // builds a fresh `ReadingState` either way, so this is the only thing that
-    // tells the two apart.
-    if (
-      !host ||
-      !drawnRef.current ||
-      session?.state.viewing === pending.edition
-    ) {
+    // No page area to measure against and nothing to attach the `load`
+    // listener to. `swapStep` answers `drop` for an absent box and this is
+    // that case, taken here because the listener has nowhere to go either.
+    if (!host) {
       swapRef.current = undefined
       return
     }
-    const kind: MapKind = zoomPrefs.onSwap === 'reset' ? 'reset' : CONTENT_MAP
-    const apply = () => {
-      // Superseded by a later swap while this one waited. Reported as done so
-      // the listener stands down; the newer swap has its own effect.
-      if (swapRef.current !== pending) return true
-      // Read here rather than captured when the effect ran. `mode` is not one
-      // of this effect's dependencies — it is not what "the reader moved"
-      // means — and adding it would be worse than useless: while a swap is
-      // waiting this effect leaves a cleanup that clears `swapRef`, and React
-      // runs that cleanup *before* the re-run that would read it, so a mode
-      // switch would drop the swap rather than redo it. Captured, a switch
-      // between single and two-page while the incoming page decodes leaves a
-      // `cell` measured under the other mode — and `cell` is which half of the
-      // group the page occupies, so a stale one lands the view about half a
-      // group out. That does not wash out on its own: every later swap maps
-      // the displaced rect through a correct transform and carries the
-      // displacement with it, until the reader presses `0`. One deref here.
+    const mapKind = swapMapKind(zoomPrefs)
+    const attempt = () => {
       const to = drawnRef.current
-      // The mode switch was to scroll, or the reader has moved onto a gap:
-      // there is no drawn page to carry the view onto. Dropped rather than
-      // held, the same answer as the guard above and for the same reason.
-      if (!to) {
-        swapRef.current = undefined
-        return true
-      }
-      const frame = frameOf(host, to.url)
-      if (!frame) return false
-      const box = host.getBoundingClientRect()
-      // The wheel handler's zero-box guard, for the same reason — and here it
-      // also protects the `w === h` invariant, since `fitRect` hands back an
-      // unfitted rect for an aspect it cannot use.
-      if (box.width <= 0 || box.height <= 0) return false
-      swapRef.current = undefined
-      setView((rect) =>
-        mapView(
-          rect,
-          pending.from,
-          { frame, cell: to.cell, half: to.half, hug: to.hug },
-          box.width / box.height,
-          kind,
-        ),
+      const step = swapStep(
+        carried,
+        swapRef.current === carried,
+        to,
+        to ? frameOf(host.querySelectorAll('img'), to.url) : undefined,
+        host.getBoundingClientRect(),
+        session?.state.viewing,
+        mapKind,
       )
+      if (step.kind === 'wait') return false
+      // `done` is finished without clearing: a later swap replaced this one
+      // while it waited, and that newer swap's own effect owns the carry now.
+      if (step.kind !== 'done') swapRef.current = undefined
+      if (step.kind === 'apply')
+        setView((rect) =>
+          mapView(rect, step.from, step.to, step.areaAspect, step.mapKind),
+        )
       return true
     }
-    if (apply()) return
+    if (attempt()) return
     const onLoad = () => {
-      if (apply()) host.removeEventListener('load', onLoad, true)
+      if (attempt()) host.removeEventListener('load', onLoad, true)
     }
     host.addEventListener('load', onLoad, true)
     return () => {
       host.removeEventListener('load', onLoad, true)
-      if (swapRef.current === pending) swapRef.current = undefined
+      if (swapRef.current === carried) swapRef.current = undefined
     }
   }, [
     session?.state.authority,
@@ -1765,32 +1295,26 @@ function App() {
     )
   }
 
-  // The filmstrip's click job while `pending` is set: `slot` is a slot of
-  // `pending.to` (the edition the strip is showing while correcting — see
-  // `correcting`'s doc on `FilmstripProps`), converted to a `Position` here
-  // because that is what `Pending.b`, `spanOf` and `displacedBy` all deal in.
-  // Not a write itself — see `confirmCorrection` below for that, and the
-  // task's own reasoning for why the two are not one step.
+  // The filmstrip's click job while `pending` is set. The slot→`Position`
+  // conversion itself is `correction.ts`'s `counterpartPick` — what stays here
+  // is the `undefined`-`pending` guard `setPending`'s updater needs and
+  // clearing a notice a previous pick or a refused write may have set.
   function pickCounterpart(slot: number) {
-    setPending((prev) => {
-      if (!prev) return prev
-      const b = resolver.slotAt(prev.to, slot)
-      return b ? { ...prev, b } : prev
-    })
+    setPending((prev) => (prev ? counterpartPick(prev, resolver, slot) : prev))
     setCorrectionNotice(undefined)
   }
 
-  // Writes `pending` — only reachable once `pending.b` is set, i.e. after
-  // `pickCounterpart` above — and, on success, moves the reader onto the
-  // page they just picked: the design's "switches to the counterpart
-  // edition" is not only the filmstrip's tiles while choosing, it is also
-  // where the reader lands once the choice is confirmed.
-  //
-  // `previous` is updated to the edition being left, same as every other
-  // change to `viewing` in this file (`session.ts`'s own doc on `previous`
-  // is explicit that this must happen on *every* change, not only a
-  // `toggle`) — skipping it here would be exactly the drift that doc warns
-  // against, just reached through a correction instead of a keypress.
+  /**
+   * Write `pending` — only reachable once `pending.b` is set, i.e. after
+   * `pickCounterpart` above.
+   *
+   * The write itself, its 412 re-read and the three outcomes are
+   * `correction.ts`'s `submitCorrection`. What is left here is what only a
+   * component can do: the re-entry guard, the busy flag, the one
+   * `resolver.dispose?.()` — which stays with the caller because a replacement
+   * has to exist before the outgoing one is freed, and `submitCorrection`
+   * deliberately never frees anything — and turning one outcome into state.
+   */
   async function confirmCorrection() {
     // `submitting` guards re-entry as well as the exits: a second `Confirm`
     // click would otherwise start a concurrent write against the same `etag`,
@@ -1798,101 +1322,61 @@ function App() {
     // only asked for once.
     if (!pending || pending.b === undefined || etag === undefined || submitting)
       return
-    const { from, to, a, b } = pending
     setSubmitting(true)
     try {
-      const fresh = await patchAlignment(work, etag, {
-        from,
-        to,
-        a: spanOf(a),
-        b: spanOf(b),
-      })
-      const nextResolver = await wasmResolver(fresh.json)
-      const bSlot = nextResolver.indexOf(to, b)
-      // The outgoing resolver's `WasmSidecar` would otherwise be stranded —
-      // see `resolver.ts`'s `Resolver.dispose` doc. Freed only now that
-      // `nextResolver` exists to replace it, not before: a `wasmResolver`
-      // parse failure above must leave the reader with a working resolver,
-      // not none.
-      resolver.dispose?.()
-      setSession((prev) => {
-        if (!prev) return prev
-        const state =
-          bSlot === undefined
-            ? prev.state
-            : navigate({ ...prev.state, viewing: to }, bSlot)
-        // `alignments` alongside the resolver swap — `Sidecar::rewrite`
-        // recomputes `quality` on every correction, so leaving this at
-        // whatever loaded at session start would show a verdict the
-        // document no longer states. See `session.ts`'s `alignmentsOf`.
-        return {
-          ...prev,
-          resolver: nextResolver,
-          alignments: alignmentsOf(fresh.json),
-          state,
-          previous: prev.state.viewing,
-        }
-      })
-      setEtag(fresh.etag)
-      setPending(undefined)
-      setCorrectionNotice(undefined)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      // The server's own wording for a `412` (`routes.rs`'s `patch_alignments`)
-      // — matched by substring, not by re-parsing the status out of the
-      // thrown message, since `api.ts` only promises the status is somewhere
-      // in there. A stale validator means somebody else's correction is in
-      // the document now, and it may be the one this reader was about to
-      // make, so `pending` survives this catch untouched: re-fetching just
-      // gets the reader a current `ETag` and resolver to confirm again
-      // against, not a silently retried write.
-      if (message.includes('changed since you read it')) {
-        try {
-          const fresh = await getSidecarWithEtag(work)
-          const nextResolver = await wasmResolver(fresh.json)
-          // Same dispose-then-replace and alignments-refresh reasoning as
-          // the success path above — a 412 re-read swaps the resolver too,
-          // and the document it re-reads can have a fresher `quality` block
-          // than the one this session loaded with.
+      const outcome = await submitCorrection(
+        work,
+        etag,
+        { ...pending, b: pending.b },
+        CORRECTION_PORTS,
+      )
+      if (outcome.kind === 'refused') {
+        setCorrectionNotice(outcome.notice)
+        return
+      }
+      if (outcome.kind === 'stale') {
+        // A failed re-read is logged rather than shown: the reader is told the
+        // pairing moved under them, which is the fact they can act on.
+        if (outcome.error !== undefined) console.error(outcome.error)
+        // `pending` survives untouched — the re-read gets the reader a current
+        // validator and resolver to confirm against, not a retried write.
+        // Both or neither: the two arrive together from one document, and
+        // installing a resolver beside the alignments of an older one is the
+        // drift `alignmentsOf` was added to close.
+        const { resolver: next, alignments: fresh, etag: freshEtag } = outcome
+        if (next && fresh) {
           resolver.dispose?.()
           setSession((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  resolver: nextResolver,
-                  alignments: alignmentsOf(fresh.json),
-                }
-              : prev,
+            prev ? { ...prev, resolver: next, alignments: fresh } : prev,
           )
-          setEtag(fresh.etag)
-        } catch (rereadErr) {
-          console.error(rereadErr)
+          setEtag(freshEtag)
         }
-        setCorrectionNotice(
-          'This work changed since it was read — check the pairing below and confirm again.',
-        )
-      } else {
-        setCorrectionNotice(message)
+        setCorrectionNotice(outcome.notice)
+        return
       }
+      // The outgoing resolver's `WasmSidecar` would otherwise be stranded —
+      // see `resolver.ts`'s `Resolver.dispose` doc. Freed only now that a
+      // replacement exists, not before.
+      resolver.dispose?.()
+      setSession((prev) => (prev ? applyLanded(prev, outcome) : prev))
+      setEtag(outcome.etag)
+      setPending(undefined)
+      setCorrectionNotice(undefined)
     } finally {
       // In `finally`, not at the end of each arm: a throw from the success
-      // path itself — `wasmResolver` failing to parse the document the server
-      // just returned, say — would otherwise leave the banner disabled with
-      // no way out but a reload.
+      // path itself would otherwise leave the banner disabled with no way out
+      // but a reload.
       setSubmitting(false)
     }
   }
 
-  // Writes the notes document with `next` applied, and on success closes the
-  // editor. `confirmCorrection`'s shape exactly, because it is the same
-  // problem: a conditional write a reader is watching, whose 412 means
-  // somebody else's write landed first.
-  //
-  // The draft survives a 412 untouched. Re-reading gets the reader a current
-  // document and validator to save against — it does not silently retry the
-  // write, which could clobber whatever arrived.
   // The debounce built once at first render calls through here, so it always
   // reaches the current closure rather than the one that existed then.
+  //
+  // *Two sentences were deleted here on 2026-08-09.* They said the write "does
+  // not silently retry" and that "the draft survives a 412 untouched", which
+  // stopped being true when the re-read-and-merge landed: it does retry, and
+  // `notesWrite.ts` is where that now lives and is described.
   writeNotesLatestRef.current = (notes: Note[]) => writeNotes(notes)
 
   /**
@@ -1904,9 +1388,7 @@ function App() {
    */
   function closeEditor() {
     saveNotesRef.current?.flush()
-    setPanelMode(undefined)
-    setEdits({})
-    setCurrentId(undefined)
+    setEditing(nothingOpen())
     setNotesNotice(undefined)
   }
 
@@ -1919,56 +1401,56 @@ function App() {
    * Write a notes document, and remember it as a step a reader can come back
    * to.
    *
-   * **On a stale validator it re-reads and re-applies rather than asking the
-   * reader to try again.** With a Save button, a `412` could stop and say
-   * "somebody else wrote; press Save again" — the reader was standing there
-   * with their finger on it. Writes are automatic now, so there is nobody to
-   * ask: the honest thing is to take the other device's document, lay this
-   * reader's own notes back over it by id, and write that. Notes belonging to
-   * *other* ids survive untouched, which is the part that matters; two devices
-   * editing the same note is still last-write-wins, and always was.
+   * The write itself — including the stale-validator re-read and merge — is
+   * `notesWrite.ts`'s `saveNotes`, which takes its two calls as ports so that
+   * its 412 path can be tested at all. Whether there is anything to write at
+   * all is that module's `writeGate`, which moved out of here for the same
+   * reason and on the same day it stopped being silent about a missing
+   * validator. What is left is what only a component can do: the busy flag,
+   * and turning one outcome into the five pieces of state a reader sees.
    *
-   * Retried once and once only. A second failure is not a race, it is
-   * something wrong, and a loop would hammer the server with a reader watching
-   * nothing happen.
+   * **`notesBusy` is now set once around the whole call.** The version this
+   * replaced set it `false` at 1961 immediately before its recursive retry set
+   * it `true` again at 1940, with no `await` between the two — so under React
+   * 19's automatic batching both landed in one continuation and no un-busy
+   * frame was ever committed. The pair of updates is gone; the frames are the
+   * same.
    */
-  async function writeNotes(
-    notes: Note[],
-    { retry = true } = {},
-  ): Promise<void> {
-    if (!notesDoc || notesEtag === undefined) return
+  async function writeNotes(notes: Note[]): Promise<void> {
+    const gate = writeGate(notesDoc, notesEtag)
+    // A validator that never arrived, or one a write's response did not carry
+    // back, is the end of saving for this session — and it used to be a silent
+    // `return`, so the reader went on typing into an editor that could no
+    // longer save a word of it. `writeGate` is where that decision and its
+    // wording now live and are tested.
+    if (gate.kind === 'refuse') return setNotesNotice(gate.notice)
+    if (gate.kind !== 'write') return
     setNotesBusy(true)
     try {
-      const fresh = await putNotes(work, notesEtag, {
-        work: notesDoc.work,
+      const outcome = await saveNotesDoc(
+        work,
+        gate.etag,
+        gate.doc,
         notes,
-      })
-      setNotesDoc(fresh.doc)
-      setNotesEtag(fresh.etag)
-      setNotesHistory((h) => record(h, fresh.doc.notes, sameNotes))
-      setNotesNotice(undefined)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      // The server's own wording for a 412 (`routes.rs`'s `put_notes`),
-      // matched by substring like the correction path's — `api.ts` only
-      // promises the status is somewhere in the thrown message.
-      if (message.includes('changed since you read them') && retry) {
-        try {
-          const fresh = await getNotes(work)
-          setNotesDoc(fresh.doc)
-          setNotesEtag(fresh.etag)
-          const merged = mergeOver(fresh.doc.notes, notes)
-          setNotesBusy(false)
-          await writeNotes(merged, { retry: false })
-          setNotesNotice(
-            'These notes changed on another device; yours were kept on top.',
-          )
-          return
-        } catch (rereadErr) {
-          console.error(rereadErr)
-        }
+        NOTES_PORTS,
+      )
+      if (outcome.kind === 'refused') {
+        // A failed re-read is logged rather than shown: the reader is told
+        // about the refusal that started it, which is the one they can do
+        // something about.
+        if (outcome.error !== undefined) console.error(outcome.error)
+        setNotesNotice(outcome.notice)
+        return
       }
-      setNotesNotice(message)
+      setNotesDoc(outcome.doc)
+      setNotesEtag(outcome.etag)
+      // `written` and `merged` both mean this document is what the server
+      // holds now, so both are a step a reader can come back to. The version
+      // this replaced recorded only the first: its retry never landed, so
+      // there was nothing on the server for a step to point at — the
+      // recursive call's own `record` ran on a success it never had.
+      setNotesHistory((h) => record(h, outcome.doc.notes, sameNotes))
+      setNotesNotice(outcome.kind === 'merged' ? outcome.notice : undefined)
     } finally {
       // In `finally` for the reason `confirmCorrection` gives: a throw from
       // the success path itself would otherwise leave every control disabled
@@ -1992,12 +1474,7 @@ function App() {
   // `modules/registry.ts` with nothing but a `defaults` shape is fully wired
   // through both callbacks the moment it is registered: no case to add here.
   function handleSettingChange(id: string, key: string, raw: unknown) {
-    const mod = registry.get(id)
-    if (!mod) return
-    setPrefsMap((map) => ({
-      ...map,
-      [id]: withFieldValue(map[id] ?? (mod.defaults as object), key, raw),
-    }))
+    setPrefsMap((map) => fieldChanged(map, registry, id, key, raw))
   }
 
   // Resets both halves: the stored slice (`resetPrefs`, so a reload does not
@@ -2009,10 +1486,11 @@ function App() {
   // of change — a reset the reader could see do nothing until they reloaded.
   // Generic for the same reason `handleSettingChange` above is.
   function handleSettingReset(id: string) {
-    const mod = registry.get(id)
-    if (!mod) return
+    // The registry lookup stays here and not only inside `sliceReset`, because
+    // `resetPrefs` writes storage and must not run for an id no module claims.
+    if (!registry.get(id)) return
     resetPrefs(id)
-    setPrefsMap((map) => ({ ...map, [id]: { ...(mod.defaults as object) } }))
+    setPrefsMap((map) => sliceReset(map, registry, id))
   }
 
   /**
@@ -2026,12 +1504,15 @@ function App() {
    * reason.
    */
   function stepTo(next: History<Note[]>) {
-    if (next === notesHistory) return
+    const step = stepHistory(notesHistory, next)
+    if (!step) return
     saveNotes.cancel()
-    setEdits({})
-    setCurrentId(undefined)
-    setNotesHistory(next)
-    void writeNotes(currentHistory(next))
+    // The edits go, the panel stays. A reader stepping back does not want the
+    // thing they just stepped back from laid on top of it; they have not asked
+    // for the panel they are standing in to close.
+    setEditing((open) => ({ ...NOTHING_OPEN, panel: open.panel }))
+    setNotesHistory(step.history)
+    void writeNotes(step.write)
   }
   const stepBack = () => stepTo(undo(notesHistory))
   const stepForward = () => stepTo(redo(notesHistory))
@@ -2166,31 +1647,13 @@ function App() {
   // is what moves the reader, once it lands). `slots`/`grouped`/`currentIndex`
   // above are untouched by any of this, on purpose — they stay exactly what
   // the page area itself renders from.
-  const correctionSlots = pending && allSlots(resolver, pending.to)
-  // `correctionTiles`, not `groups(correctionSlots, mode, ...)` — see its own
-  // doc in `pairing.ts`. `groups` would fold a joined spread into one
-  // two-slot tile the reader can only ever assert `slots[0]` of (I4 in the
-  // M5d review), and in `two` mode would do the same to every ordinary pair.
-  // Correcting needs the opposite of reading's pairing: one tile per slot,
-  // so any slot — including one half of a spread — can be named on its own,
-  // and the dashed marker below (`pairedIndex`) always lands on a tile that
-  // names exactly the slot the alignment resolves to.
-  const correctionGroups =
-    pending && correctionSlots ? correctionTiles(correctionSlots) : undefined
-  // Where the alignment currently resolves `pending.a` to, in `pending.to` —
-  // the tile a reader disagrees with when they open correction mode, so it
-  // has to be visible to disagree with it (see `Filmstrip`'s own doc on
-  // `correcting`). `undefined` when `pending.a` currently pairs with nothing
-  // in `to`, a real state `Resolver.resolve` can answer and this must not
-  // crash on rather than a bug.
-  const landedAtCounterpart =
-    pending && resolver.resolve(pending.from, pending.to, pending.a)
-  const pairedIndex = landedAtCounterpart
-    ? resolver.indexOf(pending.to, landedAtCounterpart)
-    : undefined
-  // Named before the write, not after it: the 1:1 rule means this slot loses
-  // its counterpart, and nothing undoes a correction short of making another.
-  const displaced = pending && displacedBy(pending, resolver)
+  //
+  // The four of them come back together from `correction.ts`'s
+  // `correctionView` rather than being derived one at a time here: they are
+  // read together and they are wrong together, and the dashed marker landing
+  // on a tile that names a different slot than the banner warns about is the
+  // failure one call makes impossible.
+  const correcting = pending && correctionView(pending, resolver)
 
   // The four readout lines, computed here from `modules/readouts.ts`'s pure
   // functions and handed to `Chrome` as plain strings — see that module for
@@ -2201,24 +1664,17 @@ function App() {
   // `navigate` moves `authority` to match `viewing` — `healthReadout` below
   // has no such blind spot, because it checks the edition on screen against
   // the hub, not against wherever `authority` happens to have wandered.
-  // The notes on the slot being drawn. `notesHere` is `notes.ts`'s, resolving
-  // once per edition that holds notes; nothing about travel is decided here.
-  //
-  // `travel` off filters to the viewed edition's own notes *before* resolving
-  // rather than after, so switching the setting off costs no resolution at
-  // all — the module is then genuinely doing nothing, which is the property
-  // M5b's manual pass checks for every module.
-  // Stored notes with this session's edits laid over them, plus the ones this
-  // session invented — so a box that has been nudged draws where it was nudged
-  // to, not where the server still has it, and a note that has never been
-  // saved draws at all.
-  const editedNotes: Note[] = [
-    ...allNotes.map((n) => edits[n.id] ?? n),
-    ...Object.values(edits).filter((e) => !allNotes.some((n) => n.id === e.id)),
-  ]
-  const notesForHere = annotationsPrefs.travel
-    ? editedNotes
-    : editedNotes.filter((n) => n.edition === shown.edition)
+  // The notes on the slot being drawn. `visibleNotes` and `notesHere` are both
+  // `notes.ts`'s — stored notes with this session's edits over them, filtered
+  // to the viewed edition when `travel` is off, then resolved once per edition
+  // that holds notes. Every reason for that order is in that file; nothing
+  // about travel is decided here.
+  const notesForHere = visibleNotes(
+    allNotes,
+    edits,
+    annotationsPrefs.travel,
+    shown.edition,
+  )
   // Empty in a gap rather than resolved against a slot that does not exist.
   // The note *count* readout still reports the work's total beside it, so a
   // reader sees "no notes here of 7" rather than the readout vanishing.
@@ -2264,61 +1720,32 @@ function App() {
    * it rather than where the server still has it.
    */
   function openNote(id: string) {
-    const found = edits[id] ?? allNotes.find((n) => n.id === id)
-    if (!found) return
-    setEdits((map) => (map[id] ? map : { ...map, [id]: found }))
-    setCurrentId(id)
-    setPanelMode('edit')
+    const next = openNoteInDraft(editing, id, allNotes)
+    // The same draft back means neither this session nor the document knows
+    // that id, so there is nothing to show and nothing to clear the notice for.
+    if (next === editing) return
+    setEditing(next)
     setNotesNotice(undefined)
   }
 
-  // Where the readouts report from. In a gap that is the authority slot the
-  // gap was found at — a real position in the work, which only the *viewed*
-  // edition has no page for — and `name` is what puts the edition in front of
-  // the position line so the change of scale is never silent. `Gap.tsx` says
-  // the same thing in words directly above the row.
-  const reportFrom =
-    shown.kind === 'at'
-      ? { edition: shown.edition, slot: shown.slot, name: undefined }
-      : {
-          edition: shown.from.edition,
-          slot: shown.from.slot,
-          name: shown.from.edition,
-        }
-  // Same `?? slot + 1` fallback the deleted gap branch used for
-  // `nearestPaired`'s bound: an edition the resolver cannot count still
-  // renders a line rather than `NaN%`.
-  const reportTotal =
-    resolver.slotCount(reportFrom.edition) ?? reportFrom.slot + 1
-  const chapter: Chapter | undefined = resolver.chapterAt(
-    reportFrom.edition,
-    reportFrom.slot,
+  // The five readout lines, from `modules/readouts.ts`'s `readoutLines` — the
+  // `?? slot + 1` fallback for an edition the resolver cannot count, the
+  // `Math.max(…, 0)` for a slot count that has gone backwards, the gap's
+  // report-from-the-authority rule and the `gapHealth`-in-a-gap choice are all
+  // in there, where a test reaches them. This is the clock, which only a
+  // component has.
+  const readouts = readoutLines(
+    shown,
+    resolver,
+    alignments,
+    hub,
+    { here: here.length, total: allNotes.length },
+    {
+      startedAt: clock.startedAt,
+      turns: clock.turns.current,
+      now: Date.now(),
+    },
   )
-  const positionText = positionLine({
-    slot: reportFrom.slot,
-    total: reportTotal,
-    page: resolver.slotAt(reportFrom.edition, reportFrom.slot)!.page + 1,
-    edition: reportFrom.name,
-  })
-  const chapterText = chapterReadout(chapter, alignments, hub)
-  // `gapHealth` rather than `healthReadout` in a gap: it reports the pair
-  // `Gap.tsx` already prints a verdict sentence for, so the view and the row
-  // beneath it cannot contradict each other. See `gapHealth`'s own doc.
-  const healthText =
-    shown.kind === 'at'
-      ? healthReadout(alignments, hub, shown.edition)
-      : gapHealth(alignments, shown.from.edition, shown.edition)
-  const slotsLeft = Math.max(reportTotal - (reportFrom.slot + 1), 0)
-  const timeText = timeLine({
-    elapsedMs: Date.now() - sessionStartRef.current,
-    pagesPerMin: pagesPerMinute(turnsRef.current, Date.now()),
-    slotsLeft,
-  })
-  // Counted against every note on the work, not against the ones `travel`
-  // currently admits: "2 notes here of 7" is a fact about the work, and a
-  // total that shrank when a display preference changed would be a different
-  // and much stranger claim.
-  const notesText = noteCountLine(here.length, allNotes.length)
 
   // `pageUrl` takes a page index, not a slot index — they diverge from the
   // first joined spread onward, so every slot is converted through the
@@ -2368,16 +1795,23 @@ function App() {
   // swap's arithmetic, which needs it to land on the R half rather than on the
   // middle of the spread. `undefined` for every ordinary slot, which is what
   // `Drawn.half` expects there.
-  const hugFor = (group: Group | undefined, slot: number): ArtworkHug => {
-    if (mode !== 'two' || !group) return 'centre'
-    const cell = cellOf(group, effectiveReading, slot)
-    return cell === 'first'
-      ? 'right-edge'
-      : cell === 'second'
-        ? 'left-edge'
-        : 'centre'
-  }
+  /**
+   * Which edge of its own element a slot's artwork is pulled to, asked by slot
+   * rather than by cell.
+   *
+   * The translation from a cell to an edge is `modules/fit.ts`'s `hugForCell`,
+   * where it can be tested and where the naming argument lives. What is left
+   * here is the guard that needs bindings below `if (!session) return null`:
+   * `'centre'` in single and scroll mode, and for a slot with no group on
+   * screen at all. Nothing hugs in any of those, so nothing is off-centre in
+   * them either.
+   */
+  const hugFor = (group: Group | undefined, slot: number): ArtworkHug =>
+    mode !== 'two' || !group
+      ? 'centre'
+      : hugForCell(cellOf(group, effectiveReading, slot))
 
+  /** The hug for the slot the reader is on, which is the one the overlay draws over. */
   const shownHug = at ? hugFor(current, at.slot) : 'centre'
   drawnRef.current =
     at && current && mode !== 'scroll'
@@ -2394,32 +1828,6 @@ function App() {
           hug: shownHug,
         }
       : undefined
-
-  /**
-   * Which edge of its own element a slot's artwork is pulled to — `fit.ts`'s
-   * `ArtworkHug`, asked by slot rather than by cell.
-   *
-   * One answer for the three things that have to agree about it: the two
-   * `PageView`s `renderGroup` draws, the marker overlay that measures one of
-   * them, and `pointOn`'s drag arithmetic. Written out at each of the three, a
-   * copy that fell out of step would draw the page one way and measure it
-   * another — a region landing about 180px from where the reader swept it out,
-   * `paintedBox` having the measurement — and nothing in `web/` could catch
-   * that, since none of the three is reachable from a test.
-   *
-   * `cellOf` is the rule and is asked rather than repeated, for the reason its
-   * own doc gives: the comparison written here would put a `reading === 'rtl'`
-   * test back into this file. This is only the translation from a cell to an
-   * edge, and the direction is the thing to get right — the *first* cell hugs
-   * its **right** edge, because that is the side the seam is on. `ArtworkHug`
-   * has the whole naming argument.
-   *
-   * `'centre'` everywhere else — single and scroll mode, a joined spread or a
-   * solo slot (`cellOf`'s `'only'`), and a slot with no group on screen at
-   * all. Nothing hugs in any of those, so nothing is off-centre in them
-   * either.
-   */
-  /** The hug for the slot the reader is on, which is the one the overlay draws over. */
 
   // Which mechanism governs a mounted `PageView`'s image — see that
   // component's own `buffered` doc for the full reasoning. Scroll mode
@@ -2507,17 +1915,22 @@ function App() {
     )
   }
 
-  /** What the region should be, given where the drag began and where the pointer is now. */
+  /**
+   * The two pixel points a drag is made of, in page fractions.
+   *
+   * The rule over them is `notes.ts`'s `regionUnderDrag`; this is the DOM
+   * reading it cannot do.
+   */
   function regionUnderPointer(
-    started: NonNullable<typeof dragRef.current>,
+    started: DragStart,
     event: React.PointerEvent,
   ): Region {
-    const from = pointOn(started.el, started.x, started.y)
-    const to = pointOn(started.el, event.clientX, event.clientY)
-    if (started.intent === 'move' && started.from) {
-      return moveRegion(started.from, to.x - from.x, to.y - from.y)
-    }
-    return regionFromDrag(from, to)
+    return regionUnderDrag(
+      started.intent,
+      pointOn(started.el, started.x, started.y),
+      pointOn(started.el, event.clientX, event.clientY),
+      started.from,
+    )
   }
 
   /**
@@ -2526,74 +1939,25 @@ function App() {
    * whichever answer comes back.
    */
   function beginRegion(event: React.PointerEvent) {
-    // Pan takes the drag on a press that is on the drawn page, with the editor
-    // closed or the modifier held. `gestureFor`'s four cases are untouched: it
-    // is described in its own doc as "the most-changed rule of this milestone
-    // [M5c] and lived where nothing could test it", and rewriting it to add a
-    // fifth case would spend exactly the testability that comment records.
+    // Whether this press pans is `notes.ts`'s `pressTakesPan`, whose doc
+    // carries the whole argument — why `zoomable` is one flag and not two, why
+    // a control is excluded rather than the page required, and what the
+    // ancestor-aware `isInteractivePress` is for. All four arguments are read
+    // from the event and from state; none of the reasoning is here.
     //
-    // **`drawnRef.current`** makes this inert wherever the three zoom keys
-    // are, for the reason the `ZOOM_IN_INTENT` case above states in full — and
-    // it subsumes the `mode !== 'scroll'` test that used to be written here,
-    // since `drawnRef` is already `undefined` in scroll mode. Without it, a
-    // drag anywhere over a gap — including off one of `Gap`'s own buttons —
-    // pans a rect nobody is drawing: `Gap` renders *inside* the page area, so
-    // this handler is on it.
-    //
-    // **The press must not be on a control.** "The editor is closed" is not
-    // the same set as "the pointer is over the page", and the guard above does
-    // not close the difference: the things that share the page area *with* a
-    // drawn page are `NoteList` in its `side` placement and the note tabs
-    // `PageAnnotations` draws (`pointerEvents: 'auto'` on those, deliberately,
-    // so they can be clicked). Neither stops propagation, so without this test
-    // a sweep to select text in the note list pans the manga underneath it,
-    // and so does a drag begun on a tab.
-    //
-    // **This was `event.target instanceof HTMLImageElement` until 2026-08-08**,
-    // which excluded the same controls by being narrower still: it panned only
-    // on the drawn page. The comment here argued that was the narrowest test
-    // true of the page and false of a button, and it was — but it also made
-    // the letterbox around the page dead to a drag, and a reader trying it
-    // said so. That cost was stated in this comment and judged acceptable on
-    // the reasoning that the letterbox shrinks as the zoom grows; what the
-    // reasoning missed is that a reader reaches for the nearest grey to drag
-    // from, and being ignored there reads as the pan being broken rather than
-    // as a boundary.
-    //
-    // `isInteractivePress` is the ancestor-aware sibling of the
-    // `isInteractiveTarget` this file already uses for keys, and the ancestry
-    // is the whole point: a press on a note-list entry lands on the *text*, so
-    // the keydown rule — which asks only about the target — answers `false`
-    // for exactly the case the image test was protecting against. Excluding
-    // controls rather than requiring the page also means the next component
-    // added inside the page area is included by default and has to opt out,
-    // which is the right way round for a background gesture.
-    //
-    // `stopPropagation` on every child was the other candidate, and lost
-    // again: it would put "and this is why the manga does not pan" in
-    // `NoteList.tsx` and `Annotations.tsx`, where nobody looking for the pan
-    // rule would find it.
-    //
-    // The one press this hands back that it used to keep is the modifier held
-    // with the editor open, on something that is not a page image; it now
-    // falls through to `gestureFor`, which reads it as `close` — rule 1 of
-    // that function's own list ("looking away is how a person stops writing
-    // one"), not a new behaviour invented here. With the editor *closed*
-    // nothing is lost by taking the drag ahead of `gestureFor` at all, since
-    // it answers `{ kind: 'ignore' }` for every press in that state.
-    //
-    // No `preventDefault` here, deliberately, though the region drag below
-    // calls one to stop the browser's text selection fighting the rectangle.
-    // A prevented `pointerdown` also stops focus moving, and this branch runs
-    // on every press on the page rather than only while the editor is open: a
-    // reader who clicked a mode button and then dragged the page would leave
-    // focus on that button, where `isInteractiveTarget` stands the keydown
-    // handler down and the arrow keys stop working.
-    const panning =
-      zoomPrefs.enabled &&
-      drawnRef.current !== undefined &&
-      !isInteractivePress(event.target) &&
-      (panelMode !== 'edit' || event.shiftKey)
+    // No `preventDefault` in this branch, deliberately, though the region drag
+    // below calls one to stop the browser's text selection fighting the
+    // rectangle. A prevented `pointerdown` also stops focus moving, and this
+    // runs on every press on the page rather than only while the editor is
+    // open: a reader who clicked a mode button and then dragged the page would
+    // leave focus on that button, where `isInteractiveTarget` stands the
+    // keydown handler down and the arrow keys stop working.
+    const panning = pressTakesPan({
+      zoomable: zoomable(zoomPrefs, drawnRef.current !== undefined),
+      onControl: isInteractivePress(event.target),
+      editing: panelMode === 'edit',
+      shift: event.shiftKey,
+    })
     if (panning) {
       panRef.current = { x: event.clientX, y: event.clientY }
       return
@@ -2629,8 +1993,7 @@ function App() {
         edits[gesture.noteId] ??
         here.find((h) => h.note.id === gesture.noteId)?.note
       if (!held) return
-      setEdits((map) => (map[held.id] ? map : { ...map, [held.id]: held }))
-      setCurrentId(held.id)
+      setEditing((open) => grabNote(open, held))
       setNotesNotice(undefined)
       dragRef.current = {
         x: event.clientX,
@@ -2649,30 +2012,16 @@ function App() {
     const from = panRef.current
     if (from) {
       const box = event.currentTarget.getBoundingClientRect()
-      // The wheel handler's zero-box guard, for the same reason.
+      // The wheel handler's zero-box guard, for the same reason — and here it
+      // also gates the `panRef` write below, so a frame measured against a
+      // box mid-teardown neither moves the rect nor becomes the origin the
+      // next frame steps from.
       if (box.width <= 0 || box.height <= 0) return
-      setView((rect) => {
-        // A drag moves the page under the viewport, so the rect moves the
-        // other way: dragging right shows what was to the left. The step is
-        // scaled by `rect.w`/`rect.h` because the rect is what one page area's
-        // width is showing — at 4x, a pointer crossing the box has crossed a
-        // quarter of the group.
-        const next = panBy(
-          rect,
-          (-(event.clientX - from.x) / box.width) * rect.w,
-          (-(event.clientY - from.y) / box.height) * rect.h,
-        )
-        // The rect back unchanged where the pan had nowhere to go, so React's
-        // own `Object.is` bail-out applies. `panBy` says a drag at fit-whole
-        // is "a no-op instead of a jitter", and it is the *rect* that is one:
-        // without this the no-op still allocates a fresh, equal rect on every
-        // pointer move, and every one of those re-renders this component and
-        // re-runs `PageAnnotations`' measurement. Fit-whole is what a reader
-        // who never zooms is in the whole time, so that is the common case
-        // rather than an edge of one. Only `x` and `y` are compared because
-        // `panBy` is the only writer here and it never touches the sizes.
-        return next.x === rect.x && next.y === rect.y ? rect : next
-      })
+      // The frame itself is `modules/zoom.ts`'s `panStep`, whose doc has the
+      // sign convention and the `Object.is` bail-out this depends on.
+      setView((rect) =>
+        panStep(rect, box, from, { x: event.clientX, y: event.clientY }),
+      )
       panRef.current = { x: event.clientX, y: event.clientY }
       return
     }
@@ -2687,206 +2036,55 @@ function App() {
     dragRef.current = null
     setDragging(undefined)
     if (!started || !draft) return
-    const region = regionUnderPointer(started, event)
-    // A click rather than a drag, while drawing: the note stays anchored to
-    // the whole slot, which is a real state rather than a failed one — and a
-    // one-pixel region would be a marker a reader could never find again. A
-    // *move* is exempt: clicking once inside a region without moving it is a
-    // no-op that must not delete the region it landed on.
-    // A click rather than a drag **plants a point**: a reader marking a spot
-    // rather than an area, which is the third anchor a note can have. It used
-    // to be discarded, which meant a click on the page did nothing at all and
-    // the only way to mark a panel was to draw a box around it.
-    const anchor =
-      started.intent === 'draw' && (region.w < 0.01 || region.h < 0.01)
-        ? pointAt(pointOn(started.el, started.x, started.y))
-        : region
+    // `anchorFrom` is the click-plants-a-point rule; the point it plants is
+    // where the press went down, which only the DOM can say.
+    const anchor = anchorFrom(
+      started.intent,
+      regionUnderPointer(started, event),
+      pointOn(started.el, started.x, started.y),
+    )
     const id = started.noteId ?? draft.id
-    setEdits((map) => {
-      const note = map[id]
-      if (!note) return map
-      const next = {
-        ...map,
-        [id]: { ...note, region: anchor, updated: new Date().toISOString() },
-      }
-      scheduleSave(next)
+    const now = new Date().toISOString()
+    setEditing((open) => {
+      const next = anchorNote(open, id, anchor, now)
+      // The same draft back means this session never had that note to anchor,
+      // so there is nothing to write either.
+      if (next === open) return open
+      scheduleSave(next.edits)
       return next
     })
   }
 
-  function renderGroup(group: Group, key: number) {
-    if (mode !== 'two') {
-      // Single and scroll mode put one slot per group, or — for a joined
-      // spread — both halves in one group drawn as a single wide page; see
-      // `pairing.ts`'s `groups` doc. Always a bare `PageView` here, in every
-      // mode and every group shape, which is what already kept this
-      // position's element type stable across every turn — see the
-      // two-page branch below for the case where it wasn't.
-      const [slot] = group.slots
-      return (
-        <PageView
-          key={key}
-          src={pageAt(slot)}
-          alt={altAt(slot)}
-          buffered={buffered}
-          decodeQueue={swapQueue}
-          cohort={pageCohort}
-          fit={fitPrefs}
-        />
-      )
-    }
-    // Two fixed cells, always both present, whether `group` is an ordinary
-    // pair, a joined spread, or a solo slot with no partner — see
-    // `pairing.ts`'s `cellsFor` doc for the full mechanism. This used to
-    // branch the same way the `mode !== 'two'` case above does — a bare
-    // `<PageView>` for a spread/solo group, a `<div>` wrapping two for a
-    // pair — which flipped the element *type* React saw at this position on
-    // exactly the turns that mattered (entering or leaving a joined
-    // spread), forcing a remount that threw away `decode.ts`'s whole gate:
-    // a freshly-mounted `PageView` has nothing decoded, gate or no gate.
-    // Rendering the same wrapping `<div>` and the same two child
-    // `<PageView>`s on every render, and only ever changing their
-    // `src`/layout props, lets React reconcile by position instead — see
-    // `docs/notes.md`'s two-page flicker measurement for the before and
-    // after this made.
-    const {
-      wide,
-      alone: targetAlone,
-      first,
-      second,
-    } = cellsFor(group, effectiveReading)
-    // **Two different questions, and only one of them follows the pixels.**
-    //
-    // `wide` — does the drawn page span both cells — is true for a joined
-    // spread and nothing else. It is taken from the target rather than from
-    // what is on screen because it is a fact about the *page*, not about how
-    // far a decode has got: a spread is one double-width image whichever
-    // generation is showing, and reading it off the drawn sources would make
-    // a mid-flick coincidence (two cells briefly holding one URL) resize the
-    // artwork.
-    //
-    // `alone` — is the second cell showing a real second page or a mirror of
-    // the first — is what governs whether that cell is *visible*, and that
-    // does follow the pixels. `cellsFor` mirrors the first slot into the
-    // second exactly when a group has one page, so "both cells are drawing
-    // the same source" is the same question asked of the screen. Keying it on
-    // the target instead is what made the layout flap: state moves on the
-    // keypress, the pictures wait for their decode.
-    const drawnBoth =
-      drawnSrcs.first !== undefined && drawnSrcs.second !== undefined
-    const alone = drawnBoth ? drawnSrcs.first === drawnSrcs.second : targetAlone
-    return (
-      <div key={key} style={{ display: 'flex', width: '100%', height: '100%' }}>
-        <div
-          style={{
-            flex: 1,
-            minWidth: 0,
-            height: '100%',
-            // Not while `wide`: the second cell is collapsed to zero width and
-            // gets no seam padding, so padding this one narrows the box the
-            // single drawn page centres in and shifts it `gap / 4` off centre —
-            // measured at 10px with `gap: 40` in a 1385px area. A joined spread
-            // or a solo slot has no seam to open.
-            ...(alone ? {} : seamStyle(fitPrefs, 'first')),
-          }}
-        >
-          {/*
-            The hug is `hugFor`, not a rule written out here, so the page this
-            draws and the geometry that measures it cannot disagree — that
-            function's doc has the naming argument (`right-edge` on the *left*
-            cell is not backwards), why only a real pair hugs, and why screen
-            position rather than reading direction decides it.
-
-            It asks `cellOf` about `group`, which is `current` here: `two` mode
-            renders exactly one group, the `mode !== 'two'` return above having
-            taken scroll mode's many-group case out of this branch.
-          */}
-          <PageView
-            src={pageAt(first)}
-            alt={altAt(first)}
-            buffered={buffered}
-            decodeQueue={swapQueue}
-            cohort={pageCohort}
-            onShown={showFirst}
-            fit={fitPrefs}
-            hug={hugFor(group, first)}
-          />
-        </div>
-        {/*
-          Collapsed to zero width and hidden, not unmounted, when `wide`: a
-          spread or solo group has only one real image to show, but keeping
-          this cell's `PageView` mounted — with `cellsFor`'s mirrored `src`,
-          the same URL `first` is already fetching, a harmless duplicate
-          request for a cell nothing paints — is what lets it stay
-          decode-gated too. The moment pairing resumes and this cell becomes
-          the visible second half of a real pair, its `src` prop changing is
-          a plain update on a surviving instance, the ordinary case
-          `decode.ts` already handles, not a fresh mount with nothing
-          decoded yet.
-
-          `PageView`'s decode gate is per instance, and that used to be the
-          whole story: this cell and the one beside it each ran
-          `presentWhenDecoded` independently, so an ordinary pair's two halves
-          presented at different times — one new half beside one old half for
-          as long as the slower of the two took to decode. The comment here
-          argued for leaving it that way, on the grounds that gating would make
-          the faster half wait on the slower one "for a mismatch nothing has
-          measured a reader noticing", and named a measurement as the thing
-          that should overturn it. **A reader noticed, and the measurement
-          agreed with them:** a median 89.7 ms between the two cells at a slow
-          reading pace, 158.4 ms at worst, every one of eight turns tearing by
-          more than a frame, and 213.8 ms median under a flick. Both cells now
-          present through `pageCohort` (`cohort.ts`), which holds the first
-          decode that settles until the other has settled too, so a turn
-          changes both halves in one frame. The latency the old comment was
-          protecting is genuinely paid — and it was always being paid anyway,
-          by the half the reader was still looking at.
-        */}
-        <div
-          style={
-            wide
-              ? // A joined spread: collapse this cell so the one image spans the
-                // whole group, which is the only way to draw a page that really
-                // is twice as wide.
-                {
-                  flex: '0 0 0',
-                  width: 0,
-                  minWidth: 0,
-                  height: '100%',
-                  overflow: 'hidden',
-                }
-              : {
-                  flex: 1,
-                  minWidth: 0,
-                  height: '100%',
-                  // Keeps its width while merely `alone`, and that is the whole
-                  // of the low-speed flicker fix: an unpartnered page is an
-                  // ordinary page, so the group stays two cells wide and only
-                  // this half goes empty. Collapsing here — which is what
-                  // conflating `alone` with `wide` did — let the first cell
-                  // flex to full width and back on consecutive turns wherever
-                  // the aligned pairing left a page without a partner.
-                  ...(alone
-                    ? { visibility: 'hidden' as const }
-                    : seamStyle(fitPrefs, 'second')),
-                }
-          }
-          aria-hidden={alone || undefined}
-        >
-          <PageView
-            src={pageAt(second)}
-            alt={altAt(second)}
-            buffered={buffered}
-            decodeQueue={swapQueue}
-            cohort={pageCohort}
-            onShown={showSecond}
-            fit={fitPrefs}
-            hug={hugFor(group, second)}
-          />
-        </div>
-      </div>
-    )
-  }
+  /**
+   * One group, drawn — `GroupView.tsx`, which is where the reconciliation
+   * invariant that keeps `PageView`'s decode gate alive across a turn now
+   * lives, with a test over it.
+   *
+   * `drawnSrcs` stays here rather than moving inside that component. It is
+   * written by the two `PageView` callbacks this passes and read by nothing
+   * else, which reads like component state — but the two call sites below are
+   * in different arms of the same ternary, so a reader going two -> scroll ->
+   * two unmounts and remounts everything at that position. As `App` state this
+   * record survives that; as component state it would come back empty and the
+   * layout would key on the target for as long as it took both cells to
+   * report, which is the flicker the record was introduced to stop.
+   */
+  const drawGroup = (group: Group) => (
+    <GroupView
+      group={group}
+      mode={mode}
+      reading={effectiveReading}
+      src={pageAt}
+      alt={altAt}
+      hug={hugFor}
+      buffered={buffered}
+      decodeQueue={swapQueue}
+      cohort={pageCohort}
+      fit={fitPrefs}
+      drawn={drawnSrcs}
+      onShown={showDrawn}
+    />
+  )
 
   // The gap's offered moves, and where the strip should sit. Computed only in
   // a gap; the scan is bounded by the authority's slot count so a wholly
@@ -2983,7 +2181,7 @@ function App() {
         {/*
           Single and two-page mode draw one group, so one overlay over the
           page holding the slot being read. Scroll mode mounts every group at
-          once and gets one overlay per group instead — see `renderGroup`'s
+          once and gets one overlay per group instead — see `drawGroup`'s
           caller below. Both go through `PageAnnotations`, which measures the
           page it sits over rather than assuming the box around it.
         */}
@@ -3066,7 +2264,7 @@ function App() {
                 // page in *this* group rather than the scrolling column.
                 style={{ position: 'relative' }}
               >
-                {renderGroup(g, i)}
+                {drawGroup(g)}
                 {/*
                   One overlay per mounted group, so a note is on its page while
                   scrolling exactly as it is in the other two modes. The notes
@@ -3108,7 +2306,7 @@ function App() {
             // this position is what `cellsFor`'s doc records forcing a remount
             // and throwing away `PageView`'s decode gate.
             <Viewport rect={zoomPrefs.enabled ? view : WHOLE}>
-              {renderGroup(current, 0)}
+              {drawGroup(current)}
             </Viewport>
           )
         )}
@@ -3125,15 +2323,15 @@ function App() {
         reading={effectiveReading}
         motion={motionPrefs}
         readouts={readoutsPrefs}
-        position={positionText}
-        time={timeText}
-        chapter={chapterText}
-        health={healthText}
-        notes={notesText}
+        position={readouts.position}
+        time={readouts.time}
+        chapter={readouts.chapter}
+        health={readouts.health}
+        notes={readouts.notes}
         work={work}
         edition={pending ? pending.to : shown.edition}
-        slots={pending && correctionSlots ? correctionSlots : slots}
-        groups={pending && correctionGroups ? correctionGroups : grouped}
+        slots={correcting ? correcting.slots : slots}
+        groups={correcting ? correcting.tiles : grouped}
         // No group of `pending.to`'s own is "current" while correcting — the
         // reader is still looking at `pending.from`, not `to` — so nothing
         // should draw the solid "where you are" border there. `pairedIndex`'s
@@ -3141,88 +2339,25 @@ function App() {
         currentIndex={pending ? -1 : currentIndex}
         anchor={stripAnchor}
         onNavigate={goToSlot}
-        correcting={pending ? { to: pending.to, pairedIndex } : undefined}
+        correcting={
+          pending && correcting
+            ? { to: pending.to, pairedIndex: correcting.pairedIndex }
+            : undefined
+        }
         onPickCounterpart={pending ? pickCounterpart : undefined}
       />
       {pending && (
-        <div
-          role="status"
-          style={{
-            position: 'absolute',
-            top: 16,
-            left: 16,
-            right: 16,
-            zIndex: 1,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: 8,
-            padding: '10px 16px',
-            borderRadius: 8,
-            background: 'rgba(24, 24, 24, 0.92)',
-            color: 'rgba(255, 255, 255, 0.92)',
-            textAlign: 'center',
+        <CorrectionBanner
+          pending={pending}
+          displaced={correcting?.displaced}
+          notice={correctionNotice}
+          submitting={submitting}
+          onConfirm={() => void confirmCorrection()}
+          onCancel={() => {
+            setPending(undefined)
+            setCorrectionNotice(undefined)
           }}
-        >
-          {pending.b === undefined ? (
-            <p style={{ margin: 0 }}>
-              Pick the <strong>{pending.to}</strong> page that matches{' '}
-              <strong>{pending.from}</strong> {describePosition(pending.a)}.{' '}
-              <em>Escape</em> cancels without writing anything.
-            </p>
-          ) : (
-            <>
-              {/* The assertion itself, restated at the moment of confirming.
-                  Without this the banner swapped the "pick a page" prompt for
-                  the consequence line alone, so the one screen a reader
-                  confirms an irreversible write from never said what was
-                  being asserted — found by driving this against the real
-                  corpus, where the strip has 235 tiles and the picked one
-                  scrolls out of view as easily as not. */}
-              <p style={{ margin: 0 }}>
-                Pair <strong>{pending.from}</strong>{' '}
-                {describePosition(pending.a)} with <strong>{pending.to}</strong>{' '}
-                {describePosition(pending.b)}?
-              </p>
-              {/* Named before the write, not after it — see `displaced`'s own
-                  doc above. Shown even when `displaced` is undefined, so a
-                  reader sees the same confirmation shape either way rather
-                  than wondering whether the absence of a warning is itself
-                  the warning. */}
-              <p style={{ margin: 0 }}>
-                {displaced
-                  ? `${pending.from} ${describePosition(displaced)} will lose its ${pending.to} counterpart.`
-                  : `Nothing loses its counterpart — ${pending.to} ${describePosition(pending.b)} pairs with nothing today.`}
-              </p>
-              {correctionNotice && (
-                <p style={{ margin: 0, opacity: 0.85 }}>{correctionNotice}</p>
-              )}
-              {/* Both disabled while the write is on the wire — see
-                  `submitting`'s doc. Cancel especially: it is the control
-                  that most looks like it undoes the write, and it is the one
-                  that cannot. */}
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button
-                  type="button"
-                  disabled={submitting}
-                  onClick={() => void confirmCorrection()}
-                >
-                  {submitting ? 'Writing…' : 'Confirm'}
-                </button>
-                <button
-                  type="button"
-                  disabled={submitting}
-                  onClick={() => {
-                    setPending(undefined)
-                    setCorrectionNotice(undefined)
-                  }}
-                >
-                  Cancel
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+        />
       )}
       {/*
         One panel, both states. The gap branch used to mount a second copy
@@ -3283,13 +2418,7 @@ function App() {
           // rather than in 700 ms — and it cancels whatever the debounce was
           // about to write, which would otherwise put the note straight back.
           saveNotes.cancel()
-          setEdits((map) => {
-            const rest = { ...map }
-            delete rest[id]
-            return rest
-          })
-          setCurrentId(undefined)
-          setPanelMode(undefined)
+          setEditing((open) => afterDelete(open, id))
           void writeNotes(withoutNote(applyEdits(), id))
         }}
         onClose={() => {
@@ -3298,9 +2427,7 @@ function App() {
           // sitting in the debounce is a change the reader made and expects to
           // find next time. Undo is what abandons.
           saveNotes.flush()
-          setPanelMode(undefined)
-          setEdits({})
-          setCurrentId(undefined)
+          setEditing(nothingOpen())
           setNotesNotice(undefined)
         }}
         canUndo={canUndo(notesHistory)}
@@ -3310,7 +2437,9 @@ function App() {
         onGo={(entry) => {
           if (entry.here === undefined) return
           goToSlot(entry.here)
-          setPanelMode(undefined)
+          // The panel closes; the edits stay, because going to a note is not
+          // finishing with the ones already touched.
+          setEditing((open) => ({ ...open, panel: undefined }))
         }}
       />
       <Settings

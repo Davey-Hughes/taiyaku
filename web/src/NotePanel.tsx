@@ -4,6 +4,7 @@ import {
   notesJson,
   type Note,
   type NotesDoc,
+  type PanelMode,
   type ReviewEntry,
 } from './notes'
 import { COLOUR_NAMES, DEFAULT_COLOUR, noteColour } from './palette'
@@ -41,8 +42,12 @@ const rowStyle: CSSProperties = {
   cursor: 'pointer',
 }
 
-/** What the panel is showing, or nothing at all. */
-export type PanelMode = 'edit' | 'review'
+// `PanelMode` — what the panel is showing, or nothing at all — is declared in
+// `notes.ts` and imported above. It used to be declared here, which made a
+// module that must not import React take its own state's type from a `.tsx`.
+// Imported rather than re-exported because `useComponentExportOnlyModules`
+// refuses an `export type { … }` specifier from a file that exports a
+// component, the same rule `tiles.ts` exists for.
 
 export interface NotePanelProps {
   mode: PanelMode | undefined

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { collisions } from '../module'
-import { annotationsModule, noteCountLine } from './annotations'
+import { annotationsModule, noteCountLine, toggleReveal } from './annotations'
 import { registry } from './registry'
 
 describe('annotationsModule', () => {
@@ -74,5 +74,34 @@ describe('noteCountLine', () => {
 
   it('does not pluralise one', () => {
     expect(noteCountLine(1, 1)).toBe('1 note here of 1')
+  })
+})
+
+describe('toggleReveal', () => {
+  it('turns the regions on and off again', () => {
+    const off = annotationsModule.defaults
+    const on = toggleReveal(off)
+    expect(on.reveal).toBe(true)
+    expect(toggleReveal(on).reveal).toBe(false)
+  })
+
+  /**
+   * The reason this is a function rather than a spread at the call site: a
+   * hand-written one is where the field beside it gets dropped, which is the
+   * defect `direction.ts`'s `setOverride` was extracted over.
+   */
+  it('leaves every other preference alone', () => {
+    const next = toggleReveal({
+      markers: false,
+      travel: true,
+      reveal: false,
+      notesList: 'below',
+    })
+    expect(next).toEqual({
+      markers: false,
+      travel: true,
+      reveal: true,
+      notesList: 'below',
+    })
   })
 })

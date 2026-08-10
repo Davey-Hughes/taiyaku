@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import type { AnnotationsPrefs } from './modules/annotations'
 import type { ArtworkHug } from './modules/fit'
 import {
+  artOffset,
   isPoint,
   paintedBox,
   spreadTabs,
@@ -608,9 +609,15 @@ export function PageAnnotations({
         { w: inner.width, h: inner.height },
         hug,
       )
+      // `artOffset` folds `outer`/`inner`'s own element-to-element offset
+      // together with `art`'s inset — two terms this file does not compose
+      // itself, since every fixture that exercises this measurement happens
+      // to give the host and the image the same origin and would not notice
+      // either term's sign or order coming out wrong. See `notes.ts`.
+      const offset = artOffset(outer, inner, art)
       setBox({
-        left: inner.left - outer.left + art.x,
-        top: inner.top - outer.top + art.y,
+        left: offset.left,
+        top: offset.top,
         width: art.w,
         height: art.h,
       })

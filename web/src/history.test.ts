@@ -6,6 +6,7 @@ import {
   emptyHistory,
   record,
   redo,
+  stepHistory,
   undo,
 } from './history'
 
@@ -50,6 +51,27 @@ describe('history', () => {
   it('does not record a state identical to the one in force', () => {
     const h = build('a')
     expect(record(h, 'a', same)).toBe(h)
+  })
+
+  // The step is written as well as shown, so what a caller has to write comes
+  // back with the history it has to hold — one answer rather than two that
+  // could be taken from different histories.
+  it('hands a step back with the state that step has to write', () => {
+    const h = build('a', 'b')
+    expect(stepHistory(h, undo(h))).toEqual({ history: undo(h), write: 'a' })
+    expect(stepHistory(undo(h), redo(undo(h)))).toEqual({
+      history: h,
+      write: 'b',
+    })
+  })
+
+  // Identity, not a second bounds check: `undo` and `redo` hand back the same
+  // object at either end, and that is the whole no-op rule.
+  it('is a no-op where the step had nowhere to go', () => {
+    const floor = emptyHistory('start')
+    expect(stepHistory(floor, undo(floor))).toBeUndefined()
+    const top = build('a')
+    expect(stepHistory(top, redo(top))).toBeUndefined()
   })
 
   it('drops the oldest states rather than growing without bound', () => {

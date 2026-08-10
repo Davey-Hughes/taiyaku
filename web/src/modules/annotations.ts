@@ -81,6 +81,18 @@ export const annotationsModule: ReaderModule<AnnotationsPrefs> = {
 }
 
 /**
+ * `r` — show the annotated regions and what they say, or stop.
+ *
+ * Here rather than written out in the key handler for the reason `direction`'s
+ * `setOverride` is: this is the module's own rule about its own slice, and a
+ * hand-written spread at the call site is where the field next to it gets
+ * dropped. One line, and a test that says which way it goes.
+ */
+export function toggleReveal(prefs: AnnotationsPrefs): AnnotationsPrefs {
+  return { ...prefs, reveal: !prefs.reveal }
+}
+
+/**
  * The readout's note count: how many are on this page, out of the work's own.
  *
  * Nothing at all where the work has no notes — a reader who has never

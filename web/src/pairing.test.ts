@@ -5,6 +5,7 @@ import {
   correctionTiles,
   type Group,
   groups,
+  secondCellAlone,
   stepToGroup,
 } from './pairing'
 import { bSlots, odd, whole } from './fixtures'
@@ -228,6 +229,54 @@ describe('cellsFor', () => {
     )
     // A real spread is the one thing that does change it.
     expect(cellsFor({ slots: [4, 5], spread: true }, 'ltr').wide).toBe(true)
+  })
+})
+
+describe('secondCellAlone', () => {
+  const pair = cellsFor({ slots: [2, 3] }, 'ltr')
+  const solo = cellsFor({ slots: [7] }, 'ltr')
+  const spread = cellsFor({ slots: [4, 5], spread: true }, 'ltr')
+
+  // Nothing reported yet — a group's first frame — so there is no screen to
+  // read and the target's own answer stands.
+  it('falls back to the target while neither cell has reported', () => {
+    expect(secondCellAlone(pair, {})).toBe(false)
+    expect(secondCellAlone(solo, {})).toBe(true)
+    expect(secondCellAlone(spread, {})).toBe(true)
+  })
+
+  // One cell reporting is not two cells reporting. Half a report is exactly
+  // the mid-turn state this exists to ride out.
+  it('falls back to the target while only one cell has reported', () => {
+    expect(secondCellAlone(pair, { first: 'a.png' })).toBe(false)
+    expect(secondCellAlone(solo, { second: 'a.png' })).toBe(true)
+  })
+
+  // **The flicker fix.** State moves on the keypress and the pictures wait for
+  // their decode, so the target can say "a pair" while both cells still draw
+  // one page — measured at three layout changes in 114 ms during a flick, with
+  // the artwork never changing at all.
+  it('is alone when both cells draw one page, whatever the target says', () => {
+    expect(secondCellAlone(pair, { first: 'a.png', second: 'a.png' })).toBe(
+      true,
+    )
+  })
+
+  it('is not alone when the cells draw two pages, whatever the target says', () => {
+    expect(secondCellAlone(solo, { first: 'a.png', second: 'b.png' })).toBe(
+      false,
+    )
+    expect(secondCellAlone(spread, { first: 'a.png', second: 'b.png' })).toBe(
+      false,
+    )
+  })
+
+  // Compared by value: the two cells are handed URLs built by the same
+  // function, so a mirrored cell holds an equal string rather than a shared
+  // reference to a special one.
+  it('compares the two sources by value', () => {
+    const url = '/api/works/w/en/pages/4'
+    expect(secondCellAlone(pair, { first: url, second: `${url}` })).toBe(true)
   })
 })
 

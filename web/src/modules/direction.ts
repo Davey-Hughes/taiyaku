@@ -56,6 +56,29 @@ export function setOverride(
 }
 
 /**
+ * `d`'s flip: this edition the other way round, leaving every other edition's
+ * override alone.
+ *
+ * **Flipped against the direction currently in *effect*, not against the
+ * override.** An edition with no override yet reads the sidecar's own
+ * `work.reading`, so flipping from `override[edition]` — `undefined` — would
+ * have to guess a starting point, and on a right-to-left work the first press
+ * of `d` would set `rtl` and appear to do nothing. `effectiveDirection` is
+ * what makes the first press always visible.
+ *
+ * Written out in `App.tsx`'s `d` handler until this existed, which put the one
+ * rule that decides what a keypress means somewhere no test could reach.
+ */
+export function flipped(
+  sidecarReading: Direction,
+  prefs: DirectionPrefs,
+  edition: string,
+): DirectionPrefs {
+  const now = effectiveDirection(sidecarReading, prefs.override[edition])
+  return setOverride(prefs, edition, now === 'rtl' ? 'ltr' : 'rtl')
+}
+
+/**
  * Which way a physical arrow key turns the page.
  *
  * The arrows are *physical* — `ArrowRight` is the key on the right of the

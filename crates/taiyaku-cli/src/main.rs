@@ -2218,4 +2218,1274 @@ mod tests {
             "--name-a needs an edition key, and `--name-b` is another flag"
         );
     }
+
+    // -- slug, label, url_safe_suggestion: pure formatting, no archives needed --
+
+    /// A caller-given name is trusted verbatim; the auto-derivation below is
+    /// never consulted.
+    #[test]
+    fn slug_returns_the_given_name_unchanged() {
+        assert_eq!(slug(&[], Some("raw-mono")), "raw-mono");
+    }
+
+    /// The common case: a stem with spaces becomes hyphens, lowercased.
+    #[test]
+    fn slug_derives_from_the_first_members_stem() {
+        let members = [PathBuf::from("Raw Volume 01.cbz"), PathBuf::from("z.cbz")];
+        assert_eq!(slug(&members, None), "raw-volume-01");
+    }
+
+    /// The fallback this function shares with `url_safe_suggestion`: a stem
+    /// that is nothing but unsafe characters trims to empty, and an empty slug
+    /// is not a usable edition key.
+    #[test]
+    fn slug_falls_back_to_edition_when_the_stem_has_no_safe_characters() {
+        assert_eq!(slug(&[], None), "edition");
+        assert_eq!(slug(&[PathBuf::from("!!!.cbz")], None), "edition");
+    }
+
+    /// `validate_key`'s suggestion goes through this same fallback when the
+    /// key survives on nothing: every character is unsafe, so the slug it
+    /// proposes must still be a usable key rather than an empty string.
+    #[test]
+    fn validate_key_suggests_edition_when_nothing_survives_the_slug() {
+        let err = validate_key("!!!").unwrap_err();
+        assert_eq!(
+            err,
+            "edition key `!!!` is not URL-safe (`!` at position 0); try `edition`"
+        );
+    }
+
+    #[test]
+    fn label_of_no_members_is_empty() {
+        assert_eq!(label(&[]), "");
+    }
+
+    #[test]
+    fn label_of_one_member_is_its_file_name() {
+        assert_eq!(label(&[PathBuf::from("a.cbz")]), "a.cbz");
+    }
+
+    #[test]
+    fn label_of_several_members_counts_the_rest() {
+        let members = [
+            PathBuf::from("a.cbz"),
+            PathBuf::from("b.cbz"),
+            PathBuf::from("c.cbz"),
+        ];
+        assert_eq!(label(&members), "a.cbz + 2 more");
+    }
+
+    /// `split_editions`' other refusal: the `--` was found, but one side of it
+    /// is empty. A member list with nothing in it cannot be aligned against
+    /// anything.
+    #[test]
+    fn split_editions_refuses_an_empty_side() {
+        let err = split_editions(&argv(&["--", "b.cbz"])).unwrap_err();
+        assert_eq!(err, "both sides need at least one member");
+    }
+
+    // -- run(): the dispatcher itself, not just the commands it calls --
+    //
+    // Every test above drives a command function directly, which never
+    // exercises `run`'s own `match` — the line that turns `"align"` into a
+    // call to `align` could be deleted, or point at the wrong function
+    // entirely, and nothing above would notice. These call `run` and lean on
+    // each command's own distinctive refusal to prove which function actually
+    // ran, the same way `a_flag_belonging_to_another_command_is_refused`
+    // proves `reject_unknown_flags` is not shared.
+
+    #[test]
+    fn run_dispatches_to_align() {
+        let args = argv(&["align", "a.cbz", "--", "b.cbz", "--split-spreads"]);
+        assert_eq!(
+            run(&args).unwrap_err(),
+            "--split-spreads is retired: splitting joined spreads is now what \
+             align does by default, so the flag had nothing left to turn on; \
+             pass --no-split-spreads for the page-level diagnostic"
+        );
+    }
+
+    #[test]
+    fn run_dispatches_to_verify() {
+        let args = argv(&[
+            "verify",
+            "does-not-exist-a.cbz",
+            "--",
+            "does-not-exist-b.cbz",
+            "--cache",
+            "somewhere",
+        ]);
+        assert_eq!(
+            run(&args).unwrap_err(),
+            "--cache needs --sidecar: without one verify solves the pair \
+             directly and reads nothing through the cache"
+        );
+    }
+
+    #[test]
+    fn run_dispatches_to_topology() {
+        assert_eq!(
+            run(&argv(&["topology"])).unwrap_err(),
+            "needs a hub and at least two spokes, separated by `--`"
+        );
+    }
+
+    #[test]
+    fn run_dispatches_to_lookup() {
+        assert_eq!(
+            run(&argv(&["lookup"])).unwrap_err(),
+            "usage: taiyaku lookup <taiyaku.json> <from> <to> <page>..."
+        );
+    }
+
+    #[test]
+    fn run_dispatches_to_serve() {
+        assert_eq!(
+            run(&argv(&["serve"])).unwrap_err(),
+            "needs at least one taiyaku.json to serve"
+        );
+    }
+
+    #[test]
+    fn run_dispatches_to_duplicates() {
+        assert_eq!(
+            run(&argv(&["duplicates"])).unwrap_err(),
+            "needs at least two copies, separated by `--`; one copy is not a duplicate set"
+        );
+    }
+
+    #[test]
+    fn run_dispatches_to_inventory() {
+        assert_eq!(
+            run(&argv(&["inventory"])).unwrap_err(),
+            "needs a directory to walk"
+        );
+    }
+
+    #[test]
+    fn run_dispatches_to_credits() {
+        let err = run(&argv(&["credits"])).unwrap_err();
+        assert!(err.starts_with("taiyaku credits <member>..."), "{err}");
+    }
+
+    #[test]
+    fn run_dispatches_to_regions() {
+        let err = run(&argv(&["regions"])).unwrap_err();
+        assert!(err.starts_with("taiyaku regions <member>..."), "{err}");
+    }
+
+    #[test]
+    fn run_refuses_an_unknown_command() {
+        assert_eq!(
+            run(&argv(&["frobnicate"])).unwrap_err(),
+            "unknown command `frobnicate`"
+        );
+    }
+
+    /// No command at all prints usage rather than refusing — the one arm none
+    /// of the dispatch tests above reach, since every one of them names a
+    /// command.
+    #[test]
+    fn run_with_no_command_prints_usage_and_succeeds() {
+        assert_eq!(run(&[]), Ok(()));
+    }
+
+    // -- lookup(): resolved entirely from a sidecar, so no archive is needed --
+
+    /// Write a sidecar fixture to its own temp directory and return its path,
+    /// as a `String` since every command here takes paths as `&str`.
+    fn write_fixture(name: &str, doc: &Sidecar) -> String {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("taiyaku.json");
+        std::fs::write(&path, doc.to_json()).expect("fixture written");
+        path.to_str().expect("utf-8 temp path").to_string()
+    }
+
+    /// A star built to walk `lookup` through every `Via` it can report, and
+    /// both ways `route` comes back `None`: `broken` names an edge that is
+    /// there but cannot be read (a run pointing at a slot `broken` does not
+    /// have), and `island` is an edition with no edge to anything at all.
+    fn lookup_fixture() -> Sidecar {
+        let text = r#"{
+          "taiyaku": 1,
+          "work": { "title": "Lookup Fixture", "reading": "rtl" },
+          "editions": {
+            "raw": {
+              "label": "raw",
+              "members": [{ "path": "r.cbz", "sha256": "r0", "pages": 8 }],
+              "spreads": []
+            },
+            "en-fan": {
+              "label": "en-fan",
+              "members": [{ "path": "f.cbz", "sha256": "f0", "pages": 8 }],
+              "spreads": []
+            },
+            "en-mono": {
+              "label": "en-mono",
+              "members": [{ "path": "m.cbz", "sha256": "m0", "pages": 8 }],
+              "spreads": []
+            },
+            "broken": {
+              "label": "broken",
+              "members": [{ "path": "k.cbz", "sha256": "k0", "pages": 3 }],
+              "spreads": []
+            },
+            "island": {
+              "label": "island",
+              "members": [{ "path": "i.cbz", "sha256": "i0", "pages": 3 }],
+              "spreads": []
+            }
+          },
+          "hub": "raw",
+          "alignments": [
+            { "from": "raw", "to": "en-fan", "by": "solver",
+              "runs": [{"a":"0-7","b":"0-7"}] },
+            { "from": "raw", "to": "en-mono", "by": "solver",
+              "runs": [{"a":"0-7","b":"0-7"}] },
+            { "from": "raw", "to": "broken", "by": "solver",
+              "runs": [{"a":"0-7","b":"0-99"}] }
+          ]
+        }"#;
+        Sidecar::from_json(text).expect("fixture parses")
+    }
+
+    /// Pinned against `route` directly, not just `lookup`'s `Result`:
+    /// `lookup` reports `Ok(())` whether it found a direct edge, an inverted
+    /// one, a hub composition, or nothing at all, so the `Result` alone
+    /// cannot tell this apart from any of those.
+    #[test]
+    fn lookup_reports_a_direct_edge() {
+        let doc = lookup_fixture();
+        let route = taiyaku_core::route(&doc, "raw", "en-fan").expect("a direct edge is stored");
+        assert_eq!(route.via, Via::Direct);
+        assert_eq!(
+            route.resolve(0),
+            Some(Slot {
+                page: 0,
+                half: None
+            })
+        );
+        assert_eq!(
+            route.resolve(7),
+            Some(Slot {
+                page: 7,
+                half: None
+            })
+        );
+
+        let path = write_fixture("taiyaku-test-lookup-direct", &doc);
+        assert_eq!(lookup(&argv(&[&path, "raw", "en-fan", "0", "7"])), Ok(()));
+    }
+
+    /// The reverse of a stored edge, walked without a second edge ever being
+    /// written: `sidecar.md` stores N-1 edges and reads the (N-1)th one both
+    /// ways. Pinned against `route` so a `Via::Direct` masquerading as the
+    /// reverse — or a resolve that silently fell through to the hub — would
+    /// fail here rather than only showing up as a printed line nothing reads.
+    #[test]
+    fn lookup_reports_an_inverted_edge() {
+        let doc = lookup_fixture();
+        let route =
+            taiyaku_core::route(&doc, "en-fan", "raw").expect("the raw -> en-fan edge reverses");
+        assert_eq!(route.via, Via::Inverted);
+        assert_eq!(
+            route.resolve(0),
+            Some(Slot {
+                page: 0,
+                half: None
+            })
+        );
+
+        let path = write_fixture("taiyaku-test-lookup-inverted", &doc);
+        assert_eq!(lookup(&argv(&[&path, "en-fan", "raw", "0"])), Ok(()));
+    }
+
+    /// Neither `en-fan` nor `en-mono` has a direct edge to the other; both
+    /// have one to the hub, so the route composes through it. Pinned against
+    /// `route` so a composition that quietly failed and left the pages
+    /// unresolved — indistinguishable from success through `lookup`'s
+    /// `Result` alone — would fail here.
+    #[test]
+    fn lookup_reports_a_hub_composed_route() {
+        let doc = lookup_fixture();
+        let route =
+            taiyaku_core::route(&doc, "en-fan", "en-mono").expect("both spokes reach the hub");
+        assert_eq!(route.via, Via::Hub("raw".to_string()));
+        assert_eq!(
+            route.resolve(0),
+            Some(Slot {
+                page: 0,
+                half: None
+            })
+        );
+
+        let path = write_fixture("taiyaku-test-lookup-hub", &doc);
+        assert_eq!(lookup(&argv(&[&path, "en-fan", "en-mono", "0"])), Ok(()));
+    }
+
+    /// Pinned against `route` so an identity route that quietly resolved
+    /// nothing — or one that was reached only by a same-name coincidence
+    /// through the hub rather than `Via::Identity` — would fail here.
+    #[test]
+    fn lookup_reports_identity_for_the_same_edition() {
+        let doc = lookup_fixture();
+        let route = taiyaku_core::route(&doc, "raw", "raw").expect("an edition aligns to itself");
+        assert_eq!(route.via, Via::Identity);
+        assert_eq!(
+            route.resolve(0),
+            Some(Slot {
+                page: 0,
+                half: None
+            })
+        );
+
+        let path = write_fixture("taiyaku-test-lookup-identity", &doc);
+        assert_eq!(lookup(&argv(&[&path, "raw", "raw", "0"])), Ok(()));
+    }
+
+    /// **A stored edge is the whole answer, including when it cannot be
+    /// read** — `route`'s own doc comment. `raw -> broken` is stored, so this
+    /// must not fall back to composing through the hub and must not error
+    /// lookup as a whole. Pinned against `route` and `runs_of` directly,
+    /// since `lookup`'s `Result` cannot distinguish this from a hub fallback,
+    /// an island with nothing stored, or a clean direct edge — all of them
+    /// also return `Ok(())`.
+    #[test]
+    fn lookup_reports_an_unreadable_edge_rather_than_falling_back_to_the_hub() {
+        let doc = lookup_fixture();
+        assert_eq!(
+            taiyaku_core::route(&doc, "raw", "broken"),
+            None,
+            "an edge that cannot be read must not fall back to the hub"
+        );
+        let alignment = doc
+            .alignments
+            .iter()
+            .find(|a| a.from == "raw" && a.to == "broken")
+            .expect("the raw -> broken edge is stored");
+        assert!(
+            doc.runs_of(alignment).is_err(),
+            "the stored edge names a page the 3-page `broken` edition does not have"
+        );
+
+        let path = write_fixture("taiyaku-test-lookup-broken", &doc);
+        assert_eq!(lookup(&argv(&[&path, "raw", "broken", "0"])), Ok(()));
+    }
+
+    /// `island` has no edge to anything, including the hub, so there is
+    /// nothing to compose through it either. The other `None` case above is
+    /// an edge that exists and fails to read; this is no edge existing at
+    /// all — pinned against `route` and the alignment list so the two
+    /// `None` cases cannot be silently swapped for one another.
+    #[test]
+    fn lookup_reports_that_an_unrelated_pair_has_nothing_stored() {
+        let doc = lookup_fixture();
+        assert_eq!(taiyaku_core::route(&doc, "raw", "island"), None);
+        assert!(
+            doc.alignments
+                .iter()
+                .all(|a| a.from != "island" && a.to != "island"),
+            "island must have no stored edge to anything, unlike `broken`"
+        );
+
+        let path = write_fixture("taiyaku-test-lookup-island", &doc);
+        assert_eq!(lookup(&argv(&[&path, "raw", "island", "0"])), Ok(()));
+    }
+
+    #[test]
+    fn lookup_refuses_a_page_that_does_not_parse() {
+        let path = write_fixture("taiyaku-test-lookup-badpage", &lookup_fixture());
+        let err = lookup(&argv(&[&path, "raw", "en-fan", "not-a-number"])).unwrap_err();
+        assert_eq!(err, "not a page: not-a-number");
+    }
+
+    /// A two-slot spread, page 1 of a 3-page edition, present on both sides so
+    /// the whole thing is one paired run. Reading order decides which half is
+    /// found first by a bare page number — `RightToLeft` puts the right half
+    /// first, `LeftToRight` the left — so both are exercised rather than
+    /// whichever one the default direction happens to reach.
+    fn spread_lookup_fixture(reading: &str) -> Sidecar {
+        let text = format!(
+            r#"{{
+              "taiyaku": 1,
+              "work": {{ "title": "Spread Fixture", "reading": "{reading}" }},
+              "editions": {{
+                "raw": {{
+                  "label": "raw",
+                  "members": [{{ "path": "r.cbz", "sha256": "r0", "pages": 3 }}],
+                  "spreads": [1]
+                }},
+                "en": {{
+                  "label": "en",
+                  "members": [{{ "path": "e.cbz", "sha256": "e0", "pages": 3 }}],
+                  "spreads": [1]
+                }}
+              }},
+              "hub": "raw",
+              "alignments": [
+                {{ "from": "raw", "to": "en", "by": "solver",
+                  "runs": [{{"a":"0-2","b":"0-2"}}] }}
+              ]
+            }}"#
+        );
+        Sidecar::from_json(&text).expect("fixture parses")
+    }
+
+    /// Pinned against `route`/`resolve` directly, not just `lookup`'s
+    /// `Result`: a span written in page notation is easy to get subtly wrong
+    /// — `"0-3"` reads as "page 3", which does not exist on a 3-page edition,
+    /// rather than "all four slots" — and `assert_eq!(lookup(...), Ok(()))`
+    /// alone cannot tell that mistake apart from success, since an
+    /// unreadable edge still returns `Ok(())` having printed a warning
+    /// instead of the half. This is what caught exactly that mistake in this
+    /// fixture during development.
+    #[test]
+    fn lookup_names_the_right_half_of_a_spread_in_a_right_to_left_document() {
+        let doc = spread_lookup_fixture("rtl");
+        let route = taiyaku_core::route(&doc, "raw", "en").expect("a direct edge is stored");
+        assert_eq!(
+            route.resolve(1),
+            Some(Slot {
+                page: 1,
+                half: Some(Half::Right)
+            })
+        );
+
+        let path = write_fixture("taiyaku-test-lookup-spread-rtl", &doc);
+        assert_eq!(lookup(&argv(&[&path, "raw", "en", "1"])), Ok(()));
+    }
+
+    #[test]
+    fn lookup_names_the_left_half_of_a_spread_in_a_left_to_right_document() {
+        let doc = spread_lookup_fixture("ltr");
+        let route = taiyaku_core::route(&doc, "raw", "en").expect("a direct edge is stored");
+        assert_eq!(
+            route.resolve(1),
+            Some(Slot {
+                page: 1,
+                half: Some(Half::Left)
+            })
+        );
+
+        let path = write_fixture("taiyaku-test-lookup-spread-ltr", &doc);
+        assert_eq!(lookup(&argv(&[&path, "raw", "en", "1"])), Ok(()));
+    }
+
+    // -- align, verify, topology: the happy paths, which need real pages --
+    //
+    // Everything above stops short of `taiyaku_read::read_edition` actually
+    // succeeding: every fixture is a nonexistent path, because the property
+    // under test is argument handling, and real archives would only slow that
+    // down. The full pipeline — decode, fingerprint, solve, print, and for
+    // `align --write`, write a sidecar back — has had no test at all up to
+    // this point, so everything below builds a real, decodable `.cbz`.
+
+    /// Build a cbz of `count` real, decodable, and mutually distinguishable
+    /// pages.
+    ///
+    /// A solid fill will not do here the way it does for `regions.rs`'s
+    /// `cbz_with_page`: `fingerprint::fingerprint` is a *difference* hash,
+    /// comparing each pixel to its neighbour, and every neighbour comparison
+    /// in a flat image is a tie — so every solid-colour page hashes to the
+    /// same all-zero fingerprint regardless of its level, and every alignment
+    /// over such a set would look like a perfect match by accident rather
+    /// than by the solver actually distinguishing anything. The pattern below
+    /// varies along both axes and by page and by `seed`, so distinct calls
+    /// produce distinct fingerprints.
+    fn cbz_pages(name: &str, count: u32, seed: u32) -> PathBuf {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_file(&path);
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).expect("create cbz"));
+        for i in 0..count {
+            let level = seed.wrapping_add(i).wrapping_mul(101);
+            let image = image::GrayImage::from_fn(8, 8, |x, y| {
+                let v = x.wrapping_mul(37).wrapping_add(y.wrapping_mul(59)) + level;
+                image::Luma([(v % 256) as u8])
+            });
+            let mut bytes = Vec::new();
+            image
+                .write_to(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    image::ImageFormat::Png,
+                )
+                .expect("an 8x8 gray image always encodes");
+            zip.start_file(
+                format!("{i:03}.png"),
+                zip::write::SimpleFileOptions::default(),
+            )
+            .expect("start entry");
+            zip.write_all(&bytes).expect("write page bytes");
+        }
+        zip.finish().expect("finish cbz");
+        path
+    }
+
+    /// The page-level diagnostic (`--no-split-spreads`), with `--stats` so
+    /// both `stats::calibration_line` and `stats::shape_line` run too, not
+    /// just the plain `report_summary` beneath them.
+    ///
+    /// Everything this path computes is printed, not returned, so pin
+    /// against the same `taiyaku_read::read_edition` +
+    /// `fingerprint::fingerprint_edition` + `solve` chain `align` runs on
+    /// this exact fixture: `a` and `b` share a seed, so every page is
+    /// byte-identical to its counterpart and the correspondence is exact,
+    /// not approximate. A solve that lost a page, or paired pages out of
+    /// order, would still leave `align` returning `Ok(())`.
+    #[test]
+    fn align_runs_the_page_level_diagnostic_against_real_pages() {
+        let a = cbz_pages("taiyaku-test-main-diag-a.cbz", 3, 1);
+        let b = cbz_pages("taiyaku-test-main-diag-b.cbz", 3, 1);
+
+        let a_pages = taiyaku_read::read_edition(std::slice::from_ref(&a)).expect("a decodes");
+        let b_pages = taiyaku_read::read_edition(std::slice::from_ref(&b)).expect("b decodes");
+        let a_hashes = fingerprint::fingerprint_edition(&a_pages).expect("a fingerprints");
+        let b_hashes = fingerprint::fingerprint_edition(&b_pages).expect("b fingerprints");
+        let runs = solve(&a_hashes, &b_hashes);
+        for page in 0..3u32 {
+            assert_eq!(
+                counterpart(&runs, page),
+                Some(page),
+                "page {page} is identical on both sides and should pair with itself"
+            );
+        }
+
+        let args = argv(&[
+            a.to_str().unwrap(),
+            "--",
+            b.to_str().unwrap(),
+            "--no-split-spreads",
+            "--stats",
+        ]);
+
+        assert_eq!(align(&args), Ok(()));
+    }
+
+    /// The default, split-spreads path without `--write`: fingerprints
+    /// through `cached_edition`, solves, and prints the per-slot table.
+    /// Unequal page counts so at least one slot goes unmatched, reaching the
+    /// `None => gaps += 1` arm alongside the paired ones.
+    ///
+    /// Everything this path computes is printed, not returned, so pin
+    /// against the same `cached_edition` + `solve` chain `align` runs, on a
+    /// cache directory of its own so this does not depend on `align`
+    /// having populated its cache first. `a` and `b` do not share a seed —
+    /// this is not a trivial identity pairing — and at these seeds two of
+    /// `a`'s four pages land on `b`'s two, with the other two the gaps the
+    /// doc comment above is about. A swapped or reordered pairing here
+    /// would still leave `align` returning `Ok(())`.
+    #[test]
+    fn align_runs_the_default_diagnostic_against_real_pages() {
+        let a = cbz_pages("taiyaku-test-main-split-a.cbz", 4, 1);
+        let b = cbz_pages("taiyaku-test-main-split-b.cbz", 2, 50);
+
+        let probe_cache = std::env::temp_dir().join("taiyaku-test-main-split-cache-expected");
+        let _ = std::fs::remove_dir_all(&probe_cache);
+        let (a_hashes, _, _) = cached_edition(
+            &probe_cache,
+            std::slice::from_ref(&a),
+            Direction::LeftToRight,
+        )
+        .expect("a fingerprints");
+        let (b_hashes, _, _) = cached_edition(
+            &probe_cache,
+            std::slice::from_ref(&b),
+            Direction::LeftToRight,
+        )
+        .expect("b fingerprints");
+        let runs = solve(&a_hashes, &b_hashes);
+        assert_eq!(
+            counterpart(&runs, 0),
+            None,
+            "page 0 of a has no counterpart in the 2-page b"
+        );
+        assert_eq!(counterpart(&runs, 1), Some(0));
+        assert_eq!(counterpart(&runs, 2), Some(1));
+        assert_eq!(
+            counterpart(&runs, 3),
+            None,
+            "page 3 of a has no counterpart in the 2-page b"
+        );
+
+        let cache = std::env::temp_dir().join("taiyaku-test-main-split-cache");
+        let _ = std::fs::remove_dir_all(&cache);
+        let args = argv(&[
+            a.to_str().unwrap(),
+            "--",
+            b.to_str().unwrap(),
+            "--cache",
+            cache.to_str().unwrap(),
+            "--stats",
+            "--ltr",
+        ]);
+
+        assert_eq!(align(&args), Ok(()));
+    }
+
+    /// `--write` with no existing file at `out`: the `None` arm of the
+    /// existing/absent match, building a fresh two-edition `Sidecar` from
+    /// scratch. Asserted against the file `align` actually wrote, not just
+    /// the `Result` — `write_sidecar`'s own tests already cover truncation
+    /// safety, so what is worth pinning here is that `align` handed it the
+    /// document `docs/sidecar.md` describes: both editions, one alignment,
+    /// the title and hub this run asked for.
+    ///
+    /// `b` shares `a`'s seed rather than using one of its own, so every page
+    /// matches its counterpart exactly: a real solve with no signal to speak
+    /// of would leave `solver: None` and every run's `margin: None`, which is
+    /// correct but exercises neither. A clean match is what makes calibration
+    /// worth accepting and every run fully paired, reaching both.
+    #[test]
+    fn align_write_creates_a_new_sidecar_from_real_pages() {
+        let a = cbz_pages("taiyaku-test-main-write-a.cbz", 3, 1);
+        let b = cbz_pages("taiyaku-test-main-write-b.cbz", 3, 1);
+        let cache = std::env::temp_dir().join("taiyaku-test-main-write-cache");
+        let _ = std::fs::remove_dir_all(&cache);
+        let out_dir = std::env::temp_dir().join("taiyaku-test-main-write-out");
+        let _ = std::fs::remove_dir_all(&out_dir);
+        std::fs::create_dir_all(&out_dir).expect("temp dir");
+        let out = out_dir.join("taiyaku.json");
+        let args = argv(&[
+            a.to_str().unwrap(),
+            "--",
+            b.to_str().unwrap(),
+            "--cache",
+            cache.to_str().unwrap(),
+            "--write",
+            out.to_str().unwrap(),
+            "--title",
+            "Test Work",
+            "--name-a",
+            "raw",
+            "--name-b",
+            "en",
+        ]);
+
+        assert_eq!(align(&args), Ok(()));
+
+        let text = std::fs::read_to_string(&out).expect("sidecar written");
+        let doc = Sidecar::from_json(&text).expect("written sidecar parses");
+        assert_eq!(doc.work.title, "Test Work");
+        assert_eq!(doc.hub, "raw");
+        assert_eq!(doc.editions.len(), 2);
+        assert!(doc.editions.contains_key("raw"));
+        assert!(doc.editions.contains_key("en"));
+        assert_eq!(doc.alignments.len(), 1);
+        let alignment = &doc.alignments[0];
+        assert_eq!(alignment.from, "raw");
+        assert_eq!(alignment.to, "en");
+        assert_eq!(
+            alignment.runs.len(),
+            1,
+            "one clean run over identical pages"
+        );
+        assert!(
+            alignment.runs[0].b.is_some(),
+            "the run is paired, not a gap"
+        );
+        assert!(
+            alignment.runs[0].margin.is_some(),
+            "a paired run's weakest margin is recorded"
+        );
+        assert!(
+            alignment.solver.is_some(),
+            "a real match calibrates as accepted"
+        );
+    }
+
+    /// Merging a second and then a third spoke into the document the test
+    /// above could have written, covering what a fresh write cannot: the
+    /// `Some(existing)` arm end to end, `--name-a` both given and derived
+    /// from the document's own hub, and both `Merged::Added` (`fr` is new)
+    /// and `Merged::Replaced` (`en` already exists) — `merge_spoke`'s own
+    /// tests cover the rule; what is worth pinning here is that `align`
+    /// reaches it with the right arguments in both shapes.
+    #[test]
+    fn align_write_merges_further_spokes_into_an_existing_sidecar() {
+        let a = cbz_pages("taiyaku-test-main-merge-a.cbz", 3, 1);
+        let b = cbz_pages("taiyaku-test-main-merge-b.cbz", 3, 60);
+        let c = cbz_pages("taiyaku-test-main-merge-c.cbz", 3, 90);
+        let cache = std::env::temp_dir().join("taiyaku-test-main-merge-cache");
+        let _ = std::fs::remove_dir_all(&cache);
+        let out_dir = std::env::temp_dir().join("taiyaku-test-main-merge-out");
+        let _ = std::fs::remove_dir_all(&out_dir);
+        std::fs::create_dir_all(&out_dir).expect("temp dir");
+        let out = out_dir.join("taiyaku.json");
+
+        // First write: establishes the document, hub `raw`.
+        assert_eq!(
+            align(&argv(&[
+                a.to_str().unwrap(),
+                "--",
+                b.to_str().unwrap(),
+                "--cache",
+                cache.to_str().unwrap(),
+                "--write",
+                out.to_str().unwrap(),
+                "--name-a",
+                "raw",
+                "--name-b",
+                "en",
+            ])),
+            Ok(())
+        );
+
+        // Second write: no --name-a, so it is read off the document's own
+        // hub. `fr` does not exist yet, so this is `Merged::Added`.
+        assert_eq!(
+            align(&argv(&[
+                a.to_str().unwrap(),
+                "--",
+                c.to_str().unwrap(),
+                "--cache",
+                cache.to_str().unwrap(),
+                "--write",
+                out.to_str().unwrap(),
+                "--name-b",
+                "fr",
+            ])),
+            Ok(())
+        );
+
+        // Third write: --name-a given explicitly and it agrees with the hub,
+        // re-merging `en`, which already exists — `Merged::Replaced`.
+        assert_eq!(
+            align(&argv(&[
+                a.to_str().unwrap(),
+                "--",
+                b.to_str().unwrap(),
+                "--cache",
+                cache.to_str().unwrap(),
+                "--write",
+                out.to_str().unwrap(),
+                "--name-a",
+                "raw",
+                "--name-b",
+                "en",
+            ])),
+            Ok(())
+        );
+
+        let text = std::fs::read_to_string(&out).expect("sidecar written");
+        let doc = Sidecar::from_json(&text).expect("written sidecar parses");
+        assert_eq!(doc.editions.len(), 3, "raw, en and fr all present");
+        assert!(doc.editions.contains_key("fr"));
+        assert_eq!(doc.alignments.len(), 2, "raw->en replaced, not duplicated");
+    }
+
+    /// `--direct` on a merge has no hub to fall back on, so it requires
+    /// `--name-a` — the one arm of that `match` the tests above never reach,
+    /// since both give an existing document but never `--direct` without a
+    /// name.
+    #[test]
+    fn align_write_refuses_direct_without_name_a_on_a_merge() {
+        let a = cbz_pages("taiyaku-test-main-direct-a.cbz", 3, 1);
+        let b = cbz_pages("taiyaku-test-main-direct-b.cbz", 3, 60);
+        let cache = std::env::temp_dir().join("taiyaku-test-main-direct-cache");
+        let _ = std::fs::remove_dir_all(&cache);
+        let out_dir = std::env::temp_dir().join("taiyaku-test-main-direct-out");
+        let _ = std::fs::remove_dir_all(&out_dir);
+        std::fs::create_dir_all(&out_dir).expect("temp dir");
+        let out = out_dir.join("taiyaku.json");
+        assert_eq!(
+            align(&argv(&[
+                a.to_str().unwrap(),
+                "--",
+                b.to_str().unwrap(),
+                "--cache",
+                cache.to_str().unwrap(),
+                "--write",
+                out.to_str().unwrap(),
+                "--name-a",
+                "raw",
+                "--name-b",
+                "en",
+            ])),
+            Ok(())
+        );
+
+        let err = align(&argv(&[
+            a.to_str().unwrap(),
+            "--",
+            b.to_str().unwrap(),
+            "--cache",
+            cache.to_str().unwrap(),
+            "--write",
+            out.to_str().unwrap(),
+            "--direct",
+            "--name-b",
+            "fr",
+        ]))
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "--direct needs --name-a to say which edition the edge starts from"
+        );
+    }
+
+    #[test]
+    fn align_write_refuses_both_editions_named_the_same() {
+        let a = cbz_pages("taiyaku-test-main-clash-a.cbz", 3, 1);
+        let b = cbz_pages("taiyaku-test-main-clash-b.cbz", 3, 60);
+        let out = std::env::temp_dir().join("taiyaku-test-main-clash.json");
+        let _ = std::fs::remove_file(&out);
+
+        let err = align(&argv(&[
+            a.to_str().unwrap(),
+            "--",
+            b.to_str().unwrap(),
+            "--write",
+            out.to_str().unwrap(),
+            "--name-a",
+            "same",
+            "--name-b",
+            "same",
+        ]))
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            "both editions would be named `same`; pass --name-a and --name-b"
+        );
+    }
+
+    /// A merge cannot silently rename the work it is joining — `--title` on
+    /// an existing document is only honoured when it agrees.
+    #[test]
+    fn align_write_refuses_to_rename_a_work_on_a_merge() {
+        let a = cbz_pages("taiyaku-test-main-retitle-a.cbz", 3, 1);
+        let b = cbz_pages("taiyaku-test-main-retitle-b.cbz", 3, 60);
+        let out_dir = std::env::temp_dir().join("taiyaku-test-main-retitle-out");
+        let _ = std::fs::remove_dir_all(&out_dir);
+        std::fs::create_dir_all(&out_dir).expect("temp dir");
+        let out = out_dir.join("taiyaku.json");
+        assert_eq!(
+            align(&argv(&[
+                a.to_str().unwrap(),
+                "--",
+                b.to_str().unwrap(),
+                "--write",
+                out.to_str().unwrap(),
+                "--title",
+                "Original Title",
+                "--name-a",
+                "raw",
+                "--name-b",
+                "en",
+            ])),
+            Ok(())
+        );
+
+        let err = align(&argv(&[
+            a.to_str().unwrap(),
+            "--",
+            b.to_str().unwrap(),
+            "--write",
+            out.to_str().unwrap(),
+            "--title",
+            "Different Title",
+            "--name-b",
+            "en",
+        ]))
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            format!(
+                "{} is the sidecar for `Original Title`; --title cannot rename a work on a merge",
+                out.to_str().unwrap()
+            )
+        );
+    }
+
+    /// `verify` with no `--sidecar`: solves the pair directly and writes the
+    /// HTML report. `report::render`'s own tests cover the markup; what is
+    /// worth pinning at this level is that `verify` actually reaches it and
+    /// leaves a non-empty file at `--out`.
+    #[test]
+    fn verify_writes_a_report_for_a_direct_solve() {
+        let a = cbz_pages("taiyaku-test-main-verify-a.cbz", 3, 1);
+        let b = cbz_pages("taiyaku-test-main-verify-b.cbz", 3, 60);
+        let out_dir = std::env::temp_dir().join("taiyaku-test-main-verify-out");
+        let _ = std::fs::remove_dir_all(&out_dir);
+        std::fs::create_dir_all(&out_dir).expect("temp dir");
+        let out = out_dir.join("report.html");
+        let args = argv(&[
+            a.to_str().unwrap(),
+            "--",
+            b.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+        ]);
+
+        assert_eq!(verify(&args), Ok(()));
+
+        let html = std::fs::read_to_string(&out).expect("report written");
+        assert!(!html.is_empty(), "a real report was written");
+    }
+
+    /// `verify --sidecar`: the branch that reads runs from a file rather than
+    /// solving, indexes by slot rather than page, and maps slot-confidence
+    /// back to page numbers for the report. The sidecar's `sha256` entries
+    /// are the real digests of the real archives below, computed the same way
+    /// `verify`'s own `named` closure computes them — a placeholder digest
+    /// would fail `edition_of` before any of the rest of this ran.
+    #[test]
+    fn verify_reports_confidence_through_a_stored_sidecar() {
+        let a = cbz_pages("taiyaku-test-main-verify-sc-a.cbz", 3, 1);
+        let b = cbz_pages("taiyaku-test-main-verify-sc-b.cbz", 3, 60);
+        let a_digest = taiyaku_read::member_digest(&a).expect("digest a");
+        let b_digest = taiyaku_read::member_digest(&b).expect("digest b");
+        let doc_text = format!(
+            r#"{{
+              "taiyaku": 1,
+              "work": {{ "title": "Verify Fixture", "reading": "rtl" }},
+              "editions": {{
+                "raw": {{ "label": "raw",
+                  "members": [{{ "path": "a.cbz", "sha256": "{a_digest}", "pages": 3 }}],
+                  "spreads": [] }},
+                "en": {{ "label": "en",
+                  "members": [{{ "path": "b.cbz", "sha256": "{b_digest}", "pages": 3 }}],
+                  "spreads": [] }}
+              }},
+              "hub": "raw",
+              "alignments": [
+                {{ "from": "raw", "to": "en", "by": "solver",
+                  "runs": [{{"a":"0-2","b":"0-2"}}] }}
+              ]
+            }}"#
+        );
+        let dir = std::env::temp_dir().join("taiyaku-test-main-verify-sidecar");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let sidecar_path = dir.join("taiyaku.json");
+        std::fs::write(&sidecar_path, &doc_text).expect("fixture written");
+
+        let out = dir.join("report.html");
+        let cache = dir.join("cache");
+        let args = argv(&[
+            a.to_str().unwrap(),
+            "--",
+            b.to_str().unwrap(),
+            "--sidecar",
+            sidecar_path.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+            "--cache",
+            cache.to_str().unwrap(),
+        ]);
+
+        assert_eq!(verify(&args), Ok(()));
+        assert!(out.exists(), "report written through the sidecar path");
+    }
+
+    /// The whole star: hub-to-spoke and spoke-to-spoke, direct against
+    /// composed, printed and totalled. `merge_spoke`, `compose` and `verdict`
+    /// each have their own unit tests in `taiyaku-core`; what only exists
+    /// here is `topology` actually wiring them together over real pages.
+    ///
+    /// `topology` only prints — nothing it computes reaches the `Result` —
+    /// and capturing stdout would need a dependency this crate does not
+    /// have, so this pins against the same `fingerprint_edition`, `solve`
+    /// and `compose` chain `topology` runs, on this exact fixture, instead.
+    /// At these seeds `spoke2 -> hub` is a real calibration refusal (a total
+    /// gap) while the direct `spoke2 -> spoke1` solve is a clean match — so
+    /// `compose(to_hub[spoke2], from_hub[spoke1])`, the composed leg
+    /// `topology` builds for that pair, must come back strictly weaker than
+    /// the direct solve it is measured against. That gap is exactly what the
+    /// `loss` column `topology` prints counts. A composition that silently
+    /// fell back to the direct answer, or a hub/spoke argument swapped in
+    /// `topology`'s own `solve` calls, would still return `Ok(())` and would
+    /// still fail this.
+    #[test]
+    fn topology_reports_the_star_against_two_spokes() {
+        let hub = cbz_pages("taiyaku-test-main-topology-hub.cbz", 3, 10);
+        let spoke1 = cbz_pages("taiyaku-test-main-topology-s1.cbz", 3, 20);
+        let spoke2 = cbz_pages("taiyaku-test-main-topology-s2.cbz", 3, 30);
+
+        let hub_pages =
+            taiyaku_read::read_edition(std::slice::from_ref(&hub)).expect("hub decodes");
+        let s1_pages =
+            taiyaku_read::read_edition(std::slice::from_ref(&spoke1)).expect("spoke1 decodes");
+        let s2_pages =
+            taiyaku_read::read_edition(std::slice::from_ref(&spoke2)).expect("spoke2 decodes");
+        let hub_hashes = fingerprint::fingerprint_edition(&hub_pages).expect("hub fingerprints");
+        let s1_hashes = fingerprint::fingerprint_edition(&s1_pages).expect("spoke1 fingerprints");
+        let s2_hashes = fingerprint::fingerprint_edition(&s2_pages).expect("spoke2 fingerprints");
+
+        let to_hub_2 = solve(&s2_hashes, &hub_hashes);
+        let from_hub_1 = solve(&hub_hashes, &s1_hashes);
+        let direct_2_1 = solve(&s2_hashes, &s1_hashes);
+        let composed_2_1 = compose(&to_hub_2, &from_hub_1);
+
+        for page in 0..3u32 {
+            assert_eq!(
+                counterpart(&direct_2_1, page),
+                Some(page),
+                "spoke2 and spoke1 solve directly as a clean, page-for-page match at these seeds"
+            );
+            assert_eq!(
+                counterpart(&to_hub_2, page),
+                None,
+                "spoke2 -> hub is a calibration refusal at these seeds, not a match"
+            );
+            assert_eq!(
+                counterpart(&composed_2_1, page),
+                None,
+                "composed through the hub must not recover a pairing the hub leg refused"
+            );
+        }
+
+        let args = argv(&[
+            hub.to_str().unwrap(),
+            "--",
+            spoke1.to_str().unwrap(),
+            "--",
+            spoke2.to_str().unwrap(),
+        ]);
+
+        assert_eq!(topology(&args), Ok(()));
+    }
+
+    /// The relative path is `.` exactly when `target` and `base` canonicalise
+    /// to the same directory — the empty-components case `PathBuf` cannot
+    /// represent any other way, since `PathBuf::from("")` is not a usable
+    /// path segment.
+    #[test]
+    fn relative_to_is_current_directory_when_target_and_base_are_the_same() {
+        let dir = std::env::temp_dir().join("taiyaku-test-relative-same");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let recorded = relative_to(&dir, &dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(recorded, Ok(PathBuf::from(".")));
+    }
+
+    // -- verify(): the sidecar arm's remaining branches --
+
+    /// A sidecar this specific pair is not an edition of: `--sidecar` names a
+    /// real document, but the members given on the command line hash to
+    /// nothing it defines. `named`'s closure is what catches this, and it has
+    /// to report which side.
+    #[test]
+    fn verify_refuses_members_that_match_no_edition_of_the_sidecar() {
+        let a = cbz_pages("taiyaku-test-main-verify-mismatch-a.cbz", 3, 1);
+        let b = cbz_pages("taiyaku-test-main-verify-mismatch-b.cbz", 3, 60);
+        let unrelated = cbz_pages("taiyaku-test-main-verify-mismatch-x.cbz", 3, 200);
+        let a_digest = taiyaku_read::member_digest(&a).expect("digest a");
+        let b_digest = taiyaku_read::member_digest(&b).expect("digest b");
+        let doc_text = format!(
+            r#"{{
+              "taiyaku": 1,
+              "work": {{ "title": "Mismatch Fixture", "reading": "rtl" }},
+              "editions": {{
+                "raw": {{ "label": "raw",
+                  "members": [{{ "path": "a.cbz", "sha256": "{a_digest}", "pages": 3 }}],
+                  "spreads": [] }},
+                "en": {{ "label": "en",
+                  "members": [{{ "path": "b.cbz", "sha256": "{b_digest}", "pages": 3 }}],
+                  "spreads": [] }}
+              }},
+              "hub": "raw",
+              "alignments": [
+                {{ "from": "raw", "to": "en", "by": "solver",
+                  "runs": [{{"a":"0-2","b":"0-2"}}] }}
+              ]
+            }}"#
+        );
+        let dir = std::env::temp_dir().join("taiyaku-test-main-verify-mismatch");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let sidecar_path = dir.join("taiyaku.json");
+        std::fs::write(&sidecar_path, &doc_text).expect("fixture written");
+
+        let args = argv(&[
+            unrelated.to_str().unwrap(),
+            "--",
+            b.to_str().unwrap(),
+            "--sidecar",
+            sidecar_path.to_str().unwrap(),
+        ]);
+
+        let err = verify(&args).unwrap_err();
+        assert!(
+            err.contains("the a-side members are not an edition of"),
+            "{err}"
+        );
+    }
+
+    /// The same fixture read the other way round: `raw -> en` is the stored
+    /// edge, so asking for `en`'s members as the a-side and `raw`'s as the
+    /// b-side reads it inverted rather than direct — the `--ltr` on this test
+    /// also covers `Direction::LeftToRight`, which nothing else here reaches
+    /// since every other sidecar test leaves it at the default.
+    #[test]
+    fn verify_reports_confidence_through_an_inverted_edge() {
+        let a = cbz_pages("taiyaku-test-main-verify-inv-a.cbz", 3, 1);
+        let b = cbz_pages("taiyaku-test-main-verify-inv-b.cbz", 3, 60);
+        let a_digest = taiyaku_read::member_digest(&a).expect("digest a");
+        let b_digest = taiyaku_read::member_digest(&b).expect("digest b");
+        let doc_text = format!(
+            r#"{{
+              "taiyaku": 1,
+              "work": {{ "title": "Inverted Fixture", "reading": "rtl" }},
+              "editions": {{
+                "raw": {{ "label": "raw",
+                  "members": [{{ "path": "a.cbz", "sha256": "{a_digest}", "pages": 3 }}],
+                  "spreads": [] }},
+                "en": {{ "label": "en",
+                  "members": [{{ "path": "b.cbz", "sha256": "{b_digest}", "pages": 3 }}],
+                  "spreads": [] }}
+              }},
+              "hub": "raw",
+              "alignments": [
+                {{ "from": "raw", "to": "en", "by": "solver",
+                  "runs": [{{"a":"0-2","b":"0-2"}}] }}
+              ]
+            }}"#
+        );
+        let dir = std::env::temp_dir().join("taiyaku-test-main-verify-inverted");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let sidecar_path = dir.join("taiyaku.json");
+        std::fs::write(&sidecar_path, &doc_text).expect("fixture written");
+
+        let out = dir.join("report.html");
+        let cache = dir.join("cache");
+        // b's real members on the a-side, a's on the b-side: the reverse of
+        // the stored `raw -> en` edge.
+        let args = argv(&[
+            b.to_str().unwrap(),
+            "--",
+            a.to_str().unwrap(),
+            "--sidecar",
+            sidecar_path.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+            "--cache",
+            cache.to_str().unwrap(),
+            "--ltr",
+        ]);
+
+        assert_eq!(verify(&args), Ok(()));
+        assert!(out.exists(), "report written through the inverted edge");
+    }
+
+    // -- serve(): argument parsing only. Actually starting the server would
+    // block this test forever, so every one of these stops at the first
+    // thing that fails before a socket is ever bound: `load_works` on a
+    // sidecar that does not exist.
+
+    #[test]
+    fn serve_refuses_an_unknown_flag() {
+        let err = serve(&argv(&["--bogus"])).unwrap_err();
+        assert_eq!(
+            err,
+            "serve has no flag `--bogus`; its flags are --addr, --log-requests, \
+             --refresh-stump, --stump-key, --stump-url"
+        );
+    }
+
+    #[test]
+    fn serve_refuses_a_stump_url_with_no_key() {
+        let err = serve(&argv(&["a.json", "--stump-url", "https://example.test"])).unwrap_err();
+        assert_eq!(
+            err,
+            "--stump-url needs a key: --stump-key, or TAIYAKU_STUMP_KEY"
+        );
+    }
+
+    #[test]
+    fn serve_refuses_a_stump_key_with_no_url() {
+        let err = serve(&argv(&["a.json", "--stump-key", "secret"])).unwrap_err();
+        assert_eq!(
+            err,
+            "a stump key was given with no --stump-url or TAIYAKU_STUMP_URL"
+        );
+    }
+
+    /// Past every argument-parsing branch — both stump flags together,
+    /// `--log-requests`, `--refresh-stump` — and then failing on the sidecar,
+    /// which does not exist, rather than ever reaching `tokio::runtime` and
+    /// blocking this test on a server that never stops.
+    #[test]
+    fn serve_reaches_load_works_with_every_flag_resolved() {
+        let log = std::env::temp_dir().join("taiyaku-test-serve-log.jsonl");
+        let args = argv(&[
+            "does-not-exist.json",
+            "--addr",
+            "127.0.0.1:0",
+            "--stump-url",
+            "https://example.test",
+            "--stump-key",
+            "secret",
+            "--log-requests",
+            log.to_str().unwrap(),
+            "--refresh-stump",
+        ]);
+
+        let err = serve(&args).unwrap_err();
+        assert!(err.contains("does-not-exist.json"), "{err}");
+    }
+
+    /// Neither `--stump-url` nor `--stump-key` given, and neither environment
+    /// variable set: the fourth arm of the `(base, key)` match, `stump`
+    /// staying `None` rather than being configured at all — the ordinary case
+    /// for a reader with no Stump instance, which every other serve test here
+    /// bypasses by giving both flags.
+    #[test]
+    fn serve_reaches_load_works_with_no_stump_configured() {
+        let err = serve(&argv(&["does-not-exist.json"])).unwrap_err();
+        assert!(err.contains("does-not-exist.json"), "{err}");
+    }
+
+    /// `--write` reading an existing `out` that fails for a reason other than
+    /// "not found" — here, `out` is itself a directory — reports that error
+    /// rather than reading it as an absent file and trying to create a fresh
+    /// document over it.
+    #[test]
+    fn align_write_reports_a_read_error_other_than_not_found() {
+        let a = cbz_pages("taiyaku-test-main-readerr-a.cbz", 3, 1);
+        let b = cbz_pages("taiyaku-test-main-readerr-b.cbz", 3, 60);
+        let out = std::env::temp_dir().join("taiyaku-test-main-readerr-out");
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).expect("out exists as a directory, not a file");
+
+        let err = align(&argv(&[
+            a.to_str().unwrap(),
+            "--",
+            b.to_str().unwrap(),
+            "--write",
+            out.to_str().unwrap(),
+            "--name-a",
+            "raw",
+            "--name-b",
+            "en",
+        ]))
+        .unwrap_err();
+
+        let _ = std::fs::remove_dir_all(&out);
+        assert!(
+            err.starts_with(&format!("{}: ", out.to_str().unwrap())),
+            "{err}"
+        );
+    }
+
+    // `main` itself is not tested here, and cannot usefully be: it calls
+    // `std::process::exit`, which would tear down this whole test binary
+    // along with every other test running in it, so calling it in-process is
+    // not an option. The standard escape hatch — `env!("CARGO_BIN_EXE_...")`,
+    // running the real compiled binary as a subprocess — does not apply
+    // either: that variable is set by Cargo for a package's *other* test
+    // targets, not for a `[[bin]]`'s own unit tests, since building this test
+    // binary and building the `taiyaku` binary it would need to invoke is the
+    // same `cargo build` step. `main` is four lines that unpack `argv`, call
+    // `run`, and translate `Err` into a message on stderr and exit code 1;
+    // every one of those four lines is exercised in `run`'s own tests above,
+    // and `run` is the whole of what `main` delegates to.
 }

@@ -1,4 +1,6 @@
-import type { Chapter } from '../resolver'
+import { noteCountLine } from './annotations'
+import type { Display } from '../reading'
+import type { Chapter, Resolver } from '../resolver'
 import { verdictFor, type Alignment, type Verdict } from '../session'
 import type { ReaderModule } from '../module'
 
@@ -422,4 +424,111 @@ export function readoutRow(lines: RowLines): string {
   return [lines.position, lines.health, lines.time, lines.chapter, lines.notes]
     .filter(Boolean)
     .join(' · ')
+}
+
+/**
+ * Where the readouts report from.
+ *
+ * In a gap that is the **authority** slot the gap was found at — a real
+ * position in the work, which only the *viewed* edition has no page for — and
+ * `name` is set so the change of scale is never silent: the line reports one
+ * edition's slot and slot count while the reader is looking at another, and
+ * `positionLine` prefixes the edition to say so. `Gap.tsx` says the same thing
+ * in words directly above the row.
+ *
+ * `undefined` for `name` while reading, which is every other case: the edition
+ * is the one on screen, and naming it in every frame would be noise.
+ */
+export function reportPoint(shown: Display): {
+  edition: string
+  slot: number
+  name: string | undefined
+} {
+  return shown.kind === 'at'
+    ? { edition: shown.edition, slot: shown.slot, name: undefined }
+    : {
+        edition: shown.from.edition,
+        slot: shown.from.slot,
+        name: shown.from.edition,
+      }
+}
+
+/** Everything about the clock the reading-time line needs, with `now` supplied rather than read. */
+export interface ReadoutClock {
+  /** `Date.now()` at mount — "since the reader opened the reader", not since the sidecar loaded. */
+  startedAt: number
+  /** Recent page-turn timestamps, capped by `nextTurns`. */
+  turns: number[]
+  /**
+   * The current time, as a parameter rather than a `Date.now()` in here.
+   * `timeLine` is the one readout whose output moves on its own, and a test
+   * that cannot fix the clock cannot assert on it.
+   */
+  now: number
+}
+
+/** All five readout lines, as `Chrome` takes them. */
+export interface ReadoutLines {
+  position: string
+  chapter: string
+  health: string | undefined
+  time: string
+  notes: string | undefined
+}
+
+/**
+ * The five lines, from one `Display`.
+ *
+ * `Chrome` takes strings and lays them out; **every branch behind them is
+ * here** rather than in a render body where nothing can reach it. Seven of the
+ * calls are one-liners into the functions above, and the value of the function
+ * is the three things that are not:
+ *
+ * - `?? slot + 1` for an edition the resolver cannot count, so a line still
+ *   renders rather than `NaN%`.
+ * - `Math.max(total - (slot + 1), 0)` for a slot count that has gone backwards,
+ *   which would otherwise put a negative into the remaining-time estimate.
+ * - `gapHealth` rather than `healthReadout` in a gap, so the view and the row
+ *   beneath it cannot contradict each other — see `gapHealth`'s own doc for the
+ *   silence that produces without it.
+ *
+ * The note count is deliberately against *every* note on the work rather than
+ * the ones a display preference currently admits: "2 notes here of 7" is a fact
+ * about the work, and a total that shrank when `travel` was switched off would
+ * be a different and much stranger claim. That is the caller's `notes.total`,
+ * and this only says which two numbers go in.
+ */
+export function readoutLines(
+  shown: Display,
+  resolver: Resolver,
+  alignments: Alignment[],
+  hub: string,
+  notes: { here: number; total: number },
+  clock: ReadoutClock,
+): ReadoutLines {
+  const from = reportPoint(shown)
+  const total = resolver.slotCount(from.edition) ?? from.slot + 1
+  return {
+    position: positionLine({
+      slot: from.slot,
+      total,
+      page: resolver.slotAt(from.edition, from.slot)!.page + 1,
+      edition: from.name,
+    }),
+    chapter: chapterReadout(
+      resolver.chapterAt(from.edition, from.slot),
+      alignments,
+      hub,
+    ),
+    health:
+      shown.kind === 'at'
+        ? healthReadout(alignments, hub, shown.edition)
+        : gapHealth(alignments, shown.from.edition, shown.edition),
+    time: timeLine({
+      elapsedMs: clock.now - clock.startedAt,
+      pagesPerMin: pagesPerMinute(clock.turns, clock.now),
+      slotsLeft: Math.max(total - (from.slot + 1), 0),
+    }),
+    notes: noteCountLine(notes.here, notes.total),
+  }
 }

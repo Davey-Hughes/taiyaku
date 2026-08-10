@@ -7,7 +7,7 @@ import { playwright } from '@vitest/browser-playwright'
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
-// taiyaku-wasm is a `file:` dependency, linked into node_modules from
+// taiyaku-wasm is a `link:` dependency, linked into node_modules from
 // crates/taiyaku-wasm/pkg — a directory outside `web/`. Vite's dev-server
 // filesystem allowlist otherwise refuses to serve the wasm asset from there,
 // so the allowlist is widened to exactly that package directory rather than
@@ -22,14 +22,18 @@ const wasmPkgDir = fileURLToPath(new URL('../crates/taiyaku-wasm/pkg', import.me
 // keeps deliberately, so a native shell can use the same API.
 export default defineConfig({
   plugins: [react()],
-  // **Two test projects, because two different questions need two different
-  // environments.**
+  // **Three test projects, because three different questions need three
+  // different environments.**
   //
   // `node` is every existing test: pure TypeScript with no DOM, which is why
   // `decode.ts` and friends were written to be importable without one. Fast,
   // and the overwhelming majority.
   //
-  // `browser` exists for what a Node environment cannot answer at all. The
+  // `jsdom` is for components: a DOM without a layout engine, cheap enough
+  // for CI to run on every push. See that project's own comment below for why
+  // it is not simply folded into `browser`.
+  //
+  // `browser` exists for what neither of the other two can answer at all. The
   // defects this reader has actually shipped were visual — cell widths flapping
   // under still artwork, a pair tearing, a page drawn at the wrong size — and
   // `jsdom` has no layout engine, so `getBoundingClientRect` there returns
@@ -39,7 +43,7 @@ export default defineConfig({
   //
   // Kept deliberately small: browser tests are slow and need a downloaded
   // Chromium, so they cover the properties nothing else can see rather than
-  // duplicating what the `node` project already pins.
+  // duplicating what the other two projects already pin.
   test: {
     projects: [
       {
@@ -48,6 +52,22 @@ export default defineConfig({
           name: 'node',
           include: ['src/**/*.test.ts'],
           exclude: ['src/**/*.browser.test.*'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          // **Components, in jsdom rather than in the browser project.** The
+          // browser project needs a downloaded Chromium that CI deliberately
+          // does not carry, so anything measured there is invisible to the
+          // gate and a developer's local number would exceed CI's. A gate has
+          // to measure what CI can reproduce. What jsdom structurally cannot
+          // see — real layout, real HTMLImageElement.decode() — stays in the
+          // browser project, which is why both exist.
+          name: 'jsdom',
+          environment: 'jsdom',
+          include: ['src/**/*.test.tsx'],
+          exclude: ['src/**/*.browser.test.tsx'],
         },
       },
       {
@@ -67,6 +87,65 @@ export default defineConfig({
         },
       },
     ],
+    // **`include` is set explicitly and that is the whole point.** v8 coverage
+    // instruments what the run loaded, so a file no test imports is absent
+    // from the report rather than sitting at 0%. Measured on this tree: the
+    // default reports 98.43% over 15 files, while 50 are in the gate and the
+    // real figure was 48.13% when this block landed. A gate built on the
+    // default would enforce nothing while reading beautifully.
+    //
+    // Exclusions are named individually with a reason, never a wildcard: a
+    // wildcard silently swallows the next file that matches it, which is the
+    // exact failure this gate exists to prevent.
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      exclude: [
+        'src/**/*.test.ts',
+        'src/**/*.test.tsx',
+        'src/**/*.d.ts',
+        // Entry point: ten lines that call createRoot. Nothing to assert.
+        'src/main.tsx',
+        // The vitest browser harness, not application code.
+        'src/browser-setup.ts',
+        // The shared mount/rerender helper: test harness, the same category
+        // `browser-setup.ts` is excluded for. Counting it would put test
+        // infrastructure inside an application-coverage number, and its
+        // `rerender` half is reachable only from the `browser` project, which
+        // this gate does not run — so it would sit permanently short of 100%
+        // for a structural reason rather than an untested one.
+        'src/testing/**',
+      ],
+      reporter: ['text', 'json-summary'],
+      // **Set at the end, at what was achieved, minus two points.** Not chosen
+      // up front: a threshold picked before the work is either unreachable or
+      // vacuous. The measured figure sits beside each one so a later reader can
+      // see the headroom without re-running anything, and the margin is small
+      // enough that losing one covered suite still trips it — proven, not
+      // assumed. See `docs/ci.md`, "The coverage gates".
+      //
+      // Two points, rather than one or five: v8 counts what the run loaded, so
+      // an unrelated change to which files a test imports moves these by
+      // fractions. Five would let a whole module regress in silence.
+      //
+      // Read these from `coverage/coverage-summary.json`, not from the text
+      // table — the table omits every file at 100% on all four metrics, and
+      // showed 18 rows against the JSON's 57 files when these were set.
+      thresholds: {
+        statements: 96, // measured 98.03
+        branches: 92, // measured 94.38
+        functions: 97, // measured 99.29
+        lines: 97, // measured 99.53
+        // **These are aggregate, and an aggregate cannot see one module go
+        // dark.** Measured: skipping the whole of `pairing.test.ts` drops
+        // `pairing.ts` from 100% to 83.58% and the total only 98.03% → 97.49%,
+        // because `App.test.tsx` exercises it transitively through a mounted
+        // reader. Both thresholds still passed. `scripts/coverage-floor.mjs` is
+        // the other half of this gate and catches exactly that; vitest cannot
+        // express both here — a glob entry is aggregated over its matches, and
+        // `perFile` inside one is ignored, both tried and measured.
+      },
+    },
   },
   server: {
     fs: {

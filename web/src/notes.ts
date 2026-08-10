@@ -1,4 +1,5 @@
 import type { ArtworkHug } from './modules/fit'
+import { nextColour } from './palette'
 import type { Resolver } from './resolver'
 
 /**
@@ -99,6 +100,16 @@ export interface NoteHere {
    */
   travelled: boolean
 }
+
+/**
+ * Which surface the note panel is showing, or none.
+ *
+ * Declared here rather than in `NotePanel.tsx`, which imports it: this is the
+ * type of the editor's own state, and the `Draft` below is built from it — a
+ * module that must not import React cannot take its state's type from a
+ * `.tsx`, even type-only, without making the dependency graph read backwards.
+ */
+export type PanelMode = 'edit' | 'review'
 
 /** One row of the review list: a note, and where it lands here if it does. */
 export interface ReviewEntry {
@@ -398,6 +409,40 @@ export function paintedBox(
 }
 
 /**
+ * Where a page's painted artwork sits in the coordinates of the element that
+ * hosts the overlay — that host's own top-left, not the `<img>`'s.
+ *
+ * Two rects go in, not one, because since `upscaleToFit` the `<img>` is
+ * routinely not the host: `PageAnnotations` overlays a sibling `<div>` sized
+ * to the page area, and the image inside it can sit at a different screen
+ * position from that area even though one contains the other. `outer` is the
+ * host's own `getBoundingClientRect()`, `inner` is the image's, and `art` is
+ * `paintedBox`'s inset of the artwork within `inner`. All three come from
+ * live measurement, so a CSS transform — a zoom or a pan — moves every one of
+ * them together and this needs nothing extra for that.
+ *
+ * **With matching origins, every wrong order and sign gives the same
+ * answer.** Swap `inner`/`outer`, or subtract the other way, and
+ * `inner.left - outer.left` still comes out 0 whenever the two rects start at
+ * the same point — which is the ordinary fixture in a test, and even the
+ * ordinary page before `upscaleToFit` gave the element and the image the same
+ * box. Only a host offset from its image — scrolled, or inset by layout —
+ * makes the four ways of combining these disagree, which is exactly why this
+ * is its own function with its own tests rather than arithmetic inlined
+ * where every caller's rects happen to coincide.
+ */
+export function artOffset(
+  outer: { left: number; top: number },
+  inner: { left: number; top: number },
+  art: { x: number; y: number },
+): { left: number; top: number } {
+  return {
+    left: inner.left - outer.left + art.x,
+    top: inner.top - outer.top + art.y,
+  }
+}
+
+/**
  * A point in an element's pixels, as fractions of the painted page.
  *
  * The name says slot and the doc says page, which is the whole of `Region`'s
@@ -539,6 +584,132 @@ export function gestureFor(press: {
 }
 
 /**
+ * How near a marker counts as grabbing it, in page fractions — the space
+ * `App.tsx`'s `pointOn` hands back, per `Region` above.
+ *
+ * A point has no area, so without this the only way to take hold of one would
+ * be to hit an infinitely small spot. Roughly the radius `Annotations` draws a
+ * pin at, so what a reader can grab is what they can see.
+ */
+export const GRAB_SLOP = 0.02
+
+/** Where a region drag began: the pixels, the image, and what it means. */
+export interface DragStart {
+  x: number
+  y: number
+  el: HTMLImageElement
+  /**
+   * `draw` sweeps a new rectangle out from where the pointer went down.
+   * `move` slides the region that was already under it, keeping its size —
+   * `from` is what it looked like when the drag started, so the offset is
+   * always measured against that rather than accumulated frame by frame,
+   * which would drift.
+   */
+  intent: 'draw' | 'move'
+  from?: Region
+  /** Which note is being moved — not always the one the panel was showing when the drag began. */
+  noteId?: string
+}
+
+/**
+ * Whether a press pans the page rather than reaching `gestureFor` above.
+ *
+ * Asked *before* `gestureFor` rather than as a fifth case inside it. That
+ * function is described in its own doc as "the most-changed rule of this
+ * milestone and lived where nothing could test it", and rewriting it to carry
+ * the pan would spend exactly the testability that comment records.
+ *
+ * **`zoomable` is one flag, not two**: the module being on *and* something
+ * being drawn to move the rect over. It is the same predicate the three zoom
+ * keys are gated on, and keeping it one argument is what stops the pan and the
+ * keys drifting apart. `drawn` rather than "not scroll mode" because it
+ * subsumes it: nothing is drawn in scroll mode *or* in a gap, where `Gap`
+ * renders inside the page area — without it, a drag anywhere over a gap,
+ * including off one of `Gap`'s own buttons, pans a rect nobody is drawing.
+ *
+ * **`onControl` excludes rather than requires.** "The editor is closed" is not
+ * the same set as "the pointer is over the page", and `zoomable` does not
+ * close the difference: the things that share the page area *with* a drawn
+ * page are `NoteList` in its `side` placement and the note tabs
+ * `PageAnnotations` draws, which take pointer events deliberately so they can
+ * be clicked. Neither stops propagation, so without this a sweep to select
+ * text in the note list pans the manga underneath it, and so does a drag begun
+ * on a tab.
+ *
+ * *This was "the press is on a page image" until 2026-08-08*, which excluded
+ * the same controls by being narrower still. That was the narrowest test true
+ * of the page and false of a button — and it also made the letterbox around
+ * the page dead to a drag, which a reader trying it said so of. The cost had
+ * been judged acceptable on the reasoning that the letterbox shrinks as the
+ * zoom grows; what that missed is that a reader reaches for the nearest grey
+ * to drag from, and being ignored there reads as the pan being broken rather
+ * than as a boundary. Excluding controls also means the next component added
+ * inside the page area is included by default and has to opt out, which is the
+ * right way round for a background gesture. The caller's `onControl` has to be
+ * **ancestor-aware** for that: a press on a note-list entry lands on the
+ * *text*, so a target-only test answers `false` for exactly the case the image
+ * test was protecting against.
+ *
+ * `stopPropagation` on every child was the other candidate and lost again: it
+ * would put "and this is why the manga does not pan" in `NoteList.tsx` and
+ * `Annotations.tsx`, where nobody looking for the pan rule would find it.
+ *
+ * With the editor open the modifier is what asks for a pan, since an
+ * unmodified press there means the region. The one press that leaves here for
+ * `gestureFor` rather than panning is the modifier held with the editor open
+ * on something that is not a page image, which that function reads as `close`
+ * — rule 1 of its own list, not a case invented here. With the editor *closed*
+ * nothing is lost by taking the drag first at all, since `gestureFor` answers
+ * `ignore` for every press in that state.
+ */
+export function pressTakesPan(press: {
+  zoomable: boolean
+  onControl: boolean
+  editing: boolean
+  shift: boolean
+}): boolean {
+  return press.zoomable && !press.onControl && (!press.editing || press.shift)
+}
+
+/**
+ * What the region should be, given where the drag began and where it is now.
+ *
+ * A move is measured against `started` — the region as it was when the drag
+ * began — rather than against the previous frame, so a slow drag against the
+ * page edge cannot accumulate rounding into a drift. A draw has no `started`
+ * and sweeps out from the origin.
+ */
+export function regionUnderDrag(
+  intent: 'draw' | 'move',
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  started?: Region,
+): Region {
+  if (intent === 'move' && started)
+    return moveRegion(started, to.x - from.x, to.y - from.y)
+  return regionFromDrag(from, to)
+}
+
+/**
+ * A click rather than a drag, while drawing, plants a point instead.
+ *
+ * A one-pixel rectangle would be a marker a reader could never find again, and
+ * discarding it — which is what this used to do — meant a click on the page
+ * did nothing at all and the only way to mark a panel was to draw a box round
+ * it. A *move* is exempt: clicking once inside a region without moving it is a
+ * no-op that must not delete the region it landed on.
+ */
+export function anchorFrom(
+  intent: 'draw' | 'move',
+  region: Region,
+  start: { x: number; y: number },
+): Region {
+  return intent === 'draw' && (region.w < 0.01 || region.h < 0.01)
+    ? pointAt(start)
+    : region
+}
+
+/**
  * The notes a write should send: everything stored, with this session's edits
  * laid over it, minus the ones that were invented here and never filled in.
  *
@@ -595,6 +766,252 @@ export function withNote(notes: Note[], note: Note): Note[] {
 /** Drop a note by id. */
 export function withoutNote(notes: Note[], id: string): Note[] {
   return notes.filter((n) => n.id !== id)
+}
+
+// ---- the editing session ---------------------------------------------------
+
+/**
+ * Everything the editor holds that is not the stored document.
+ *
+ * One record with eight transitions rather than three states written three
+ * setters at a time. The argument for it is `nothingOpen` below: closing the
+ * editor is the same three-field move made from four different places, and it
+ * was written out twice in `App.tsx` before this existed — which is exactly
+ * how a fourth exit ends up clearing two of the three.
+ *
+ * `edits` is a map rather than one draft, because the editor is an **edit
+ * mode**: while it is open every region on the page can be grabbed and moved,
+ * not only the one belonging to the note being typed into. Grabbing another
+ * note's box makes it the one on show, and the note you were on keeps its
+ * changes here rather than being discarded for having lost focus — so a write
+ * sends everything you touched, and nothing you did quietly goes missing
+ * because you reached for a different box.
+ */
+export interface Draft {
+  panel: PanelMode | undefined
+  /** Every note this editing session has changed, keyed by id. */
+  edits: Record<string, Note>
+  currentId: string | undefined
+}
+
+/** Nothing open and nothing touched — where every session starts and ends. */
+export const NOTHING_OPEN: Draft = {
+  panel: undefined,
+  edits: {},
+  currentId: undefined,
+}
+
+/**
+ * Escape, a background click, the panel's own close, a delete's aftermath.
+ *
+ * A function as well as a constant because that is how the other seven read at
+ * a call site, and it hands back the shared value rather than a fresh one: a
+ * caller setting this when it is already set does not need a re-render.
+ */
+export function nothingOpen(): Draft {
+  return NOTHING_OPEN
+}
+
+/**
+ * The note the panel is showing.
+ *
+ * Derived, never stored, so there is one copy of every edit and no way for the
+ * shown note and the saved one to disagree.
+ */
+export function shownNote(draft: Draft): Note | undefined {
+  return draft.currentId ? draft.edits[draft.currentId] : undefined
+}
+
+/**
+ * `n`: always a brand-new note, however many the slot already holds.
+ *
+ * One note per panel is the ordinary case, and this key used to *reopen* the
+ * note already there — which made a second note on a page impossible, since
+ * nothing else creates one. The reasoning for reopening was to stop `n`
+ * pressed twice leaving duplicates, and it protected against nothing: a draft
+ * is not a note until it is written, so a second press only ever replaced an
+ * unsaved one. Reopening an existing note is what its margin tab is for.
+ *
+ * The colour is the next one nobody on **this page** is using, so two notes on
+ * one page come out different without a reader choosing — picked from `here`
+ * rather than from the whole work, since telling one note from another only
+ * matters where they are drawn together.
+ *
+ * `id` and `now` are arguments rather than minted here: a rule that reaches
+ * for a clock and a random source is a rule that cannot be tested for anything
+ * except not crashing.
+ */
+export function newNote(
+  draft: Draft,
+  at: { edition: string; slot: number },
+  here: NoteHere[],
+  id: string,
+  now: string,
+): Draft {
+  const fresh: Note = {
+    id,
+    edition: at.edition,
+    slot: at.slot,
+    color: nextColour(here.map((h) => h.note.color)),
+    body: '',
+    created: now,
+    updated: now,
+  }
+  return {
+    panel: 'edit',
+    edits: { ...draft.edits, [id]: fresh },
+    currentId: id,
+  }
+}
+
+/**
+ * A margin tab or a review row: show a note, bringing it into this session.
+ *
+ * Whatever is already in `edits` for that id wins over the stored copy, so
+ * clicking back onto a note you moved a moment ago shows it where you left it
+ * rather than where the server still has it. An id neither side knows is not
+ * an error and not an empty editor — the same draft comes back, so a caller
+ * can tell nothing happened.
+ */
+export function openNote(draft: Draft, id: string, stored: Note[]): Draft {
+  const found = draft.edits[id] ?? stored.find((n) => n.id === id)
+  if (!found) return draft
+  return {
+    panel: 'edit',
+    edits: draft.edits[id] ? draft.edits : { ...draft.edits, [id]: found },
+    currentId: id,
+  }
+}
+
+/**
+ * Change the note on show, in place. The same `Draft` back when there is none.
+ *
+ * Identity is how a caller tells a real change from a no-op, which matters
+ * because the caller schedules the write: a save scheduled for a change that
+ * did not happen is a write of the document as it already is.
+ */
+export function changeShown(draft: Draft, change: (note: Note) => Note): Draft {
+  const id = draft.currentId
+  const note = id === undefined ? undefined : draft.edits[id]
+  if (id === undefined || !note) return draft
+  return { ...draft, edits: { ...draft.edits, [id]: change(note) } }
+}
+
+/**
+ * A region drag grabbed a note: bring it in and show it.
+ *
+ * Its own copy in `edits` wins if it has one, so grabbing a box that was moved
+ * earlier continues from where it is now rather than from where the server
+ * still has it. The panel is untouched — a grab happens while the editor is
+ * already open, and this is which note it is open *on*.
+ */
+export function grabNote(draft: Draft, note: Note): Draft {
+  return {
+    ...draft,
+    edits: draft.edits[note.id]
+      ? draft.edits
+      : { ...draft.edits, [note.id]: note },
+    currentId: note.id,
+  }
+}
+
+/**
+ * Give a note a new anchor — a swept rectangle or a planted point.
+ *
+ * By id rather than "the one on show", because the note a drag ends on is not
+ * always the one the panel was showing when it began. A note this session has
+ * not touched is not anchored: the same draft comes back, since the drag had
+ * nothing to write onto.
+ */
+export function anchorNote(
+  draft: Draft,
+  id: string,
+  region: Region,
+  now: string,
+): Draft {
+  const note = draft.edits[id]
+  if (!note) return draft
+  return {
+    ...draft,
+    edits: { ...draft.edits, [id]: { ...note, region, updated: now } },
+  }
+}
+
+/**
+ * `a`: show the review list, or close it if that is what is open.
+ *
+ * **It cannot reach a reader mid-edit, and this comment used to say it did.**
+ * This function has a second arm, where `panel: 'edit'` becomes `'review'`,
+ * and no keypress gets to it: `keyplan.ts` returns no plan at all for
+ * anything but `Escape` while the editor is open, because the editor is a
+ * dialog that takes text and a keystroke there means the note. That is the
+ * behaviour a reader typing a note wants, so it is the comment that was
+ * wrong rather than the guard — the arm is reachable only by a caller that
+ * does not exist. The edits are left alone: swapping surfaces is not
+ * finishing, and a reader who presses `a` mid-session has not asked to drop
+ * what they have touched.
+ */
+export function toggleReview(draft: Draft): Draft {
+  return { ...draft, panel: draft.panel === 'review' ? undefined : 'review' }
+}
+
+/**
+ * A note was deleted: forget this session's copy of it and put the page back.
+ *
+ * The other edits stay. Deleting one note is not abandoning the rest, and the
+ * write that carries the deletion carries them too.
+ */
+export function afterDelete(draft: Draft, id: string): Draft {
+  const rest = { ...draft.edits }
+  delete rest[id]
+  return { panel: undefined, edits: rest, currentId: undefined }
+}
+
+/**
+ * Stored notes with this session's edits over them, plus the ones it invented.
+ *
+ * So a box that has been nudged draws where it was nudged to, not where the
+ * server still has it, and a note that has never been written draws at all.
+ *
+ * Unlike `editsToWrite`, a blank invented note is **kept**: this is what is
+ * drawn, and a reader who has just pressed `n` needs to see the note they are
+ * about to write. It is the write that decides an untouched draft is not a
+ * note, not the drawing.
+ */
+export function withEdits(stored: Note[], edits: Record<string, Note>): Note[] {
+  return [
+    ...stored.map((n) => edits[n.id] ?? n),
+    ...Object.values(edits).filter((e) => !stored.some((n) => n.id === e.id)),
+  ]
+}
+
+/**
+ * Those, filtered to one edition when `travel` is off — filtered **before**
+ * resolving.
+ *
+ * Before rather than after, so switching the setting off costs no resolution
+ * at all: the module is then genuinely doing nothing, which is the property
+ * every module's manual pass checks for.
+ */
+export function visibleNotes(
+  stored: Note[],
+  edits: Record<string, Note>,
+  travel: boolean,
+  viewing: string,
+): Note[] {
+  const all = withEdits(stored, edits)
+  return travel ? all : all.filter((n) => n.edition === viewing)
+}
+
+/**
+ * Whether two documents are the same, for history's sake.
+ *
+ * By serialised content rather than by reference: every write produces fresh
+ * objects, so reference equality would record a step for a write that changed
+ * nothing and leave undo needing two presses to do anything visible.
+ */
+export function sameNotes(a: Note[], b: Note[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
 }
 
 /**

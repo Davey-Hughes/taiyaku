@@ -159,6 +159,14 @@ export async function getNotes(work: string): Promise<FetchedNotes> {
  * No `keepalive`, unlike `putProgress`: a note is a deliberate act the reader
  * is watching the result of, not a background write that has to survive the
  * tab going away.
+ *
+ * **The returned `etag` is `undefined` where the response carried no `ETag`,
+ * and that is not a shrug.** `routes.rs`'s `put_notes` always sends one on a
+ * success, so reaching it means a proxy stripped the header or the server is
+ * older than this route — and either way the caller is now holding a document
+ * it has no validator for. `notesWrite.ts`'s `writeGate` is what that answer
+ * runs into: the next write is refused and the reader is told, rather than
+ * every write from here on being a silent no-op, which is what it used to be.
  */
 export async function putNotes(
   work: string,

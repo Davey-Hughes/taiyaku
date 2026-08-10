@@ -68,3 +68,31 @@ export function redo<T>(history: History<T>): History<T> {
 /** The state in force. */
 export const current = <T>(history: History<T>): T =>
   history.entries[history.at]
+
+/**
+ * A step, and the value it has to write. `undefined` where it is a no-op.
+ *
+ * **Identity is the no-op rule**, not a bounds check restated here: `undo` and
+ * `redo` above hand back the *same* history object at either end, so a caller
+ * comparing what it asked for against what it holds already knows whether
+ * anything moved. A second `at > 0` here would be the same rule written twice,
+ * and the two could disagree the moment either grew a case.
+ *
+ * The value comes back with the history because a step is written as well as
+ * shown: with automatic saving, what is on the server *is* the document, so an
+ * undo that only changed the screen would be undone again by the next
+ * keystroke. Returning them together is what stops a caller writing one
+ * history's value while holding another's.
+ *
+ * Generic, like everything else in this file. The reader has exactly one undo
+ * stack and it is the notes', but the rule is about `History<T>` and writing
+ * it as `History<Note[]>` would be the only thing in this module that knew
+ * what it was holding.
+ */
+export function stepHistory<T>(
+  from: History<T>,
+  to: History<T>,
+): { history: History<T>; write: T } | undefined {
+  if (to === from) return undefined
+  return { history: to, write: current(to) }
+}

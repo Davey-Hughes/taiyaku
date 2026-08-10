@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { groupWindow, prefetchModule, window } from './prefetch'
+import type { Display } from '../reading'
+import {
+  groupWindow,
+  prefetchModule,
+  prefetchTargets,
+  superseded,
+  window,
+} from './prefetch'
 
 describe('window', () => {
   it('takes N ahead and M behind', () => {
@@ -113,5 +120,137 @@ describe('groupWindow', () => {
 
   it('prefetches nothing when both depths are zero', () => {
     expect(groupWindow(paired, 2, 0, 0)).toEqual([])
+  })
+})
+
+describe('prefetchTargets', () => {
+  const paired = [{ slots: [0, 1] }, { slots: [2, 3] }, { slots: [4, 5] }]
+  const prefs = { ...prefetchModule.defaults }
+  const at: Display = { kind: 'at', edition: 'en', slot: 2, via: 'identity' }
+  // A page index that is not the slot index, so nothing below can pass by
+  // reading one for the other: slot n is page n + 10.
+  const slotAt = (_edition: string, index: number) => ({ page: index + 10 })
+
+  it('names each neighbouring slot with the page its URL is built from', () => {
+    expect(prefetchTargets(paired, at, prefs, 'two', slotAt)).toEqual([
+      { slot: 0, page: 10 },
+      { slot: 1, page: 11 },
+      { slot: 4, page: 14 },
+      { slot: 5, page: 15 },
+    ])
+  })
+
+  it('asks slotAt for the edition being looked at, not the authority', () => {
+    const seen: string[] = []
+    prefetchTargets(paired, at, prefs, 'two', (edition, index) => {
+      seen.push(edition)
+      return { page: index }
+    })
+    expect(new Set(seen)).toEqual(new Set(['en']))
+  })
+
+  // Every group is already mounted in scroll mode, so a window around the
+  // current slot is not a meaningful subset to warm ahead of the rest.
+  it('warms nothing in scroll mode', () => {
+    expect(prefetchTargets(paired, at, prefs, 'scroll', slotAt)).toEqual([])
+  })
+
+  it('warms nothing while the module is off', () => {
+    expect(
+      prefetchTargets(paired, at, { ...prefs, enabled: false }, 'two', slotAt),
+    ).toEqual([])
+  })
+
+  // A gap has nothing paired to prefetch around.
+  it('warms nothing in a gap', () => {
+    const gap: Display = {
+      kind: 'gap',
+      edition: 'raw',
+      from: { edition: 'en', slot: 2 },
+    }
+    expect(prefetchTargets(paired, gap, prefs, 'two', slotAt)).toEqual([])
+  })
+
+  // No fallback to the slot-space `window`, which counts the wrong unit in
+  // `two` mode — an unassigned grouping warms nothing at all.
+  it('warms nothing before a grouping has been assigned', () => {
+    expect(prefetchTargets(undefined, at, prefs, 'two', slotAt)).toEqual([])
+  })
+
+  // A prefetch miss is cheaper than a fetch of the wrong page.
+  it('skips a slot the resolver cannot place rather than guessing at it', () => {
+    const patchy = (_edition: string, index: number) =>
+      index === 1 ? undefined : { page: index + 10 }
+    expect(prefetchTargets(paired, at, prefs, 'two', patchy)).toEqual([
+      { slot: 0, page: 10 },
+      { slot: 4, page: 14 },
+      { slot: 5, page: 15 },
+    ])
+  })
+
+  // The depths are the module's, and `groupWindow`'s nearest-group-first
+  // interleaving is what decides the order.
+  it('honours ahead and behind, nearest group first', () => {
+    const single = [0, 1, 2, 3, 4, 5].map((slot) => ({ slots: [slot] }))
+    const here: Display = {
+      kind: 'at',
+      edition: 'en',
+      slot: 3,
+      via: 'identity',
+    }
+    expect(
+      prefetchTargets(
+        single,
+        here,
+        { ...prefs, ahead: 2, behind: 1 },
+        'single',
+        slotAt,
+      ).map((t) => t.slot),
+    ).toEqual([2, 4, 5])
+  })
+})
+
+describe('superseded', () => {
+  const queuedFor = { edition: 'en', slot: 7 }
+  const atSame: Display = {
+    kind: 'at',
+    edition: 'en',
+    slot: 7,
+    via: 'identity',
+  }
+
+  it('is not superseded while the reader is still where the window was built', () => {
+    expect(superseded(queuedFor, atSame)).toBe(false)
+  })
+
+  // Strict equality on the slot, not proximity: the position the reader moved
+  // *to* has queued its own window, so nothing is lost by dropping this one.
+  it('is superseded by a move of a single slot', () => {
+    expect(superseded(queuedFor, { ...atSame, slot: 8 })).toBe(true)
+  })
+
+  it('is superseded by a swap to another edition at the same slot', () => {
+    expect(superseded(queuedFor, { ...atSame, edition: 'raw' })).toBe(true)
+  })
+
+  it('is superseded in a gap', () => {
+    expect(
+      superseded(queuedFor, {
+        kind: 'gap',
+        edition: 'raw',
+        from: { edition: 'en', slot: 7 },
+      }),
+    ).toBe(true)
+  })
+
+  // What stops a queue draining into a reader that has gone.
+  it('is superseded with no session to ask', () => {
+    expect(superseded(queuedFor, undefined)).toBe(true)
+  })
+
+  // `via` is how the position was reached, not where it is — a window queued
+  // before a swap resolved onto the same slot is still the right window.
+  it('does not read anything but the edition and the slot', () => {
+    expect(superseded(queuedFor, { ...atSame, via: 'direct' })).toBe(false)
   })
 })

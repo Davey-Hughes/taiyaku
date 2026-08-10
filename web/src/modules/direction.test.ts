@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   directionModule,
   effectiveDirection,
+  flipped,
   setOverride,
   stepFor,
   type DirectionPrefs,
@@ -71,5 +72,41 @@ describe('stepFor', () => {
     for (const reading of ['ltr', 'rtl'] as const)
       for (const by of [1, -1] as const)
         expect(stepFor(stepFor(by, reading), reading)).toBe(by)
+  })
+})
+
+describe('flipped', () => {
+  /**
+   * **The first press of `d` is always visible.** Flipping from the *override*
+   * — `undefined` for an edition nobody has touched — would have to guess a
+   * starting point, and on a right-to-left work guessing `ltr` makes the first
+   * press set `rtl` and appear to do nothing at all.
+   */
+  it('flips against the direction in effect, not against the override', () => {
+    const fresh = directionModule.defaults
+    expect(flipped('rtl', fresh, 'raw').override.raw).toBe('ltr')
+    expect(flipped('ltr', fresh, 'raw').override.raw).toBe('rtl')
+  })
+
+  it('flips an edition that already has an override', () => {
+    const set = { override: { raw: 'ltr' as const } }
+    expect(flipped('rtl', set, 'raw').override.raw).toBe('rtl')
+  })
+
+  it('is its own inverse, so two presses are where the reader started', () => {
+    const once = flipped('rtl', directionModule.defaults, 'raw')
+    expect(flipped('rtl', once, 'raw').override.raw).toBe('rtl')
+    expect(
+      effectiveDirection('rtl', flipped('rtl', once, 'raw').override.raw),
+    ).toBe('rtl')
+  })
+
+  /** Overrides are per edition, and `setOverride`'s whole reason for existing. */
+  it('leaves every other edition’s override alone', () => {
+    const set = { override: { raw: 'ltr' as const, jp: 'ltr' as const } }
+    expect(flipped('rtl', set, 'raw').override).toEqual({
+      raw: 'rtl',
+      jp: 'ltr',
+    })
   })
 })

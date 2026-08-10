@@ -68,8 +68,106 @@ jobs:
           git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
           git fetch -q --depth 1 origin "$FORGEJO_REF"
           git checkout -q FETCH_HEAD
-      - name: Tests
-        run: cargo test --workspace --all-features
+      - name: Add llvm-tools
+        run: rustup component add llvm-tools-preview
+      - name: Install cargo-llvm-cov
+        # A prebuilt release binary rather than `cargo install`, the precedent
+        # the `wasm` job already sets for `wasm-pack`: this job only runs the
+        # tool, never links against it. The musl build is static, so it runs on
+        # the glibc bookworm container without a matching libc.
+        #
+        # **The checksum is not optional and it is not upstream's.** This
+        # project publishes no checksum file for its release assets, and a
+        # GitHub release asset can be replaced in place by whoever owns the
+        # repository. So the digest below was computed here, from the artefact
+        # this workflow was written against, and pins it: a substituted tarball
+        # fails the job instead of executing as root in the test container.
+        # Bump it together with the version, by downloading and re-computing —
+        # never by copying a value from an issue or a README.
+        run: |
+          curl -fsSL -o /tmp/llvm-cov.tar.gz \
+            https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.8.7/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz
+          echo "967b5cc996c29d8baa52bbb4595ef1f53af35255af8e2036ddbc6468d7b523c7  /tmp/llvm-cov.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llvm-cov.tar.gz -C /usr/local/bin
+          cargo llvm-cov --version
+      - name: Tests, with coverage
+        # `cargo llvm-cov` runs the tests — this is the `cargo test` step, not
+        # an addition to it. Four files are ignored: two gated one-off
+        # measurement modules, and two that cannot execute without
+        # TAIYAKU_CORPUS, which CI does not have.
+        #
+        # Note the regex matches `/corpus.rs` by path segment, so a *new*
+        # `corpus.rs` added to some crate that is not corpus-gated would be
+        # silently excluded too. Nothing like that exists today — the whole
+        # workspace holds exactly these four matching files — but a coverage
+        # exclusion that grows on its own is the failure this list is shaped to
+        # avoid. This used to ask the reader to check the file count by hand when
+        # adding a crate; the "Coverage floor, per file" step below now asserts
+        # it (37 files today, 32 required), so a regex that quietly swallows more
+        # than these four fails the job. The four are named with a reason each in
+        # docs/ci.md, "The coverage gates".
+        #
+        # `--fail-under-lines 93` is the gate: measured 95.75% lines over the
+        # workspace with those four ignored, less two points. Lines rather than
+        # regions because llvm-cov reports regions far below lines on `match`-
+        # heavy code and the two would need different numbers for no gain.
+        # Keep this in step with scripts/check-all.sh, which runs the same
+        # invocation.
+        run: |
+          cargo llvm-cov --workspace --all-features \
+            --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$' \
+            --fail-under-lines 93
+      - name: Install node
+        # This job needs node for exactly one thing — the coverage floor script
+        # below — which is why the step sits here rather than with the tool
+        # installs above. rust:1-bookworm carries no node at all (the comment at
+        # the top of this file records `command -v node` exiting non-zero), so
+        # it is fetched the same way the `wasm` job fetches it: a checksummed
+        # tarball from nodejs.org rather than a dual-toolchain image. Same
+        # version, same digest, same symlink.
+        run: |
+          curl -fsSL -o /tmp/node.tar.xz \
+            https://nodejs.org/dist/v26.7.0/node-v26.7.0-linux-x64.tar.xz
+          echo "982aa24dd8be4c889c6a8ab337ddff3b0896645b20f4239356e80552c16277ee  /tmp/node.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/node.tar.xz -C /opt
+          ln -s /opt/node-v26.7.0-linux-x64/bin/node /usr/local/bin/node
+          node --version
+      - name: Coverage floor, per file
+        # **The step above is workspace-aggregate and cannot see one module go
+        # dark.** Measured: if `taiyaku-read/src/pages.rs` (432 lines, 406
+        # covered) lost every one of its tests, the workspace lands at
+        # 13996/15041 = 93.05% and `--fail-under-lines 93` still passes. Any
+        # module up to roughly 410 covered lines can go entirely dark unnoticed.
+        # This is the Rust counterpart of the web job's identically named step,
+        # and it runs the identical script.
+        #
+        # **`cargo llvm-cov report` is not a second test run.** It re-renders the
+        # profile data the step above already produced — no rebuild, no re-run —
+        # and measured 0.13 seconds against 7.8 for the run itself. It is a
+        # separate command rather than another flag because `--text` and
+        # `--json` are mutually exclusive, and dropping the text table would cost
+        # this job its only human-readable coverage output.
+        #
+        # **`cargo llvm-cov --fail-under-file-lines` exists and is deliberately
+        # not used.** It works, but it exits 1 having printed nothing at all —
+        # measured, zero bytes on stdout and stderr beyond the ordinary table —
+        # naming neither the file nor the threshold. A red step above a 37-row
+        # table with no indication which row is the reason is not a gate anyone
+        # can act on.
+        #
+        # The `--ignore-filename-regex` is repeated from the step above and the
+        # two cannot silently disagree: a narrower copy lets the excluded files
+        # in at 12–40% and the floor names them; a wider one drops the file count
+        # and the script's minimum-file check fires. Both were run.
+        #
+        # Keep the three lines below in step with scripts/check-all.sh, together
+        # with the three in the step above: strip the leading whitespace from
+        # all six, and the `run` / `run env -u TAIYAKU_CORPUS` prefixes on the
+        # other side, and the two files hash identically.
+        run: |
+          cargo llvm-cov report --json --output-path target/rust-coverage.json \
+            --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$'
+          node scripts/coverage-floor.mjs target/rust-coverage.json
 
   # The core is required to stay WebAssembly-compatible so the browser reader
   # and a future native shell can share it. This is easy to break by accident —
@@ -115,11 +213,15 @@ jobs:
         # precedent this job already sets for `wasm-pack`. The checksum is
         # from nodejs.org's own SHASUMS256.txt for this file.
         #
-        # Three places name a Node version and nothing keeps them in step:
+        # Five places name a Node version and nothing keeps them in step:
         # this pin (below, twice — the download URL and the symlink target),
-        # the `web` job's `node:26-bookworm` image tag above, and
-        # `.node-version` at the repository root, which nothing reads. Bump
-        # all three together if any of them drifts.
+        # the identical pin in the `test` job above, which fetches node for
+        # the per-file coverage floor, the `web` job's `node:26-bookworm`
+        # image tag below, `.node-version` at the repository root, which
+        # nothing reads, and `web/package.json`'s `@types/node`, which tracks
+        # the runtime major by convention rather than by any check.
+        # `docs/ci.md` enumerates all five in a table, so the count can be
+        # argued with there rather than re-derived. Bump them together.
         run: |
           curl -fsSL -o /tmp/node.tar.xz \
             https://nodejs.org/dist/v26.7.0/node-v26.7.0-linux-x64.tar.xz
@@ -131,9 +233,16 @@ jobs:
         # A prebuilt release binary, fetched and verified to resolve rather
         # than guessed at (see docs/ci.md). Bump the version here and in
         # rust-toolchain.toml's neighbourly context together if either drifts.
+        #
+        # The checksum was added on the coverage branch, not when this step was
+        # written: this job downloads three binaries and only node's was pinned,
+        # so two of the three would have executed whatever the URL happened to
+        # return. wasm-pack publishes no checksum file either, so this digest
+        # was computed here from the artefact in use. Re-compute it on a bump.
         run: |
           curl -fsSL -o /tmp/wasm-pack.tar.gz \
             https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz
+          echo "c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a  /tmp/wasm-pack.tar.gz" | sha256sum -c -
           tar -xzf /tmp/wasm-pack.tar.gz -C /tmp
           install -m 0755 /tmp/wasm-pack-v0.15.0-x86_64-unknown-linux-musl/wasm-pack /usr/local/bin/wasm-pack
       - name: Build the browser package
@@ -177,5 +286,28 @@ jobs:
         run: pnpm -C web run lint
       - name: Typecheck
         run: pnpm -C web run typecheck
-      - name: Test
-        run: pnpm -C web run test
+      - name: Tests, with coverage
+        # `--project node --project jsdom --coverage`: both projects in one
+        # run, which is why this replaces the separate `test` and `test:jsdom`
+        # steps rather than joining them — the same trade the `test` job makes
+        # with `cargo llvm-cov`. The `browser` project is deliberately not here;
+        # it needs a Chromium download this cacheless CI would repeat every run,
+        # and a gate must measure what CI can reproduce.
+        #
+        # The thresholds are in `web/vite.config.ts` and fire only under
+        # `--coverage`, so a plain `vitest run` here would leave the web half of
+        # the gate enforcing nothing while reading green. Mirrored in
+        # scripts/check-all.sh; see docs/ci.md, "The coverage gates".
+        run: pnpm -C web run test:coverage
+      - name: Coverage floor, per file
+        # The other half of the web gate. `vite.config.ts`'s thresholds are
+        # aggregate, and an aggregate cannot see one module go dark: measured,
+        # skipping the whole of `pairing.test.ts` takes that file from 100% to
+        # 83.58% while the total moves only 98.03% → 97.49% — because
+        # `App.test.tsx` covers the same lines through a mounted reader — and
+        # every vitest threshold still passed. This step fails on it.
+        #
+        # vitest cannot express both halves: a glob entry in `thresholds` is
+        # aggregated over its matches, and `perFile` inside one is ignored. Both
+        # were tried and measured before this script existed.
+        run: node scripts/coverage-floor.mjs

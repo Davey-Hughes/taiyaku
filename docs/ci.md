@@ -8,9 +8,14 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 | Job | Runs |
 | --- | ---- |
 | `lint` | `cargo fmt --check`, `cargo clippy -D warnings` |
-| `test` | `cargo test --workspace` |
+| `test` | `cargo llvm-cov --workspace` — runs the tests *and* gates their aggregate coverage — then installs node and runs `scripts/coverage-floor.mjs` over a re-rendered JSON report for the per-file half |
 | `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown`, builds the browser package with `wasm-pack`, and runs `scripts/smoke-wasm.mjs` against the compiled module |
-| `web` | `pnpm install --frozen-lockfile`, `biome check` (formatting **and** lint), `tsc -b` typecheck, `vitest run` in `web/` |
+| `web` | `pnpm install --frozen-lockfile`, `biome check` (formatting **and** lint), `tsc -b` typecheck, `vitest run --coverage` in `web/`, then `scripts/coverage-floor.mjs` for the per-file half |
+
+The `test` job installs node for one step and one step only. `rust:1-bookworm`
+carries none, and the per-file floor is a node script because it is the *same*
+script the `web` job runs — see "The other half" below for why one file rather
+than two.
 
 The `wasm` job is the one worth keeping even when it feels redundant. The design
 depends on the core being shareable between the browser reader and a future
@@ -138,6 +143,514 @@ existed and failed after it, naming the package:
 It is run directly rather than piped, because a pipe masks the exit code — which
 was caught while writing the probe, and is exactly how a gate stops gating.
 
+## The coverage gates
+
+Two gates, one per language, and **four CI steps** — each language runs an
+aggregate check and then a per-file one. This section said "two of them, one per
+language" until 2026-08-10, which was true when the Rust half had no per-file
+check and the web half's had just been added. They are gates rather than reports:
+each fails its job rather than filing a number somewhere. Every one was **proven
+by regression** before being written up — see "Proving the gate gates" below —
+because an unproven gate is indistinguishable from no gate.
+
+| | aggregate step | per-file step | set in |
+| --- | -------------- | ------------- | ------ |
+| web | four thresholds — `statements`/`branches`/`functions`/`lines` | four floors, and ≥50 files in the report | `web/vite.config.ts`; `scripts/coverage-floor.mjs` |
+| Rust | `--fail-under-lines 93` | one floor, on lines, and ≥32 files in the report | `ci.yml` and `check-all.sh`; `scripts/coverage-floor.mjs` |
+
+Four steps, but **three kinds of failure**, and it is worth being plain about
+which catches what, because each is invisible to the others:
+
+- **the tree regressing overall** — what the aggregate thresholds see;
+- **one file that is *in* the report and has stopped being tested** — which no
+  aggregate can see, because a 400-line module going dark moves a workspace total
+  by half a point. Proven below, on both languages;
+- **files that have left the report entirely** — which no *per-file* check can
+  see either, because a file that is absent is a file nothing visits. Only the
+  count sees a collapse, and only the count catches a one-character edit to a
+  glob taking 13 of 57 files out of the gate for less than half a point on every
+  metric.
+
+Neither gate is a separate job. `cargo llvm-cov` *runs* the tests, so it
+replaced the `test` job's `cargo test`; `vitest --coverage` runs the same two
+projects the `web` job already ran, so `pnpm -C web run test:coverage` replaced
+the separate `test` and `test:jsdom` steps. The cost is instrumentation on a
+build both jobs already paid for, not a second cold compile. **Rejected
+alternative:** a dedicated `coverage` job, which would have duplicated the whole
+workspace build for the Rust half.
+
+**What the per-file halves added to that bill.** On the Rust side, one extra
+`cargo llvm-cov report --json` — and it is not a second test run. It re-renders
+the profile data the aggregate step already produced: no rebuild, no re-executed
+test binary. **Measured here three times against the existing profile data:
+0.176s cold, then 0.128s and 0.131s.** The instrumented run it sits beside was
+**7.68s**; that figure is the one taken when the step was written and is carried
+forward rather than re-measured, since re-measuring it means paying for a fresh
+instrumented pass to learn something already known. Either way the ratio is not
+close: the report pass is under two percent of the run.
+
+It is a separate command rather than another flag because `--text` and `--json`
+are mutually exclusive, and dropping the text table would cost the `test` job its
+only human-readable coverage output.
+
+The `test` job also now pays a node install it did not pay before —
+`node-v26.7.0-linux-x64.tar.xz`, **33.5 MB** (`content-length: 33539588`,
+confirmed against nodejs.org), checksummed and extracted. The same fetch the
+`wasm` job already makes, measured there at **1.4–1.6 seconds** on this
+development machine across three runs; see "Running the compiled module in CI"
+for that measurement and for why a tarball beats a dual-toolchain image. **That
+is a local figure, not a runner one** — no runner network was reachable to time
+it — but it is the cost the job took on, and it bought the Rust half the check
+`--fail-under-lines` cannot express.
+
+### The numbers, and where they came from
+
+Measured on this machine on 2026-08-09, on the commit that set the thresholds.
+Each threshold is **two points below measured, rounded down to a whole number**,
+and the measured figure sits beside it in the source so a later reader can see
+the headroom without re-running anything.
+
+*The web statements and branches rows read 98.07% and 94.44% until 2026-08-10,
+when a review re-ran the suite and got 98.03% and 94.38%. Corrected from
+`web/coverage/coverage-summary.json` rather than from the text table. Neither
+threshold moves — 98.03 and 94.38 still round down to 96 and 92 — so the gate
+was never set wrong, only this document's record of what it was set from, and
+no run of it could have caught that. The same two figures were wrong in
+`web/vite.config.ts`'s comment beside the thresholds and in one bullet of
+`docs/status.md`, while a second bullet a few lines further down that same
+document had already recorded 98.03% for the same run — the repository
+disagreeing with itself in two places about one measurement, which is the
+signal a re-measurement was owed.*
+
+| gate | metric | measured | threshold | set in |
+| ---- | ------ | -------- | --------- | ------ |
+| web | statements, aggregate | 98.03% | 96 | `web/vite.config.ts` |
+| web | branches, aggregate | 94.38% | 92 | `web/vite.config.ts` |
+| web | functions, aggregate | 99.29% | 97 | `web/vite.config.ts` |
+| web | lines, aggregate | 99.53% | 97 | `web/vite.config.ts` |
+| Rust | lines, aggregate | 95.75% | 93 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
+| Rust | lines, **per file** | 59.44%, `taiyaku-serve/src/stump/http.rs` | 57 | `scripts/coverage-floor.mjs` |
+| web | **files in the report** | 57 | 50 | `scripts/coverage-floor.mjs` |
+| Rust | **files in the report** | 37 | 32 | `scripts/coverage-floor.mjs` |
+
+The four web per-file floors have their own table under "The other half" below,
+beside the lowest file each was derived from.
+
+**The two minimums do not follow the two-points rule, and are not meant to.**
+They are counts, not percentages, and the failure they exist to catch is not a
+slide — it is a collapse. Web carries seven of margin (50 against 57) because 40
+would have been too loose to catch the near miss recorded below, where a
+one-character edit to a glob dropped 13 files and every percentage stayed green.
+Rust carries five (32 against 37) because the count there can only fall three
+ways — the `--ignore-filename-regex` widens, a crate leaves the workspace, or
+files merge — and four files are excluded by name today, so five leaves that list
+room to grow without a coverage edit becoming a gate edit. Thirty-two also trips
+when any one of the three largest crates leaves the report: `taiyaku-serve` is
+15 files, `taiyaku-cli` 11, `taiyaku-core` 7.
+
+**The Rust per-file floor is loose by construction and that is stated rather than
+apologised for.** The spread between the workspace's best-covered file and its
+worst is too wide for one number to catch a module sliding from 95% to 80%. The
+five lowest on a clean tree: `taiyaku-serve/src/stump/http.rs` 59.44%,
+`taiyaku-wasm/src/lib.rs` 72.64%, `taiyaku-cli/src/inventory.rs` 75.82%,
+`taiyaku-serve/src/lib.rs` 83.09%, `taiyaku-read/src/naming.rs` 93.02%. What 57
+catches is a module that stops being tested *at all* — see "Why the Rust
+per-file floor exists" below, which is the arithmetic that fixes the number.
+
+**Lines only on the Rust side, and the other three metrics are refusals rather
+than oversights.** `branches` is `count: 0` on all 37 files — llvm-cov emits no
+branch data without a nightly flag, verified by counting: zero files report a
+non-zero branch count — so any floor on it would fail every file. `regions` and
+`instantiations` read far below lines on `match`-heavy and generic code (lowest
+measured 66.80% and **39.39%**, both `taiyaku-serve/src/stump/http.rs`), so they
+would need their own numbers for no signal the line floor does not already give.
+
+The Rust figure is the workspace total with the four files below ignored;
+without them it is **87.59%** lines, and the difference is not work anyone did
+— it is code nobody intends to run in CI, which is the whole reason the
+exclusions exist. `taiyaku-cli/src/main.rs`, this branch's long pole, went from
+43.79% to **95.82%** regions and 97.23% lines.
+
+**Two points, rather than one or five.** v8 counts what the run loaded, so an
+unrelated change to which files a test imports moves the web figures by
+fractions; one point would make the gate flap. Five would let a whole module
+regress in silence. The margin is a compromise and the regression proofs below
+record exactly what it does and does not catch.
+
+**Lines, not regions, for Rust.** llvm-cov reports regions well below lines on
+`match`-heavy code — 94.97% against 95.75% here — so gating both would mean two
+numbers to maintain and re-derive for no additional signal. One gate, on the
+metric whose meaning a reader guesses correctly.
+
+### The four ignored Rust files, named
+
+`ci.yml`'s comment used to say these were "named in `docs/ci.md`". They were
+not — the claim was a forward reference to a section nobody had written, false
+from the day it landed until this one. Here they are, with a reason each:
+
+| ignored | reason |
+| ------- | ------ |
+| `taiyaku-cli/src/geometry_experiment.rs` | a gated one-off measurement module; it fingerprints roughly 1.4 million crops when it runs, and a gate run was once killed at 1h09m inside it |
+| `taiyaku-cli/src/region_experiment.rs` | the same: a gated one-off measurement, not a code path the reader takes |
+| `taiyaku-cli/src/corpus.rs` | cannot execute without `TAIYAKU_CORPUS`, which CI does not have |
+| `taiyaku-serve/src/corpus.rs` | the same |
+
+**The regex matches `/corpus.rs` by path segment, and that is the sharp edge.**
+A *new* `corpus.rs` added to a crate that is **not** corpus-gated would be
+excluded silently, and its coverage would leave the number without leaving a
+trace. Nothing like that exists today — verified, not assumed, and **re-measured
+on 2026-08-10 from `cargo llvm-cov report --json` with and without the flag: 41
+files without the regex, 37 with it, and the four that disappear are exactly the
+four above.** The workspace reads 87.59% lines without the regex against 95.75%
+with it, both re-measured the same way.
+
+**That check is now half a gate rather than wholly a ritual.** This paragraph
+used to end "re-run that diff when adding a crate", and asking a reader to
+remember a thing is the weakest form of a check there is. The per-file floor
+script now asserts the file count itself — 37 today, 32 required — so a regex
+that quietly swallows more than these four fails the job instead of waiting to be
+noticed. Only *half*, because the automated half sees the count and not the
+names: a regex that dropped one file while a new crate added one would net to
+zero and pass. So the diff is still worth running when adding a crate, and it is
+now a confirmation rather than the only thing standing between the exclusion list
+and silent growth:
+
+    env -u TAIYAKU_CORPUS cargo llvm-cov --workspace --all-features --summary-only > /tmp/all.txt
+    env -u TAIYAKU_CORPUS cargo llvm-cov --workspace --all-features --summary-only \
+      --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$' > /tmp/gated.txt
+    diff <(awk '{print $1}' /tmp/all.txt) <(awk '{print $1}' /tmp/gated.txt)
+
+Both commands above run the tests. To diff the file lists alone against profile
+data that already exists, `cargo llvm-cov report --json --output-path …` twice
+costs about a tenth of a second each and rebuilds nothing.
+
+`resolver.ts` is deliberately **not** excluded on the web side. It is untested
+because it imports `taiyaku-wasm` as a value and no test loads it — a
+testability problem with a fix, not a property of the code deserving permanent
+amnesty.
+
+### Why `coverage.include` is set explicitly
+
+This is the single most important line in the web gate, and the shortest proof of
+it is this. Set `include: ['nope/**/*.ts']` — a directory that does not exist —
+and vitest reports:
+
+    Statements   : Unknown% ( 0/0 )
+    Branches     : Unknown% ( 0/0 )
+    Functions    : Unknown% ( 0/0 )
+    Lines        : Unknown% ( 0/0 )
+
+**and exits 0.** Measured, by doing it. Every one of the four thresholds passed
+against nothing at all. A gate whose input is empty does not fail loudly; it
+reports success, and a typo in one glob is enough to get there.
+
+The reason is the thing to carry away. **v8 instruments what the run loaded**, so
+a file no test imports is not reported at 0% — it is *absent*. The headline then
+answers "is the code we test tested?", to which the answer is always yes, and in
+the degenerate case there is no code at all and the answer is still yes.
+
+The milder version of the same failure was the first one measured, when the block
+landed: the default `include` reported **98.43% over 15 files**, while 50 were
+inside the gate and the real figure was **48.13%**. A gate built on the default
+would have enforced nothing while reading beautifully.
+
+That is why `include` is set explicitly and why exclusions are named one at a
+time with a reason, never as a wildcard. It is also why the gate grew a minimum
+file count: no threshold *value* can defend against `0/0`, because `0/0` is not a
+number that failed a comparison — it is a comparison that never happened. See
+"Why `minFiles` is 50 and not 40" below.
+
+**The `.tsx` half of that glob is inert, and was assumed rather than measured
+until 2026-08-10.** `include` reads `['src/**/*.ts', 'src/**/*.tsx']`, and the
+second entry contributes nothing: vitest's coverage `include` resolves a `*.ts`
+pattern across its whole extension list, so `['src/**/*.ts']` alone reports the
+same **57 files** and the same 98.03 / 94.38 / 99.29 / 99.53. Measured by running
+it. The entry is kept because it is what a reader expects to see and costs
+nothing, but the document should not have claimed it was doing work.
+
+**`--coverage.include` cannot be repeated on the command line.** Passing the
+flag twice does not union the patterns — the last one silently wins. This
+branch's first baseline measurement came from a run whose reported file list did
+not match the flags it was invoked with, and the discrepancy was only caught by
+counting files. Set it in `vite.config.ts`, where it is one value, and never
+reach for the flag.
+
+### Read the JSON, not the table
+
+`reporter: ['text', 'json-summary']` produces two views and they do not agree on
+what a file list is. **The text table omits every file at 100% on all four
+metrics.** At the thresholds above it printed **18 file rows against the JSON's
+57 files** — 39 fully covered files simply absent, measured by counting both.
+The gap was recorded as 28 rows against 50 files when this branch began, which
+is the earlier reading carried forward rather than a second measurement here.
+
+The totals are identical; only the rows differ. But anyone reading the table as
+an inventory — "these are the files in the gate" — reaches a false conclusion,
+and that is the same failure mode as the 98.43% above, one layer down. Take
+per-file figures from `web/coverage/coverage-summary.json`.
+
+### Proving the gate gates
+
+Both gates were regressed on purpose, and every output is recorded because the
+result was repeatedly not what the plan expected. Four proofs follow, one per
+check: the two aggregates fire (and one of them says nothing useful when it
+does), and the two per-file steps exist because of what the aggregates were
+measured *failing* to notice.
+
+**Rust — fires, and says nothing.** `#[ignore]` on all 84 tests in
+`taiyaku-cli/src/main.rs`'s test module took `main.rs` from 97.23% to 2.12%
+lines and the workspace from 95.75% to **82.19%**. `--fail-under-lines 93`
+exited **1**, and restoring the file returned it to 0.
+
+Its failure output is worth knowing: **cargo-llvm-cov prints no message at all.**
+It exits non-zero with the ordinary summary table and nothing naming the
+threshold, the metric or the shortfall. A CI log will show a red step whose
+output looks exactly like a passing one, so read the `TOTAL` row against the 93
+in `ci.yml`. vitest, by contrast, names each unmet threshold explicitly.
+
+That is still true of `--fail-under-lines`, but the Rust half is no longer silent
+end to end: the per-file floor step after it names the file, the metric and the
+number it missed, in the same format the web half uses.
+
+**`cargo llvm-cov --fail-under-file-lines` exists and was rejected, measured
+rather than assumed.** The flag is present in the pinned 0.8.7 — `cargo llvm-cov
+report --help` lists it alongside `--fail-under-lines`, `--fail-under-regions`
+and `--fail-under-functions` — so the obvious question is why a script does work
+a flag already does. Run against this tree at `--fail-under-file-lines 80` it
+exits **1** having written **7995 bytes to stdout, all of it the ordinary
+coverage table, and zero bytes to stderr.** It names neither the file that
+tripped it nor the threshold it tripped. That is a red step above a 37-row table
+with no indication which row is the reason — the same defect as the paragraph
+above, one layer worse, because now there are 37 candidates rather than one
+`TOTAL`. Checked in `scripts/coverage-floor.mjs` instead, where the failure can
+say what to open first. **The cost of that choice** is a node install in a Rust
+container and a script kept in step with two workflows; it was paid because a
+gate nobody can act on is a gate that gets disabled.
+
+**Web — fires, but not on everything, and the reason is structural.** Skipping a
+whole suite is *not* reliably enough:
+
+| suite skipped | statements | branches | exit |
+| ------------- | ---------- | -------- | :--: |
+| `viewport.test.ts` | 94.71% | 89.70% | **1** |
+| `Annotations.test.tsx` | 97.43% | 91.96% | **1** |
+| `alignedPairs.test.ts` | 97.43% | 93.75% | 0 |
+| `notes.test.ts` | 97.18% | 92.65% | 0 |
+| `pairing.test.ts` | 97.49% | 93.77% | 0 |
+
+Deleting all 59 `pairing.test.ts` cases costs **0.54 statement points**, well
+inside the margin. The cause is not a slack threshold: `App.test.tsx` mounts the
+whole application, so `pairing.ts` and `notes.ts` are covered *twice* — once by
+their unit suites and again as a side effect of the integration tests. Removing
+one of the two leaves the other. `pairing.ts` still reported 83.58% statements
+with its entire suite skipped.
+
+**So state plainly what the aggregate half catches**: a new source file with no
+test at all, the loss of a large area's tests, or a regression in a module only
+its own suite reaches (`viewport.ts` at 103 statements is over the line;
+`alignedPairs.ts` at 77 is not). It does **not** catch the deletion of a unit
+suite whose module `App.test.tsx` also exercises. That is a real limit of a
+whole-project percentage and no threshold *value* fixes it. The failure output,
+from the `viewport.test.ts` run:
+
+    ERROR: Coverage for lines (96.34%) does not meet global threshold (97%)
+    ERROR: Coverage for functions (96.46%) does not meet global threshold (97%)
+    ERROR: Coverage for statements (94.71%) does not meet global threshold (96%)
+    ERROR: Coverage for branches (89.7%) does not meet global threshold (92%)
+
+*(Those last three lines sat orphaned at the end of the next section until
+2026-08-10, detached from the run that produced them. Rejoined here, unchanged.)*
+
+### Why `minFiles` is 50 and not 40
+
+The collapse to zero files is not the only failure a file count has to catch, and
+picking the number for the collapse alone would have left the interesting one
+through. **Deleting one `*` from the include glob is a one-character edit.**
+Measured by making it, three times, and reading
+`web/coverage/coverage-summary.json` rather than the text table:
+
+| `coverage.include` | files | vitest |
+| ------------------ | ----- | ------ |
+| `['nope/**/*.ts']` | 0 | `Unknown% ( 0/0 )` on all four metrics, **exit 0** |
+| `['src/*.ts']` | 44 | 97.79 / 93.90 / 99.20 / 99.48 — every threshold passed, **exit 0** |
+| `['src/**/*.ts']` | 57 | 98.03 / 94.38 / 99.29 / 99.53, unchanged |
+
+**The middle row is the one that fixes the number.** One deleted `*` drops all
+13 files of `src/modules` — `annotations`, `credits`, `direction`, `fit`, `help`,
+`layout`, `motion`, `prefetch`, `readouts`, `registry`, `regroup`, `settings`,
+`zoom` — out of the gate entirely, and **it costs less than half a point on every
+metric**: −0.24 statements, −0.48 branches, −0.09 functions, −0.05 lines, against
+margins of 1.79, 1.90, 2.20 and 2.48 to the thresholds. Nearly a quarter of the
+files in the gate leave, and the aggregate barely twitches, because it is an
+average over what remains and what left was well covered. Nothing in the run is
+red. The per-file floor sees nothing either: a file that is absent is a file no
+per-file check visits. Only a count can see it.
+
+So 50 rather than 40: 40 catches the collapse and lets the 44 through. Fifty
+leaves seven of margin over the 57 measured, which is enough for a deliberate
+exclusion — beside the three test-and-declaration patterns, the `exclude` list
+names `main.tsx`, `browser-setup.ts` and the `src/testing/**` directory, each
+with a reason — and not so much that dropping a directory passes. Growth only ever moves the count
+the safe way. **If a deliberate exclusion ever does trip this, that is the check
+working**: re-derive the number beside the exclusion rather than widening it on
+reflex.
+
+### Why the Rust per-file floor exists
+
+`--fail-under-lines 93` is workspace-aggregate, and the workspace is large enough
+that the blind spot is not a corner case. Measured against the clean report —
+15041 lines, 14402 covered, 95.75% — the arithmetic is: a module going entirely
+dark still passes as long as it accounts for **413 covered lines or fewer**.
+
+**Twenty-two modules of 100 or more covered lines can go entirely dark with the
+aggregate still green.** The largest three:
+
+| module | covered lines | workspace after it goes dark |
+| ------ | -------------: | ---------------------------- |
+| `taiyaku-read/src/pages.rs` | 406 | 93.05% |
+| `taiyaku-core/src/solve.rs` | 391 | 93.15% |
+| `taiyaku-serve/src/notes.rs` | 375 | 93.26% |
+
+and the tail runs down through `stump/resolve.rs`, `composite.rs`,
+`inventory.rs`, `binding.rs`, `credits.rs` and the rest to
+`stump/cache.rs` at 100. Only seven files in the whole workspace are large enough
+that losing them trips the aggregate at all, and three of those are
+`routes.rs`, `sidecar.rs` and `main.rs` at roughly two thousand covered lines
+each. **Every one of the 22 trips the per-file floor**, because a dark file
+reports 0% lines against a floor of 57.
+
+That is the division of labour, stated plainly: `--fail-under-lines` catches the
+workspace sliding; it structurally cannot catch one module being switched off.
+The floor is loose — it will not notice 95% becoming 80% — and it does not need
+to be tight to catch the thing the aggregate cannot see at all.
+
+**One implementation detail is recorded because it is exactly how a check gets
+silently defeated.** On a collapsed report istanbul writes `"pct": "Unknown"` — a
+**string**, not a number. Coerced for comparison that is `NaN`, and `NaN < floor`
+is `false`, so a naive numeric comparison would have *passed* such a file rather
+than failing it. `coverage-floor.mjs` therefore skips every non-number rather
+than comparing it, and detects the istanbul format on `total.lines.total` — a
+count, `0` on a collapsed report — rather than on `total.lines.pct`, which is the
+field that turns into a string in precisely the case the gate exists for. The
+first attempt sniffed `pct`, and it failed the collapsed report for the wrong
+reason: not "this report is empty" but "this is not an istanbul summary".
+
+## The other half: `scripts/coverage-floor.mjs`
+
+**One script, and it runs in both gates.** It is the per-file half of the web
+gate *and* the per-file half of the Rust gate — the same file, invoked twice with
+different arguments, once by the `web` job over
+`web/coverage/coverage-summary.json` and once by the `test` job over
+`target/rust-coverage.json`.
+
+An earlier draft of the section above rejected a per-file threshold "at the cost
+of 57 numbers to maintain". That objection is right about per-file *values* and
+wrong about per-file *floors*: **one floor per metric, applied to every file, is
+one number per metric.** Five in total across both languages, each two points
+below its metric's lowest honest figure on a clean tree, plus two file-count
+minimums:
+
+| format | metric | floor | lowest measured |
+| ------ | ------ | ----- | --------------- |
+| istanbul (web) | statements | 91 | `fixtures.ts`, 93.10% |
+| istanbul (web) | branches | 78 | `api.ts`, 80.76% |
+| istanbul (web) | functions | 91 | `decode.ts`, 93.33% |
+| istanbul (web) | lines | 92 | `api.ts`, 94.28% |
+| llvm-cov (Rust) | lines | 57 | `taiyaku-serve/src/stump/http.rs`, 59.44% |
+
+| format | files measured | `minFiles` |
+| ------ | -------------: | ---------: |
+| istanbul (web) | 57 | 50 |
+| llvm-cov (Rust) | 37 | 32 |
+
+**The count is checked ahead of the floors, deliberately.** If the report
+collapsed then every per-file finding under it is noise and the count is the real
+story, so that failure is reported on its own and names the config to open first
+— the `include`/`exclude` lists for the web format, the `--ignore-filename-regex`
+for the Rust one.
+
+**Two report formats, detected by shape rather than by filename**, since the path
+is an argument and could be anything. istanbul is recognised on
+`total.lines.total` and llvm-cov on `data[0].files` being an array; a report
+matching neither exits **2** rather than passing, because a gate that cannot read
+its own input must not report green. The two adapters differ in exactly three
+places, and each difference is a measured property of the tool rather than a
+style choice:
+
+- **How to enumerate files** — istanbul keys the object by path with a `total`
+  entry mixed in; llvm-cov nests them under `data[0].files`.
+- **What an empty metric looks like.** istanbul writes `"pct": 100` for a metric
+  with nothing in it on a populated report — `total.branchesTrue` is 0/0 on every
+  run here — and the string `"Unknown"` on a collapsed one. llvm-cov writes `0`,
+  not 100, for the same situation. Both were measured. So the web adapter skips
+  every non-number and the Rust one skips every zero `count`; swapping the two
+  rules would make one gate blind and the other all false alarms.
+- **Which config a reader should open first** when the count check fires.
+
+**One file rather than two, and the alternative it beat.** A sibling script was
+the obvious other shape. This is one file because the two checks are the same
+idea twice — same floor comparison, same minimum, same thing to say on failure —
+and only the adapter differs. Two files would have meant maintaining that
+reasoning twice and leaving two chances to fix a hole in only one of them. The
+cost is a `FORMATS` table a reader has to scan past to find the half they care
+about.
+
+Its job is not to be tight. It is to notice a module that stops being tested at
+all, which is the one thing an aggregate provably cannot see. On the
+`pairing.test.ts` regression that every aggregate threshold passed:
+
+    coverage-floor: 3 file/metric pair(s) below the per-file floor:
+      web/src/pairing.ts  statements 83.58% < 91%
+      web/src/pairing.ts  functions 81.81% < 91%
+      web/src/pairing.ts  lines 86.20% < 92%
+
+and on a clean tree it says what it measured rather than only that it passed:
+
+    coverage-floor: 57 files (floor requires 50), all above the per-file floor — istanbul json-summary
+
+**Why a script and not more configuration.** vitest cannot express both halves.
+A glob entry in `coverage.thresholds` is aggregated over the files it matches —
+`'src/**': { statements: 91 }` passed with `pairing.ts` at 83.58%, measured — and
+`perFile` inside a glob entry is ignored, also measured. `perFile: true` at the
+top level *does* apply per file, but then one number serves both roles, and the
+aggregate bar of 96 is far above the lowest honest file, so a clean tree would
+fail. Both forms were tried before this file was written. On the Rust side the
+equivalent flag *does* exist — `--fail-under-file-lines` — and was rejected for
+saying nothing when it fires; see "Proving the gate gates" above for that
+measurement.
+
+**What none of the four checks can do.** Coverage counts execution, not
+verification. Measured on this branch: adding a test that genuinely pinned new
+behaviour — proven by deleting the code and watching the test fail — moved
+statement coverage by **zero**, because a pre-existing test already executed the
+same line while asserting nothing about it. Seven tests that could not fail were
+found here, five of them by mutation rather than by reading; the gate would have
+caught none of them. It stops coverage regressing. It cannot tell you the tests
+underneath mean anything.
+
+### Why component tests are in `jsdom` and not the browser project
+
+`web/` has three vitest projects and the gate runs two of them. The `browser`
+project needs a downloaded Chromium, and this CI has no cache to keep one in, so
+it would be re-fetched on every run — the same cost reasoning recorded under
+"Caching, and why there is none".
+
+The consequence is the deciding one, and it is about the gate's integrity rather
+than about speed: **anything measured in the browser project is invisible to the
+gate**, so a developer's local coverage number would sit above CI's and the two
+gates would disagree about the same tree. A gate must measure what CI can
+reproduce. Component tests therefore run in `jsdom`, which is cheap enough for
+every push.
+
+What `jsdom` structurally cannot see stays in the `browser` project and stays
+outside the gate: it has no layout engine, so `getBoundingClientRect` returns
+zeroes, and no real `HTMLImageElement.decode()` — the seam the whole page-turn
+mechanism is built on. `check-all.sh` runs those six tests locally and names
+them as unmeasured when no Chromium is present. `src/testing/**` is excluded
+from coverage for the matching reason: its `rerender` half is reachable only
+from the `browser` project, so counting it would park test infrastructure
+permanently short of 100% for a structural reason rather than an untested one.
+
 ## Formatting, and the tool that checks it
 
 Until 2026-08-07 the TypeScript half had **no formatting check at all**, which
@@ -200,10 +713,20 @@ was that coverage did not change. `tiles.ts` exists because of this rule.
 
 **Two rules are on with inline suppressions carrying their reasons.**
 `correctness/useExhaustiveDependencies` is the descendant of the rule `oxlint`
-was enforcing, and its four suppressions all say the same thing: the flagged
-dependencies are *triggers* rather than closure reads, and biome's own
-suggestion — remove them — would leave scroll mode never following the reader,
-the filmstrip centring once, and a reopened note never refocusing.
+was enforcing, and it carries **11** suppressions. *This said four until
+2026-08-10 and nobody revisited it, while this branch's extractions moved
+effects into files of their own and added most of the rest.* Seven of the 11
+say the same thing: the flagged dependencies are *triggers* rather than closure
+reads, and biome's own suggestion — remove them — would leave scroll mode never
+following the reader, the filmstrip centring once, and a reopened note never
+refocusing. The other four each carry a different reason, which is the argument
+for reading them rather than counting them: two in `PageView.tsx` (one
+dependency the effect itself sets, where obeying the rule would tear down an
+in-flight decode and restart it the moment it settles; one a parent's fresh
+closure, where obeying it would fire the effect every render), one in `App.tsx`
+where `session` is reached through `setSession`'s updater rather than closed
+over, and one in `hooks.test.tsx` where subscribing exactly once is the subject
+of the test.
 `suspicious/noTsIgnore` is suppressed at file level in `resolver.ts`, where
 biome's suggested fix (`@ts-expect-error`) would break the build in exactly the
 state the section below describes.
@@ -242,15 +765,30 @@ or `ci.yml` changing, and nothing pins the `web` job to 26.7.0 the way the
 `wasm` job's own node install does. Exact agreement holds only there — see
 that job's section below.
 
-**Three places name a Node version, and nothing keeps them in step.**
-`.node-version` at the repository root says `26`; the `web` job's image
-floats at `node:26-bookworm`; the `wasm` job hardcodes `26.7.0` twice, in the
-download URL and the symlink target (see `ci.yml`'s comment on that step).
-`.node-version` is read by nothing in this repository — no document, script
-or workflow references it — so it is not a single stated source for the pin,
-only a fourth place that can drift from the other three. Bump all of them
-together if any one moves, the same discipline `ci.yml` already asks of
+**Five places name a Node version, and nothing keeps them in step.** This
+paragraph said "three" and then, four lines later, called `.node-version` "a
+fourth place" — it disagreed with itself, and it was written before the `test`
+job grew a node install of its own. Counted afresh on 2026-08-10, by grepping the
+tree rather than from memory:
+
+| place | what it says | how it can drift |
+| ----- | ------------ | ---------------- |
+| `.node-version`, repository root | `26` | read by nothing here; drifts unnoticed |
+| `web/package.json` | `@types/node` at `^26.2.0` | a types package tracking the runtime major, by convention only |
+| `ci.yml`, `web` job | image tag `node:26-bookworm` | a floating tag: picks up 26.8.0 without any file changing |
+| `ci.yml`, `test` job | `26.7.0` **twice** — download URL and symlink target | the two halves can disagree with each other |
+| `ci.yml`, `wasm` job | `26.7.0` **twice** — download URL and symlink target | the same |
+
+Five places, **seven literal occurrences**. `.node-version` is read by nothing in
+this repository — no document, script or workflow references it — so it is not a
+single stated source for the pin, only one more thing that can drift. Bump all of
+them together if any one moves, the same discipline `ci.yml` already asks of
 `wasm-pack`'s version.
+
+*`ci.yml`'s own comment on the `wasm` job's node step says "Four places" and
+enumerates four. It is one behind: it counts the same set minus `@types/node`.
+Correcting a comment in `ci.yml` was outside the scope of the change that found
+this, so the disagreement is recorded here rather than silently left.*
 
 **The `wasm` job was on Node 18 and nothing said so.** It installed node with
 `apt-get install -y nodejs`, and Debian bookworm's `nodejs` package is

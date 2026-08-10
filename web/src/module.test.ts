@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildRegistry,
+  changeSlice,
   collisions,
   duplicateIds,
+  fieldChanged,
+  initialPrefs,
+  persistPrefs,
   sliceFor,
+  sliceReset,
+  withSlice,
   type ReaderModule,
 } from './module'
 import { withFieldValue } from './settingsPanel'
@@ -133,5 +139,154 @@ describe('the generic per-module preference map App.tsx builds', () => {
     // `Settings.tsx`'s onReset path — `handleSettingReset`'s shape.
     map = { ...map, [extra.id]: { ...extra.defaults } }
     expect(sliceFor(map, extra)).toEqual({ on: true, n: 5 })
+  })
+})
+
+/**
+ * The preferences map, as six rules rather than six hand-written spreads.
+ *
+ * Every one of these was inline in `App.tsx` and so was covered by typecheck
+ * alone — and the class of defect they guard against is one this repository
+ * has already shipped once: `direction.ts` extracted `setOverride` because a
+ * hand-written merge dropped every other edition's saved value.
+ */
+
+const two = (): ReaderModule<{ on: boolean; size: number }> => ({
+  id: 'two',
+  label: 'Two',
+  defaults: { on: true, size: 3 },
+})
+
+const nested = (): ReaderModule<{ override: Record<string, string> }> => ({
+  id: 'nested',
+  label: 'Nested',
+  defaults: { override: {} },
+})
+
+describe('withSlice', () => {
+  it('replaces one module and leaves the rest', () => {
+    const map = { two: { on: false, size: 1 }, other: { x: 1 } }
+    const next = withSlice(map, two(), { on: true, size: 9 })
+    expect(next).toEqual({ two: { on: true, size: 9 }, other: { x: 1 } })
+  })
+
+  /**
+   * A `setPrefsMap` updater must stay pure — React may invoke it more than
+   * once, e.g. under StrictMode — so the map it is handed cannot be written
+   * into. Asserted on identity, which is the only way to see the difference.
+   */
+  it('never writes into the map it was given', () => {
+    const map = { two: { on: false, size: 1 } }
+    const next = withSlice(map, two(), { on: true, size: 9 })
+    expect(next).not.toBe(map)
+    expect(map.two).toEqual({ on: false, size: 1 })
+  })
+})
+
+describe('changeSlice', () => {
+  it('applies one rule to one module’s current slice', () => {
+    const map = { two: { on: false, size: 1 }, other: { x: 1 } }
+    const next = changeSlice(map, two(), (prefs) => ({
+      ...prefs,
+      on: !prefs.on,
+    }))
+    expect(next.two).toEqual({ on: true, size: 1 })
+    expect(next.other).toEqual({ x: 1 })
+  })
+
+  /** A module registered but never written falls back to its own defaults, the same fallback `sliceFor` applies at every read. */
+  it('changes a module with no entry yet, from its defaults', () => {
+    const next = changeSlice({}, two(), (prefs) => ({ ...prefs, size: 7 }))
+    expect(next.two).toEqual({ on: true, size: 7 })
+  })
+
+  /**
+   * **The defect this shape exists to prevent.** A rule that returns only the
+   * field it changed drops the rest of the slice — which is exactly what
+   * `direction.ts`'s `setOverride` was extracted over, and what makes the
+   * *rule* rather than the merge the thing to get right.
+   */
+  it('keeps whatever the rule keeps, and nothing more', () => {
+    const dropped = changeSlice({}, two(), () => ({ on: false }) as never)
+    expect(dropped.two).toEqual({ on: false })
+  })
+})
+
+describe('initialPrefs', () => {
+  it('loads every registered module’s slice, keyed by id', () => {
+    const loaded: string[] = []
+    const map = initialPrefs([two(), nested()], (id, defaults) => {
+      loaded.push(id)
+      return { ...defaults, loaded: true }
+    })
+    expect(loaded).toEqual(['two', 'nested'])
+    expect(map.two).toEqual({ on: true, size: 3, loaded: true })
+    expect(map.nested).toEqual({ override: {}, loaded: true })
+  })
+
+  it('is empty for an empty registry', () => {
+    expect(initialPrefs([], () => ({}))).toEqual({})
+  })
+})
+
+describe('persistPrefs', () => {
+  it('saves every module’s slice, not only the one that moved', () => {
+    const saved: [string, object][] = []
+    persistPrefs([two(), nested()], { two: { on: false, size: 1 } }, (id, p) =>
+      saved.push([id, p]),
+    )
+    expect(saved).toEqual([
+      ['two', { on: false, size: 1 }],
+      // A module with no entry yet saves its own defaults rather than
+      // `undefined`, which would put a `null` in storage for the next load.
+      ['nested', { override: {} }],
+    ])
+  })
+})
+
+describe('fieldChanged and sliceReset', () => {
+  const registry = buildRegistry([
+    two() as ReaderModule<unknown>,
+    nested() as ReaderModule<unknown>,
+  ])
+
+  it('coerces the control’s raw value through withFieldValue', () => {
+    const next = fieldChanged({}, registry, 'two', 'size', '12')
+    expect(next.two).toEqual({ on: true, size: 12 })
+  })
+
+  it('refuses a key the module does not declare', () => {
+    const next = fieldChanged({}, registry, 'two', 'nope', 1)
+    expect(next.two).toEqual({ on: true, size: 3 })
+  })
+
+  /** A stale panel must not write a slice no module will ever read back. */
+  it('leaves the map alone for an id the registry does not know', () => {
+    const map = { two: { on: false, size: 1 } }
+    expect(fieldChanged(map, registry, 'ghost', 'on', true)).toBe(map)
+    expect(sliceReset(map, registry, 'ghost')).toBe(map)
+  })
+
+  it('resets one module to its defaults, leaving the rest', () => {
+    const map = {
+      two: { on: false, size: 99 },
+      nested: { override: { a: 'b' } },
+    }
+    const next = sliceReset(map, registry, 'two')
+    expect(next.two).toEqual({ on: true, size: 3 })
+    expect(next.nested).toEqual({ override: { a: 'b' } })
+  })
+
+  /**
+   * A *copy* of `defaults`, never the module's own literal — a reset that
+   * handed the literal to state would let the next `fieldChanged` spread from
+   * an object the module itself is still holding.
+   */
+  it('resets to a copy, not to the module’s own defaults object', () => {
+    const mod = two()
+    const single = buildRegistry([mod as ReaderModule<unknown>])
+    const next = sliceReset({}, single, 'two')
+    expect(next.two).toEqual(mod.defaults)
+    expect(next.two).not.toBe(mod.defaults)
   })
 })

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { bSlots, fakeResolver, whole } from '../fixtures'
+import type { Display } from '../reading'
 import type { Alignment } from '../session'
 import {
   chapterLine,
@@ -9,9 +11,12 @@ import {
   nextTurns,
   pagesPerMinute,
   positionLine,
+  readoutLines,
   readoutRow,
   readoutsModule,
+  reportPoint,
   timeLine,
+  type ReadoutClock,
 } from './readouts'
 
 describe('positionLine', () => {
@@ -341,5 +346,195 @@ describe('readoutsModule', () => {
 
   it('claims no keys — every readout is toggled in settings, not mid-read', () => {
     expect(readoutsModule.keys ?? []).toEqual([])
+  })
+})
+
+/**
+ * The block `App.tsx` used to hold: nine bindings, four branches and two
+ * arithmetic rules, none of them reachable from a test until now.
+ *
+ * `fakeResolver` rather than the real one — `resolver.ts` value-imports
+ * `taiyaku-wasm` and a test that pulls it in passes on a machine that has
+ * built the wasm package and breaks CI.
+ */
+
+const ALIGNMENTS: Alignment[] = [
+  { from: 'a', to: 'b', quality: { verdict: 'fragmented' } },
+]
+
+const at = (edition: string, slot: number): Display => ({
+  kind: 'at',
+  edition,
+  slot,
+  via: 'direct',
+})
+
+const gap = (edition: string, from: string, slot: number): Display => ({
+  kind: 'gap',
+  edition,
+  from: { edition: from, slot },
+})
+
+const CLOCK = { startedAt: 0, turns: [], now: 600_000 }
+
+const lines = (shown: Display, over: Partial<ReadoutClock> = {}) =>
+  readoutLines(
+    shown,
+    fakeResolver(
+      { a: whole(8), b: bSlots },
+      {},
+      { 'a|3': { member: 2, of: 7, path: 'x - c002.cbz' } },
+    ),
+    ALIGNMENTS,
+    'a',
+    { here: 2, total: 7 },
+    { ...CLOCK, ...over },
+  )
+
+describe('reportPoint', () => {
+  it('reports the slot on screen while reading, unnamed', () => {
+    expect(reportPoint(at('b', 4))).toEqual({
+      edition: 'b',
+      slot: 4,
+      name: undefined,
+    })
+  })
+
+  /**
+   * **In a gap it reports the authority, and names it.** The viewed edition
+   * has no page there; the authority's slot is a real position in the work.
+   * `name` is what stops the change of scale being silent — the slot count
+   * the percentage is measured against is a different edition's.
+   */
+  it('reports the authority in a gap, and names it', () => {
+    expect(reportPoint(gap('b', 'a', 5))).toEqual({
+      edition: 'a',
+      slot: 5,
+      name: 'a',
+    })
+  })
+})
+
+describe('readoutLines', () => {
+  it('reports the position on screen, 1-based, with the page', () => {
+    expect(lines(at('a', 3)).position).toBe('slot 4 / 8 · p. 4 · 50%')
+  })
+
+  /** A joined spread's two slots share one page, and the line reports the page. */
+  it('reports the page a spread slot sits on', () => {
+    expect(lines(at('b', 3)).position).toBe('slot 4 / 9 · p. 3 · 44%')
+  })
+
+  it('prefixes the edition in a gap, so the change of scale is not silent', () => {
+    expect(lines(gap('b', 'a', 5)).position).toBe('a slot 6 / 8 · p. 6 · 75%')
+  })
+
+  /**
+   * `?? slot + 1`. An edition the resolver cannot count still renders a line
+   * rather than `NaN%` — which is what a bare `slotCount` would produce, and
+   * which reads as a broken reader rather than as a missing edition.
+   */
+  it('renders a line rather than NaN for an edition it cannot count', () => {
+    const noCount = readoutLines(
+      { ...at('ghost', 0), edition: 'ghost' },
+      {
+        ...fakeResolver({ ghost: whole(1) }, {}),
+        slotCount: () => undefined,
+      },
+      [],
+      'a',
+      { here: 0, total: 0 },
+      CLOCK,
+    )
+    expect(noCount.position).toBe('slot 1 / 1 · p. 1 · 100%')
+    expect(noCount.position).not.toContain('NaN')
+  })
+
+  it('carries the chapter through, marked where the hub pairing is fragile', () => {
+    // `chapterReadout` prefixes `~` when any hub alignment is not sound.
+    expect(lines(at('a', 3)).chapter).toBe('~c002 · 3 of 7')
+  })
+
+  /**
+   * `healthReadout` against the hub while reading — and `undefined` on the hub
+   * itself, where there is no cross-edition pairing to report on.
+   */
+  it('reports health against the hub while reading', () => {
+    expect(lines(at('b', 0)).health).toBe('fragmented pair')
+    expect(lines(at('a', 0)).health).toBeUndefined()
+  })
+
+  /**
+   * **`gapHealth`, not `healthReadout`, in a gap.** It reports the pair
+   * `Gap.tsx` already prints a verdict sentence for, so the view and the row
+   * beneath it cannot contradict each other — and it never goes silent, which
+   * is what `healthReadout` would do on a sound pairing with a gap at the slot
+   * on screen.
+   */
+  it('reports the gap’s own pair in a gap, and never silently', () => {
+    expect(lines(gap('b', 'a', 5)).health).toBe(
+      'fragmented pair · no counterpart here',
+    )
+    const sound = readoutLines(
+      gap('b', 'a', 5),
+      fakeResolver({ a: whole(8), b: bSlots }, {}),
+      [{ from: 'a', to: 'b', quality: { verdict: 'sound' } }],
+      'a',
+      { here: 0, total: 0 },
+      CLOCK,
+    )
+    expect(sound.health).toBe('sound pair · no counterpart here')
+  })
+
+  it('reports the time from the clock it is handed, not from the wall', () => {
+    expect(lines(at('a', 0), { now: 600_000 }).time).toBe('10m read')
+    expect(lines(at('a', 0), { now: 60_000 }).time).toBe('1m read')
+  })
+
+  /**
+   * `Math.max(total - (slot + 1), 0)`. A slot count that has gone backwards —
+   * a stale position against a shrunk edition — would otherwise put a negative
+   * into the remaining-page estimate.
+   */
+  it('never estimates against a negative number of slots left', () => {
+    const backwards = readoutLines(
+      at('a', 20),
+      { ...fakeResolver({ a: whole(30) }, {}), slotCount: () => 3 },
+      [],
+      'a',
+      { here: 0, total: 0 },
+      { startedAt: 0, turns: [0, 60_000], now: 120_000 },
+    )
+    // Without the clamp this line reads `2m read · ~-18m left`, which is what
+    // the raw `3 - 21` produces — checked directly against `timeLine`, not
+    // assumed from the shape of the arithmetic.
+    expect(backwards.time).toBe('2m read · ~0m left')
+  })
+
+  it('counts notes here against the work’s own total', () => {
+    expect(lines(at('a', 0)).notes).toBe('2 notes here of 7')
+  })
+
+  it('says nothing about notes on a work that has none', () => {
+    const none = readoutLines(
+      at('a', 0),
+      fakeResolver({ a: whole(8) }, {}),
+      [],
+      'a',
+      { here: 0, total: 0 },
+      CLOCK,
+    )
+    expect(none.notes).toBeUndefined()
+  })
+
+  /** All five, in one call, so `Chrome` can be handed strings and nothing else. */
+  it('answers every line the row lays out', () => {
+    expect(Object.keys(lines(at('b', 0)))).toEqual([
+      'position',
+      'chapter',
+      'health',
+      'time',
+      'notes',
+    ])
   })
 })

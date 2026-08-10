@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { fitModule, pageStyle, seamStyle } from './fit'
+import { cellOf } from '../pairing'
+import { fitModule, hugForCell, pageStyle, seamStyle } from './fit'
 import { registry } from './registry'
 
 describe('fitModule', () => {
@@ -22,6 +23,45 @@ describe('fitModule', () => {
 
   it('closes the seam by default', () => {
     expect(fitModule.defaults.gap).toBe(0)
+  })
+})
+
+describe('hugForCell', () => {
+  // The one thing in this translation it is possible to get backwards, and the
+  // reason `ArtworkHug` is named for the edge rather than for the cell: the
+  // *first* cell is the one on the left, so the seam — and therefore its hug —
+  // is on its right.
+  it('pulls the first cell right and the second left', () => {
+    expect(hugForCell('first')).toBe('right-edge')
+    expect(hugForCell('second')).toBe('left-edge')
+  })
+
+  // A joined spread fills its group. There is no seam inside one image.
+  it('centres the only cell', () => {
+    expect(hugForCell('only')).toBe('centre')
+  })
+
+  // The pair this and `cellOf` make has to come out the same way round under
+  // both reading directions: `cellsFor` has already applied the work's
+  // direction by the time a `Cell` exists, so applying it a second time here
+  // would hug both pages to the same side. Asserted through `cellOf` rather
+  // than restated, since that is exactly how the caller asks.
+  it('hugs by screen position, not by reading direction', () => {
+    const pair = { slots: [4, 5] }
+    expect(hugForCell(cellOf(pair, 'rtl', 5))).toBe('right-edge')
+    expect(hugForCell(cellOf(pair, 'rtl', 4))).toBe('left-edge')
+    expect(hugForCell(cellOf(pair, 'ltr', 4))).toBe('right-edge')
+    expect(hugForCell(cellOf(pair, 'ltr', 5))).toBe('left-edge')
+  })
+
+  // An unpartnered page keeps its own half-width cell (`cellsFor`'s `alone`
+  // without `wide`), so it is a `'first'` and hugs the seam like any other
+  // first cell; a real spread is `'only'` and does not.
+  it('hugs a solo slot but not a spread', () => {
+    expect(hugForCell(cellOf({ slots: [7] }, 'rtl', 7))).toBe('right-edge')
+    expect(hugForCell(cellOf({ slots: [2, 3], spread: true }, 'rtl', 2))).toBe(
+      'centre',
+    )
   })
 })
 

@@ -1,9 +1,9 @@
 import { act } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { createCohort } from './cohort'
 import { createDecodeQueue } from './decode'
 import { PageView } from './PageView'
+import { mount, rerender } from './testing/mount'
 
 /**
  * `PageView` in a real browser, which is the only place several of its
@@ -25,24 +25,6 @@ const TINY =
 /** A second image, distinguishable from the first by its own data URL. */
 const OTHER =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGOQszkBRAwQCgAdHgSJ5Ed7/AAAAABJRU5ErkJggg=='
-
-let root: Root | undefined
-let host: HTMLElement | undefined
-
-afterEach(() => {
-  act(() => root?.unmount())
-  host?.remove()
-  root = undefined
-  host = undefined
-})
-
-function mount(ui: React.ReactNode): HTMLElement {
-  host = document.createElement('div')
-  document.body.append(host)
-  root = createRoot(host)
-  act(() => root?.render(ui))
-  return host
-}
 
 /** Waits until `check` holds, or gives up — a decode is real here, so nothing is synchronous. */
 async function until(check: () => boolean, ms = 2000): Promise<void> {
@@ -77,9 +59,7 @@ describe('PageView, in a browser', () => {
     // A source that can never decode: the gate must hold the old page rather
     // than blank the cell.
     const broken = 'data:image/png;base64,not-a-png'
-    act(() =>
-      root?.render(<PageView src={broken} alt="a page" buffered={true} />),
-    )
+    rerender(<PageView src={broken} alt="a page" buffered={true} />)
     await act(async () => {
       await new Promise((r) => setTimeout(r, 120))
     })

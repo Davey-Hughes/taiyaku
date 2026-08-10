@@ -1,27 +1,45 @@
 import { describe, expect, it } from 'vitest'
 import { bSlots, fakeResolver, whole } from './fixtures'
 import {
+  afterDelete,
+  anchorFrom,
+  anchorNote,
+  artOffset,
+  changeShown,
   editsToWrite,
   exportName,
   gestureFor,
+  grabNote,
   isBlank,
   isPoint,
   listPlacement,
   mergeOver,
+  newNote,
+  NOTHING_OPEN,
+  nothingOpen,
   notesBySlot,
   notesHere,
   moveRegion,
   notesJson,
+  openNote,
   paintedBox,
   pointAt,
   pointInSlot,
+  pressTakesPan,
   regionContains,
   regionFromDrag,
+  regionUnderDrag,
   reviewList,
+  sameNotes,
+  shownNote,
   spreadTabs,
   tabOffset,
+  toggleReview,
+  visibleNotes,
+  withEdits,
   withNote,
   withoutNote,
+  type Draft,
   type Note,
 } from './notes'
 
@@ -384,6 +402,39 @@ describe('paintedBox', () => {
   })
 })
 
+describe('artOffset', () => {
+  // `Annotations.tsx`'s `measure` gives this the page area's own rect as
+  // `outer`, the `<img>`'s as `inner`, and `paintedBox`'s inset as `art`.
+  it('is just the artwork inset when the host and the image share an origin', () => {
+    // The case every one of `Annotations.test.tsx`'s fixtures happens to be:
+    // `inner.left - outer.left` is 0, so the element-to-element term
+    // vanishes and only `art` shows up. Wrong order or wrong sign here would
+    // answer exactly the same thing.
+    expect(
+      artOffset({ left: 10, top: 20 }, { left: 10, top: 20 }, { x: 5, y: 8 }),
+    ).toEqual({ left: 5, top: 8 })
+  })
+
+  it('folds in the element-to-element offset when the two rects do not coincide', () => {
+    // `outer` at (100, 50), `inner` at (90, 70): the image sits 10px left of
+    // and 20px below the host it is measured against.
+    expect(
+      artOffset({ left: 100, top: 50 }, { left: 90, top: 70 }, { x: 5, y: 0 }),
+    ).toEqual({ left: -5, top: 20 })
+  })
+
+  it('takes the offset as inner minus outer, not outer minus inner', () => {
+    // Swapping the two operands — the mutation a matching-origin fixture
+    // cannot catch — disagrees with the correct answer as soon as the
+    // origins differ.
+    const outer = { left: 100, top: 50 }
+    const inner = { left: 90, top: 70 }
+    const art = { x: 5, y: 0 }
+    expect(artOffset(outer, inner, art)).toEqual({ left: -5, top: 20 })
+    expect(artOffset(inner, outer, art)).toEqual({ left: 15, top: -20 })
+  })
+})
+
 describe('pointInSlot', () => {
   it('reads a point inside the painted image as fractions of it', () => {
     const painted = { x: 150, y: 0, w: 100, h: 200 }
@@ -729,5 +780,317 @@ describe('export', () => {
     const doc = { work: 'w', notes: [note('1', 'a', 0)] }
     expect(JSON.parse(notesJson(doc))).toEqual(doc)
     expect(notesJson(doc)).toContain('\n  ')
+  })
+})
+
+// ---- the editing session ---------------------------------------------------
+
+/** A draft holding `notes`, showing the last of them, with the editor open. */
+const editing = (...notes: Note[]): Draft => ({
+  panel: 'edit',
+  edits: Object.fromEntries(notes.map((n) => [n.id, n])),
+  currentId: notes.at(-1)?.id,
+})
+
+const here = (...notes: Note[]) =>
+  notes.map((note) => ({ note, travelled: false }))
+
+describe('shownNote', () => {
+  it('is the note the panel is showing', () => {
+    const a = note('a', 'a', 0)
+    expect(shownNote(editing(a))).toEqual(a)
+  })
+
+  it('is nothing with nothing open, and nothing for an id that went away', () => {
+    expect(shownNote(NOTHING_OPEN)).toBeUndefined()
+    expect(
+      shownNote({ panel: 'edit', edits: {}, currentId: 'gone' }),
+    ).toBeUndefined()
+  })
+})
+
+describe('newNote', () => {
+  const at = { edition: 'a', slot: 4 }
+
+  it('opens the editor on a note anchored where the reader is standing', () => {
+    const draft = newNote(NOTHING_OPEN, at, [], 'fresh', '2026-08-09T00:00:00Z')
+    expect(draft.panel).toBe('edit')
+    expect(draft.currentId).toBe('fresh')
+    expect(shownNote(draft)).toEqual({
+      id: 'fresh',
+      edition: 'a',
+      slot: 4,
+      color: 'amber',
+      body: '',
+      created: '2026-08-09T00:00:00Z',
+      updated: '2026-08-09T00:00:00Z',
+    })
+  })
+
+  // Always a new note, however many the slot already holds — reopening the one
+  // already there is what made a second note on a page impossible.
+  it('keeps the notes this session already touched', () => {
+    const held = note('held', 'a', 4)
+    const draft = newNote(editing(held), at, [], 'fresh', 'now')
+    expect(Object.keys(draft.edits).sort()).toEqual(['fresh', 'held'])
+  })
+
+  // Two notes on one page come out different without a reader choosing.
+  it('takes the next colour nobody on this page is using', () => {
+    const used = { ...note('used', 'a', 4), color: 'amber' }
+    const draft = newNote(NOTHING_OPEN, at, here(used), 'fresh', 'now')
+    expect(shownNote(draft)?.color).not.toBe('amber')
+  })
+})
+
+describe('openNote', () => {
+  const stored = [note('stored', 'a', 0)]
+
+  it('brings a stored note in and shows it', () => {
+    const draft = openNote(NOTHING_OPEN, 'stored', stored)
+    expect(draft.panel).toBe('edit')
+    expect(shownNote(draft)).toEqual(stored[0])
+  })
+
+  // Clicking back onto a note moved a moment ago shows it where it was left,
+  // not where the server still has it.
+  it("prefers this session's copy over the stored one", () => {
+    const moved = { ...stored[0], body: 'moved' }
+    expect(shownNote(openNote(editing(moved), 'stored', stored))).toEqual(moved)
+  })
+
+  it('hands the same draft back for an id neither side knows', () => {
+    expect(openNote(NOTHING_OPEN, 'nobody', stored)).toBe(NOTHING_OPEN)
+  })
+})
+
+describe('changeShown', () => {
+  it('changes the note on show and leaves the rest alone', () => {
+    const other = note('other', 'a', 0)
+    const shown = note('shown', 'a', 1)
+    const draft = changeShown(editing(other, shown), (n) => ({
+      ...n,
+      body: 'typed',
+    }))
+    expect(shownNote(draft)?.body).toBe('typed')
+    expect(draft.edits.other).toEqual(other)
+  })
+
+  // Identity is how the caller tells a real change from a no-op, and it is the
+  // caller that schedules the write.
+  it('hands the same draft back when nothing is on show', () => {
+    expect(changeShown(NOTHING_OPEN, (n) => n)).toBe(NOTHING_OPEN)
+    const stale: Draft = { panel: 'edit', edits: {}, currentId: 'gone' }
+    expect(changeShown(stale, (n) => n)).toBe(stale)
+  })
+})
+
+describe('grabNote', () => {
+  const grabbed = note('grabbed', 'a', 0)
+
+  it('brings the grabbed note in and makes it the one on show', () => {
+    const draft = grabNote(NOTHING_OPEN, grabbed)
+    expect(draft.currentId).toBe('grabbed')
+    expect(shownNote(draft)).toEqual(grabbed)
+  })
+
+  // Grabbing a box moved earlier continues from where it is now.
+  it("keeps this session's copy of a note it has already touched", () => {
+    const moved = { ...grabbed, body: 'moved' }
+    expect(shownNote(grabNote(editing(moved), grabbed))).toEqual(moved)
+  })
+
+  it('leaves the panel alone — a grab happens with the editor already open', () => {
+    expect(grabNote({ ...NOTHING_OPEN, panel: 'review' }, grabbed).panel).toBe(
+      'review',
+    )
+  })
+})
+
+describe('anchorNote', () => {
+  const region = { x: 0.1, y: 0.2, w: 0.3, h: 0.4 }
+
+  // The note a drag ends on is not always the one the panel was showing when
+  // it began.
+  it('anchors by id rather than by what is on show', () => {
+    const dragged = note('dragged', 'a', 0)
+    const shown = note('shown', 'a', 1)
+    const draft = anchorNote(
+      editing(dragged, shown),
+      'dragged',
+      region,
+      'later',
+    )
+    expect(draft.edits.dragged).toEqual({
+      ...dragged,
+      region,
+      updated: 'later',
+    })
+    expect(draft.edits.shown).toEqual(shown)
+    expect(draft.currentId).toBe('shown')
+  })
+
+  it('hands the same draft back for a note this session never had', () => {
+    expect(anchorNote(NOTHING_OPEN, 'nobody', region, 'later')).toBe(
+      NOTHING_OPEN,
+    )
+  })
+})
+
+describe('toggleReview', () => {
+  it('opens the list, and closes it when it is what is open', () => {
+    const open = toggleReview(NOTHING_OPEN)
+    expect(open.panel).toBe('review')
+    expect(toggleReview(open).panel).toBeUndefined()
+  })
+
+  // `a` always means "show me the list" rather than sometimes meaning "close".
+  it('swaps the editor for the list rather than closing', () => {
+    expect(toggleReview({ ...NOTHING_OPEN, panel: 'edit' }).panel).toBe(
+      'review',
+    )
+  })
+
+  it('leaves the edits alone — swapping surfaces is not finishing', () => {
+    const held = note('held', 'a', 0)
+    expect(toggleReview(editing(held)).edits.held).toEqual(held)
+  })
+})
+
+describe('nothingOpen / afterDelete', () => {
+  it('closes everything and forgets every edit', () => {
+    expect(nothingOpen()).toEqual({
+      panel: undefined,
+      edits: {},
+      currentId: undefined,
+    })
+  })
+
+  // Deleting one note is not abandoning the rest, and the write that carries
+  // the deletion carries them too.
+  it('forgets the deleted note and keeps the others', () => {
+    const kept = note('kept', 'a', 0)
+    const gone = note('gone', 'a', 1)
+    const draft = afterDelete(editing(kept, gone), 'gone')
+    expect(draft.edits).toEqual({ kept })
+    expect(draft.panel).toBeUndefined()
+    expect(draft.currentId).toBeUndefined()
+  })
+})
+
+describe('withEdits / visibleNotes', () => {
+  const stored = [note('stored', 'a', 0), note('moved', 'a', 1)]
+  const moved = { ...stored[1], body: 'moved' }
+  const invented = { ...note('invented', 'b', 2), body: '', region: undefined }
+
+  it('draws a nudged box where it was nudged to, not where the server has it', () => {
+    expect(withEdits(stored, { moved })).toEqual([stored[0], moved])
+  })
+
+  // Unlike `editsToWrite`: a reader who has just pressed `n` needs to see the
+  // note they are about to write.
+  it('keeps a blank invented note, which a write would drop', () => {
+    expect(withEdits(stored, { invented })).toContainEqual(invented)
+    expect(editsToWrite(stored, { invented })).not.toContainEqual(invented)
+  })
+
+  it('filters to the edition being read when travel is off', () => {
+    expect(visibleNotes(stored, { invented }, false, 'a')).toEqual(stored)
+    expect(visibleNotes(stored, { invented }, true, 'a')).toHaveLength(3)
+  })
+})
+
+describe('sameNotes', () => {
+  // Reference equality would record a step for a write that changed nothing
+  // and leave undo needing two presses to do anything visible.
+  it('compares by content, not by reference', () => {
+    const a = [note('a', 'a', 0)]
+    expect(sameNotes(a, [note('a', 'a', 0)])).toBe(true)
+    expect(sameNotes(a, a)).toBe(true)
+    expect(sameNotes(a, [{ ...a[0], body: 'other' }])).toBe(false)
+  })
+})
+
+// ---- the region gesture ----------------------------------------------------
+
+describe('pressTakesPan', () => {
+  const press = {
+    zoomable: true,
+    onControl: false,
+    editing: false,
+    shift: false,
+  }
+
+  it('pans a press on the page with the editor closed', () => {
+    expect(pressTakesPan(press)).toBe(true)
+  })
+
+  // Nothing drawn to move the rect over, or the module switched off: the same
+  // flag the three zoom keys are gated on.
+  it('does nothing where there is nothing to pan', () => {
+    expect(pressTakesPan({ ...press, zoomable: false })).toBe(false)
+  })
+
+  // A sweep to select text in the note list must not pan the manga under it.
+  it('hands a press on a control back', () => {
+    expect(pressTakesPan({ ...press, onControl: true })).toBe(false)
+  })
+
+  it('gives an unmodified press to the region while editing, and a shifted one to the pan', () => {
+    expect(pressTakesPan({ ...press, editing: true })).toBe(false)
+    expect(pressTakesPan({ ...press, editing: true, shift: true })).toBe(true)
+  })
+})
+
+describe('regionUnderDrag', () => {
+  // Quarters, so the deltas below are exact in binary and the assertions are
+  // about the rule rather than about float error.
+  const from = { x: 0.5, y: 0.25 }
+  const to = { x: 0.25, y: 0.75 }
+
+  it('sweeps a normalised rectangle out, whichever way the drag went', () => {
+    expect(regionUnderDrag('draw', from, to)).toEqual(regionFromDrag(from, to))
+  })
+
+  // Measured against the region as it was when the drag began, so a slow drag
+  // against the page edge cannot accumulate rounding into a drift.
+  it('slides a move by the whole offset from where it started', () => {
+    const started = { x: 0.5, y: 0.25, w: 0.25, h: 0.25 }
+    expect(regionUnderDrag('move', from, to, started)).toEqual({
+      x: 0.25,
+      y: 0.75,
+      w: 0.25,
+      h: 0.25,
+    })
+    expect(regionUnderDrag('move', from, to, started)).toEqual(
+      moveRegion(started, -0.25, 0.5),
+    )
+  })
+
+  it('draws where a move has no region to slide', () => {
+    expect(regionUnderDrag('move', from, to)).toEqual(regionFromDrag(from, to))
+  })
+})
+
+describe('anchorFrom', () => {
+  const start = { x: 0.25, y: 0.75 }
+
+  // A click on the page used to do nothing at all, and the only way to mark a
+  // panel was to draw a box round it.
+  it('plants a point where a draw barely moved', () => {
+    const barely = { x: 0.25, y: 0.75, w: 0.001, h: 0.5 }
+    expect(anchorFrom('draw', barely, start)).toEqual(pointAt(start))
+  })
+
+  it('keeps a rectangle a reader actually swept out', () => {
+    const swept = { x: 0.1, y: 0.1, w: 0.3, h: 0.3 }
+    expect(anchorFrom('draw', swept, start)).toBe(swept)
+  })
+
+  // Clicking once inside a region without moving it must not delete the region
+  // it landed on.
+  it('never plants a point for a move', () => {
+    const unmoved = { x: 0.1, y: 0.1, w: 0, h: 0 }
+    expect(anchorFrom('move', unmoved, start)).toBe(unmoved)
   })
 })

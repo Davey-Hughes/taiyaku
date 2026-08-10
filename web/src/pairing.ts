@@ -276,6 +276,40 @@ export function cellsFor(group: Group, reading: 'rtl' | 'ltr'): Cells {
 }
 
 /**
+ * Whether the second cell is showing a real second page or a mirror of the
+ * first — read off what is **drawn**, not off the target.
+ *
+ * **Two different questions, and only one of them follows the pixels.**
+ * `cellsFor`'s `wide` — does the drawn page span both cells — is a fact about
+ * the *page* and is taken from the target: a joined spread is one
+ * double-width image whichever generation is showing, and reading it off the
+ * drawn sources would make a mid-flick coincidence (two cells briefly holding
+ * one URL) resize the artwork.
+ *
+ * `alone` governs whether the second cell is *visible*, and that does follow
+ * the pixels. State moves on the keypress and the pictures wait for their
+ * decode, so keying this on the target is what made the layout flap —
+ * measured at three changes in 114 ms during a flick, with the artwork never
+ * changing at all. `cellsFor` gives both cells the same URL exactly when a
+ * group has one page to draw, so "both cells are drawing the same source" *is*
+ * that question, asked of the screen instead of predicted.
+ *
+ * Until both cells have reported something, there is nothing on screen to read
+ * and the target's own answer stands. That is the state a freshly mounted
+ * group is in, which is why `drawn` is held above the component that draws it
+ * — a `two` → `scroll` → `two` excursion unmounts the cells, and state that
+ * came back empty would fall to the predicted value for exactly the frame this
+ * exists to fix.
+ */
+export function secondCellAlone(
+  target: Cells,
+  drawn: { first?: string; second?: string },
+): boolean {
+  const drawnBoth = drawn.first !== undefined && drawn.second !== undefined
+  return drawnBoth ? drawn.first === drawn.second : target.alone
+}
+
+/**
  * Which of `two` mode's two drawing positions holds `slot` — `viewport.ts`'s
  * `Cell`, for the group `cellsFor` has just laid out.
  *

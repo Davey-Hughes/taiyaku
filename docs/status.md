@@ -75,7 +75,8 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 475 tests, plus 654 in `web/`'s TypeScript and six more in a
+Five crates, 475 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
+project and 296 in the `jsdom` one this branch added — and six more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
@@ -83,8 +84,9 @@ and `vite` in `web/`. The six run under Vitest's browser mode over Playwright's
 Chromium, and cover only what no Node environment can answer: `jsdom` has no
 layout engine and no real `HTMLImageElement.decode()`, and every defect the page
 area has shipped was one or the other. They are **not** a CI job — a cacheless
-CI would download a browser on every run — so `pnpm -C web run test` stays the `node`
-project alone and `check-all.sh` runs the browser one locally, naming it
+CI would download a browser on every run — so `pnpm -C web run test:coverage`, which
+is what CI and `check-all.sh` both run, stays the `node` and `jsdom` projects, and
+`check-all.sh` runs the browser one separately and locally, naming it
 unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
@@ -368,6 +370,59 @@ alternative that lost.
   Neither of the two candidates the design named won, and `pillarbox` was not
   one of them; §5 below and `notes.md`, "Which derived transform maps a rect
   between editions", are the record.
+- **Coverage thresholds set at what was achieved, minus two points**, and
+  proven by regression rather than asserted. Web: 96/92/97/97 under a measured
+  98.03% statements, 94.38% branches, 99.29% functions, 99.53% lines. Rust:
+  `--fail-under-lines 93` under a measured 95.75% with four files ignored —
+  87.59% without them, a difference that is exclusions rather than work — plus a
+  **per-file floor of 57% lines** under a lowest measured 59.44%
+  (`taiyaku-serve/src/stump/http.rs`) and a **minimum of 32 files** against 37 in
+  the report. Both gates were deliberately regressed: `#[ignore]` on `main.rs`'s
+  84 tests takes the workspace to 82.19% and exits 1; skipping
+  `viewport.test.ts` takes the web figures below all four thresholds and exits 1.
+  It beat picking a round number up front, which is either unreachable or
+  vacuous, and it beat gating Rust regions as well as lines, which needs a second
+  number maintained for no extra signal. The Rust per-file floor also beat
+  `cargo llvm-cov --fail-under-file-lines`, which exists in the pinned 0.8.7 and
+  was measured exiting 1 with the ordinary coverage table on stdout and **zero
+  bytes on stderr** — naming neither the file that tripped it nor the threshold,
+  which above a 37-row table is not a gate anyone can act on. Its cost is a node
+  install in a Rust container.
+- **The regression proof found a hole in the gate it was proving, and the gate
+  grew a second half because of it.** Skipping the whole of `pairing.test.ts`
+  takes that file from 100% to 83.58% and the total only 98.03% → 97.49% —
+  because `App.test.tsx` covers the same lines through a mounted reader — and
+  **every aggregate threshold still passed**. A developer could delete a unit
+  suite and be told nothing. `scripts/coverage-floor.mjs` is the answer: a floor
+  per file, two points below each metric's lowest measured figure. It exits 1 on
+  exactly that regression, naming the file and all three metrics that fell.
+  vitest cannot express both halves itself — a glob entry in `thresholds` is
+  aggregated over its matches, and `perFile` inside one is ignored; both were
+  tried and measured before the script was written. **One script, two report
+  formats, both gates**: it reads istanbul's `coverage-summary.json` for the web
+  half and `cargo llvm-cov report --json` for the Rust half, detecting which by
+  shape rather than by filename, and a report matching neither exits 2 rather
+  than passing. One file beat two because the two checks are the same idea twice
+  and only the adapter differs; the cost is that the differences between the
+  formats — llvm-cov reports 0% for an empty metric where istanbul reports 100%,
+  or the string `"Unknown"` on a collapsed report — all live in one table.
+  `docs/ci.md`, "The coverage gates", is the record.
+- **A minimum file count, because both halves used to pass on a report with no
+  files in it.** Measured: with `coverage.include` pointed at a directory that
+  does not exist, vitest prints `Unknown% ( 0/0 )` for all four metrics and
+  **exits 0**, and the floor script printed "0 files, all above the floor" and
+  exited 0 too — so a typo in one glob left the whole gate green while measuring
+  nothing. `minFiles` is 50 for web (57 measured) and 32 for Rust (37). **50
+  rather than 40**, and that is the measurement worth keeping: deleting one `*`
+  from the include glob — `['src/*.ts']` — drops all 13 files of `src/modules`
+  and vitest reports 97.79/93.90/99.20/99.48, every threshold passed, exit 0. The
+  per-file floor sees nothing either, because a file that is absent is a file no
+  per-file check visits. Only a count can see it, and 40 would have caught the
+  bare collapse and let that one through. On the Rust side the same check
+  replaces a ritual `ci.yml` used to ask a reader to perform by hand — "check the
+  file count when adding a crate". The cost is that a deliberate exclusion can
+  trip it; the rule is to re-derive the number beside the exclusion rather than
+  widen it on reflex.
 
 ## What has been proven against real material
 
@@ -528,18 +583,26 @@ clears the bar is the one finding no text".
 
 ### Open items
 
-Thirty-four, each found by a whole-branch review, carried as a deferral,
+Thirty-seven, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
 produced against the corpus, turned up by designing the fix for another one,
-turned up by checking a diagnosis against the one case it did not explain, or
-turned up by simulating the reader from every position it can hold, and
+turned up by checking a diagnosis against the one case it did not explain,
+turned up by simulating the reader from every position it can hold, or turned
+up by reading a file closely enough to write tests for it, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Twenty-five are now closed
+visible act rather than a thing someone remembers. **Twenty-eight are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25, O26, O27, O28, O29 and O30 — leaving nine.**
+O21, O22, O25, O26, O27, O28, O29, O30, O35, O36 and O37 — leaving nine.**
+
+Three of those closed the same day they opened, which the "judged not worth
+blocking on" framing above does not fit: O35, O36 and O37 were found by the
+coverage branch and fixed on it. They are recorded here anyway rather than only
+in that branch's entry, because this table is where a reader looks for what was
+wrong and whether it still is, and a defect that never appears here because it
+was fixed quickly is a defect nobody can later find.
 Closed rows stay in the table rather than being deleted, because a list that
 only ever grows says nothing about whether anything gets fixed. The evidence for
 each is in the detail below; the table is what a reader scans.
@@ -580,6 +643,9 @@ each is in the detail below; the table is what a reader scans.
 | O32 | [ ] | The `median_area` disqualifier cannot fire — `MAX_BLOCK_AREA` clamps every region under it before the median is taken | `detect.rs::detect_page`, `regions.rs::median_area` | L2a whole-branch review |
 | O33 | [ ] | Two of the five detection constants reject nothing in any test, so a computation bug in either would ship unseen — *the gap is in the tests and stays open; against the corpus `MAX_BLOCK_AREA` fires on 89 of 90 pages and `MIN_BLOCK_STROKE_SPAN` on 1* | `detect.rs`, the `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` filters | L2a whole-branch review |
 | O34 | [ ] | `MIN_INK` cannot reject anything on real material — it sums overlapping stroke bounding boxes, so 61 of 76 surviving blocks score above 1.0 against a floor of 0.05, and it rejected 0 blocks on 0 of 90 sampled pages | `detect.rs::detect_page`, the `MIN_INK` filter | the survivor-composition measurement |
+| O35 | [x] | A `PUT` response with no `ETag` turns every later note write into a silent no-op — the same "write without a validator" hole the 412 path was fixed for, left open on the response path — *closed on the branch that found it (178f3e5): the guard became `writeGate` with three arms — `wait` (no document, the only silent one), `refuse` (document but no validator, carrying a notice), `write` — after the correct-behaviour test was watched failing against a faithful port* | `api.ts::putNotes`, `App.tsx::writeNotes`'s `notesEtag === undefined` guard | coverage-gate reading |
+| O36 | [x] | The two write debounces are never cancelled on unmount, so an unmounted `App` can still `PUT` up to 700 ms later — *a two-line fix, not an impossibility: `useFlushOnHide`'s cleanup already exists and `debounce` already exposes `cancel()`* — *closed on the branch that found it (4303dee): `useFlushOnHide`'s cleanup now flushes both, decided per call site: cancelling `writeProgress` drops the last page turn, cancelling `saveNotes` destroys up to 700 ms of prose that exists nowhere else* | `App.tsx`'s `writeProgress`/`saveNotes` handles, `hooks.ts::useFlushOnHide` | coverage-gate reading |
+| O37 | [x] | `reviewNotes`'s doc comment describes an arm of `toggleReview` no key can reach — it claims `a` closes the editor mid-edit, which `keyplan.ts` refuses; the code is right and the comment is wrong — *closed on the branch that found it (f4047b7): corrected, and the same wrong claim in `notes.ts` with it in `7cab6ec`* | `App.tsx::reviewNotes`'s doc comment | coverage-gate reading |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -1855,6 +1921,116 @@ O33 are not:
   so. Both are decisions for the detector's redesign rather than now, which is
   why this is tracked rather than fixed — the same reasoning O31 and O32 carry.
 
+**O35 to O37 came from the coverage branch, and none of them was introduced by
+it.** They are what reading a file closely enough to write tests for it turns
+up — which is an argument for the exercise independent of the number it moved.
+**All three were fixed on that branch, and the argument against doing so is
+worth keeping because it was a good one.** The case for leaving them open: a
+coverage branch is a gate and its tests, this repository squash-merges, and a
+behaviour change buried in forty-odd commits cannot be reverted on its own.
+
+What decided it the other way was that the branch already carried exactly such
+a change by explicit decision — the 412 retry, whose fix is described above and
+which is the direct sibling of O35. The revertability cost had been accepted
+once already; three more of the same class did not change the shape of the
+branch, and leaving a known write-loss filed rather than fixed had a cost of its
+own. Recorded so that the next branch faces the question fresh rather than
+inheriting this as a precedent: the default for a gate branch is still to file
+and not fix.
+
+- **O35 — A `PUT` response with no `ETag` silently killed every later note
+  write. Closed by `178f3e5`.** `api.ts::putNotes` returns `etag: res.headers.get('etag') ??
+  undefined`, so a response without the header yields `undefined` rather than
+  an error. `notesWrite.ts` passes that straight through — `{ kind: 'written',
+  doc, etag: fresh.etag }` — `App.tsx` stores it with
+  `setNotesEtag(outcome.etag)`, and `writeNotes` opens with `if (!notesDoc ||
+  notesEtag === undefined) return`. From then on every note a reader writes
+  returns at that line: no request, no notice, no console entry, and the editor
+  closes as though it had saved.
+  **The same hole was already recognised and fixed one path over.** On the 412
+  re-read, `notesWrite.ts` has `if (fresh.etag === undefined) return { kind:
+  'refused', notice: message }` — refuse rather than write without a validator.
+  That is exactly the right instinct; it was applied to the re-read and not to
+  the ordinary response.
+  **Not a hypothesis about the server:** it is a statement about what this
+  client does if a response omits the header, and the client is the half that
+  fails quietly. `taiyaku serve` sets the header today, so nothing misbehaves
+  now — which is why this was a latent hole rather than an outage, and why
+  there was an argument for filing it at all.
+  **What closed it:** the 412 path's own instinct, applied to the ordinary
+  response. The single `if (!notesDoc || notesEtag === undefined) return` became
+  `writeGate`, which answers with one of three arms rather than with one
+  silence — `wait` (no document yet, a load still in flight, and the only arm
+  that stays silent because there is nothing yet to tell the reader about),
+  `refuse` (a document but no validator: exactly the O35 case, and it now
+  carries a notice), and `write`. The correct-behaviour test was watched failing
+  against a faithful port of the old guard before the fix went in, and
+  `App.test.tsx` observes the refuse notice a reader actually sees (`4105a1c`).
+  **It cost a fifth behaviour change, on a branch that recorded four.** On the
+  `refused`-after-failed-retry path, `notesWrite.ts` no longer refreshes
+  `notesDoc` and `notesEtag` from the 412 re-read; the old code set both before
+  recursing. So a write that 412s, and whose retry then also fails, pays one
+  extra 412 and one extra re-read before the next write lands. That is a real
+  difference in what a reader's machine does, and it was accepted rather than
+  overlooked: the cost is one round trip on an already-rare path, and *not*
+  adopting the other device's document is what keeps the reader's own notes on
+  screen instead of silently replacing them with a copy they never saw. It is
+  recorded here because the branch's other four behaviour changes are recorded,
+  and this one should not be the exception for having been a consequence rather
+  than an intention.
+
+- **O36 — The write debounces outlived the component. Closed by `4303dee`.** `writeProgress`
+  and `saveNotes` are `debounce` handles with timers up to 700 ms, and no
+  unmount path cancels either. An unmounted `App` can therefore still issue a
+  `putProgress` or `putNotes` against a work the reader has left.
+  **A reviewer established this is a two-line fix rather than an
+  impossibility**, and that finding is the reason it is written down instead of
+  waved off: `hooks.ts::useFlushOnHide` already runs a cleanup on unmount, and
+  that cleanup today does nothing but remove its two listeners; `debounce`
+  already exposes both `flush()` and `cancel()`, and no unmount path calls
+  either. The pieces are all present and unconnected.
+  **Nothing observed it, which is the whole reason filing it was arguable**:
+  `App` is the SPA root and never unmounts, so no reader could reach the
+  behaviour. It becomes real the moment a route, a work switch, or a test
+  harness mounts and unmounts it — and a test harness is now something this
+  repository has, which is what turned the argument.
+  **What closed it:** the decision the diagnosis said was the work — and it came
+  out **flush at both**, made per call site rather than once for the pair.
+  `useFlushOnHide`'s cleanup now flushes `writeProgress` and `saveNotes` on
+  unmount, because cancelling `writeProgress` drops the reader's last page turn
+  and cancelling `saveNotes` destroys up to 700 ms of prose that exists nowhere
+  else: a debounce window that has not elapsed is not evidence that the reader
+  changed their mind. `cancel()` keeps its place where the pending write is
+  genuinely *stale* rather than merely pending — at `stepTo`, where a newer
+  position is about to be written over it anyway, and at the panel's delete,
+  where the note the pending write describes is gone. The decision was indeed
+  the work; the code was the two lines a reviewer had promised.
+
+- **O37 — `reviewNotes`'s doc comment described an arm nothing can reach.
+  Closed by `f4047b7`.** It said `a` "closes the editor if that is what is open, so `a` always
+  means 'show me the list'". `keyplan.ts` disagrees and is right: `if
+  (guards.panel === 'edit') return undefined` refuses every intent but
+  `Escape` while the editor is open, so `a` never reaches `reviewNotes` at all
+  and `toggleReview`'s close arm is unreachable from the keyboard.
+  **The behaviour the code has is the one a reader wants** — `a` is a letter,
+  and someone typing a note should get the letter rather than lose the panel —
+  so this is a documentation defect, not a behaviour one. The file already
+  states the correct rule a dozen lines above, in `startNote`'s comment: "no
+  module key reaches this at all while the editor is open (`keyPlan`'s `panel
+  === 'edit'` refusal)". Two comments in one file contradict each other, and the
+  wrong one sits on the function a reader would check.
+  **What closed it:** the comment was rewritten to describe the toggle the
+  function actually performs, which was the cheapest fix of the three — and
+  chasing the *claim* rather than the file turned up a second copy of it.
+  `notes.ts`'s own `toggleReview` doc repeated `App.tsx`'s wrong sentence
+  unchanged, and was corrected with it in `7cab6ec`. The one judgement in the
+  item went the conservative way: `toggleReview`'s close arm stays. It is
+  unreachable from the keyboard, not unreachable from the function, and
+  deleting a correct branch to make a comment true is the wrong direction of
+  fix. This was the only one of the three where fixing it found more of itself
+  somewhere else, which is the argument for grepping the sentence rather than
+  editing the line.
+
 ## What comes next
 
 Roughly in order. All four are now settled — one closed by a measurement that
@@ -2374,16 +2550,21 @@ whole-branch review, now that O1 (found by one, closed by removing the round
 trip its own entry was arguing about), O12 (carried rather than found), O14
 (found by one, closed by M5b), O26 (found by one, closed on its own branch),
 O28 (found by walking the reader through every position it can hold, closed on
-its own branch) and O29 (found by driving O26's own fix against the corpus,
-closed the same way) are all out of the count. Two are the exceptions: O23,
-turned up by measuring what a new surface produced against the corpus rather
-than by reviewing a branch, and O34, turned up by asking a diagnosis about the
-one case it could not explain. **Every milestone M5 named has now shipped.**
+its own branch), O29 (found by driving O26's own fix against the corpus, closed
+the same way) and O35, O36 and O37 (found by reading `web/src` closely enough to
+write tests for it, and closed on that same branch) are all out of the count.
+Two are the exceptions: O23, turned up by measuring what a new surface produced
+against the corpus rather than by reviewing a branch; and O34, turned up by
+asking a diagnosis about the one case it could not explain.
+**Every milestone M5 named has now shipped.**
 
 *This paragraph said "the five open items" until 2026-08-08, having missed
 O31, O32 and O33 when L2a landed them and O34 when the detector measurement
 opened it — the exact drift the open-items ritual warns the count word is
-prone to.*
+prone to. It went to "twelve" when the coverage gate opened O35, O36 and O37,
+and stayed at twelve after that same branch closed all three — the third time
+the word has drifted, and this time it was caught by a reviewer counting the
+table's rows against its own preamble rather than by the ritual.*
 
 **Four of the nine wait on evidence rather than on code**, which is worth
 stating plainly now that the one item with a code-shaped exit has taken it:
@@ -2403,6 +2584,15 @@ Each would sharpen an instrument that is measuring the wrong population, so
 none is worth fixing before the detector is redesigned — and what that
 redesign has to account for is now measured rather than assumed: see the two
 mechanism corrections under "What is known to be wrong or missing".
+
+**Three more were the reader's, and they are closed rather than open** — O35,
+O36 and O37 were each a decision plus a few lines, and the branch that found
+them made the decision and wrote the lines rather than filing them: `178f3e5`,
+`4303dee` and `f4047b7`, plus `7cab6ec` for the second copy of O37's wrong
+claim that fixing the first one turned up. They were the first items in a while
+that could be closed in an afternoon, and they were. The argument for filing
+them instead was a good one and is kept under "O35 to O37 came from the coverage
+branch" above, together with what decided it the other way.
 
 ### 4. Skipping scanlation credit pages — shipped
 

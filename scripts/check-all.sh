@@ -118,7 +118,47 @@ run cargo clippy --workspace --all-targets --all-features -- -D warnings
 #
 # Debug, deliberately and not merely by default: this is the only pass with overflow checks and
 # `debug_assert!` compiled in.
-run env -u TAIYAKU_CORPUS cargo test --workspace --all-features
+#
+# `cargo llvm-cov` runs the tests itself, so it replaces the `cargo test` invocation rather than
+# joining it — the same trade CI's `test` job makes, and for the same reason: instrumentation on a
+# build this gate already pays for, not a second cold compile. A machine without the tool falls
+# back to plain `cargo test` and names the skip, rather than failing the whole gate over a coverage
+# tool nobody installed.
+#
+# **The per-file floor is the second command, and it is not a second test run.** `--fail-under-lines`
+# is workspace-aggregate and cannot see one module go dark: measured, if `taiyaku-read/src/pages.rs`
+# (432 lines, 406 covered) lost every test, the workspace lands at 93.05% and the gate stays green.
+# `cargo llvm-cov report` re-renders the profile data the run above already produced — no rebuild, no
+# re-run — and measured **0.13 seconds** against 7.8 for the run. `--text` and `--json` are mutually
+# exclusive, which is why this is a second command rather than another flag on the first.
+#
+# The `--ignore-filename-regex` appears twice as a result, and the two copies cannot silently
+# disagree: if the report's is narrower, the excluded files leak in at 12–40% and the floor names
+# them; if it is wider, the file count drops and the minimum-file check fires. Both were run.
+#
+# Keep the six invocation lines below in step with .forgejo/workflows/ci.yml, which runs them byte
+# for byte. The property is checkable: take those six lines from each file, strip the leading
+# whitespace and any `run` / `run env -u TAIYAKU_CORPUS` prefix, and the two hash identically. The
+# `cargo test` fallback above is the one line with no CI counterpart, deliberately — CI always has
+# the tool, because it installs it.
+if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
+  note_skip "the Rust coverage gate on the test job (cargo-llvm-cov not on PATH — tests still ran, the threshold did not)"
+  run env -u TAIYAKU_CORPUS cargo test --workspace --all-features
+else
+  run env -u TAIYAKU_CORPUS cargo llvm-cov --workspace --all-features \
+    --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$' \
+    --fail-under-lines 93
+  # Guarded the same way the tool above is, and for the same reason: a Rust-only machine without
+  # node should not fail the whole gate over the half of it that node runs. CI has no such problem —
+  # its `test` job fetches the pinned node tarball — so this branch is local-only.
+  if ! command -v node >/dev/null 2>&1; then
+    note_skip "the Rust per-file coverage floor (node not on PATH — the aggregate threshold ran, the per-file one did not)"
+  else
+    run cargo llvm-cov report --json --output-path target/rust-coverage.json \
+      --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$'
+    run node scripts/coverage-floor.mjs target/rust-coverage.json
+  fi
+fi
 
 # --- the standing corpus checks ---
 # Not a CI job: CI has no corpus, so these skip there and are the one thing this script measures
@@ -208,17 +248,38 @@ else
   else
     run pnpm -C web run lint
     run pnpm -C web run typecheck
-    run pnpm -C web run test
+
+    # `test:coverage` is `--project node --project jsdom --coverage`, so it runs
+    # both of the projects CI runs and replaces the separate `test` and
+    # `test:jsdom` invocations rather than joining them — the same trade the
+    # `test` job makes with `cargo llvm-cov` above, and for the same reason:
+    # instrumentation on a run this gate already pays for, not a second pass.
+    # The thresholds live in `web/vite.config.ts` and only fire under
+    # `--coverage`, so running plain `vitest run` here would have left the web
+    # half of the gate enforcing nothing while reading green.
+    run pnpm -C web run test:coverage
+
+    # **The other half of the web coverage gate, and it is not redundant.**
+    # `vite.config.ts`'s thresholds are aggregate, and an aggregate cannot see
+    # one module go dark. Measured: skipping the whole of `pairing.test.ts`
+    # takes `pairing.ts` from 100% to 83.58% while the total moves only
+    # 98.03% → 97.49%, because `App.test.tsx` exercises the same lines through a
+    # mounted reader — and every vitest threshold still passed. This check fails
+    # on it. vitest cannot express both halves; see the script's own comment for
+    # the two forms that were tried and measured first.
+    run node scripts/coverage-floor.mjs
 
     # --- the browser tests, which are not a CI job ---
-    # `pnpm -C web run test` is the `node` project alone, which is exactly what the
-    # forge runs: a browser project would need a Chromium download on every CI run,
-    # and CI has no cache to keep one in. So these are local-only, and named here
-    # when they cannot run rather than passed over.
+    # `test:coverage` above is the `node` and `jsdom` projects, which is exactly
+    # what the forge runs: a browser project would need a
+    # Chromium download on every CI run, and CI has no cache to keep one in. So
+    # these are local-only, and named here when they cannot run rather than
+    # passed over.
     #
-    # They exist for what a Node environment cannot answer: `jsdom` has no layout
-    # engine and no real `HTMLImageElement.decode()`, and every defect this reader
-    # has shipped in the page area was visual. See `web/src/PageView.browser.test.tsx`.
+    # They exist for what neither `node` nor `jsdom` can answer: `jsdom` has no
+    # layout engine and no real `HTMLImageElement.decode()`, and every defect
+    # this reader has shipped in the page area was visual. See
+    # `web/src/PageView.browser.test.tsx`.
     if [ ! -d "${HOME}/.cache/ms-playwright" ]; then
       note_skip "the browser tests (no Chromium — run \`pnpm -C web exec playwright install chromium\`)"
     else

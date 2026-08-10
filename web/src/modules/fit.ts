@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react'
 import type { ReaderModule } from '../module'
+import type { Cell } from '../viewport'
 
 /**
  * Page geometry: how large a page is drawn in its own box, and how far apart
@@ -55,6 +56,36 @@ export const fitModule: ReaderModule<FitPrefs> = {
  * `right-edge` — a cell is not an edge.
  */
 export type ArtworkHug = 'centre' | 'left-edge' | 'right-edge'
+
+/**
+ * Which edge a cell's artwork is pulled to — the translation from
+ * `viewport.ts`'s `Cell` to the hug above, and nothing else.
+ *
+ * One answer for the three things that have to agree about it: the two
+ * `PageView`s `GroupView` draws, the marker overlay that measures one of them,
+ * and `pointOn`'s drag arithmetic. Written out at each of the three, a copy
+ * that fell out of step would draw the page one way and measure it another — a
+ * region landing about 180px from where the reader swept it out, `paintedBox`
+ * having the measurement.
+ *
+ * **The *first* cell hugs its right edge**, because that is the side the seam
+ * is on; `ArtworkHug` above has the whole naming argument. Which physical slot
+ * is the first cell is `cellOf`'s question and is already
+ * reading-direction-corrected by the time it reaches here, so nothing in this
+ * function knows about `rtl` — writing the comparison out at a call site is
+ * what would put a `reading === 'rtl'` test back into `App.tsx`.
+ *
+ * `'only'` is `'centre'`: one image filling its group has no seam to close.
+ * Single and scroll mode never reach a cell at all, and their caller answers
+ * `'centre'` without asking.
+ */
+export function hugForCell(cell: Cell): ArtworkHug {
+  return cell === 'first'
+    ? 'right-edge'
+    : cell === 'second'
+      ? 'left-edge'
+      : 'centre'
+}
 
 /**
  * How one page sits in its own box.
