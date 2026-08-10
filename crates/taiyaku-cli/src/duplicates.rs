@@ -139,13 +139,21 @@ fn memoized_confirm(
     }
 }
 
+/// Which way the copies read, which decides which half of a spread comes first.
+///
+/// Right to left is the default because it is what every work in the corpus is;
+/// `--ltr` is the exception a caller has to ask for by name.
+fn reading_direction(args: &[String]) -> Direction {
+    match args.iter().any(|a| a == "--ltr") {
+        true => Direction::LeftToRight,
+        false => Direction::RightToLeft,
+    }
+}
+
 pub fn command(args: &[String]) -> Result<(), String> {
     crate::reject_unknown_flags("duplicates", args, &["--against", "--cache", "--ltr"])?;
     let copies = groups(args)?;
-    let direction = match args.iter().any(|a| a == "--ltr") {
-        true => Direction::LeftToRight,
-        false => Direction::RightToLeft,
-    };
+    let direction = reading_direction(args);
     let cache = PathBuf::from(
         crate::option_value(args, "--cache", "a directory")?.unwrap_or(".taiyaku-cache"),
     );
@@ -905,14 +913,21 @@ mod tests {
 
     /// The Chainsaw Man table: four scans against one English release, ranked
     /// on slots then pairings then runs. `v01b` wins on every axis at once.
+    ///
+    /// **Cluster 2 is listed before cluster 0 on purpose.** The two are tied on
+    /// slots and on pairings and separate only on runs, so they are the pair
+    /// the reference tiebreak exists for — and `sort_by` is stable, which means
+    /// a tiebreak that did nothing at all would still leave them in whatever
+    /// order they arrived in. Given in the order the answer is not, so the
+    /// assertion below can only pass if something actually reordered them.
     #[test]
     fn a_reference_edition_breaks_a_tie_on_pairings_then_runs() {
         let ranked = rank(vec![
             Ranked {
-                cluster: vec![0],
+                cluster: vec![2],
                 slots: 198,
                 against: Some(Against {
-                    runs: 5,
+                    runs: 7,
                     paired: 182,
                 }),
             },
@@ -925,10 +940,10 @@ mod tests {
                 }),
             },
             Ranked {
-                cluster: vec![2],
+                cluster: vec![0],
                 slots: 198,
                 against: Some(Against {
-                    runs: 7,
+                    runs: 5,
                     paired: 182,
                 }),
             },
@@ -941,6 +956,96 @@ mod tests {
             "199 slots first, then 5 runs before 7"
         );
         assert!(decided(&ranked));
+    }
+
+    /// A tie on slots that the reference breaks is decided; one it does not is
+    /// not.
+    ///
+    /// Every other test of `decided` either has a winner on slots or has no
+    /// reference at all, so the arm that reads the reference never runs in any
+    /// of them — and without it `decided` answers from the slot count alone and
+    /// calls every reference-broken tie a tie.
+    #[test]
+    fn a_tie_on_slots_is_decided_by_the_reference_and_only_by_a_real_difference() {
+        let tied = |paired, runs| Ranked {
+            cluster: vec![0],
+            slots: 198,
+            against: Some(Against { runs, paired }),
+        };
+
+        assert!(
+            decided(&[tied(183, 3), tied(182, 3)]),
+            "more pages paired against the reference"
+        );
+        assert!(
+            decided(&[tied(182, 3), tied(182, 7)]),
+            "the same pages, in fewer runs"
+        );
+        assert!(
+            !decided(&[tied(182, 3), tied(182, 3)]),
+            "the same on both axes is a tie, and is reported as one"
+        );
+    }
+
+    /// Right to left unless asked otherwise. Everything the corpus holds reads
+    /// that way, so the flag is the exception and the default is not a guess.
+    #[test]
+    fn the_reading_direction_is_right_to_left_unless_the_flag_says_otherwise() {
+        let args = |all: &[&str]| all.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+
+        assert_eq!(
+            reading_direction(&args(&["a.cbz", "b.cbz"])),
+            Direction::RightToLeft
+        );
+        assert_eq!(
+            reading_direction(&args(&["a.cbz", "--ltr", "b.cbz"])),
+            Direction::LeftToRight
+        );
+        assert_eq!(reading_direction(&[]), Direction::RightToLeft);
+    }
+
+    /// Two byte-identical copies whose fingerprint comes back with no slots.
+    ///
+    /// The identity short-circuit skips the solve and states the answer
+    /// directly, as a run spanning `0..slots - 1` — one subtraction away from
+    /// underflowing when there are no slots, and `slots > 0` is the guard
+    /// against it.
+    ///
+    /// Reached through the closure `resolve_with` exists to take rather than
+    /// through empty archives, which cannot get this far: `Signature::of`
+    /// refuses a member with no page images in step 1, several steps before
+    /// anything is fingerprinted. So this is a statement about the seam, not
+    /// about a set of files — which is exactly what the guard is protecting,
+    /// since through `resolve` the count can never be zero.
+    #[test]
+    fn an_identity_pair_with_no_slots_resolves_rather_than_underflowing() {
+        let root = std::env::temp_dir().join("taiyaku-test-duplicates-noslots");
+        let _ = std::fs::remove_dir_all(&root);
+        let copies: Vec<Vec<PathBuf>> = ["a", "b"]
+            .iter()
+            .map(|name| {
+                let dir = root.join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("000.jpg"), b"identical bytes").unwrap();
+                vec![dir]
+            })
+            .collect();
+
+        let mut fingerprint = |_: &[PathBuf]| Ok(Vec::new());
+        let resolution = resolve_with(&copies, None, &mut fingerprint);
+
+        let _ = std::fs::remove_dir_all(&root);
+        let resolution = resolution.expect("a slotless identity pair resolves");
+        assert!(
+            resolution.copies.iter().all(|copy| copy.slots == 0),
+            "the closure's answer is the slot count, whatever the files hold"
+        );
+        // The guard sends the pair to the solver rather than declaring the
+        // identity, and a solve over two empty sequences pairs nothing — so the
+        // two are reported as refusing each other. Stated because it is the
+        // consequence of not underflowing, not because it is a good answer.
+        assert_eq!(resolution.clusters, vec![vec![0], vec![1]]);
+        assert_eq!(resolution.flagged, vec![0, 1]);
     }
 
     /// A hundred short runs over most of the pages: the shape a needle and a

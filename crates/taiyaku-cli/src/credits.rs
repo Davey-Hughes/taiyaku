@@ -136,6 +136,21 @@ pub(crate) fn credit_pages(runs: &[UnpairedRun]) -> Vec<u32> {
     pages
 }
 
+/// The members named on the command line: every argument that is neither a
+/// flag nor the value of one.
+///
+/// Flag values are excluded by value rather than by position. `--sidecar
+/// taiyaku.json` puts a path in the argument list that is not a member, and it
+/// is indistinguishable from one by shape alone — so what a flag consumed is
+/// what gets taken out.
+fn member_args(args: &[String], consumed: &[Option<&str>]) -> Vec<PathBuf> {
+    args.iter()
+        .filter(|a| !a.starts_with("--"))
+        .filter(|a| !consumed.contains(&Some(a.as_str())))
+        .map(PathBuf::from)
+        .collect()
+}
+
 /// What a member is called in the table: the last component of the path the
 /// sidecar records, which is the part that distinguishes one chapter from the
 /// next.
@@ -412,14 +427,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
         return Err("--against names an edition of a sidecar, so it needs --sidecar too".into());
     }
 
-    let members: Vec<PathBuf> = args
-        .iter()
-        .filter(|a| !a.starts_with("--"))
-        .filter(|a| Some(a.as_str()) != sidecar)
-        .filter(|a| Some(a.as_str()) != against)
-        .filter(|a| Some(a.as_str()) != cache)
-        .map(PathBuf::from)
-        .collect();
+    let members = member_args(args, &[sidecar, against, cache]);
     if members.is_empty() {
         return Err(USAGE.into());
     }
@@ -1120,6 +1128,108 @@ mod tests {
             line.split_once(" work=").map(|(_, title)| title),
             Some("Reversed Order Co."),
             "the title must run unambiguously to end of line, spaces and all: {line}"
+        );
+    }
+
+    /// A path a flag consumed is not also a member, and a flag is not a member
+    /// at all.
+    ///
+    /// The two filters fail in opposite directions and both are silent. Keeping
+    /// the flags would refuse a real invocation for having no members; keeping
+    /// only the flag values would try to fingerprint `taiyaku.json`.
+    #[test]
+    fn a_path_a_flag_consumed_is_not_also_a_member() {
+        let args: Vec<String> = [
+            "one.cbz",
+            "--sidecar",
+            "taiyaku.json",
+            "--against",
+            "raw",
+            "two.cbz",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+
+        let members = member_args(&args, &[Some("taiyaku.json"), Some("raw"), None]);
+
+        assert_eq!(
+            members,
+            vec![PathBuf::from("one.cbz"), PathBuf::from("two.cbz")]
+        );
+    }
+
+    /// A three-member fan edition against a one-member raw hub, with fan pages
+    /// 3 to 5 — the whole back half of `c1` — unpaired.
+    ///
+    /// `fan_and_raw`'s single unpaired page cannot separate a run's *length*
+    /// from its arithmetic: a run of one is `4 - 3`, and `4 / 3` is also one.
+    /// This fixture's run is three pages long, where subtraction, addition and
+    /// division give 3, 9 and 2.
+    fn fan_and_raw_with_a_long_run() -> Sidecar {
+        let text = r#"{
+          "taiyaku": 1,
+          "work": { "title": "Long Run", "reading": "rtl" },
+          "editions": {
+            "raw": {
+              "label": "raw",
+              "members": [{ "path": "r.cbz", "sha256": "r0", "pages": 10 }],
+              "spreads": []
+            },
+            "fan": {
+              "label": "fan",
+              "members": [
+                { "path": "c1.cbz", "sha256": "c1", "pages": 6 },
+                { "path": "c2.cbz", "sha256": "c2", "pages": 4 }
+              ],
+              "spreads": []
+            }
+          },
+          "hub": "raw",
+          "alignments": [
+            { "from": "raw", "to": "fan", "by": "solver",
+              "runs": [{"a":"0-2","b":"0-2"},{"a":"3-5"},{"a":"6-9","b":"6-9"}] }
+          ]
+        }"#;
+        Sidecar::from_json(text).expect("fixture parses")
+    }
+
+    /// A row reports the run it came from and the recurrence at *its own* page.
+    ///
+    /// Both are printed beside each other and neither is asserted anywhere
+    /// else: the length is arithmetic on a range, and the recurrence is a
+    /// lookup by page number into a list that holds one entry for every page in
+    /// the edition — so a lookup that matched the wrong way round still finds
+    /// something, and prints another page's nearest neighbour beside this one's
+    /// run.
+    #[test]
+    fn a_row_carries_its_runs_length_and_the_recurrence_at_its_own_page() {
+        let doc = fan_and_raw_with_a_long_run();
+        // `hash_with_bits_set` puts two hashes exactly |a - b| bits apart, so
+        // the distances below are chosen rather than observed. Page 0 is 5 bits
+        // from c2's first page; page 3 is 1 bit from c2's *third*. A row that
+        // took page 0's recurrence would report 5 and `c2.cbz#0`.
+        let c1: Vec<PageHash> = [0, 10, 20, 30, 40, 50]
+            .iter()
+            .map(|n| hash_with_bits_set(*n))
+            .collect();
+        let c2: Vec<PageHash> = [5, 150, 29, 160]
+            .iter()
+            .map(|n| hash_with_bits_set(*n))
+            .collect();
+        let fingerprinted = vec![("c1".to_string(), c1), ("c2".to_string(), c2)];
+
+        let (rows, _, _) = classify(&doc, "fan", "raw", &fingerprinted).expect("classifies");
+
+        assert_eq!(rows.len(), 1, "one unpaired run");
+        let row = &rows[0];
+        assert_eq!(row.page, 3);
+        assert_eq!(row.run, 3, "pages 3, 4 and 5");
+        assert_eq!(row.recurs, Some(1), "page 3's nearest, not page 0's");
+        assert_eq!(row.nearest.as_deref(), Some("c2.cbz#2"));
+        assert!(
+            !row.credits,
+            "three pages is longer than any credits card measured"
         );
     }
 }

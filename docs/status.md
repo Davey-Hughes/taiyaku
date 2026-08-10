@@ -75,7 +75,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 592 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
+Five crates, 618 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
 project and 296 in the `jsdom` one this branch added — and six more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -91,7 +91,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Thirteen of the 592 are standing checks gated on
+`rayon` exactly as `align` already did. Thirteen of the 618 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
@@ -585,9 +585,10 @@ clears the bar is the one finding no text".
 crates are now closed, and every survivor that remains is `taiyaku-cli`'s.** Of
 the 346 — `taiyaku-core` 47, `taiyaku-cli` 217, `taiyaku-serve` 52,
 `taiyaku-read` 17, `taiyaku-wasm` 13 — core is down to three equivalent mutants,
-read, wasm and serve are at zero, and cli is at 187 with `report.rs` closed.
-**143 of those 187 are actionable; the other 44 are deliberately deferred**
-until L2's detector is redesigned, for the reason given below. `env -u TAIYAKU_CORPUS
+read, wasm and serve are at zero, and cli is at 117 with `report.rs` and five
+more files closed. **70 of those 117 are actionable, all of them in `main.rs`;
+44 more are deliberately deferred** until L2's detector is redesigned, for the
+reason given below, and the last three are equivalent mutants. `env -u TAIYAKU_CORPUS
 cargo mutants --gitignore=true --test-tool=nextest` ran 1,660 mutants in 43
 minutes on 2026-08-10: 1,149 caught, 346 missed, 136 unviable, 29 timed out —
 75.4% of 1,524 viable mutants caught. `taiyaku-core`'s 47 were concentrated in
@@ -650,8 +651,37 @@ gauge, and two pages that hashed alike", is the record.
 **`detect.rs`'s 37 and `regions.rs`'s 7 are deliberately not being closed**:
 O31 to O34 record that the detector is measuring the wrong population and wants
 a redesign, and pinning its present behaviour with 44 tests would cement what
-those items exist to change. That leaves **`taiyaku-cli`'s remaining 143**, in
-six files of ordinary code, as the whole of what is still measured and open.
+those items exist to change.
+
+**Five of the remaining six files are now closed — 73 survivors to 3**:
+`fingerprint.rs` 39 to 1, `inventory.rs` 19 to 0, `duplicates.rs` 7 to 2,
+`credits.rs` 5 to 0, `cache.rs` 3 to 0. All three survivors are equivalent
+mutants and each carries its argument in `notes.md`: `flat_border`'s
+crossed-scan guard, which the quarter-per-side caps make unreachable at every
+page size from 8 pixels to 100,000, and two in `contradictions`, where a
+singleton cluster has no pairs to examine and no producer of `Pair` ever builds
+one judging a copy against itself.
+
+Two shapes account for most of the 73, and neither is "untested code". **A
+bound no fixture reached**: sixteen were the four `MAX_SIDE` caps in
+`flat_border`, free because every letterbox fixture pads narrower than a
+quarter, which is what a real letterbox does. **A decision inside a print
+statement**: eleven were in `inventory`'s table loop, counted in a loop whose
+only output is `eprintln!` — each now a named function returning a value, the
+pattern `#41` established in `serve`. Three fixtures that could not fail turned
+up on the way, including a ranking test whose tied clusters were listed in the
+order its own assertion wanted, against a stable sort. `notes.md`, "The quarter
+that never bound, and a constant no test could see" and "The loop that printed,
+the test that copied it, and a fixture in the order of its own answer", are the
+record.
+
+Confirmed at crate scale as well as file by file: re-running the whole crate
+gives **771 mutants, 117 missed, 592 caught**, 50 unviable, 12 timed out,
+against 752 / 187 / 508 / 45 / 12 before — and the 117 are exactly `main.rs`'s
+70, `detect.rs`'s 37, `regions.rs`'s 7 and the three equivalent mutants, with
+nothing appearing that a scoped run had not already seen. That leaves
+**`main.rs`'s 70**, plus `detect.rs` and `regions.rs` waiting on L2, as what is
+still measured and open.
 
 ### Open items
 

@@ -8585,3 +8585,246 @@ That the base had changed underneath — `taiyaku-core` and `taiyaku-read` both
 moved while this branch sat open, and `taiyaku-cli` depends on both — is the
 reason for re-running rather than carrying the number forward. On the two
 branches before this one, doing so found a real defect each time.
+
+## The quarter that never bound, and a constant no test could see
+
+`fingerprint.rs` measures at **127 mutants, 39 missed**, 80 caught, 4 unviable,
+4 timed out — the recorded 39 exactly. After six tests it is **1 missed, 118
+caught**, the other two figures unchanged: 1 + 118 + 4 + 4 = 127, and 39 - 38 =
+1. The single survivor is an equivalent mutant, argued at the end.
+
+The file was not untested. It had four tests, and they were good ones — a
+letterbox that comes off, an inked margin that stays, a symmetric trim that
+keeps a spread splitting down its middle, a hash unchanged by exposure. What
+the survivors marked out was not neglect but four *kinds* of blind spot, none
+of which more of the same tests would have found.
+
+**A constant its own test could not see.** `partition_by_size` was covered
+exactly — order preserved, every index once, the threshold inclusive, the empty
+case — and every assertion in it is written in terms of `LARGE_PAGE_BYTES`, so
+it agrees with the constant whatever the constant says. The two ways
+`32 * 1024 * 1024` can be mutated give **1,048,608 and 33,792** — 1 MB and
+33 KB — and at either one every ordinary manga page takes the decode-alone
+path. Nothing fails. The run is slower, on a machine nobody is timing. The test
+that kills them had to be written in page sizes rather than in the constant's
+name: 3 MB is parallel, 430 MB is not.
+
+**A bound that no fixture ever reached.** Sixteen of the 39 — the largest
+single cluster in the file — are the four `MAX_SIDE` caps in `flat_border`,
+`w / 4` and `h / 4` and the `w - 1 -` arithmetic around each. Every letterbox
+fixture in the module pads *narrower* than a quarter, because that is what a
+real letterbox does, so the caps never bound and every operator inside them was
+free: `<` could be `<=`, `w - 1` could be `w + 1` or `w / 1`, `h / MAX_SIDE`
+could be `h % MAX_SIDE`, and the tests went green on all of it. A 40×40 page
+with a 10×10 panel floating in white — fifteen flat lines on every side against
+a cap of ten — makes all four bind at once, and one `assert_eq!` on the
+resulting `Border` kills all sixteen.
+
+The cap is not incidental. It is what separates this trim from the
+ink-bounding-box autocrop that was tried and rejected: without it, that page
+would crop to the panel, which is content-following cropping under another
+name.
+
+**An axis nothing measured.** `flat_row`'s tolerance, and the `top + bottom`
+in `crop`, survived while their left/right twins were caught. Every fixture in
+the file pads the sides, because side bars are the shape the corpus has —
+Tongari volume 9 is spreads padded into 1920×1080. So the horizontal scan ran
+in every test and was asserted in none. The vertical `crop` pair needed
+**3 and 2** rather than a matching pair, because an even border cannot tell
+`top + bottom` from `top - bottom`: both read as five.
+
+`crop`'s two `||`s went the same way. Each needs a page where exactly one axis
+collapses — a border wider than the page but no taller — and a guard requiring
+*both* to collapse still hands a zero-width image to a stage that will resize
+it to the hash grid.
+
+**Two entry points with no test at all.** `common_border` and `describe_pages`
+could each be replaced with a constant. They take encoded pages rather than
+decoded ones, which is the whole reason: testing them costs a PNG round-trip
+and four tests that took a `GrayImage` directly were cheaper to write.
+
+`common_border`'s three survivors are three different wrong answers, and one
+fixture separates all of them. Twenty-four pages: a full-bleed cover at zero,
+the other even pages at ten, the odd ones at twenty. Sampling every second page
+— what `(len / 12).max(1)` does — sees eleven tens and one zero and answers
+**10**. Sampling every page answers **20**. Sampling page zero alone answers
+**0**. Taking `v[0]` instead of the median answers **0**. The correct answer is
+the only one of the four that requires both the step and the median index to be
+right.
+
+That fixture is also the argument for the median stated as a test: the
+full-bleed cover is page zero, page zero is always sampled, and under a minimum
+it would cancel the trim for the entire volume.
+
+**And the fixture that had to be shown it could fail.** `describe_pages`
+splits a landscape page in half, and the natural test — assert two hashes come
+back — passes against `width % 2` and against `width * 2` alike. The test
+asserts the halves *are* `fingerprint` of the left and right crops, and before
+doing so asserts that the two halves hash differently from each other and that
+a half hashes differently from the whole. Both guards pass today; they are
+there because the same assertion in `report.rs` was written against two pages
+that hashed alike, and passed for the wrong reason.
+
+**The four timeouts are unchanged and are not survivors.** `left += 1` → `*=`
+and `right -= 1` → `/=` in the four scan loops: 0 times 1 is 0 and 39 over 10
+walks down, so the loop stops terminating and `cargo-mutants` reports TIMEOUT
+rather than MISSED. That is the same classification O39 records, and for the
+same reason — a mutant that hangs cannot produce a silently wrong answer.
+
+**The one survivor is equivalent, and the arm it guards is unreachable.**
+`fingerprint.rs:169:25`, `||` → `&&` in `match right <= left || bottom <= top`.
+Neither side can ever be true. `left` only increments while `left < w /
+MAX_SIDE`, so it ends at most `w / 4`; `right` only decrements while
+`right > w - 1 - w / MAX_SIDE`, so it ends at least `w - 1 - w / 4`. The gap is
+therefore at least `w - 1 - 2 * (w / 4)`, and the `w < 8` guard above means
+`w >= 8`, so the gap is at least **3** — swept over every width from 8 to
+100,000, the minimum gap is exactly 3, at the smallest sizes. The vertical pair
+is the same statement in `h`. Pixel content cannot change it: content only
+makes a scan stop *earlier*, never later.
+
+So the `true => Border::default()` arm never runs, and `&&` is
+indistinguishable from `||` because both are always false. The tightest case is
+in the tests as an assertion rather than as prose: a uniformly white 8×20 page,
+the smallest the guard admits, comes back `Border { 2, 2, 5, 5 }` — the two
+scans two and five pixels apart with fourteen columns of flat white between
+them, and no way to close it.
+
+This stops being equivalent if `MAX_SIDE` ever drops below 2, which would let
+one side claim more than half the page. It is defensive code against a constant
+that is not currently allowed to be wrong, and it is left in place.
+
+## The loop that printed, the test that copied it, and a fixture in the order of its own answer
+
+`inventory.rs`, `duplicates.rs`, `credits.rs` and `cache.rs` measure together at
+**289 mutants, 34 missed** — 19, 7, 5 and 3, the recorded figures exactly — 223
+caught, 22 unviable, 10 timed out. After the work: **308 mutants, 2 missed, 269
+caught**, 27 unviable, 10 timed out. Both figures close, and both remaining
+survivors are equivalent mutants in one function, argued at the end.
+
+**The total went up by 19, which is the point rather than a side effect.**
+Extracting a decision out of a print statement turns an expression nothing could
+reach into a function a test can call — and `cargo-mutants` then generates
+*more* mutants against it, including the whole-function replacements that make
+up five of the six new unviable ones. 32 survivors died and 19 new mutants
+appeared, every one of them caught. A file that resists mutation testing by
+being unreachable scores well by being small.
+
+**Eleven of `inventory.rs`'s 19 were inside one loop that prints.** The
+`duplicated` and `settled` accumulators, the `largest` agreement count, the
+`distinct`/`identical`/`n of m` column and the gate deciding which groups appear
+at all — every one a decision made inside a `for` loop whose only output is
+`eprintln!`. This is the shape `#41` found in `serve` and the fix is the same:
+`should_print_group` was already extracted and already tested, and it was the
+one thing in that loop nothing could mutate silently. The rest now follows it —
+`excluded_span`, `group_by_volume`, `agreement`, `Row::column`, `rows` and
+`counts`, each returning a value.
+
+One behaviour changed with it, small and worth naming: signatures for the whole
+table are now taken before any row prints, where before each row printed as it
+was computed. A signature error part-way through used to leave a partial table
+above the error and now leaves none.
+
+**The test that copied the code it was testing.** `inventory.rs`'s
+`a_single_unparsed_candidate_is_reported` carried the comment "Now simulate the
+grouping logic from `command`" and then reimplemented fourteen lines of it —
+the same `find`, the same `sort_by_key`. A copy agrees with itself whatever the
+original does, so `command`'s `*volume == number` was free: inverted, every
+candidate after the first joins the first group it does not belong to, and the
+test still passes. The grouping is now a function both call.
+
+The test's last two lines were the same failure in miniature — they asserted
+`copies.len() < 2`, the *old* rule, written out again in the test body to show
+it would have skipped the group. That is a statement about a line of code that
+no longer exists. It now asserts `!should_print_group(Some(1), 1)`, which is the
+same claim made against the code that is actually there.
+
+**A fixture given in the order of its own answer.** `duplicates.rs`'s
+`a_reference_edition_breaks_a_tie_on_pairings_then_runs` builds three clusters
+and asserts they rank `[1, 0, 2]`. Clusters 0 and 2 tie on slots and on
+pairings and separate only on runs — they are the pair the reference tiebreak
+exists for — and they were listed in the input as 0 then 2. `sort_by` is
+stable. Deleting the entire tiebreak arm leaves them in the order they arrived
+in, which is the order the assertion wants, and the test passes with the
+tiebreak gone. They are now given as 2 then 0, and the assertion can only pass
+if something reordered them.
+
+`decided` had the mirror of the same hole: every test of it either had a winner
+on slots or had no reference at all, so the arm that reads the reference never
+ran in any of them. It could return `false` for every reference-broken tie —
+reporting "no clear winner" on the Chainsaw Man set, which is the case the
+reference was passed for.
+
+**A run of one cannot tell subtraction from division.** `credits.rs`'s `Row.run`
+is `run.pages.end - run.pages.start`, and the only fixture that reaches
+`classify` has a single unpaired page: `4 - 3` is 1 and `4 / 3` is also 1. The
+new fixture's run is three pages, where the three operators give 3, 9 and 2.
+
+Beside it, the recurrence lookup — `recurring.iter().find(|r| r.page ==
+run.pages.start)` — searches a list holding **one entry per page in the
+edition**, so inverting the comparison does not fail to find anything. It finds
+page 0's entry instead, and prints another page's nearest neighbour and distance
+beside this page's run, in a table whose whole purpose is to put the two
+side by side. The fixture sets distances deliberately rather than observing
+them: page 3 is one bit from `c2`'s third page, page 0 is five bits from its
+first, so the wrong lookup reports `5` and `c2.cbz#0` where the right one
+reports `1` and `c2.cbz#2`.
+
+**`cache.rs` had no test module at all**, and only three survivors, which is
+worth stating plainly: five of its eight mutants are unviable because the
+functions return types with no `Default`. A low survivor count measured nothing
+here. All three fall to one test — that a second run over unchanged bytes is
+answered from the cache — because `entry_path` returning nothing, a version
+check reversed and a digest check reversed all produce the same visible result:
+a permanent miss. A cache that never hits is a slow cache, which fails no test
+that is not looking for it.
+
+**And one guard reachable only through the seam it was written for.**
+`duplicates.rs`'s identity short-circuit builds `PageRange::new(0, slots - 1)`
+under `stands_for[a] == stands_for[b] && slots > 0`. Dropping the second
+condition underflows on an empty edition — but `Signature::of` refuses a member
+with no page images in step 1, several steps before anything is fingerprinted,
+so through `resolve` the count can never be zero. The test drives
+`resolve_with` with a closure returning no hashes, which is the seam that
+function is `pub` for, and it is written as a statement about the seam rather
+than about a set of files.
+
+**The two survivors are equivalent, both in `contradictions`.**
+
+`duplicates.rs:448:53`, `>` → `>=` in `clusters.iter().filter(|g| g.len() > 1)`.
+The only groups newly admitted are those of length one, and a group of length
+one contributes nothing: the outer loop runs once with `at = 0` and the inner
+loop is over `group[1..]`, which is empty. Equivalence over the whole input
+domain, needing no assumption about what the caller supplies.
+
+`duplicates.rs:450:33`, `+` → `*` in `&group[at + 1..]`, which makes it
+`group[at..]`. The extra iterations are exactly `b == a`, and each looks for a
+pair with `p.a == p.b`. There is one producer of `Pair` outside the tests —
+`resolve_with`'s `for a in 0..copies.len() { for b in a + 1..copies.len() }` —
+and it never builds one. This is the **weaker** kind of equivalence, over the
+inputs the callers supply rather than over the whole domain: `contradictions` is
+`pub`, and a hand-made self-pair distinguishes the two forms immediately. No
+test does it, because constructing a `Pair` judging a copy against itself pins
+behaviour on an input nothing produces — the same reasoning that keeps
+`detect.rs`'s 37 open, applied to a much smaller thing.
+
+**Confirmed at crate scale.** The two scoped runs above measure their own
+files; re-running the whole crate gives **771 mutants, 117 missed, 592 caught,
+50 unviable, 12 timed out**, against **752, 187, 508, 45, 12** before. Every
+figure closes against its total, and the arithmetic between them closes too: 19
+more mutants, 70 fewer missed, 84 more caught, 5 more unviable, timeouts
+unchanged — and 84 + 5 - 70 = 19.
+
+The 117 are `main.rs`'s 70, `detect.rs`'s 37, `regions.rs`'s 7 and the three
+equivalent mutants: the same set the scoped runs left, at the same sizes, with
+nothing appearing that a scoped run had not already seen. On the three branches
+before this one the crate-scale re-run found a real defect twice, which is why
+it is run at all.
+
+The 19 new mutants are the functions extracted out of `inventory`'s print loop
+and `credits`'s argument parsing, and every one is caught. That is the argument
+for extraction stated as a number: pulling a decision out of an `eprintln!`
+does not merely make the old mutants killable, it hands `cargo-mutants` more to
+attack — whole-function replacements, the arms of a match that was an inline
+`if`, each comparison in a filter that had nowhere to be called from — and all
+of it dies to the same tests. A file that scores well by being unreachable is
+scoring on the wrong thing.
