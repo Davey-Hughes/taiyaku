@@ -8807,24 +8807,101 @@ test does it, because constructing a `Pair` judging a copy against itself pins
 behaviour on an input nothing produces — the same reasoning that keeps
 `detect.rs`'s 37 open, applied to a much smaller thing.
 
-**Confirmed at crate scale.** The two scoped runs above measure their own
-files; re-running the whole crate gives **771 mutants, 117 missed, 592 caught,
-50 unviable, 12 timed out**, against **752, 187, 508, 45, 12** before. Every
-figure closes against its total, and the arithmetic between them closes too: 19
-more mutants, 70 fewer missed, 84 more caught, 5 more unviable, timeouts
-unchanged — and 84 + 5 - 70 = 19.
+## main.rs: 70 to 0, and fourteen that died by deletion
 
-The 117 are `main.rs`'s 70, `detect.rs`'s 37, `regions.rs`'s 7 and the three
-equivalent mutants: the same set the scoped runs left, at the same sizes, with
-nothing appearing that a scoped run had not already seen. On the three branches
-before this one the crate-scale re-run found a real defect twice, which is why
-it is run at all.
+`main.rs` measures at **156 mutants, 70 missed**, 75 caught, 10 unviable, 1
+timed out — the recorded 70 exactly. After: **172 mutants, 0 missed, 153
+caught**, 18 unviable, 1 timed out. Every one of the seventy is dead, and the
+sixteen new mutants are all caught.
 
-The 19 new mutants are the functions extracted out of `inventory`'s print loop
-and `credits`'s argument parsing, and every one is caught. That is the argument
-for extraction stated as a number: pulling a decision out of an `eprintln!`
-does not merely make the old mutants killable, it hands `cargo-mutants` more to
-attack — whole-function replacements, the arms of a match that was an inline
-`if`, each comparison in a filter that had nowhere to be called from — and all
-of it dies to the same tests. A file that scores well by being unreachable is
-scoring on the wrong thing.
+The seventy sat in five command handlers, and almost none of them were
+reachable from a unit test as the code stood: `topology` runs against real
+archives, `align` and `verify` print, `lookup` prints, `serve` starts a server.
+The fix is the one `#41` established in `serve` — extract the decision into a
+named function returning a value — and it applies here at a larger scale.
+
+**Fourteen died by deletion rather than by test, which is the best outcome
+available.** `Sidecar::edge_between` already existed in `taiyaku-core` — "the
+alignment relating two editions, in whichever direction it is stored" — tested,
+fully caught, and `pub(crate)`. `verify` had its own copy of the two-way
+comparison for the `by` it prints, and `lookup` had a third for the edge whose
+read error `route` swallowed. Three copies of one predicate, seven mutants each
+in the two that were not tested. Making the original `pub` and calling it
+removed both copies and all fourteen mutants, and left one comparison where
+there had been three.
+
+**`topology`'s 24 were a single loop.** Four per-page accumulators, four
+running totals, a verdict comparison, a self-pair skip and the guard on the
+match arms — every one of them inside a doubly-nested `for` whose only output
+is `println!`. They are now `ordered_pairs`, `Divergence` and `PairReport`.
+Two things are worth separating there:
+
+- The four counts are **not** slices of one number, and the fixture that kills
+  them says so: five pages where two pair identically, one is lost by
+  composition, one is paired only by composition, and one is paired by both to
+  different counterparts. Four paired directly, one loss, one inverse, one
+  disagreement — four different numbers, so none can be read off another. A
+  fixture where any two of them coincided would let a mutant swap the two
+  counters and pass.
+- The totals became `fold` and `filter(…).count()`, which **removes** the eight
+  `+=` mutants rather than killing them. A running counter initialised to zero
+  and mutated to `*=` stays zero and prints zero, and the only test that can
+  see it is one that asserts the total — which is exactly the test that could
+  not be written while the total never left the function.
+
+**`report_summary` prints to two streams, which is why it could not simply
+return a string.** The per-run table is stdout and the figure line is stderr,
+and `scripts/margin-survey.sh` reads one without the other. It returns both, as
+a pair the caller prints to the right stream each — so the paired total and the
+runs-per-hundred rate are assertable for the first time. Neither was: `100.0 *
+runs.len() / a_len` could become `100.0 + runs.len() / a_len` and print a
+number a reader would accept, and `paired += run.a.len()` could become `*=` and
+report nothing paired on an alignment that paired everything.
+
+**`main` itself is only killable from outside the process.** `replace main with
+()` leaves a binary that does nothing and every unit test in the crate green,
+because no unit test invokes it. `crates/taiyaku-cli/tests/cli.rs` spawns the
+binary through `CARGO_BIN_EXE_taiyaku` and asserts the two contracts `scripts/`
+depends on: a refusal exits 1 with `taiyaku: ` leading stderr and nothing on
+stdout, and no arguments prints the usage and exits 0.
+
+**And the re-run caught a test written in this session that could not fail.**
+`route_verdict`'s test asserted `route_verdict(&doc, &Via::Hub("raw"), "fan",
+"colour") == doc.trust("fan", "colour")` — and the fixture's editions are named
+`raw`, `en-fan` and `en-mono`. Both sides were `None`, all three assertions
+were `None == None`, and the whole function could be replaced by `None` and
+pass. Nothing about the test looked wrong; the edition names were plausible for
+this repository and belonged to a different fixture.
+
+That is the fourth instance of this failure in this line of work — six in
+`ddb6149`'s plan, one in `report.rs`'s hashing fixture, two found here in tests
+written years apart, and now one of mine — and the first where the wrong thing
+was a *name* rather than a value. It is also the clearest argument for the rule
+the whole exercise runs on: **the re-run is the test of the test.** Reading it
+would not have found this. Running the suite would not have found it. Only
+re-measuring did, and the same discipline caught two more of my own fixtures
+the same afternoon — an `ambiguous_pairings` test where one narrow margin could
+not tell `< 0.05` from `== 0.05`, and a `slot_hashes` fixture whose spread was
+three times an ordinary page rather than twice and so was not a spread at all.
+
+**Confirmed at crate scale.** The six scoped runs above measure their own files;
+re-running the whole crate gives **785 mutants, 47 missed, 669 caught, 57
+unviable, 12 timed out**, against **752, 187, 508, 45, 12** before. Every figure
+closes against its total, and the arithmetic between them closes too: 33 more
+mutants, 140 fewer missed, 161 more caught, 12 more unviable, timeouts
+unchanged — and 161 + 12 - 140 = 33.
+
+The 47 are `detect.rs`'s 37, `regions.rs`'s 7 and the three equivalent mutants,
+which is the same set the scoped runs left, at the same sizes, with nothing
+appearing that a scoped run had not already seen. On the three branches before
+this one the crate-scale re-run found a real defect twice; this time it found
+none, and that null result is worth something only because the same check has
+paid for itself before.
+
+The 33 new mutants are the extracted functions. Every one is caught, which is
+the argument for extraction stated as a number: pulling a decision out of a
+`println!` does not merely make the old mutants killable, it hands
+`cargo-mutants` more to attack — whole-function replacements, the arms of a
+match that was an inline `if`, each operator in an arithmetic that had nowhere
+to be called from — and all of it dies to the same tests. A file that scores
+well by being unreachable is scoring on the wrong thing.

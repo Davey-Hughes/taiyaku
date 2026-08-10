@@ -994,7 +994,14 @@ impl Sidecar {
     /// The alignment relating two editions, in whichever direction it is
     /// stored. A verdict is a property of the pairing rather than of a
     /// direction, so either orientation answers.
-    pub(crate) fn edge_between(&self, from: &str, to: &str) -> Option<&Alignment> {
+    ///
+    /// `pub` rather than `pub(crate)` because `taiyaku-cli` asked the same
+    /// question twice — `verify` for the `by` it prints beside an alignment,
+    /// `lookup` for the edge whose read error `route` swallowed — each with its
+    /// own copy of the two-way comparison. Three copies of one predicate is
+    /// three places for the orientation to be got wrong, and only this one was
+    /// ever tested.
+    pub fn edge_between(&self, from: &str, to: &str) -> Option<&Alignment> {
         self.alignments
             .iter()
             .find(|a| (a.from == from && a.to == to) || (a.from == to && a.to == from))

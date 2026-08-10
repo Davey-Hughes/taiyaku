@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 
 use taiyaku_core::{
     Alignment, Anchor, Direction, Edition, Half, Member, Merged, Run, Sidecar, Slot, SolverInfo,
-    Source, Via, Work, compose, confidence, counterpart, entries_from_runs, solve,
+    Source, Verdict, Via, Work, compose, confidence, counterpart, entries_from_runs, solve,
 };
 
 fn main() {
@@ -224,6 +224,27 @@ pub(crate) fn edition_of_digests(
 /// command passes its own set rather than sharing a global one: `--pattern` is
 /// real for `inventory` and a typo for `align`, and a global list would accept
 /// it in both.
+/// Whether a bare flag was given.
+///
+/// One function rather than an `any(|a| a == "--x")` written out at each site.
+/// The comparison is the whole of the decision and it is the same decision
+/// every time — inverted, a flag is on exactly when it was not passed, and
+/// nothing about the run looks wrong.
+fn flag_present(args: &[String], flag: &str) -> bool {
+    args.iter().any(|a| a == flag)
+}
+
+/// Which way the work reads, which decides which half of a spread comes first.
+///
+/// Right to left is the default because it is what every work in the corpus is;
+/// `--ltr` is the exception a caller asks for by name.
+fn reading_direction(args: &[String]) -> Direction {
+    match flag_present(args, "--ltr") {
+        true => Direction::LeftToRight,
+        false => Direction::RightToLeft,
+    }
+}
+
 fn reject_unknown_flags(command: &str, args: &[String], known: &[&str]) -> Result<(), String> {
     let Some(unknown) = args
         .iter()
@@ -395,11 +416,7 @@ fn verify(args: &[String]) -> Result<(), String> {
     // which is what makes a hand correction reviewable: edit the runs, render
     // again, look at what changed. Confidence is still recomputed from the
     // fingerprints, because a stored run-level margin cannot shade a page.
-    let direction = if args.iter().any(|a| a == "--ltr") {
-        Direction::LeftToRight
-    } else {
-        Direction::RightToLeft
-    };
+    let direction = reading_direction(args);
     // The summary at the end is counted in whatever unit the runs are addressed
     // in. A solved run indexes pages; a run out of a sidecar indexes slots, and
     // an edition with seven spreads has seven more slots than pages — which is
@@ -456,11 +473,7 @@ fn verify(args: &[String]) -> Result<(), String> {
             };
             // `by` belongs to a stored edge, and a composed path has none.
             let by = sidecar
-                .alignments
-                .iter()
-                .find(|al| {
-                    (al.from == a_name && al.to == b_name) || (al.from == b_name && al.to == a_name)
-                })
+                .edge_between(&a_name, &b_name)
                 .map(|al| format!(", by {:?}", al.by))
                 .unwrap_or_default();
             eprintln!(
@@ -488,22 +501,7 @@ fn verify(args: &[String]) -> Result<(), String> {
             let (a_slot_hashes, a_slots, _) = cached_edition(&cache_root, &a_members, direction)?;
             let (b_slot_hashes, b_slots, _) = cached_edition(&cache_root, &b_members, direction)?;
             let slot_scores = confidence(&a_slot_hashes, &b_slot_hashes, &runs);
-            // The report is page-indexed, so map slots back to the pages whose
-            // thumbnails it will show.
-            slot_scores
-                .into_iter()
-                .filter_map(|s| {
-                    let page = a_slots.get(s.page as usize)?.page;
-                    Some(taiyaku_core::PageConfidence {
-                        page,
-                        counterpart: s
-                            .counterpart
-                            .and_then(|c| b_slots.get(c as usize))
-                            .map(|slot| slot.page),
-                        ..s
-                    })
-                })
-                .collect()
+            on_pages(slot_scores, &a_slots, &b_slots)
         }
         None => confidence(&a, &b, &runs),
     };
@@ -517,16 +515,61 @@ fn verify(args: &[String]) -> Result<(), String> {
     );
     std::fs::write(out, &html).map_err(|e| format!("{out}: {e}"))?;
 
-    report_summary(&runs, a_units);
-    let ambiguous = scored
-        .iter()
-        .filter(|s| s.counterpart.is_some() && s.margin < 0.05)
-        .count();
+    let (table, figures) = report_summary(&runs, a_units);
+    print!("{table}");
+    eprintln!("{figures}");
     eprintln!(
-        "wrote {out} ({:.1} MB) | {ambiguous} ambiguous pairings to review",
-        html.len() as f64 / 1_048_576.0
+        "wrote {out} ({:.1} MB) | {} ambiguous pairings to review",
+        html.len() as f64 / 1_048_576.0,
+        ambiguous_pairings(&scored)
     );
     Ok(())
+}
+
+/// Slot-indexed confidence, mapped back onto the pages the report shows.
+///
+/// A run out of a sidecar addresses slots, and an edition with seven spreads
+/// has seven more slots than pages — but the report shows thumbnails, and a
+/// thumbnail is of a page. Both ends of a pairing move: the score's own slot
+/// becomes the page holding it, and its counterpart slot becomes the page
+/// holding *that*. Leaving either as a slot index puts a page's score against
+/// another page's picture, off by the number of spreads before it.
+///
+/// A score whose slot is not in the table is dropped rather than guessed at.
+fn on_pages(
+    slot_scores: Vec<taiyaku_core::PageConfidence>,
+    a_slots: &[Slot],
+    b_slots: &[Slot],
+) -> Vec<taiyaku_core::PageConfidence> {
+    slot_scores
+        .into_iter()
+        .filter_map(|s| {
+            Some(taiyaku_core::PageConfidence {
+                page: a_slots.get(s.page as usize)?.page,
+                counterpart: s
+                    .counterpart
+                    .and_then(|c| b_slots.get(c as usize))
+                    .map(|slot| slot.page),
+                ..s
+            })
+        })
+        .collect()
+}
+
+/// How close the second-best counterpart came before a pairing counts as
+/// worth a person's eye.
+const AMBIGUOUS_MARGIN: f32 = 0.05;
+
+/// Pairings the report asks someone to look at: paired, and paired only just.
+///
+/// An unpaired page is not ambiguous — there was no second-best for it to be
+/// close to — so the count is over pairings rather than over pages, and the
+/// number is printed as "to review" beside a file somebody is about to open.
+fn ambiguous_pairings(scored: &[taiyaku_core::PageConfidence]) -> usize {
+    scored
+        .iter()
+        .filter(|s| s.counterpart.is_some() && s.margin < AMBIGUOUS_MARGIN)
+        .count()
 }
 
 /// Measure what hub-and-spoke costs against solving every pair directly.
@@ -571,69 +614,54 @@ fn topology(args: &[String]) -> Result<(), String> {
         "{:<9} {:>6} {:>7} {:>8} {:>9} {:>9} {:>21}",
         "pair", "pages", "direct", "loss", "disagree", "inverse", "verdict"
     );
-    let (mut total_pages, mut total_loss, mut total_disagree, mut total_inverse) = (0, 0, 0, 0);
+    let measured: Vec<((usize, usize), PairReport)> = ordered_pairs(spokes.len())
+        .into_iter()
+        .map(|(i, j)| {
+            let direct = solve(&spoke_hashes[i], &spoke_hashes[j]);
+            let composed = compose(&to_hub[i], &from_hub[j]);
+            let report = PairReport {
+                pages: spoke_hashes[i].len(),
+                divergence: Divergence::between(&direct, &composed, spoke_hashes[i].len() as u32),
+                composed: taiyaku_core::verdict(&composed, spoke_hashes[i].len()),
+                worse_leg: taiyaku_core::verdict(&to_hub[i], spoke_hashes[i].len())
+                    .min(taiyaku_core::verdict(&from_hub[j], hub_hashes.len())),
+            };
+            ((i, j), report)
+        })
+        .collect();
+
+    for ((i, j), report) in &measured {
+        let (pages, d) = (report.pages, report.divergence);
+        println!(
+            "{i}->{j:<7} {pages:>6} {:>7} {:>7.1}% {:>8.1}% {:>8.1}% {:>21}",
+            d.direct_paired,
+            100.0 * f64::from(d.loss) / pages as f64,
+            100.0 * f64::from(d.disagree) / pages as f64,
+            100.0 * f64::from(d.inverse) / pages as f64,
+            report.verdict_column()
+        );
+    }
+
     // Composition can merge two fragmented runs into one clean one, so judging
     // the composed runs is not the same as taking the worse of the two legs.
     // `Sidecar::trust` takes the worse leg; this counts how often that is the
     // more pessimistic answer, which is what decides whether it should.
-    let mut verdict_splits = 0;
-
-    for i in 0..spokes.len() {
-        for j in 0..spokes.len() {
-            if i == j {
-                continue;
-            }
-            let direct = solve(&spoke_hashes[i], &spoke_hashes[j]);
-            let composed = compose(&to_hub[i], &from_hub[j]);
-
-            let composed_verdict = taiyaku_core::verdict(&composed, spoke_hashes[i].len());
-            let worse_leg = taiyaku_core::verdict(&to_hub[i], spoke_hashes[i].len())
-                .min(taiyaku_core::verdict(&from_hub[j], hub_hashes.len()));
-            if composed_verdict != worse_leg {
-                verdict_splits += 1;
-            }
-
-            let (mut direct_paired, mut loss, mut disagree, mut inverse) = (0, 0, 0, 0);
-            for page in 0..spoke_hashes[i].len() as u32 {
-                let d = counterpart(&direct, page);
-                let c = counterpart(&composed, page);
-                if d.is_some() {
-                    direct_paired += 1;
-                }
-                match (d, c) {
-                    (Some(_), None) => loss += 1,
-                    (None, Some(_)) => inverse += 1,
-                    (Some(x), Some(y)) if x != y => disagree += 1,
-                    _ => {}
-                }
-            }
-            let pages = spoke_hashes[i].len();
-            println!(
-                "{i}->{j:<7} {pages:>6} {direct_paired:>7} {:>7.1}% {:>8.1}% {:>8.1}% {:>21}",
-                100.0 * loss as f64 / pages as f64,
-                100.0 * disagree as f64 / pages as f64,
-                100.0 * inverse as f64 / pages as f64,
-                match composed_verdict == worse_leg {
-                    true => stats::verdict_word(composed_verdict).to_string(),
-                    false => format!(
-                        "{} != {}",
-                        stats::verdict_word(composed_verdict),
-                        stats::verdict_word(worse_leg)
-                    ),
-                }
-            );
-            total_pages += pages;
-            total_loss += loss;
-            total_disagree += disagree;
-            total_inverse += inverse;
-        }
-    }
+    let verdict_splits = measured
+        .iter()
+        .filter(|(_, report)| report.verdict_split())
+        .count();
+    let total_pages: usize = measured.iter().map(|(_, report)| report.pages).sum();
+    let totals = measured
+        .iter()
+        .fold(Divergence::default(), |sum, (_, report)| {
+            sum.plus(report.divergence)
+        });
 
     eprintln!(
         "\nacross {total_pages} page comparisons: loss {:.2}% | disagreement {:.2}% | inverse loss {:.2}%",
-        100.0 * total_loss as f64 / total_pages as f64,
-        100.0 * total_disagree as f64 / total_pages as f64,
-        100.0 * total_inverse as f64 / total_pages as f64,
+        100.0 * f64::from(totals.loss) / total_pages as f64,
+        100.0 * f64::from(totals.disagree) / total_pages as f64,
+        100.0 * f64::from(totals.inverse) / total_pages as f64,
     );
     eprintln!(
         "loss is the number that decides it: pages a direct solve pairs and composition cannot"
@@ -644,6 +672,100 @@ fn topology(args: &[String]) -> Result<(), String> {
         spokes.len() * (spokes.len() - 1)
     );
     Ok(())
+}
+
+/// Every ordered pair of distinct spokes.
+///
+/// Ordered, not unordered: `i -> j` composes through the hub as `i -> hub`
+/// then `hub -> j`, and `j -> i` uses the other two legs, so the two are
+/// different measurements and the table reports both. A star of `n` spokes
+/// gives `n * (n - 1)` of them, which is the number the header prints as what
+/// all-pairs would have cost.
+fn ordered_pairs(spokes: usize) -> Vec<(usize, usize)> {
+    (0..spokes)
+        .flat_map(|i| (0..spokes).map(move |j| (i, j)))
+        .filter(|(i, j)| i != j)
+        .collect()
+}
+
+/// How a direct alignment and a composed one differ, page by page.
+///
+/// The four counts are not slices of one number: a page can be paired by the
+/// direct solve and lost by composition, paired by composition and missed by
+/// the direct solve, or paired by both to different counterparts. Only the
+/// first is a cost of the star, which is why they are counted apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Divergence {
+    /// Pages the direct solve pairs at all.
+    direct_paired: u32,
+    /// Pages the direct solve pairs and composition does not — the number that
+    /// decides whether hub-and-spoke is worth what it saves.
+    loss: u32,
+    /// Pages composition pairs and the direct solve does not.
+    inverse: u32,
+    /// Pages both pair, to different counterparts.
+    disagree: u32,
+}
+
+impl Divergence {
+    fn between(direct: &[Run], composed: &[Run], pages: u32) -> Self {
+        let mut found = Self::default();
+        for page in 0..pages {
+            let (d, c) = (counterpart(direct, page), counterpart(composed, page));
+            if d.is_some() {
+                found.direct_paired += 1;
+            }
+            match (d, c) {
+                (Some(_), None) => found.loss += 1,
+                (None, Some(_)) => found.inverse += 1,
+                (Some(x), Some(y)) if x != y => found.disagree += 1,
+                _ => {}
+            }
+        }
+        found
+    }
+
+    /// Running totals across the whole star.
+    fn plus(self, other: Self) -> Self {
+        Self {
+            direct_paired: self.direct_paired + other.direct_paired,
+            loss: self.loss + other.loss,
+            inverse: self.inverse + other.inverse,
+            disagree: self.disagree + other.disagree,
+        }
+    }
+}
+
+/// One row of the topology table: what composition cost, and what the two ways
+/// of judging it said.
+#[derive(Debug, Clone, Copy)]
+struct PairReport {
+    pages: usize,
+    divergence: Divergence,
+    /// The verdict on the composed runs, judged as a whole.
+    composed: Verdict,
+    /// What `Sidecar::trust` would say: the worse of the two legs.
+    worse_leg: Verdict,
+}
+
+impl PairReport {
+    /// Whether judging the composition disagrees with taking the worse leg.
+    fn verdict_split(&self) -> bool {
+        self.composed != self.worse_leg
+    }
+
+    /// The verdict column: one word where the two rules agree, and both words
+    /// where they do not — the disagreement is the measurement.
+    fn verdict_column(&self) -> String {
+        match self.verdict_split() {
+            false => stats::verdict_word(self.composed).to_string(),
+            true => format!(
+                "{} != {}",
+                stats::verdict_word(self.composed),
+                stats::verdict_word(self.worse_leg)
+            ),
+        }
+    }
 }
 
 /// Express `target` relative to `base`, for writing into a sidecar.
@@ -817,18 +939,8 @@ fn lookup(args: &[String]) -> Result<(), String> {
         Some(found) => match &found.via {
             Via::Identity => eprintln!("  alignment {from} -> {to}: identical edition"),
             via => {
-                let verdict = match via {
-                    // Composition is only as good as its weaker leg, which is
-                    // what `trust` reports. The run length is of the composed
-                    // runs, because those are what this call walks.
-                    Via::Hub(_) => sidecar.trust(from, to),
-                    _ => sidecar.quality_of(from, to).map(|q| q.verdict),
-                };
-                let how = match via {
-                    Via::Inverted => format!(", from the stored {to} -> {from} edge"),
-                    Via::Hub(hub) => format!(", composed through {hub}"),
-                    _ => String::new(),
-                };
+                let verdict = route_verdict(&sidecar, via, from, to);
+                let how = route_note(via, from, to);
                 match verdict {
                     Some(v) => eprintln!(
                         "  alignment {from} -> {to}: {}, average run {:.1}{how}",
@@ -846,9 +958,7 @@ fn lookup(args: &[String]) -> Result<(), String> {
         // for whoever is hand-editing the file, and this is the only place they
         // can reach them.
         None => match sidecar
-            .alignments
-            .iter()
-            .find(|a| (a.from == *from && a.to == *to) || (a.from == *to && a.to == *from))
+            .edge_between(from, to)
             .and_then(|a| sidecar.runs_of(a).err())
         {
             Some(why) => eprintln!("  alignment {from} -> {to}: cannot be read: {why}"),
@@ -925,7 +1035,7 @@ fn serve(args: &[String]) -> Result<(), String> {
     // Throws away every work's remembered Stump resolutions before this start
     // resolves them again. The escape hatch for a book added to Stump after a
     // work first resolved, which nothing here notices on its own.
-    let refresh_stump = args.iter().any(|a| a == "--refresh-stump");
+    let refresh_stump = flag_present(args, "--refresh-stump");
 
     let works = taiyaku_serve::load_works(&paths)?;
     for work in &works {
@@ -940,6 +1050,34 @@ fn serve(args: &[String]) -> Result<(), String> {
     tokio::runtime::Runtime::new()
         .map_err(|e| format!("{e}"))?
         .block_on(taiyaku_serve::serve(works, addr, stump, log, refresh_stump))
+}
+
+/// How believable a route is, which depends on how it was reached.
+///
+/// A composed path is only as good as its weaker leg, which is what `trust`
+/// reports; a stored edge — either orientation of one — answers for itself
+/// through `quality_of`. Asking `quality_of` about a composed pair would find
+/// no edge and report that the document does not say, on a pairing the
+/// document says plenty about.
+fn route_verdict(sidecar: &Sidecar, via: &Via, from: &str, to: &str) -> Option<Verdict> {
+    match via {
+        Via::Hub(_) => sidecar.trust(from, to),
+        _ => sidecar.quality_of(from, to).map(|q| q.verdict),
+    }
+}
+
+/// How a route was reached, as the line names it.
+///
+/// Empty for a direct edge, because there is nothing to explain: the reader
+/// asked for `from -> to` and that is what was stored. The other two are worth
+/// a clause each — an inverted edge means the runs were read backwards, and a
+/// composed one means no solver ever checked this pair.
+fn route_note(via: &Via, from: &str, to: &str) -> String {
+    match via {
+        Via::Inverted => format!(", from the stored {to} -> {from} edge"),
+        Via::Hub(hub) => format!(", composed through {hub}"),
+        _ => String::new(),
+    }
 }
 
 /// Fingerprint an edition through the cache, splitting joined spreads.
@@ -962,9 +1100,25 @@ fn cached_edition(
         described.extend(pages);
     }
 
-    // Whether a page is a spread is decided against the edition it sits in, so
-    // it cannot be cached per member: the baseline has to be taken over the
-    // whole flattened sequence.
+    let (hashes, wide) = slot_hashes(&described, direction);
+    Ok((hashes, taiyaku_core::expand(&wide, direction), hits))
+}
+
+/// One hash per slot, splitting the pages that read as joined spreads, and the
+/// flags saying which pages were split.
+///
+/// Whether a page is a spread is decided against the edition it sits in, so it
+/// cannot be cached per member: the baseline has to be taken over the whole
+/// flattened sequence, which is why this takes the edition rather than a page.
+///
+/// A page can be wide enough to read as a spread and still have no halves
+/// cached — an entry written before halves were stored — and that page
+/// contributes its whole hash rather than nothing, which is why the two
+/// conditions are one pattern rather than two nested tests.
+fn slot_hashes(
+    described: &[cache::CachedPage],
+    direction: Direction,
+) -> (Vec<taiyaku_core::PageHash>, Vec<bool>) {
     let dimensions: Vec<(u32, u32)> = described.iter().map(|p| (p.width, p.height)).collect();
     let flags = taiyaku_core::spread_flags(&dimensions);
 
@@ -986,7 +1140,7 @@ fn cached_edition(
             }
         }
     }
-    Ok((hashes, taiyaku_core::expand(&wide, direction), hits))
+    (hashes, wide)
 }
 
 fn align(args: &[String]) -> Result<(), String> {
@@ -1029,9 +1183,9 @@ fn align(args: &[String]) -> Result<(), String> {
     // path the one that can do almost nothing: it cannot write a sidecar, and
     // it refuses six of the nine flags. A default nobody should choose is the
     // same silence this group has been closing, one level up.
-    let split_spreads = !args.iter().any(|a| a == "--no-split-spreads");
-    let show_stats = args.iter().any(|a| a == "--stats");
-    let direct = args.iter().any(|a| a == "--direct");
+    let split_spreads = !flag_present(args, "--no-split-spreads");
+    let show_stats = flag_present(args, "--stats");
+    let direct = flag_present(args, "--direct");
 
     // Every valued flag is resolved here, before either edition is read, and
     // not merely before the sidecar is written: a flag typed wrong is a typo,
@@ -1144,11 +1298,7 @@ fn align(args: &[String]) -> Result<(), String> {
     // Which edition joins a spread is not fixed - raws split them and English
     // releases join them here, but the colour editions join them too, so the
     // same pair read the other way round puts the spreads on the other side.
-    let direction = if args.iter().any(|a| a == "--ltr") {
-        Direction::LeftToRight
-    } else {
-        Direction::RightToLeft
-    };
+    let direction = reading_direction(args);
     let started = std::time::Instant::now();
     let (a_slots_hashes, a_slots, a_hits) = cached_edition(&cache_root, &a_members, direction)?;
     let (b, b_slots, b_hits) = cached_edition(&cache_root, &b_members, direction)?;
@@ -1158,8 +1308,8 @@ fn align(args: &[String]) -> Result<(), String> {
         a_hits + b_hits,
         a_members.len() + b_members.len()
     );
-    let a_wide = a_slots.iter().filter(|s| s.half.is_some()).count() / 2;
-    let b_wide = b_slots.iter().filter(|s| s.half.is_some()).count() / 2;
+    let a_wide = spreads_in(&a_slots);
+    let b_wide = spreads_in(&b_slots);
     eprintln!(
         "A: {} slots ({a_wide} spreads) | B: {} slots ({b_wide} spreads)",
         a_slots_hashes.len(),
@@ -1175,28 +1325,30 @@ fn align(args: &[String]) -> Result<(), String> {
         );
         eprintln!("{}", stats::shape_line(&runs, a_slots_hashes.len()));
     }
-    let mut whole = 0u32;
-    let mut halves = 0u32;
-    let mut gaps = 0u32;
-    for (i, from) in a_slots.iter().enumerate() {
-        match counterpart(&runs, i as u32).and_then(|slot| b_slots.get(slot as usize)) {
-            Some(to) => {
-                if from.half.is_some() || to.half.is_some() {
-                    halves += 1;
-                } else {
-                    whole += 1;
-                }
-                println!(
-                    "{:>4}{:<6} -> {:>4}{}",
-                    from.page,
-                    from.half.map(|h| format!(" {h:?}")).unwrap_or_default(),
-                    to.page,
-                    to.half.map(|h| format!(" {h:?}")).unwrap_or_default()
-                );
-            }
-            None => gaps += 1,
+    let paired: Vec<(&Slot, Option<&Slot>)> = a_slots
+        .iter()
+        .enumerate()
+        .map(|(i, from)| {
+            let to = counterpart(&runs, i as u32).and_then(|slot| b_slots.get(slot as usize));
+            (from, to)
+        })
+        .collect();
+    for (from, to) in &paired {
+        if let Some(to) = to {
+            println!(
+                "{:>4}{:<6} -> {:>4}{}",
+                from.page,
+                from.half.map(|h| format!(" {h:?}")).unwrap_or_default(),
+                to.page,
+                to.half.map(|h| format!(" {h:?}")).unwrap_or_default()
+            );
         }
     }
+    let kinds: Vec<Pairing> = paired
+        .iter()
+        .map(|(from, to)| pairing_of(from, *to))
+        .collect();
+    let (whole, halves, gaps) = tally(&kinds);
     // Runs in slot notation, which is what the sidecar stores.
     let show = |slots: &[taiyaku_core::Slot], i: u32| -> String {
         match slots.get(i as usize) {
@@ -1233,11 +1385,7 @@ fn align(args: &[String]) -> Result<(), String> {
     if let Some(out) = write {
         // Read before writing. `--write` used to be a bare `fs::write`, which
         // silently discarded a document that may hold four other editions.
-        let existing = match std::fs::read_to_string(out) {
-            Ok(text) => Some(Sidecar::from_json(&text)?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(format!("{out}: {e}")),
-        };
+        let existing = existing_sidecar(out)?;
 
         // On a merge the a-side is the edition the document already names, so
         // `--name-a` is optional and, given, must agree. `--direct` has no hub
@@ -1367,29 +1515,101 @@ fn align(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn report_summary(runs: &[Run], a_len: usize) {
+/// How many slots the counterpart search resolved, and to what.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pairing {
+    /// Two whole pages.
+    Whole,
+    /// At least one side is half of a joined spread.
+    Half,
+    /// No counterpart at all.
+    Gap,
+}
+
+/// What one slot's pairing is, for the tally under the table.
+///
+/// A pairing counts as involving a spread if *either* side is a half. The two
+/// are not symmetric in the data — raws split spreads and English releases
+/// join them, and the colour editions join them too — so which side is halved
+/// depends on which way round the pair was given, and a rule naming one side
+/// would report the same pairing differently in each direction.
+fn pairing_of(from: &Slot, to: Option<&Slot>) -> Pairing {
+    match to {
+        None => Pairing::Gap,
+        Some(to) => match from.half.is_some() || to.half.is_some() {
+            true => Pairing::Half,
+            false => Pairing::Whole,
+        },
+    }
+}
+
+/// The three counts under the table, which have to sum to the slots there are.
+///
+/// Reported together because they are read together: whole pairings against
+/// ones involving a spread half says how much of the alignment turned on the
+/// spread detection being right, and neither number means much on its own.
+fn tally(pairings: &[Pairing]) -> (usize, usize, usize) {
+    let count = |wanted: Pairing| pairings.iter().filter(|p| **p == wanted).count();
+    (
+        count(Pairing::Whole),
+        count(Pairing::Half),
+        count(Pairing::Gap),
+    )
+}
+
+/// How many joined spreads a slot table holds.
+///
+/// Halves, divided by two: a spread expands to two slots, so counting the
+/// halved slots counts each spread twice.
+fn spreads_in(slots: &[Slot]) -> usize {
+    slots.iter().filter(|s| s.half.is_some()).count() / 2
+}
+
+/// The document `--write` will merge into, if there is one.
+///
+/// Absent is a new document; unreadable is not. `--write` used to be a bare
+/// `fs::write`, which silently discarded a file that may hold four other
+/// editions — so a read that fails for any reason other than the file not
+/// being there has to stop the write, rather than be treated as "nothing to
+/// merge" and overwrite whatever is actually at that path.
+fn existing_sidecar(out: &str) -> Result<Option<Sidecar>, String> {
+    match std::fs::read_to_string(out) {
+        Ok(text) => Ok(Some(Sidecar::from_json(&text)?)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{out}: {e}")),
+    }
+}
+
+/// A report's summary: the per-run table, and the figure line under it.
+///
+/// Returned as two strings rather than printed, so both can be asserted. They
+/// go to different streams — the run table is the output and the figure line
+/// is commentary on it — and the caller keeps them apart, because a survey
+/// script reading one must not have to filter out the other.
+fn report_summary(runs: &[Run], a_len: usize) -> (String, String) {
     let mut paired = 0u32;
+    let mut table = String::new();
     for run in runs {
         match run.b {
             Some(b) => {
                 paired += run.a.len();
-                println!(
-                    "{:>4}-{:<4} -> {:>4}-{:<4}  ({} pages, offset {:+})",
+                table.push_str(&format!(
+                    "{:>4}-{:<4} -> {:>4}-{:<4}  ({} pages, offset {:+})\n",
                     run.a.start,
                     run.a.end,
                     b.start,
                     b.end,
                     run.a.len(),
                     b.start as i64 - run.a.start as i64
-                );
+                ));
             }
-            None => println!(
-                "{:>4}-{:<4} -> {:^11}  ({} pages)",
+            None => table.push_str(&format!(
+                "{:>4}-{:<4} -> {:^11}  ({} pages)\n",
                 run.a.start,
                 run.a.end,
                 "gap",
                 run.a.len()
-            ),
+            )),
         }
     }
     // Fragmentation, not coverage, is what tells a real alignment from a
@@ -1403,17 +1623,557 @@ fn report_summary(runs: &[Run], a_len: usize) {
     // The verdict is printed alongside the number because the number alone is
     // misleading: a refusal is one run, which reads as better than any correct
     // alignment on a runs-per-page scale.
-    eprintln!(
+    let figures = format!(
         "{} runs | {paired}/{a_len} pages paired ({:.1}%) | {per_hundred:.1} runs per 100 pages | {}",
         runs.len(),
-        100.0 * paired as f64 / a_len.max(1) as f64,
+        100.0 * f64::from(paired) / a_len.max(1) as f64,
         stats::verdict_sentence(runs, a_len)
     );
+    (table, figures)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bare flag is on when it is there and off when it is not, and that is
+    /// the whole of it — but it is the whole of it at every call site, so the
+    /// comparison being right once is the comparison being right everywhere.
+    #[test]
+    fn a_bare_flag_is_on_only_when_it_was_given() {
+        let args = |all: &[&str]| all.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+
+        assert!(flag_present(&args(&["a.cbz", "--stats"]), "--stats"));
+        assert!(!flag_present(&args(&["a.cbz", "--stats"]), "--ltr"));
+        assert!(!flag_present(&args(&["a.cbz"]), "--stats"));
+        assert!(!flag_present(&[], "--stats"));
+        assert!(
+            !flag_present(&args(&["--stats-please"]), "--stats"),
+            "a longer flag that starts the same is a different flag"
+        );
+    }
+
+    /// Right to left unless asked otherwise. Everything the corpus holds reads
+    /// that way, so the flag is the exception and the default is not a guess.
+    #[test]
+    fn the_reading_direction_is_right_to_left_unless_the_flag_says_otherwise() {
+        let args = |all: &[&str]| all.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+
+        assert_eq!(
+            reading_direction(&args(&["a.cbz", "b.cbz"])),
+            Direction::RightToLeft
+        );
+        assert_eq!(
+            reading_direction(&args(&["a.cbz", "--ltr", "b.cbz"])),
+            Direction::LeftToRight
+        );
+        assert_eq!(reading_direction(&[]), Direction::RightToLeft);
+    }
+
+    /// Both directions of every distinct pair, and no self-pairs.
+    ///
+    /// A star is directional: `i -> j` composes `i -> hub` with `hub -> j`,
+    /// and `j -> i` uses the other two legs, so they are different
+    /// measurements. The count is also what the header prints as the price of
+    /// all-pairs, so it has to be the count of what the table actually holds.
+    #[test]
+    fn the_star_measures_both_directions_of_every_pair_and_no_self_pair() {
+        assert_eq!(
+            ordered_pairs(3),
+            vec![(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)]
+        );
+        assert_eq!(ordered_pairs(3).len(), 3 * (3 - 1), "n(n-1), as printed");
+        assert_eq!(ordered_pairs(1), vec![], "one spoke has nothing to pair");
+        assert_eq!(ordered_pairs(0), vec![]);
+    }
+
+    fn run_between(a: (u32, u32), b: (u32, u32)) -> Run {
+        Run::paired(
+            taiyaku_core::PageRange::new(a.0, a.1),
+            taiyaku_core::PageRange::new(b.0, b.1),
+        )
+    }
+
+    /// The four ways a direct solve and a composed one can differ, all four in
+    /// one comparison so that none of them can borrow another's count.
+    ///
+    /// Pages 0 and 1 pair the same way in both. Page 2 the direct solve pairs
+    /// and composition loses. Page 3 composition pairs and the direct solve
+    /// misses. Page 4 both pair, to different counterparts. So: four pages
+    /// paired directly, one loss, one inverse, one disagreement — four
+    /// different numbers, which is what stops any of them being read off
+    /// another.
+    #[test]
+    fn a_divergence_counts_loss_inverse_and_disagreement_apart() {
+        let direct = vec![
+            run_between((0, 2), (0, 2)),
+            Run::gap(taiyaku_core::PageRange::new(3, 3)),
+            run_between((4, 4), (4, 4)),
+        ];
+        let composed = vec![
+            run_between((0, 1), (0, 1)),
+            Run::gap(taiyaku_core::PageRange::new(2, 2)),
+            run_between((3, 4), (9, 10)),
+        ];
+
+        let found = Divergence::between(&direct, &composed, 5);
+
+        assert_eq!(
+            found,
+            Divergence {
+                direct_paired: 4,
+                loss: 1,
+                inverse: 1,
+                disagree: 1,
+            }
+        );
+
+        // Totals across the star are the four sums, each on its own.
+        assert_eq!(
+            found.plus(Divergence {
+                direct_paired: 10,
+                loss: 2,
+                inverse: 3,
+                disagree: 4,
+            }),
+            Divergence {
+                direct_paired: 14,
+                loss: 3,
+                inverse: 4,
+                disagree: 5,
+            }
+        );
+        assert_eq!(found.plus(Divergence::default()), found);
+    }
+
+    /// The verdict column is where composition and `trust`'s worse-leg rule
+    /// are put side by side, and the disagreement is the measurement the
+    /// command exists to take — so agreement prints one word and disagreement
+    /// prints both, in that order.
+    #[test]
+    fn the_verdict_column_names_both_rules_only_when_they_disagree() {
+        let report = |composed, worse_leg| PairReport {
+            pages: 200,
+            divergence: Divergence::default(),
+            composed,
+            worse_leg,
+        };
+
+        let agreed = report(Verdict::Sound, Verdict::Sound);
+        assert!(!agreed.verdict_split());
+        assert_eq!(agreed.verdict_column(), stats::verdict_word(Verdict::Sound));
+
+        let split = report(Verdict::Sound, Verdict::Fragmented);
+        assert!(split.verdict_split());
+        assert_eq!(
+            split.verdict_column(),
+            format!(
+                "{} != {}",
+                stats::verdict_word(Verdict::Sound),
+                stats::verdict_word(Verdict::Fragmented)
+            ),
+            "composed first, worse leg second"
+        );
+    }
+
+    /// A composed route is judged by its weaker leg and a stored one answers
+    /// for itself, and asking the wrong one of the two is silent in both
+    /// directions: `quality_of` on a composed pair finds no edge and says the
+    /// document does not say, about a pairing the document says plenty about.
+    ///
+    /// `en-fan` and `en-mono` are the two spokes of this fixture's star, so
+    /// nothing joins them directly and the difference between the two rules is
+    /// the difference between an answer and no answer at all.
+    #[test]
+    fn a_composed_route_is_judged_by_its_weaker_leg_and_a_stored_one_by_itself() {
+        let doc = three_editions_one_hand_corrected();
+
+        let composed = route_verdict(&doc, &Via::Hub("raw".into()), "en-fan", "en-mono");
+        assert_eq!(
+            composed,
+            doc.trust("en-fan", "en-mono"),
+            "a composed pair is only as good as its worse leg"
+        );
+        assert!(
+            composed.is_some(),
+            "the fixture must actually compose, or nothing above can fail"
+        );
+        assert_eq!(
+            doc.quality_of("en-fan", "en-mono"),
+            None,
+            "and asking for a stored edge between two spokes finds none, \
+             which is what makes the arm above load-bearing"
+        );
+
+        let stored = route_verdict(&doc, &Via::Direct, "raw", "en-fan");
+        assert_eq!(
+            stored,
+            doc.quality_of("raw", "en-fan").map(|q| q.verdict),
+            "a stored edge answers for itself"
+        );
+        assert!(stored.is_some(), "and this fixture stores one");
+        assert_eq!(
+            route_verdict(&doc, &Via::Inverted, "en-fan", "raw"),
+            doc.quality_of("en-fan", "raw").map(|q| q.verdict),
+            "so does the same edge read backwards"
+        );
+    }
+
+    /// How the route was reached, which is the difference between a number a
+    /// solver checked and one nothing ever did.
+    #[test]
+    fn the_route_note_says_only_what_a_direct_edge_would_not() {
+        assert_eq!(route_note(&Via::Direct, "raw", "fan"), "");
+        assert_eq!(route_note(&Via::Identity, "raw", "fan"), "");
+        assert_eq!(
+            route_note(&Via::Inverted, "raw", "fan"),
+            ", from the stored fan -> raw edge",
+            "inverted names the edge as it is stored, not as it was asked for"
+        );
+        assert_eq!(
+            route_note(&Via::Hub("raw".into()), "fan", "colour"),
+            ", composed through raw"
+        );
+    }
+
+    /// Both ends of a slot-indexed pairing move when it is put back onto
+    /// pages, and each moves by a different amount.
+    ///
+    /// A slots: page 0, then page 1 as two halves, then page 2 — so slot 3 is
+    /// page 2. B slots: page 0 as two halves, then pages 1 and 2 — so slot 3
+    /// is page 2 there too, but slot 1 is page 0 rather than page 1. Mapping
+    /// only one end, or neither, still produces a score for every page and
+    /// puts it against the wrong picture.
+    #[test]
+    fn slot_scores_are_put_back_onto_the_pages_at_both_ends() {
+        let a_slots = vec![
+            Slot {
+                page: 0,
+                half: None,
+            },
+            Slot {
+                page: 1,
+                half: Some(Half::Right),
+            },
+            Slot {
+                page: 1,
+                half: Some(Half::Left),
+            },
+            Slot {
+                page: 2,
+                half: None,
+            },
+        ];
+        let b_slots = vec![
+            Slot {
+                page: 0,
+                half: Some(Half::Right),
+            },
+            Slot {
+                page: 0,
+                half: Some(Half::Left),
+            },
+            Slot {
+                page: 1,
+                half: None,
+            },
+            Slot {
+                page: 2,
+                half: None,
+            },
+        ];
+        let score = |page, counterpart| taiyaku_core::PageConfidence {
+            page,
+            counterpart,
+            similarity: 0.9,
+            margin: 0.3,
+        };
+
+        let on = on_pages(
+            vec![score(3, Some(1)), score(0, None), score(9, Some(0))],
+            &a_slots,
+            &b_slots,
+        );
+
+        assert_eq!(
+            on.iter()
+                .map(|s| (s.page, s.counterpart))
+                .collect::<Vec<_>>(),
+            vec![(2, Some(0)), (0, None)],
+            "slot 3 is page 2 in A and slot 1 is page 0 in B; slot 9 is neither"
+        );
+        assert_eq!(on[0].margin, 0.3, "the score itself is carried through");
+    }
+
+    /// The count printed as "to review", which is a count of pairings rather
+    /// than of pages: an unpaired page had no second-best to be close to.
+    #[test]
+    fn only_a_pairing_with_a_narrow_margin_is_ambiguous() {
+        let score = |counterpart, margin| taiyaku_core::PageConfidence {
+            page: 0,
+            counterpart,
+            similarity: 0.9,
+            margin,
+        };
+
+        // Two below the threshold rather than one: with a single narrow
+        // pairing, "below 0.05" and "exactly 0.05" both count one thing, and
+        // the test cannot tell a threshold from an equality.
+        assert_eq!(
+            ambiguous_pairings(&[
+                score(Some(1), 0.01),
+                score(Some(2), 0.02),
+                score(Some(3), 0.9),
+                score(None, 0.0),
+                score(Some(4), AMBIGUOUS_MARGIN),
+            ]),
+            2,
+            "two narrow pairings; a wide one, a gap and one exactly at the \
+             threshold are not ambiguous"
+        );
+        assert_eq!(ambiguous_pairings(&[]), 0);
+    }
+
+    /// The counts under the alignment table. They partition the slots, so a
+    /// fixture holding all three kinds is the only one that can tell them
+    /// apart — count each kind as "everything that is not this kind" and the
+    /// three numbers still sum to the right total.
+    #[test]
+    fn the_pairing_tally_splits_the_slots_three_ways() {
+        let kinds = [
+            Pairing::Whole,
+            Pairing::Half,
+            Pairing::Whole,
+            Pairing::Gap,
+            Pairing::Whole,
+        ];
+
+        assert_eq!(tally(&kinds), (3, 1, 1));
+        assert_eq!(
+            tally(&kinds).0 + tally(&kinds).1 + tally(&kinds).2,
+            kinds.len(),
+            "every slot is counted exactly once"
+        );
+        assert_eq!(tally(&[]), (0, 0, 0));
+    }
+
+    /// A joined spread becomes two slots in reading order, and a page that is
+    /// not one keeps its own hash. The flags say which happened, because the
+    /// slot table is built from them.
+    #[test]
+    fn a_joined_spread_becomes_two_slot_hashes_in_reading_order() {
+        let hash = |n: u64| taiyaku_core::PageHash([n, 0, 0, 0]);
+        // Two portraits around one page twice as wide, which is what makes the
+        // middle one read as a spread against the edition it sits in.
+        let described = vec![
+            cache::CachedPage {
+                width: 100,
+                height: 150,
+                hash: hash(1),
+                halves: None,
+            },
+            cache::CachedPage {
+                width: 200,
+                height: 150,
+                hash: hash(2),
+                halves: Some((hash(20), hash(21))),
+            },
+            cache::CachedPage {
+                width: 100,
+                height: 150,
+                hash: hash(3),
+                halves: None,
+            },
+        ];
+
+        let (hashes, wide) = slot_hashes(&described, Direction::RightToLeft);
+        assert_eq!(
+            hashes,
+            vec![hash(1), hash(21), hash(20), hash(3)],
+            "manga reads the right half first"
+        );
+        assert_eq!(wide, vec![false, true, false]);
+
+        let (hashes, _) = slot_hashes(&described, Direction::LeftToRight);
+        assert_eq!(
+            hashes,
+            vec![hash(1), hash(20), hash(21), hash(3)],
+            "and a western comic reads the left half first"
+        );
+
+        // A page wide enough to read as a spread but with no halves cached —
+        // an entry written before halves were stored — keeps its whole hash
+        // rather than contributing nothing.
+        let mut without = described.clone();
+        without[1].halves = None;
+        let (hashes, wide) = slot_hashes(&without, Direction::RightToLeft);
+        assert_eq!(hashes, vec![hash(1), hash(2), hash(3)]);
+        assert_eq!(wide, vec![false, false, false]);
+    }
+
+    /// Spreads counted from the slot table, where each one appears twice.
+    #[test]
+    fn a_spread_is_two_slots_and_is_counted_once() {
+        let whole = |page| Slot { page, half: None };
+        let half = |page, side| Slot {
+            page,
+            half: Some(side),
+        };
+
+        assert_eq!(
+            spreads_in(&[
+                whole(0),
+                half(1, Half::Right),
+                half(1, Half::Left),
+                whole(2),
+                half(3, Half::Right),
+                half(3, Half::Left),
+            ]),
+            2
+        );
+        assert_eq!(spreads_in(&[whole(0), whole(1)]), 0);
+        assert_eq!(spreads_in(&[]), 0);
+    }
+
+    /// A pairing involves a spread if *either* side is a half. Which side is
+    /// halved depends on which way round the pair was given — raws split
+    /// spreads and English releases join them, and the colour editions join
+    /// them too — so a rule naming one side would count the same pairing
+    /// differently in each direction.
+    #[test]
+    fn a_pairing_involves_a_spread_whichever_side_is_the_half() {
+        let whole = Slot {
+            page: 4,
+            half: None,
+        };
+        let half = Slot {
+            page: 7,
+            half: Some(Half::Left),
+        };
+
+        assert_eq!(pairing_of(&whole, Some(&whole)), Pairing::Whole);
+        assert_eq!(pairing_of(&half, Some(&whole)), Pairing::Half);
+        assert_eq!(pairing_of(&whole, Some(&half)), Pairing::Half);
+        assert_eq!(pairing_of(&half, Some(&half)), Pairing::Half);
+        assert_eq!(pairing_of(&whole, None), Pairing::Gap);
+        assert_eq!(pairing_of(&half, None), Pairing::Gap);
+    }
+
+    /// `--write` merges, so it reads first — and a read that fails for any
+    /// reason other than the file not being there has to stop the write. It
+    /// used to be a bare `fs::write`, which silently discarded a document that
+    /// may hold four other editions, and treating every read error as "nothing
+    /// to merge" puts that back.
+    #[test]
+    fn a_sidecar_that_cannot_be_read_stops_the_write_rather_than_being_absent() {
+        let root = std::env::temp_dir().join("taiyaku-test-existing-sidecar");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert!(
+            existing_sidecar(&root.join("nothing-here.json").to_string_lossy())
+                .expect("an absent file is a new document")
+                .is_none()
+        );
+
+        // A directory is readable metadata and unreadable content: the error
+        // is not `NotFound`, so it must be reported rather than overwritten.
+        let error = existing_sidecar(&root.to_string_lossy())
+            .expect_err("a path that is not a file is not an absent file");
+
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            error.contains(&root.to_string_lossy().to_string()),
+            "the refusal must name the path: {error}"
+        );
+    }
+
+    /// How many members came from cache, which is the difference between a
+    /// cold run and a warm one and is reported to say which just happened.
+    ///
+    /// Counted rather than inferred: a count that never rises reads as an
+    /// honest cold run every time, and the only thing wrong is that the
+    /// three-orders-of-magnitude saving the cache exists for is invisible.
+    #[test]
+    fn a_warm_edition_reports_every_member_as_a_cache_hit() {
+        let root = std::env::temp_dir().join("taiyaku-test-cached-edition");
+        let _ = std::fs::remove_dir_all(&root);
+        // The two members hold different pages. Identical ones would share a
+        // digest, and the second would be answered from the entry the first
+        // just wrote — one hit on a cold run, which is correct behaviour and
+        // not what this is measuring.
+        let members: Vec<PathBuf> = ["c1", "c2"]
+            .iter()
+            .enumerate()
+            .map(|(chapter, name)| {
+                let dir = root.join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                for page in 0..2u32 {
+                    let seed = page * 53 + chapter as u32 * 11;
+                    let image = image::GrayImage::from_fn(24, 32, |x, y| {
+                        image::Luma([((x * 7 + y * 31 + seed) % 200) as u8])
+                    });
+                    image.save(dir.join(format!("{page:03}.png"))).unwrap();
+                }
+                dir
+            })
+            .collect();
+        let cache_root = root.join("cache");
+
+        let cold = cached_edition(&cache_root, &members, Direction::RightToLeft);
+        let warm = cached_edition(&cache_root, &members, Direction::RightToLeft);
+
+        let _ = std::fs::remove_dir_all(&root);
+        let (cold_hashes, _, cold_hits) = cold.expect("decodes");
+        let (warm_hashes, _, warm_hits) = warm.expect("reads the cache");
+        assert_eq!(cold_hits, 0, "nothing is cached on the first run");
+        assert_eq!(warm_hits, members.len(), "both members on the second");
+        assert_eq!(cold_hashes.len(), 4, "two members of two pages each");
+        assert_eq!(cold_hashes, warm_hashes);
+    }
+
+    /// The summary under a report: a line per run, then the figures.
+    ///
+    /// Both are returned rather than printed because they go to different
+    /// streams and a survey script reads one without the other — and because
+    /// neither the paired total nor the runs-per-hundred rate is checkable at
+    /// all while they only ever reach a terminal.
+    #[test]
+    fn a_report_summary_counts_paired_pages_and_the_run_rate() {
+        let runs = vec![
+            run_between((0, 9), (0, 9)),
+            Run::gap(taiyaku_core::PageRange::new(10, 14)),
+            run_between((15, 19), (10, 14)),
+        ];
+
+        let (table, figures) = report_summary(&runs, 20);
+
+        assert_eq!(table.lines().count(), 3, "one line per run, gaps included");
+        assert!(
+            table.contains("offset +0") && table.contains("offset -5"),
+            "each paired run reports the offset it sits at: {table}"
+        );
+        assert!(table.contains("gap"), "and a gap says so: {table}");
+        assert!(
+            figures.starts_with("3 runs | 15/20 pages paired (75.0%) | 15.0 runs per 100 pages"),
+            "three runs over twenty pages, fifteen of them paired: {figures}"
+        );
+
+        // A hundred pages makes the rate and the run count different numbers,
+        // so neither can stand in for the other.
+        let (_, figures) = report_summary(&runs, 100);
+        assert!(
+            figures.contains("3.0 runs per 100 pages"),
+            "the rate is per hundred pages, not per alignment: {figures}"
+        );
+
+        let (table, figures) = report_summary(&[], 0);
+        assert_eq!(table, "", "no runs, no table");
+        assert!(
+            figures.starts_with("0 runs | 0/0 pages paired (0.0%)"),
+            "an empty alignment divides by the floor rather than by zero: {figures}"
+        );
+    }
 
     /// A shell glob is not in reading order, and the sidecar used to record it
     /// verbatim while the solver quietly worked in natural order — so a

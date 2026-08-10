@@ -139,21 +139,10 @@ fn memoized_confirm(
     }
 }
 
-/// Which way the copies read, which decides which half of a spread comes first.
-///
-/// Right to left is the default because it is what every work in the corpus is;
-/// `--ltr` is the exception a caller has to ask for by name.
-fn reading_direction(args: &[String]) -> Direction {
-    match args.iter().any(|a| a == "--ltr") {
-        true => Direction::LeftToRight,
-        false => Direction::RightToLeft,
-    }
-}
-
 pub fn command(args: &[String]) -> Result<(), String> {
     crate::reject_unknown_flags("duplicates", args, &["--against", "--cache", "--ltr"])?;
     let copies = groups(args)?;
-    let direction = reading_direction(args);
+    let direction = crate::reading_direction(args);
     let cache = PathBuf::from(
         crate::option_value(args, "--cache", "a directory")?.unwrap_or(".taiyaku-cache"),
     );
@@ -985,23 +974,6 @@ mod tests {
             !decided(&[tied(182, 3), tied(182, 3)]),
             "the same on both axes is a tie, and is reported as one"
         );
-    }
-
-    /// Right to left unless asked otherwise. Everything the corpus holds reads
-    /// that way, so the flag is the exception and the default is not a guess.
-    #[test]
-    fn the_reading_direction_is_right_to_left_unless_the_flag_says_otherwise() {
-        let args = |all: &[&str]| all.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-
-        assert_eq!(
-            reading_direction(&args(&["a.cbz", "b.cbz"])),
-            Direction::RightToLeft
-        );
-        assert_eq!(
-            reading_direction(&args(&["a.cbz", "--ltr", "b.cbz"])),
-            Direction::LeftToRight
-        );
-        assert_eq!(reading_direction(&[]), Direction::RightToLeft);
     }
 
     /// Two byte-identical copies whose fingerprint comes back with no slots.

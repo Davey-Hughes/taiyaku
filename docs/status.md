@@ -75,7 +75,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 618 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
+Five crates, 635 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
 project and 296 in the `jsdom` one this branch added — and six more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -91,7 +91,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Thirteen of the 618 are standing checks gated on
+`rayon` exactly as `align` already did. Thirteen of the 635 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
@@ -581,14 +581,13 @@ boxes, so 61 of the 76 surviving blocks score *above* 1.0 against a floor of
 essentially all the filtering. That is O34. See `notes.md`, "The edition that
 clears the bar is the one finding no text".
 
-**Mutation testing found 346 survivors across the workspace. Four of the five
-crates are now closed, and every survivor that remains is `taiyaku-cli`'s.** Of
-the 346 — `taiyaku-core` 47, `taiyaku-cli` 217, `taiyaku-serve` 52,
-`taiyaku-read` 17, `taiyaku-wasm` 13 — core is down to three equivalent mutants,
-read, wasm and serve are at zero, and cli is at 117 with `report.rs` and five
-more files closed. **70 of those 117 are actionable, all of them in `main.rs`;
-44 more are deliberately deferred** until L2's detector is redesigned, for the
-reason given below, and the last three are equivalent mutants. `env -u TAIYAKU_CORPUS
+**Mutation testing found 346 survivors across the workspace. All five crates
+are now closed, and every survivor that remains is either an equivalent mutant
+carrying its argument or deliberately deferred.** Of the 346 — `taiyaku-core`
+47, `taiyaku-cli` 217, `taiyaku-serve` 52, `taiyaku-read` 17, `taiyaku-wasm` 13
+— read, wasm and serve are at zero, core is at three equivalent mutants and cli
+at three more, with its remaining 44 deferred until L2's detector is redesigned
+for the reason given below. `env -u TAIYAKU_CORPUS
 cargo mutants --gitignore=true --test-tool=nextest` ran 1,660 mutants in 43
 minutes on 2026-08-10: 1,149 caught, 346 missed, 136 unviable, 29 timed out —
 75.4% of 1,524 viable mutants caught. `taiyaku-core`'s 47 were concentrated in
@@ -675,13 +674,36 @@ that never bound, and a constant no test could see" and "The loop that printed,
 the test that copied it, and a fixture in the order of its own answer", are the
 record.
 
+**And `main.rs` is closed too — 70 to 0**, which finishes the 143. Its seventy
+sat in five command handlers, almost none of them reachable from a unit test as
+the code stood: `topology` runs against real archives, `align`, `verify` and
+`lookup` print, `serve` starts a server. Three things carried it.
+**Twenty-four were a single loop** — `topology`'s four per-page accumulators,
+four running totals, verdict comparison and self-pair skip, all inside a
+doubly-nested `for` whose only output is `println!`, now `ordered_pairs`,
+`Divergence` and `PairReport`. **Fourteen died by deletion rather than by
+test**: `Sidecar::edge_between` was already in `taiyaku-core`, tested and
+`pub(crate)`, while `verify` and `lookup` each carried their own copy of the
+two-way comparison — three copies of one predicate, and only the tested one
+survived the change. **And `main` itself is only killable from outside the
+process**, so `crates/taiyaku-cli/tests/cli.rs` spawns the binary and asserts
+the two contracts `scripts/` depends on: a refusal exits 1 with `taiyaku: `
+leading stderr and nothing on stdout, and no arguments prints the usage and
+exits 0.
+
+A fourth fixture that could not fail turned up here, written in this session
+and caught only by re-measuring: `route_verdict`'s test compared `None` to
+`None` throughout, because it named an edition the fixture does not define.
+`notes.md`, "main.rs: 70 to 0, and fourteen that died by deletion", is the
+record.
+
 Confirmed at crate scale as well as file by file: re-running the whole crate
-gives **771 mutants, 117 missed, 592 caught**, 50 unviable, 12 timed out,
-against 752 / 187 / 508 / 45 / 12 before — and the 117 are exactly `main.rs`'s
-70, `detect.rs`'s 37, `regions.rs`'s 7 and the three equivalent mutants, with
-nothing appearing that a scoped run had not already seen. That leaves
-**`main.rs`'s 70**, plus `detect.rs` and `regions.rs` waiting on L2, as what is
-still measured and open.
+gives **785 mutants, 47 missed, 669 caught**, 57 unviable, 12 timed out,
+against 752 / 187 / 508 / 45 / 12 before. The 47 are exactly `detect.rs`'s 37,
+`regions.rs`'s 7 and the three equivalent mutants, and the 33 mutants the crate
+gained are the extracted functions, every one of them caught. That leaves
+**`detect.rs` and `regions.rs`** as the whole of what is measured and open, and
+both are waiting on L2.
 
 ### Open items
 
