@@ -137,8 +137,11 @@ impl StumpConfig {
 
 /// Bind and serve until interrupted.
 ///
-/// Separate from `build_router` so every test drives the router directly and
-/// none of them opens a socket.
+/// Separate from `build_router` so the router's behaviour is driven directly,
+/// without a socket, by every test that is about a route. **One test is about
+/// the bind itself** — `serve_binds_the_address_and_answers_on_it` — because
+/// with none, this whole function could be replaced by `Ok(())`, starting no
+/// server at all, and nothing else in the crate would notice.
 pub async fn serve(
     works: Vec<Work>,
     addr: &str,
@@ -320,17 +323,32 @@ fn resolve_all_works(
         // since a run that gave up partway still learned whatever it got to.
         learned(resolved.resolutions);
         if aborted {
-            let remaining = works.len() - index - 1;
-            if remaining > 0 {
-                eprintln!(
-                    "taiyaku: stump appears unreachable — skipping stump resolution for the \
-                     remaining {remaining} work(s); they will read from disk until the next \
-                     start"
-                );
+            if let Some(notice) = skipping_notice(works.len(), index) {
+                eprintln!("{notice}");
             }
             break;
         }
     }
+}
+
+/// What to say when a run gives up partway, or `None` when it gave up on the
+/// last work and there is nothing left to skip.
+///
+/// `works.len() - index - 1` and the `> 0` test that guards it were both
+/// invisible to the suite: they decide only the wording of a line on stderr,
+/// and the abort test asserts which requests were made rather than what was
+/// printed. Extracted so the arithmetic is a value something can check —
+/// including the case that matters most, aborting on the final work, where
+/// every mutation of the subtraction produces a sentence promising to skip
+/// works that do not exist.
+fn skipping_notice(total: usize, index: usize) -> Option<String> {
+    let remaining = total.saturating_sub(index + 1);
+    (remaining > 0).then(|| {
+        format!(
+            "taiyaku: stump appears unreachable — skipping stump resolution for the \
+             remaining {remaining} work(s); they will read from disk until the next start"
+        )
+    })
 }
 
 #[cfg(test)]
@@ -796,6 +814,115 @@ mod tests {
             !requests.iter().any(|r| r.contains("bravo")),
             "the second work must never be asked about once the first aborted by \
              transport failure: {requests:?}"
+        );
+    }
+
+    /// The tile cache is a *sibling* of the cover cache, not the same
+    /// directory and not a child of it — O11's reasoning, which nothing
+    /// checked. `thumb_cache_dir` could return `PathBuf::default()`, the empty
+    /// path, and every tile in every library would share one directory in the
+    /// process's working directory.
+    #[test]
+    fn the_tile_cache_is_a_sibling_of_the_cover_cache() {
+        let state = crate::test_support::state("taiyaku-test-thumb-dir");
+        let covers = state.cache_dir.clone();
+        let thumbs = state.thumb_cache_dir();
+
+        crate::test_support::cleanup("taiyaku-test-thumb-dir");
+        assert_ne!(thumbs, covers, "not the same directory");
+        assert_eq!(
+            thumbs.parent(),
+            covers.parent(),
+            "siblings: same parent, different leaf"
+        );
+        assert_eq!(thumbs.file_name().unwrap(), "thumbs");
+        assert!(
+            !thumbs.as_os_str().is_empty(),
+            "an empty path would put every library's tiles in one place"
+        );
+    }
+
+    /// Aborting on the *last* work must say nothing: there is nothing left to
+    /// skip, and a sentence promising to skip "0 work(s)" — or, with the
+    /// subtraction mutated, some other number of works that do not exist — is
+    /// worse than silence.
+    ///
+    /// The abort test above asserts which requests were made, which is the
+    /// right thing for it to assert and cannot see any of this.
+    #[test]
+    fn the_skipping_notice_counts_only_the_works_actually_left() {
+        assert_eq!(
+            crate::skipping_notice(1, 0),
+            None,
+            "gave up on the only work: nothing follows it"
+        );
+        assert_eq!(
+            crate::skipping_notice(3, 2),
+            None,
+            "gave up on the last of three: nothing follows it either"
+        );
+
+        let two_left = crate::skipping_notice(3, 0).expect("two works follow the first");
+        assert!(
+            two_left.contains("remaining 2 work(s)"),
+            "must count what is left, not what there was: {two_left}"
+        );
+        let one_left = crate::skipping_notice(3, 1).expect("one work follows the second");
+        assert!(one_left.contains("remaining 1 work(s)"), "{one_left}");
+    }
+
+    /// `serve` actually binds and answers.
+    ///
+    /// The one thing in this crate that opens a socket, and so — by the design
+    /// its own doc comment states — the one thing every other test avoids
+    /// driving. The cost of that is that `serve` could be replaced wholesale by
+    /// `Ok(())`, starting no server at all, with all 168 other tests green. A
+    /// composition root nothing composes is worth exactly one test.
+    ///
+    /// The port is taken by binding and releasing, which is racy in principle;
+    /// the poll below is what makes it deterministic in practice, and a genuine
+    /// collision fails loudly rather than passing wrongly.
+    ///
+    /// **`multi_thread` is required, not stylistic.** `ureq` is a blocking
+    /// client — deliberately, per `stump::http`'s doc — so polling with it on
+    /// the default current-thread runtime blocks the very runtime that is
+    /// supposed to be driving `serve`, and the test deadlocks rather than
+    /// failing. Written the obvious way first, and it hung.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn serve_binds_the_address_and_answers_on_it() {
+        let works = vec![crate::test_support::work("taiyaku-test-serve-bind")];
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let addr = probe.local_addr().unwrap().to_string();
+        drop(probe);
+
+        let serving = tokio::spawn({
+            let addr = addr.clone();
+            async move { crate::serve(works, &addr, None, None, false).await }
+        });
+
+        // Poll rather than sleep a fixed time: the bind is the thing under
+        // test, so waiting for it is the assertion.
+        let url = format!("http://{addr}/api/works");
+        let mut answered = None;
+        for _ in 0..100 {
+            if serving.is_finished() {
+                break;
+            }
+            if let Ok(mut r) = ureq::get(&url).call() {
+                answered = Some(r.body_mut().read_to_string().unwrap_or_default());
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        serving.abort();
+        crate::test_support::cleanup("taiyaku-test-serve-bind");
+
+        let body = answered.expect("serve must bind the address and answer on it");
+        assert!(
+            body.contains("\"t\""),
+            "and answer with the works it was given: {body}"
         );
     }
 }

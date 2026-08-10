@@ -261,4 +261,39 @@ mod tests {
         assert_eq!(sniffed_type(b"<?xml version=\"1.0\"?>"), None);
         assert_eq!(sniffed_type(b""), None);
     }
+
+    /// Two of the sniffs need *both* halves of their test, and `&&` becoming
+    /// `||` in either survived every existing case — because every buffer the
+    /// other tests hand it satisfies both halves or neither.
+    ///
+    /// A RIFF container is not necessarily a WebP: `.wav` opens `RIFF` too, and
+    /// calling one `image/webp` sends a browser a header it will act on. The
+    /// `ftyp` box is the same shape — plenty of MP4s carry it and are not AVIF.
+    #[test]
+    fn a_riff_that_is_not_webp_and_an_ftyp_that_is_not_avif_are_not_images() {
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&[0, 0, 0, 0]);
+        wav.extend_from_slice(b"WAVE");
+        assert_eq!(sniffed_type(&wav), None, "RIFF alone is not a WebP");
+
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&[0, 0, 0, 0]);
+        webp.extend_from_slice(b"WEBP");
+        assert_eq!(sniffed_type(&webp), Some("image/webp"));
+
+        let mut mp4 = vec![0u8; 4];
+        mp4.extend_from_slice(b"ftyp");
+        mp4.extend_from_slice(b"isom");
+        assert_eq!(sniffed_type(&mp4), None, "an ftyp box alone is not an AVIF");
+
+        let mut avif = vec![0u8; 4];
+        avif.extend_from_slice(b"ftyp");
+        avif.extend_from_slice(b"avif");
+        assert_eq!(sniffed_type(&avif), Some("image/avif"));
+
+        // And the brand alone, with no ftyp box, is nothing either.
+        let mut bare = vec![0u8; 8];
+        bare.extend_from_slice(b"avif");
+        assert_eq!(sniffed_type(&bare), None);
+    }
 }

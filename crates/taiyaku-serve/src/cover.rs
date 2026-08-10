@@ -718,15 +718,49 @@ mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
+    /// Acquiring takes a permit, and the count says so.
+    ///
+    /// The direct, single-threaded half of the property the test below tries
+    /// to observe through two threads. It exists because that one **is** timing
+    /// dependent, despite having said otherwise for as long as it existed:
+    /// mutation testing flipped `*available -= 1` to `*available /= 1` — a
+    /// permit count that never decreases — and caught it on two runs and
+    /// missed it on a third. Nothing about the code changed between them.
+    ///
+    /// With the count asserted here, that mutant dies the same way every run.
+    #[test]
+    fn acquiring_a_permit_decrements_the_available_count() {
+        let sem = Semaphore::new(2);
+        assert_eq!(*sem.available.lock().unwrap(), 2, "both permits free");
+
+        let first = sem.acquire();
+        assert_eq!(*sem.available.lock().unwrap(), 1, "one taken");
+
+        let second = sem.acquire();
+        assert_eq!(*sem.available.lock().unwrap(), 0, "both taken");
+
+        drop(second);
+        assert_eq!(*sem.available.lock().unwrap(), 1, "and released on drop");
+        drop(first);
+        assert_eq!(*sem.available.lock().unwrap(), 2);
+    }
+
     /// Important 6: a third acquisition against a one-permit semaphore must
     /// not succeed until the held permit is released — the property that
     /// actually bounds concurrent decodes rather than merely allowing some.
     ///
-    /// Deterministic, not timing-based: the second thread's `acquire()` can
-    /// only return after `Drop` runs on the first thread's guard, which in
-    /// program order happens strictly after `released.store(true, ..)` — so
-    /// if `acquire()` ever returned early, this would be observable as
-    /// `false`, not as a flaky pass.
+    /// **This test is timing dependent, and the comment here used to claim it
+    /// was not.** The claim was that the second thread's `acquire()` can only
+    /// return after `Drop` runs on the first thread's guard, which is strictly
+    /// after `released.store(true, ..)` — true while `acquire` blocks, and the
+    /// whole point is that a broken `acquire` does not. Once it returns early
+    /// there is no ordering at all between that store and this load, so the
+    /// mutant that stops permits decrementing is caught or missed by
+    /// scheduling. It was observed doing both.
+    ///
+    /// Kept, because the blocking property is worth stating and this is the
+    /// only test that states it. What makes the mutant die reliably is
+    /// `acquiring_a_permit_decrements_the_available_count` above.
     #[test]
     fn a_second_acquisition_waits_until_the_held_permit_is_released() {
         use std::sync::Barrier;
@@ -757,6 +791,41 @@ mod tests {
         assert!(
             observed_after_release.load(Ordering::SeqCst),
             "the second acquire must not succeed before the first permit was released"
+        );
+    }
+
+    /// Two different outputs must never share one path. `page_cache_path` and
+    /// `thumb_cache_path` can be asked for the same sha, offset and long edge —
+    /// a tile cropped to a strip, and the whole page — and a content-addressed
+    /// cache that returned one for the other would show a reader a crop where a
+    /// page belongs.
+    ///
+    /// The `r` in the name is what keeps them apart, and nothing asserted it:
+    /// `page_cache_path` could return `Default::default()` — the empty path,
+    /// shared by every page of every work — with the suite still green.
+    #[test]
+    fn a_reading_page_and_a_tile_never_share_a_cache_path() {
+        let dir = std::path::Path::new("/cache");
+        // At the tile's own long edge, so the two differ by the `r` in the
+        // name rather than by the size — which is the case the doc calls out.
+        let page = page_cache_path(dir, "abc", 3, THUMB_LONG_EDGE);
+        let tile = thumb_cache_path(dir, "abc", 3);
+
+        assert_ne!(page, tile, "same inputs, two different outputs");
+        assert!(page.starts_with(dir), "under the cache directory");
+        assert!(
+            page.to_string_lossy().contains("abc"),
+            "content-addressed: {page:?}"
+        );
+        assert_ne!(
+            page,
+            page_cache_path(dir, "abc", 4, 1600),
+            "a different offset is a different page"
+        );
+        assert_ne!(
+            page,
+            page_cache_path(dir, "abc", 3, 800),
+            "and a different size is a different rendering"
         );
     }
 }

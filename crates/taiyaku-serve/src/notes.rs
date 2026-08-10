@@ -687,4 +687,50 @@ mod tests {
             }
         );
     }
+
+    /// The same rule on the other axis. `a_region_must_lie_within_the_slot_and_have_a_size`
+    /// overflows in x only — `x: 0.8, w: 0.5` — so the `y + h` half of the
+    /// bound was never asked, and both arithmetic mutations of it survived. A
+    /// marker can run off the bottom of a page as easily as off the side.
+    #[test]
+    fn a_region_that_runs_off_the_bottom_is_refused_like_one_that_runs_off_the_side() {
+        let work = crate::test_support::work("taiyaku-test-notes-region-y");
+        let over_y = Region {
+            x: 0.1,
+            y: 0.8,
+            w: 0.2,
+            h: 0.5,
+        };
+        let result = validate(&on("raw", 0, Some(over_y)), &work, &empty("t"));
+        crate::test_support::cleanup("taiyaku-test-notes-region-y");
+
+        assert!(
+            matches!(result, Err(Invalid::Refused(_))),
+            "y + h is 1.3, which is off the page: {result:?}"
+        );
+    }
+
+    /// `NotFound` means "nothing recorded"; every other error means the notes
+    /// could not be read and must not be reported as an empty document.
+    ///
+    /// The guard `Err(e) if e.kind() == NotFound` could be replaced by `true`
+    /// unnoticed, because every test either wrote a file or wrote none — and
+    /// a missing file and an unreadable one are the same to a test that only
+    /// ever checks for `None`. A reader whose notes file had become
+    /// unreadable would be shown a blank margin and, on the next write, have
+    /// the file replaced with one note.
+    #[test]
+    fn an_unreadable_notes_file_is_an_error_rather_than_nothing_recorded() {
+        let work = crate::test_support::work("taiyaku-test-notes-unreadable");
+        // A directory where a file belongs: readable as an entry, not as text.
+        std::fs::create_dir_all(notes_path(&work)).unwrap();
+
+        let result = load(&work);
+
+        crate::test_support::cleanup("taiyaku-test-notes-unreadable");
+        assert!(
+            result.is_err(),
+            "must not read as `no notes yet`: {result:?}"
+        );
+    }
 }

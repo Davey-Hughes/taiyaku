@@ -377,8 +377,13 @@ async fn get_page(
     // client bug or a hand-typed URL, and the useful answer to both is the
     // page — at the nearest size this server will make — rather than a 400 that
     // leaves the reader with a blank cell. Zero and one are treated as absent,
-    // since `fit_at` would answer `None` for them anyway once no real page is
-    // that small.
+    // and that filter is load-bearing rather than a shortcut. The sentence that
+    // used to be here — "`fit_at` would answer `None` for them anyway once no
+    // real page is that small" — had the condition backwards: `fit_at` answers
+    // `None` when the page is *already* within the requested edge, so at `w=1`
+    // it answers `Some` and re-encodes. Without this filter `?w=1` hands a
+    // reader a one-pixel JPEG rather than the page.
+    // `a_width_of_one_is_absent_rather_than_a_one_pixel_page` is the witness.
     let long_edge = query
         .w
         .filter(|edge| *edge > 1)
@@ -3052,5 +3057,97 @@ mod tests {
             message.contains("these are not notes"),
             "the refusal must be this server's own: {message}"
         );
+    }
+
+    /// `?w=1` must mean "no resize", not "resize to one pixel".
+    ///
+    /// The filter that does it could be `>= 1` — admitting 1 — with every
+    /// other test still green, because no test asked for a width of 1 and the
+    /// comment above the filter claimed `fit_at` would decline it anyway. It
+    /// does not: `fit_at` returns `None` only when the page is *already*
+    /// within the requested edge, so at `w=1` a 16-pixel page is re-encoded
+    /// down to one pixel and handed to the reader as a JPEG.
+    #[tokio::test]
+    async fn a_width_of_one_is_absent_rather_than_a_one_pixel_page() {
+        let state = crate::test_support::state_with_real_pages();
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::get("/api/works/w/a/pages/0?w=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let decoded = image::load_from_memory(&body).expect("a decodable image");
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (16, 16),
+            "the page untouched, not a one-pixel rendering of it"
+        );
+    }
+
+    /// Naming an unknown work must be a 404 that says so. `NoSuchWork`'s
+    /// `into_response` could return `Response::default()` — an empty 200 —
+    /// with the suite green, because every test that asks for a missing work
+    /// went through a route that builds its own refusal, and the ones that go
+    /// through this impl only ever asked for works that exist.
+    ///
+    /// An empty 200 is the worst of the available answers: the reader's client
+    /// cannot tell "no such work" from "a work with nothing in it".
+    #[tokio::test]
+    async fn an_unknown_work_is_a_404_that_names_it() {
+        let state = Arc::new(crate::test_support::state("taiyaku-test-routes-unknown"));
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::get("/api/works/nope/raw/pages/0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        crate::test_support::cleanup("taiyaku-test-routes-unknown");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("nope"),
+            "must name the work asked for: {text}"
+        );
+    }
+
+    /// The work list must contain the works. `list_works` could return
+    /// `Response::default()` — an empty 200 — and
+    /// `the_reader_can_list_a_work_read_its_sidecar_and_fetch_a_page` would
+    /// still pass, because it asserts the status and never looks at the body.
+    /// A reader given an empty list shows an empty library.
+    #[tokio::test]
+    async fn the_work_list_names_every_work_rather_than_being_merely_ok() {
+        let state = Arc::new(crate::test_support::state("taiyaku-test-routes-list"));
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(Request::get("/api/works").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        crate::test_support::cleanup("taiyaku-test-routes-list");
+        let ids: Vec<String> = serde_json::from_slice(&body).expect("a JSON array of ids");
+        assert_eq!(ids, vec!["t".to_string()]);
     }
 }

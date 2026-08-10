@@ -619,4 +619,24 @@ mod tests {
         );
         assert!(latch_clear, "a successful request must clear the latch");
     }
+
+    /// The cooldown must outlast the fetch timeout it guards, which is what
+    /// the comment on `DOWN_COOLDOWN` argues at length and nothing checked.
+    /// Every arithmetic mutation of `GET_TIMEOUT_SECONDS * 3` survived —
+    /// including `+`, which gives 23 s against a 20 s timeout and re-creates
+    /// exactly the "stalls dominate and the latch buys almost nothing" case
+    /// the constant was raised to fix.
+    #[test]
+    fn the_cooldown_outlasts_the_fetch_timeout_it_guards() {
+        let timeout = std::time::Duration::from_secs(crate::stump::http::GET_TIMEOUT_SECONDS);
+        assert!(
+            DOWN_COOLDOWN > timeout,
+            "cooldown {DOWN_COOLDOWN:?} must exceed the timeout {timeout:?}"
+        );
+        assert!(
+            DOWN_COOLDOWN >= timeout * 2,
+            "and by a margin, or a reader meets a full timeout almost continuously"
+        );
+        assert_eq!(DOWN_COOLDOWN, std::time::Duration::from_secs(60));
+    }
 }

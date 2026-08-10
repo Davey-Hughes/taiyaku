@@ -75,7 +75,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 563 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
+Five crates, 585 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
 project and 296 in the `jsdom` one this branch added — and six more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -91,7 +91,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Thirteen of the 563 are standing checks gated on
+`rayon` exactly as `align` already did. Thirteen of the 585 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
@@ -611,8 +611,25 @@ it guards needs, and rewriting it as `bytes.get(257..262)` removed the
 arithmetic along with three already-caught mutants at the same site. The eight
 timeouts are all non-terminating `tokenize` loops and are O39's disposition
 rather than untested behaviour. `notes.md`, "The other 30, and the four
-surfaces they were hiding in", is the record. **Two crates remain measured but
-not addressed: `taiyaku-cli` 217 and `taiyaku-serve` 52.**
+surfaces they were hiding in", is the record. **`taiyaku-serve` is now closed too — 51
+survivors to 0**, re-measured at 307 mutants, 272 caught, 31 unviable, 4 timed
+out and none missed. Its gaps were concentrated rather than scattered: **27 of the 51 were in
+`UreqTransport`**, the one component in the crate that talks to the outside
+world — and the one every other test avoids by design, since `Transport` exists
+precisely so the suite does not need the NAS. Nothing offline had ever driven
+it, so `post_json` and `get_bytes` could each return a constant. They are now
+tested against a hand-rolled `TcpListener` on a loopback port. Three more
+survivors were decisions buried inside `eprintln!` arms — the warn-once latch in
+`reqlog`, the "skipping N works" arithmetic in `resolve_all_works` — which no
+test of either component's *output* could see; each is now a named function with
+a return value. And `serve` itself could be replaced by `Ok(())`, starting no
+server at all, with every other test green. `notes.md`, "The 51, and the client
+that talked to nobody", is the record, including the comment in `get_page` that
+justified a load-bearing filter with the condition backwards. A **fifty-second**
+survivor appeared only while rebasing, on a mutant the earlier runs had caught
+twice: the test guarding it is timing dependent and its own comment claimed it
+was not. `notes.md`, "The mutant that was caught twice and missed once", is that
+record. **Only `taiyaku-cli`'s 217 remain.**
 
 ### Open items
 

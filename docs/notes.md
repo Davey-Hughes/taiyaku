@@ -8383,3 +8383,127 @@ mutants at that site stopped existing, one of them the survivor and three
 already caught. **29 of the 30 were killed by tests; the thirtieth was killed by
 deleting the expression it lived in.** Worth stating plainly, because "30 → 0"
 and "30 killed" are not the same claim.
+## The 51, and the client that talked to nobody
+
+`taiyaku-serve`, the third crate after `ddb6149`. **51 missed → 0**, re-measured
+at 307 mutants: 271 caught, 31 unviable, 4 timed out.
+
+**Over half of them — 27 — were in one struct**, and it is the one the crate's
+own design goes furthest out of its way to avoid. `stump/http.rs` opens:
+
+> Every call goes through `Transport`, so the whole of `stump` is testable
+> against recorded responses and the suite does not depend on the NAS being up.
+
+That is true, and it is good design, and it is exactly why `UreqTransport` had
+no coverage at all. Every test in `stump`, `composite` and `routes` runs against
+`FakeTransport`. The real client — the four lines of `ureq` configuration that
+decide what actually goes out on the wire — was reachable by nothing. `url`,
+`bearer`, `post_json` and `get_bytes` could each return a constant.
+
+**A seam that lets tests skip a component is a seam that hides it.** The fix is
+30 lines of `TcpListener` and `write!` in a test module: bind a loopback port,
+capture the request, answer with a fixed response. No dependency, and it pins
+the four things the configuration exists to do — the path is joined below the
+base, the bearer token is attached, the body goes out as typed, and the reply
+comes back rather than being invented. Plus the one piece of real judgement in
+it: `http_status_as_error(false)`, so a 404 from a page route arrives as the
+number 404. Without that, `composite` would read a missing page as *Stump being
+down* and trip the cooldown latch.
+
+**Three more were decisions living inside `eprintln!` arms**, which is a
+category worth naming because no amount of testing the surrounding component
+finds them:
+
+- `reqlog`'s `!self.write_failed.swap(true, …)`. The `!` is the entire
+  behaviour — warn once on a failing disk rather than once per request — and
+  deleting it inverts that. Every test of the log reads its *contents*; the
+  difference is on stderr.
+- `resolve_all_works`'s `works.len() - index - 1` and the `> 0` that guards it.
+  They decide only the wording of a line printed when a run gives up partway.
+  The abort test asserts which requests were made, which is the right thing for
+  it to assert and cannot see any of this.
+
+Both are now named functions returning values — `first_write_failure()` and
+`skipping_notice(total, index)` — and both tests are about the case that
+matters and had no witness: the second failure, and aborting on the *last* work,
+where every mutation of the subtraction promises to skip works that do not
+exist.
+
+**And `serve` could be replaced by `Ok(())`.** The composition root, binding no
+socket, starting no server, with all 168 other tests green — because its doc
+comment said "every test drives the router directly and none of them opens a
+socket", and that had quietly become a reason not to test it at all rather than
+a description of where the seam is. It now has exactly one test, and writing it
+turned up a trap worth recording: **`ureq` is blocking**, so polling the server
+with it from a default `#[tokio::test]` blocks the very runtime that is meant to
+be driving `serve`. The obvious version deadlocked rather than failing. It needs
+`flavor = "multi_thread"`.
+
+**One comment was wrong, and the mutant is what asked the question.**
+`get_page` filters `?w=` with `*edge > 1`, justified by:
+
+> Zero and one are treated as absent, since `fit_at` would answer `None` for
+> them anyway once no real page is that small.
+
+The condition is backwards. `fit_at` returns `None` when the page is *already
+within* the requested edge — so for `w=1` it returns `Some` and re-encodes, and
+a reader asking for `?w=1` would get a one-pixel JPEG rather than the page. The
+filter is load-bearing; only the reasoning for it was wrong. The surviving
+mutant `> 1` → `>= 1` is precisely that scenario, and it survived because no
+test had ever asked for a width of 1 — the comment having explained why nobody
+needed to.
+
+**A note on how the last one was killed.** The two read-limit assertions were
+first written as `assert!(MAX_PAGE_BYTES > 430 * 1024 * 1024, …)`, which is
+`clippy::assertions_on_constants`, and clippy's suggested fix is
+`const { assert!(…) }`. That would be worse here, not better: a compile-time
+assertion turns a mutated constant into a mutant that fails to *build*, which
+`cargo-mutants` reports as **unviable** rather than caught. The check is bound
+through locals instead so it stays a runtime assertion and the mutants stay
+killable. Moving a check earlier is not always moving it forward.
+
+## The mutant that was caught twice and missed once
+
+Re-running `cargo mutants -p taiyaku-serve` after rebasing the serve branch onto
+a moved `main` produced **1 missed** where two earlier runs had produced 0, on a
+mutant that was never in the original 51:
+
+    cover.rs:260: replace -= with /= in Semaphore::acquire
+
+Nothing in the code had changed. `*available -= 1` becoming `*available /= 1` is
+a permit count that never decreases, so `acquire` stops blocking and the
+two-permit ceiling on concurrent decodes disappears.
+
+**The test that was supposed to catch it is timing dependent, and its own
+comment said it was not.** `a_second_acquisition_waits_until_the_held_permit_is_released`
+argued:
+
+> Deterministic, not timing-based: the second thread's `acquire()` can only
+> return after `Drop` runs on the first thread's guard, which in program order
+> happens strictly after `released.store(true, ..)` — so if `acquire()` ever
+> returned early, this would be observable as `false`, not as a flaky pass.
+
+The first clause is true **only while `acquire` blocks**, and a broken `acquire`
+is precisely one that does not. Once it returns early there is no ordering at
+all between thread A's `released.store(true)` and thread B's load of it: B
+acquires immediately and races A. Whichever wins decides whether the mutant is
+caught. Two runs said caught, the third said missed.
+
+So the reasoning was not merely unlucky — it assumed the property under test in
+order to prove the test could observe its absence. A test for "X blocks" cannot
+derive its own determinism from X blocking.
+
+The fix is not to make the concurrent test cleverer.
+`acquiring_a_permit_decrements_the_available_count` asserts the count directly,
+single-threaded, before and after each acquire and each drop. Three consecutive
+scoped runs of `cover.rs` then give 39 mutants, 0 missed, every time. The
+concurrent test stays, because the blocking property is worth stating and it is
+the only test that states it — with its comment corrected to say what it can and
+cannot see.
+
+**Worth generalising.** Mutation testing is usually described as finding
+untested code; here it found a *flaky* test, and only because the same mutant
+was run three times across three bases. A single run reporting a survivor could
+have been dismissed as noise, and a single run reporting none — which is what
+the two earlier runs did — hid it completely. When a survivor appears that was
+not there before and nothing changed, the flakiness is the finding.

@@ -214,10 +214,23 @@ impl Log {
         let line = entry.to_json_line();
         let mut guard = self.file.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = guard.write_all(line.as_bytes())
-            && !self.write_failed.swap(true, Ordering::SeqCst)
+            && self.first_write_failure()
         {
             eprintln!("taiyaku: request log write failed: {e}");
         }
+    }
+
+    /// True once, for the first write failure only.
+    ///
+    /// A full disk fails *every* subsequent write, and a line of stderr per
+    /// request would bury whatever the operator was actually reading. Named
+    /// rather than left inline as `!self.write_failed.swap(true, …)` because
+    /// the `!` is the whole behaviour and, inline, deleting it was invisible
+    /// to the suite — the difference between "warn once" and "warn on every
+    /// failure after the first" is not something a test of the log's
+    /// *contents* can see.
+    fn first_write_failure(&self) -> bool {
+        !self.write_failed.swap(true, Ordering::SeqCst)
     }
 }
 
@@ -415,5 +428,42 @@ mod tests {
             1,
             "the cancelled request must not have produced an entry"
         );
+    }
+
+    /// Warn once, not once per request. A full disk fails every write, and the
+    /// `!` that makes this fire a single time was invisible to every test:
+    /// they read the log's *contents*, and the difference is on stderr.
+    #[test]
+    fn only_the_first_write_failure_is_reported() {
+        let log =
+            Log::new(std::env::temp_dir().join("taiyaku-test-reqlog-once.jsonl")).expect("opens");
+
+        assert!(log.first_write_failure(), "the first failure is reported");
+        assert!(
+            !log.first_write_failure(),
+            "and no later one is, or a full disk buries the terminal"
+        );
+        assert!(!log.first_write_failure());
+
+        let _ = std::fs::remove_file(std::env::temp_dir().join("taiyaku-test-reqlog-once.jsonl"));
+    }
+
+    /// The timestamp is what orders a session, and `now_micros` could return
+    /// `0` or `1` for every entry with nothing noticing — every line would
+    /// claim 1970 and no measurement drawn from the log would mean anything.
+    #[test]
+    fn the_clock_reads_a_real_time_that_does_not_go_backwards() {
+        // 2020-01-01 in microseconds since the epoch. Any plausible reading is
+        // far above it, and both `0` and `1` are far below.
+        const Y2020_MICROS: u64 = 1_577_836_800_000_000;
+
+        let first = now_micros();
+        let second = now_micros();
+
+        assert!(
+            first > Y2020_MICROS,
+            "a real wall clock, not 0 or 1: {first}"
+        );
+        assert!(second >= first, "and it does not go backwards");
     }
 }

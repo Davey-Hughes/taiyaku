@@ -187,4 +187,24 @@ mod tests {
         );
         assert!(strays.is_empty(), "temp files left behind: {strays:?}");
     }
+
+    /// `NotFound` means "never opened"; any other read failure must not be
+    /// reported as that. The guard was replaceable by `true` — and the whole
+    /// point of `absent_progress_is_not_the_same_as_slot_zero` is that
+    /// "nothing recorded" is a meaningful answer, so handing it back for an
+    /// unreadable file reopens the reader at the cover and then overwrites
+    /// whatever was there.
+    #[test]
+    fn an_unreadable_progress_file_is_an_error_rather_than_never_opened() {
+        let work = crate::test_support::work("taiyaku-test-progress-unreadable");
+        std::fs::create_dir_all(progress_path(&work)).unwrap();
+
+        let result = load(&work);
+
+        crate::test_support::cleanup("taiyaku-test-progress-unreadable");
+        assert!(
+            result.is_err(),
+            "must not read as `never opened`: {result:?}"
+        );
+    }
 }

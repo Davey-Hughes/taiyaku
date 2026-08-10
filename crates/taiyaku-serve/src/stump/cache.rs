@@ -226,4 +226,24 @@ mod tests {
             "a corrupt cache rebuilds rather than refusing to start"
         );
     }
+
+    /// `forget` treats a missing cache file as success — deleting nothing is
+    /// the right answer to "make sure this is gone". Any *other* failure is
+    /// not: a cache file that cannot be removed means the next start reads a
+    /// stale resolution, and reporting that as `Ok(())` is how it goes
+    /// unnoticed. The guard could be replaced by `true` with the suite green.
+    #[test]
+    fn a_cache_file_that_cannot_be_removed_is_an_error_rather_than_success() {
+        let work = work("taiyaku-test-stump-forget-unremovable");
+        // `remove_file` on a directory fails with something that is not
+        // `NotFound`, which is the distinction under test.
+        std::fs::create_dir_all(path_for(&work)).unwrap();
+
+        let result = forget(&work);
+
+        let _ = std::fs::remove_dir_all(
+            std::env::temp_dir().join("taiyaku-test-stump-forget-unremovable"),
+        );
+        assert!(result.is_err(), "must not report success: {result:?}");
+    }
 }
