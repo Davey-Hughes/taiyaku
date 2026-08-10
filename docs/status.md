@@ -75,7 +75,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 475 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
+Five crates, 554 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
 project and 296 in the `jsdom` one this branch added — and six more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -91,8 +91,8 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Twelve of the 475 are standing checks gated on
-`TAIYAKU_CORPUS` — nine in `crates/taiyaku-cli/src/corpus.rs` and three in
+`rayon` exactly as `align` already did. Thirteen of the 554 are standing checks gated on
+`TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
 needs is absent, so CI stays green without the corpus or a reachable Stump.
@@ -616,9 +616,9 @@ up by reading a file closely enough to write tests for it, or turned up while
 reading the code around a line a tool had pointed at, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Twenty-eight are now closed
+visible act rather than a thing someone remembers. **Twenty-nine are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25, O26, O27, O28, O29, O30, O35, O36 and O37 — leaving eleven.**
+O21, O22, O25, O26, O27, O28, O29, O30, O35, O36, O37 and O38 — leaving ten.**
 
 Three of those closed the same day they opened, which the "judged not worth
 blocking on" framing above does not fit: O35, O36 and O37 were found by the
@@ -669,7 +669,7 @@ each is in the detail below; the table is what a reader scans.
 | O35 | [x] | A `PUT` response with no `ETag` turns every later note write into a silent no-op — the same "write without a validator" hole the 412 path was fixed for, left open on the response path — *closed on the branch that found it (178f3e5): the guard became `writeGate` with three arms — `wait` (no document, the only silent one), `refuse` (document but no validator, carrying a notice), `write` — after the correct-behaviour test was watched failing against a faithful port* | `api.ts::putNotes`, `App.tsx::writeNotes`'s `notesEtag === undefined` guard | coverage-gate reading |
 | O36 | [x] | The two write debounces are never cancelled on unmount, so an unmounted `App` can still `PUT` up to 700 ms later — *a two-line fix, not an impossibility: `useFlushOnHide`'s cleanup already exists and `debounce` already exposes `cancel()`* — *closed on the branch that found it (4303dee): `useFlushOnHide`'s cleanup now flushes both, decided per call site: cancelling `writeProgress` drops the last page turn, cancelling `saveNotes` destroys up to 700 ms of prose that exists nowhere else* | `App.tsx`'s `writeProgress`/`saveNotes` handles, `hooks.ts::useFlushOnHide` | coverage-gate reading |
 | O37 | [x] | `reviewNotes`'s doc comment describes an arm of `toggleReview` no key can reach — it claims `a` closes the editor mid-edit, which `keyplan.ts` refuses; the code is right and the comment is wrong — *closed on the branch that found it (f4047b7): corrected, and the same wrong claim in `notes.ts` with it in `7cab6ec`* | `App.tsx::reviewNotes`'s doc comment | coverage-gate reading |
-| O38 | [ ] | `unpaired_runs` counts a gap run's own `a` span as "mentioned", so asking the `from` side of an edge which of its pages have no counterpart answers `[]` for pages that demonstrably have none — reachable today as `taiyaku credits --edition <hub> --against <spoke>`, which prints zero candidates | `credits.rs::unpaired_runs`, the `true => Some(run.a)` arm | the Task 7 mutation review, by probe |
+| O38 | [x] | `unpaired_runs` counts a gap run's own `a` span as "mentioned", so asking the `from` side of an edge which of its pages have no counterpart answers `[]` for pages that demonstrably have none — reachable today as `taiyaku credits <hub member>... --sidecar F --against <spoke>`, which prints zero candidates — *closed by `run.b.map(|_| run.a)`, with a corpus drive that found it answering `[]` on **all twelve** volumes — 26 gap runs over 36 raw pages — and hiding a real `credits` verdict on kobayashi-v01's last page* | `credits.rs::unpaired_runs`, the `true => Some(run.a)` arm | the Task 7 mutation review, by probe |
 | O39 | [ ] | Nothing bounds a test's runtime, so a regression that stops a loop terminating hangs the forge instead of failing it — there is no `.config/nextest.toml`, no `timeout-minutes` in `ci.yml`, and CI does not run nextest at all but `cargo llvm-cov` over `cargo test` | `.forgejo/workflows/ci.yml`'s `test` job; no nextest config exists to name | the Tasks 2-6 mutation review |
 
 Sites are named by symbol rather than line, because a line number in a document
@@ -2064,7 +2064,7 @@ CI. That is worth recording because it is not what mutation testing is
 advertised to do. The tool finds unverified lines; what actually surfaced these
 two was a person reading the code around a line the tool had pointed at.
 
-- **O38 — `unpaired_runs` treats a gap run's own pages as covered. Open.** The
+- **O38 — `unpaired_runs` treats a gap run's own pages as covered. Closed.** The
   function answers "which pages of `edition` does the alignment against
   `against` never reach", and it builds that answer by collecting every page
   any run mentions and complementing it. The collection is unconditional:
@@ -2087,16 +2087,42 @@ two was a person reading the code around a line the tool had pointed at.
   `unpaired_runs(doc, edition, counterpart)`. So `taiyaku credits --edition
   <hub> --against <spoke>` takes the defective arm and prints zero candidates
   for a volume that has them.
-  **Why it is open rather than fixed:** the branch that found it was a test-only
+  *The two `--edition <hub>` invocations above are wrong and are kept as
+  written: `credits` has no such flag. Its usage is `credits <member>...
+  --sidecar FILE [--against EDITION]`, and the edition is identified by
+  fingerprinting the archives passed, not named on the command line. The
+  mechanism the passage describes — hub as the `from` side, `--against`
+  bypassing the hub refusal, `unpaired_runs(doc, edition, counterpart)` — is
+  exactly right, and the drive below ran the corrected form.*
+  **Why it was open rather than fixed:** the branch that found it was a test-only
   branch, and this is a behaviour change. The fix is one expression —
-  `run.b.map(|_| run.a)` — but it wants its own commit and its own corpus drive,
+  `run.b.map(|_| run.a)` — but it wanted its own commit and its own corpus drive,
   because "prints nothing" is the failure mode that hides how long it has been
   wrong. It fails silently in the found-nothing direction, corrupts no stored
   document, and no current caller in the corpus checks hits it, which is why it
   was judged not worth blocking the branch on.
-  **What would close it:** the one-expression fix, a test built from the probe's
-  own fixture, and a run of `credits --edition <hub>` against a real work to
-  confirm the candidates appear.
+  **Closed, and the corpus drive is the reason it was worth doing separately.**
+  The fix is the one expression the entry predicted. The drive was not: twelve
+  volumes across four series, each aligned raw-mono → en-mono and asked from the
+  hub side, **every one of which answered `runs=0` before and the stored gap
+  count after** — 26 gap runs spanning 36 raw pages, none of them reportable by
+  the side a reader would naturally ask. The estimate that "no current caller in
+  the corpus checks hits it" was true only because no corpus check asks the hub;
+  every volume in the corpus has the material. And it was hiding a real result
+  rather than only runs: `kobayashi-v01` raw page 145 of 146 comes back
+  `at-end yes … credits`, where the same command previously printed a bare
+  header. The `before` column was built from a clean worktree at `ddb6149`
+  rather than by reverting the fix in place, so no number depends on an edit
+  having landed. **The corpus now watches this arm rather than only having been
+asked once**: `gotoubun_hub_reports_the_pages_its_english_edition_never_reaches`
+is a thirteenth standing check, and it was confirmed failing against `ddb6149`
+with the new test applied to it — `left: []`, `right: [1, 6]`. Both existing
+credits checks ask the `to` side, so neither could ever have seen this.
+`notes.md`, "O38: the arm that answered nothing, on every
+  volume in the corpus", is the record — including why
+  `each_end_of_a_directed_edge_reports_its_own_gaps`, which executes the
+  defective arm and was hardened in `ddb6149` for being too weak, still cannot
+  fail on this: its only run is paired, so both arms agree.
 
 - **O39 — nothing bounds a test's runtime, so a hang is not a failure. Open.**
   Mutation testing produced this one by accident. `cargo-mutants` reports a
@@ -2640,19 +2666,20 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the eleven open items tabled above — seven of them found by a
+What remains: the ten open items tabled above — seven of them found by a
 whole-branch review, now that O1 (found by one, closed by removing the round
 trip its own entry was arguing about), O12 (carried rather than found), O14
 (found by one, closed by M5b), O26 (found by one, closed on its own branch),
 O28 (found by walking the reader through every position it can hold, closed on
 its own branch), O29 (found by driving O26's own fix against the corpus, closed
-the same way) and O35, O36 and O37 (found by reading `web/src` closely enough to
-write tests for it, and closed on that same branch) are all out of the count.
-Four are the exceptions: O23, turned up by measuring what a new surface produced
+the same way), O35, O36 and O37 (found by reading `web/src` closely enough to
+write tests for it, and closed on that same branch) and O38 (found by a probe
+beside the survivors, closed on a branch of its own with the corpus drive its
+entry asked for) are all out of the count.
+Three are the exceptions: O23, turned up by measuring what a new surface produced
 against the corpus rather than by reviewing a branch; O34, turned up by asking a
-diagnosis about the one case it could not explain; and O38 and O39, turned up on
-the mutation branch beside its survivors rather than among them — one by a
-reviewer writing a probe instead of accepting a claim, the other by asking what
+diagnosis about the one case it could not explain; and O39, turned up on
+the mutation branch beside its survivors rather than among them, by asking what
 a survivor's disposition would mean if it ever reached CI.
 **Every milestone M5 named has now shipped.**
 
@@ -2678,6 +2705,7 @@ in it.
 real defect in `unpaired_runs` that no test covered because the branch that
 found it was a test-only branch, and O39, the absence of any bound on a test's
 runtime. Both are recorded above.
+*O38 has since closed — see its entry above. O39 stays open.*
 
 **The remaining four are the detector's**, and they are held together rather
 than picked off: O31 (the axis is per page where the design says per cluster),

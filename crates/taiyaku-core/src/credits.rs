@@ -72,8 +72,13 @@ pub fn unpaired_runs(
 
     let mut mentioned: BTreeSet<u32> = BTreeSet::new();
     for run in &runs {
+        // A gap run carries an `a` span and no `b`: those are exactly the
+        // pages with no counterpart, so neither side may count them as
+        // mentioned. The `false` arm gets that for free — `run.b` is `None`.
+        // The `true` arm has to ask for it, or it marks the gap as covered and
+        // the function answers the opposite of what it is for.
         let range = match mine_is_a {
-            true => Some(run.a),
+            true => run.b.map(|_| run.a),
             false => run.b,
         };
         if let Some(r) = range {
@@ -228,6 +233,28 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].local, 1..3);
         assert!(!runs[0].at_member_end);
+    }
+
+    #[test]
+    fn the_from_side_of_an_edge_reports_its_own_gap_runs() {
+        // Every other test in this file asks the `to` side of the stored edge,
+        // so the `from` arm had never been executed. A gap run carries only an
+        // `a` span, and that span *is* the pages with no counterpart — so the
+        // side the span addresses must report them, not treat them as covered.
+        //
+        // Same fixture as `a_run_at_a_members_final_index_is_flagged_at_its_end`
+        // asked from the other end: one gap at `a` page 3, and `raw` is the
+        // `from` edition, so this is that page in raw's index space.
+        let doc = two_members(r#"[{"a":"0-2","b":"0-2"},{"a":"3"},{"a":"4-7","b":"4-7"}]"#);
+        let runs = unpaired_runs(&doc, "raw", "fan").expect("resolves");
+        assert_eq!(runs.len(), 1, "raw page 3 has no counterpart in fan");
+        assert_eq!(runs[0].pages, 3..4);
+        assert_eq!(runs[0].member, 0);
+        assert_eq!(runs[0].local, 3..4);
+        assert!(
+            !runs[0].at_member_end,
+            "raw's only member is 8 pages; page 3 is not its last"
+        );
     }
 
     #[test]

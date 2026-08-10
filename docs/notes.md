@@ -4460,7 +4460,6 @@ hand runs and solver runs should be counted differently.
 Site: `sidecar.rs::rewrite` (which recomputes the quality block) and
 `solve.rs::verdict` (which sets the threshold).
 
-
 ## O24 — a solver-written direct edge outlives the edition it addresses
 
 Found by the M5d whole-branch review, and the half of it that got fixed is
@@ -4506,7 +4505,6 @@ turned up O19 from O15's scoping, and O20 from O19's fix.
 edge and a re-solve. The measurements that argued for direct edges existing at
 all — editions furthest from the hub losing 3.5% to each other — were taken
 without one ever being written to a file that was later merged into.
-
 
 ## A correction silently stripped every margin on the edge it touched
 
@@ -4771,7 +4769,6 @@ meets. Where a step exists to be performed by a person — typing, dragging,
 clicking — it has to be performed that way, or the pass will confirm
 everything except the part that is broken.
 
-
 ## The annotation overlay was placed on the page area, not on the page
 
 Reported straight after the two defects above: "the corners should line up to
@@ -4829,7 +4826,6 @@ obvious to a check that compared it to the thing a person actually sees — the
 pointer's coordinates, the image's rect, a real keystroke. Prefer the outside
 measurement even when the inside one is easier to write.
 
-
 ## The drawing rectangle, and moving one
 
 Two requests after the overlay was placed correctly: the selection was hard to
@@ -4875,7 +4871,6 @@ Measured with real mouse input:
 | shoved past the bottom-right corner | size kept, flush to the page edge (1px, 0px) |
 | stored after that move | `x .7  y .75  w .3  h .25` — `x + w` and `y + h` both exactly `1` |
 
-
 ## The note's words, inside the region it marks
 
 Asked for directly, and it is a **departure from the design**, so it is
@@ -4901,7 +4896,6 @@ The design's concern is answered rather than overridden:
 Measured: revealed saved note draws its body inside its box; a draft draws the
 text as it is typed; and a body far longer than the box holds stays inside the
 box's bounds rather than spilling across the page.
-
 
 ## Text behind its own switch, and the markers that went missing
 
@@ -4945,7 +4939,6 @@ the tab back on the artwork.
 | `t` alone | in the margin | drawn | drawn |
 | back to reading | in the margin | — | — |
 
-
 ## One note per page was all you could have
 
 Reported as "I can't do multiple annotations per page", and it was exactly
@@ -4977,7 +4970,6 @@ another.
 Measured: three notes written on one page — two whole-slot, one with a region
 — all three stored, three tabs drawn at 650, 719 and 963 px (gaps of 69 and
 244), and clicking the first reopened *that* note rather than making a fourth.
-
 
 ## Colours, and the focus bug that came out from under them
 
@@ -5034,7 +5026,6 @@ draw five boxes — `rgba(255, 138, 160, …)`, `rgba(120, 199, 255, …)`,
 `rgba(126, 231, 179, …)` and two amber for the notes that name no colour —
 each carrying its own text.
 
-
 ## One switch, not two
 
 `reveal` (`r`) and `labels` (`t`) are one setting again, an hour after being
@@ -5054,7 +5045,6 @@ thing only using it surfaces.
 `t` is free again. Measured: default reading draws a tab and no box; `r` draws
 the box with its text; `t` now does nothing; `r` again puts the page back; and
 the generated settings panel shows three annotation fields rather than four.
-
 
 ## The editor is an edit mode, not a form for one note
 
@@ -5091,7 +5081,6 @@ because emptying one is an edit where deleting one is a button.
 Measured: two saved notes; `n` then dragging both of them then Save leaves
 **two** notes with both regions moved (`x .15 → .40`, `y .45 → .66`); the same
 flow with the new note actually written in leaves three.
-
 
 ## A note can be a point, and its words have somewhere else to live
 
@@ -5160,7 +5149,6 @@ Measured: an area note and a point note saved together, stored as
 `w .4 h .18` and `w 0 h 0`; two markers numbered 1 and 2; list rows reading
 `1 an area note` and `2 point · a point note`; one ring drawn for the point.
 
-
 ## Three reports on the first real use of points and the list
 
 **A point could not be moved, and the grab test was not the reason.** It has
@@ -5191,7 +5179,6 @@ All three were invisible to every check run before them, and all three are
 about what the thing *looks* like rather than what it computes — which is the
 same lesson this milestone keeps teaching, now with a sharper edge: the
 arithmetic being right is not evidence that anything is on screen.
-
 
 ## No Save button, and a way back instead
 
@@ -5254,7 +5241,6 @@ screen each time), coloured `amber`, `rose`, `violet` without anybody choosing;
 point being edited draws a 24px ring with no label inside it, during the drag
 and after.
 
-
 ## No Done button either
 
 Being finished is not an act a reader performs — it is what they have already
@@ -5279,7 +5265,6 @@ leaves the editor closed with the text saved (`closed by clicking away`);
 typing then `Escape` does the same inside the debounce window (`closed by
 escape`); and clicking the page *itself* leaves the editor open, because that
 is where drawing happens.
-
 
 ## Closing the gaps before merge
 
@@ -6442,7 +6427,6 @@ The transform is TypeScript, so this note is the record and the unit tests
 beside `mapRect` are the guard. A Rust corpus check cannot see a change to
 `mapRect`; that is why there is no thirteenth gated check, and it is a decision
 rather than an omission.
-
 
 ## Fit, the seam, and the keybind help
 
@@ -8200,3 +8184,109 @@ was written specifically to pin the score table's stride and **does not kill
 either stride mutant**; the leading-gap fixture kills both. A test can be aimed
 at one thing, hit nothing, and still look like coverage of the thing it was
 named for.
+
+## O38: the arm that answered nothing, on every volume in the corpus
+
+`unpaired_runs` answers "which pages of `edition` does the alignment against
+`against` never reach". It builds that by collecting every page any run
+mentions and complementing the set. The collection was unconditional on one
+side:
+
+    let range = match mine_is_a {
+        true => Some(run.a),
+        false => run.b,
+    };
+
+A **gap run** carries an `a` span and no `b` — those pages are precisely the
+ones with no counterpart. The `false` arm gets that right for free, because
+`run.b` is `None` and the gap contributes nothing. The `true` arm collected
+`run.a` regardless, so it marked every gap as *mentioned* and then complemented
+it away. The fix is to ask the same question the `false` arm answers by
+accident: `run.b.map(|_| run.a)`.
+
+**What the corpus says, and it is the whole corpus.** Twelve volumes across four
+series, each aligned raw-mono → en-mono into a scratch sidecar, then asked from
+the hub side — the `true` arm — with `credits <raw members> --sidecar F
+--against en-mono`. The `before` column is `ddb6149` built from a clean
+worktree, not the working tree with the fix reverted, so nothing measured here
+depends on an edit having landed:
+
+| work | gap runs stored | gap pages | `runs=` before | `runs=` after |
+| ---- | --------------: | --------: | -------------: | ------------: |
+| gotoubun-v01 | 2 | 2 | 0 | 2 |
+| gotoubun-v03 | 2 | 2 | 0 | 2 |
+| gotoubun-v08 | 2 | 3 | 0 | 2 |
+| kaguya-v01 | 4 | 4 | 0 | 4 |
+| kaguya-v03 | 2 | 2 | 0 | 2 |
+| kaguya-v08 | 2 | 3 | 0 | 2 |
+| kobayashi-v01 | 2 | 2 | 0 | 2 |
+| kobayashi-v03 | 1 | 2 | 0 | 1 |
+| kobayashi-v08 | 4 | 5 | 0 | 4 |
+| oshinoko-v01 | 1 | 1 | 0 | 1 |
+| oshinoko-v03 | 2 | 2 | 0 | 2 |
+| oshinoko-v08 | 2 | 8 | 0 | 2 |
+| **total** | **26** | **36** | **0** | **26** |
+
+**Zero on every volume.** Not "rarely wrong" or "wrong on an unusual shape" —
+the hub side of every stored edge in the corpus answered `[]`, for 26 runs
+spanning 36 raw pages, and the failure looks exactly like a clean bill of
+health. That is the answer to how long it had been wrong: since the function
+was written, on everything anyone could have pointed it at.
+
+**And it was hiding a real credits page.** Eleven of the twelve produce runs but
+no candidates — mid-volume gaps are not credit cards, and the heuristic is right
+to say so. `kobayashi-v01` is the twelfth:
+
+    page  member      local  run  at-end  recurs  nearest  verdict
+     143  raw-mono  143/146    1      no       -  -        -
+     145  raw-mono  145/146    1     yes       -  -        credits
+
+Raw page 145 of 146 — the last page of the volume, unpaired against the English
+edition, flagged `at-end`, verdict `credits`. Before the fix that same command
+printed a bare header and `candidates=0`.
+
+**The test that should have caught it, and why it could not.**
+`each_end_of_a_directed_edge_reports_its_own_gaps` executes the `true` arm, is
+named for exactly this property, and was *hardened* in `ddb6149` after the
+mutation review found its assertions too weak — pinned to exact runs in both
+index spaces rather than `assert_ne!`. It still cannot fail on O38, because its
+fixture's only run is `{"a":"0-3","b":"2-5"}`: a paired run, so `run.b` is
+always `Some` and both arms agree. Its unreached pages are unreached by falling
+*outside* every run's span, which is a different shape from falling *inside* a
+gap run, and the fixture carries only the first.
+
+This is an eighth instance of the finding recorded above — a fixture that
+verifies less than its name claims — and the one with the sharpest edge, because
+it had already been reviewed once for that exact weakness and strengthened
+against the wrong axis. Strengthening assertions does not help when the fixture
+lacks the material. `the_from_side_of_an_edge_reports_its_own_gap_runs` supplies
+it, and was watched failing at `left: 0, right: 1` before the fix went in.
+
+**The corpus now watches it, and the check was confirmed failing first.**
+`gotoubun_hub_reports_the_pages_its_english_edition_never_reaches` asks
+`unpaired_runs(&doc, "raw-mono", "en-mono")` — the `from` side — and asserts the
+pages, not the count: two-of-two is reachable by reporting the wrong two.
+Applied to a clean `ddb6149` worktree with the defective arm still in place it
+fails `left: []`, `right: [1, 6]`, which is O38's signature exactly.
+
+It is worth saying why this did not already exist. Both existing credits checks
+ask `("en-fan", "raw-mono")`, because that is the direction a reader asks about
+a spoke — so the file had two standing checks *named for* `unpaired_runs` and
+neither could ever execute the arm that was broken. The manual drive recorded
+above answered the question once; a standing check is what keeps answering it.
+
+**And the tool could not have caught it, before or after.** `cargo mutants
+--file crates/taiyaku-core/src/credits.rs` at this branch's head is 43 mutants —
+38 caught, 1 unviable, 4 timeouts, **0 missed** — but it generates *no mutant at
+all* for `run.b.map(|_| run.a)`: two mutants' diffs contain the line as context
+and neither replaces it, because match arms of that shape are not in its
+operator set. The four timeouts are the ones §12 of the design already
+recorded, at the slot-grouping `while` loop, five lines further down than
+before only because this change adds a comment above them.
+
+So the mutation score says nothing about this defect in either direction. It
+was found by a reviewer writing a probe rather than by the tool, and the only
+evidence the fix works is a test watched failing first and twelve volumes
+measured before and after. That is worth stating plainly next to a clean
+mutation report, because "0 missed" on a file reads as "this file is verified"
+and here it did not mean that.

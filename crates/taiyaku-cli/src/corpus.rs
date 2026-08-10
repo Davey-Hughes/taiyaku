@@ -649,6 +649,51 @@ fn read_sidecar(volume: &Path) -> Sidecar {
     Sidecar::from_json(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
+/// Go-Toubun v01's **hub** reports the pages its English edition never reaches.
+///
+/// The other two credits checks in this file both ask `("en-fan", "raw-mono")`
+/// — the `to` side of a stored edge — because that is the direction a reader
+/// asks about a spoke. Nothing asked the `from` side, and O38 lived there: a
+/// gap run's own `a` span was counted as *mentioned*, so the hub answered `[]`
+/// for pages that demonstrably have no counterpart.
+///
+/// **This check fails on the code as it stood before that fix**, which is the
+/// property that makes it worth having: measured across all twelve aligned
+/// volumes, the hub side returned zero runs on every one of them while the
+/// stored edges carried 26 gap runs between them. A defect whose failure mode
+/// is "prints nothing" needs a check that expects something.
+///
+/// The pages are asserted, not just the count: two-of-two is reachable by
+/// reporting the wrong two.
+#[test]
+fn gotoubun_hub_reports_the_pages_its_english_edition_never_reaches() {
+    let Some(root) = corpus() else {
+        eprintln!("TAIYAKU_CORPUS unset; skipping");
+        return;
+    };
+    let doc = read_sidecar(&root.join("gotoubun-v01"));
+
+    let runs = taiyaku_core::unpaired_runs(&doc, "raw-mono", "en-mono").expect("aligned");
+    let pages: Vec<u32> = runs.iter().map(|r| r.pages.start).collect();
+
+    println!(
+        "gotoubun raw-mono against en-mono: {} unpaired runs at {:?}",
+        runs.len(),
+        pages
+    );
+
+    assert_eq!(
+        pages,
+        vec![1, 6],
+        "the hub's own pages 1 and 6 have no counterpart in en-mono; \
+         an empty answer here is O38 returning"
+    );
+    for run in &runs {
+        assert_eq!(run.pages.end - run.pages.start, 1, "each gap is one page");
+        assert_eq!(run.member, 0, "raw-mono is a single member");
+    }
+}
+
 /// Go-Toubun v01's fan edition classifies exactly its four credit pages.
 ///
 /// Exercises the actual classification rule — `credits::credit_pages`, the
