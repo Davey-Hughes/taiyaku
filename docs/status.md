@@ -75,7 +75,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 585 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
+Five crates, 592 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
 project and 296 in the `jsdom` one this branch added — and six more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -91,7 +91,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Thirteen of the 585 are standing checks gated on
+`rayon` exactly as `align` already did. Thirteen of the 592 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
@@ -581,8 +581,13 @@ boxes, so 61 of the 76 surviving blocks score *above* 1.0 against a floor of
 essentially all the filtering. That is O34. See `notes.md`, "The edition that
 clears the bar is the one finding no text".
 
-**Mutation testing found 346 survivors across the workspace. `taiyaku-core`'s
-47 are closed; the other 299 are measured and open.** `env -u TAIYAKU_CORPUS
+**Mutation testing found 346 survivors across the workspace. Four of the five
+crates are now closed, and every survivor that remains is `taiyaku-cli`'s.** Of
+the 346 — `taiyaku-core` 47, `taiyaku-cli` 217, `taiyaku-serve` 52,
+`taiyaku-read` 17, `taiyaku-wasm` 13 — core is down to three equivalent mutants,
+read, wasm and serve are at zero, and cli is at 187 with `report.rs` closed.
+**143 of those 187 are actionable; the other 44 are deliberately deferred**
+until L2's detector is redesigned, for the reason given below. `env -u TAIYAKU_CORPUS
 cargo mutants --gitignore=true --test-tool=nextest` ran 1,660 mutants in 43
 minutes on 2026-08-10: 1,149 caught, 346 missed, 136 unviable, 29 timed out —
 75.4% of 1,524 viable mutants caught. `taiyaku-core`'s 47 were concentrated in
@@ -629,7 +634,24 @@ justified a load-bearing filter with the condition backwards. A **fifty-second**
 survivor appeared only while rebasing, on a mutant the earlier runs had caught
 twice: the test guarding it is timing dependent and its own comment claimed it
 was not. `notes.md`, "The mutant that was caught twice and missed once", is that
-record. **Only `taiyaku-cli`'s 217 remain.**
+record. `taiyaku-cli` re-measures at **752 mutants,
+217 missed**, 478 caught, 45 unviable, 12 timed out — the recorded figure
+exactly. They fall in nine files, and the distribution is the useful part:
+`main.rs` 70, `fingerprint.rs` 39, `detect.rs` 37, `report.rs` 30,
+`inventory.rs` 19, `regions.rs` 7, `duplicates.rs` 7, `credits.rs` 5,
+`cache.rs` 3. **`report.rs` is closed — 30 to 0**, verified at 40 mutants, 37
+caught, 3 unviable; its gaps were `verdict`'s two margin thresholds, every
+operator in the gauge arithmetic and the header's runs-per-hundred rate, and
+`prepare`, which could return two empty vectors. Confirmed at crate scale as
+well as in isolation: re-running the whole crate gives **752 mutants, 187
+missed, 508 caught**, 45 unviable, 12 timed out — exactly thirty moved from
+missed to caught, and nothing else shifted. `notes.md`, "The verdict bands, the
+gauge, and two pages that hashed alike", is the record.
+**`detect.rs`'s 37 and `regions.rs`'s 7 are deliberately not being closed**:
+O31 to O34 record that the detector is measuring the wrong population and wants
+a redesign, and pinning its present behaviour with 44 tests would cement what
+those items exist to change. That leaves **`taiyaku-cli`'s remaining 143**, in
+six files of ordinary code, as the whole of what is still measured and open.
 
 ### Open items
 

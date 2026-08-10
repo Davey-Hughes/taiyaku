@@ -8507,3 +8507,81 @@ was run three times across three bases. A single run reporting a survivor could
 have been dismissed as noise, and a single run reporting none — which is what
 the two earlier runs did — hid it completely. When a survivor appears that was
 not there before and nothing changed, the flakiness is the finding.
+## The verdict bands, the gauge, and two pages that hashed alike
+
+`taiyaku-cli` re-measures at **752 mutants, 217 missed** — the recorded figure
+exactly — 478 caught, 45 unviable, 12 timed out. Nine files hold them:
+
+| file | survivors |
+| ---- | --------: |
+| `main.rs` | 70 |
+| `fingerprint.rs` | 39 |
+| `detect.rs` | 37 |
+| `report.rs` | 30 |
+| `inventory.rs` | 19 |
+| `regions.rs` | 7 |
+| `duplicates.rs` | 7 |
+| `credits.rs` | 5 |
+| `cache.rs` | 3 |
+
+**`detect.rs` and `regions.rs` — 44 between them — are deliberately left.** O31
+to O34 record that the text-block detector is measuring the wrong population and
+that none of its constants is worth sharpening before it is redesigned. Writing
+44 tests that pin its present behaviour would make that redesign harder, not
+easier: every one of them would be a claim about output the redesign exists to
+change. Mutation coverage is not a goal in itself, and this is the case where
+chasing it works against the project.
+
+**`report.rs` is closed: 30 → 0**, verified at 40 mutants, 37 caught, 3
+unviable. Its gaps were three shapes.
+
+**The bands, and both their boundaries.** `verdict` sorts a page into `none`,
+`weak`, `check` or `firm` on two thresholds, and nothing asserted any of it — it
+could return `("xyzzy", "xyzzy")` for every page, and both comparisons could be
+inverted. Both tests are strict `<`, so the new test asserts *exactly at* each
+constant: a margin of exactly `MARGIN_WEAK` is not weak. That is the distinction
+every `<` → `<=` mutant turns on, and an assertion at 0.02 and 0.10 would have
+missed all of them.
+
+**The gauge.** `(((MARGIN_FIRM - margin.clamp(0.0, MARGIN_FIRM)) / MARGIN_FIRM)
+* 16.0)` is the one thing in the report a reader judges at a glance while
+scrolling, and every operator in it survived. Asserted through `render` on the
+emitted `--offset` rather than on an extracted helper, because the arithmetic is
+written inline there and it is the emitted value a stylesheet reads: 0 at firm,
+16 at a collapsed margin, 8 halfway.
+
+**And the header's one rate.** `100.0 * run_count / scored.len()` — where `*` →
+`+` gives 102 instead of 50 and reads perfectly plausibly in a table.
+
+**The fixture that hashed alike, which is the part worth keeping.** `prepare`
+decodes each page once and takes both a hash and a thumbnail from it; the three
+survivors were whole-function replacements returning empty vectors. The obvious
+test is two pages and an `assert_ne!` on their hashes — and the first version of
+it *failed*, with both pages reporting `PageHash([0, 0, 0, 0])`.
+
+The two fixtures were smooth gradients differing in one colour channel. The
+fingerprint is perceptual and runs on `to_luma8`, so a channel that vanishes
+into luma leaves two structurally identical images. Had the test asserted only
+that two hashes came back — the natural way to kill `Ok((vec![], vec![]))` — it
+would have passed while proving nothing about whether the hashes were *of the
+pages*. The fixtures are now split on different axes, left/right against
+top/bottom, which is structure the hash can see.
+
+This is the same finding as `ddb6149`'s six fixtures, arrived at from the other
+direction: there, plausible test data passed against unmutated code; here, a
+plausible fixture produced identical inputs to an assertion that was itself
+correct. **The assertion was strong enough to expose its own fixture**, which is
+the argument for asserting on values that must differ rather than on counts that
+must be right.
+
+**Confirmed at crate scale after rebasing.** The `report.rs` figure above is a
+scoped run. Re-measuring the whole crate on the rebased base gives **752
+mutants, 187 missed, 508 caught, 45 unviable, 12 timed out**, against 217
+missed and 478 caught before — thirty moved from missed to caught and nothing
+else moved, which is what a change confined to one file should look like. Both
+runs' figures close against the 752 total.
+
+That the base had changed underneath — `taiyaku-core` and `taiyaku-read` both
+moved while this branch sat open, and `taiyaku-cli` depends on both — is the
+reason for re-running rather than carrying the number forward. On the two
+branches before this one, doing so found a real defect each time.
