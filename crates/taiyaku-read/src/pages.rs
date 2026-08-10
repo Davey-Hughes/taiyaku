@@ -174,7 +174,12 @@ fn unsupported_container(bytes: &[u8]) -> Option<&'static str> {
         Some("a 7-Zip archive")
     } else if bytes.starts_with(RAR) {
         Some("a RAR archive")
-    } else if bytes.len() > 262 && &bytes[257..262] == b"ustar" {
+    // `get` rather than a length test and an index: the manual bound was
+    // `len() > 262`, one past what the slice needs, so a 262-byte buffer
+    // carrying the signature read as unrecognised. Unreachable with a real tar
+    // — the format's first header block alone is 512 bytes — but the guard now
+    // says exactly what it means and has no arithmetic to get wrong.
+    } else if bytes.get(257..262) == Some(&b"ustar"[..]) {
         Some("a tar archive")
     } else {
         None
@@ -455,6 +460,106 @@ mod tests {
         assert_eq!(unsupported_container(&tar), Some("a tar archive"));
         // Zip is supported, so it is not something to complain about.
         assert_eq!(unsupported_container(&zip), None);
+    }
+
+    /// The signature sits at bytes 257..262, so 262 bytes is exactly enough to
+    /// read it. The old guard asked for 263 and called a 262-byte buffer
+    /// unrecognised; `get` asks for what it reads.
+    ///
+    /// No real tar is this short — one header block is 512 bytes, which is why
+    /// this was never felt — but a bound that is one out is worth removing
+    /// rather than pinning, and a slice guard written as arithmetic is a thing
+    /// a test has to keep honest.
+    #[test]
+    fn the_tar_signature_is_read_from_the_shortest_buffer_that_holds_it() {
+        let mut exact = vec![0u8; 262];
+        exact[257..262].copy_from_slice(b"ustar");
+        assert_eq!(unsupported_container(&exact), Some("a tar archive"));
+
+        let mut one_short = vec![0u8; 261];
+        one_short[256..261].copy_from_slice(b"ustar");
+        assert_eq!(
+            unsupported_container(&one_short),
+            None,
+            "too short to hold the signature at its offset, whatever it contains"
+        );
+    }
+
+    /// A page prints as its name and size. Deriving `Debug` would dump several
+    /// megabytes of JPEG into any failure that touches one, which is why it is
+    /// hand-written — and a hand-written impl is code, so it can be wrong.
+    #[test]
+    fn a_page_prints_as_its_name_and_size_rather_than_its_bytes() {
+        let page = Page {
+            name: "p1.jpg".into(),
+            bytes: vec![0xFF, 0xD8, 0xFF, 0xE0],
+        };
+        assert_eq!(format!("{page:?}"), "Page(p1.jpg, 4 bytes)");
+    }
+
+    /// Two independent reasons to skip an entry, and they must stay
+    /// independent. A resource fork is `__MACOSX/…` whether or not its
+    /// basename begins with a dot, and a dotfile is a dotfile wherever it
+    /// sits — so the test needs one of each that the *other* rule would keep.
+    ///
+    /// `__MACOSX/p1.jpg` is the discriminating one: the usual resource fork is
+    /// `__MACOSX/._p1.jpg`, which both rules reject, and an archive holding
+    /// only those cannot tell the two conditions apart.
+    #[test]
+    fn a_resource_fork_and_a_dotfile_are_each_skipped_on_their_own_account() {
+        let path = cbz(
+            "taiyaku-test-skips.cbz",
+            &[
+                "__MACOSX/p1.jpg",
+                ".hidden.jpg",
+                "__MACOSX/._p2.jpg",
+                "p1.jpg",
+                "p2.jpg",
+            ],
+        );
+
+        let pages = read_member(&path).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["p1.jpg", "p2.jpg"],
+            "a fork with an ordinary basename and a dotfile outside a fork are both skipped"
+        );
+    }
+
+    /// The digest is what tells a reader the archive was replaced, so a stub
+    /// returning a constant would report every member as unchanged forever.
+    /// Pinned against a hash computed outside this crate rather than against
+    /// `Sha256` called a second time here, which would agree with any bug both
+    /// copies shared.
+    ///
+    /// A directory hashes its pages' bytes in order, not the directory itself,
+    /// so the same bytes split across two files must not collide with them
+    /// concatenated in one.
+    #[test]
+    fn a_members_digest_is_the_hash_of_its_content() {
+        let file = std::env::temp_dir().join("taiyaku-test-digest.bin");
+        std::fs::write(&file, b"taiyaku page").unwrap();
+        let got = member_digest(&file).unwrap();
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(
+            got, "e7a8b30f8c6591c8e3341e1f6b0b4f6658cfe5b09b048dafabeaf9ef113622bd",
+            "sha256 of the file's bytes"
+        );
+
+        let dir = std::env::temp_dir().join("taiyaku-test-digest-dir");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("1.jpg"), b"taiyaku ").unwrap();
+        std::fs::write(dir.join("2.jpg"), b"pageone").unwrap();
+        let got = member_digest(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            got, "ce663f7c43b7eb8989b012dfa7c8183eb4e052b8ac0f178b87132354b02b8d72",
+            "sha256 over the pages' bytes in reading order, joined"
+        );
     }
 
     /// Write a cbz whose entries are stored in the order given.

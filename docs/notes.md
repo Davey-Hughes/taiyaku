@@ -8290,3 +8290,96 @@ evidence the fix works is a test watched failing first and twelve volumes
 measured before and after. That is worth stating plainly next to a clean
 mutation report, because "0 missed" on a file reads as "this file is verified"
 and here it did not mean that.
+## The other 30, and the four surfaces they were hiding in
+
+`taiyaku-read` 17 and `taiyaku-wasm` 13, the two smallest of the four crates
+left after `ddb6149`. Re-measured on this branch: **30 missed → 0**, at 140
+mutants, 110 caught, 22 unviable, 8 timed out.
+
+The interesting part is not the number but the shape. These were not thirty
+scattered weak assertions. They were **four surfaces with no test on them at
+all**, and each one is a different reason a surface goes unwatched.
+
+**1. The wasm shell's value forwarders (13).** `editions`, `slotCount`,
+`slotAt`, `indexOf` and `credits` are one line each — `self.inner.method(…)` —
+and every one could be replaced by a constant with the suite still green. The
+reason is structural and worth naming: `binding` is thoroughly tested *one layer
+below*, and `lib.rs`'s own module doc says the shell "converts types across the
+JS boundary and decides nothing". A layer that decides nothing still has to
+forward the right argument to the right method, and nothing checked that it did.
+Two of the shell's methods — `resolveSlot` and `chapterAt` — already had tests
+for exactly this reason; the other five had been passed over because they look
+even more trivial than the two that were not.
+
+`slotAt` and `indexOf` are pinned against *each other* rather than separately,
+since they are inverses and each adds its own half conversion on the way out and
+back.
+
+**And one thing could not be tested at this layer, which is worth recording
+because the existing comment understates it.** `indexOf`'s refusal of an unknown
+half builds a `JsError`, and *constructing* one on a non-wasm target panics with
+`cannot call wasm-bindgen imported functions on non-wasm targets` — not merely
+formatting it, which is what the note on
+`the_shell_forwards_its_arguments_and_copies_every_field` says. The refusal is
+pinned one layer down in `half_from_str`, which is ordinary Rust.
+
+**2. `naming.rs::tokenize` (6, plus all 8 timeouts).** The file carried exactly
+one test, and it is a good test — fractional chapters sorting after their whole
+numbers is a real defect that cost a volume's page order. It just cannot see
+this function's bounds. Every name in it ends in `.cbz`, so every digit run
+finishes in the middle of the string and no loop ever approaches its guard.
+
+Two shapes of survivor followed from that:
+
+- **The lookahead.** `chars[i + 1].is_ascii_digit()` decides whether a `.` joins
+  the number. Asking `chars[i - 1]` instead always sees the digit the run just
+  ended on, so every `.` would swallow — and the ordering test still passes,
+  because `c005.cbz` tokenizing as `Number(5.0), Text("cbz")` rather than
+  `Number(5.0), Text(".cbz")` compares identically against `c005.5.cbz`. Only
+  the token stream shows it, so that is what the new test asserts.
+- **The bounds.** `< len` → `<= len` in any of the three loops indexes one past
+  the end. Killing those needs names that *end* where a loop ends: `page1` on a
+  digit, `c005.` on a trailing dot, `c005.5` on the digits after one. A trailing
+  dot is not hypothetical — it is what a truncated rename leaves.
+
+The **8 timeouts are all here**, and all the same shape: `+=` → `*=` never
+advances `i`, `<` → `>` never enters, `delete !` never exits. A `tokenize` that
+does not terminate cannot silently mis-order a volume, which is the O39
+disposition rather than an untested behaviour.
+
+**3. `MAX_DECODE_ALLOC` (6).** `3 * 1024 * 1024 * 1024`, and every arithmetic
+mutation of it survived — including ones that lower the ceiling below the
+corpus's largest page, which is the entire reason the constant was raised from
+`image`'s 512 MB default. A constant with a long doc comment explaining why it
+must be what it is, and nothing asserting that it is.
+
+Written as the two facts the doc claims rather than as `assert_eq!(X, 3 * 1024 *
+1024 * 1024)`, which is the expression again and would move with any edit to it:
+it must admit a 10200×14039 decode at four bytes a pixel, and the default it
+replaces must not.
+
+**4. `pages.rs` (5), and one of them was deleted rather than killed.** The
+hand-written `Debug` for `Page` — which exists so a failure does not dump
+megabytes of JPEG — could return `Ok(Default::default())` unnoticed.
+`page_names_from`'s two skip rules could be `&&`-ed together, because the usual
+resource fork `__MACOSX/._p2.jpg` satisfies *both* conditions and cannot tell
+them apart; the discriminating entry is `__MACOSX/p1.jpg`, with an ordinary
+basename. `member_digest` could return a constant, which would report every
+member as unchanged forever.
+
+The fifth is the one worth reading. `unsupported_container` guarded its tar
+signature with `bytes.len() > 262 && &bytes[257..262] == b"ustar"`, and the
+mutant `>` → `>=` survived — correctly, because `>=` is what the slice actually
+needs. Reading `bytes[257..262]` requires 262 bytes; the guard demanded 263, so
+a 262-byte buffer carrying the signature read as unrecognised. **Unreachable
+with a real tar** — the format's first header block alone is 512 bytes — so
+this is not a defect anyone could hit. But the choice was between pinning an
+arbitrary off-by-one with a test and removing it, and the guard is now
+`bytes.get(257..262) == Some(&b"ustar"[..])`, which says what it means and has
+no arithmetic to get wrong.
+
+That is why the mutant total moved 144 → 140 rather than staying put: four
+mutants at that site stopped existing, one of them the survivor and three
+already caught. **29 of the 30 were killed by tests; the thirtieth was killed by
+deleting the expression it lived in.** Worth stating plainly, because "30 → 0"
+and "30 killed" are not the same claim.

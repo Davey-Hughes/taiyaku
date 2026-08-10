@@ -75,7 +75,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 554 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
+Five crates, 563 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
 project and 296 in the `jsdom` one this branch added — and six more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -91,7 +91,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Thirteen of the 554 are standing checks gated on
+`rayon` exactly as `align` already did. Thirteen of the 563 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
@@ -599,9 +599,20 @@ and "The 47, killed — and what the fixtures got wrong", has the full record,
 including the gap penalty in `solve::solve`'s first column that could be turned
 into a bonus
 with all 526 CI-visible tests still passing, and the six planned fixtures that
-passed while discriminating nothing. The other four crates are measured but
-not addressed: `taiyaku-cli` 217, `taiyaku-serve` 52, `taiyaku-read` 17,
-`taiyaku-wasm` 13.
+passed while discriminating nothing. **`taiyaku-read` and `taiyaku-wasm` are now
+closed too — 30 survivors to 0**, re-measured at 140 mutants, 110 caught, 22
+unviable, 8 timed out. Their gaps were four, and each was a whole surface rather
+than a scattering: the wasm shell's five value-forwarding methods, which
+`binding`'s tests sit one layer below and cannot see; `tokenize`'s decimal-point
+lookahead, in a file that carried one test; `MAX_DECODE_ALLOC`, a number nothing
+asserted; and four odds in `pages.rs`. One survivor was not killed but
+*deleted* — `unsupported_container`'s `len() > 262` was one past what the slice
+it guards needs, and rewriting it as `bytes.get(257..262)` removed the
+arithmetic along with three already-caught mutants at the same site. The eight
+timeouts are all non-terminating `tokenize` loops and are O39's disposition
+rather than untested behaviour. `notes.md`, "The other 30, and the four
+surfaces they were hiding in", is the record. **Two crates remain measured but
+not addressed: `taiyaku-cli` 217 and `taiyaku-serve` 52.**
 
 ### Open items
 
