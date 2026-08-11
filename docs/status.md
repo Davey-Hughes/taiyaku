@@ -313,6 +313,53 @@ below, under "What is known to be wrong or missing".
   measured against, not merely dismissed: the whole JavaScript gate is about
   2.5 seconds, so there is no runtime budget to recover, and the one place a
   faster engine could apply is vitest, which bun cannot run in browser mode.
+- **`clippy::pedantic` runs, advisory and non-blocking** (2026-08-10). This
+  step first shipped carrying 100 per-site `#[expect(clippy::…, reason =
+  "…")]` attributes; a same-day review then asked whether they could be fixed
+  rather than documented; and a follow-up campaign fixed 60 of them outright
+  — 3 `clippy::similar_names` renames, a `Pairing` enum replacing
+  `Option<Option<String>>`, `SlotSpan` gaining its own serde impls, and 55
+  casts routed through named `try_from(..).expect(..)` helpers that argue
+  their bound once rather than at every site (`docs/notes.md` has the
+  detail). The workspace now carries **40** per-site `#[expect]` attributes:
+  33 on individual casts — 25 `clippy::cast_precision_loss`, for which no fix
+  applies (all three routes measured; see `docs/notes.md`) — and 8
+  `clippy::cast_possible_truncation`/`clippy::cast_sign_loss`, each kept for a
+  reason specific to its site (four in `taiyaku-wasm`, where a panic traps the
+  whole module rather than unwinding; two in `taiyaku-serve` tracing to
+  request-path rather than in-process data; one each in `taiyaku-core` and
+  `taiyaku-cli` with no viable conversion route) — plus 7 function-level
+  (`clippy::too_many_lines` ×3, `clippy::needless_pass_by_value` ×3, and one
+  `clippy::many_single_char_names` on `solve`, which judges a whole function
+  rather than one binding). Plus two module-level
+  `#[allow(clippy::pedantic, …)]`s, both on the one-off
+  `*_experiment` modules and argued at the declaration, the sole exception to
+  the per-site rule. `.forgejo/workflows/ci.yml`'s `lint` job and
+  `scripts/check-all.sh` both run `cargo clippy --workspace --all-targets
+  --all-features -- -W clippy::pedantic` after the blocking gate —
+  `continue-on-error: true` in the first, `|| true` in the second — and both
+  print, unconditionally, 15 `clippy::float_cmp` warnings from `assert_eq!`
+  on floats in tests that `scripts/pedantic-sites.mjs` correctly excludes as
+  not belonging to any file in this repository (see `docs/ci.md`, "The
+  pedantic lints, and why they are advisory"). **The two halves of that
+  mirror do not carry equal evidence.** `|| true` is a shell operator,
+  verified on every local run of `scripts/check-all.sh`: the advisory step's
+  own exit code is always swallowed, and there is nothing to check on a
+  Forgejo runner that this repository's own commands can prove one way or
+  the other. `continue-on-error: true` is Forgejo Actions' own key for the
+  same behaviour, no other job in `ci.yml` uses it, and — since it can only
+  fire when the step it guards actually fails — verifying it needs a step
+  that fails on a pushed branch, not a local read. The branch has since been
+  pushed and the pipeline came back green, but that does not verify the
+  key: `cargo clippy -- -W clippy::pedantic` exits 0 regardless of how many
+  warnings it prints — only `-D warnings` sets a non-zero exit — so the
+  advisory step succeeded on its own and `continue-on-error` was never
+  exercised. More fundamentally, the step cannot fail from a lint at all:
+  its only possible failure is a genuine compile error, which the blocking
+  clippy step above would already have caught, so both guards are
+  belt-and-braces for a failure lints cannot produce today. The key is
+  untriggered rather than untested; it has still never been observed doing
+  its job.
 
 ## What is settled
 
@@ -423,6 +470,53 @@ alternative that lost.
   file count when adding a crate". The cost is that a deliberate exclusion can
   trip it; the rule is to re-derive the number beside the exclusion rather than
   widen it on reflex.
+- **`clippy::pedantic` is on as an advisory step, never in `[workspace.lints]`.**
+  420 sites measured at `df8cbd9`; 375 fixed or given a per-site
+  `#[expect(…, reason = …)]` stating the bound, and 45 in the two one-off
+  experiment files covered by a module-level allow, argued at the declaration.
+  It beat a blocking gate, which a floating toolchain turns red on an unrelated
+  PR every six weeks or so; and it beat leaving the lint off, because `as` is
+  invisible to every other instrument here — `docs/ci.md` records the debug
+  profile as the only one with overflow checks, and overflow checks do not apply
+  to `as`. The enforcement that remains is narrow and real: a stale `#[expect]`
+  is `unfulfilled_lint_expectations`, an ordinary rustc lint the existing
+  `-D warnings` gate already denies, so a cast deleted without its attribute
+  fails CI.
+  **The design's own mechanism for switching two lints off by name does not
+  work, refuted rather than repaired** — a `[workspace.lints.clippy]` allow is
+  overridden by the trailing `-W` of the pedantic group, measured directly:
+  with `must_use_candidate = "allow"` in the table, all 47 of its sites still
+  fired and the total stayed at 420. So both lints §10.1 would have switched
+  off by name were *fixed* instead, and the sites supported that better than
+  the design's own argument for switching them off did: all 47
+  `must_use_candidate` sites were pure functions where discarding the result is
+  a live bug, not the false positive the design assumed, and all 39
+  `match_bool` sites were two-arm `match <bool> { true => …, false => … }`, not
+  the exhaustive enum dispatch the design's argument described.
+  **The branch found one live defect in the 131 casts it read** —
+  `Vec::with_capacity(entry.size() as usize)` in `taiyaku-read`, twice, in
+  `read_archive` and `member_page`. A `.cbz`'s central directory declares its
+  own uncompressed size, unchecked against the real bytes until they are
+  inflated; measured with a patched header, `entry.size()` reported 2 GiB
+  against 104 actual bytes, attacker-controlled since `taiyaku serve` reads
+  archives from requests. Bounded now by `MAX_ENTRY_CAPACITY_HINT` at 32 MiB —
+  a whole-branch review found the first-cut 1 GiB ceiling reserved
+  1,073,741,824 bytes for a 6-byte entry, and found the regression test that
+  should have caught it self-referential (`capacity() <= MAX_ENTRY_CAPACITY_HINT`
+  passes for any ceiling at or above the declared lie). 32 MiB is sized from
+  the corpus itself — real pages run 100 KB–3 MB, a live client session
+  transferred at 247 KB mean and 2.0 MB largest — not from
+  `taiyaku_read::MAX_DECODE_ALLOC`, the separate ceiling that bounds a
+  *decoded* pixel buffer rather than this *encoded*-bytes hint, and it matches
+  `taiyaku-cli`'s independently-chosen `LARGE_PAGE_BYTES` on the same corpus.
+  The regression test now asserts a literal reservation bound rather than the
+  constant itself, and the identical clamp on `member_page` — the path
+  `taiyaku-serve` actually calls per page request — has its own test too. The
+  design read ten of the
+  highest-risk sites before writing this plan and found zero live defects; the
+  branch's full pass read 131, thirteen times that sample, and found this one.
+  That is the result at 13× the sample the design's zero was drawn from, worth
+  stating as a result rather than folding into the arithmetic as a footnote.
 
 ## What has been proven against real material
 

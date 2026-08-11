@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -95,6 +95,16 @@ impl Entry {
     /// promises a path or method never contains a quote, a backslash or a
     /// control character, and a log line that is not valid JSON defeats the
     /// one thing this format exists to guarantee.
+    ///
+    /// # Panics
+    ///
+    /// Panics if serialising `self` to JSON fails. Every field of `Entry` is
+    /// a `String`, a `u16`, a `u64`, or a `BTreeMap<String, String>`, none of
+    /// which `serde_json` can fail to encode, so this is not reachable from
+    /// any `Entry` this crate can construct; the `expect` exists because
+    /// `Serialize::serialize` is fallible in general, not because failure is
+    /// possible here.
+    #[must_use]
     pub fn to_json_line(&self) -> String {
         serde_json::to_string(self).expect("Entry always serialises") + "\n"
     }
@@ -113,12 +123,14 @@ impl Entry {
 pub struct InFlight {
     started: Instant,
     started_at: u64,
-    in_flight: u64,
+    /// This request's own share of the in-flight count, captured at arrival —
+    /// see the struct doc above.
+    share: u64,
     counter: Arc<AtomicU64>,
     /// Carried from arrival rather than collected at `finish`, because a
     /// request's headers are an arrival-time fact exactly like `started_at`
-    /// and `in_flight` — and by the time the response comes back, the
-    /// request they came from is gone.
+    /// and `share` — and by the time the response comes back, the request
+    /// they came from is gone.
     headers: BTreeMap<String, String>,
 }
 
@@ -160,11 +172,18 @@ impl Log {
     /// Not optional: a `Log` with nowhere to write would now record nothing
     /// anywhere, and `serve` already expresses "not logging" as no `Log` at
     /// all rather than an inert one.
-    pub fn new(path: PathBuf) -> Result<Self, String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, worded `--log-requests {path}: {e}`, if `path`
+    /// cannot be opened for appending and cannot be created — most often
+    /// because a parent directory does not exist, or because the process
+    /// lacks permission to write there.
+    pub fn new(path: &Path) -> Result<Self, String> {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&path)
+            .open(path)
             .map_err(|e| format!("--log-requests {}: {e}", path.display()))?;
         Ok(Self {
             in_flight: Arc::new(AtomicU64::new(0)),
@@ -182,11 +201,11 @@ impl Log {
     /// line contains is decided in one place, and it is not this one's job to
     /// know what an `http::HeaderMap` is.
     pub fn begin(&self, headers: BTreeMap<String, String>) -> InFlight {
-        let in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        let share = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         InFlight {
             started: Instant::now(),
             started_at: now_micros(),
-            in_flight,
+            share,
             counter: Arc::clone(&self.in_flight),
             headers,
         }
@@ -200,19 +219,41 @@ impl Log {
     /// function returns; that is the same path a cancellation takes, so
     /// there is exactly one decrement site rather than one here and another
     /// in `Drop`.
+    ///
+    /// Takes `request` by value rather than `&InFlight`, though every field
+    /// below is read by copy or clone and none is moved out: ownership is the
+    /// mechanism that makes the doc comment above true. A reference would let
+    /// `InFlight::drop` — and so the in-flight decrement — happen whenever the
+    /// caller's own binding later goes out of scope, not at the point this
+    /// function returns. Taking `request` by value moves it into this call so
+    /// its `Drop` runs here, at the moment the response is actually recorded,
+    /// which is what keeps the decrement synchronised with the write below
+    /// rather than merely eventual.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "InFlight is consumed for its Drop timing, not its fields (see doc comment \
+                  above): taking it by value is what makes the in-flight counter release \
+                  exactly when this function returns, rather than whenever the caller's local \
+                  variable happens to go out of scope. Tried a &InFlight signature first; it \
+                  compiles, but silently detaches the decrement from the write it is meant to \
+                  be synchronised with, which is the defect Drop was written to prevent."
+    )]
     pub fn finish(&self, request: InFlight, method: &str, path: &str, status: u16, bytes: u64) {
         let entry = Entry {
             method: method.to_string(),
             path: path.to_string(),
             status,
             bytes,
-            micros: request.started.elapsed().as_micros() as u64,
+            micros: u64::try_from(request.started.elapsed().as_micros()).unwrap_or(u64::MAX),
             started_at: request.started_at,
-            in_flight: request.in_flight,
+            in_flight: request.share,
             headers: request.headers.clone(),
         };
         let line = entry.to_json_line();
-        let mut guard = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .file
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Err(e) = guard.write_all(line.as_bytes())
             && self.first_write_failure()
         {
@@ -234,11 +275,30 @@ impl Log {
     }
 }
 
+/// Microseconds since `UNIX_EPOCH`, narrowed from `Duration::as_micros`'s `u128`.
+///
+/// Saturates rather than panics, matching `finish`'s narrowing of
+/// `Instant::elapsed()`'s `as_micros()` a few lines above
+/// (`u64::try_from(..).unwrap_or(u64::MAX)`) — deliberately, even though the
+/// two narrowings look like they should differ. `elapsed()` is measured
+/// against a monotonic clock nothing outside the process can move, so
+/// overflowing `u64` microseconds there needs 584,000 years of uptime. Wall
+/// time carries no such guarantee: an operator's clock can be set to
+/// anything, by a fat-fingered `date`, a stuck RTC, or a misbehaving NTP
+/// source, and this function runs on every request's arrival
+/// (`now_micros`, called from `begin`), not once at startup. A clock
+/// misconfigured far enough into the future to overflow this narrowing must
+/// not take the request-handling path down with it on every subsequent
+/// request; a saturated, nonsensical `started_at` is a far better failure
+/// than a panicking request log.
+fn wall_clock_micros(d: u128) -> u64 {
+    u64::try_from(d).unwrap_or(u64::MAX)
+}
+
 fn now_micros() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| wall_clock_micros(d.as_micros()))
 }
 
 #[cfg(test)]
@@ -286,7 +346,7 @@ mod tests {
             method: "GET".into(),
             path: "/opds/v1.2/works/t/raw/pages/7".into(),
             status: 200,
-            bytes: 1180617,
+            bytes: 1_180_617,
             micros: 4200,
             started_at: 1_753_900_000_000_000,
             in_flight: 3,
@@ -352,7 +412,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&missing_dir);
         let path = missing_dir.join("nested").join("req.jsonl");
 
-        let err = Log::new(path).unwrap_err();
+        let err = Log::new(&path).unwrap_err();
 
         assert!(!err.is_empty(), "the failure has to say something");
     }
@@ -370,7 +430,7 @@ mod tests {
     fn entries_written_to_disk_are_valid_json_lines_with_the_expected_keys() {
         let path = std::env::temp_dir().join("taiyaku-test-reqlog-disk.jsonl");
         let _ = std::fs::remove_file(&path);
-        let log = Log::new(path.clone()).unwrap();
+        let log = Log::new(&path).unwrap();
 
         let a = log.begin(BTreeMap::new());
         log.finish(a, "GET", "/api/works/t/raw/pages/2", 200, 1234);
@@ -411,12 +471,12 @@ mod tests {
         let (log, path) = crate::test_support::log("taiyaku-test-reqlog-cancelled");
 
         let cancelled = log.begin(BTreeMap::new());
-        assert_eq!(cancelled.in_flight, 1);
+        assert_eq!(cancelled.share, 1);
         drop(cancelled);
 
         let after = log.begin(BTreeMap::new());
         assert_eq!(
-            after.in_flight, 1,
+            after.share, 1,
             "the cancelled request must not still be counted as in flight"
         );
         log.finish(after, "GET", "/a", 200, 1);
@@ -436,7 +496,7 @@ mod tests {
     #[test]
     fn only_the_first_write_failure_is_reported() {
         let log =
-            Log::new(std::env::temp_dir().join("taiyaku-test-reqlog-once.jsonl")).expect("opens");
+            Log::new(&std::env::temp_dir().join("taiyaku-test-reqlog-once.jsonl")).expect("opens");
 
         assert!(log.first_write_failure(), "the first failure is reported");
         assert!(

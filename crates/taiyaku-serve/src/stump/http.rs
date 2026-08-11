@@ -393,7 +393,7 @@ pub(crate) mod test_support {
         pub(crate) fn on_post_sequence(mut self, path: &str, replies: &[&str]) -> Self {
             self.post_sequences.insert(
                 path.to_string(),
-                Mutex::new(replies.iter().map(|r| r.to_string()).collect()),
+                Mutex::new(replies.iter().map(ToString::to_string).collect()),
             );
             self
         }

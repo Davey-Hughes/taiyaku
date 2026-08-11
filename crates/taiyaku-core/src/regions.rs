@@ -53,10 +53,10 @@ pub enum Axis {
 /// the page it was measured on.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Region {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
     pub axis: Axis,
 }
 
@@ -91,6 +91,7 @@ impl RegionEdition {
     /// has: a stale alignment sends a reader to the wrong page, where stale
     /// regions draw a box on the wrong art on the *right* page, which is harder
     /// to notice.
+    #[must_use]
     pub fn is_stale_for(&self, digests: &[String]) -> bool {
         self.members.len() != digests.len()
             || self
@@ -110,6 +111,7 @@ pub struct RegionDoc {
 }
 
 impl RegionDoc {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             taiyaku_regions: VERSION,
@@ -126,21 +128,38 @@ impl RegionDoc {
     /// keeping it: `go.between.json` first strips to `go.between`, whose own
     /// extension is then `between`, and the second call replaces that,
     /// giving `go.regions.json` rather than `go.between.regions.json`.
+    #[must_use]
     pub fn path_beside(sidecar: &Path) -> PathBuf {
-        let stem = sidecar
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "taiyaku".to_string());
+        let stem = sidecar.file_stem().map_or_else(
+            || "taiyaku".to_string(),
+            |s| s.to_string_lossy().to_string(),
+        );
         sidecar
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(format!("{stem}.regions.json"))
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `text` is not valid JSON, or is JSON that does not
+    /// match this document's shape — a missing `taiyaku_regions` field, an
+    /// `axis` value other than `"v"` or `"h"`, a `pages` entry keyed by
+    /// something other than a page number. The message embeds `serde_json`'s
+    /// own, which names the field and byte offset.
     pub fn from_json(text: &str) -> Result<Self, String> {
         serde_json::from_str(text).map_err(|e| format!("not a readable regions document: {e}"))
     }
 
+    /// # Panics
+    ///
+    /// Panics if this document fails to serialise. In practice it cannot:
+    /// every field is a plain number, string, `BTreeMap` or enum with no
+    /// custom `Serialize` impl, so the only way `serde_json` returns `Err`
+    /// here — a non-finite float used as a map key — does not apply, since
+    /// this document's only float fields (`Region`'s `x`, `y`, `w`, `h`) are
+    /// values, not keys, and `u32` page keys are always finite.
+    #[must_use]
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("regions are always serialisable")
     }

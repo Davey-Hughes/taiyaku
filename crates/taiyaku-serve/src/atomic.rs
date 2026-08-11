@@ -73,6 +73,14 @@ pub(crate) fn temp_path(path: &Path, extension: &str) -> PathBuf {
 /// behind both `align --write` and `credits --write` — is the caller outside
 /// this crate, and it is writing the very file the paragraph above names as the
 /// worst thing to lose half of.
+///
+/// # Errors
+///
+/// Returns an error if writing the temporary file beside `path` fails — a
+/// full disk or a missing parent directory, most often — or if renaming that
+/// temporary onto `path` fails, such as `path` naming a directory rather than
+/// a file. Both messages name `path`, the file the caller asked for, and
+/// never the temporary, which is deleted before either error is returned.
 pub fn write(path: &Path, bytes: &[u8], extension: &str) -> Result<(), String> {
     let temporary = temp_path(path, extension);
     if let Err(e) = std::fs::write(&temporary, bytes) {
@@ -199,7 +207,7 @@ mod tests {
         // Nothing left behind: the temp file is removed on this path too.
         let strays: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
-            .filter_map(|entry| entry.ok())
+            .filter_map(Result::ok)
             .map(|entry| entry.file_name().to_string_lossy().to_string())
             .filter(|name| name.contains(".tmp."))
             .collect();

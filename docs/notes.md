@@ -8905,3 +8905,367 @@ the argument for extraction stated as a number: pulling a decision out of a
 match that was an inline `if`, each operator in an arithmetic that had nowhere
 to be called from — and all of it dies to the same tests. A file that scores
 well by being unreachable is scoring on the wrong thing.
+
+## `serde_json` errors on a map key, not a value — two PR 3 agents hit this and split
+
+PR 3 wrote `# Errors` and `# Panics` sections for 37 functions across
+`taiyaku-serve` and `taiyaku-core`, several of which end in
+`serde_json::to_string`/`to_string_pretty` and had to say what makes that
+call fail. It fails in exactly one way: a non-finite float (`NaN`, `inf`,
+`-inf`) serialised as a **map key**. A float sitting in a struct field or a
+`Vec` is a different code path and does not fail at all — it writes JSON
+`null` and returns `Ok`. Measured directly against this workspace's
+`serde_json 1.0.151` with a standalone repro, both halves: a struct with
+`x: f64::NAN, y: f64::INFINITY` serialised as ordinary fields returned
+`Ok({"x":null,"y":null,...})`; the same `NaN` used as a `BTreeMap` key (via a
+wrapper type whose `Serialize` calls `serialize_f64`) returned
+`Err("float key must be finite (got NaN or +/-inf)")`. The value case is
+`ser.rs`'s ordinary `serialize_f64`; the key case is routed through the
+separate `MapKeySerializer`, which is the only place the finite check lives.
+
+Two agents wrote a doc section against this rule in the same PR and landed on
+opposite answers. `taiyaku-core::regions::RegionDoc::to_json` and
+`taiyaku-core::sidecar::Sidecar::to_json` got it right: both name the map-key
+rule and both correctly note that their own float fields — `Region`'s
+`x`/`y`/`w`/`h` in the first, `SolverInfo::floor`, `Quality::avg_run` and
+`RunEntry::margin` in the second — are struct values, never map keys, so
+`to_string_pretty` cannot fail on them; `Sidecar`'s only actual map keys
+(`editions`, by `String`) are not floats either. `taiyaku-serve::notes::to_json`
+got it backwards: its `# Errors` section claimed failure "requires a
+`Region`'s `x`, `y`, `w` or `h` to hold `NaN` or infinity" — exactly the case
+the rule says cannot fail, and exactly the case the repro above measured as
+`Ok`. Fixed to match the other two.
+
+**Four functions in this PR return `Result` or carry `# Panics` for a
+failure that cannot actually happen — none of the four changed behaviour,
+the doc sections now just say so instead of overclaiming or, in
+`notes::to_json`'s case, misclaiming:**
+
+- `taiyaku-serve::notes::to_json` — the map-key rule above; `Notes`/`Note`
+  hold no map keyed by a float.
+- `taiyaku-serve::reqlog::Entry::to_json_line` — same rule, and already
+  correct when written: every `Entry` field is `String`, `u16`, `u64` or
+  `BTreeMap<String, String>`, none of which can fail to encode.
+- `taiyaku-core::regions::RegionDoc::to_json` — same rule; `Region`'s floats
+  are values, and `pages`' `u32` keys are always finite.
+- `taiyaku-core::sidecar::Sidecar::to_json` — same rule; the document's
+  floats (`SolverInfo::floor`, `Quality::avg_run`, `RunEntry::margin`) are
+  values, and its only map (`editions`) is keyed by `String`.
+
+Two more in `taiyaku-core::sidecar` carry a `# Panics` section for a
+different, unrelated kind of unreachable failure — an `.expect` or an index
+whose panic depends on an invariant the function itself maintains, nothing to
+do with `serde_json` — and both were re-read against the code rather than
+trusted from the existing comment:
+
+- `Sidecar::merge_spoke` — the `.expect("just inserted")` follows
+  `self.editions.insert(name.to_string(), edition)` on the same key in the
+  same statement sequence, so the entry is always there; the two indexing
+  operations (`self.editions[&start]`, `self.editions[name]`) are reached
+  only inside `if carried > 0`, by which point `start`'s presence was already
+  confirmed by the earlier `self.editions.get(&start).ok_or_else(...)?` and
+  `name` was just inserted, and the `name == start` case was already refused
+  earlier in the function.
+- `Sidecar::correct` — the `.expect("orientation was found by the same
+  lookup")` re-finds an edge `edge_between` already located; on the only
+  branch that reaches this second lookup, nothing between the two mutates
+  `self.alignments`, so the second lookup cannot fail to find what the first
+  one did.
+
+## A fifth unreachable-panic site, in a different shape, and a fourth `runs_of` cause that is not O24 by another route
+
+`taiyaku-core::credits::unpaired_runs` carries both. Its `# Panics` section is
+a fifth site shaped like the four above — an `.expect` reachable only if an
+invariant the function itself maintains breaks — but it was not written that
+way. Where `RegionDoc::to_json`, `Sidecar::to_json`, `Sidecar::merge_spoke` and
+`Sidecar::correct` each read "Panics if X. In practice it cannot: ..." and name
+what currently prevents it, `unpaired_runs`'s doc read as a live conditional —
+"this can only fire if the two disagreed between the two passes" — even though
+the same review had already called the underlying
+`.expect("every page has at least one slot")` unreachable by construction
+elsewhere in its own notes. The mismatch between what the review already
+believed and what the shipped prose actually said is what caught it.
+
+Traced independently rather than taken on the review's word: `slots` (from
+`target.slots(...)`) is bound once, immutably, and never mutated between the
+loop that builds `unpaired_pages` (reading `slots[at].page`) and the
+`slot_start` closure that re-searches that same `slots` array for a page value
+read out of it moments earlier. `.position()` cannot fail to find it. The
+panic is exactly as unreachable as the other four; only the prose disagreed.
+Rewritten to match theirs — no behaviour change.
+
+The function's `# Errors` section had a separate gap: it named three causes of
+failure and missed a fourth `runs_of` cause, `alignment.from`/`.to` naming an
+edition whose key is absent from `self.editions` altogether. That reads close
+enough to O24 — "a stored alignment outlives the edition it names" — to ask
+whether it is O24 reached by a new route. It is not, and the two mechanisms
+are worth keeping apart:
+
+- **O24** (`sidecar.rs::merge_spoke`, still open): a solver-written direct edge
+  survives a spoke replacement because nothing marks it `by: "hand"`. The
+  edition *name* persists — nothing in this crate, checked across all five,
+  ever removes an edition entry — so the stale edge's far side still resolves
+  by name, but its slot numbers now address different content. That can
+  surface as a `runs_of` "no such slot" error or, worse, silently succeed with
+  a wrong-but-well-formed answer. That silent branch is what keeps O24 open.
+- **This gap**: an alignment naming an edition whose key is *absent* from
+  `self.editions`. Since nothing in this codebase ever deletes an edition key,
+  that state is reachable only by hand-editing `taiyaku.json` — already the
+  general class the doc's "hand-edited alignment" language covers — and it is
+  handled correctly today: `self.editions.get(...)` returns `None` and the
+  call comes back a clean `Err`, not a panic and not a silent wrong answer.
+
+Same family — a stale alignment reference — different code path and different
+severity: O24 is a live silent-wrong-answer defect still open in
+`route`/`merge_spoke`; this was a doc omission over a path that was already
+correct. `unpaired_runs`'s doc now names the fourth cause and points at O24 as
+the nearer live concern, with the distinction spelled out rather than left for
+a reader to work out from the surface similarity.
+
+## `member_digest`'s five call sites, and whether an empty digest can ever reach a reader
+
+An earlier claim in the same review — that every call site of
+`taiyaku_read::member_digest` sits "downstream of a successful page read" —
+does not hold for all of them, checked against the five production call sites
+(test code excluded) rather than assumed from the shape of one:
+`describe_edition`'s write path and `verify`'s `named` closure in `main.rs`,
+the fingerprint loop in `credits.rs`, `cache::member_pages` in `cache.rs`, and
+`regions`' identify step in `regions.rs`. Three of the five —
+`describe_edition`, `cache::member_pages` and the `regions` step — compute the
+digest first and unconditionally, before anything checks the member has
+pages, the opposite order the "downstream of a page read" claim assumed. So
+the real question is narrower and better stated: can any of the five surface
+the digest of an empty directory (SHA-256 of zero bytes,
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`) as a
+**successful, externally visible result**, without the command that reached
+it also failing?
+
+The answer is no, and the reason is not ordering, it is where the one durable
+write lives. `Member.sha256` — the only record a digest is ever checked
+against — is constructed in exactly one place, `describe_edition`, called only
+from `align`'s write path:
+
+```rust
+described.push(Member {
+    path: relative_to(member, beside)?.to_string_lossy().to_string(),
+    sha256: taiyaku_read::member_digest(member)?,
+    pages: taiyaku_read::member_pages(member)?,
+});
+```
+
+The digest is computed before the page count here too, but the `?` on
+`member_pages` means a page-less member fails that iteration and discards the
+whole `described: Vec<Member>` built so far, digest included. No sidecar can
+ever contain a `Member` whose `sha256` is the digest of an empty read — that
+invariant lives at this one function, not at each caller. `RegionMember`'s
+records are downstream of the same invariant transitively, through the
+`regions` step below, not a second independent writer.
+
+`verify`'s `named` closure and the `regions` identify step lean on that
+invariant directly: both compute the digest unconditionally for every member,
+then match it against sidecar-recorded digests (`edition_of` and
+`edition_of_digests` respectively) — a lookup that, per the invariant above,
+never includes the empty digest, so a page-less member simply fails to match
+rather than succeeding. `named` has a second, independent guarantee besides:
+by the time it runs, `read_edition` has already succeeded earlier in the same
+function, and `read_edition` errors on any page-less member before `named` is
+ever called. The `regions` step has one too: its later
+`read_members_in_order` call re-validates non-emptiness before the write,
+independent of the digest match.
+
+The fingerprint loop in `credits.rs` calls `cache::member_pages` immediately
+after computing its own digest, and that call's fate gates it: if
+`cache::member_pages` fails, the `?` propagates before the fingerprint list is
+ever handed to `edition_of_digests`.
+
+`cache::member_pages` is the one site where "digest first, unconditional" is
+genuinely load-bearing rather than backstopped by a sidecar lookup — a cache
+hit under the empty digest's key would return `Ok` without ever calling
+`read_edition`. It cannot happen through this codebase's own writes: the only
+place this function writes a cache entry is after `read_edition` has already
+succeeded, and `read_edition` cannot succeed for a page-less member, so no run
+of this program ever populates a cache file keyed by the empty digest. Caveat,
+not a defect: a JSON file dropped into the cache directory by hand under that
+exact key would be served, same as any other digest would be — a general
+property of a cache keyed by untrusted-provenance hashes, not something
+specific to page-less members.
+
+No live defect found across any of the five. `member_digest`'s own doc comment
+(`taiyaku-read/src/pages.rs`) was left unchanged, per the review's own scope —
+this trace confirms it rather than contradicting it, and corrects the
+"downstream of a page read" claim to the narrower, actually-true one: the one
+place a digest is durably recorded discards the whole write on a page-less
+member, and every lookup site either matches against that record or against a
+cache only ever populated downstream of a successful read.
+
+## The one cast in 131 that had nothing bounding it — a zip's declared size
+
+`docs/superpowers/specs/2026-08-10-mutation-testing-and-pedantic-design.md`
+read ten of the highest-risk `cast_possible_truncation` sites before turning
+the lint on and found zero live defects — every one bounded by construction.
+The branch-wide pass that followed attached a per-site `#[expect]` to every
+`as` cast across all five crates, stating what bounds it, with one rule for
+the fourth case: if nothing bounds the value, that is a defect, fixed rather
+than annotated. Across every cast this pass reviewed and closed — 131 — that
+branch fired exactly once, both sites in `taiyaku-read/src/pages.rs`:
+
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
+
+in `read_archive` and `member_page`. `entry.size()` is the uncompressed-size
+field the `zip` crate reads straight from the archive's central directory —
+metadata the archive declares about itself, never checked against the real
+bytes until they are inflated. A `.cbz` is a user-supplied file, and nothing
+between the archive and this line validates the field.
+
+**Measured, not reasoned about.** A valid zip was built, its central
+directory's uncompressed-size field patched to `0x7FFFFFF0`, and read with
+this workspace's pinned `zip` 7.2.0:
+
+    entry.size() reports: 2147483632 bytes   (2.00 GiB)
+    actual inflated bytes: 104
+    ATTACKER-CONTROLLED: true
+
+**The first fix tried was `usize::try_from(entry.size()).unwrap_or(0)`, and
+it does not work.** `usize::try_from(u64)` is infallible on every host this
+crate targets — 64-bit; it does not compile to wasm — so `unwrap_or(0)` never
+fires. The conversion always succeeds, at whatever value the archive
+declared, and `Vec::with_capacity` reserves that value immediately: 2 GiB in
+the probe above, and nothing caps how much higher a crafted or merely corrupt
+`.cbz` could push it before the allocator itself refuses and the process
+aborts. The truncation lint was satisfied — there is no truncating cast left
+to fire it — while the actual exposure, an unbounded up-front reservation
+driven by unvalidated file content, was untouched. `taiyaku serve` reads
+archives from requests, so this reaches the server, not only the CLI.
+
+**It is a capacity hint only.** `read_to_end` grows the buffer regardless of
+what was reserved up front, so a wrong hint was never a correctness issue —
+no wrong output, no memory unsafety. The harm is allocation, sized by
+whatever the declared field says, and that is the whole defect: describing it
+as more than that would be the same kind of inflation the field itself
+practises.
+
+**What bounds it now:** `MAX_ENTRY_CAPACITY_HINT`, a new constant in
+`pages.rs`, clamps `entry.size()` before the cast —
+`entry.size().min(MAX_ENTRY_CAPACITY_HINT) as usize` — so the cast is bounded
+by construction (the clamp) rather than by type. No `#[expect]` needed here
+at all: clippy's own range analysis follows `.min()` against a constant, so
+it verifies the cast is safe rather than having to be told so — the one site
+in this branch's 131 where the honest fix also happens to be the one the
+lint stops complaining about on its own. Deliberately not
+`taiyaku_read::MAX_DECODE_ALLOC`,
+the 3 GiB ceiling `taiyaku-serve/src/cover.rs` already applies to image
+decoding: that constant bounds a *decoded* pixel buffer, several times the
+size of the *encoded* file bytes this hint is for, on the same page. This
+project's largest known page files are the Color Walk art books' 430 MB
+archival TIFFs (`taiyaku-read/src/lib.rs`), so 1 GiB clears every page this
+corpus holds with better than 2x headroom while capping a hostile or corrupt
+declared size's immediate reservation at a third of `MAX_DECODE_ALLOC`
+instead of all of it. A capacity hint does not need to be generous to be
+useful — being tight costs a reallocation on the rare oversized page, never a
+wrong result.
+
+A regression test builds a real archive and patches its central directory the
+same way the probe did, rather than reimplementing the read path against a
+mock: the actual bytes read back correctly despite the lie, and the buffer's
+capacity never exceeds `MAX_ENTRY_CAPACITY_HINT` regardless of what the
+entry declared.
+
+Ten read, zero defects; 131 reviewed, one — and it survived a first fix that
+looked complete because the lint went quiet. The lint measures whether a cast
+truncates, not whether the value behind it is bounded to something sane; this
+is the branch's one demonstration of the gap between the two.
+
+The range analysis behind `.min()` clearing that cast is narrower than it
+looks here, too: it only fires because `entry.size()` is a fixed-width `u64`.
+A later pass reviewing `solve.rs`'s own `#[expect]`ed casts tried the same
+idiom against a `usize`-sourced page index and got none of it — see "The
+clamp that only works for fixed-width sources", below.
+
+## The clamp that only works for fixed-width sources, and the helper that replaced it
+
+Fixing the suppressions above was the design's own stopping point — every
+`as` cast in the workspace got a per-site `#[expect]` stating its bound, and
+that was treated as done. The pilot asked a further question: could any of
+them be fixed outright instead of documented? `solve.rs` went first, as the
+file leaning hardest on physical-book invariants rather than explicit guards.
+
+Six of its `cast_possible_truncation` sites (`usize` page/run indices
+narrowing to `u32`, in `solve()`'s traceback, `all_unmatched()` and
+`confidence()`) looked like exactly the case the zip-size fix above had just
+closed: clamp first, and let clippy's range analysis see it. It doesn't.
+`.min(u32::MAX as usize) as u32` gets none of the recognition
+`entry.size().min(MAX_ENTRY_CAPACITY_HINT) as usize` did — confirmed with a
+minimal repro outside this crate before touching the real file. **The clamp
+recognition clippy performs only fires when the cast's *source* is
+fixed-width** (`u32`, `u64`, …), not `usize`/`isize` — which is exactly why
+the zip-size fix worked (`entry.size()` is `u64`) and a direct `usize -> u32`
+clamp on a page index does not. The workaround that does satisfy the lint:
+widen to `u64` first, clamp there against a shared `MAX_U32_AS_U64` constant,
+then narrow — three operations recovering the one pattern clippy recognizes.
+
+That workaround was tried, and then rejected on its own terms rather than
+clippy's: `(i as u64).min(MAX_U32_AS_U64) as u32` silences the lint without
+changing any failure mode. The clamp cannot fire — `i` indexes a
+`&[PageHash]`, and reaching `u32::MAX` needs four billion of them — and if it
+somehow did fire, it would produce a wrong index just as silently as the
+truncating `as` it replaced, now spread across three operations instead of
+one. What replaced it: a single private helper, `page_index(usize) ->
+u32`, built on `u32::try_from(..).expect(..)`, with the invariant argued once
+in its own doc comment rather than at each of the seven call sites — an
+impossible value now panics loudly instead of wrapping silently, and no
+suppression is needed either, since there is no cast left for clippy to warn
+about. Measured against the pre-pilot baseline on `solve.rs` alone: the clamp
+idiom cost +41 lines, the helper +23.
+
+The same helper pattern (`slot_position`, `slot_position_signed`,
+`page_index` again for a different collection) then carried across
+`sidecar.rs`, `credits.rs`, `route.rs` and `slot.rs` — 19 more
+`cast_possible_truncation`/`cast_sign_loss` sites sharing the one invariant
+that a position, length or count drawn from `Edition::slots()` cannot
+approach `u32::MAX` — and the net across those four files ran the other way
+from the per-site `#[expect]`s it replaced: **-72 lines** (90 insertions, 162
+deletions across `taiyaku-core`), smaller than the suppressions it deleted,
+not merely no bigger. The same technique closed 11 of 13 sites in
+`taiyaku-serve` and 16 of 17 in `taiyaku-cli`; what stayed `#[expect]`ed in
+each case had a reason the helper couldn't reach — two `taiyaku-serve` sites
+trace to request-path data rather than an in-process invariant, and one
+`taiyaku-cli` site (`report.rs`'s `f32`-sourced offset) has no `TryFrom` to
+route through at all.
+
+## `cast_precision_loss`: all three routes measured, none apply
+
+Twenty-five `cast_precision_loss` sites survived the campaign above with
+their `#[expect]` intact — five of them in `solve.rs` alone, the file where
+the clamp-only-works-for-fixed-width-sources discovery above was made. This
+is the record of why no fix reaches them, checked route by route rather than
+assumed.
+
+**Clamping does nothing.** Unlike `cast_possible_truncation`,
+`cast_precision_loss` performs no range analysis at all — clamped or not,
+literal or const, a `.min()` in front of the cast is invisible to it. The
+`solve()` traceback casts (`i as f32`, `j as f32`) tried this first, for the
+same reason the `u32`-narrowing sites did, and it does not apply here even in
+principle: precision loss is a property of the *target* type's mantissa
+width, not a range clippy could bound away.
+
+**`try_from` does not apply.** There is no fallible integer-to-float
+conversion to reach for: `as f32`/`as f64` on an integer always succeeds — it
+rounds, it never errors — so there is no failure path for a
+`try_from`-shaped helper to `.expect()` against. The pattern that closed
+every `cast_possible_truncation` site above has nothing to attach to here.
+
+**The third route — Rust's lossless `From` impls** (`f64::from(u32/i32/u16/
+i16/u8/i8)`, `f32::from(u16/i16/u8/i8)`) **— was checked site by site and
+fails for all 25, in three distinct ways:**
+
+- 11 cast from `usize`: no `From<usize>` for either float type exists,
+  since `usize`'s width is platform-dependent, unlike `u32`'s.
+- 7 cast `u64` to `f64`: `u64` exceeds `f64`'s 52-bit mantissa.
+- 7 cast `u32` to `f32`: `f64::from(u32)` exists, but the target here is
+  `f32`, whose 24-bit mantissa is too narrow for `u32`'s full range.
+
+A null result, but a measured one rather than an assumed one: every
+`#[expect]` reason at these 25 sites now records that this third route was
+tried and why it doesn't apply — `solve.rs`'s `i_f32`/`j_f32` casts are two
+of them — closing the question for the next reader instead of leaving it
+looking untried.

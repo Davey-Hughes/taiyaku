@@ -250,12 +250,15 @@ impl Semaphore {
     /// Block until a permit is free, then hold it until the returned guard
     /// drops.
     fn acquire(&self) -> SemaphoreGuard<'_> {
-        let mut available = self.available.lock().unwrap_or_else(|e| e.into_inner());
+        let mut available = self
+            .available
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while *available == 0 {
             available = self
                 .released
                 .wait(available)
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         *available -= 1;
         SemaphoreGuard { semaphore: self }
@@ -273,7 +276,7 @@ impl Drop for SemaphoreGuard<'_> {
             .semaphore
             .available
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *available += 1;
         drop(available);
         self.semaphore.released.notify_one();
@@ -358,7 +361,7 @@ pub fn cached_or_generated(
     sha256: &str,
     page: impl FnOnce() -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {
-    at_path(cache_path(dir, sha256), dir, page, |bytes| {
+    at_path(&cache_path(dir, sha256), dir, page, |bytes| {
         thumbnail(&bytes)
     })
 }
@@ -370,7 +373,7 @@ pub fn cached_or_generated_thumb(
     offset: u32,
     page: impl FnOnce() -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {
-    at_path(thumb_cache_path(dir, sha256, offset), dir, page, |bytes| {
+    at_path(&thumb_cache_path(dir, sha256, offset), dir, page, |bytes| {
         thumbnail_at(&bytes, THUMB_LONG_EDGE)
     })
 }
@@ -389,12 +392,12 @@ pub fn cached_or_generated_thumb(
 /// unbounded decodes at `MAX_DECODE_ALLOC` each is what
 /// `MAX_CONCURRENT_GENERATIONS` exists to prevent.
 fn at_path(
-    path: PathBuf,
+    path: &Path,
     dir: &Path,
     page: impl FnOnce() -> Result<Vec<u8>, String>,
     generate: impl FnOnce(Vec<u8>) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {
-    if let Ok(found) = std::fs::read(&path) {
+    if let Ok(found) = std::fs::read(path) {
         return Ok(found);
     }
     let generated = {
@@ -410,7 +413,7 @@ fn at_path(
         // grid produces — each get their own file to write and rename,
         // rather than racing on one shared name, and it cleans up its own
         // temp file on a failed rename.
-        let _ = crate::atomic::write(&path, &generated, "jpg");
+        let _ = crate::atomic::write(path, &generated, "jpg");
     }
     Ok(generated)
 }
@@ -420,6 +423,18 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    /// A pixel channel value synthesized for a fixture image below.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `v` exceeds `u8::MAX`. It cannot at either call site: `real_page_bytes`
+    /// multiplies a coordinate `from_fn` bounds to `0..16` by 16, topping out at
+    /// `15 * 16 == 240`, and the aspect-ratio fixture below takes `x % 256` / `y %
+    /// 256`, always inside `0..256` by construction.
+    fn channel(v: u32) -> u8 {
+        u8::try_from(v).expect("channel value exceeds u8::MAX")
+    }
+
     /// A real, small, decodable page. The shared `test_support::work`
     /// fixture's "pages" are ASCII strings and cannot be decoded — that is by
     /// design (see `bytes_that_are_not_an_image_fail_by_name`) — so any test
@@ -427,7 +442,9 @@ mod tests {
     /// weakening that fixture.
     fn real_page_bytes() -> Vec<u8> {
         let page = image::RgbImage::from_fn(16, 16, |x, y| {
-            image::Rgb([(x * 16) as u8, (y * 16) as u8, 200])
+            let r = channel(x * 16);
+            let g = channel(y * 16);
+            image::Rgb([r, g, 200])
         });
         let mut encoded = std::io::Cursor::new(Vec::new());
         image::DynamicImage::ImageRgb8(page)
@@ -443,7 +460,9 @@ mod tests {
     fn a_cover_is_a_bounded_jpeg_whatever_the_page_was() {
         // A 900x1400 PNG, which is portrait like a manga page.
         let page = image::RgbImage::from_fn(900, 1400, |x, y| {
-            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+            let r = channel(x % 256);
+            let g = channel(y % 256);
+            image::Rgb([r, g, 128])
         });
         let mut encoded = std::io::Cursor::new(Vec::new());
         image::DynamicImage::ImageRgb8(page)
@@ -487,7 +506,7 @@ mod tests {
 
         assert_ne!(one, two);
         assert!(one.to_string_lossy().contains("abc123"));
-        assert!(one.extension().unwrap() == "jpg");
+        assert_eq!(one.extension().unwrap(), "jpg");
     }
 
     /// Important 2: content alone is not the whole cache key. `cache_path`'s

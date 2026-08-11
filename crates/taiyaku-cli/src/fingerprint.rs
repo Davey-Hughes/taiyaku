@@ -122,9 +122,10 @@ fn crop(page: &GrayImage, border: Border) -> GrayImage {
     let (w, h) = page.dimensions();
     let width = w.saturating_sub(border.left + border.right);
     let height = h.saturating_sub(border.top + border.bottom);
-    match width == 0 || height == 0 || (border == Border::default()) {
-        true => page.clone(),
-        false => image::imageops::crop_imm(page, border.left, border.top, width, height).to_image(),
+    if width == 0 || height == 0 || (border == Border::default()) {
+        page.clone()
+    } else {
+        image::imageops::crop_imm(page, border.left, border.top, width, height).to_image()
     }
 }
 
@@ -166,14 +167,15 @@ fn flat_border(page: &GrayImage) -> Border {
         bottom -= 1;
     }
 
-    match right <= left || bottom <= top {
-        true => Border::default(),
-        false => Border {
+    if right <= left || bottom <= top {
+        Border::default()
+    } else {
+        Border {
             left,
             right: w - 1 - right,
             top,
             bottom: h - 1 - bottom,
-        },
+        }
     }
 }
 
@@ -185,9 +187,10 @@ pub fn partition_by_size(sizes: &[usize]) -> (Vec<usize>, Vec<usize>) {
     let mut parallel = Vec::new();
     let mut alone = Vec::new();
     for (index, size) in sizes.iter().enumerate() {
-        match *size >= LARGE_PAGE_BYTES {
-            true => alone.push(index),
-            false => parallel.push(index),
+        if *size >= LARGE_PAGE_BYTES {
+            alone.push(index);
+        } else {
+            parallel.push(index);
         }
     }
     (parallel, alone)
@@ -318,12 +321,27 @@ pub(crate) fn hamming(a: PageHash, b: PageHash) -> u32 {
 mod tests {
     use super::*;
 
+    /// A pixel coordinate `GrayImage::from_fn` hands `ink`'s closure.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `v` exceeds `u16::MAX`. It cannot at `ink`'s call sites:
+    /// every `GrayImage::from_fn` call in this file passes a literal, small
+    /// width and height (the largest is 400x100, at the padded-page
+    /// fixture), so `v` is always under 400, far below `u16::MAX` — a
+    /// property of this file's fixtures, verified by inspection, not a
+    /// general bound on image dimensions.
+    fn coord16(v: u32) -> u16 {
+        u16::try_from(v).expect("pixel coordinate exceeds u16::MAX")
+    }
+
     /// Ink that varies both across the page and down it, so that no single line
     /// of it reads as flat. A fixture whose content is uniform down a column
     /// cannot tell a bar from artwork, which is the way these tests fail
     /// silently rather than loudly. Never reaches 255, so white stays white.
     fn ink(x: u32, y: u32) -> u8 {
-        40 + ((x as u16 * 7 + y as u16 * 31) % 180) as u8
+        40 + u8::try_from((coord16(x) * 7 + coord16(y) * 31) % 180)
+            .expect("value % 180 is always < 180, which fits u8")
     }
 
     /// A `Page` carrying `image` as encoded PNG, which is what the entry points

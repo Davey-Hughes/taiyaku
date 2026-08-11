@@ -79,6 +79,14 @@ pub struct Resolved {
 
 impl Binding {
     /// Parse a sidecar from its JSON text.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `json` does not parse as a taiyaku sidecar
+    /// document — see `Sidecar::from_json` in `taiyaku-core`. The message
+    /// names what failed to read (`"not a readable taiyaku.json"`) and the
+    /// line and column `serde_json` located the fault at, so a caller
+    /// handed a malformed `taiyaku.json` learns why rather than only that.
     pub fn from_json(json: &str) -> Result<Self, String> {
         Ok(Self {
             sidecar: Sidecar::from_json(json)?,
@@ -135,7 +143,27 @@ impl Binding {
     /// slot is the addressed unit everywhere else in the format.
     pub fn slot_count(&self, edition: &str) -> Option<u32> {
         let reading = self.sidecar.work.reading;
-        Some(self.sidecar.editions.get(edition)?.slots(reading).len() as u32)
+        let count = self.sidecar.editions.get(edition)?.slots(reading).len();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "count is at most twice the edition's page count (crate::expand's \
+                      flat_map in taiyaku-core/src/slot.rs emits at most two Slots per page), \
+                      and a page count is bounded by what a book can physically contain, far \
+                      below u32::MAX. Tried taiyaku-core::solve's page_index pattern — a named \
+                      helper that panics on the impossible case — and rejected it here: this \
+                      crate compiles to wasm32-unknown-unknown and is loaded by a JS caller, \
+                      where a panic is a trap that poisons the whole module rather than an \
+                      ordinary Rust unwind. Unlike page_index's PageHash slices, `count` \
+                      traces back through a JS-supplied taiyaku.json's declared per-member \
+                      `pages` field (Sidecar::total_pages, taiyaku-core/src/sidecar.rs) — data \
+                      this binding cannot treat as a trusted in-process invariant the way \
+                      page_index's caller can. A JsError would fix that, but slot_count's \
+                      signature is Option<u32> end to end, here and in WasmSidecar::slot_count \
+                      (lib.rs), and widening it to Result<_, JsError> for an unreachable case \
+                      is an API change outside a behaviour-preserving cleanup."
+        )]
+        let count = count as u32;
+        Some(count)
     }
 
     /// The `(page, half)` pair at a flat slot index, or `None` for an unknown
@@ -171,7 +199,25 @@ impl Binding {
             .slots(reading)
             .iter()
             .position(|candidate| *candidate == slot)
-            .map(|found| found as u32)
+            .map(|found| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "found is a position within edition.slots(reading), at most \
+                              twice the edition's page count (crate::expand's flat_map in \
+                              taiyaku-core/src/slot.rs emits at most two Slots per page), and \
+                              a page count is bounded by what a book can physically contain, \
+                              far below u32::MAX. Same reasoning, and the same rejection of \
+                              slot_count's page_index-style helper above, applies here: this \
+                              crate is wasm32-unknown-unknown and JS-loaded, so a panic traps \
+                              the module rather than unwinding; `found`'s bound traces through \
+                              a JS-supplied taiyaku.json's declared `pages` fields, not a \
+                              trusted in-process computation; and index_of's signature is \
+                              Option<u32> throughout, so a JsError would need a scope-widening \
+                              API change this cleanup does not make."
+                )]
+                let found = found as u32;
+                found
+            })
     }
 
     /// Resolve one slot of `from` into `to`.

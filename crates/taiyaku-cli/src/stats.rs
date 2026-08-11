@@ -21,10 +21,7 @@ pub fn calibration_line(cal: Option<&Calibration>, a_len: usize, b_len: usize) -
             cal.separation(),
             cal.margin,
             cal.floor,
-            match cal.accepted() {
-                true => "yes",
-                false => "no",
-            }
+            if cal.accepted() { "yes" } else { "no" }
         ),
     }
 }
@@ -37,6 +34,16 @@ pub fn calibration_line(cal: Option<&Calibration>, a_len: usize, b_len: usize) -
 /// runs-per-page scale.
 pub fn shape_line(runs: &[Run], a_len: usize) -> String {
     let paired = taiyaku_core::paired_slots(runs);
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "runs.len() and a_len count alignment runs and pages for one pairing; real \
+                  editions run to at most a few hundred pages and runs, far below f32's 2^24 \
+                  exact-integer bound, so the conversion loses no precision — a \
+                  property of the material, not enforced by the type (both are usize with no \
+                  cap). The lossless-From route is closed too: both are usize, and std has \
+                  no From<usize> for f32 — usize's width is platform-dependent, \
+                  unlike u32/u16/u8, so no such impl exists."
+    )]
     let per_hundred = 100.0 * runs.len() as f32 / a_len.max(1) as f32;
     let call = match verdict(runs, a_len) {
         Verdict::Refused => "Refused",

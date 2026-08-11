@@ -1,5 +1,6 @@
 //! HTTP. Everything interesting happens below this file.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use axum::{
@@ -221,7 +222,10 @@ pub(crate) fn sidecar_etag(sidecar: &taiyaku_core::Sidecar) -> String {
     let mut hasher = Sha256::new();
     hasher.update(sidecar.to_json().as_bytes());
     let digest = hasher.finalize();
-    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    let hex = digest.iter().fold(String::new(), |mut hex, b| {
+        let _ = write!(hex, "{b:02x}");
+        hex
+    });
     format!("\"{hex}\"")
 }
 
@@ -236,7 +240,10 @@ pub(crate) fn notes_etag(json: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(json.as_bytes());
     let digest = hasher.finalize();
-    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    let hex = digest.iter().fold(String::new(), |mut hex, b| {
+        let _ = write!(hex, "{b:02x}");
+        hex
+    });
     format!("\"{hex}\"")
 }
 
@@ -761,6 +768,18 @@ async fn put_progress(
         // was reached, and an edition that joins spreads has more slots than
         // pages. Checking against `total_pages()` would refuse the last slot
         // of every such edition — One Piece v092 is spreads throughout.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "edition.slots(reading).len() is at most twice the edition's page count \
+                      (crate::expand's flat_map in taiyaku-core/src/slot.rs emits at most two \
+                      Slots per page), and a page count is bounded by what a book can \
+                      physically contain, far below u32::MAX. Kept as an #[expect] rather \
+                      than a try_from().expect() helper: this runs inside a progress-write \
+                      request handler against a sidecar, which a re-solve or a hand edit can \
+                      change, not an in-process invariant — adding a panic here would trade a \
+                      truncation that cannot happen for a request failure that, however \
+                      unlikely, could."
+        )]
         let slots = edition.slots(sidecar.work.reading).len() as u32;
         if progress.slot >= slots {
             return Err(NoProgress::NotFound(format!(
@@ -834,15 +853,43 @@ struct Correction {
     /// status table left `{"from":…,"to":…,"a":"2"}` answering `200` and
     /// unpairing the slot.
     ///
-    /// The two `Option`s are what separate the cases: the outer one is
-    /// "present or not", filled by `#[serde(default)]` only when the key is
-    /// absent, and the inner one is "a slot or `null`". `present` is what
-    /// forces the wrapper past a plain `Option`'s null-absorbing
-    /// `Deserialize`.
+    /// `Pairing` is what the *present* value means; the outer `Option` here is
+    /// still "present or not", filled by `#[serde(default)]` only when the key
+    /// is absent. `present` still has to force the wrapper past a plain
+    /// `Option`'s null-absorbing `Deserialize` — that absorption is exactly
+    /// what would make `"b": null` and an absent `b` indistinguishable again,
+    /// now one level up: measured the same way, `Option<Pairing>` without
+    /// `deserialize_with` answers `an_explicit_null_unpairs_the_slot`'s `"b":
+    /// null` with the *absent-b* refusal, because `Option<Pairing>::deserialize`
+    /// consumes the `null` and reports `None` before `Pairing::deserialize`
+    /// ever runs.
     #[serde(default, deserialize_with = "present")]
-    b: Option<Option<String>>,
+    b: Option<Pairing>,
     #[serde(default)]
     note: Option<String>,
+}
+
+/// What a present `b` asks for: `null` versus a slot. `Correction::b`'s outer
+/// `Option` is presence, filled by `#[serde(default)]`; this is the other
+/// axis, the one that used to be a second, anonymous `Option`.
+#[derive(Debug)]
+enum Pairing {
+    /// `"b": null` — unpair `a`.
+    Unpair,
+    /// `"b": "4R"` — pair `a` with this slot.
+    To(String),
+}
+
+impl<'de> serde::Deserialize<'de> for Pairing {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match Option::<String>::deserialize(deserializer)? {
+            None => Pairing::Unpair,
+            Some(slot) => Pairing::To(slot),
+        })
+    }
 }
 
 /// Deserialize a value that may be `null` into `Some`, so a *missing* key stays
@@ -910,11 +957,11 @@ async fn patch_alignments(
         Ok(slot) => slot,
         Err(refusal) => return refusal,
     };
-    // The outer `Option` is presence, the inner one is `null`. Absence is
-    // refused here rather than in the derive, so the message names the field
-    // and says what the two spellings mean — serde's own "missing field `b`"
-    // would not say that an unpairing has to be asked for explicitly.
-    let Some(b) = correction.b else {
+    // Absence is refused here rather than in the derive, so the message names
+    // the field and says what the two spellings mean — serde's own "missing
+    // field `b`" would not say that an unpairing has to be asked for
+    // explicitly.
+    let Some(pairing) = correction.b else {
         return bad_request(
             "a correction needs `b`: a slot of the target edition, or `null` to say this slot \
              pairs with nothing. Leaving it out is refused, because an unpairing is an edit and \
@@ -922,10 +969,12 @@ async fn patch_alignments(
                 .to_string(),
         );
     };
-    let b = match b.as_deref().map(|text| one_slot(text, "b")) {
-        Some(Ok(slot)) => Some(slot),
-        Some(Err(refusal)) => return refusal,
-        None => None,
+    let b = match pairing {
+        Pairing::Unpair => None,
+        Pairing::To(text) => match one_slot(&text, "b") {
+            Ok(slot) => Some(slot),
+            Err(refusal) => return refusal,
+        },
     };
 
     // Serialising, hashing and writing all block, and the read-modify-write
@@ -965,10 +1014,12 @@ async fn patch_alignments(
                     &correction.to,
                     a,
                     b,
-                    correction.note.clone(),
+                    correction.note.as_deref(),
                 )
                 .map_err(|why| {
-                    use taiyaku_core::NotCorrected::*;
+                    use taiyaku_core::NotCorrected::{
+                        NoPath, NoSuchEdition, NoSuchSlot, SameEdition, Unreadable,
+                    };
                     let status = match why {
                         NoSuchEdition(_) | NoSuchSlot(_) | NoPath(_) => StatusCode::NOT_FOUND,
                         SameEdition(_) => StatusCode::BAD_REQUEST,
@@ -1049,8 +1100,10 @@ pub fn build_router(state: Arc<ServeState>) -> Router {
                     let path = request
                         .uri()
                         .path_and_query()
-                        .map(|pq| pq.as_str())
-                        .unwrap_or_else(|| request.uri().path())
+                        .map_or_else(
+                            || request.uri().path(),
+                            axum::http::uri::PathAndQuery::as_str,
+                        )
                         .to_string();
                     // Read here, before the request is consumed: by the time
                     // a response exists, what it was asked with is gone.
@@ -2418,10 +2471,10 @@ mod tests {
             "taiyaku-test-routes-correct-stale",
         ));
         let router = build_router(state.clone());
-        let stale = etag_of(&router, "/api/works/t").await;
+        let stale_etag = etag_of(&router, "/api/works/t").await;
         correct(
             &router,
-            &stale,
+            &stale_etag,
             r#"{"from":"raw","to":"en","a":"2","b":"1"}"#,
         )
         .await;
@@ -2429,7 +2482,7 @@ mod tests {
         let (second, message) = correct_with_body(
             &router,
             "t",
-            &stale,
+            &stale_etag,
             r#"{"from":"raw","to":"en","a":"3","b":"0"}"#,
         )
         .await;
@@ -2860,8 +2913,9 @@ mod tests {
         let (unconditional, _) = write_notes(&app, None, one_note("01J8", "first")).await;
         assert_eq!(unconditional, StatusCode::PRECONDITION_REQUIRED);
 
-        let (stale, _) = write_notes(&app, Some("\"nonsense\""), one_note("01J8", "first")).await;
-        assert_eq!(stale, StatusCode::PRECONDITION_FAILED);
+        let (stale_status, _) =
+            write_notes(&app, Some("\"nonsense\""), one_note("01J8", "first")).await;
+        assert_eq!(stale_status, StatusCode::PRECONDITION_FAILED);
 
         let tag = etag_of(&app, "/api/works/t/notes").await;
         let (written, _) = write_notes(&app, Some(&tag), one_note("01J8", "first")).await;
@@ -3009,7 +3063,7 @@ mod tests {
             let (a, b) = (first.await.unwrap(), second.await.unwrap());
 
             let mut statuses = [a.0, b.0];
-            statuses.sort_by_key(|s| s.as_u16());
+            statuses.sort_by_key(StatusCode::as_u16);
             if statuses != [StatusCode::OK, StatusCode::PRECONDITION_FAILED] {
                 crate::test_support::cleanup("taiyaku-test-notes-concurrent");
                 panic!(

@@ -58,9 +58,10 @@ fn unusable(value: &str, is_dir: bool) -> Option<String> {
     if is_dir {
         return None;
     }
-    let cwd = std::env::current_dir()
-        .map(|d| d.display().to_string())
-        .unwrap_or_else(|_| "the working directory".to_string());
+    let cwd = std::env::current_dir().map_or_else(
+        |_| "the working directory".to_string(),
+        |d| d.display().to_string(),
+    );
     Some(format!(
         "TAIYAKU_CORPUS={value} is not a directory from {cwd}.\n\
          cargo runs each package's tests with that package's own directory as \
@@ -109,10 +110,23 @@ pub(crate) fn members(dir: &Path) -> Vec<String> {
                 .then(|| path.to_string_lossy().to_string())
         })
         .collect();
-    match archives.is_empty() {
-        true => vec![dir.to_string_lossy().to_string()],
-        false => archives,
+    if archives.is_empty() {
+        vec![dir.to_string_lossy().to_string()]
+    } else {
+        archives
     }
+}
+
+/// A slot index, as `counterpart` takes it.
+///
+/// # Panics
+///
+/// Panics if `i` exceeds `u32::MAX`. It cannot at this test's one call site:
+/// `i` comes from `.enumerate()` over `from_slots`, one entry per slot of a
+/// real scanned volume under `TAIYAKU_CORPUS`; volumes here run to a few
+/// hundred pages, nowhere near `u32::MAX`.
+fn slot_index(i: usize) -> u32 {
+    u32::try_from(i).expect("slot index exceeds u32::MAX")
 }
 
 /// Build the five-edition Go-Toubun document through the merge path, then check
@@ -123,6 +137,18 @@ pub(crate) fn members(dir: &Path) -> Vec<String> {
 /// hub-and-spoke carried, and it must be zero. Loss is expected and safe: the
 /// reader sees "no counterpart" rather than the wrong page.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one measurement in three necessary parts — build the five-edition document \
+              through align's own hub-and-spoke merge path, fingerprint every spoke, then \
+              compare every spoke-to-spoke composed lookup against a direct solve — and the \
+              claim this test makes (`disagree == 0`) is only true of all three run together. \
+              Splitting the comparison loop out would need `sidecar`, `fingerprints`, `spokes` \
+              and the four running counters passed across the boundary for no reduction in \
+              what a reader has to hold at once; the doc comments on the blank-page skip and \
+              the half-slot skip inside the loop explain choices specific to this comparison, \
+              not general-purpose helpers worth naming on their own."
+)]
 fn composing_through_the_hub_agrees_with_a_direct_solve() {
     let Some(root) = corpus() else {
         eprintln!("TAIYAKU_CORPUS unset; skipping");
@@ -219,7 +245,7 @@ fn composing_through_the_hub_agrees_with_a_direct_solve() {
                     continue;
                 }
                 compared += 1;
-                let expected = counterpart(&direct, index as u32)
+                let expected = counterpart(&direct, slot_index(index))
                     .and_then(|i| to_slots.get(i as usize))
                     .copied();
                 let got: Option<Slot> = route.resolve(slot.page);
@@ -242,12 +268,12 @@ fn composing_through_the_hub_agrees_with_a_direct_solve() {
         }
     }
 
-    let loss_rate = loss as f64 / compared as f64;
+    let loss_rate = f64::from(loss) / f64::from(compared);
     eprintln!(
         "{compared} page comparisons | loss {:.2}% | disagreement {:.2}% \
          | {blank} blank pages not compared",
         100.0 * loss_rate,
-        100.0 * disagree as f64 / compared as f64
+        100.0 * f64::from(disagree) / f64::from(compared)
     );
     assert_eq!(
         disagree, 0,

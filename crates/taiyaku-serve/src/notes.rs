@@ -117,6 +117,21 @@ fn same_anchor(a: &Note, b: &Note) -> bool {
 /// something that quietly bricks their notes. What is still refused is a
 /// *new* bad anchor, and moving an existing note onto one — the cases where
 /// this write is what makes the anchor wrong.
+///
+/// # Errors
+///
+/// Returns `Invalid::Refused` (a 400's shape) if `notes.work` does not match
+/// `work.id`, if two notes in the document share an `id`, if a note's colour
+/// is not lowercase ASCII letters, digits and dashes of at most 24
+/// characters, or if a note's region strays outside `0..1` of its slot by
+/// more than floating-point slack.
+///
+/// Returns `Invalid::Missing` (a 404's shape) if a note's anchor — its
+/// `edition` and `slot` — is new or has moved, and names an edition `work`
+/// does not have, or a slot at or past that edition's slot count. An anchor
+/// already present, unmoved, in `stored` is exempt from that edition/slot
+/// check, which is what keeps a re-solve that invalidates an untouched
+/// note's anchor from refusing every write on the work thereafter.
 pub fn validate(notes: &Notes, work: &Work, stored: &Notes) -> Result<(), Invalid> {
     if notes.work != work.id {
         return Err(Invalid::Refused(format!(
@@ -155,6 +170,19 @@ pub fn validate(notes: &Notes, work: &Work, stored: &Notes) -> Result<(), Invali
             // Slots, not pages: a joined spread is one page and two slots, and
             // a note on one half must not be refused because the page count is
             // smaller. O3 established this on progress, for the same reason.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "edition.slots(reading).len() is at most twice the edition's page \
+                          count (crate::expand's flat_map in taiyaku-core/src/slot.rs emits \
+                          at most two Slots per page), and a page count is bounded by what a \
+                          book can physically contain, far below u32::MAX. Kept as an \
+                          #[expect] rather than a try_from().expect() helper: this runs on \
+                          the write path of a client-supplied notes document against a \
+                          sidecar, which a re-solve or a hand edit can change, not an \
+                          in-process invariant — adding a panic here would trade a truncation \
+                          that cannot happen for a request failure that, however unlikely, \
+                          could."
+            )]
             let slots = edition.slots(sidecar.work.reading).len() as u32;
             if note.slot >= slots {
                 return Err(Invalid::Missing(format!(
@@ -219,6 +247,7 @@ pub fn notes_path(work: &Work) -> PathBuf {
 /// The route hands this back where no file exists, so a client that has never
 /// seen a document still gets one — and, with it, the `ETag` its first write
 /// has to be conditional on.
+#[must_use]
 pub fn empty(id: &str) -> Notes {
     Notes {
         work: id.to_string(),
@@ -232,11 +261,33 @@ pub fn empty(id: &str) -> Notes {
 /// that body, so a validator can never be computed over bytes a client was not
 /// sent — the failure mode that would make a conditional write silently
 /// unconditional.
+///
+/// # Errors
+///
+/// Returns an error if serialising `notes` to JSON fails. In practice it
+/// cannot: `Notes`, `Note` and `Region` carry no hand-written `Serialize`
+/// impl, and the only way `serde_json` returns `Err` from `to_string_pretty`
+/// is a non-finite float used as a **map key** — `Region`'s `x`, `y`, `w` and
+/// `h` are struct values, never a key, so that path is not reachable here.
+/// Confirmed directly against this workspace's `serde_json 1.0.151`:
+/// serialising a `Region { x: f64::NAN, y: f64::INFINITY, .. }` as a field
+/// returns `Ok`, writing JSON `null`, not `Err`. The `Result` return stays
+/// because the signature already commits to it, not because the `Err` arm is
+/// reachable.
 pub fn to_json(notes: &Notes) -> Result<String, String> {
     serde_json::to_string_pretty(notes).map_err(|e| format!("serialising notes: {e}"))
 }
 
 /// What is stored, or `None` where nothing ever was.
+///
+/// # Errors
+///
+/// Returns an error if the notes file exists but its contents are not valid
+/// JSON for `Notes` — including a field this build does not recognise, since
+/// `Notes` and `Note` both deny unknown fields — or if reading it fails for
+/// any reason other than the file simply not existing, such as a permission
+/// refusal or a directory sitting where the file should. A missing file is
+/// not an error: it is `Ok(None)`.
 pub fn load(work: &Work) -> Result<Option<Notes>, String> {
     let path = notes_path(work);
     match std::fs::read_to_string(&path) {
@@ -254,6 +305,12 @@ pub fn load(work: &Work) -> Result<Option<Notes>, String> {
 /// notes file holds prose a person typed, so a crash mid-write truncating it
 /// destroys work that cannot be recomputed from anything, where a truncated
 /// position merely loses a page number.
+///
+/// # Errors
+///
+/// Returns an error if `to_json` fails to serialise `notes` (see its own
+/// `# Errors`), or if writing the result to `notes_path(work)` fails — see
+/// `atomic::write` for the two ways that can happen.
 pub fn store(work: &Work, notes: &Notes) -> Result<(), String> {
     let path = notes_path(work);
     let text = to_json(notes)?;

@@ -58,6 +58,14 @@ pub struct WasmChapter {
 #[wasm_bindgen]
 impl WasmSidecar {
     /// Parse a sidecar from its JSON text, throwing on malformed input.
+    ///
+    /// # Errors
+    ///
+    /// Throws (as a JS `Error`, via `JsError`) if `json` does not parse as a
+    /// taiyaku sidecar document — the same condition `Binding::from_json`
+    /// reports. The thrown message names what failed to read and the line
+    /// and column the parser found the fault at, so a JS caller handed a
+    /// malformed `taiyaku.json` sees why rather than a bare failure.
     #[wasm_bindgen(js_name = fromJson)]
     pub fn from_json(json: &str) -> Result<WasmSidecar, JsError> {
         binding::Binding::from_json(json)
@@ -79,7 +87,27 @@ impl WasmSidecar {
 
     /// Resolve one slot of `from` into `to`, or `undefined` when there is no
     /// counterpart, no path, or no such edition.
+    ///
+    /// # Errors
+    ///
+    /// Throws if `half` is present but is neither `"L"` nor `"R"` — the
+    /// thrown message names the string it received and the two values it
+    /// accepts. An unknown `from`/`to` edition, no path between them, or a
+    /// slot with no counterpart is not an error: each resolves to
+    /// `undefined`, as the doc above says.
     #[wasm_bindgen(js_name = resolveSlot)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "half: &str does not compile here: #[wasm_bindgen] on this impl block \
+                  expands resolveSlot's Option<T> parameter through wasm_bindgen::convert:: \
+                  OptionFromWasmAbi, which is implemented for String (see wasm-bindgen \
+                  0.2.126, src/convert/slices.rs) but not for &str. Tried Option<&str> \
+                  directly: `cargo clippy -p taiyaku-wasm --all-targets` fails E0277, \"the \
+                  trait bound `&str: wasm_bindgen::convert::OptionFromWasmAbi` is not \
+                  satisfied\", on the native (non-wasm32) lib and lib-test targets — the \
+                  wasm32-unknown-unknown build alone does not surface it, which is why this \
+                  needs checking against --all-targets specifically."
+    )]
     pub fn resolve_slot(
         &self,
         from: &str,
@@ -105,7 +133,21 @@ impl WasmSidecar {
     }
 
     /// The flat slot index of a page and half, or `undefined`.
+    ///
+    /// # Errors
+    ///
+    /// Throws if `half` is present but is neither `"L"` nor `"R"` — the same
+    /// condition and message as `resolve_slot` (`resolveSlot` in JS). An
+    /// unknown `edition`, or a `(page, half)` the edition does not present,
+    /// is not an error: it answers `undefined`.
     #[wasm_bindgen(js_name = indexOf)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "half: &str does not compile here, for the same reason as resolveSlot above: \
+                  wasm_bindgen::convert::OptionFromWasmAbi is implemented for String, not \
+                  &str, so #[wasm_bindgen] on this impl block fails E0277 on the native \
+                  (non-wasm32) targets with Option<&str>. Verified by trying it."
+    )]
     pub fn index_of(
         &self,
         edition: &str,
@@ -127,10 +169,41 @@ impl WasmSidecar {
     /// Which chapter a flat slot index falls in, or `undefined`.
     #[wasm_bindgen(js_name = chapterAt)]
     pub fn chapter_at(&self, edition: &str, index: u32) -> Option<WasmChapter> {
-        self.inner.chapter_at(edition, index).map(|at| WasmChapter {
-            member: at.member as u32,
-            of: at.of as u32,
-            path: at.path,
+        self.inner.chapter_at(edition, index).map(|at| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "at.member is a member index bounded by edition.members.len() \
+                          (ChapterAt::member, taiyaku-core/src/sidecar.rs) — how many files a \
+                          release group split a volume into, nowhere near u32::MAX. Tried \
+                          taiyaku-core::solve's page_index pattern — a named helper that \
+                          panics on the impossible case — and rejected it here: this crate \
+                          compiles to wasm32-unknown-unknown and is loaded by a JS caller, \
+                          where a panic is a trap that poisons the whole module rather than \
+                          an ordinary Rust unwind, and edition.members.len() is a JS-supplied \
+                          taiyaku.json's own member-array length, not data this shell can \
+                          treat as a trusted in-process invariant. A JsError would fix that, \
+                          but chapter_at returns Option<WasmChapter> end to end (here and in \
+                          Binding::chapter_at, binding.rs), and widening it to \
+                          Result<_, JsError> for an unreachable case is an API change outside \
+                          a behaviour-preserving cleanup."
+            )]
+            let member = at.member as u32;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "at.of is edition.members.len() itself (ChapterAt::of, \
+                          taiyaku-core/src/sidecar.rs) — the same bounded member count as \
+                          at.member above, and the same rejection of a page_index-style \
+                          helper applies: a panic here would be a wasm trap over data that \
+                          traces back to a JS-supplied taiyaku.json, and chapter_at's \
+                          Option<WasmChapter> signature would need to become fallible to \
+                          report it any other way."
+            )]
+            let of = at.of as u32;
+            WasmChapter {
+                member,
+                of,
+                path: at.path,
+            }
         })
     }
 }

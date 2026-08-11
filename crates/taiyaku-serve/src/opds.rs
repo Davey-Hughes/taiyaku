@@ -11,6 +11,7 @@
 //! small and fixed, and the only hard part is escaping — which has its own
 //! test, because this corpus holds titles with `&` and `♡` in them.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use axum::{
@@ -130,16 +131,16 @@ async fn works(State(state): State<Arc<ServeState>>) -> Response {
         // depend on a guarantee made in another module.
         let href_id = escape(&percent_encode(&work.id));
         let count = sidecar.editions.len();
-        entries.push_str(&format!(
+        let _ = writeln!(
+            entries,
             r#"  <entry>
     <id>taiyaku:work:{id}</id>
     <title>{title}</title>
     <updated>1970-01-01T00:00:00Z</updated>
     <content type="text">{count} editions</content>
     <link rel="subsection" type="{ATOM};kind=acquisition" href="/opds/v1.2/works/{href_id}"/>
-  </entry>
-"#
-        ));
+  </entry>"#
+        );
     }
     feed(format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -198,7 +199,8 @@ async fn work_feed(State(state): State<Arc<ServeState>>, AxPath(id): AxPath<Stri
         // pages here, which only works because pages are addressed by flat
         // index rather than by member and entry.
         let pages = edition.total_pages();
-        entries.push_str(&format!(
+        let _ = writeln!(
+            entries,
             r#"  <entry>
     <id>taiyaku:edition:{work_id}:{key_x}</id>
     <title>{title} — {label}</title>
@@ -211,9 +213,8 @@ async fn work_feed(State(state): State<Arc<ServeState>>, AxPath(id): AxPath<Stri
     <link rel="http://vaemendis.net/opds-pse/stream" type="image/jpeg"
           href="/opds/v1.2/works/{work_href}/{key_href}/pages/{{pageNumber}}"
           pse:count="{pages}"/>
-  </entry>
-"#
-        ));
+  </entry>"#
+        );
     }
 
     (
@@ -918,7 +919,7 @@ mod tests {
         let state = Arc::new(crate::test_support::state("taiyaku-test-opds-author"));
         let app = routes().with_state(state);
 
-        let works_body = body_of(
+        let all_works_feed_body = body_of(
             app.clone()
                 .oneshot(
                     Request::get("/opds/v1.2/works")
@@ -929,7 +930,7 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        let work_body = body_of(
+        let single_work_feed_body = body_of(
             app.oneshot(
                 Request::get("/opds/v1.2/works/t")
                     .body(Body::empty())
@@ -942,12 +943,12 @@ mod tests {
 
         crate::test_support::cleanup("taiyaku-test-opds-author");
         assert!(
-            works_body.contains("<author><name>taiyaku</name></author>"),
-            "the works feed must declare an author: {works_body}"
+            all_works_feed_body.contains("<author><name>taiyaku</name></author>"),
+            "the works feed must declare an author: {all_works_feed_body}"
         );
         assert!(
-            work_body.contains("<author><name>taiyaku</name></author>"),
-            "the work feed must declare an author: {work_body}"
+            single_work_feed_body.contains("<author><name>taiyaku</name></author>"),
+            "the work feed must declare an author: {single_work_feed_body}"
         );
     }
 
@@ -1091,6 +1092,18 @@ mod tests {
         );
     }
 
+    /// A pixel channel value synthesized for `work_with_a_pageless_first_member`
+    /// below.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `v` exceeds `u8::MAX`. It cannot: the caller multiplies a
+    /// coordinate `from_fn` bounds to `0..16` by 16, topping out at `15 * 16
+    /// == 240`.
+    fn channel(v: u32) -> u8 {
+        u8::try_from(v).expect("channel value exceeds u8::MAX")
+    }
+
     /// A work whose "raw" edition's first member is declared with zero
     /// pages — physically present on disk with real content, but stepped
     /// over by `Edition::locate` purely on the recorded page count, exactly
@@ -1106,7 +1119,9 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         let page = image::RgbImage::from_fn(16, 16, |x, y| {
-            image::Rgb([(x * 16) as u8, (y * 16) as u8, 200])
+            let r = channel(x * 16);
+            let g = channel(y * 16);
+            image::Rgb([r, g, 200])
         });
         let mut real_image = std::io::Cursor::new(Vec::new());
         image::DynamicImage::ImageRgb8(page)

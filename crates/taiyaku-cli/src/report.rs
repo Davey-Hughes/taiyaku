@@ -6,6 +6,8 @@
 //! are two plates out of registration, and each row's gutter carries a gauge
 //! that reads as aligned or visibly offset.
 
+use std::fmt::Write as _;
+
 use image::DynamicImage;
 use rayon::prelude::*;
 use taiyaku_core::{PageConfidence, PageHash};
@@ -49,11 +51,32 @@ fn verdict(score: &PageConfidence) -> (&'static str, &'static str) {
     }
 }
 
+/// A thumbnail dimension in pixels, as `thumbnail`'s resize takes it.
+///
+/// # Panics
+///
+/// Panics if `v` exceeds `u32::MAX`. It cannot at `thumbnail`'s one call
+/// site: `width` is always a small fixed value (`THUMB_WIDTH` (130) is the
+/// only width production code passes — main.rs's two `report::prepare`
+/// calls — and the two test calls pass 100 and 32, confirmed by `grep -rn
+/// 'thumbnail(' crates/`, no caller passes anything else), and
+/// `page.height()`/`page.width()` come from real decoded page images, whose
+/// dimensions in this tool's corpus run to at most a few thousand pixels per
+/// side. `width * page.height() / page.width().max(1)` stays far inside
+/// u32's range — a property of the material this tool decodes, not enforced
+/// by the code. Check both claims if a caller passing a different width is
+/// ever added.
+fn thumb_dimension(v: u64) -> u32 {
+    u32::try_from(v).expect("thumbnail dimension exceeds u32::MAX")
+}
+
 /// Encode a page as a thumbnail in a `data:` URI.
 pub fn thumbnail(page: &DynamicImage, width: u32) -> Result<String, String> {
     use base64::Engine;
 
-    let height = ((width as u64 * page.height() as u64) / page.width().max(1) as u64).max(1) as u32;
+    let height = thumb_dimension(
+        ((u64::from(width) * u64::from(page.height())) / u64::from(page.width().max(1))).max(1),
+    );
     let small = page.resize_exact(width, height, image::imageops::FilterType::Triangle);
 
     let mut jpeg = Vec::new();
@@ -81,30 +104,36 @@ pub fn render(
 ) -> String {
     let paired = scored.iter().filter(|s| s.counterpart.is_some()).count();
     let weak = scored.iter().filter(|s| verdict(s).0 == "weak").count();
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "run_count and scored.len() count runs and pages for this report; real \
+                  editions run to at most a few hundred pages and runs, far below f64's 2^53 \
+                  exact-integer bound, so the conversion loses no precision — a property of \
+                  the material (both are usize with no cap; no From<usize> for f64 exists, \
+                  since usize's width is platform-dependent)."
+    )]
     let per_hundred = 100.0 * run_count as f64 / scored.len().max(1) as f64;
 
     let mut strip = String::new();
     for score in scored {
-        strip.push_str(&format!(
+        let _ = write!(
+            strip,
             "<a class=\"tick {}\" href=\"#p{}\" title=\"page {} — {}\"></a>",
             verdict(score).0,
             score.page,
             score.page,
             verdict(score).1
-        ));
+        );
     }
 
     let mut rows = String::new();
     for score in scored {
         let (state, label) = verdict(score);
-        let a_thumb = a_thumbs
-            .get(score.page as usize)
-            .map(String::as_str)
-            .unwrap_or("");
+        let a_thumb = a_thumbs.get(score.page as usize).map_or("", String::as_str);
         let facing = match score.counterpart {
             Some(j) => format!(
                 "<div class=\"plate\"><img src=\"{}\" alt=\"edition B page {j}\" loading=\"lazy\"><span class=\"num b\">{j}</span></div>",
-                b_thumbs.get(j as usize).map(String::as_str).unwrap_or("")
+                b_thumbs.get(j as usize).map_or("", String::as_str)
             ),
             None => "<div class=\"plate empty\"></div>".to_string(),
         };
@@ -114,6 +143,15 @@ pub fn render(
         // the difference between a firm pairing and an ambiguous one has to be
         // obvious in peripheral vision while scrolling, or the gauge is
         // decoration.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "score.margin.clamp(0.0, MARGIN_FIRM) bounds the clamped value to \
+                      [0.0, MARGIN_FIRM] right here, so (MARGIN_FIRM - clamped) / MARGIN_FIRM \
+                      is in [0.0, 1.0] and the rounded result of that times 16.0 is an integer \
+                      in 0..=16, well inside i32's range — enforced by the .clamp call \
+                      on this same line. A try_from helper does not fit: the source is f32, \
+                      which TryFrom does not convert from."
+        )]
         let offset = (((MARGIN_FIRM - score.margin.clamp(0.0, MARGIN_FIRM)) / MARGIN_FIRM) * 16.0)
             .round() as i32;
         // Only say something when there is something to say. A firm pairing
@@ -136,15 +174,15 @@ pub fn render(
                 score.similarity
             ),
         };
-        rows.push_str(&format!(
+        let _ = writeln!(
+            rows,
             r#"<article class="pair {state}" id="p{page}">
 <div class="plate"><img src="{a_thumb}" alt="edition A page {page}" loading="lazy"><span class="num a">{page}</span></div>
 <div class="gutter" style="--offset:{offset}px"><span class="gauge"></span>{note}{readout}</div>
 {facing}
-</article>
-"#,
+</article>"#,
             page = score.page,
-        ));
+        );
     }
 
     format!(

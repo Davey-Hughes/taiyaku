@@ -45,6 +45,37 @@ pub struct UnpairedRun {
 /// A page counts as unpaired only when **every** slot it presents is unpaired.
 /// A joined spread whose halves are half-reached is content the other edition
 /// partly has, and no credits card is half of a spread.
+///
+/// # Errors
+///
+/// Returns an error if `edition` names an edition the document does not
+/// define, or if no stored alignment joins `edition` and `against` in either
+/// direction. It also propagates `Sidecar::runs_of`'s errors for the
+/// alignment it finds: `alignment.from` or `alignment.to` naming an edition
+/// this document no longer defines, a span whose slot does not exist in
+/// either edition, a span with its endpoints reversed, or two paired spans
+/// that cover different numbers of slots — all signs of a hand-edited
+/// alignment the document can no longer read. The first of those reaches
+/// here through `against` rather than `edition`: the `find_map` above
+/// matches `against` as a bare string against the stored edge and never
+/// checks it against `self.editions`, so an alignment naming a since-deleted
+/// edition is still found and handed to `runs_of`, which is where the error
+/// actually comes from. This crate has no code path that removes an edition
+/// once added — `docs/status.md`'s O24 is the nearer live concern, a direct
+/// edge whose far edition survives *under the same name* with replaced
+/// content rather than vanishing outright — so this arm is reached only by a
+/// document edited by hand. Finally, it refuses if a page already found to
+/// be unpaired cannot be located in `edition`'s own member table, which
+/// would mean that table and `edition`'s slot table disagree.
+///
+/// # Panics
+///
+/// Panics if `slot_start` cannot find a page drawn from `unpaired_pages` in
+/// `edition`'s slot table. In practice it cannot: `unpaired_pages` is built
+/// by grouping that same `slots` binding's entries by page, and nothing
+/// mutates `slots` between the two passes, so every page `slot_start` is
+/// asked to find was itself read out of `slots` moments earlier, and its
+/// `.position()` search of that identical array always finds it again.
 pub fn unpaired_runs(
     sidecar: &Sidecar,
     edition: &str,
@@ -74,12 +105,14 @@ pub fn unpaired_runs(
     for run in &runs {
         // A gap run carries an `a` span and no `b`: those are exactly the
         // pages with no counterpart, so neither side may count them as
-        // mentioned. The `false` arm gets that for free — `run.b` is `None`.
-        // The `true` arm has to ask for it, or it marks the gap as covered and
-        // the function answers the opposite of what it is for.
-        let range = match mine_is_a {
-            true => run.b.map(|_| run.a),
-            false => run.b,
+        // mentioned.
+        let range = if mine_is_a {
+            // This side has to ask for it, or it marks the gap as covered and
+            // the function answers the opposite of what it is for.
+            run.b.map(|_| run.a)
+        } else {
+            // This side gets that for free — `run.b` is `None`.
+            run.b
         };
         if let Some(r) = range {
             mentioned.extend(r.start..=r.end);
@@ -98,19 +131,23 @@ pub fn unpaired_runs(
         while at < slots.len() && slots[at].page == page {
             at += 1;
         }
-        if (first..at).all(|i| !mentioned.contains(&(i as u32))) {
+        if (first..at).all(|i| !mentioned.contains(&crate::sidecar::slot_position(i))) {
             unpaired_pages.push(page);
         }
     }
 
     // Where each page's slots begin, so a run can report both index spaces.
     let slot_start = |page: u32| -> u32 {
-        slots
-            .iter()
-            .position(|s| s.page == page)
-            .expect("every page has at least one slot") as u32
+        crate::sidecar::slot_position(
+            slots
+                .iter()
+                .position(|s| s.page == page)
+                .expect("every page has at least one slot"),
+        )
     };
-    let slot_count = |page: u32| -> u32 { slots.iter().filter(|s| s.page == page).count() as u32 };
+    let slot_count = |page: u32| -> u32 {
+        crate::sidecar::slot_position(slots.iter().filter(|s| s.page == page).count())
+    };
 
     let mut out: Vec<UnpairedRun> = Vec::new();
     for page in unpaired_pages {

@@ -110,6 +110,44 @@ fi
 run cargo fmt --all -- --check
 run cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+# Advisory and non-blocking — the `|| true` is the point, not an oversight, and
+# it mirrors `continue-on-error: true` on the same step in ci.yml. See
+# docs/ci.md, "The pedantic lints, and why they are advisory": pedantic stays
+# out of [workspace.lints] so a floating toolchain cannot turn the blocking gate
+# above red, while the per-site #[expect] attributes stay enforced by it, since
+# a stale one is an ordinary rustc lint.
+#
+# The two halves of that mirror are not equally proven. `|| true` is a shell
+# operator — this script runs it, on this machine, every time, so it is
+# verified rather than assumed. `continue-on-error: true` in ci.yml is
+# Forgejo Actions' own key for the same job, and nothing local can exercise
+# it: it only does anything when the step it guards fails. The branch was
+# pushed and came back green, but that proves nothing about the key: `-W
+# clippy::pedantic` exits 0 no matter how many warnings it prints, only
+# `-D warnings` sets a non-zero exit, so the step never had a reason to
+# fail on lints — and it cannot fail on lints at all, since its only
+# possible failure is a compile error the blocking step above would
+# already have caught. Both guards are belt-and-braces for a failure
+# lints cannot produce today; the key stays untriggered rather than
+# untested, and has still never been observed doing its job.
+#
+# Written out rather than passed to `run`, because `run` inherits this script's
+# `set -e` and would abort the whole gate on a warning — the opposite of what
+# "advisory" means here.
+#
+# Not quite empty at baseline, and that is expected rather than a leak: every
+# `assert_eq!` on a float literal in this workspace's tests prints a
+# `clippy::float_cmp` warning here, always, because clippy's JSON marks that
+# lint's primary span inside `assert_eq!`'s own expansion in rustc's
+# `core/src/macros/mod.rs` — confirmed by path in the JSON stream, not
+# assumed — never a file in this repository. `scripts/pedantic-sites.mjs`, the
+# count this branch is built on, reports 0 unique sites under `crates/` even
+# though this unfiltered, plain-text run still prints all of them. See
+# docs/ci.md, "The pedantic lints, and why they are advisory". Anything *else*
+# here is a new unguarded cast or a lint a newer clippy added.
+echo; echo "==> cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic (advisory)"
+cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic || true
+
 # --- the `test` job ---
 # **`TAIYAKU_CORPUS` is removed from this one's environment**, which is the difference between a
 # gate that finishes and one nobody runs — see "Two profiles" at the top. It is also the more

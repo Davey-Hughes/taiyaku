@@ -23,6 +23,7 @@ pub use route::{Route, Via, invert, resolve, route};
 pub use sidecar::{
     Alignment, Anchor, ChapterAt, Corrected, Edition, Member, Merged, NotCorrected, Quality,
     RunEntry, Sidecar, SlotSpan, SolverInfo, Source, VERSION, Work, entries_from_runs,
+    rounded_avg_run,
 };
 pub use slot::{Direction, Half, Slot, expand, is_spread, spread_flags};
 pub use solve::{
@@ -42,19 +43,31 @@ pub struct PageRange {
 }
 
 impl PageRange {
+    /// # Panics
+    ///
+    /// Panics if `start > end`, but only in a build with `debug_assertions`
+    /// enabled — the check is a `debug_assert!` and does not fire in
+    /// release, which is the profile `check-all.sh` runs the corpus checks
+    /// under. Callers that must turn a backwards span into an `Err` rather
+    /// than risk this — a hand-edited sidecar, say — validate before calling
+    /// `new`; see `Sidecar::runs_of`.
+    #[must_use]
     pub fn new(start: u32, end: u32) -> Self {
         debug_assert!(start <= end, "page range must not be inverted");
         Self { start, end }
     }
 
+    #[must_use]
     pub fn len(&self) -> u32 {
         self.end - self.start + 1
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         false // an inclusive range always covers at least one page
     }
 
+    #[must_use]
     pub fn contains(&self, page: u32) -> bool {
         page >= self.start && page <= self.end
     }
@@ -73,12 +86,24 @@ pub struct Run {
 
 impl Run {
     /// A paired run, where both editions carry the same number of pages.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `a` and `b` do not span the same number of pages, but only
+    /// in a build with `debug_assertions` enabled — the check is a
+    /// `debug_assert_eq!` and does not fire in release, which is the profile
+    /// `check-all.sh` runs the corpus checks under. `Sidecar::runs_of`
+    /// checks the lengths itself and returns an `Err` naming both spans
+    /// before calling this, precisely so a hand-edited mismatch cannot reach
+    /// here.
+    #[must_use]
     pub fn paired(a: PageRange, b: PageRange) -> Self {
         debug_assert_eq!(a.len(), b.len(), "paired run sides must be equal length");
         Self { a, b: Some(b) }
     }
 
     /// A run present in edition A only.
+    #[must_use]
     pub fn gap(a: PageRange) -> Self {
         Self { a, b: None }
     }
@@ -93,6 +118,7 @@ impl Run {
 /// Runs are expected to be ordered and non-overlapping on the A side. A linear
 /// scan is deliberate — a typical volume resolves to on the order of ten runs,
 /// so the indirection of a binary search would cost more than it saves.
+#[must_use]
 pub fn counterpart(runs: &[Run], page: u32) -> Option<u32> {
     let run = runs.iter().find(|r| r.a.contains(page))?;
     let b = run.b?;
@@ -105,6 +131,7 @@ pub fn counterpart(runs: &[Run], page: u32) -> Option<u32> {
 /// N editions need N-1 alignments rather than N(N-1)/2, and any A-to-B lookup
 /// resolves by composing through the hub, so transitivity holds by construction
 /// and two editions cannot disagree about where a page went.
+#[must_use]
 pub fn compose(a_to_hub: &[Run], hub_to_b: &[Run]) -> Vec<Run> {
     let chained: Vec<(u32, Option<u32>)> = a_to_hub
         .iter()
@@ -142,6 +169,7 @@ pub fn compose(a_to_hub: &[Run], hub_to_b: &[Run]) -> Vec<Run> {
 /// Slots the run list never mentions stay unmentioned. A run list need not
 /// cover its edition, and inventing gap runs for the head of one would put
 /// slots into the document that the alignment never claimed anything about.
+#[must_use]
 pub fn correct_runs(runs: &[Run], a: u32, b: Option<u32>) -> Vec<Run> {
     let end = runs.iter().map(|r| r.a.end).max().unwrap_or(a).max(a);
     let mentioned = |slot: u32| runs.iter().any(|r| r.a.contains(slot));

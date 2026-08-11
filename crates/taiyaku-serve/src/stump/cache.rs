@@ -34,11 +34,10 @@ struct Document {
 /// The convention M2 established for progress. `taiyaku.json` stays a pure
 /// alignment document that diffs meaningfully in git.
 pub fn path_for(work: &Work) -> PathBuf {
-    let stem = work
-        .path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "taiyaku".to_string());
+    let stem = work.path.file_stem().map_or_else(
+        || "taiyaku".to_string(),
+        |s| s.to_string_lossy().to_string(),
+    );
     work.path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))

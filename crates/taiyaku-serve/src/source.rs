@@ -42,6 +42,22 @@ pub trait PageSource: Send + Sync + std::fmt::Debug {
     ///
     /// `root` is the directory the sidecar sits in; a member's `path` is
     /// relative to it — `docs/sidecar.md`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the page at `within` cannot be produced from
+    /// `member`. For `LocalLibrary`, that means the file or directory named
+    /// by `root.join(&member.path)` cannot be opened, or holds no page at
+    /// that index — the message then adds the sidecar's own recorded page
+    /// count, since a member's disagreeing with it means the file was
+    /// replaced. **For `CompositeSource` (`composite.rs`), a Stump-backed
+    /// member's remote failure is not this method's `Err`.** A transport
+    /// error, or a response that does not sniff as an image, is logged to
+    /// stderr and the call falls through to `LocalLibrary` unconditionally —
+    /// a Stump outage degrades to the local answer rather than being
+    /// surfaced to the caller. So for such a member this method fails only
+    /// when the local fallback itself does, once Stump has already been
+    /// tried and given up on.
     fn page(&self, root: &Path, member: &Member, within: u32) -> Result<ServedPage, String>;
 }
 

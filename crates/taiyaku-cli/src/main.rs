@@ -25,19 +25,58 @@ mod fingerprint;
 // A one-off measurement rather than a shipped command, and gated on
 // `TAIYAKU_CORPUS` exactly as `corpus` is — so it is declared the same way, and
 // no part of it is compiled into the binary.
+//
+// It also carries one of this workspace's two module-level lint
+// suppressions — the other is `region_experiment`'s, below, granted on the
+// same grounds. Everything else pedantic flags is fixed or carries a
+// per-site #[expect] stating its bound; §10.3 of the design forbids
+// module-level allows precisely so that a file with many casts cannot
+// switch the lint off wholesale. The exception is granted on the same
+// grounds the coverage gate already excludes this file by name: its
+// arithmetic exists to print a table for docs/notes.md once, and writing 29
+// bounds for it would spend the mechanism's credibility on the code least
+// able to hurt anyone.
+//
+// The cost, stated: a truncating cast introduced here is invisible. That is
+// accepted because a wrong number in a measurement shows up as a wrong number
+// in the table it prints, which a person reads before it reaches notes.md.
 #[cfg(test)]
+#[allow(
+    clippy::pedantic,
+    reason = "one-off measurement; see above and docs/ci.md"
+)]
 mod geometry_experiment;
 mod inventory;
 mod regions;
 // A one-off measurement rather than a shipped command, gated on
 // `TAIYAKU_CORPUS` exactly as `corpus` and `geometry_experiment` are — so it
 // is declared the same way, and no part of it is compiled into the binary.
+//
+// It also carries the second of this workspace's two module-level lint
+// suppressions — `geometry_experiment`'s, above, is the other, granted on
+// the same grounds. Everything else pedantic flags is fixed or carries a
+// per-site #[expect] stating its bound; §10.3 of the design forbids
+// module-level allows precisely so that a file with many casts cannot
+// switch the lint off wholesale. The exception is granted on the same
+// grounds the coverage gate already excludes this file by name: its
+// arithmetic exists to print a table for docs/notes.md once, and writing 16
+// bounds for it would spend the mechanism's credibility on the code least
+// able to hurt anyone.
+//
+// The cost, stated: a truncating cast introduced here is invisible. That is
+// accepted because a wrong number in a measurement shows up as a wrong number
+// in the table it prints, which a person reads before it reaches notes.md.
 #[cfg(test)]
+#[allow(
+    clippy::pedantic,
+    reason = "one-off measurement; see above and docs/ci.md"
+)]
 mod region_experiment;
 mod report;
 mod signature;
 mod stats;
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use taiyaku_core::{
@@ -239,9 +278,10 @@ fn flag_present(args: &[String], flag: &str) -> bool {
 /// Right to left is the default because it is what every work in the corpus is;
 /// `--ltr` is the exception a caller asks for by name.
 fn reading_direction(args: &[String]) -> Direction {
-    match flag_present(args, "--ltr") {
-        true => Direction::LeftToRight,
-        false => Direction::RightToLeft,
+    if flag_present(args, "--ltr") {
+        Direction::LeftToRight
+    } else {
+        Direction::RightToLeft
     }
 }
 
@@ -257,14 +297,15 @@ fn reject_unknown_flags(command: &str, args: &[String], known: &[&str]) -> Resul
     // flag the caller believed in, and the honest answer to that is what does
     // exist — a single guess would be right often and confidently wrong the
     // rest of the time.
-    match known.is_empty() {
-        true => Err(format!(
+    if known.is_empty() {
+        Err(format!(
             "{command} takes no flags, and `{unknown}` was given as one"
-        )),
-        false => Err(format!(
+        ))
+    } else {
+        Err(format!(
             "{command} has no flag `{unknown}`; its flags are {}",
             known.join(", ")
-        )),
+        ))
     }
 }
 
@@ -325,9 +366,10 @@ fn url_safe_suggestion(key: &str) -> String {
         })
         .collect();
     let trimmed = slug.trim_matches('-').to_string();
-    match trimmed.is_empty() {
-        true => "edition".to_string(),
-        false => trimmed,
+    if trimmed.is_empty() {
+        "edition".to_string()
+    } else {
+        trimmed
     }
 }
 
@@ -353,9 +395,10 @@ fn slug(members: &[PathBuf], given: Option<&str>) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
     let trimmed = slug.trim_matches('-').to_string();
-    match trimmed.is_empty() {
-        true => "edition".to_string(),
-        false => trimmed.chars().take(48).collect(),
+    if trimmed.is_empty() {
+        "edition".to_string()
+    } else {
+        trimmed.chars().take(48).collect()
     }
 }
 
@@ -369,6 +412,89 @@ fn label(members: &[PathBuf]) -> String {
         0 | 1 => first,
         n => format!("{first} + {} more", n - 1),
     }
+}
+
+/// Resolve `verify`'s runs and their addressing unit from a `--sidecar`
+/// document, rather than solving `a` against `b` directly.
+///
+/// Split out of `verify`, which otherwise reaches `too_many_lines` on this
+/// branch alone: which two editions `path` names is asked of the archives
+/// (`named`, below) rather than assumed, and that check — plus the route
+/// lookup and the `by`/`how` diagnostic line — is a single self-contained
+/// question with its own doc comments, not a piece of the render-and-write
+/// flow around it.
+///
+/// `a_len` is `a.len()`: the page count of the already-read a-side, used only
+/// as the slot-count fallback when `path`'s edition has no slot table of its
+/// own to consult.
+fn runs_from_sidecar(
+    path: &str,
+    a_members: &[PathBuf],
+    b_members: &[PathBuf],
+    a_len: usize,
+) -> Result<(Vec<Run>, usize), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let sidecar = Sidecar::from_json(&text)?;
+
+    // Which two editions is this? Asked of the archives rather than
+    // assumed from the document's order. Taking the first alignment
+    // worked only while `align` could write just one; against a
+    // five-edition document it renders a confident report of a pair
+    // nobody asked about, which is the single failure this report
+    // exists to prevent.
+    let named = |members: &[PathBuf], side: &str| -> Result<String, String> {
+        let mut digests = Vec::new();
+        for member in members {
+            digests.push(taiyaku_read::member_digest(member)?);
+        }
+        sidecar
+            .edition_of(&digests)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                format!(
+                    "the {side} members are not an edition of {path}. It defines {}; \
+                     the first member hashes {}",
+                    sidecar
+                        .editions
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    digests.first().map_or("nothing", |d| &d[..8.min(d.len())]),
+                )
+            })
+    };
+    let a_name = named(a_members, "a-side")?;
+    let b_name = named(b_members, "b-side")?;
+
+    // Through `route` rather than a stored edge, so a composed pair is
+    // reviewable too. That is the alignment most worth looking at: it
+    // is the one no solver ever checked.
+    let route = taiyaku_core::route(&sidecar, &a_name, &b_name)
+        .ok_or_else(|| format!("{path} carries no path from `{a_name}` to `{b_name}`"))?;
+    let how = match &route.via {
+        Via::Direct => String::new(),
+        Via::Inverted => format!(", from the stored {b_name} -> {a_name} edge"),
+        Via::Hub(hub) => format!(", composed through {hub}"),
+        Via::Identity => ", identical edition".to_string(),
+    };
+    // `by` belongs to a stored edge, and a composed path has none.
+    let by = sidecar
+        .edge_between(&a_name, &b_name)
+        .map(|al| format!(", by {:?}", al.by))
+        .unwrap_or_default();
+    eprintln!(
+        "alignment from {path}: {a_name} -> {b_name}{how} ({} runs{by})",
+        route.runs().len()
+    );
+    // The document's own reading order, not the `--ltr` flag: the runs
+    // were written under the former and the slot count has to match
+    // what they address.
+    let slots = sidecar
+        .editions
+        .get(&a_name)
+        .map_or(a_len, |e| e.slots(sidecar.work.reading).len());
+    Ok((route.runs().to_vec(), slots))
 }
 
 fn verify(args: &[String]) -> Result<(), String> {
@@ -422,74 +548,7 @@ fn verify(args: &[String]) -> Result<(), String> {
     // an edition with seven spreads has seven more slots than pages — which is
     // how the same summary reported 192 of 187 pages paired, at 102.7%.
     let (runs, a_units) = match sidecar_path {
-        Some(path) => {
-            let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-            let sidecar = Sidecar::from_json(&text)?;
-
-            // Which two editions is this? Asked of the archives rather than
-            // assumed from the document's order. Taking the first alignment
-            // worked only while `align` could write just one; against a
-            // five-edition document it renders a confident report of a pair
-            // nobody asked about, which is the single failure this report
-            // exists to prevent.
-            let named = |members: &[PathBuf], side: &str| -> Result<String, String> {
-                let mut digests = Vec::new();
-                for member in members {
-                    digests.push(taiyaku_read::member_digest(member)?);
-                }
-                sidecar
-                    .edition_of(&digests)
-                    .map(str::to_string)
-                    .ok_or_else(|| {
-                        format!(
-                            "the {side} members are not an edition of {path}. It defines {}; \
-                             the first member hashes {}",
-                            sidecar
-                                .editions
-                                .keys()
-                                .map(String::as_str)
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                            digests
-                                .first()
-                                .map(|d| &d[..8.min(d.len())])
-                                .unwrap_or("nothing"),
-                        )
-                    })
-            };
-            let a_name = named(&a_members, "a-side")?;
-            let b_name = named(&b_members, "b-side")?;
-
-            // Through `route` rather than a stored edge, so a composed pair is
-            // reviewable too. That is the alignment most worth looking at: it
-            // is the one no solver ever checked.
-            let route = taiyaku_core::route(&sidecar, &a_name, &b_name)
-                .ok_or_else(|| format!("{path} carries no path from `{a_name}` to `{b_name}`"))?;
-            let how = match &route.via {
-                Via::Direct => String::new(),
-                Via::Inverted => format!(", from the stored {b_name} -> {a_name} edge"),
-                Via::Hub(hub) => format!(", composed through {hub}"),
-                Via::Identity => ", identical edition".to_string(),
-            };
-            // `by` belongs to a stored edge, and a composed path has none.
-            let by = sidecar
-                .edge_between(&a_name, &b_name)
-                .map(|al| format!(", by {:?}", al.by))
-                .unwrap_or_default();
-            eprintln!(
-                "alignment from {path}: {a_name} -> {b_name}{how} ({} runs{by})",
-                route.runs().len()
-            );
-            // The document's own reading order, not the `--ltr` flag: the runs
-            // were written under the former and the slot count has to match
-            // what they address.
-            let slots = sidecar
-                .editions
-                .get(&a_name)
-                .map(|e| e.slots(sidecar.work.reading).len())
-                .unwrap_or(a.len());
-            (route.runs().to_vec(), slots)
-        }
+        Some(path) => runs_from_sidecar(path, &a_members, &b_members, a.len())?,
         None => (solve(&a, &b), a.len()),
     };
     // Confidence has to be measured in whatever space the runs are addressed in.
@@ -518,9 +577,18 @@ fn verify(args: &[String]) -> Result<(), String> {
     let (table, figures) = report_summary(&runs, a_units);
     print!("{table}");
     eprintln!("{figures}");
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "html.len() is the byte length of one generated report; f64 stops \
+                  representing every integer exactly above 2^53 (~8 petabytes), and no \
+                  report this tool writes is within many orders of magnitude of that. \
+                  The lossless-From route is closed too: html.len() is usize, and \
+                  std has no From<usize> for f64 — usize's width is \
+                  platform-dependent, unlike u32/u16/u8, so no such impl exists."
+    )]
+    let html_mb = html.len() as f64 / 1_048_576.0;
     eprintln!(
-        "wrote {out} ({:.1} MB) | {} ambiguous pairings to review",
-        html.len() as f64 / 1_048_576.0,
+        "wrote {out} ({html_mb:.1} MB) | {} ambiguous pairings to review",
         ambiguous_pairings(&scored)
     );
     Ok(())
@@ -572,6 +640,17 @@ fn ambiguous_pairings(scored: &[taiyaku_core::PageConfidence]) -> usize {
         .count()
 }
 
+/// A page count, as `Divergence::between` takes it.
+///
+/// # Panics
+///
+/// Panics if `n` exceeds `u32::MAX`. It cannot here: every call site derives
+/// `n` from `.len()` of one spoke's fingerprinted pages, a count bounded by
+/// what a physical book can contain — nowhere near `u32::MAX`.
+fn page_count(n: usize) -> u32 {
+    u32::try_from(n).expect("page count exceeds u32::MAX")
+}
+
 /// Measure what hub-and-spoke costs against solving every pair directly.
 ///
 /// The star topology is a bet: that composing A to hub to B is as good as
@@ -621,7 +700,11 @@ fn topology(args: &[String]) -> Result<(), String> {
             let composed = compose(&to_hub[i], &from_hub[j]);
             let report = PairReport {
                 pages: spoke_hashes[i].len(),
-                divergence: Divergence::between(&direct, &composed, spoke_hashes[i].len() as u32),
+                divergence: Divergence::between(
+                    &direct,
+                    &composed,
+                    page_count(spoke_hashes[i].len()),
+                ),
                 composed: taiyaku_core::verdict(&composed, spoke_hashes[i].len()),
                 worse_leg: taiyaku_core::verdict(&to_hub[i], spoke_hashes[i].len())
                     .min(taiyaku_core::verdict(&from_hub[j], hub_hashes.len())),
@@ -632,12 +715,19 @@ fn topology(args: &[String]) -> Result<(), String> {
 
     for ((i, j), report) in &measured {
         let (pages, d) = (report.pages, report.divergence);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "pages is an edition's page count, bounded by what a physical book can \
+                      contain; f64 only loses precision above 2^53. No From<usize> for f64 \
+                      exists either — usize's width is platform-dependent, unlike u32/u16/u8."
+        )]
+        let pages_f64 = pages as f64;
         println!(
             "{i}->{j:<7} {pages:>6} {:>7} {:>7.1}% {:>8.1}% {:>8.1}% {:>21}",
             d.direct_paired,
-            100.0 * f64::from(d.loss) / pages as f64,
-            100.0 * f64::from(d.disagree) / pages as f64,
-            100.0 * f64::from(d.inverse) / pages as f64,
+            100.0 * f64::from(d.loss) / pages_f64,
+            100.0 * f64::from(d.disagree) / pages_f64,
+            100.0 * f64::from(d.inverse) / pages_f64,
             report.verdict_column()
         );
     }
@@ -657,11 +747,18 @@ fn topology(args: &[String]) -> Result<(), String> {
             sum.plus(report.divergence)
         });
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "total_pages sums a handful of editions' page counts, each bounded by what \
+                  a physical book can contain; even summed, they come nowhere near 2^53. \
+                  No From<usize> for f64 exists either — usize's width is platform-dependent."
+    )]
+    let total_pages_f64 = total_pages as f64;
     eprintln!(
         "\nacross {total_pages} page comparisons: loss {:.2}% | disagreement {:.2}% | inverse loss {:.2}%",
-        100.0 * f64::from(totals.loss) / total_pages as f64,
-        100.0 * f64::from(totals.disagree) / total_pages as f64,
-        100.0 * f64::from(totals.inverse) / total_pages as f64,
+        100.0 * f64::from(totals.loss) / total_pages_f64,
+        100.0 * f64::from(totals.disagree) / total_pages_f64,
+        100.0 * f64::from(totals.inverse) / total_pages_f64,
     );
     eprintln!(
         "loss is the number that decides it: pages a direct solve pairs and composition cannot"
@@ -757,13 +854,14 @@ impl PairReport {
     /// The verdict column: one word where the two rules agree, and both words
     /// where they do not — the disagreement is the measurement.
     fn verdict_column(&self) -> String {
-        match self.verdict_split() {
-            false => stats::verdict_word(self.composed).to_string(),
-            true => format!(
+        if self.verdict_split() {
+            format!(
                 "{} != {}",
                 stats::verdict_word(self.composed),
                 stats::verdict_word(self.worse_leg)
-            ),
+            )
+        } else {
+            stats::verdict_word(self.composed).to_string()
         }
     }
 }
@@ -815,9 +913,10 @@ fn relative_to(target: &Path, base: &Path) -> Result<PathBuf, String> {
     for component in target_parts {
         relative.push(component);
     }
-    Ok(match relative.as_os_str().is_empty() {
-        true => PathBuf::from("."),
-        false => relative,
+    Ok(if relative.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        relative
     })
 }
 
@@ -911,9 +1010,8 @@ fn describe_edition(
 /// here must match what `align` printed, from the file alone.
 fn lookup(args: &[String]) -> Result<(), String> {
     reject_unknown_flags("lookup", args, &[])?;
-    let (path, from, to) = match args {
-        [p, f, t, ..] => (p, f, t),
-        _ => return Err("usage: taiyaku lookup <taiyaku.json> <from> <to> <page>...".into()),
+    let [path, from, to, ..] = args else {
+        return Err("usage: taiyaku lookup <taiyaku.json> <from> <to> <page>...".into());
     };
     let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
     let sidecar = Sidecar::from_json(&text)?;
@@ -948,7 +1046,7 @@ fn lookup(args: &[String]) -> Result<(), String> {
                         taiyaku_core::average_run_length(found.runs())
                     ),
                     None => {
-                        eprintln!("  alignment {from} -> {to}: this document does not say{how}")
+                        eprintln!("  alignment {from} -> {to}: this document does not say{how}");
                     }
                 }
             }
@@ -1125,25 +1223,44 @@ fn slot_hashes(
     let mut hashes = Vec::new();
     let mut wide = Vec::new();
     for (page, spread) in described.iter().zip(&flags) {
-        match (*spread, page.halves) {
-            (true, Some((left, right))) => {
-                // Reading order, matching the slot table.
-                match direction {
-                    Direction::RightToLeft => hashes.extend([right, left]),
-                    Direction::LeftToRight => hashes.extend([left, right]),
-                }
-                wide.push(true);
+        if let (true, Some((left, right))) = (*spread, page.halves) {
+            // Reading order, matching the slot table.
+            match direction {
+                Direction::RightToLeft => hashes.extend([right, left]),
+                Direction::LeftToRight => hashes.extend([left, right]),
             }
-            _ => {
-                hashes.push(page.hash);
-                wide.push(false);
-            }
+            wide.push(true);
+        } else {
+            hashes.push(page.hash);
+            wide.push(false);
         }
     }
     (hashes, wide)
 }
 
-fn align(args: &[String]) -> Result<(), String> {
+/// The parsed and validated flags `align` runs on, resolved once before
+/// either edition is read.
+///
+/// Split out of `align` itself so that ~130 lines of argument checking —
+/// none of which touches an archive or a solver — are not counted as part of
+/// the function that does. `align_flags` reads only `args`; `align` reads
+/// only an already-validated `AlignFlags`.
+struct AlignFlags<'a> {
+    a_members: Vec<PathBuf>,
+    b_members: Vec<PathBuf>,
+    split_spreads: bool,
+    show_stats: bool,
+    direct: bool,
+    name_a: Option<&'a str>,
+    name_b: Option<&'a str>,
+    write: Option<&'a str>,
+    title: Option<&'a str>,
+    cache_root: PathBuf,
+}
+
+/// Parse and validate every flag `align` accepts, in the order the checks
+/// have always run in. Nothing here reads an archive.
+fn align_flags(args: &[String]) -> Result<AlignFlags<'_>, String> {
     // Before `reject_unknown_flags`, which would otherwise call it a
     // misspelling. A flag that was documented yesterday is not a typo, and the
     // two failures want different answers: a typo wants the alphabet, a
@@ -1275,6 +1392,295 @@ fn align(args: &[String]) -> Result<(), String> {
         }
     }
 
+    Ok(AlignFlags {
+        a_members,
+        b_members,
+        split_spreads,
+        show_stats,
+        direct,
+        name_a,
+        name_b,
+        write,
+        title,
+        cache_root,
+    })
+}
+
+/// Everything the `--write` branch of `align` needs, once solving is done.
+///
+/// Bundled into one struct rather than passed as thirteen positional
+/// arguments — the count `clippy::too_many_arguments` (on by default, not
+/// merely pedantic) would refuse — so `write_aligned_sidecar` stays a
+/// function of one parameter and `align` stays the one place these values are
+/// named.
+struct AlignWrite<'a> {
+    out: &'a str,
+    name_a: Option<&'a str>,
+    name_b: Option<&'a str>,
+    title: Option<&'a str>,
+    direct: bool,
+    direction: Direction,
+    a_members: &'a [PathBuf],
+    b_members: &'a [PathBuf],
+    a_slots: &'a [Slot],
+    b_slots: &'a [Slot],
+    a_slots_hashes: &'a [taiyaku_core::PageHash],
+    b_hashes: &'a [taiyaku_core::PageHash],
+    runs: &'a [Run],
+}
+
+/// A slot index, as `counterpart` takes it.
+///
+/// # Panics
+///
+/// Panics if `i` exceeds `u32::MAX`. It cannot here: `i` comes from
+/// `.enumerate()` over `a_slots`, so `i < a_slots.len()`, a slot count
+/// bounded by what a physical book can contain — nowhere near `u32::MAX`.
+fn slot_index(i: usize) -> u32 {
+    u32::try_from(i).expect("slot index exceeds u32::MAX")
+}
+
+/// Build or merge into the sidecar `align --write` names, from the runs
+/// `align` just solved.
+///
+/// Split out of `align` itself, which otherwise reaches `too_many_lines` on
+/// this block alone — the merge-or-create decision below cannot shrink
+/// without either hiding a case `docs/sidecar.md` distinguishes, or naming it
+/// a second time in a doc comment where a reader has to trust it still
+/// matches the code below it.
+/// Print the two diagnostics `align` shows on its split-spreads path: the
+/// page-to-page pairing table and the runs restated in slot notation.
+///
+/// Split out of `align` for the same reason as `write_aligned_sidecar`
+/// above: this is pure output over `a_slots`, `b_slots` and `runs`, computes
+/// nothing the `--write` branch after it needs, and its own two local
+/// closures (`show`, `span`) exist only to keep the printing below them
+/// short.
+fn print_alignment_detail(a_slots: &[Slot], b_slots: &[Slot], runs: &[Run]) {
+    let paired: Vec<(&Slot, Option<&Slot>)> = a_slots
+        .iter()
+        .enumerate()
+        .map(|(i, from)| {
+            let to = counterpart(runs, slot_index(i)).and_then(|slot| b_slots.get(slot as usize));
+            (from, to)
+        })
+        .collect();
+    for (from, to) in &paired {
+        if let Some(to) = to {
+            println!(
+                "{:>4}{:<6} -> {:>4}{}",
+                from.page,
+                from.half.map(|h| format!(" {h:?}")).unwrap_or_default(),
+                to.page,
+                to.half.map(|h| format!(" {h:?}")).unwrap_or_default()
+            );
+        }
+    }
+    let kinds: Vec<Pairing> = paired
+        .iter()
+        .map(|(from, to)| pairing_of(**from, to.copied()))
+        .collect();
+    let (whole, halves, gaps) = tally(&kinds);
+    // Runs in slot notation, which is what the sidecar stores.
+    let show = |slots: &[taiyaku_core::Slot], i: u32| -> String {
+        match slots.get(i as usize) {
+            Some(s) => match s.half {
+                Some(Half::Left) => format!("s{i}={}L", s.page),
+                Some(Half::Right) => format!("s{i}={}R", s.page),
+                None => format!("s{i}={}", s.page),
+            },
+            None => "?".into(),
+        }
+    };
+    let span = |slots: &[taiyaku_core::Slot], from: u32, to: u32| {
+        format!("{}-{}", show(slots, from), show(slots, to))
+    };
+    eprintln!("runs in slot notation:");
+    for run in runs {
+        let a_span = span(a_slots, run.a.start, run.a.end);
+        match run.b {
+            Some(b) => eprintln!("  {a_span:>22} -> {}", span(b_slots, b.start, b.end)),
+            None => eprintln!("  {a_span:>22} -> gap"),
+        }
+    }
+    eprintln!(
+        "{} runs | {whole} whole pairings | {halves} involving a spread half | {gaps} unmatched slots",
+        runs.len()
+    );
+    // The verdict was previously printed only in the plain path, so the
+    // documented way of running the tool - `--split-spreads`, which
+    // corpus/README.md says to pass essentially always - never showed it. An
+    // art book paired page-for-page against a volume looked like a clean
+    // result.
+    eprintln!("{}", stats::verdict_sentence(runs, a_slots.len()));
+}
+
+/// The `Alignment` a `--write`'d merge or create records: the solver's floor,
+/// the quality summary, and the per-run entries with their margins filled in.
+///
+/// Split out of `write_aligned_sidecar`, which reaches `too_many_lines` with
+/// this construction inlined — reformatting elsewhere in that function is
+/// enough to push it over on its own, since this literal's fields do not
+/// shrink. `a_name`/`b_name` are taken apart from `w` because they are
+/// computed just before this is called, from `w.name_a`/`w.name_b` and
+/// `existing`, and are not otherwise part of `AlignWrite`.
+fn built_alignment(a_name: &str, b_name: &str, w: &AlignWrite<'_>) -> Result<Alignment, String> {
+    Ok(Alignment {
+        from: a_name.to_string(),
+        to: b_name.to_string(),
+        by: Source::Solver,
+        // The floor the solver actually used, not a placeholder: it is
+        // calibrated from these two editions and a re-solve needs it to be
+        // reproducible.
+        // Only a calibration the solver accepted, so a refused pair records
+        // no solver block rather than a floor that was never used.
+        // `calibrate` reports its figures either way; `accepted` is what
+        // decides whether they drove an alignment.
+        solver: taiyaku_core::calibrate(w.a_slots_hashes, w.b_hashes)
+            .filter(taiyaku_core::Calibration::accepted)
+            .map(|cal| SolverInfo {
+                hash: "dhash-16".to_string(),
+                floor: cal.floor,
+            }),
+        // Computed here rather than left for a reader to derive: the whole
+        // point of the document is that a reader should not need the
+        // archives. `Sidecar::quality_of` recomputes it anyway, so this is
+        // a summary for anything not using this library.
+        quality: Some(taiyaku_core::Quality {
+            verdict: taiyaku_core::verdict(w.runs, w.a_slots.len()),
+            slots: u32::try_from(w.a_slots.len())
+                .map_err(|_| format!("{} slots is too many to record", w.a_slots.len()))?,
+            paired: taiyaku_core::paired_slots(w.runs),
+            avg_run: taiyaku_core::rounded_avg_run(taiyaku_core::average_run_length(w.runs)),
+        }),
+        runs: {
+            // The weakest per-page margin inside each run, which is what
+            // the verification report shades on. Storing it means a reader
+            // can show confidence without the archives.
+            let scored = confidence(w.a_slots_hashes, w.b_hashes, w.runs);
+            let mut entries = entries_from_runs(w.runs, w.a_slots, w.b_slots)?;
+            for (entry, run) in entries.iter_mut().zip(w.runs) {
+                if entry.b.is_none() {
+                    continue;
+                }
+                entry.margin = scored
+                    .iter()
+                    .filter(|s| run.a.contains(s.page))
+                    .map(|s| s.margin)
+                    .min_by(f32::total_cmp);
+            }
+            entries
+        },
+    })
+}
+
+fn write_aligned_sidecar(w: &AlignWrite<'_>) -> Result<(), String> {
+    // Read before writing. `--write` used to be a bare `fs::write`, which
+    // silently discarded a document that may hold four other editions.
+    let existing = existing_sidecar(w.out)?;
+
+    // On a merge the a-side is the edition the document already names, so
+    // `--name-a` is optional and, given, must agree. `--direct` has no hub
+    // to fall back on and so requires it.
+    let a_name = match (&existing, w.name_a) {
+        (Some(_), None) if w.direct => {
+            return Err("--direct needs --name-a to say which edition the edge starts from".into());
+        }
+        (Some(sidecar), None) => sidecar.hub.clone(),
+        (Some(_), Some(given)) => given.to_string(),
+        (None, given) => slug(w.a_members, given),
+    };
+    let b_name = slug(w.b_members, w.name_b);
+    if a_name == b_name {
+        return Err(format!(
+            "both editions would be named `{a_name}`; pass --name-a and --name-b"
+        ));
+    }
+
+    // Member paths are recorded relative to the sidecar, so the writer has
+    // to know where the sidecar is going before it can describe an edition.
+    let beside = sidecar_dir(std::path::Path::new(w.out));
+    let a_edition = describe_edition(&label(w.a_members), w.a_members, w.a_slots, beside)?;
+    let b_edition = describe_edition(&label(w.b_members), w.b_members, w.b_slots, beside)?;
+    let alignment = built_alignment(&a_name, &b_name, w)?;
+
+    let (sidecar, note) = match existing {
+        Some(mut sidecar) => {
+            if let Some(title) = w.title
+                && title != sidecar.work.title
+            {
+                return Err(format!(
+                    "{} is the sidecar for `{}`; --title cannot rename a work on a merge",
+                    w.out, sidecar.work.title
+                ));
+            }
+            let anchor = if w.direct {
+                Anchor::Direct
+            } else {
+                Anchor::Hub
+            };
+            let merged = sidecar.merge_spoke(
+                w.direction,
+                anchor,
+                &a_edition,
+                &b_name,
+                b_edition,
+                alignment,
+            )?;
+            let verb = match merged {
+                Merged::Added => "added".to_string(),
+                Merged::Replaced => "replaced".to_string(),
+                Merged::CarriedHandRuns(n) => format!("replaced, carrying {n} hand run(s)"),
+                Merged::DroppedCredits(n) => {
+                    format!("replaced, dropping {n} credits page(s)")
+                }
+            };
+            let note = format!(
+                "merged {}: {verb} `{b_name}` | {} editions, {} alignments",
+                w.out,
+                sidecar.editions.len(),
+                sidecar.alignments.len()
+            );
+            (sidecar, note)
+        }
+        None => (
+            Sidecar {
+                taiyaku: taiyaku_core::VERSION,
+                work: Work {
+                    title: w.title.unwrap_or("Untitled work").to_string(),
+                    reading: w.direction,
+                },
+                editions: [(a_name.clone(), a_edition), (b_name.clone(), b_edition)]
+                    .into_iter()
+                    .collect(),
+                // A two-edition sidecar is a degenerate star: A is the
+                // reference simply because it is the only thing B is
+                // aligned to. A third edition makes it a real one.
+                hub: a_name.clone(),
+                alignments: vec![alignment],
+            },
+            format!("wrote {}", w.out),
+        ),
+    };
+    write_sidecar(w.out, &sidecar)?;
+    eprintln!("{note}");
+    Ok(())
+}
+
+fn align(args: &[String]) -> Result<(), String> {
+    let AlignFlags {
+        a_members,
+        b_members,
+        split_spreads,
+        show_stats,
+        direct,
+        name_a,
+        name_b,
+        write,
+        title,
+        cache_root,
+    } = align_flags(args)?;
+
     if !split_spreads {
         let a_pages = taiyaku_read::read_edition(&a_members)?;
         let b_pages = taiyaku_read::read_edition(&b_members)?;
@@ -1325,192 +1731,24 @@ fn align(args: &[String]) -> Result<(), String> {
         );
         eprintln!("{}", stats::shape_line(&runs, a_slots_hashes.len()));
     }
-    let paired: Vec<(&Slot, Option<&Slot>)> = a_slots
-        .iter()
-        .enumerate()
-        .map(|(i, from)| {
-            let to = counterpart(&runs, i as u32).and_then(|slot| b_slots.get(slot as usize));
-            (from, to)
-        })
-        .collect();
-    for (from, to) in &paired {
-        if let Some(to) = to {
-            println!(
-                "{:>4}{:<6} -> {:>4}{}",
-                from.page,
-                from.half.map(|h| format!(" {h:?}")).unwrap_or_default(),
-                to.page,
-                to.half.map(|h| format!(" {h:?}")).unwrap_or_default()
-            );
-        }
-    }
-    let kinds: Vec<Pairing> = paired
-        .iter()
-        .map(|(from, to)| pairing_of(from, *to))
-        .collect();
-    let (whole, halves, gaps) = tally(&kinds);
-    // Runs in slot notation, which is what the sidecar stores.
-    let show = |slots: &[taiyaku_core::Slot], i: u32| -> String {
-        match slots.get(i as usize) {
-            Some(s) => match s.half {
-                Some(Half::Left) => format!("s{i}={}L", s.page),
-                Some(Half::Right) => format!("s{i}={}R", s.page),
-                None => format!("s{i}={}", s.page),
-            },
-            None => "?".into(),
-        }
-    };
-    let span = |slots: &[taiyaku_core::Slot], from: u32, to: u32| {
-        format!("{}-{}", show(slots, from), show(slots, to))
-    };
-    eprintln!("runs in slot notation:");
-    for run in &runs {
-        let a_span = span(&a_slots, run.a.start, run.a.end);
-        match run.b {
-            Some(b) => eprintln!("  {a_span:>22} -> {}", span(&b_slots, b.start, b.end)),
-            None => eprintln!("  {a_span:>22} -> gap"),
-        }
-    }
-    eprintln!(
-        "{} runs | {whole} whole pairings | {halves} involving a spread half | {gaps} unmatched slots",
-        runs.len()
-    );
-    // The verdict was previously printed only in the plain path, so the
-    // documented way of running the tool - `--split-spreads`, which
-    // corpus/README.md says to pass essentially always - never showed it. An
-    // art book paired page-for-page against a volume looked like a clean
-    // result.
-    eprintln!("{}", stats::verdict_sentence(&runs, a_slots.len()));
+    print_alignment_detail(&a_slots, &b_slots, &runs);
 
     if let Some(out) = write {
-        // Read before writing. `--write` used to be a bare `fs::write`, which
-        // silently discarded a document that may hold four other editions.
-        let existing = existing_sidecar(out)?;
-
-        // On a merge the a-side is the edition the document already names, so
-        // `--name-a` is optional and, given, must agree. `--direct` has no hub
-        // to fall back on and so requires it.
-        let a_name = match (&existing, name_a) {
-            (Some(_), None) if direct => {
-                return Err(
-                    "--direct needs --name-a to say which edition the edge starts from".into(),
-                );
-            }
-            (Some(sidecar), None) => sidecar.hub.clone(),
-            (Some(_), Some(given)) => given.to_string(),
-            (None, given) => slug(&a_members, given),
-        };
-        let b_name = slug(&b_members, name_b);
-        if a_name == b_name {
-            return Err(format!(
-                "both editions would be named `{a_name}`; pass --name-a and --name-b"
-            ));
-        }
-
-        // Member paths are recorded relative to the sidecar, so the writer has
-        // to know where the sidecar is going before it can describe an edition.
-        let beside = sidecar_dir(std::path::Path::new(out));
-        let a_edition = describe_edition(&label(&a_members), &a_members, &a_slots, beside)?;
-        let b_edition = describe_edition(&label(&b_members), &b_members, &b_slots, beside)?;
-        let alignment = Alignment {
-            from: a_name.clone(),
-            to: b_name.clone(),
-            by: Source::Solver,
-            // The floor the solver actually used, not a placeholder: it is
-            // calibrated from these two editions and a re-solve needs it to be
-            // reproducible.
-            // Only a calibration the solver accepted, so a refused pair records
-            // no solver block rather than a floor that was never used.
-            // `calibrate` reports its figures either way; `accepted` is what
-            // decides whether they drove an alignment.
-            solver: taiyaku_core::calibrate(&a_slots_hashes, &b)
-                .filter(taiyaku_core::Calibration::accepted)
-                .map(|cal| SolverInfo {
-                    hash: "dhash-16".to_string(),
-                    floor: cal.floor,
-                }),
-            // Computed here rather than left for a reader to derive: the whole
-            // point of the document is that a reader should not need the
-            // archives. `Sidecar::quality_of` recomputes it anyway, so this is
-            // a summary for anything not using this library.
-            quality: Some(taiyaku_core::Quality {
-                verdict: taiyaku_core::verdict(&runs, a_slots.len()),
-                slots: a_slots.len() as u32,
-                paired: taiyaku_core::paired_slots(&runs),
-                avg_run: taiyaku_core::average_run_length(&runs),
-            }),
-            runs: {
-                // The weakest per-page margin inside each run, which is what
-                // the verification report shades on. Storing it means a reader
-                // can show confidence without the archives.
-                let scored = confidence(&a_slots_hashes, &b, &runs);
-                let mut entries = entries_from_runs(&runs, &a_slots, &b_slots)?;
-                for (entry, run) in entries.iter_mut().zip(&runs) {
-                    if entry.b.is_none() {
-                        continue;
-                    }
-                    entry.margin = scored
-                        .iter()
-                        .filter(|s| run.a.contains(s.page))
-                        .map(|s| s.margin)
-                        .min_by(f32::total_cmp);
-                }
-                entries
-            },
-        };
-
-        let (sidecar, note) = match existing {
-            Some(mut sidecar) => {
-                if let Some(title) = title
-                    && title != sidecar.work.title
-                {
-                    return Err(format!(
-                        "{out} is the sidecar for `{}`; --title cannot rename a work on a merge",
-                        sidecar.work.title
-                    ));
-                }
-                let anchor = match direct {
-                    true => Anchor::Direct,
-                    false => Anchor::Hub,
-                };
-                let merged = sidecar
-                    .merge_spoke(direction, anchor, &a_edition, &b_name, b_edition, alignment)?;
-                let verb = match merged {
-                    Merged::Added => "added".to_string(),
-                    Merged::Replaced => "replaced".to_string(),
-                    Merged::CarriedHandRuns(n) => format!("replaced, carrying {n} hand run(s)"),
-                    Merged::DroppedCredits(n) => {
-                        format!("replaced, dropping {n} credits page(s)")
-                    }
-                };
-                let note = format!(
-                    "merged {out}: {verb} `{b_name}` | {} editions, {} alignments",
-                    sidecar.editions.len(),
-                    sidecar.alignments.len()
-                );
-                (sidecar, note)
-            }
-            None => (
-                Sidecar {
-                    taiyaku: taiyaku_core::VERSION,
-                    work: Work {
-                        title: title.unwrap_or("Untitled work").to_string(),
-                        reading: direction,
-                    },
-                    editions: [(a_name.clone(), a_edition), (b_name.clone(), b_edition)]
-                        .into_iter()
-                        .collect(),
-                    // A two-edition sidecar is a degenerate star: A is the
-                    // reference simply because it is the only thing B is
-                    // aligned to. A third edition makes it a real one.
-                    hub: a_name.clone(),
-                    alignments: vec![alignment],
-                },
-                format!("wrote {out}"),
-            ),
-        };
-        write_sidecar(out, &sidecar)?;
-        eprintln!("{note}");
+        write_aligned_sidecar(&AlignWrite {
+            out,
+            name_a,
+            name_b,
+            title,
+            direct,
+            direction,
+            a_members: &a_members,
+            b_members: &b_members,
+            a_slots: &a_slots,
+            b_slots: &b_slots,
+            a_slots_hashes: &a_slots_hashes,
+            b_hashes: &b,
+            runs: &runs,
+        })?;
     }
     Ok(())
 }
@@ -1533,13 +1771,16 @@ enum Pairing {
 /// join them, and the colour editions join them too — so which side is halved
 /// depends on which way round the pair was given, and a rule naming one side
 /// would report the same pairing differently in each direction.
-fn pairing_of(from: &Slot, to: Option<&Slot>) -> Pairing {
+fn pairing_of(from: Slot, to: Option<Slot>) -> Pairing {
     match to {
         None => Pairing::Gap,
-        Some(to) => match from.half.is_some() || to.half.is_some() {
-            true => Pairing::Half,
-            false => Pairing::Whole,
-        },
+        Some(to) => {
+            if from.half.is_some() || to.half.is_some() {
+                Pairing::Half
+            } else {
+                Pairing::Whole
+            }
+        }
     }
 }
 
@@ -1593,23 +1834,27 @@ fn report_summary(runs: &[Run], a_len: usize) -> (String, String) {
         match run.b {
             Some(b) => {
                 paired += run.a.len();
-                table.push_str(&format!(
-                    "{:>4}-{:<4} -> {:>4}-{:<4}  ({} pages, offset {:+})\n",
+                let _ = writeln!(
+                    table,
+                    "{:>4}-{:<4} -> {:>4}-{:<4}  ({} pages, offset {:+})",
                     run.a.start,
                     run.a.end,
                     b.start,
                     b.end,
                     run.a.len(),
-                    b.start as i64 - run.a.start as i64
-                ));
+                    i64::from(b.start) - i64::from(run.a.start)
+                );
             }
-            None => table.push_str(&format!(
-                "{:>4}-{:<4} -> {:^11}  ({} pages)\n",
-                run.a.start,
-                run.a.end,
-                "gap",
-                run.a.len()
-            )),
+            None => {
+                let _ = writeln!(
+                    table,
+                    "{:>4}-{:<4} -> {:^11}  ({} pages)",
+                    run.a.start,
+                    run.a.end,
+                    "gap",
+                    run.a.len()
+                );
+            }
         }
     }
     // Fragmentation, not coverage, is what tells a real alignment from a
@@ -1619,14 +1864,34 @@ fn report_summary(runs: &[Run], a_len: usize) -> (String, String) {
     // the 18-row survey in docs/notes.md ("The margin survey, and where the
     // refusal threshold sits") retired it in favour of average run length,
     // which `verdict_sentence` reports.
-    let per_hundred = 100.0 * runs.len() as f64 / a_len.max(1) as f64;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "runs.len() cannot exceed a_len (every run consumes at least one A page), \
+                  and a_len is a page count off the material, bounded by what a physical \
+                  book can contain — nowhere near 2^53, above which f64 stops representing \
+                  every integer exactly. The lossless-From route is closed too: \
+                  runs.len() is usize, and std has no From<usize> for f64 — usize's \
+                  width is platform-dependent, unlike u32/u16/u8, so no such impl exists."
+    )]
+    let runs_f64 = runs.len() as f64;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a_len is edition A's page count, a fact about the material, bounded by \
+                  what a physical book can contain — nowhere near 2^53, above which f64 \
+                  stops representing every integer exactly. The lossless-From route is \
+                  closed too: a_len is usize, and std has no From<usize> for f64 — \
+                  usize's width is platform-dependent, unlike u32/u16/u8, so no such \
+                  impl exists."
+    )]
+    let a_len_f64 = a_len.max(1) as f64;
+    let per_hundred = 100.0 * runs_f64 / a_len_f64;
     // The verdict is printed alongside the number because the number alone is
     // misleading: a refusal is one run, which reads as better than any correct
     // alignment on a runs-per-page scale.
     let figures = format!(
         "{} runs | {paired}/{a_len} pages paired ({:.1}%) | {per_hundred:.1} runs per 100 pages | {}",
         runs.len(),
-        100.0 * f64::from(paired) / a_len.max(1) as f64,
+        100.0 * f64::from(paired) / a_len_f64,
         stats::verdict_sentence(runs, a_len)
     );
     (table, figures)
@@ -2051,12 +2316,12 @@ mod tests {
             half: Some(Half::Left),
         };
 
-        assert_eq!(pairing_of(&whole, Some(&whole)), Pairing::Whole);
-        assert_eq!(pairing_of(&half, Some(&whole)), Pairing::Half);
-        assert_eq!(pairing_of(&whole, Some(&half)), Pairing::Half);
-        assert_eq!(pairing_of(&half, Some(&half)), Pairing::Half);
-        assert_eq!(pairing_of(&whole, None), Pairing::Gap);
-        assert_eq!(pairing_of(&half, None), Pairing::Gap);
+        assert_eq!(pairing_of(whole, Some(whole)), Pairing::Whole);
+        assert_eq!(pairing_of(half, Some(whole)), Pairing::Half);
+        assert_eq!(pairing_of(whole, Some(half)), Pairing::Half);
+        assert_eq!(pairing_of(half, Some(half)), Pairing::Half);
+        assert_eq!(pairing_of(whole, None), Pairing::Gap);
+        assert_eq!(pairing_of(half, None), Pairing::Gap);
     }
 
     /// `--write` merges, so it reads first — and a read that fails for any
@@ -2109,7 +2374,9 @@ mod tests {
                 let dir = root.join(name);
                 std::fs::create_dir_all(&dir).unwrap();
                 for page in 0..2u32 {
-                    let seed = page * 53 + chapter as u32 * 11;
+                    let chapter = u32::try_from(chapter)
+                        .expect("chapter is 0 or 1, from enumerate() over the fixed 2-element array [\"c1\", \"c2\"] above");
+                    let seed = page * 53 + chapter * 11;
                     let image = image::GrayImage::from_fn(24, 32, |x, y| {
                         image::Luma([((x * 7 + y * 31 + seed) % 200) as u8])
                     });
@@ -2199,7 +2466,7 @@ mod tests {
             "c2.cbz",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .collect();
 
         let (a, b) = split_editions(&args).unwrap();
@@ -2412,7 +2679,7 @@ mod tests {
         // file per attempt in the reader's own library directory.
         let strays: Vec<String> = std::fs::read_dir(&dir)
             .expect("the temp dir is readable")
-            .filter_map(|entry| entry.ok())
+            .filter_map(Result::ok)
             .map(|entry| entry.file_name().to_string_lossy().to_string())
             .filter(|name| name.contains(".tmp"))
             .collect();
@@ -2518,7 +2785,7 @@ mod tests {
             "raw color",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .collect();
 
         let err = align(&args).unwrap_err();
@@ -2541,7 +2808,7 @@ mod tests {
             "en/fan",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .collect();
 
         let err = align(&args).unwrap_err();
@@ -2553,7 +2820,7 @@ mod tests {
     }
 
     fn argv(args: &[&str]) -> Vec<String> {
-        args.iter().map(|s| s.to_string()).collect()
+        args.iter().map(ToString::to_string).collect()
     }
 
     /// Splitting joined spreads is what the corpus README has said to do
@@ -3464,7 +3731,9 @@ mod tests {
             let level = seed.wrapping_add(i).wrapping_mul(101);
             let image = image::GrayImage::from_fn(8, 8, |x, y| {
                 let v = x.wrapping_mul(37).wrapping_add(y.wrapping_mul(59)) + level;
-                image::Luma([(v % 256) as u8])
+                let byte = u8::try_from(v % 256)
+                    .expect("v % 256 is in 0..256 by construction, which is exactly u8's range");
+                image::Luma([byte])
             });
             let mut bytes = Vec::new();
             image

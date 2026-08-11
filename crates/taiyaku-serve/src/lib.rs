@@ -55,6 +55,7 @@ pub struct ServeState {
 }
 
 impl ServeState {
+    #[must_use]
     pub fn work(&self, id: &str) -> Option<&Work> {
         self.works.iter().find(|w| w.id == id)
     }
@@ -65,6 +66,7 @@ impl ServeState {
     /// that two caches already share `.taiyaku-cache` and only one of them —
     /// the covers — is cheap to rebuild, and a third cache sharing that
     /// directory would make "clear the cache" blunter still.
+    #[must_use]
     pub fn thumb_cache_dir(&self) -> std::path::PathBuf {
         self.cache_dir.with_file_name("thumbs")
     }
@@ -73,12 +75,17 @@ impl ServeState {
     /// exist.
     ///
     /// Four call sites — the `/api/…` page route, the OPDS work feed, its
-    /// page stream and its cover — each typed their own copy of `no work
-    /// `{id}`` before this existed, which is exactly the drift the doc
+    /// page stream and its cover — each typed their own copy of `` no work
+    /// `{id}` `` before this existed, which is exactly the drift the doc
     /// comment on `routes.rs`'s own `work()` helper already warned about:
     /// one place decides what a request for a missing work gets back, so
     /// four routes cannot drift into four different answers to the same
     /// question.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, worded `` no work `{id}` ``, if `id` names no work
+    /// this server was started with.
     pub fn work_or_missing(&self, id: &str) -> Result<&Work, String> {
         self.work(id).ok_or_else(|| format!("no work `{id}`"))
     }
@@ -90,6 +97,21 @@ impl ServeState {
     /// all arrive here. The failure messages name what was missing, because a
     /// reader shown a blank page with no explanation is the failure this
     /// project exists to avoid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `edition` names no edition in `work`'s sidecar, if
+    /// `index` is at or past that edition's total page count (the message
+    /// then states how many pages it has), or if the underlying source
+    /// (`PageSource::page`) fails to produce the page it located — a local
+    /// read failure, or, over Stump, a failed fetch. Every case appends
+    /// `work.path` to the source's own message.
+    ///
+    /// **Both callers in `routes.rs` — `get_page` and `get_thumb` — map every
+    /// `Err` from this function to `404 not_found`, never `500`.** A local
+    /// read failure that has nothing to do with what the client asked for —
+    /// a permission refusal, a corrupted archive — is therefore reported to
+    /// a client identically to a page that genuinely does not exist.
     pub fn page(&self, work: &Work, edition: &str, index: u32) -> Result<ServedPage, String> {
         let sidecar = work.sidecar();
         let found = sidecar
@@ -142,6 +164,17 @@ impl StumpConfig {
 /// the bind itself** — `serve_binds_the_address_and_answers_on_it` — because
 /// with none, this whole function could be replaced by `Ok(())`, starting no
 /// server at all, and nothing else in the crate would notice.
+///
+/// # Errors
+///
+/// Returns an error if `log_requests` is `Some` and the file it names cannot
+/// be opened or created (see `reqlog::Log::new`), if binding `addr` fails —
+/// the port already in use, the address not this host's, or a privileged
+/// port without the permission it needs — or if the server's accept loop,
+/// run by `axum::serve`, ends in an I/O error. The bind failure and the
+/// accept-loop failure are both worded `{addr}: {e}`, since a process that
+/// may serve several addresses over its life prints nothing else to say
+/// which one failed.
 pub async fn serve(
     works: Vec<Work>,
     addr: &str,
@@ -153,7 +186,7 @@ pub async fn serve(
     // startup failure that can be acted on, rather than an hour of reading
     // on an iPad producing a silently empty file.
     let log = match log_requests {
-        Some(path) => Some(Arc::new(reqlog::Log::new(path)?)),
+        Some(path) => Some(Arc::new(reqlog::Log::new(&path)?)),
         None => None,
     };
 
@@ -452,13 +485,26 @@ pub(crate) mod test_support {
         state
     }
 
+    /// A pixel channel value synthesized for `real_page_bytes` below.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `v` exceeds `u8::MAX`. It cannot: `real_page_bytes` multiplies
+    /// a coordinate `from_fn` bounds to `0..16` by 16, topping out at `15 * 16
+    /// == 240`.
+    fn channel(v: u32) -> u8 {
+        u8::try_from(v).expect("channel value exceeds u8::MAX")
+    }
+
     /// A small real, decodable page image — same recipe as
     /// `cover::tests::real_page_bytes`, duplicated here rather than exposed
     /// across the module boundary that keeps `cover`'s test helpers private
     /// to `cover`.
     fn real_page_bytes() -> Vec<u8> {
         let page = image::RgbImage::from_fn(16, 16, |x, y| {
-            image::Rgb([(x * 16) as u8, (y * 16) as u8, 200])
+            let r = channel(x * 16);
+            let g = channel(y * 16);
+            image::Rgb([r, g, 200])
         });
         let mut encoded = std::io::Cursor::new(Vec::new());
         image::DynamicImage::ImageRgb8(page)
@@ -553,7 +599,7 @@ pub(crate) mod test_support {
     pub(crate) fn log(name: &str) -> (std::sync::Arc<crate::Log>, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!("{name}.jsonl"));
         let _ = std::fs::remove_file(&path);
-        let log = std::sync::Arc::new(crate::Log::new(path.clone()).unwrap());
+        let log = std::sync::Arc::new(crate::Log::new(&path).unwrap());
         (log, path)
     }
 

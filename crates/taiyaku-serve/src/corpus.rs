@@ -29,6 +29,30 @@ use std::sync::Arc;
 
 use crate::{LocalLibrary, PageSource, ServeState, load_works};
 
+/// The page index this test asks `ServeState::page` for, walking `sequenced`.
+///
+/// # Panics
+///
+/// Panics if `i` exceeds `u32::MAX`. It cannot: `i` walks `sequenced`, this
+/// test's own read of a real corpus volume — a page count, bounded by what a
+/// physical book can contain, far below `u32::MAX`.
+fn sequenced_index(i: usize) -> u32 {
+    u32::try_from(i).expect("sequenced index exceeds u32::MAX")
+}
+
+/// How many slots an edition has, for a test that walks every one.
+///
+/// # Panics
+///
+/// Panics if `n` exceeds `u32::MAX`. It cannot: `edition.slots(reading).len()`
+/// is at most twice the edition's page count (`crate::expand`'s `flat_map` in
+/// `taiyaku-core/src/slot.rs` emits at most two `Slot`s per page), and a page
+/// count is bounded by what a book can physically contain, far below
+/// `u32::MAX`.
+fn slot_count(n: usize) -> u32 {
+    u32::try_from(n).expect("slot count exceeds u32::MAX")
+}
+
 /// The corpus root, or `None` when this machine does not have it.
 ///
 /// **Unset is an absence and skips; set-but-unusable is a mistake and fails.**
@@ -57,9 +81,10 @@ fn corpus_root() -> Option<PathBuf> {
          the working directory rather than the workspace root, so a relative \
          path resolves under crates/<package>/ and finds nothing. Pass an \
          absolute path, or run scripts/check-all.sh, which canonicalises it.",
-        std::env::current_dir()
-            .map(|d| d.display().to_string())
-            .unwrap_or_else(|_| "the working directory".to_string())
+        std::env::current_dir().map_or_else(
+            |_| "the working directory".to_string(),
+            |d| d.display().to_string()
+        )
     );
     Some(root)
 }
@@ -101,8 +126,9 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
         let sequenced = taiyaku_read::read_members_in_order(&members).expect("aligner sequences");
 
         for (index, page) in sequenced.iter().enumerate() {
+            let index_u32 = sequenced_index(index);
             let served = state
-                .page(work, key, index as u32)
+                .page(work, key, index_u32)
                 .unwrap_or_else(|e| panic!("{key} page {index}: {e}"));
             assert_eq!(
                 served.bytes, page.bytes,
@@ -276,7 +302,7 @@ fn a_note_can_be_anchored_to_every_slot_of_every_real_edition() {
     let mut checked = 0usize;
     let mut spread_editions = 0usize;
     for (key, edition) in &sidecar.editions {
-        let slots = edition.slots(sidecar.work.reading).len() as u32;
+        let slots = slot_count(edition.slots(sidecar.work.reading).len());
         let pages = edition.total_pages();
         if slots > pages {
             spread_editions += 1;

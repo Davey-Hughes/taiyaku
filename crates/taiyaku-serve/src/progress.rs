@@ -171,7 +171,7 @@ mod tests {
         // one file per page turn in the reader's library directory.
         let strays: Vec<String> = std::fs::read_dir(path.parent().unwrap())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .map(|e| e.file_name().to_string_lossy().to_string())
             .filter(|name| name.contains(".tmp"))
             .collect();

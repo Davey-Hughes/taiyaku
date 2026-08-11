@@ -55,21 +55,21 @@ mod tests {
     /// corpus, and the `image` default it replaces must not.
     #[test]
     fn the_decode_ceiling_admits_the_largest_page_in_the_corpus() {
-        assert_eq!(MAX_DECODE_ALLOC, 3_221_225_472, "three GiB");
-
         // The Color Walk art books, at 10200×14039 — the largest pages the
         // corpus holds, and the reason this constant exists. `image` bounds the
         // decoded buffer, which is four bytes a pixel.
         const WIDEST: u64 = 10_200;
         const TALLEST: u64 = 14_039;
-        let decoded = WIDEST * TALLEST * 4;
+        const IMAGE_DEFAULT: u64 = 512 * 1024 * 1024;
 
+        assert_eq!(MAX_DECODE_ALLOC, 3_221_225_472, "three GiB");
+
+        let decoded = WIDEST * TALLEST * 4;
         assert!(
             MAX_DECODE_ALLOC > decoded,
             "must admit a {decoded}-byte decode; the ceiling is {MAX_DECODE_ALLOC}"
         );
 
-        const IMAGE_DEFAULT: u64 = 512 * 1024 * 1024;
         assert!(
             IMAGE_DEFAULT < decoded,
             "and the default this replaces must not, or raising it bought nothing"

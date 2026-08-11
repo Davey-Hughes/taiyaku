@@ -1,6 +1,7 @@
 //! Assembling an edition's flat page sequence from its members.
 
 use std::{
+    fmt::Write as _,
     fs::File,
     io::{Read, Seek},
     path::{Path, PathBuf},
@@ -11,6 +12,55 @@ use crate::naming::natural_cmp;
 const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "tif", "tiff",
 ];
+
+/// The most a `Vec::with_capacity` hint for one archive entry's raw bytes may
+/// reserve, before `read_archive`/`member_page` read the entry for real.
+///
+/// `entry.size()` is the uncompressed-size field the `zip` crate reads
+/// straight from the archive's central directory — metadata the archive
+/// declares about itself, never checked against the real bytes until they are
+/// inflated. `usize::try_from(entry.size())` alone does not bound it: on every
+/// host this crate actually targets (64-bit; it does not compile to wasm) the
+/// conversion is infallible, so a `.cbz` that misstates the field — hand-
+/// edited, or merely corrupt — sails straight through to `with_capacity`,
+/// which reserves the declared size immediately. `docs/notes.md` measured a
+/// patched archive reporting 2 GiB for 104 real bytes.
+///
+/// It is a hint, not a limit, and that is what should size it:
+/// `read_to_end` grows the buffer to the true size regardless of what was
+/// reserved up front, so a hint that is too small costs one reallocation and
+/// nothing else — being tight is free. The number that matters is therefore
+/// not "large enough to cover the biggest page the corpus holds" (an earlier
+/// version of this constant reasoned that way, and reserved 1 GiB per entry
+/// for it — 1,073,741,824 bytes for a 6-byte entry, in the regression test
+/// below); it is "large enough that an ordinary page never reallocates,
+/// small enough that a lying declared size cannot turn one request into a
+/// large reservation." Real pages on this corpus run 100 KB–3 MB
+/// (`taiyaku-cli::fingerprint::LARGE_PAGE_BYTES`'s doc comment) and a live
+/// client session transferred at 247 KB mean, 2.0 MB largest
+/// (`docs/notes.md`). 32 MiB clears all of that with roughly an order of
+/// magnitude to spare — and lands on the same number `LARGE_PAGE_BYTES`
+/// independently draws as the line between an ordinary page and an unusual
+/// one, on this same corpus, for an unrelated decision (parallel vs.
+/// sequential decode).
+///
+/// The corpus does hold pages bigger than 32 MiB — the Color Walk art
+/// books' ~430 MB archival TIFFs (`lib.rs`) — and this ceiling is
+/// deliberately below them: reading one now costs a few reallocations
+/// instead of none, which the hint-not-limit property above makes harmless.
+/// Deliberately not `MAX_DECODE_ALLOC` either: that 3 GiB ceiling bounds a
+/// *decoded* pixel buffer, and even at the corpus's own worst case
+/// (10200×14039, 24-bit) that buffer is only 1.33× the encoded file's
+/// bytes — ~430 MB on disk, ~546 MiB decoded — not "several times" as an
+/// earlier version of this comment claimed, and not a number this hint
+/// should be derived from either way.
+///
+/// **This clamp is per entry, and `read_archive` collects every page before
+/// returning**, so a crafted archive of N lying entries reserves the ceiling
+/// N times over, simultaneously, before any of them is freed. At the old
+/// 1 GiB ceiling, a 100-entry archive could reserve 100 GiB at once; at
+/// 32 MiB the same 100 entries reserve at most 3.125 GiB in aggregate.
+const MAX_ENTRY_CAPACITY_HINT: u64 = 32 * 1024 * 1024;
 
 pub struct Page {
     pub name: String,
@@ -31,12 +81,12 @@ impl std::fmt::Debug for Page {
 /// must not carry its own copy of this list — which entries are pages is
 /// normative (`docs/sidecar.md`, "How a member becomes pages"), and a second
 /// list is the duplication O10 was closed to remove.
+#[must_use]
 pub fn is_page_name(name: &str) -> bool {
     Path::new(name)
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
-        .unwrap_or(false)
+        .is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 /// Flatten an edition into one page sequence.
@@ -46,6 +96,25 @@ pub fn is_page_name(name: &str) -> bool {
 /// flatten before anything else happens, so volume-against-chapters stops being
 /// a special case. Members are ordered naturally rather than as given, because a
 /// shell glob sorts `c005.5` ahead of `c005`.
+///
+/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode is
+/// total, not fallible — invalid bytes come back as `U+FFFD`, or are mapped
+/// through codepage 437 if the UTF-8 flag is unset — so a mis-encoded entry is
+/// garbled, never refused, and still takes its place in the natural-order page
+/// sequence.
+///
+/// # Errors
+///
+/// Returns an error on the first member, in natural order, that fails: its
+/// path is neither a readable directory nor an openable zip-based archive, it
+/// names a recognised-but-unsupported container — 7-Zip, RAR, or tar, named
+/// as such rather than reported as a corrupt cbz — it holds no entry this
+/// crate reads as a page, or one of its pages' bytes cannot be read back: a
+/// directory entry removed or made unreadable since listing, or an archive
+/// entry whose compressed data does not decode. In the no-pages case, for a
+/// directory member, the message also lists the extensions it did hold, so a
+/// `.webp`-only release is distinguishable from an empty one; an archive with
+/// no page entries just says so.
 pub fn read_edition(members: &[PathBuf]) -> Result<Vec<Page>, String> {
     let mut ordered = members.to_vec();
     ordered.sort_by(|a, b| natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
@@ -58,6 +127,25 @@ pub fn read_edition(members: &[PathBuf]) -> Result<Vec<Page>, String> {
 /// rule 1 — and its paths may point into unrelated trees, so sorting them by
 /// name can reorder the volume. `read_edition` sorts because its caller hands
 /// it shell globs; a caller holding a sidecar must not.
+///
+/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode is
+/// total, not fallible — invalid bytes come back as `U+FFFD`, or are mapped
+/// through codepage 437 if the UTF-8 flag is unset — so a mis-encoded entry is
+/// garbled, never refused, and still takes its place in that member's own
+/// natural-order page sequence.
+///
+/// # Errors
+///
+/// Returns an error on the first member, in the given order, that fails: its
+/// path is neither a readable directory nor an openable zip-based archive, it
+/// names a recognised-but-unsupported container — 7-Zip, RAR, or tar, named
+/// as such rather than reported as a corrupt cbz — it holds no entry this
+/// crate reads as a page, or one of its pages' bytes cannot be read back: a
+/// directory entry removed or made unreadable since listing, or an archive
+/// entry whose compressed data does not decode. In the no-pages case, for a
+/// directory member, the message also lists the extensions it did hold, so a
+/// `.webp`-only release is distinguishable from an empty one; an archive with
+/// no page entries just says so.
 pub fn read_members_in_order(members: &[PathBuf]) -> Result<Vec<Page>, String> {
     let mut pages = Vec::new();
     for member in members {
@@ -103,16 +191,17 @@ fn skipped(path: &Path) -> String {
         }
     }
     extensions.sort();
-    match extensions.is_empty() {
-        true => String::new(),
-        false => format!(
+    if extensions.is_empty() {
+        String::new()
+    } else {
+        format!(
             ". It holds {}, none of which taiyaku reads as a page",
             extensions
                 .iter()
                 .map(|e| format!(".{e}"))
                 .collect::<Vec<_>>()
                 .join(", ")
-        ),
+        )
     }
 }
 
@@ -259,7 +348,17 @@ fn read_archive(path: &Path) -> Result<Vec<Page>, String> {
             let mut entry = zip
                 .by_name(&name)
                 .map_err(|e| format!("{}: {name}: {e}", path.display()))?;
-            let mut bytes = Vec::with_capacity(entry.size() as usize);
+            // `entry.size()` is unverified archive metadata a hostile or
+            // corrupt .cbz can misstate arbitrarily — see
+            // `MAX_ENTRY_CAPACITY_HINT`'s doc comment. Clamped rather than
+            // passed straight to `with_capacity`, so the reservation this
+            // hint drives is bounded by construction; `read_to_end` still
+            // grows the buffer to the real size regardless of the hint. The
+            // clamp is what makes the cast that follows provably safe —
+            // clippy verifies it against `MAX_ENTRY_CAPACITY_HINT`'s value
+            // rather than needing to be told so.
+            let hint = entry.size().min(MAX_ENTRY_CAPACITY_HINT) as usize;
+            let mut bytes = Vec::with_capacity(hint);
             entry
                 .read_to_end(&mut bytes)
                 .map_err(|e| format!("{}: {name}: {e}", path.display()))?;
@@ -268,11 +367,47 @@ fn read_archive(path: &Path) -> Result<Vec<Page>, String> {
         .collect()
 }
 
+/// A member's page count, as `member_pages` reports it.
+///
+/// # Panics
+///
+/// Panics if `n` exceeds `u32::MAX`. It cannot in this crate: `n` is
+/// `names.len()`, the number of page-image entries `member_page_names`
+/// actually found — real directory entries `directory_page_paths` walked, or
+/// archive entries `page_names_from` read out of a zip's already-parsed
+/// central directory. Unlike `MAX_ENTRY_CAPACITY_HINT`'s `entry.size()`,
+/// which one unchecked field can misstate arbitrarily, this count cannot be
+/// inflated without the directory or archive actually holding that many
+/// entries: reaching `u32::MAX` would take either that many real directory
+/// entries or a zip whose central directory alone ran past 100 GB, the same
+/// physical-limit argument `taiyaku-core::solve`'s `page_index` makes for a
+/// page count. Panicking rather than clamping is deliberate for the same
+/// reason `page_index` panics rather than clamps: a clamp here would report
+/// a wrong page count for the edition, exactly the silently-wrong result a
+/// clamp was rejected for elsewhere on this branch.
+fn page_count(n: usize) -> u32 {
+    u32::try_from(n).expect("page count exceeds u32::MAX")
+}
+
 /// The names of a member's pages, in reading order, without reading any bytes.
 ///
 /// For an archive this reads only the central directory; for a directory only
 /// the listing. That is what makes serving one page of a 195-page volume cost
 /// one page rather than the volume.
+///
+/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode is
+/// total, not fallible — invalid bytes come back as `U+FFFD`, or are mapped
+/// through codepage 437 if the UTF-8 flag is unset — so a mis-encoded entry is
+/// garbled, never refused, and the garbled name is what comes back in this
+/// listing.
+///
+/// # Errors
+///
+/// For a directory, returns an error if `path`, or a directory nested under
+/// it, cannot be listed. For an archive, returns an error if the file cannot
+/// be opened, if its leading bytes identify a recognised-but-unsupported
+/// container — 7-Zip, RAR, or tar, named as such rather than reported as a
+/// corrupt cbz — or if it does not parse as a zip archive.
 pub fn member_page_names(path: &Path) -> Result<Vec<String>, String> {
     if path.is_dir() {
         Ok(directory_page_paths(path)?
@@ -294,6 +429,22 @@ pub fn member_page_names(path: &Path) -> Result<Vec<String>, String> {
 /// The name comes back with the bytes because the caller cannot recover it:
 /// `taiyaku-serve` needs the extension to say what it is serving, and asking
 /// for the listing again to find out would read the archive twice.
+///
+/// An entry name that is not valid UTF-8 does not fail this either: `zip`'s
+/// decode is total, not fallible — invalid bytes come back as `U+FFFD`, or
+/// are mapped through codepage 437 if the UTF-8 flag is unset — so it comes
+/// back garbled rather than refused, at whatever `index` its position in the
+/// natural-order sort gives it.
+///
+/// # Errors
+///
+/// Returns an error if `path` cannot be opened as a directory or an
+/// archive — including a recognised-but-unsupported container such as
+/// 7-Zip, RAR, or tar, named as such — if `index` is at or past the
+/// member's page count (`"no page {index}"`), or if the located page's
+/// bytes cannot be read back: a directory entry removed or made unreadable
+/// since listing, or an archive entry whose compressed data does not
+/// decode.
 pub fn member_page(path: &Path, index: u32) -> Result<Page, String> {
     let i = index as usize;
     if path.is_dir() {
@@ -320,7 +471,14 @@ pub fn member_page(path: &Path, index: u32) -> Result<Page, String> {
     let mut entry = zip
         .by_name(&name)
         .map_err(|e| format!("{}: {name}: {e}", path.display()))?;
-    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    // Same reasoning as `read_archive` above: `entry.size()` is unverified
+    // archive metadata, clamped to `MAX_ENTRY_CAPACITY_HINT` so the hint it
+    // drives is bounded by construction; `read_to_end` still grows the
+    // buffer to fit the real size regardless. The clamp is what makes the
+    // cast provably safe, so clippy verifies it rather than needing an
+    // `#[expect]` to be told so.
+    let hint = entry.size().min(MAX_ENTRY_CAPACITY_HINT) as usize;
+    let mut bytes = Vec::with_capacity(hint);
     entry
         .read_to_end(&mut bytes)
         .map_err(|e| format!("{}: {name}: {e}", path.display()))?;
@@ -332,6 +490,16 @@ pub fn member_page(path: &Path, index: u32) -> Result<Page, String> {
 /// Over the file for an archive, and over every page in order for a directory —
 /// a directory has no single file to hash, and hashing the pages is what
 /// actually identifies the content.
+///
+/// # Errors
+///
+/// For a directory, returns an error if it, or a directory nested under it,
+/// cannot be listed, or if one of its page files cannot be read back —
+/// removed or made unreadable since listing. A directory that lists cleanly
+/// but holds no pages is *not* an error here: it hashes to the digest of
+/// nothing, because this reads pages directly rather than through
+/// `read_member`'s emptiness check. For a single file, returns an error if
+/// it cannot be read.
 pub fn member_digest(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -342,14 +510,29 @@ pub fn member_digest(path: &Path) -> Result<String, String> {
     } else {
         hasher.update(std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?);
     }
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect())
+    Ok(hasher.finalize().iter().fold(String::new(), |mut hex, b| {
+        let _ = write!(hex, "{b:02x}");
+        hex
+    }))
 }
 
 /// How many pages a member holds, without reading any of them.
+///
+/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode is
+/// total, not fallible — invalid bytes come back as `U+FFFD`, or are mapped
+/// through codepage 437 if the UTF-8 flag is unset — so a mis-encoded entry is
+/// garbled, never refused, and if its extension still matches, it still
+/// counts toward the total.
+///
+/// # Errors
+///
+/// Returns an error if the member cannot be listed — the same conditions as
+/// `member_page_names`: an unreadable directory, an unopenable archive, a
+/// recognised-but-unsupported container named as such, or an archive that
+/// does not parse. If the member opens and lists fine but holds no entry
+/// this crate reads as a page, returns `read_member`'s error for it, which —
+/// for a directory — names the extensions found instead, so a `.webp`-only
+/// release reads differently from an empty one.
 pub fn member_pages(path: &Path) -> Result<u32, String> {
     let names = member_page_names(path)?;
     if names.is_empty() {
@@ -360,7 +543,7 @@ pub fn member_pages(path: &Path) -> Result<u32, String> {
         // this line is reached.
         read_member(path)?;
     }
-    Ok(names.len() as u32)
+    Ok(page_count(names.len()))
 }
 
 /// The uncompressed byte size of each of a member's pages, in reading order,
@@ -374,6 +557,22 @@ pub fn member_pages(path: &Path) -> Result<u32, String> {
 ///
 /// A listing, not a read — the property that lets an inventory run over a NAS
 /// and decide what is worth copying.
+///
+/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode is
+/// total, not fallible — invalid bytes come back as `U+FFFD`, or are mapped
+/// through codepage 437 if the UTF-8 flag is unset — so a mis-encoded entry is
+/// garbled, never refused, and its size is still listed at the position the
+/// garbled name sorts to.
+///
+/// # Errors
+///
+/// For a directory, returns an error if it, or a directory nested under it,
+/// cannot be listed, or if a page file's metadata cannot be read — removed
+/// or made unreadable since listing. For an archive, returns an error if it
+/// cannot be opened, if its leading bytes identify a recognised-but-
+/// unsupported container — 7-Zip, RAR, or tar, named as such — if it does
+/// not parse as a zip archive, or if a listed entry cannot be looked up
+/// again by name.
 pub fn member_page_sizes(path: &Path) -> Result<Vec<u64>, String> {
     if path.is_dir() {
         return directory_page_paths(path)?
@@ -808,5 +1007,98 @@ mod tests {
         let _ = std::fs::remove_file(&archive);
         assert_eq!(from_dir, from_archive);
         assert_eq!(from_dir, vec![6, 6, 7], "p1.jpg, p2.jpg, p10.jpg by length");
+    }
+
+    /// Build a cbz and patch its first entry's central-directory
+    /// uncompressed-size field to an outrageous lie — the same thing a
+    /// hostile or corrupt `.cbz` would carry — rather than reimplementing
+    /// the read path against a mock. Shared by both capacity-ceiling tests
+    /// below, so `read_archive`'s and `member_page`'s identical clamp are
+    /// proven against identically-constructed evidence.
+    ///
+    /// The central directory's uncompressed-size field sits at offset 24 of
+    /// the 46-byte fixed header that follows the `PK\x01\x02` signature
+    /// (APPNOTE.TXT §4.3.12). Patched, not the local file header, because
+    /// `entry.size()` reads the central directory — patching only that one
+    /// leaves the entry's actual stored bytes untouched, so a correct read
+    /// is still possible despite the lie.
+    fn lying_size_cbz(name: &str, entries: &[&str]) -> PathBuf {
+        let path = cbz(name, entries);
+        let mut raw = std::fs::read(&path).unwrap();
+        let central_directory = raw
+            .windows(4)
+            .position(|w| w == [0x50, 0x4B, 0x01, 0x02])
+            .expect("a central directory file header");
+        let size_field = central_directory + 24;
+        // Same declared size as the probe docs/notes.md records: ~2 GiB for
+        // an entry whose real content is a handful of bytes.
+        raw[size_field..size_field + 4].copy_from_slice(&0x7FFF_FFF0u32.to_le_bytes());
+        std::fs::write(&path, &raw).unwrap();
+        path
+    }
+
+    /// A literal, not `MAX_ENTRY_CAPACITY_HINT` itself. An earlier version of
+    /// this test asserted `capacity() <= MAX_ENTRY_CAPACITY_HINT`, which
+    /// passes for *any* ceiling at or above the declared lie — raise the
+    /// constant to 4 GiB and the assertion still goes green, having proved
+    /// nothing about whether the clamp does anything useful. This bound sits
+    /// comfortably above today's 32 MiB ceiling (allocator rounding, and
+    /// room to retune the ceiling within its own order of magnitude without
+    /// editing this test) and 30-fold below the ~2 GiB lie, so it still
+    /// catches a regression that quietly enlarges the ceiling or drops the
+    /// clamp outright.
+    ///
+    /// Verified against the failure it exists to catch: with `.min(...)`
+    /// deleted from the call site, both tests below failed with
+    /// `capacity() == 2147483632` (the declared lie itself), before the
+    /// clamp was restored.
+    const RESERVATION_CEILING: usize = 64 * 1024 * 1024;
+
+    /// The path `read_archive` takes: every page in the member, collected at
+    /// once. See `MAX_ENTRY_CAPACITY_HINT`'s doc comment for why that makes
+    /// the per-entry ceiling matter in aggregate too.
+    #[test]
+    fn a_declared_size_far_past_reality_does_not_reserve_past_the_ceiling() {
+        let path = lying_size_cbz("taiyaku-test-lying-size.cbz", &["p1.jpg"]);
+
+        let pages = read_member(&path).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(
+            pages[0].bytes, b"p1.jpg",
+            "the real bytes must still be read correctly despite the lie"
+        );
+        assert!(
+            pages[0].bytes.capacity() < RESERVATION_CEILING,
+            "a declared ~2 GiB must not reserve anywhere near it; got {} bytes reserved",
+            pages[0].bytes.capacity()
+        );
+    }
+
+    /// The path `taiyaku-serve` actually calls on every page request: one
+    /// entry, addressed by index, never the whole archive. `read_archive`
+    /// and `member_page` carry the identical
+    /// `entry.size().min(MAX_ENTRY_CAPACITY_HINT)` clamp, but until this
+    /// test only the `read_archive` side had a regression test — a change
+    /// that broke the clamp on `member_page` alone (a copy-paste that
+    /// dropped the `.min()`, say) would have shipped with the suite green,
+    /// on the one path a server request actually reaches.
+    #[test]
+    fn a_lying_member_page_does_not_reserve_past_the_ceiling_either() {
+        let path = lying_size_cbz("taiyaku-test-lying-size-member-page.cbz", &["p1.jpg"]);
+
+        let page = member_page(&path, 0).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            page.bytes, b"p1.jpg",
+            "the real bytes must still be read correctly despite the lie"
+        );
+        assert!(
+            page.bytes.capacity() < RESERVATION_CEILING,
+            "a declared ~2 GiB must not reserve anywhere near it; got {} bytes reserved",
+            page.bytes.capacity()
+        );
     }
 }

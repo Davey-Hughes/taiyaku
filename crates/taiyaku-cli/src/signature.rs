@@ -9,6 +9,7 @@
 //! confirming a match with `content_digest` and fingerprinting one
 //! representative per group.
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
@@ -28,6 +29,18 @@ pub struct Signature {
     pub pages: u32,
     pub bytes: u64,
     pub digest: String,
+}
+
+/// A page count, as `Signature.pages` stores it.
+///
+/// # Panics
+///
+/// Panics if `n` exceeds `u32::MAX`. It cannot here: `n` is `sizes.len()`, a
+/// copy's page count across its members from
+/// `taiyaku_read::member_page_sizes`; no real archive in this tool's corpus
+/// runs anywhere near `u32::MAX` pages.
+fn page_count(n: usize) -> u32 {
+    u32::try_from(n).expect("page count exceeds u32::MAX")
 }
 
 impl Signature {
@@ -53,8 +66,11 @@ impl Signature {
         for size in &sorted {
             hasher.update(size.to_le_bytes());
         }
+        // An intermediate binding: Rust's attribute grammar allows no attribute on a
+        // struct-literal field, so `pages` is bound here rather than inline below.
+        let pages = page_count(sizes.len());
         Self {
-            pages: sizes.len() as u32,
+            pages,
             bytes: sizes.iter().sum(),
             digest: hex(hasher),
         }
@@ -98,11 +114,10 @@ fn ordered(members: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 fn hex(hasher: Sha256) -> String {
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    hasher.finalize().iter().fold(String::new(), |mut hex, b| {
+        let _ = write!(hex, "{b:02x}");
+        hex
+    })
 }
 
 #[cfg(test)]

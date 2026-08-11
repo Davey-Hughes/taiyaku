@@ -68,6 +68,18 @@ impl Bounds {
     }
 }
 
+/// A histogram bin index, as `otsu`'s `best_level` result.
+///
+/// # Panics
+///
+/// Panics if `level` exceeds `u8::MAX`. It cannot: every call site indexes
+/// the fixed-size `histogram: [0u64; 256]` array below via `.enumerate()`,
+/// which cannot yield an index past 255 — enforced by the array's declared
+/// size, not merely a property of the material.
+fn intensity_level(level: usize) -> u8 {
+    u8::try_from(level).expect("histogram bin index exceeds u8::MAX")
+}
+
 /// Otsu's threshold: the level that best separates the page's two populations.
 ///
 /// Chosen over a fixed level because the corpus spans scans, re-encodes and one
@@ -101,15 +113,54 @@ pub fn otsu(page: &GrayImage) -> u8 {
             break;
         }
         below_weighted += level as u64 * count;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "below_weighted and below are u64 counts of pixels on one page \
+                      (`total` above sums the 256-bin histogram over `page.pixels()`); \
+                      f64 is exact up to 2^53 and no page in this corpus is remotely \
+                      that large — stroke_scale's doc comment below records real page \
+                      widths from 685 to 5343px. Property of the material, not \
+                      something the code bounds. A third route was tried too: \
+                      f64::from is lossless for u32/i32/u16/i16/u8/i8, but no such \
+                      impl exists for u64 — its 64 bits exceed even f64's 52-bit \
+                      mantissa — so this stays a cast, not a conversion."
+        )]
         let mean_below = below_weighted as f64 / below as f64;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "weighted, below_weighted and above are u64 pixel counts, same \
+                      bound as mean_below above: no page here comes near f64's 2^53 \
+                      exact-integer limit. Same absence of a third route as mean_below \
+                      above: no From<u64> for f64 exists in std."
+        )]
         let mean_above = (weighted - below_weighted) as f64 / above as f64;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "below and above are u64 pixel counts, same bound as mean_below \
+                      above: no page here comes near f64's 2^53 exact-integer limit. \
+                      Same absence of a third route as mean_below above: no \
+                      From<u64> for f64 exists in std."
+        )]
         let variance = below as f64 * above as f64 * (mean_below - mean_above).powi(2);
         if variance > best_variance {
             best_variance = variance;
-            best_level = level as u8;
+            best_level = intensity_level(level);
         }
     }
     best_level
+}
+
+/// A pixel coordinate, as `components`' flood-fill neighbour scan takes it.
+///
+/// # Panics
+///
+/// Panics if `v` is negative or exceeds `u32::MAX`. Neither happens at the
+/// one call site here: the explicit `nx < 0 || ny < 0 || nx >= i64::from(width)
+/// || ny >= i64::from(height)` guard immediately above it continues before
+/// reaching this, so `v` is already known to be in `0..width` or `0..height`,
+/// both `u32`.
+fn pixel_coord(v: i64) -> u32 {
+    u32::try_from(v).expect("pixel coordinate is negative or exceeds u32::MAX")
 }
 
 /// Bounding boxes of the connected regions of ink.
@@ -153,12 +204,12 @@ pub fn components(page: &GrayImage, threshold: u8) -> Vec<Bounds> {
                 });
                 for dy in -1i64..=1 {
                     for dx in -1i64..=1 {
-                        let nx = cx as i64 + dx;
-                        let ny = cy as i64 + dy;
-                        if nx < 0 || ny < 0 || nx >= width as i64 || ny >= height as i64 {
+                        let nx = i64::from(cx) + dx;
+                        let ny = i64::from(cy) + dy;
+                        if nx < 0 || ny < 0 || nx >= i64::from(width) || ny >= i64::from(height) {
                             continue;
                         }
-                        let (nx, ny) = (nx as u32, ny as u32);
+                        let (nx, ny) = (pixel_coord(nx), pixel_coord(ny));
                         if seen[at(nx, ny)] || !is_ink(nx, ny) {
                             continue;
                         }
@@ -218,15 +269,15 @@ pub fn stroke_scale(strokes: &[Bounds]) -> Option<u32> {
 /// production code, so it would otherwise be dead code in an ordinary build.
 #[cfg(test)]
 fn size_floor(strokes: &[Bounds]) -> Option<u32> {
-    if strokes.is_empty() {
-        return None;
-    }
     // 25 buckets covers log2 of any real scan (2^24px is already absurd), so
     // no bucket count needs to be derived from the page in hand either.
     const BUCKETS: usize = 25;
+    if strokes.is_empty() {
+        return None;
+    }
     let mut histogram = [0u64; BUCKETS];
     for s in strokes {
-        let bucket = (31 - s.longer().leading_zeros()) as usize;
+        let bucket = s.longer().ilog2() as usize;
         histogram[bucket.min(BUCKETS - 1)] += 1;
     }
 
@@ -249,8 +300,32 @@ fn size_floor(strokes: &[Bounds]) -> Option<u32> {
             break;
         }
         below_weighted += bucket as u64 * count;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "below_weighted and below are u64 counts of this page's \
+                      connected components (`strokes.len()` at most), bucketed into \
+                      25 log2 bins; f64 is exact up to 2^53 and no real page has \
+                      anywhere near that many components. Property of the material, \
+                      the same style of bound as otsu's mean_below above. Same absence \
+                      of a third route, too: no From<u64> for f64 exists in std — \
+                      f64::from is lossless only for u32/i32/u16/i16/u8/i8."
+        )]
         let mean_below = below_weighted as f64 / below as f64;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "weighted, below_weighted and above are u64 component counts, \
+                      same bound as mean_below above: nowhere near f64's 2^53 \
+                      exact-integer limit. No From<u64> for f64 exists in std, so the \
+                      third route is closed the same way as mean_below above."
+        )]
         let mean_above = (weighted - below_weighted) as f64 / above as f64;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "below and above are u64 component counts, same bound as \
+                      mean_below above: nowhere near f64's 2^53 exact-integer limit. \
+                      No From<u64> for f64 exists in std, so the third route is \
+                      closed the same way as mean_below above."
+        )]
         let variance = below as f64 * above as f64 * (mean_below - mean_above).powi(2);
         if variance > best_variance {
             best_variance = variance;
@@ -387,9 +462,10 @@ pub fn merge_along(strokes: &[Bounds], axis: Axis, gap: u32) -> Vec<Bounds> {
 pub fn axis_of(strokes: &[Bounds], gap: u32) -> Axis {
     let vertical = merge_along(strokes, Axis::Vertical, gap).len();
     let horizontal = merge_along(strokes, Axis::Horizontal, gap).len();
-    match vertical <= horizontal {
-        true => Axis::Vertical,
-        false => Axis::Horizontal,
+    if vertical <= horizontal {
+        Axis::Vertical
+    } else {
+        Axis::Horizontal
     }
 }
 
@@ -498,14 +574,33 @@ pub fn detect_page(page: &GrayImage) -> Vec<Region> {
         })
         .filter(|block| {
             let area = f64::from(block.width()) * f64::from(block.height());
-            area > 0.0 && ink_in(block) as f64 / area >= f64::from(MIN_INK)
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "ink_in sums each stroke's bounding-box area, filtered to \
+                          strokes inside `block`; those boxes can overlap — two \
+                          crossing diagonal strokes in one glyph is the easy case — \
+                          so the sum can exceed `block`'s own pixel area rather than \
+                          being bounded by it. Recorded as O34 in `docs/status.md`: \
+                          61 of 76 surviving blocks score above 1.0 against MIN_INK's \
+                          0.05 floor. The bound that does hold: at most \
+                          `strokes.len()` boxes, each at most page_area, so the sum \
+                          is bounded by strokes-on-page times page-area — still many \
+                          orders of magnitude below f64's 2^53 exact-integer limit; \
+                          see stroke_scale's doc comment above, real widths from 685 \
+                          to 5343px. The lossless-From route is closed too: ink_in \
+                          returns u64, and no From<u64> for f64 exists in std — only \
+                          u32/i32/u16/i16/u8/i8 have one."
+            )]
+            {
+                area > 0.0 && ink_in(block) as f64 / area >= f64::from(MIN_INK)
+            }
         })
-        .map(|block| Region {
-            x: block.x0 as f32 / width as f32,
-            y: block.y0 as f32 / height as f32,
-            w: block.width() as f32 / width as f32,
-            h: block.height() as f32 / height as f32,
-            axis,
+        .map(|block| {
+            let x = f64::from(block.x0) / f64::from(width);
+            let y = f64::from(block.y0) / f64::from(height);
+            let w = f64::from(block.width()) / f64::from(width);
+            let h = f64::from(block.height()) / f64::from(height);
+            Region { x, y, w, h, axis }
         })
         .collect()
 }

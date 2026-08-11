@@ -34,6 +34,7 @@ pub enum Via {
 /// paired run is identical to its transpose. `calibrate` is asymmetric on
 /// paper, since `signal` is a median of per-A-page maxima, and it does not
 /// reach the DP's output on any material measured. See `notes.md`.
+#[must_use]
 pub fn invert(runs: &[Run]) -> Vec<Run> {
     let mut inverted: Vec<Run> = runs
         .iter()
@@ -71,8 +72,10 @@ impl Route {
     /// different answer — so a reader doing that moves a page without being
     /// asked to. `notes.md`, "swapping must not round-trip through the
     /// alignment", is the same failure reached by a different route.
+    #[must_use]
     pub fn resolve_slot(&self, slot: Slot) -> Option<Slot> {
-        let here = crate::sidecar::slot_index(&self.from_slots, slot)? as u32;
+        let here =
+            crate::sidecar::slot_position(crate::sidecar::slot_index(&self.from_slots, slot)?);
         let there = counterpart(&self.runs, here)?;
         self.to_slots.get(there as usize).copied()
     }
@@ -83,6 +86,7 @@ impl Route {
     /// is what makes `47` mean the same thing whether page 47 is whole or a
     /// spread. The answer carries a half because that is what a reader has to
     /// display — possibly one side of a joined spread.
+    #[must_use]
     pub fn resolve(&self, page: u32) -> Option<Slot> {
         self.resolve_slot(Slot { page, half: None })
     }
@@ -92,6 +96,7 @@ impl Route {
     /// Exposed because a caller reporting how far the answer can be trusted has
     /// to judge what will actually be walked, which for a composed route is
     /// neither of the stored run lists.
+    #[must_use]
     pub fn runs(&self) -> &[Run] {
         &self.runs
     }
@@ -107,6 +112,7 @@ impl Route {
 /// question than the one asked — not "where does this edge send the page" but
 /// "where does some other path send it". `Sidecar::trust` makes the same
 /// choice for the same reason.
+#[must_use]
 pub fn route(sidecar: &Sidecar, from: &str, to: &str) -> Option<Route> {
     // Existence is checked before identity: `route("nosuch", "nosuch")` must be
     // `None` rather than a confident identity over an edition that is not here.
@@ -119,10 +125,15 @@ pub fn route(sidecar: &Sidecar, from: &str, to: &str) -> Option<Route> {
         // a run list that need not exist — the same rule `trust` applies.
         let runs = match from_slots.len() {
             0 => Vec::new(),
-            n => vec![Run::paired(
-                crate::PageRange::new(0, n as u32 - 1),
-                crate::PageRange::new(0, n as u32 - 1),
-            )],
+            n => {
+                // n > 0 in this arm (0 is handled above), so slot_position(n) - 1
+                // cannot underflow.
+                let last = crate::sidecar::slot_position(n) - 1;
+                vec![Run::paired(
+                    crate::PageRange::new(0, last),
+                    crate::PageRange::new(0, last),
+                )]
+            }
         };
         return Some(Route {
             via: Via::Identity,
@@ -134,9 +145,10 @@ pub fn route(sidecar: &Sidecar, from: &str, to: &str) -> Option<Route> {
 
     if let Some(edge) = sidecar.edge_between(from, to) {
         let stored = sidecar.runs_of(edge).ok()?;
-        let (runs, via) = match edge.from == from {
-            true => (stored, Via::Direct),
-            false => (invert(&stored), Via::Inverted),
+        let (runs, via) = if edge.from == from {
+            (stored, Via::Direct)
+        } else {
+            (invert(&stored), Via::Inverted)
         };
         return Some(Route {
             via,
@@ -170,9 +182,10 @@ pub fn route(sidecar: &Sidecar, from: &str, to: &str) -> Option<Route> {
 fn leg(sidecar: &Sidecar, from: &str, to: &str) -> Option<Vec<Run>> {
     let edge = sidecar.edge_between(from, to)?;
     let stored = sidecar.runs_of(edge).ok()?;
-    Some(match edge.from == from {
-        true => stored,
-        false => invert(&stored),
+    Some(if edge.from == from {
+        stored
+    } else {
+        invert(&stored)
     })
 }
 
@@ -181,6 +194,7 @@ fn leg(sidecar: &Sidecar, from: &str, to: &str) -> Option<Vec<Run>> {
 ///
 /// This is the whole reader API in one call. A caller resolving more than one
 /// page should hold a `Route` instead, which builds the path once.
+#[must_use]
 pub fn resolve(sidecar: &Sidecar, from: &str, to: &str, page: u32) -> Option<Slot> {
     route(sidecar, from, to)?.resolve(page)
 }

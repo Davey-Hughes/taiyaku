@@ -11,6 +11,8 @@
 //! actually matters, which is that page N agrees, rather than that two files
 //! resemble each other.
 
+use std::fmt::Write as _;
+
 use sha2::{Digest, Sha256};
 
 use crate::stump::cache::{self, Resolutions};
@@ -24,11 +26,10 @@ fn digest(bytes: &[u8]) -> String {
     // Not `format!("{:x}", …)`: `digest` 0.11's `Output` no longer implements
     // `LowerHex`, matching the byte-by-byte formatting `taiyaku_read` already
     // uses for the same reason.
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    hasher.finalize().iter().fold(String::new(), |mut hex, b| {
+        let _ = write!(hex, "{b:02x}");
+        hex
+    })
 }
 
 /// What resolving one work against Stump produced.

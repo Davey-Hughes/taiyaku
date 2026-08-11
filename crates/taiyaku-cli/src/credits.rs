@@ -37,6 +37,19 @@ pub struct Recurrence {
     pub nearest_local: u32,
 }
 
+/// A page index or count in this tool's corpus, as `Recurrence` and
+/// `classify` spell it.
+///
+/// # Panics
+///
+/// Panics if `n` exceeds `u32::MAX`. It cannot at any call site in this file:
+/// each derives `n` from the length of, or an index into, a member's or an
+/// edition's page-hash list — real archives in this tool's corpus run to a
+/// few hundred pages, nowhere near `u32::MAX`.
+fn page_index(n: usize) -> u32 {
+    u32::try_from(n).expect("page index exceeds u32::MAX")
+}
+
 /// For each page, the nearest page in a *different* member.
 ///
 /// Quadratic in the edition's page count, which is fine at the scale this runs
@@ -56,7 +69,7 @@ pub fn recurrences(members: &[Vec<PageHash>]) -> Vec<Recurrence> {
     let mut flat: Vec<(usize, u32, PageHash)> = Vec::new();
     for (mi, pages) in members.iter().enumerate() {
         for (li, h) in pages.iter().enumerate() {
-            flat.push((mi, li as u32, *h));
+            flat.push((mi, page_index(li), *h));
         }
     }
 
@@ -68,8 +81,9 @@ pub fn recurrences(members: &[Vec<PageHash>]) -> Vec<Recurrence> {
                 .filter(|(mj, _, _)| mj != mi)
                 .map(|(mj, lj, g)| (hamming(*h, *g), *mj, *lj))
                 .min_by_key(|(d, _, _)| *d)?;
+            let page = page_index(page);
             Some(Recurrence {
-                page: page as u32,
+                page,
                 distance,
                 nearest_member,
                 nearest_local,
@@ -193,16 +207,18 @@ impl Row {
             self.member.clone(),
             format!("{}/{}", self.local, self.member_pages),
             self.run.to_string(),
-            match self.at_end {
-                true => "yes".to_string(),
-                false => "no".to_string(),
+            if self.at_end {
+                "yes".to_string()
+            } else {
+                "no".to_string()
             },
             self.recurs
                 .map_or_else(|| "-".to_string(), |d| d.to_string()),
             self.nearest.clone().unwrap_or_else(|| "-".to_string()),
-            match self.credits {
-                true => "credits".to_string(),
-                false => "-".to_string(),
+            if self.credits {
+                "credits".to_string()
+            } else {
+                "-".to_string()
             },
         ]
     }
@@ -230,9 +246,12 @@ fn table(rows: &[Row]) -> String {
             .iter()
             .zip(widths)
             .zip(LEFT)
-            .map(|((cell, w), left)| match left {
-                true => format!("{cell:<w$}"),
-                false => format!("{cell:>w$}"),
+            .map(|((cell, w), left)| {
+                if left {
+                    format!("{cell:<w$}")
+                } else {
+                    format!("{cell:>w$}")
+                }
             })
             .collect();
         // Trailing pad on the last column is invisible in a terminal and
@@ -269,27 +288,31 @@ fn resolve_counterpart(
         .alignments
         .iter()
         .filter(|al| al.from == edition || al.to == edition)
-        .map(|al| match al.from == edition {
-            true => al.to.as_str(),
-            false => al.from.as_str(),
+        .map(|al| {
+            if al.from == edition {
+                al.to.as_str()
+            } else {
+                al.from.as_str()
+            }
         })
         .collect();
     spokes.sort_unstable();
     spokes.dedup();
 
-    Err(match spokes.is_empty() {
+    Err(if spokes.is_empty() {
         // The empty case: with nothing to suggest, the sentence has to end on
         // its own rather than trail off after a bare `--against:`.
-        true => format!(
+        format!(
             "`{edition}` is this work's hub, so which edition it is unpaired against is \
              a choice rather than a default, and this document has no alignment naming an \
              edition to suggest. Name one with --against."
-        ),
-        false => format!(
+        )
+    } else {
+        format!(
             "`{edition}` is this work's hub, so which edition it is unpaired against is \
              a choice rather than a default. Name one with --against: {}",
             spokes.join(", ")
-        ),
+        )
     })
 }
 
@@ -331,7 +354,7 @@ fn classify(
         // one from the document's recorded counts — so a disagreement would
         // print one page's recurrence beside another page's run rather than
         // fail.
-        if hashes.len() as u32 != member.pages {
+        if page_index(hashes.len()) != member.pages {
             return Err(format!(
                 "`{}` holds {} pages but the sidecar records {} for it, so the two signals \
                  would be numbering different pages; re-run align to bring the document up \
@@ -509,7 +532,10 @@ mod tests {
 
     #[test]
     fn write_without_a_sidecar_is_refused() {
-        let args: Vec<String> = ["a.cbz", "--write"].iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = ["a.cbz", "--write"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         let err = command(&args).expect_err("refuses");
         assert!(
             err.contains("--write") && err.contains("--sidecar"),
@@ -523,7 +549,7 @@ mod tests {
         // options late would fail on a missing file instead of ever refusing.
         let args: Vec<String> = ["no-such-file.cbz", "--sidecar"]
             .iter()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .collect();
         let err = command(&args).expect_err("refuses");
         assert!(
@@ -535,7 +561,10 @@ mod tests {
     #[test]
     fn a_misspelled_flag_is_refused() {
         // O21's rule.
-        let args: Vec<String> = ["a.cbz", "--wrote"].iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = ["a.cbz", "--wrote"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         let err = command(&args).expect_err("refuses");
         assert!(err.contains("--wrote"), "the refusal must name it: {err}");
     }
@@ -553,7 +582,7 @@ mod tests {
     fn against_without_a_sidecar_is_refused() {
         let args: Vec<String> = ["a.cbz", "--against", "raw"]
             .iter()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .collect();
         let err = command(&args).expect_err("refuses");
         assert!(
@@ -564,7 +593,7 @@ mod tests {
 
     #[test]
     fn no_sidecar_at_all_is_refused_naming_the_flag() {
-        let args: Vec<String> = ["a.cbz"].iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = ["a.cbz"].iter().map(ToString::to_string).collect();
         let err = command(&args).expect_err("refuses");
         assert!(err.contains("--sidecar"), "unhelpful: {err}");
     }
@@ -580,7 +609,7 @@ mod tests {
             "/nonexistent-dir/taiyaku.json",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .collect();
         let err = command(&args).expect_err("refuses");
         assert!(
@@ -591,6 +620,13 @@ mod tests {
 
     #[test]
     fn the_table_widens_to_its_names_and_says_nothing_it_did_not_measure() {
+        // No cell in this fixture holds a space, so splitting on whitespace
+        // recovers the cells and states the columns without pinning the
+        // padding, which is asserted separately below.
+        fn cells(line: &str) -> Vec<&str> {
+            line.split_whitespace().collect()
+        }
+
         // The `-` in the recurs column is the case that matters: an edition of
         // one member has no recurrence to report, and a `0` there would read as
         // a perfect match.
@@ -621,12 +657,6 @@ mod tests {
         let out = table(&rows);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 3, "a header and one row each: {out}");
-        // No cell in this fixture holds a space, so splitting on whitespace
-        // recovers the cells and states the columns without pinning the
-        // padding, which is asserted separately below.
-        fn cells(line: &str) -> Vec<&str> {
-            line.split_whitespace().collect()
-        }
         assert_eq!(cells(lines[0]), HEADERS);
         assert_eq!(
             cells(lines[1]),
@@ -795,7 +825,7 @@ mod tests {
         // file per attempt in the reader's own library directory.
         let strays: Vec<String> = std::fs::read_dir(&dir)
             .expect("the temp dir is readable")
-            .filter_map(|entry| entry.ok())
+            .filter_map(Result::ok)
             .map(|entry| entry.file_name().to_string_lossy().to_string())
             .filter(|name| name.contains(".tmp"))
             .collect();

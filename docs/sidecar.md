@@ -146,7 +146,7 @@ predicted hub-gap case rather than a broken tool.
       "to": "en-mono",
       "by": "solver",
       "solver": { "hash": "dhash-16", "floor": 0.69921875 },
-      "quality": { "verdict": "sound", "slots": 195, "paired": 193, "avg_run": 64.333336 },
+      "quality": { "verdict": "sound", "slots": 195, "paired": 193, "avg_run": 64.33 },
       "runs": [
         { "a": "0",     "b": "0",     "margin": 0.08984375 },
         { "a": "1" },
@@ -160,15 +160,31 @@ predicted hub-gap case rather than a broken tool.
 ```
 
 That is the real alignment of Go-Toubun volume 1, not an illustration, and the
-figures are byte-for-byte what the tool writes. `margin`, `floor` and `avg_run`
-are `f32`s and none of them is rounded on the way out: each is written to as
-many digits as it takes to round-trip that `f32`, and no more. The eight decimal
-places on `margin` and `floor` are a property of these particular figures rather
-than of `f32` serialisation. Every margin and floor here is a multiple of 1/256,
-which is the scale a 256-bit hash distance lands on — 0.69921875 is 179/256 —
-and a floor of 0.75 would print as `0.75`. `avg_run` takes six, 64.333336 above.
-Rounding happens only where a figure is *printed*: `lookup`'s trust line reports
-this alignment as an average run of 64.3. Five runs for 195 pages.
+figures are byte-for-byte what the tool writes. `margin` and `floor` are `f32`s
+and neither is rounded on the way out: each is written to as many digits as it
+takes to round-trip that `f32`, and no more. The eight decimal places on
+`margin` and `floor` are a property of these particular figures rather than of
+`f32` serialisation. Every margin and floor here is a multiple of 1/256, which
+is the scale a 256-bit hash distance lands on — 0.69921875 is 179/256 — and a
+floor of 0.75 would print as `0.75`.
+
+`avg_run` is stored differently, deliberately. It is an `f64` — widened, along
+with the spread-detection and run-length arithmetic behind it (`slot.rs`,
+`solve.rs`), to close a `cast_precision_loss` suppression that `f32` could not
+close without one — but it is *rounded to two decimal places* before it is
+written, rather than left at whatever the arithmetic produced. The
+unrounded figure was never a considered precision: at `f32` it happened to
+round-trip at six-ish digits (`64.333336`), and at `f64` the same division
+prints sixteen (`64.33333333333333`) — neither digit count was chosen
+by anyone, both are just where a binary fraction's decimal expansion happens to
+stop being exact. Two decimals is chosen instead, because this field's whole
+job is to be read by a person without opening the archives — the design goals
+above put human-readable and diffable first — and a longer figure serves
+neither. Nothing reads the stored value back for a decision: `verdict` always
+recomputes from the runs, using the unrounded average, so rounding this field
+changes no verdict, only what a reader sees. Rounding also happens where a
+figure is *printed* rather than stored: `lookup`'s trust line reports this
+alignment as an average run of 64.3. Five runs for 195 pages.
 
 ## Why it is that short
 
@@ -434,13 +450,15 @@ report can show it. Anything worth writing down about an alignment is data.
 An alignment may carry a `quality` block:
 
 ```json
-"quality": { "verdict": "sound", "slots": 195, "paired": 193, "avg_run": 64.333336 }
+"quality": { "verdict": "sound", "slots": 195, "paired": 193, "avg_run": 64.33 }
 ```
 
 `verdict` is `"refused"`, `"fragmented"` or `"sound"`. `slots` and `paired`
 count the alignment's own `from` side — whichever edition the alignment itself
 calls `from`, not necessarily the side a caller looked from. `avg_run` is the
-mean length, in slots, of the runs that paired.
+mean length, in slots, of the runs that paired, rounded to two decimal places
+for storage — see "Shape" above for why, and for how that differs from
+`margin` and `floor`.
 
 The verdict is a function of the runs, not of calibration, which is why it sits
 on the alignment rather than inside `solver`: the floor decides whether the

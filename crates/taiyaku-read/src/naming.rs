@@ -46,6 +46,7 @@ fn tokenize(name: &str) -> Vec<Token> {
 }
 
 /// Compare two names in natural order.
+#[must_use]
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     let (ta, tb) = (tokenize(a), tokenize(b));
     for pair in ta.iter().zip(tb.iter()) {

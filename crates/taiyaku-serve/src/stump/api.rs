@@ -71,7 +71,7 @@ pub fn find_book(
     size: u64,
     pages: u32,
 ) -> Result<Option<Book>, StumpError> {
-    let query = r#"query Find($stem: String!, $size: Int!, $pages: Int!) {
+    let query = r"query Find($stem: String!, $size: Int!, $pages: Int!) {
         media(
             filter: { _and: [
                 { name:  { eq: $stem } },
@@ -80,7 +80,7 @@ pub fn find_book(
             ] },
             pagination: { offset: { page: 1, pageSize: 8 } }
         ) { nodes { id name path size pages } }
-    }"#;
+    }";
     let body = serde_json::json!({
         "query": query,
         "variables": { "stem": stem, "size": size, "pages": pages },

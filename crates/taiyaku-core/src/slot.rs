@@ -14,6 +14,18 @@
 //! in the hashed sequence, the alignment stays strictly one-to-one, and the
 //! halves are folded back afterwards. The solver never learns spreads exist.
 
+/// An index into `landscape`, the page-flag sequence `expand` walks below.
+///
+/// # Panics
+///
+/// Panics if `i` exceeds `u32::MAX`. It cannot in this crate: `landscape`
+/// carries one entry per page of the edition being expanded into slots, and
+/// a page count is bounded by what a book can physically contain, far below
+/// `u32::MAX`.
+fn page_index(i: usize) -> u32 {
+    u32::try_from(i).expect("page index exceeds u32::MAX")
+}
+
 /// Which side of a joined spread a page corresponds to.
 ///
 /// Sides are in image coordinates, not reading order. In this corpus the right
@@ -64,7 +76,8 @@ pub enum Direction {
 /// correct and the white bars either side are not. Everything genuinely
 /// measured falls either at 1.95 to 2.53, or at 3.43 for the jacket, so the
 /// line sits in the gap between them.
-pub fn is_spread(page_aspect: f32, ordinary_aspect: f32) -> bool {
+#[must_use]
+pub fn is_spread(page_aspect: f64, ordinary_aspect: f64) -> bool {
     if ordinary_aspect <= 0.0 {
         return false;
     }
@@ -81,24 +94,32 @@ pub fn is_spread(page_aspect: f32, ordinary_aspect: f32) -> bool {
 /// published two facing pages per image throughout, so every page is landscape
 /// and there is no portrait baseline to measure against.
 pub fn spread_flags(dimensions: &[(u32, u32)]) -> Vec<bool> {
-    let aspect = |(w, h): (u32, u32)| w as f32 / h as f32;
-    let mut portrait: Vec<f32> = dimensions
+    // w and h are a page's pixel dimensions; the corpus's largest measured page
+    // is 10200x14039 (crates/taiyaku-read/src/lib.rs's MAX_DECODE_ALLOC, the
+    // Color Walk art books), far below 2^24 (16,777,216) where f32 begins
+    // losing integer precision, and further still below f64's 2^53. f64::from
+    // (u32) is lossless outright (u32's 32 bits fit f64's 52-bit mantissa),
+    // where there is no equivalent `From<u32> for f32` (f32's mantissa is
+    // only 24 bits) — so widening `is_spread`'s parameters and every value
+    // computed here to f64 closes the cast without a suppression.
+    let aspect = |(w, h): (u32, u32)| f64::from(w) / f64::from(h);
+    let mut portrait: Vec<f64> = dimensions
         .iter()
         .copied()
         .filter(|(w, h)| w <= h)
         .map(aspect)
         .collect();
-    portrait.sort_by(f32::total_cmp);
+    portrait.sort_by(f64::total_cmp);
 
     let ordinary = if portrait.is_empty() {
         // No portrait page anywhere: the typical page of this edition is itself
         // a joined spread, so an ordinary single page is half of one.
-        let mut all: Vec<f32> = dimensions.iter().copied().map(aspect).collect();
-        all.sort_by(f32::total_cmp);
-        match all.is_empty() {
-            true => return Vec::new(),
-            false => all[all.len() / 2] / 2.0,
+        let mut all: Vec<f64> = dimensions.iter().copied().map(aspect).collect();
+        all.sort_by(f64::total_cmp);
+        if all.is_empty() {
+            return Vec::new();
         }
+        all[all.len() / 2] / 2.0
     } else {
         portrait[portrait.len() / 2]
     };
@@ -115,6 +136,7 @@ pub fn spread_flags(dimensions: &[(u32, u32)]) -> Vec<bool> {
 /// `landscape[i]` says whether page `i` is a joined spread. Halves are emitted
 /// in reading order, because the alignment is monotonic and cannot run backwards
 /// across a pair.
+#[must_use]
 pub fn expand(landscape: &[bool], direction: Direction) -> Vec<Slot> {
     let (first, second) = match direction {
         Direction::RightToLeft => (Half::Right, Half::Left),
@@ -124,7 +146,7 @@ pub fn expand(landscape: &[bool], direction: Direction) -> Vec<Slot> {
         .iter()
         .enumerate()
         .flat_map(|(page, wide)| {
-            let page = page as u32;
+            let page = page_index(page);
             if *wide {
                 vec![
                     Slot {
@@ -277,7 +299,7 @@ mod tests {
     /// wide page that is not have to come out on opposite sides of this.
     #[test]
     fn a_wraparound_cover_is_not_a_spread() {
-        let aspect = |w: f32, h: f32| w / h;
+        let aspect = |w: f64, h: f64| w / h;
 
         // Genuine joined spreads, from four series. None is exactly double.
         let gotoubun = aspect(2147.0, 3056.0);

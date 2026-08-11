@@ -273,12 +273,13 @@ fn decide(node: &Totals, min_pages: u32, walked: &mut Walked) {
     if node.pages == 0 {
         return;
     }
-    match node.pages >= min_pages {
-        true => walked.candidates.push(Candidate {
+    if node.pages >= min_pages {
+        walked.candidates.push(Candidate {
             path: node.path.clone(),
             pages: node.pages,
-        }),
-        false => walked.excluded.push(node.pages),
+        });
+    } else {
+        walked.excluded.push(node.pages);
     }
 }
 

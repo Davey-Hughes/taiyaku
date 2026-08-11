@@ -1179,3 +1179,102 @@ whole technique exists to expose: a green result that means "nothing was
 tested" is indistinguishable from a green result that means "everything
 passed", unless something independent confirms the thing under test was
 actually there.
+
+## The pedantic lints, and why they are advisory
+
+`clippy::pedantic` is **not** in `[workspace.lints]` and must not be put there.
+The blocking gate stays `cargo clippy --workspace --all-targets --all-features
+-- -D warnings`, which sees the two lints that table does set — `todo` and
+`dbg_macro` — and nothing from the pedantic group.
+
+The reason is drift in the toolchain rather than distaste for the lints.
+`rust-toolchain.toml` says `channel = "stable"` and this file's jobs run
+`rust:1-bookworm`; both float, and clippy adds lints to `pedantic` on roughly a
+six-week cadence. A pedantic lint in the blocking gate means a rustc release
+turns an unrelated PR red in a file its author did not touch.
+
+The mechanism that makes the step advisory rather than blocking is
+`continue-on-error: true`, on that one step and nowhere else in `ci.yml`.
+Unlike `scripts/check-all.sh`'s `|| true`, which is a shell operator this
+repository's own gate exercises on every local run, this key needs the step
+it guards to actually fail before it does anything, and nothing local can
+force that. The branch has since been pushed and the pipeline came back
+green — but a green run does not exercise the key: `-W clippy::pedantic`
+exits 0 no matter how many warnings it prints (measured: exit 0, 15
+warnings), and only `-D warnings` sets a non-zero exit, so the advisory
+step never had a reason to fail on lints. It cannot fail on lints at all,
+in fact — its only possible failure is a compile error, which the blocking
+step just above would already have caught — so `continue-on-error` and
+`|| true` are both belt-and-braces for a failure lints cannot produce
+today. The key stays untriggered rather than untested: it has still never
+been observed doing its job.
+
+What *is* enforced is narrower and is the point of the whole exercise: every
+suppression in the tree is a per-site `#[expect(clippy::…, reason = "…")]`, and
+`unfulfilled_lint_expectations` is a plain rustc lint that the `-D warnings`
+gate above already denies. **So a stale expectation fails CI even though the
+lint it names is off.** Measured, on this workspace:
+
+| pedantic | the lint would fire | result under `-D warnings` |
+| -------- | ------------------- | -------------------------- |
+| off      | yes                 | silent, exit 0 |
+| on       | yes                 | silent |
+| off      | no (stale)          | `error: this lint expectation is unfulfilled`, exit 101 |
+
+That is what stops 40 suppressions decaying into 40 unchecked claims: delete
+a cast without deleting its attribute and the gate says so. The cost is real
+and accepted — a refactor that removes a cast must remove its attribute in the
+same commit. (40 is the count after a same-day campaign fixed 60 of the 100
+this step first shipped with — see `docs/status.md`, "`clippy::pedantic` runs,
+advisory and non-blocking".)
+
+**Most of the 40 are per-site, and one is not.**
+`clippy::similar_names` and `clippy::many_single_char_names` are
+function-scoped lints — they judge every binding in a function together, not
+one expression — so an `#[expect]` on the `let` that introduces the offending
+name does not suppress them; it has to sit on the enclosing `fn`. One of the
+40 is a function-level `#[expect]` for exactly this reason: `many_single_char_names`
+on `solve` (`taiyaku-core/src/solve.rs`), covering all six of `a`, `b`, `m`,
+`n`, `i` and `j` in one attribute rather than a `let` each — the three
+`clippy::similar_names` sites the branch found were fixed outright instead of
+suppressed, which is why only one function-level `#[expect]` remains for this
+reason. `clippy::too_many_lines` (3 attributes) and
+`clippy::needless_pass_by_value` (3) are also function-level, but for the
+ordinary reason that neither lint has a narrower span to attach to — not the
+per-binding nuance `similar_names`/`many_single_char_names` are about.
+That is not a breach of the per-site rule in the plan (§10.3): the site clippy
+reports *is* the whole function for these two lints, and the attribute matches
+it.
+
+**A `[workspace.lints.clippy]` entry cannot switch a pedantic lint off for the
+advisory step.** Measured: with `must_use_candidate = "allow"` in the table, all
+47 of its sites still fired under `-W clippy::pedantic`, and the total was
+unchanged at 420. Cargo emits `[lints]` as `--allow` flags before the `--`
+arguments and rustc takes the last matching level, so the trailing group `-W`
+re-enables them. Lint-group specificity resolves *attribute* levels, not
+command-line ones. Nothing in this repository relies on that mechanism — no
+pedantic lint is off by name — but the next person to reach for it should know
+it does not work.
+
+Counting is done with `scripts/pedantic-sites.mjs`, and by hand it is done
+wrong: clippy emits one message per primary span, so a line with four casts
+reports four warnings at one site, and the raw count runs about 1.7× the real
+one.
+
+**The advisory step's own plain-text output is not quite empty, and that is
+not a leak.** Every `assert_eq!` comparing floats in this workspace's tests —
+there are 15, all pre-existing — prints a `clippy::float_cmp` warning under
+`-W clippy::pedantic`, unconditionally, every run. Checked directly against
+this workspace's clippy JSON stream rather than assumed: the rendered warning
+shows the call site (`crates/taiyaku-core/src/solve.rs:973:9`, and the like),
+but the `is_primary: true` span clippy actually attaches the lint to has
+`file_name: .../library/core/src/macros/mod.rs` — `assert_eq!`'s own expansion
+in the standard library, not any file here. `scripts/pedantic-sites.mjs`
+filters on exactly that field, which is why it reports 0 unique sites under
+`crates/` even though `.forgejo/workflows/ci.yml`'s advisory step and
+`scripts/check-all.sh`'s mirror of it both print all 15, unfiltered, every
+time. Nothing to fix: an `#[expect]` here would sit on a real test function
+suppressing a warning clippy itself does not attribute to that function, which
+is the wrong shape for the mechanism this file already documents above. A
+reader watching either gate should expect to see these and read past them —
+what is worth reading is anything *beyond* the 15.

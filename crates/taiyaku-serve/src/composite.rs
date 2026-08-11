@@ -88,7 +88,7 @@ impl StumpSide {
     pub fn learn(&self, resolutions: Resolutions) {
         self.resolutions
             .write()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .extend(resolutions);
     }
 
@@ -136,6 +136,7 @@ pub struct CompositeSource {
 }
 
 impl CompositeSource {
+    #[must_use]
     pub fn new(local: LocalLibrary, stump: Option<StumpSide>) -> Self {
         Self { local, stump }
     }
@@ -154,7 +155,7 @@ impl CompositeSource {
             .as_ref()?
             .resolutions
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&member.sha256)?
             .clone()
     }

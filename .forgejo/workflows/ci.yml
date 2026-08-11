@@ -52,6 +52,46 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # Advisory and non-blocking, deliberately. `clippy::pedantic` is not in
+      # [workspace.lints] and must not be: this container is `rust:1-bookworm`
+      # and rust-toolchain.toml says `channel = "stable"`, both of which float,
+      # and clippy adds lints to `pedantic` roughly every six weeks — so in the
+      # blocking gate above, a rustc release would turn an unrelated PR red in a
+      # file its author never touched.
+      #
+      # `continue-on-error: true` is what makes this step advisory rather than
+      # blocking, and it is the only place in this file that uses the key. The
+      # branch that added it was pushed and came back green, but that does not
+      # verify the key: `-W clippy::pedantic` exits 0 regardless of how many
+      # warnings it prints (only `-D warnings` sets a non-zero exit), so this
+      # step succeeded on its own and `continue-on-error` was never exercised.
+      # It cannot fail on a lint at all — its only possible failure is a
+      # compile error, which the blocking step above would already have
+      # caught — so this key and `scripts/check-all.sh`'s shell-level
+      # `|| true` (which *is* verified, on every local run) are both
+      # belt-and-braces for a failure lints cannot produce today. The key is
+      # untriggered rather than untested; it has still never been observed
+      # turning this job red.
+      #
+      # This step's own output is not quite empty, and that is expected rather
+      # than a leak: every `assert_eq!` on a float literal in this workspace's
+      # tests prints a `clippy::float_cmp` warning here, always, because
+      # clippy's JSON marks that lint's primary span inside `assert_eq!`'s own
+      # expansion in rustc's `core/src/macros/mod.rs` — confirmed by path in
+      # the JSON stream, not assumed — never a file in this repository. That is
+      # why `scripts/pedantic-sites.mjs`, the count this branch is built on,
+      # reports 0 unique sites under `crates/` even though this unfiltered,
+      # plain-text step still prints all of them. See docs/ci.md, "The
+      # pedantic lints, and why they are advisory".
+      #
+      # Anything *else* that appears here is either a cast written without a
+      # stated bound or a lint a new rustc added — and the per-site #[expect]
+      # attributes are still enforced by the blocking step above, because a
+      # stale one is `unfulfilled_lint_expectations`, an ordinary rustc lint
+      # that `-D warnings` already denies.
+      - name: Clippy (pedantic, advisory)
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic
 
   test:
     runs-on: docker

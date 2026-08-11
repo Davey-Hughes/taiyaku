@@ -5,9 +5,42 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{Direction, Half, Run, Slot, Verdict};
+
+/// A position within an edition's slot table, its length, or a count drawn
+/// from it.
+///
+/// Named apart from `slot_index` above, which answers a different question
+/// (which position a `Slot` sits at) and already owns that name.
+///
+/// # Panics
+///
+/// Panics if `i` exceeds `u32::MAX`. It cannot in this crate: every call
+/// site — here and in `credits.rs`, `route.rs` — derives `i` from
+/// `Edition::slots()`'s output, a `Vec<Slot>` at most twice the length of
+/// the edition's page count (`expand` in `slot.rs` emits at most two `Slot`s
+/// per page), and a page count is bounded by what a book can physically
+/// contain, far below `u32::MAX`.
+pub(crate) fn slot_position(i: usize) -> u32 {
+    u32::try_from(i).expect("slot position exceeds u32::MAX")
+}
+
+/// `slot_position`, from a source already computed with signed arithmetic —
+/// carrying a slot position across a paired run's offset, or clamping one
+/// into another position's range.
+///
+/// # Panics
+///
+/// Panics if `i` is negative or exceeds `u32::MAX`. Every call site in this
+/// module builds `i` from slot-table positions that are themselves within
+/// `u32::MAX` (the bound `slot_position` relies on), combined only by
+/// addition or by `min`/`max` against another in-range bound, so `i` cannot
+/// leave the non-negative, in-range band its inputs started in.
+fn slot_position_signed(i: i64) -> u32 {
+    u32::try_from(i).expect("slot offset is negative or exceeds u32::MAX")
+}
 
 /// A contiguous stretch of slots, written the way the sidecar writes it.
 ///
@@ -21,6 +54,12 @@ pub struct SlotSpan {
 }
 
 impl SlotSpan {
+    /// # Errors
+    ///
+    /// Returns an error if `text` has more than one `-`, so more than two
+    /// endpoints — `"1-2-3"` — or if either endpoint is not a page reference:
+    /// empty, containing a non-digit byte other than a trailing `L`/`R`, or a
+    /// digit run too large for `u32`.
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut ends = text.split('-');
         let first = ends.next().unwrap_or("");
@@ -71,11 +110,39 @@ fn show_slot(slot: Slot) -> String {
     }
 }
 
+// A span lives as a plain string in the document, which is what makes a run
+// readable. Implemented by hand rather than derived, because the derive would
+// write the struct's two `Slot` fields out as an object and lose the notation
+// entirely. `Option<SlotSpan>` needs no separate impl: serde's blanket
+// `Option<T>` handling calls straight through to these for `Some`, and
+// already treats a missing field and an explicit `null` the same way `None`
+// is treated here — see `RunEntry::b` and its tests.
+impl Serialize for SlotSpan {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for SlotSpan {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(d)?;
+        Self::parse(&text).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Convert solved runs into the entries a sidecar stores.
 ///
 /// The solver works in slot indices; the document is written in page terms. The
 /// slot tables are what translate between them, and getting this wrong by one
 /// would misfile every run in the file while still producing valid JSON.
+///
+/// # Errors
+///
+/// Returns an error if any run's `a` or `b` endpoint is a slot index at or
+/// past the length of the matching slot table (`a_slots` for `a`, `b_slots`
+/// for `b`) — a run the solver produced against a different edition, or one
+/// hand-edited to reach past the edition's last slot. The message names the
+/// offending index and how many slots the edition actually has.
 pub fn entries_from_runs(
     runs: &[crate::Run],
     a_slots: &[Slot],
@@ -171,6 +238,7 @@ impl Edition {
     /// `docs/sidecar.md` rule 1 — and a server that sums it differently
     /// disagrees with the aligner about where every member after the first
     /// begins, while still matching every `sha256` in the file.
+    #[must_use]
     pub fn total_pages(&self) -> u32 {
         self.members.iter().map(|m| m.pages).sum()
     }
@@ -182,6 +250,7 @@ impl Edition {
     ///
     /// Members recorded with zero pages are stepped over, so a hand-edited
     /// sidecar cannot make one of them absorb an index.
+    #[must_use]
     pub fn locate(&self, index: u32) -> Option<(usize, u32)> {
         let mut offset = 0u32;
         for (position, member) in self.members.iter().enumerate() {
@@ -198,6 +267,7 @@ impl Edition {
     /// Reconstructed from the page count and the spread list rather than
     /// stored, because storing it would be a second source of truth that could
     /// disagree with the first.
+    #[must_use]
     pub fn slots(&self, reading: Direction) -> Vec<Slot> {
         let pages = self.total_pages();
         let wide: Vec<bool> = (0..pages).map(|p| self.spreads.contains(&p)).collect();
@@ -221,9 +291,8 @@ pub struct SolverInfo {
 /// One run, as stored. `b` absent means the pages in `a` have no counterpart.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunEntry {
-    #[serde(with = "span_text")]
     pub a: SlotSpan,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "span_option")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub b: Option<SlotSpan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub margin: Option<f32>,
@@ -259,7 +328,38 @@ pub struct Quality {
     /// How many of those slots found a counterpart.
     pub paired: u32,
     /// Mean length of the paired runs, in slots.
-    pub avg_run: f32,
+    ///
+    /// `f64`, matching `average_run_length`'s return type: widened there to
+    /// close a `cast_precision_loss` suppression (u32 -> f64 is lossless
+    /// where u32 -> f32 is not). Unlike that function's result, this field is
+    /// rounded — see `rounded_avg_run` — because it is stored in the sidecar
+    /// document, which `docs/sidecar.md` pins to a human-readable, diffable
+    /// form; `average_run_length` itself stays unrounded, since `verdict`
+    /// compares its result against a threshold and rounding there would move
+    /// which pairings cross it.
+    pub avg_run: f64,
+}
+
+/// Round an average run length to the precision the sidecar document stores,
+/// without touching the value `verdict` actually compares against.
+///
+/// f32 rounded `avg_run` to six-ish decimal digits by accident — that was
+/// never a chosen precision, just where f32's mantissa ran out — and widening
+/// `average_run_length` to f64 (see its doc) would otherwise have let a raw
+/// figure like `64.33333333333333` reach the document, which is longer for
+/// no reason `docs/sidecar.md`'s "human-readable, diffable" goals can point
+/// to. Two decimals is enough: `docs/status.md` already reports these exact
+/// figures at two decimals (64.33 -> 32.00 -> 21.22), `stats.rs` only ever
+/// prints one, and nothing reads the stored field back for a decision —
+/// `verdict` always recomputes from `average_run_length` directly.
+///
+/// Called at each of the three places a `Quality` is built (`sidecar.rs`'s
+/// `rewrite` and `quality_of`, and `taiyaku-cli`'s `built_alignment`), rather
+/// than left for each to round inline, so the precision cannot drift between
+/// them.
+#[must_use]
+pub fn rounded_avg_run(raw: f64) -> f64 {
+    (raw * 100.0).round() / 100.0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -384,10 +484,28 @@ pub struct ChapterAt {
 }
 
 impl Sidecar {
+    /// # Errors
+    ///
+    /// Returns an error if `text` is not valid JSON, or is JSON that does not
+    /// match `taiyaku.json`'s shape — a missing required field such as
+    /// `work` or `hub`, a `reading` value that is neither `"ltr"` nor `"rtl"`,
+    /// an alignment entry whose span notation `SlotSpan::parse` rejects, and
+    /// so on. The message embeds `serde_json`'s own, which names the field
+    /// and byte offset.
     pub fn from_json(text: &str) -> Result<Self, String> {
         serde_json::from_str(text).map_err(|e| format!("not a readable taiyaku.json: {e}"))
     }
 
+    /// # Panics
+    ///
+    /// Panics if this document fails to serialise. In practice it cannot:
+    /// the only hand-written `Serialize` impl here is `SlotSpan`'s, which
+    /// writes as a plain string and cannot fail, and every other field is a
+    /// number, string, `BTreeMap`, `Vec` or derived enum. `serde_json` only
+    /// returns `Err` from `to_string_pretty` for a non-finite float used as
+    /// a map key, and this document's only map keys (`editions`, by
+    /// `String`) are not floats.
+    #[must_use]
     pub fn to_json(&self) -> String {
         // Pretty-printed on purpose: the format is meant to diff in git, and a
         // one-line document defeats that entirely.
@@ -423,6 +541,46 @@ impl Sidecar {
     /// `from_side` is the freshly described `alignment.from` edition. It is
     /// passed rather than looked up because the check that matters is whether
     /// the document's copy and the just-aligned copy are the same content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - `reading` does not match the document's own reading order;
+    /// - `anchor` is `Anchor::Hub` and `alignment.from` is not this
+    ///   document's hub;
+    /// - this document has no edition named `alignment.from`, or its stored
+    ///   content (member `sha256`s, in order) does not match `from_side`;
+    /// - `name` and `alignment.from` are the same edition;
+    /// - a stored edge between them is recorded in the other direction and
+    ///   holds a hand-corrected run, which this call cannot invert safely; or
+    /// - `name`'s stored content differs from `edition`'s (a spoke being
+    ///   replaced) while some alignment mentioning `name` holds a
+    ///   hand-corrected run — carrying it onto different bytes would point
+    ///   it at pages that may no longer exist.
+    ///
+    /// # Panics
+    ///
+    /// Does not panic in practice, though the body carries an `.expect("just
+    /// inserted")` and two indexing operations that would if their
+    /// invariants broke. The `.expect` follows
+    /// `self.editions.insert(name.to_string(), edition)` on the same key, so
+    /// the entry is always there. The indexing (`self.editions[&start]`,
+    /// `self.editions[name]`) is reached only when `carried > 0`, by which
+    /// point `start`'s presence was confirmed earlier in this function and
+    /// `name` was just inserted; the self-pairing check above already rules
+    /// out `name == start`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "seven sequential guards (reading order, hub anchor, from-side content match, \
+                  self-pairing, the stored-edge orientation check O13 exists for, the \
+                  spoke-replaced hand-run check C1 exists for, and the credits-drop check) each \
+                  refuse a distinct way this merge could silently corrupt the document, followed \
+                  by the one mutation all of them were clearing the way for. The Panics doc \
+                  comment above ties two indexing operations and one .expect() to the exact \
+                  order these guards run in — moving a guard into a helper would separate its \
+                  refusal from the invariant it establishes for the mutation below, which is \
+                  the thing a reader of this function most needs kept in view."
+    )]
     pub fn merge_spoke(
         &mut self,
         reading: Direction,
@@ -615,7 +773,7 @@ impl Sidecar {
         // no *hand-corrected* edge to a third edition survives with stale
         // meaning, because `spoke_replaced` refused before this line runs.
         self.alignments
-            .retain(|a| !(a.from == start && a.to == name) && !(a.from == name && a.to == start));
+            .retain(|a| !(a.from == start && a.to == name || a.from == name && a.to == start));
         let mut alignment = alignment;
         // Carried onto the freshly solved edge by *replacing* the solver's run
         // wherever a hand run covers the same source slots, so the two cannot
@@ -667,13 +825,32 @@ impl Sidecar {
     ///   permits a direct edge "for pairs where composition demonstrably
     ///   loses", and a hand correction is that demonstration. The cost is that
     ///   the pair leaves the star and stops inheriting transitivity.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotCorrected::SameEdition` if `from` and `to` name the same
+    /// edition; `NotCorrected::NoSuchEdition` if either does not exist;
+    /// `NotCorrected::NoSuchSlot` if `a` is not a slot `from` presents, or
+    /// `b`, when given, is not a slot `to` presents; `NotCorrected::NoPath`
+    /// if no edge, direct or through the hub, joins `from` and `to`; and
+    /// `NotCorrected::Unreadable` if a stored edge between them holds a span
+    /// this document can no longer read — a hand edit naming a slot that has
+    /// since stopped existing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the edge just located by `edge_between` cannot be found
+    /// again immediately afterwards by its `(from, to)` key. Nothing in this
+    /// function mutates `self.alignments` between the two lookups in the
+    /// branch that reaches this `.expect`, so the second lookup always
+    /// finds what the first one did.
     pub fn correct(
         &mut self,
         from: &str,
         to: &str,
         a: Slot,
         b: Option<Slot>,
-        note: Option<String>,
+        note: Option<&str>,
     ) -> Result<Corrected, NotCorrected> {
         if from == to {
             return Err(NotCorrected::SameEdition(format!(
@@ -694,13 +871,13 @@ impl Sidecar {
         };
         let from_slots = slots_of(from)?;
         let to_slots = slots_of(to)?;
-        let a_index = slot_index(&from_slots, a).ok_or_else(|| {
+        let a_index = slot_position(slot_index(&from_slots, a).ok_or_else(|| {
             NotCorrected::NoSuchSlot(format!("`{from}` has no slot `{}`", show_slot(a)))
-        })? as u32;
+        })?);
         let b_index = match b {
-            Some(b) => Some(slot_index(&to_slots, b).ok_or_else(|| {
-                NotCorrected::NoSuchSlot(format!("`{to}` has no slot `{}`", show_slot(b)))
-            })? as u32),
+            Some(b) => Some(slot_position(slot_index(&to_slots, b).ok_or_else(
+                || NotCorrected::NoSuchSlot(format!("`{to}` has no slot `{}`", show_slot(b))),
+            )?)),
             None => None,
         };
 
@@ -711,17 +888,20 @@ impl Sidecar {
             Some(edge) => {
                 let key = (edge.from.clone(), edge.to.clone());
                 let runs = self.runs_of(edge).map_err(NotCorrected::Unreadable)?;
+                // Hoisted out of the `None` arm so it stays a single expression (a
+                // block here nudges clippy toward suggesting `if let`).
+                let to_len = slot_position(to_slots.len());
                 match b_index {
                     Some(b) => (key, b, Some(a_index)),
                     // "this slot pairs with nothing", read in the stored
                     // direction, is "whatever currently reaches it pairs with
                     // nothing".
-                    None => match (0..to_slots.len() as u32)
-                        .find(|&s| crate::counterpart(&runs, s) == Some(a_index))
-                    {
-                        Some(owner) => (key, owner, None),
-                        None => return Ok(Corrected::AlreadyTrue),
-                    },
+                    None => {
+                        match (0..to_len).find(|&s| crate::counterpart(&runs, s) == Some(a_index)) {
+                            Some(owner) => (key, owner, None),
+                            None => return Ok(Corrected::AlreadyTrue),
+                        }
+                    }
                 }
             }
             None => {
@@ -743,7 +923,8 @@ impl Sidecar {
                     quality: None,
                     runs: Vec::new(),
                 });
-                self.rewrite(&(from.to_string(), to.to_string()), fixed, &before, note)?;
+                let key = (from.to_string(), to.to_string());
+                self.rewrite(&key, &fixed, &before, note)?;
                 return Ok(Corrected::DirectEdgeAdded);
             }
         };
@@ -758,7 +939,7 @@ impl Sidecar {
             return Ok(Corrected::AlreadyTrue);
         }
         let fixed = crate::correct_runs(&before, source, target);
-        self.rewrite(&key, fixed, &before, note)?;
+        self.rewrite(&key, &fixed, &before, note)?;
         Ok(Corrected::Edge)
     }
 
@@ -770,9 +951,9 @@ impl Sidecar {
     fn rewrite(
         &mut self,
         key: &(String, String),
-        runs: Vec<crate::Run>,
+        runs: &[crate::Run],
         before: &[crate::Run],
-        note: Option<String>,
+        note: Option<&str>,
     ) -> Result<(), NotCorrected> {
         let reading = self.work.reading;
         let from_slots = self.editions[&key.0].slots(reading);
@@ -783,11 +964,16 @@ impl Sidecar {
             .position(|e| e.from == key.0 && e.to == key.1)
             .expect("the edge was found before this was called");
 
+        let idx = |slot: Slot| -> u32 {
+            slot_position(slot_index(&from_slots, slot).expect("span was validated by runs_of"))
+        };
+        let from_len = slot_position(from_slots.len());
+
         // Exactly the slots *this* correction changed the answer for: the one
         // asserted, and the one displaced from the target it held. Derived by
         // diffing rather than tracked, so the two cannot drift apart.
-        let changed: Vec<u32> = (0..from_slots.len() as u32)
-            .filter(|&s| crate::counterpart(before, s) != crate::counterpart(&runs, s))
+        let changed: Vec<u32> = (0..from_len)
+            .filter(|&s| crate::counterpart(before, s) != crate::counterpart(runs, s))
             .collect();
         // Every source slot an *earlier* hand decision already covers. Kept
         // separate from `changed` because the note below belongs only to this
@@ -799,15 +985,11 @@ impl Sidecar {
             .iter()
             .filter(|e| e.by == Some(Source::Hand))
         {
-            let start = slot_index(&from_slots, entry.a.start)
-                .expect("span was validated by runs_of") as u32;
-            let end =
-                slot_index(&from_slots, entry.a.end).expect("span was validated by runs_of") as u32;
-            by_hand.extend(start..=end);
+            by_hand.extend(idx(entry.a.start)..=idx(entry.a.end));
         }
 
         let mut entries =
-            entries_from_runs(&runs, &from_slots, &to_slots).map_err(NotCorrected::Unreadable)?;
+            entries_from_runs(runs, &from_slots, &to_slots).map_err(NotCorrected::Unreadable)?;
         let previous = self.alignments[position].runs.clone();
         // Every earlier note, with the slot range it was written for — in
         // slot indices, not page notation, so overlap can be tested exactly
@@ -818,18 +1000,12 @@ impl Sidecar {
             .iter()
             .filter_map(|e| {
                 let note = e.note.as_deref()?;
-                let start = slot_index(&from_slots, e.a.start)
-                    .expect("span was validated by runs_of") as u32;
-                let end =
-                    slot_index(&from_slots, e.a.end).expect("span was validated by runs_of") as u32;
-                Some((start, end, note))
+                Some((idx(e.a.start), idx(e.a.end), note))
             })
             .collect();
-        for entry in entries.iter_mut() {
-            let start = slot_index(&from_slots, entry.a.start)
-                .expect("span was validated by runs_of") as u32;
-            let end =
-                slot_index(&from_slots, entry.a.end).expect("span was validated by runs_of") as u32;
+        for entry in &mut entries {
+            let start = idx(entry.a.start);
+            let end = idx(entry.a.end);
 
             // Carry the margin of a run this correction did not touch.
             //
@@ -884,8 +1060,8 @@ impl Sidecar {
                 .map(|&(_, _, n)| n.to_string())
                 .collect();
             if (start..=end).any(|s| changed.contains(&s)) {
-                if let Some(n) = &note {
-                    notes.push(n.clone());
+                if let Some(n) = note {
+                    notes.push(n.to_string());
                 }
             }
             let mut deduped: Vec<String> = Vec::new();
@@ -894,18 +1070,19 @@ impl Sidecar {
                     deduped.push(n);
                 }
             }
-            entry.note = match deduped.is_empty() {
-                true => None,
-                false => Some(deduped.join("; ")),
+            entry.note = if deduped.is_empty() {
+                None
+            } else {
+                Some(deduped.join("; "))
             };
         }
 
         self.alignments[position].runs = entries;
         self.alignments[position].quality = Some(Quality {
-            verdict: crate::verdict(&runs, from_slots.len()),
-            slots: from_slots.len() as u32,
-            paired: crate::paired_slots(&runs),
-            avg_run: crate::average_run_length(&runs),
+            verdict: crate::verdict(runs, from_slots.len()),
+            slots: from_len,
+            paired: crate::paired_slots(runs),
+            avg_run: rounded_avg_run(crate::average_run_length(runs)),
         });
         Ok(())
     }
@@ -923,6 +1100,15 @@ impl Sidecar {
     /// backwards or mismatched span into an `Err`, not a panic that a debug
     /// build — which is what the test suite and debug wasm both are — would
     /// turn into an abort.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `alignment.from` or `alignment.to` names an
+    /// edition this document does not define, if a run's span names a slot
+    /// that does not exist in the edition it addresses (the message names
+    /// the side and, when the span covers more than one slot, which endpoint
+    /// failed), if a span's endpoints run backwards, or if a paired run's two
+    /// spans cover different numbers of slots.
     pub fn runs_of(&self, alignment: &Alignment) -> Result<Vec<Run>, String> {
         let from_slots = self
             .editions
@@ -942,11 +1128,12 @@ impl Sidecar {
         // the message names it, and names the endpoint that failed when the
         // span covers more than one slot.
         let at = |slots: &[Slot], want: Slot, span: SlotSpan, side: &str| {
-            slot_index(slots, want).map(|i| i as u32).ok_or_else(|| {
+            slot_index(slots, want).map(slot_position).ok_or_else(|| {
                 let slot = show_slot(want);
-                match slot == span.to_string() {
-                    true => format!("{side} has no slot `{slot}`"),
-                    false => format!("{side} has no slot `{slot}` in span `{span}`"),
+                if slot == span.to_string() {
+                    format!("{side} has no slot `{slot}`")
+                } else {
+                    format!("{side} has no slot `{slot}` in span `{span}`")
                 }
             })
         };
@@ -1001,6 +1188,7 @@ impl Sidecar {
     /// own copy of the two-way comparison. Three copies of one predicate is
     /// three places for the orientation to be got wrong, and only this one was
     /// ever tested.
+    #[must_use]
     pub fn edge_between(&self, from: &str, to: &str) -> Option<&Alignment> {
         self.alignments
             .iter()
@@ -1018,6 +1206,7 @@ impl Sidecar {
     /// slot count.
     ///
     /// `None` when the path cannot be established at all — see `trust`.
+    #[must_use]
     pub fn quality_of(&self, from: &str, to: &str) -> Option<Quality> {
         let edge = self.edge_between(from, to)?;
         let runs = self.runs_of(edge).ok()?;
@@ -1027,9 +1216,9 @@ impl Sidecar {
 
         Some(Quality {
             verdict: crate::verdict(&runs, slots.len()),
-            slots: slots.len() as u32,
+            slots: slot_position(slots.len()),
             paired: crate::paired_slots(&runs),
-            avg_run: crate::average_run_length(&runs),
+            avg_run: rounded_avg_run(crate::average_run_length(&runs)),
         })
     }
 
@@ -1055,6 +1244,7 @@ impl Sidecar {
     /// `None` means the document does not say, which is **not** the same as
     /// sound: every sidecar written before the `quality` block existed is
     /// silent, and a reader must not read silence as approval.
+    #[must_use]
     pub fn trust(&self, from: &str, to: &str) -> Option<Verdict> {
         if !self.editions.contains_key(from) || !self.editions.contains_key(to) {
             return None;
@@ -1085,6 +1275,7 @@ impl Sidecar {
     /// the answer is stable, not because a key ordering settles which
     /// edition is really the chapter list. If that case arises in practice
     /// it wants a real decision, not this guess.
+    #[must_use]
     pub fn chapter_at(&self, from: &str, slot: Slot) -> Option<ChapterAt> {
         let (key, edition) = self
             .editions
@@ -1197,8 +1388,10 @@ fn carry_hand_runs(
     b_slots: &[Slot],
 ) -> Vec<RunEntry> {
     let index = |slots: &[Slot], slot: Slot| -> u32 {
-        slot_index(slots, slot)
-            .expect("hand and solved runs are addressed in this edition's own slots") as u32
+        slot_position(
+            slot_index(slots, slot)
+                .expect("hand and solved runs are addressed in this edition's own slots"),
+        )
     };
 
     // Hand spans in slot indices, sorted by where they start, so a solved run
@@ -1235,9 +1428,17 @@ fn carry_hand_runs(
                 b: if forced_gap {
                     None
                 } else {
-                    b_offset.map(|offset| SlotSpan {
-                        start: b_slots[(a_from as i64 + offset) as usize],
-                        end: b_slots[(a_to as i64 + offset) as usize],
+                    b_offset.map(|offset| {
+                        // Non-negative: a_from, a_to >= s_start by split_around's
+                        // contract, and offset = index(b_slots, ..) - s_start, so
+                        // x + offset >= index(b_slots, ..) >= 0 -- within
+                        // slot_position_signed's bound. `as usize` below only
+                        // widens a u32, which cannot lose information.
+                        let at_b = |x: u32| -> Slot {
+                            b_slots[slot_position_signed(i64::from(x) + offset) as usize]
+                        };
+                        let (start, end) = (at_b(a_from), at_b(a_to));
+                        SlotSpan { start, end }
                     })
                 },
                 margin: if forced_gap { None } else { entry.margin },
@@ -1258,7 +1459,7 @@ fn carry_hand_runs(
         // start is the offset everywhere inside it.
         let b_offset = entry
             .b
-            .map(|b| index(b_slots, b.start) as i64 - s_start as i64);
+            .map(|b| i64::from(index(b_slots, b.start)) - i64::from(s_start));
         split_around(s_start, s_end, &hand_spans, |from, to, cut| {
             if !cut {
                 spliced.push(build(entry, from, to, b_offset, false));
@@ -1278,14 +1479,20 @@ fn carry_hand_runs(
             evicted.push(piece.clone());
             continue;
         };
-        let offset = index(b_slots, b.start) as i64 - a_start as i64;
+        let offset = i64::from(index(b_slots, b.start)) - i64::from(a_start);
         let cuts: Vec<(u32, u32)> = hand_b_spans
             .iter()
             .filter_map(|&(hs, he)| {
-                let cs = hs as i64 - offset;
-                let ce = he as i64 - offset;
-                (ce >= a_start as i64 && cs <= a_end as i64)
-                    .then(|| (cs.max(a_start as i64) as u32, ce.min(a_end as i64) as u32))
+                let cs = i64::from(hs) - offset;
+                let ce = i64::from(he) - offset;
+                (ce >= i64::from(a_start) && cs <= i64::from(a_end)).then(|| {
+                    // Clamped into [a_start, a_end] by .max/.min -- both bounds
+                    // are u32, so slot_position_signed's bound holds.
+                    (
+                        slot_position_signed(cs.max(i64::from(a_start))),
+                        slot_position_signed(ce.min(i64::from(a_end))),
+                    )
+                })
             })
             .collect();
         split_around(a_start, a_end, &cuts, |from, to, cut| {
@@ -1297,43 +1504,6 @@ fn carry_hand_runs(
     out.extend(hand.iter().cloned());
     out.sort_by_key(|e| (e.a.start.page, e.a.start.half.is_some()));
     out
-}
-
-// Spans live as strings in the document, which is what makes a run readable.
-mod span_text {
-    use super::SlotSpan;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(span: &SlotSpan, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&span.to_string())
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SlotSpan, D::Error> {
-        let text = String::deserialize(d)?;
-        SlotSpan::parse(&text).map_err(serde::de::Error::custom)
-    }
-}
-
-mod span_option {
-    use super::SlotSpan;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(span: &Option<SlotSpan>, s: S) -> Result<S::Ok, S::Error> {
-        match span {
-            Some(span) => s.serialize_str(&span.to_string()),
-            None => s.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SlotSpan>, D::Error> {
-        let text = Option::<String>::deserialize(d)?;
-        match text {
-            Some(text) => SlotSpan::parse(&text)
-                .map(Some)
-                .map_err(serde::de::Error::custom),
-            None => Ok(None),
-        }
-    }
 }
 
 /// The document from `docs/sidecar.md`, verbatim: the real alignment of
@@ -1521,9 +1691,9 @@ mod tests {
         let mut owners: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
         for entry in runs {
             let Some(b) = entry.b else { continue };
-            let b_start = slot_index(b_slots, b.start).expect("valid b span") as u32;
-            let b_end = slot_index(b_slots, b.end).expect("valid b span") as u32;
-            let a_start = slot_index(a_slots, entry.a.start).expect("valid a span") as u32;
+            let b_start = slot_position(slot_index(b_slots, b.start).expect("valid b span"));
+            let b_end = slot_position(slot_index(b_slots, b.end).expect("valid b span"));
+            let a_start = slot_position(slot_index(a_slots, entry.a.start).expect("valid a span"));
             for offset in 0..=(b_end - b_start) {
                 owners
                     .entry(b_start + offset)
@@ -2455,6 +2625,19 @@ mod tests {
     /// silent page move `notes.md`'s "swapping must not round-trip through
     /// the alignment" is about.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "reproduces one specific collision (C2) end to end: hand-correct a slot, \
+                  build a fresh solve shaped differently enough to disagree with the hand \
+                  runs, merge it in, then check five separate resolve() outcomes — the \
+                  corrected slot, the slot it displaced, the slot the fresh solve's own offset \
+                  would have collided on, the fresh solve's own gap, and two ordinary \
+                  untouched slots. Every assertion reads against the same `fresh` fixture \
+                  built earlier in the function; splitting the checks into a second function \
+                  would need that fixture and the merge result passed across the boundary \
+                  without shrinking what a reader has to hold to see the collision the test \
+                  exists to catch."
+    )]
     fn carrying_hand_runs_across_a_reshaped_solve_evicts_the_collision() {
         let mut s = two_edition();
         s.correct(
@@ -2904,6 +3087,42 @@ mod tests {
 
         let again = Sidecar::from_json(&parsed.to_json()).expect("re-parses");
         assert_eq!(again, parsed, "round trip changed the document");
+    }
+
+    /// `b` absent means "no counterpart", and the document has to say so by
+    /// leaving the key out entirely — writing `null` would still parse, but
+    /// it would rewrite every gap in a hand-edited file the moment the tool
+    /// touches it. Coming in, a missing key and an explicit `null` must mean
+    /// the same thing too: unlike `routes.rs`'s `Correction::b`, which tells
+    /// "not sent" apart from "sent as null" to support clearing a field over
+    /// HTTP, `RunEntry::b` has no clearing operation to distinguish for —
+    /// `#[serde(default)]` already maps a missing key to `None`, so the two
+    /// inputs cannot help but agree.
+    #[test]
+    fn a_run_with_no_b_omits_the_key_rather_than_writing_null() {
+        let text = r#"{
+          "taiyaku": 1,
+          "work": { "title": "W", "reading": "rtl" },
+          "editions": {
+            "a": { "label": "A", "members": [{ "path": "a.cbz", "sha256": "00", "pages": 4 }] }
+          },
+          "hub": "a",
+          "alignments": [{ "from": "a", "to": "a", "by": "hand", "runs": [{ "a": "0-3" }] }]
+        }"#;
+        let parsed = Sidecar::from_json(text).expect("parses");
+        assert_eq!(parsed.alignments[0].runs[0].b, None);
+
+        let emitted = parsed.to_json();
+        assert!(
+            !emitted.contains("\"b\""),
+            "a run with no counterpart must not emit a b key at all:\n{emitted}"
+        );
+
+        // An explicit null must mean the same thing coming in, even though
+        // nothing this crate writes ever produces one.
+        let with_null = text.replace(r#"{ "a": "0-3" }"#, r#"{ "a": "0-3", "b": null }"#);
+        let parsed_null = Sidecar::from_json(&with_null).expect("parses with explicit null");
+        assert_eq!(parsed_null.alignments[0].runs[0].b, None);
     }
 
     /// An L0 reader has to tolerate fields it does not understand, or shipping
@@ -3675,13 +3894,7 @@ mod tests {
         let before = s.clone();
 
         let what = s
-            .correct(
-                "raw-mono",
-                "en-mono",
-                at(100),
-                Some(at(94)),
-                Some("noted".into()),
-            )
+            .correct("raw-mono", "en-mono", at(100), Some(at(94)), Some("noted"))
             .expect("is accepted");
 
         assert_eq!(what, Corrected::AlreadyTrue);
@@ -3826,14 +4039,8 @@ mod tests {
     #[test]
     fn a_correction_round_trips_through_the_document() {
         let mut s = Sidecar::from_json(REAL).expect("parses");
-        s.correct(
-            "raw-mono",
-            "en-mono",
-            at(50),
-            Some(at(40)),
-            Some("checked".into()),
-        )
-        .unwrap();
+        s.correct("raw-mono", "en-mono", at(50), Some(at(40)), Some("checked"))
+            .unwrap();
 
         let reparsed = Sidecar::from_json(&s.to_json()).expect("round-trips");
 
@@ -3854,21 +4061,15 @@ mod tests {
     #[test]
     fn a_later_correction_leaves_an_earlier_ones_note_alone() {
         let mut s = Sidecar::from_json(REAL).expect("parses");
-        s.correct(
-            "raw-mono",
-            "en-mono",
-            at(50),
-            Some(at(40)),
-            Some("first".into()),
-        )
-        .unwrap();
+        s.correct("raw-mono", "en-mono", at(50), Some(at(40)), Some("first"))
+            .unwrap();
 
         s.correct(
             "raw-mono",
             "en-mono",
             at(150),
             Some(at(140)),
-            Some("second".into()),
+            Some("second"),
         )
         .unwrap();
 
@@ -4033,9 +4234,9 @@ mod tests {
     #[test]
     fn two_merged_corrections_keep_both_notes() {
         let mut s = Sidecar::from_json(REAL).expect("parses");
-        s.correct("raw-mono", "en-mono", at(60), None, Some("first".into()))
+        s.correct("raw-mono", "en-mono", at(60), None, Some("first"))
             .expect("corrects");
-        s.correct("raw-mono", "en-mono", at(61), None, Some("second".into()))
+        s.correct("raw-mono", "en-mono", at(61), None, Some("second"))
             .expect("corrects");
 
         // Guard: the fixture must actually merge the two corrections into one

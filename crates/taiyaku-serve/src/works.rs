@@ -37,6 +37,7 @@ pub struct Work {
 }
 
 impl Work {
+    #[must_use]
     pub fn new(id: String, path: PathBuf, sidecar: Sidecar) -> Self {
         Self {
             id,
@@ -92,11 +93,10 @@ impl Work {
     /// enough. A sidecar with no stem at all falls back to `taiyaku`, the
     /// convention this project documents for the file itself.
     pub fn sibling(&self, suffix: &str) -> PathBuf {
-        let stem = self
-            .path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "taiyaku".to_string());
+        let stem = self.path.file_stem().map_or_else(
+            || "taiyaku".to_string(),
+            |s| s.to_string_lossy().to_string(),
+        );
         self.path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -130,6 +130,14 @@ impl Work {
     /// this allows are not worth an indirection at every call site and an
     /// unwrap at every match. The lint is right about the size and wrong about
     /// whether it matters, which is what an `allow` is for.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever `f` returns as `Err` — a `Response` the caller minted
+    /// to refuse the change, such as a 412 for a stale `If-Match` or a 400
+    /// for a malformed body — unchanged, and without replacing the held
+    /// document. `update` introduces no error of its own; every `Err` here
+    /// is one `f` chose to return.
     #[allow(clippy::result_large_err)]
     pub fn update<T>(
         &self,
@@ -152,6 +160,7 @@ impl Work {
 /// The sidecar has a title but no id, and titles are neither unique across a
 /// library nor stable across an edit. The filename is both, and a person
 /// looking at a URL can tell which file it came from.
+#[must_use]
 pub fn work_id(sidecar_path: &Path) -> String {
     let stem = sidecar_path
         .file_name()
@@ -163,9 +172,10 @@ pub fn work_id(sidecar_path: &Path) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
     let trimmed = slug.trim_matches('-').to_string();
-    match trimmed.is_empty() {
-        true => "work".to_string(),
-        false => trimmed,
+    if trimmed.is_empty() {
+        "work".to_string()
+    } else {
+        trimmed
     }
 }
 
@@ -173,6 +183,15 @@ pub fn work_id(sidecar_path: &Path) -> String {
 ///
 /// Two works resolving to the same id is an error rather than a silent
 /// shadowing: one of them would be unreachable and nothing would say which.
+///
+/// # Errors
+///
+/// Returns an error if any `path` cannot be read — a missing file or a
+/// permission refusal, with the message naming the path — if its contents do
+/// not parse as a sidecar (`Sidecar::from_json`), or if two paths' filenames
+/// slugify to the same work id, in which case the message names both paths
+/// and the id they share, since nothing else would tell the person running
+/// the server which two files collided.
 pub fn load_works(paths: &[PathBuf]) -> Result<Vec<Work>, String> {
     let mut works: Vec<Work> = Vec::new();
     for path in paths {

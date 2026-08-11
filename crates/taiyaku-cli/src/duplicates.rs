@@ -178,6 +178,17 @@ pub fn resolve(
 /// The protocol over one set, fingerprinting through a caller-supplied
 /// closure.
 ///
+/// A copy's fingerprinted slot count, as `PageRange::new` takes it.
+///
+/// # Panics
+///
+/// Panics if `n` exceeds `u32::MAX`. It cannot: `n` is one copy's
+/// fingerprinted slot count, and real volumes never come anywhere near
+/// `u32::MAX` slots — a corpus fact, not usize's.
+fn slot_count(n: usize) -> u32 {
+    u32::try_from(n).expect("slot count exceeds u32::MAX")
+}
+
 /// Separated from `resolve` so the branch that matters most here can be
 /// tested: a copy confirmed byte-identical to an earlier one is never
 /// fingerprinted, and a decode of every page is what that saves. A test
@@ -209,9 +220,10 @@ pub fn resolve_with(
     let mut hashes: Vec<Vec<PageHash>> = Vec::new();
     let mut described = Vec::new();
     for (copy, members) in copies.iter().enumerate() {
-        let slot_hashes = match stands_for[copy] == copy {
-            true => fingerprint(members)?,
-            false => hashes[stands_for[copy]].clone(),
+        let slot_hashes = if stands_for[copy] == copy {
+            fingerprint(members)?
+        } else {
+            hashes[stands_for[copy]].clone()
         };
         described.push(Copy {
             label: members
@@ -232,12 +244,15 @@ pub fn resolve_with(
     for a in 0..copies.len() {
         for b in a + 1..copies.len() {
             let slots = described[a].slots;
-            let runs = match stands_for[a] == stands_for[b] && slots > 0 {
-                true => vec![Run::paired(
-                    PageRange::new(0, slots as u32 - 1),
-                    PageRange::new(0, slots as u32 - 1),
-                )],
-                false => solve(&hashes[a], &hashes[b]),
+            // The `slots > 0` guard above, on the untruncated usize, rules out `- 1`
+            // underflowing.
+            let runs = if stands_for[a] == stands_for[b] && slots > 0 {
+                vec![Run::paired(
+                    PageRange::new(0, slot_count(slots) - 1),
+                    PageRange::new(0, slot_count(slots) - 1),
+                )]
+            } else {
+                solve(&hashes[a], &hashes[b])
             };
             pairs.push(Pair::judge(
                 a,
@@ -312,9 +327,10 @@ pub fn resolve_with(
         // What was reported as flagged has to be what was actually kept out of
         // the ranking, or the "not this volume" section and the `flagged=`
         // field describe a rule the ranking did not use.
-        flagged: match reference.is_some() {
-            true => excluded,
-            false => within_set,
+        flagged: if reference.is_some() {
+            excluded
+        } else {
+            within_set
         },
         reference_given: reference.is_some(),
         ranked: rank(ranked),
@@ -399,7 +415,6 @@ impl Pair {
 /// Clusters come back with their members ascending, ordered by their lowest
 /// member, so the output is stable whatever order the pairs arrived in.
 pub fn cluster(copies: usize, pairs: &[Pair]) -> Vec<Vec<usize>> {
-    let mut parent: Vec<usize> = (0..copies).collect();
     fn root(parent: &mut [usize], mut of: usize) -> usize {
         while parent[of] != of {
             parent[of] = parent[parent[of]];
@@ -407,6 +422,7 @@ pub fn cluster(copies: usize, pairs: &[Pair]) -> Vec<Vec<usize>> {
         }
         of
     }
+    let mut parent: Vec<usize> = (0..copies).collect();
     for pair in pairs.iter().filter(|p| p.relation == Relation::Identity) {
         let (a, b) = (root(&mut parent, pair.a), root(&mut parent, pair.b));
         if a != b {
@@ -586,9 +602,10 @@ pub fn set_line(resolution: &Resolution) -> String {
         resolution.flagged.len(),
         count(Verdict::Refused),
         count(Verdict::Fragmented),
-        match decided(&resolution.ranked) {
-            true => "yes",
-            false => "no",
+        if decided(&resolution.ranked) {
+            "yes"
+        } else {
+            "no"
         }
     )
 }
@@ -641,10 +658,7 @@ pub fn tables(resolution: &Resolution) -> String {
             out,
             "  {{{}}}{}",
             members.join(", "),
-            match group.len() > 1 {
-                true => "  identity",
-                false => "",
-            }
+            if group.len() > 1 { "  identity" } else { "" }
         );
     }
 
@@ -662,9 +676,10 @@ pub fn tables(resolution: &Resolution) -> String {
         // reference the two can disagree: a copy the set agreed with can pair
         // nothing with the reference, and "refused against every other copy"
         // would then be a sentence the pairs table above contradicts.
-        let why = match resolution.reference_given {
-            true => "paired nothing with the reference edition",
-            false => "refused against every other copy",
+        let why = if resolution.reference_given {
+            "paired nothing with the reference edition"
+        } else {
+            "refused against every other copy"
         };
         for &copy in &resolution.flagged {
             let _ = writeln!(out, "  {copy}  {why}  {}", resolution.copies[copy].label);
@@ -1330,21 +1345,23 @@ rank
             ],
             signature_settled: 0,
             contradictions: contradictions(&clusters, &pairs),
-            flagged: match with_reference {
-                true => vec![0],
-                false => flagged(2, &pairs),
+            flagged: if with_reference {
+                vec![0]
+            } else {
+                flagged(2, &pairs)
             },
             reference_given: with_reference,
-            ranked: match with_reference {
-                true => vec![Ranked {
+            ranked: if with_reference {
+                vec![Ranked {
                     cluster: vec![1],
                     slots: 198,
                     against: Some(Against {
                         runs: 1,
                         paired: 198,
                     }),
-                }],
-                false => Vec::new(),
+                }]
+            } else {
+                Vec::new()
             },
             clusters,
             pairs,
@@ -1499,7 +1516,7 @@ rank
     fn groups_end_at_the_first_flag() {
         let args: Vec<String> = ["a", "--", "b1", "b2", "--against", "ref", "--ltr"]
             .iter()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .collect();
 
         let parsed = groups(&args).unwrap();
@@ -1510,7 +1527,7 @@ rank
 
     #[test]
     fn one_copy_is_not_a_duplicate_set() {
-        let args: Vec<String> = ["only"].iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = ["only"].iter().map(ToString::to_string).collect();
 
         let error = groups(&args).unwrap_err();
 
@@ -1523,7 +1540,7 @@ rank
     fn against_members_stops_at_the_next_flag() {
         let args: Vec<String> = ["a", "--", "b1", "b2", "--against", "ref", "--ltr"]
             .iter()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .collect();
 
         let members = against_members(&args).unwrap();
@@ -1540,7 +1557,7 @@ rank
     fn against_with_no_member_is_an_error() {
         let args: Vec<String> = ["a", "--", "b", "--against", "--ltr"]
             .iter()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .collect();
 
         let error = against_members(&args).unwrap_err();

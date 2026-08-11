@@ -2,6 +2,21 @@
 
 use crate::{PageRange, Run};
 
+/// A page or slot index, as the sidecar format spells it.
+///
+/// # Panics
+///
+/// Panics if `i` exceeds `u32::MAX`. It cannot in this crate: every call site
+/// in this module derives `i` from the length of, or an `enumerate()` over, a
+/// `&[PageHash]` — one hash per page of a scanned book — and reaching
+/// `u32::MAX` would take 4 billion pages, 137 GB of hashes alone. The
+/// `expect` is here so that an impossible input is loud rather than a
+/// silently wrong index, which is what both a truncating `as` and a clamp
+/// would produce.
+fn page_index(i: usize) -> u32 {
+    u32::try_from(i).expect("page index exceeds u32::MAX")
+}
+
 /// A 256-bit structural page hash.
 ///
 /// 256 bits because that is what the corpus asked for: a 16x16 difference hash
@@ -11,13 +26,19 @@ use crate::{PageRange, Run};
 pub struct PageHash(pub [u64; 4]);
 
 /// Fraction of bits two hashes agree on, in `0.0..=1.0`.
+#[must_use]
 pub fn similarity(a: PageHash, b: PageHash) -> f32 {
     let differing: u32 =
         a.0.iter()
             .zip(b.0.iter())
             .map(|(x, y)| (x ^ y).count_ones())
             .sum();
-    1.0 - differing as f32 / 256.0
+    // differing sums four u32::count_ones() results, each at most 64, over the
+    // fixed 4-element PageHash array, so differing is at most 256 — clamped
+    // here so the u16 narrowing below is checked rather than merely true, and
+    // f32::from(u16) is then exact for every value that type can hold.
+    let differing = f32::from(differing.min(256) as u16);
+    1.0 - differing / 256.0
 }
 
 /// Cost of leaving a page unpaired.
@@ -72,11 +93,13 @@ pub struct Calibration {
 
 impl Calibration {
     /// How far the signal stands clear of the noise.
+    #[must_use]
     pub fn separation(&self) -> f32 {
         self.signal - self.noise
     }
 
     /// Whether any pairing between these two editions is worth making.
+    #[must_use]
     pub fn accepted(&self) -> bool {
         self.separation() >= MIN_SEPARATION
     }
@@ -91,6 +114,7 @@ impl Calibration {
 /// distance from that noise, not its absolute value.
 ///
 /// Returns `None` only when a side has no pages at all.
+#[must_use]
 pub fn calibrate(a: &[PageHash], b: &[PageHash]) -> Option<Calibration> {
     if a.is_empty() || b.is_empty() {
         return None;
@@ -127,9 +151,10 @@ pub fn calibrate(a: &[PageHash], b: &[PageHash]) -> Option<Calibration> {
         // A single-page B has no runner-up, so the score stands alone. This
         // matches how `confidence` treats the same case rather than inventing
         // a second convention for it.
-        margins.push(match row_second.is_finite() {
-            true => row_best - row_second,
-            false => row_best,
+        margins.push(if row_second.is_finite() {
+            row_best - row_second
+        } else {
+            row_best
         });
     }
     let noise = median(&mut all);
@@ -138,7 +163,7 @@ pub fn calibrate(a: &[PageHash], b: &[PageHash]) -> Option<Calibration> {
         noise,
         signal,
         margin: median(&mut margins),
-        floor: (noise + signal) / 2.0,
+        floor: f32::midpoint(noise, signal),
     })
 }
 
@@ -172,6 +197,44 @@ fn median(values: &mut [f32]) -> f32 {
 fn percentile(values: &mut [f32], fraction: f32) -> f32 {
     debug_assert!((0.0..=1.0).contains(&fraction));
     values.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "fraction is bounded to 0.0..=1.0 by every caller, asserted just above; and \
+                  values is non-empty on every call in this module — calibrate returns None \
+                  before percentile is reached when a or b is empty, and every direct call in \
+                  this file's tests passes a non-empty slice — so len is at least 1 and \
+                  (len - 1) * fraction lies in 0.0..=(len - 1): never negative, never past the \
+                  last index. Tried clamping the operand with .clamp(0.0, ...) before the cast, \
+                  matching the pattern that works for integer-to-integer narrowing elsewhere in \
+                  this file — confirmed by direct experiment that clippy's cast_possible_truncation \
+                  and cast_sign_loss give this no credit for a float source: every float-to-usize \
+                  cast is flagged regardless of any .clamp()/.max() bound placed before it, clamped \
+                  or not, literal or named const. No infallible float-to-usize conversion exists, \
+                  and percentile returns f32, not Result, so there is no error to propagate and \
+                  none would be reachable — the caller-side bound is real but this function has no \
+                  way to hand a violation back."
+    )]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "f32 represents every integer below 2^24 exactly. values.len() is a slot \
+                  count bounded by what a physical book can contain, far below the 16.7 \
+                  million where precision loss begins. Tried narrowing values.len() to u16 first \
+                  (the route that closed differing's cast_precision_loss above in similarity()) \
+                  and rejected it: that route only holds where the code itself proves a tight \
+                  bound — differing is a sum of count_ones() results with a provable ceiling of \
+                  256 — where here the only bound is the empirical 'a physical book can contain', \
+                  true well below 2^24 but never claimed to be true below u16::MAX (65 535). \
+                  Narrowing to u16 would silently misreport any input between those two ceilings \
+                  instead of converting it exactly, trading a wide, honest margin for a narrow, \
+                  invented one clippy cannot itself verify — confirmed separately that \
+                  cast_precision_loss carries no clamp-based range analysis at all, so a .min() \
+                  before this cast changes nothing regardless of the bound chosen. A third \
+                  route was tried too: values.len() is usize, and std has no From<usize> \
+                  for f32 (or f64) — usize's width is platform-dependent, unlike \
+                  u32/u16/u8, which do have infallible From impls into these float types. \
+                  So this stays a cast, not a conversion."
+    )]
     let at = ((values.len() as f32 - 1.0) * fraction).round() as usize;
     values[at]
 }
@@ -193,6 +256,16 @@ enum Step {
 /// monotonic but admits insertions on both sides, which is exactly what this
 /// recurrence expresses. Pages score `similarity - floor`, so a match below the
 /// floor is worse than no match at all and becomes a gap.
+#[must_use]
+#[expect(
+    clippy::many_single_char_names,
+    reason = "a and b are the two editions being aligned (matching this module's own doc \
+              comment and every other function here — similarity(a, b), calibrate(a, b)); m \
+              and n are their lengths and i and j the indices walking the Needleman-Wunsch \
+              matrix these are standard names for, matching CLRS and every textbook treatment \
+              of this recurrence. Renaming them to `edition_a_len` and `edition_b_len` would \
+              make this harder to check against the algorithm it implements, not easier."
+)]
 pub fn solve(a: &[PageHash], b: &[PageHash]) -> Vec<Run> {
     if a.is_empty() {
         return Vec::new();
@@ -207,11 +280,40 @@ pub fn solve(a: &[PageHash], b: &[PageHash]) -> Vec<Run> {
     let mut score = vec![0f32; (m + 1) * (n + 1)];
     let mut from = vec![Step::Pair; (m + 1) * (n + 1)];
     for i in 1..=m {
-        score[at(i, 0)] = -(i as f32) * GAP_PENALTY;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "i is a 1-based page index of edition A, at most m == a.len(), a slot \
+                      count bounded by what a physical book can contain — far below the \
+                      2^24 where f32 begins losing integer precision. Tried the u16-narrowing \
+                      route used for differing in similarity(): rejected, because that route \
+                      needs a bound the code itself proves (differing's is an exact ceiling of \
+                      256 from summed count_ones() results), and this bound is empirical — 'a \
+                      physical book can contain' is true well under 2^24 but was never claimed \
+                      true under u16::MAX, so narrowing would trade a wide, honest margin for a \
+                      narrow, invented one. Also tried clamping i itself before the cast; \
+                      cast_precision_loss has no clamp-based range analysis at all (confirmed by \
+                      direct experiment), so no bound placed before this cast changes anything. \
+                      A third route was tried too: i is usize, and std has no From<usize> \
+                      for f32 — usize's width is platform-dependent, unlike u32/u16/u8, \
+                      which do have infallible From impls into f32/f64."
+        )]
+        let i_f32 = i as f32;
+        score[at(i, 0)] = -i_f32 * GAP_PENALTY;
         from[at(i, 0)] = Step::SkipA;
     }
     for j in 1..=n {
-        score[at(0, j)] = -(j as f32) * GAP_PENALTY;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "j is a 1-based page index of edition B, at most n == b.len(), a slot \
+                      count bounded by what a physical book can contain — far below the \
+                      2^24 where f32 begins losing integer precision. Same attempt and same \
+                      rejection as i_f32 just above: no code-proven bound tight enough to \
+                      narrow into u16 exists, and cast_precision_loss ignores clamps entirely. \
+                      Same closed third route as i_f32 above, too: j is usize, and std has \
+                      no From<usize> for f32."
+        )]
+        let j_f32 = j as f32;
+        score[at(0, j)] = -j_f32 * GAP_PENALTY;
         from[at(0, j)] = Step::SkipB;
     }
 
@@ -240,12 +342,12 @@ pub fn solve(a: &[PageHash], b: &[PageHash]) -> Vec<Run> {
     while i > 0 {
         match from[at(i, j)] {
             Step::Pair => {
-                pairs.push((i as u32 - 1, Some(j as u32 - 1)));
+                pairs.push((page_index(i) - 1, Some(page_index(j) - 1)));
                 i -= 1;
                 j -= 1;
             }
             Step::SkipA => {
-                pairs.push((i as u32 - 1, None));
+                pairs.push((page_index(i) - 1, None));
                 i -= 1;
             }
             Step::SkipB => j -= 1,
@@ -257,7 +359,7 @@ pub fn solve(a: &[PageHash], b: &[PageHash]) -> Vec<Run> {
 
 /// Every page of A, with no counterpart in B.
 fn all_unmatched(len: usize) -> Vec<Run> {
-    compress(&(0..len).map(|i| (i as u32, None)).collect::<Vec<_>>())
+    compress(&(0..len).map(|i| (page_index(i), None)).collect::<Vec<_>>())
 }
 
 /// Collapse a per-page pairing into runs.
@@ -323,6 +425,7 @@ pub enum Verdict {
 /// slots a run or more, and everything that must not pass 6.8 or fewer — 6.8
 /// being the one-chapter-to-volume subset, with the known-bad copies, the
 /// needle and the unrelated pairs all at 4.8 or below.
+#[must_use]
 pub fn verdict(runs: &[Run], pages: usize) -> Verdict {
     let paired = paired_slots(runs);
     if pages == 0 || paired == 0 {
@@ -333,9 +436,31 @@ pub fn verdict(runs: &[Run], pages: usize) -> Verdict {
     // slots: an edition shorter than the constant could never reach it, and a
     // pairing that is one clean run averages exactly its own length, so it stays
     // `Sound` at any size.
-    match average_run_length(runs) < MIN_AVERAGE_RUN.min(pages as f32) {
-        true => Verdict::Fragmented,
-        false => Verdict::Sound,
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pages is an edition's page count, a slot count bounded by what a physical \
+                  book can contain — far below the 2^24 where f32 begins losing integer \
+                  precision. Tried narrowing to u16 first, as differing does in similarity(): \
+                  rejected, because differing has a bound the arithmetic proves (a sum of \
+                  count_ones() results ceilinged at 256), while pages only has the empirical \
+                  physical-book ceiling, never claimed tighter than u16::MAX — narrowing would \
+                  swap a wide, honest margin for one this file cannot back up. Also tried \
+                  clamping pages before the cast; cast_precision_loss carries no clamp-based \
+                  range analysis (confirmed by direct experiment against clippy 1.97), so no \
+                  bound placed before an integer-to-float cast changes whether it fires. A \
+                  third route was tried too: pages (this function's usize parameter) has no \
+                  From<usize> for f32 in std — usize's width is platform-dependent, unlike \
+                  u32/u16/u8, which do have infallible From impls into f32/f64."
+    )]
+    let cap = MIN_AVERAGE_RUN.min(pages as f32);
+    // average_run_length now returns f64 (see its own doc). f64::from(f32) is
+    // lossless, so promoting cap for the comparison changes no value: cap
+    // stays exactly what it was, computed in f32 as before, only compared at
+    // higher precision.
+    if average_run_length(runs) < f64::from(cap) {
+        Verdict::Fragmented
+    } else {
+        Verdict::Sound
     }
 }
 
@@ -344,6 +469,7 @@ pub fn verdict(runs: &[Run], pages: usize) -> Verdict {
 /// Public because a sidecar records it: a reader holding only the document
 /// should be able to see how much of an edition was placed without opening the
 /// archives.
+#[must_use]
 pub fn paired_slots(runs: &[Run]) -> u32 {
     runs.iter()
         .filter(|r| r.b.is_some())
@@ -404,7 +530,8 @@ const MIN_AVERAGE_RUN: f32 = 27.0;
 /// Gap runs are excluded deliberately. A refused pair is one gap covering the
 /// whole edition, and including it would report the longest run in the corpus
 /// for the pairing that made none.
-pub fn average_run_length(runs: &[Run]) -> f32 {
+#[must_use]
+pub fn average_run_length(runs: &[Run]) -> f64 {
     // Folded rather than collected: the sum and the count are all this needs,
     // and an intermediate allocation is not worth making in the crate that
     // compiles to WebAssembly, on a path an align walks up to three times.
@@ -416,7 +543,18 @@ pub fn average_run_length(runs: &[Run]) -> f32 {
         });
     match count {
         0 => 0.0,
-        _ => total as f32 / count as f32,
+        // total and count are both derived from a's paired-run lengths, slot
+        // counts bounded by what a physical book can contain — far below the
+        // 2^24 where f32 begins losing integer precision, and further still
+        // below f64's 2^53. total and count are u32, and f64::from(u32) is
+        // lossless outright (u32's 32 bits fit f64's 52-bit mantissa), where
+        // there is no equivalent `From<u32> for f32` (f32's mantissa is only
+        // 24 bits) — so widening this function's return type to f64 closes
+        // the cast without a suppression. `verdict` promotes its f32 cap to
+        // f64 with `f64::from` to compare against this, which is itself
+        // lossless, so the threshold value being compared against is
+        // unchanged.
+        _ => f64::from(total) / f64::from(count),
     }
 }
 
@@ -441,8 +579,10 @@ pub struct PageConfidence {
 /// resembles all nine of its siblings is dangerous at 0.98, and only the margin
 /// tells them apart. The verification report shades on this so the eye is drawn
 /// to the pairings that need a human.
+#[must_use]
 pub fn confidence(a: &[PageHash], b: &[PageHash], runs: &[Run]) -> Vec<PageConfidence> {
-    (0..a.len() as u32)
+    let pages = page_index(a.len());
+    (0..pages)
         .map(|page| {
             let hash = a[page as usize];
             let scores: Vec<f32> = b.iter().map(|hb| similarity(hash, *hb)).collect();
@@ -450,7 +590,7 @@ pub fn confidence(a: &[PageHash], b: &[PageHash], runs: &[Run]) -> Vec<PageConfi
                 .iter()
                 .enumerate()
                 .max_by(|x, y| x.1.total_cmp(y.1))
-                .map(|(j, s)| (j as u32, *s));
+                .map(|(j, s)| (page_index(j), *s));
 
             let counterpart = crate::counterpart(runs, page);
             // Report the pairing the alignment actually made, not the highest
@@ -464,7 +604,7 @@ pub fn confidence(a: &[PageHash], b: &[PageHash], runs: &[Run]) -> Vec<PageConfi
             let rival = scores
                 .iter()
                 .enumerate()
-                .filter(|(j, _)| Some(*j as u32) != subject)
+                .filter(|(j, _)| Some(page_index(*j)) != subject)
                 .map(|(_, s)| *s)
                 .fold(f32::NEG_INFINITY, f32::max);
 
@@ -535,7 +675,7 @@ mod tests {
     fn h(seed: u64) -> PageHash {
         let mut w = [0u64; 4];
         let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
-        for slot in w.iter_mut() {
+        for slot in &mut w {
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;
@@ -769,7 +909,7 @@ mod tests {
         assert!(cal.noise < 0.60, "{cal:?}");
         // The floor is still the midpoint of noise and signal, unchanged.
         assert!(
-            (cal.floor - (cal.noise + cal.signal) / 2.0).abs() < 1e-6,
+            (cal.floor - f32::midpoint(cal.noise, cal.signal)).abs() < 1e-6,
             "{cal:?}"
         );
     }
@@ -837,7 +977,7 @@ mod tests {
         let runs = vec![Run::paired(PageRange::new(0, 19), PageRange::new(0, 19))];
 
         // Below the bare constant, which is what makes this the failing case.
-        assert!(average_run_length(&runs) < MIN_AVERAGE_RUN);
+        assert!(average_run_length(&runs) < f64::from(MIN_AVERAGE_RUN));
         assert_eq!(verdict(&runs, 20), Verdict::Sound);
 
         // The cap must not rescue a needle. Color Walk's nine art book pages
@@ -857,7 +997,10 @@ mod tests {
     /// confirmed-good pairing at 36 slots a run or better.
     #[test]
     fn a_short_run_average_is_fragmented_even_when_runs_per_page_looks_healthy() {
-        let runs: Vec<Run> = (0..20)
+        // Named and typed so the ratio below can read it back losslessly with
+        // f32::from rather than casting runs.len() and asserting it matches.
+        let run_count: u16 = 20;
+        let runs: Vec<Run> = (0..u32::from(run_count))
             .map(|i| {
                 Run::paired(
                     PageRange::new(i * 10, i * 10 + 1),
@@ -867,7 +1010,8 @@ mod tests {
             .collect();
 
         // The measure this replaces would have called it sound.
-        assert!(100.0 * runs.len() as f32 / 210.0 < 15.0);
+        let ratio = 100.0 * f32::from(run_count) / 210.0;
+        assert!(ratio < 15.0);
         assert!(average_run_length(&runs) < 3.0);
 
         assert_eq!(verdict(&runs, 210), Verdict::Fragmented);

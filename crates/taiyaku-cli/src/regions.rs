@@ -32,8 +32,8 @@ pixels, and the regions document is what makes a second run cheap.";
 /// The median rather than the mean, because the disqualifier the L2 design
 /// states is a median and a single page-sized block would drag a mean past it
 /// while every other block was fine.
-fn median_area(pages: &BTreeMap<u32, Vec<Region>>) -> f32 {
-    let mut areas: Vec<f32> = pages
+fn median_area(pages: &BTreeMap<u32, Vec<Region>>) -> f64 {
+    let mut areas: Vec<f64> = pages
         .values()
         .flatten()
         .map(|region| region.w * region.h)
@@ -62,9 +62,21 @@ fn survey_line(edition: &str, pages: &BTreeMap<u32, Vec<Region>>) -> String {
         .flatten()
         .filter(|r| r.axis == Axis::Vertical)
         .count();
-    let per_page = match pages.is_empty() {
-        true => 0.0,
-        false => blocks as f32 / pages.len() as f32,
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "blocks and pages.len() count text-block regions and pages for one edition \
+                  this tool proposes regions for; real editions run to at most a few hundred \
+                  pages and a similar order of blocks, both far below f32's 2^24 exact-integer \
+                  bound, so the conversion loses no precision — a property of the \
+                  material, not enforced by the type (both are usize with no cap). The \
+                  lossless-From route is closed too: both are usize, and std has no \
+                  From<usize> for f32 — usize's width is platform-dependent, unlike \
+                  u32/u16/u8, so no such impl exists."
+    )]
+    let per_page = if pages.is_empty() {
+        0.0
+    } else {
+        blocks as f32 / pages.len() as f32
     };
     format!(
         "regions: edition={edition} pages={} blocks={blocks} v={vertical} h={} \
@@ -105,6 +117,18 @@ fn load_beside(path: &Path) -> Result<RegionDoc, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(RegionDoc::new()),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
+}
+
+/// A page index, as `found`'s `BTreeMap<u32, Vec<Region>>` keys it.
+///
+/// # Panics
+///
+/// Panics if `i` exceeds `u32::MAX`. It cannot here: `i` comes from
+/// `.enumerate()` over `detected`, one entry per page of the edition being
+/// processed; real editions run to at most a few hundred pages, nowhere
+/// near `u32::MAX`.
+fn page_index(i: usize) -> u32 {
+    u32::try_from(i).expect("page index exceeds u32::MAX")
 }
 
 pub fn command(args: &[String]) -> Result<(), String> {
@@ -199,7 +223,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
     let found: BTreeMap<u32, Vec<Region>> = detected
         .into_iter()
         .enumerate()
-        .map(|(index, regions)| (index as u32, regions))
+        .map(|(index, regions)| (page_index(index), regions))
         .collect();
 
     eprint!("{}", table(&found));
@@ -243,7 +267,7 @@ mod tests {
     use super::*;
 
     fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
+        list.iter().map(ToString::to_string).collect()
     }
 
     #[test]
