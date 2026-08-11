@@ -1588,7 +1588,7 @@ mod tests {
     /// body at all — sending one would defeat the entire point of a `304`.
     #[tokio::test]
     async fn a_page_carries_an_etag_and_a_matching_request_is_answered_304() {
-        let state = crate::test_support::state_with_real_pages();
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
         let app = build_router(state);
 
         let first = app
@@ -1627,7 +1627,7 @@ mod tests {
     /// whatever the archive held (this fixture holds PNG).
     #[tokio::test]
     async fn a_width_smaller_than_the_page_resizes_it_and_declares_jpeg() {
-        let state = crate::test_support::state_with_real_pages();
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
         let app = build_router(state);
 
         let response = app
@@ -1659,7 +1659,7 @@ mod tests {
     /// frequently smaller than a viewport asks for.
     #[tokio::test]
     async fn a_width_larger_than_the_page_serves_the_original_bytes_untouched() {
-        let state = crate::test_support::state_with_real_pages();
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
         let app = build_router(state);
 
         let plain = app
@@ -1701,7 +1701,7 @@ mod tests {
     /// on drawing a soft page with nothing to point at.
     #[tokio::test]
     async fn a_validator_from_one_size_does_not_satisfy_a_request_for_another() {
-        let state = crate::test_support::state_with_real_pages();
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
         let app = build_router(state);
 
         let small = app
@@ -1751,7 +1751,7 @@ mod tests {
     /// what stops one cache entry per pixel value.
     #[tokio::test]
     async fn an_absurd_width_is_clamped_rather_than_refused() {
-        let state = crate::test_support::state_with_real_pages();
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
         let app = build_router(state);
 
         for query in ["?w=0", "?w=1", "?w=999999", "?w=4096"] {
@@ -1862,7 +1862,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_thumb_route_answers_a_jpeg_and_404s_a_page_that_does_not_exist() {
-        let state = crate::test_support::state_with_real_pages();
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
         let app = build_router(state);
 
         let ok = app
@@ -1907,7 +1907,7 @@ mod tests {
     /// next read.
     #[tokio::test]
     async fn every_route_serving_a_member_s_bytes_says_how_long_they_may_be_reused() {
-        let state = crate::test_support::state_with_real_pages();
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
         let app = build_router(state);
 
         for uri in [
@@ -1987,7 +1987,7 @@ mod tests {
     /// on the `200` would have been, and no test saw it.
     #[tokio::test]
     async fn no_document_a_client_can_change_is_given_a_freshness_lifetime() {
-        let state = crate::test_support::state_with_real_pages();
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
         let app = build_router(state);
 
         for uri in [
@@ -3123,7 +3123,7 @@ mod tests {
     /// down to one pixel and handed to the reader as a JPEG.
     #[tokio::test]
     async fn a_width_of_one_is_absent_rather_than_a_one_pixel_page() {
-        let state = crate::test_support::state_with_real_pages();
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
         let app = build_router(state);
 
         let response = app

@@ -9575,3 +9575,51 @@ the branch added seventeen.
 The lesson is not that counting is hard. It is the one §6 now carries: **a
 per-site list is checkable and a count is not**, and every one of these was
 found by running something rather than by reading.
+
+## The fixtures that were unique but never removed
+
+Two test helpers in `taiyaku-serve` built a temp directory per call with a
+process id and a monotonic counter in the name, and neither ever removed one.
+Both carried a doc comment explaining why the *name* had to be unique — Rust
+runs tests in parallel threads, and a fixed name means whichever test runs
+second deletes the first's fixture mid-test — and neither said anything about
+who deletes it afterwards. Uniqueness stops tests colliding. It does not stop
+them accumulating.
+
+Measured on 2026-08-11, before the fix:
+
+| Prefix | Directories | Where from |
+| ------ | ----------- | ---------- |
+| `taiyaku-test-real-pages-*` | 9,147 | `test_support::work_with_real_pages`, reached by 10 tests |
+| `taiyaku-thumb-*` | 1,772 | `cover.rs`'s `tempdir_for_test`, reached by 1 |
+
+**106 MB and 32,427 inodes** between them, on a 31 GB `tmpfs`. Growth is one
+directory per calling test per run, so the figure is a count of test runs
+times call sites rather than anything about the tests themselves.
+
+`test_support::Fixture` replaces both: the same unique name, plus a `Drop` that
+removes the directory. **`Drop` rather than a cleanup call at the end of each
+test**, because the runs that leak are the ones that fail — a panicking test
+never reaches its own last line, so the fixtures a failing run leaves behind
+are exactly the ones nobody goes back for. `Drop::drop` ignores the removal's
+result in both directions: a test that has already passed must not be failed
+by a directory that would not go away, and one that has already failed must
+not have its message replaced by this one.
+
+Two tests, and the second is the one that matters. `a_fixture_removes_its_directory_when_it_is_dropped`
+asserts both halves — the directory exists first and is gone after, since a
+`Drop` that removed a directory never created would pass an
+existence-after check and prove nothing. `a_fixture_removes_its_directory_when_the_scope_unwinds`
+drives the leaking case directly through `catch_unwind`, rather than
+`#[should_panic]`, because the assertion has to run *after* the unwind rather
+than being the thing that panics.
+
+Verified by counting rather than by reading: 22 `taiyaku-*` directories under
+`/tmp` before, 22 after two consecutive full runs of the crate's 186 tests,
+and zero of either prefix. The 22 that remain are fixed-name fixtures from
+`taiyaku-cli`, which overwrite themselves each run and so are bounded rather
+than leaking.
+
+The 10,919 directories that had already accumulated were removed by hand; no
+code reclaims them, and nothing needed to, since the two helpers that made
+them no longer do.

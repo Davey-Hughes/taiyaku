@@ -421,7 +421,7 @@ fn at_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::Ordering;
 
     /// A pixel channel value synthesized for a fixture image below.
     ///
@@ -676,14 +676,11 @@ mod tests {
     }
 
     /// A directory unique to this test, so tests sharing a name for their
-    /// cache key cannot see each other's files. No `tempfile` dependency:
-    /// the workspace's dependency set is deliberately short.
-    fn tempdir_for_test() -> std::path::PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("taiyaku-thumb-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// cache key cannot see each other's files — and one that removes itself
+    /// when the test ends, which the local version of this helper did not.
+    /// `test_support::Fixture` carries the argument for both halves.
+    fn tempdir_for_test() -> crate::test_support::Fixture {
+        crate::test_support::Fixture::new("taiyaku-thumb")
     }
 
     /// A filmstrip tile is smaller than a cover, and the two never collide in
@@ -727,8 +724,8 @@ mod tests {
             calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(real_page_bytes())
         };
-        let first = cached_or_generated_thumb(&dir, "abc", 7, page).unwrap();
-        let second = cached_or_generated_thumb(&dir, "abc", 7, || {
+        let first = cached_or_generated_thumb(dir.path(), "abc", 7, page).unwrap();
+        let second = cached_or_generated_thumb(dir.path(), "abc", 7, || {
             calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(real_page_bytes())
         })

@@ -567,22 +567,64 @@ pub(crate) mod test_support {
     /// `Work` is deliberately not `Clone` (see `works.rs`), so the work cannot
     /// be taken back out of an `Arc<ServeState>`, and a second copy of this
     /// fixture is the thing that goes stale.
-    pub(crate) fn work_with_real_pages() -> (Work, std::path::PathBuf) {
-        // A process id plus a monotonic per-process counter, not a fixed
-        // name — the same pattern `cover.rs`'s `tempdir_for_test` uses, and
-        // for the same reason. This helper used to open a single fixed
-        // path and start by `remove_dir_all`-ing it with no cleanup after;
-        // Rust runs tests in parallel threads, so the moment a second test
-        // called this helper, whichever ran second would delete the first's
-        // fixture out from under it mid-test.
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "taiyaku-test-real-pages-{}-{n}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+    /// A temp directory that removes itself when the test that made it ends.
+    ///
+    /// **`Drop` rather than a cleanup call at the end of each test**, because
+    /// the runs that leak are the ones that fail: a panicking test never
+    /// reaches its own last line, and the fixture a failure leaves behind is
+    /// exactly the one nobody goes back for. Measured before this existed —
+    /// 9,147 `taiyaku-test-real-pages-*` directories and 1,772
+    /// `taiyaku-thumb-*` under `/tmp`, 106 MB and 32,427 inodes between them.
+    /// Both helpers already documented why their *names* had to be unique and
+    /// neither said anything about who removes them, which is the whole gap:
+    /// uniqueness stops tests colliding, it does not stop them accumulating.
+    pub(crate) struct Fixture {
+        path: std::path::PathBuf,
+    }
+
+    impl Fixture {
+        /// A directory unique to this test: the process id plus a monotonic
+        /// per-process counter, so tests running in parallel threads cannot
+        /// see or delete each other's files. One counter across every prefix
+        /// is enough, since the prefix is part of the name.
+        ///
+        /// No `tempfile` dependency: the workspace's dependency set is
+        /// deliberately short enough to quote in `docs/status.md`, and this
+        /// is the whole of what that crate would be used for here.
+        pub(crate) fn new(prefix: &str) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!("{prefix}-{}-{n}", std::process::id()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        pub(crate) fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for Fixture {
+        /// Failure is ignored deliberately, and in both directions: a test
+        /// that has already passed must not be failed by a directory that
+        /// would not go away, and one that has already failed must not have
+        /// its message replaced by this one. A panic here during unwinding
+        /// would abort the process outright.
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    pub(crate) fn work_with_real_pages() -> (Work, Fixture) {
+        // This helper used to open a single fixed path and start by
+        // `remove_dir_all`-ing it with no cleanup after; Rust runs tests in
+        // parallel threads, so the moment a second test called this helper,
+        // whichever ran second would delete the first's fixture out from
+        // under it mid-test. `Fixture` answers both halves — a unique name,
+        // and someone to remove it.
+        let fixture = Fixture::new("taiyaku-test-real-pages");
+        let root = fixture.path();
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(root.join("a1.cbz")).unwrap());
         zip.start_file("p1.png", zip::write::SimpleFileOptions::default())
@@ -609,19 +651,25 @@ pub(crate) mod test_support {
             path,
             taiyaku_core::Sidecar::from_json(json).unwrap(),
         );
-        (work, root)
+        (work, fixture)
     }
 
     /// The real-page work, wired to a `LocalLibrary` with its cache under the
     /// same temp directory.
-    pub(crate) fn state_with_real_pages() -> std::sync::Arc<ServeState> {
-        let (work, root) = work_with_real_pages();
-        std::sync::Arc::new(ServeState {
+    ///
+    /// Returns the `Fixture` alongside the state rather than dropping it here:
+    /// dropping it at the end of this function would delete the archives the
+    /// state is about to read. The caller binds it — `let (state, _fixture)` —
+    /// and the directory goes when the test does.
+    pub(crate) fn state_with_real_pages() -> (std::sync::Arc<ServeState>, Fixture) {
+        let (work, fixture) = work_with_real_pages();
+        let state = std::sync::Arc::new(ServeState {
             works: vec![work],
             source: std::sync::Arc::new(crate::LocalLibrary),
-            cache_dir: root.join("covers"),
+            cache_dir: fixture.path().join("covers"),
             log: None,
-        })
+        });
+        (state, fixture)
     }
 
     /// The fixture work, but with its `"raw"` edition renamed to a
@@ -983,6 +1031,57 @@ mod tests {
         assert_eq!(covers.parent(), thumbs.parent(), "siblings");
     }
 
+    /// A fixture makes its directory up front and removes it when the scope
+    /// that held it ends. Both halves are asserted: a `Drop` that removed a
+    /// directory which had never been created would pass an
+    /// existence-after check and prove nothing.
+    #[test]
+    fn a_fixture_removes_its_directory_when_it_is_dropped() {
+        let path = {
+            let fixture = crate::test_support::Fixture::new("taiyaku-test-drop-guard");
+            let path = fixture.path().to_path_buf();
+            assert!(path.is_dir(), "the fixture creates its directory up front");
+            path
+        };
+        assert!(
+            !path.exists(),
+            "and removes it when the scope that held it ends: {}",
+            path.display()
+        );
+    }
+
+    /// **And it removes it when the scope unwinds**, which is the case that
+    /// was actually leaking: a panicking test never reaches a cleanup line,
+    /// so the fixtures a failing run left behind were exactly the ones nobody
+    /// went back for. 9,147 directories of one prefix and 1,772 of another
+    /// had accumulated under `/tmp` — 106 MB, 32,427 inodes — before this
+    /// existed.
+    ///
+    /// `catch_unwind` rather than `#[should_panic]`, because the assertion
+    /// has to run *after* the unwind rather than being the thing that panics.
+    #[test]
+    fn a_fixture_removes_its_directory_when_the_scope_unwinds() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured = std::sync::Arc::clone(&seen);
+        let outcome = std::panic::catch_unwind(move || {
+            let fixture = crate::test_support::Fixture::new("taiyaku-test-drop-unwind");
+            *captured.lock().unwrap() = Some(fixture.path().to_path_buf());
+            panic!("as a failing assertion would");
+        });
+
+        assert!(outcome.is_err(), "the closure must actually have panicked");
+        let path = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the fixture was made before the panic");
+        assert!(
+            !path.exists(),
+            "unwinding must still remove it: {}",
+            path.display()
+        );
+    }
+
     /// Aborting on the *last* work must say nothing: there is nothing left to
     /// skip, and a sentence promising to skip "0 work(s)" — or, with the
     /// subtraction mutated, some other number of works that do not exist — is
@@ -1130,7 +1229,7 @@ mod tests {
         // Pinned by the flag under the fixture's own temp directory: the test
         // must not read the environment it happens to run under, and must not
         // be able to write into a real `$HOME`.
-        let cache = fixture.join("cache");
+        let cache = fixture.path().join("cache");
         let serving = tokio::spawn({
             let addr = addr.clone();
             let cache = cache.clone();
@@ -1171,15 +1270,16 @@ mod tests {
             .map(|r| r.status().as_u16())
             .map_err(|e| e.to_string());
 
-        // Read before the fixture is removed, and before the assertions, so a
-        // failing assertion still leaves no server running and no temp tree.
+        // Read before the assertions, so a failing one still leaves no server
+        // running. The temp tree is `fixture`'s business now: it goes when
+        // this function returns *or* unwinds, which is what makes a failing
+        // assertion stop leaking it.
         let expected_cover = crate::cover::cache_path(&cache.join("covers"), &sha);
         let expected_tile = crate::cover::thumb_cache_path(&cache.join("thumbs"), &sha, 0);
         let cover_cached = expected_cover.is_file();
         let tile_cached = expected_tile.is_file();
 
         serving.abort();
-        let _ = std::fs::remove_dir_all(&fixture);
 
         assert!(bound, "serve must bind before anything else is asserted");
         assert!(
