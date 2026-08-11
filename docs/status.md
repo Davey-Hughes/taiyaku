@@ -75,7 +75,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 639 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
+Five crates, 656 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
 project and 296 in the `jsdom` one this branch added — and six more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -91,7 +91,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Thirteen of the 639 are standing checks gated on
+`rayon` exactly as `align` already did. Thirteen of the 656 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
@@ -203,7 +203,7 @@ taiyaku align  <a-member>... -- <b-member>...   [--ltr] [--cache DIR] [--stats] 
 taiyaku verify <a-member>... -- <b-member>...   [--out FILE] [--sidecar FILE [--cache DIR] [--ltr]]
 taiyaku topology <hub>... -- <spoke>... -- <spoke>...
 taiyaku lookup <taiyaku.json> <from> <to> <page>...
-taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT] [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump]
+taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT] [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump] [--cache DIR]
 taiyaku inventory <root>                        [--min-pages N] [--pattern SPEC]
 taiyaku duplicates <copy>... -- <copy>...       [--against <member>...] [--cache DIR] [--ltr]
 taiyaku credits <member>...                     --sidecar FILE [--against EDITION] [--cache DIR] [--write]
@@ -1250,11 +1250,10 @@ worth fixing".
   doing nothing when no `--stump-url` was given. The tradeoff itself stands —
   a remembered miss still costs one query once instead of one per page turn,
   and nothing watches Stump for changes — but acting on it no longer requires
-  having read this paragraph. The generated-cover cache has
-  the same shape without the excuse of a design tradeoff behind it: covers
-  live under `.taiyaku-cache/covers`, relative to the server's working
-  directory, and are unbounded and never pruned — an archive that is replaced
-  gets a new cover under its new hash, but the old file is never reclaimed.
+  having read this paragraph. The generated-cover cache has the same
+  shape without the excuse of a design tradeoff behind it: covers are
+  unbounded and never pruned — an archive that is replaced gets a new
+  cover under its new hash, but the old file is never reclaimed.
   **That second half now has a size, and it is 165 KB.** Three files, one per
   edition of the one work ever served, at 54 to 60 KB each. Growth needs an
   archive to be *replaced*, not a page to be read — the key is the member's
@@ -1262,23 +1261,42 @@ worth fixing".
   hundred works at three editions apiece, every one replaced once, at about
   33 MB. Unbounded in form, negligible in size, and stated here so that the
   next person to read "never pruned" knows what it has actually cost.
-  **One thing worth knowing before anyone clears "the cache":** two different
-  caches share that tree. `.taiyaku-cache/covers/` is the server's; the 55
-  `<sha256>.json` files beside it, about 1.2 MB, are the CLI's fingerprint
-  cache — the one `--cache` names and the one measured at 3.4 s → 189 ms.
-  Deleting the parent throws away both, and only one is cheap to rebuild.
+  **The two caches no longer share a tree, and that is new.** They did:
+  `.taiyaku-cache/covers/` was the server's, and the 55 `<sha256>.json` files
+  beside it — about 1.2 MB — are the CLI's fingerprint cache, the one
+  `align --cache` names and the one measured at 3.4 s → 189 ms. The command
+  has to be said with the flag now: `serve` took a `--cache` of its own on
+  2026-08-11 and it names the server's root, so a bare `--cache` no longer
+  picks out one of the two caches this sentence exists to tell apart.
+  Deleting the parent threw away both, and only one is cheap to rebuild.
+  Since 2026-08-11 the server's cache lives under `$XDG_CACHE_HOME/taiyaku`
+  (or `$HOME/.cache/taiyaku`), so wherever either variable is set — every
+  ordinary environment — `.taiyaku-cache/` holds the fingerprint cache alone
+  and clearing it can no longer discard the expensive half by accident. The
+  hazard is recorded rather than deleted because a warning that vanishes
+  without explanation reads as an oversight — and it has not vanished
+  entirely: where neither variable is set, as under a `systemd` unit without
+  `Environment=HOME` or a bare `env -i`, the server falls back to the old
+  relative path and the two share a tree again. That branch is the one that
+  prints, naming the directory it settled on and the `--cache` flag that pins
+  it, so the exception announces itself rather than being found later as a
+  pile of regenerated pages.
   **What would reopen it:** archives replaced routinely enough for 55 KB
-  apiece to accumulate, or a second consumer of that directory — the
-  filmstrip's thumbnail-per-page route, deferred to M5 in `cover.rs`.
-  **That second consumer now exists (M5a Task 2) and has been measured, in
-  `.taiyaku-cache/thumbs`, a sibling of `.taiyaku-cache/covers` rather than the
-  same directory.** Fetching every tile of one 195-page edition
-  (`corpus/gotoubun-v01`'s `raw-mono`) produced 195 files totalling 1,177,982
-  bytes — about 1.12 MiB — individual tiles from 1,117 to 8,808 bytes. Roughly
-  seven times the covers' bytes for sixty-five times the file count, which is
-  proportionate to 195 tiles against one cover rather than the kind of blowup
-  "changes the arithmetic entirely" was written to warn about. See `notes.md`,
-  "M5a Task 2: the filmstrip's tile cache, measured against the real corpus".
+  apiece to accumulate, or a second consumer of the server's cache directory —
+  the filmstrip's thumbnail-per-page route, deferred to M5 in `cover.rs`.
+  **That second consumer now exists (M5a Task 2) and has been measured, in a
+  `thumbs` directory that is a sibling of `covers` rather than the same
+  directory** — both under `.taiyaku-cache` when the measurement was taken,
+  and both under whichever root resolves since 2026-08-11; the sibling
+  relationship is what the figures below depend on, and it holds under every
+  one of the four rules.
+  Fetching every tile of one 195-page edition (`corpus/gotoubun-v01`'s
+  `raw-mono`) produced 195 files totalling 1,177,982 bytes — about 1.12 MiB —
+  individual tiles from 1,117 to 8,808 bytes. Roughly seven times the covers'
+  bytes for sixty-five times the file count, which is proportionate to 195
+  tiles against one cover rather than the kind of blowup "changes the
+  arithmetic entirely" was written to warn about. See `notes.md`, "M5a Task 2:
+  the filmstrip's tile cache, measured against the real corpus".
   **Still not closed:** the reopening condition stands, now at the tile
   cache's larger constant factor, and a library with many editions' filmstrips
   warmed at once is a case this one-edition run does not speak to.
@@ -1289,8 +1307,9 @@ worth fixing".
   `--cache` at all: such a cache would hold the same boxes the regions document
   already holds, under the same key, in a second place that can disagree with
   the first — which is the duplication O10 was closed to remove — and `--write`
-  is what makes a second run cheap. So the count of caches sharing that tree is
-  still two, and the flag is refused rather than accepted and ignored.
+  is what makes a second run cheap. So `regions` adds no cache of its own, the
+  tree it would have shared ordinarily holds the fingerprint cache alone now,
+  and the flag is refused rather than accepted and ignored.
 
 **One deferral was carried rather than found** — O12, named while planning M1
 and M2, and now closed:
@@ -3486,17 +3505,27 @@ mismatched pair said nothing at all.
 
 ### Later
 
-- **The page cache follows the working directory, and now that costs more.**
-  `ServeState`'s `cache_dir` defaults to the *relative* `.taiyaku-cache/covers`,
-  so where a cache lands depends on where `taiyaku serve` was launched from.
-  That was cheap while the cache held covers and tiles; since `?w=` it holds
-  every reading-size page, so starting the server from a different directory
-  silently produces a second cache and regenerates a whole volume at ~126 ms a
-  page. Found by noticing 120 MB of pages under `web/` after a session that had
-  launched `serve` from there. Gitignored, so nothing can be committed, and
-  harmless beyond the wasted work — but an absolute default, or resolving it
-  against the sidecar the way the Stump cache already does, would remove the
-  surprise.
+- **The page cache used to follow the working directory. Shipped 2026-08-11**
+  on `serve-cache-root`; `docs/superpowers/specs/2026-08-11-serve-cache-root-design.md`
+  is the record, and this entry is kept as the defect that opened it.
+  `ServeState`'s `cache_dir` defaulted to the *relative*
+  `.taiyaku-cache/covers`, so where a cache landed depended on where `taiyaku
+  serve` was launched from. That was cheap while the cache held covers and
+  tiles; since `?w=` it holds every reading-size page, so starting the server
+  from a different directory silently produced a second cache and regenerated a
+  whole volume at ~126 ms a page. Found by noticing 120 MB of pages under
+  `web/` after a session that had launched `serve` from there. Gitignored, so
+  nothing could be committed, and harmless beyond the wasted work.
+  It now resolves to `$XDG_CACHE_HOME/taiyaku`, falling back to
+  `$HOME/.cache/taiyaku` and then — printing a line that says so — to the old
+  relative path, with `--cache DIR` overriding all three. **Two alternatives
+  the entry itself had proposed both lost.** Resolving against the sidecar,
+  the way `stump::cache::path_for` does, cannot work as stated: that function
+  takes a `&Work` and runs per work, while `cache_dir` is one directory for a
+  server that may be handed sidecars in several directories, so there is no
+  single sidecar to resolve against. Canonicalising against the first sidecar
+  would have made the location depend on argument order instead, trading one
+  surprise for another. Both would also have written into the corpus tree.
 
 - **Move `web/` from npm to pnpm. Shipped 2026-08-09** on
   `toolchain-pnpm-node26-ts7`; `docs/ci.md` is the record now, this entry is

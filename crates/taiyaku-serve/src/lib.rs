@@ -15,6 +15,7 @@
 /// crate. The module path says what the function guarantees, which a re-export
 /// at the crate root as a bare `write` would not.
 pub mod atomic;
+mod cache_root;
 mod composite;
 #[cfg(test)]
 mod corpus;
@@ -62,10 +63,20 @@ impl ServeState {
 
     /// Where generated filmstrip tiles are kept between runs.
     ///
-    /// A sibling of `cache_dir` rather than the same directory: O11 records
-    /// that two caches already share `.taiyaku-cache` and only one of them —
-    /// the covers — is cheap to rebuild, and a third cache sharing that
-    /// directory would make "clear the cache" blunter still.
+    /// A sibling of `cache_dir` rather than the same directory, so that the
+    /// two can be thrown away separately — because only one of them is cheap
+    /// to rebuild. The covers are one per edition and 165 KB for the whole
+    /// library; the tiles and reading-size pages beside them are 1.12 MiB per
+    /// 195-page edition and cost 126 ms a page to regenerate against 10 ms
+    /// warm, measured over 235 real generations. One shared directory would
+    /// make clearing the cheap half impossible without taking the expensive
+    /// half with it, which is exactly the bluntness this arrangement avoids.
+    ///
+    /// O11 made this argument about `.taiyaku-cache`, where the server's
+    /// covers sat beside the CLI's fingerprint cache. They no longer share a
+    /// tree — `cache_root` moved the server's under the platform cache root —
+    /// and the argument outlived the move because it was never about which
+    /// tree the two were in.
     #[must_use]
     pub fn thumb_cache_dir(&self) -> std::path::PathBuf {
         self.cache_dir.with_file_name("thumbs")
@@ -181,6 +192,7 @@ pub async fn serve(
     stump: Option<StumpConfig>,
     log_requests: Option<std::path::PathBuf>,
     refresh_stump: bool,
+    cache: Option<std::path::PathBuf>,
 ) -> Result<(), String> {
     // Opened before anything else so a bad `--log-requests` path is a
     // startup failure that can be acted on, rather than an hour of reading
@@ -233,10 +245,37 @@ pub async fn serve(
         }
     };
 
+    // Resolved before the bind, so a person who is about to be surprised by
+    // where their pages went reads it above `listening` rather than below it.
+    let xdg = std::env::var_os("XDG_CACHE_HOME");
+    let home = std::env::var_os("HOME");
+    let resolved = cache_root::cache_root(cache.as_deref(), xdg.as_deref(), home.as_deref());
+    // The rule two hundred lines up, applied to a default rather than to a
+    // flag: a thing that quietly does something surprising is worse than one
+    // that says so. The fallback branch is the only one that still follows the
+    // working directory — a relative variable is ignored rather than joined,
+    // and a relative `--cache` was typed on purpose — which is the defect that
+    // module was written to remove, so it is the one branch that must not be
+    // silent. Which branch that is lives in `cache_root::notice`, where a test
+    // can assert it; deciding it here would put it back inside an `eprintln!`.
+    if let Some(notice) = cache_root::notice(&resolved) {
+        eprintln!("{notice}");
+    }
+    // Created here rather than left to the first request that wants it.
+    // `cover.rs` treats a cache directory it cannot make as non-fatal and
+    // silent, which is right per request and hides the startup case entirely:
+    // `--cache` naming a file, or a directory under a read-only mount, would
+    // otherwise serve perfectly and regenerate every page forever. Reported
+    // and survived rather than refused, for the same reason the fallback is a
+    // fallback — a cache is derived data.
+    if let Some(complaint) = cache_root::create(&resolved) {
+        eprintln!("{complaint}");
+    }
+
     let state = Arc::new(ServeState {
         works,
         source,
-        cache_dir: std::path::PathBuf::from(".taiyaku-cache/covers"),
+        cache_dir: resolved.covers(),
         log,
     });
     let listener = tokio::net::TcpListener::bind(addr)
@@ -514,14 +553,21 @@ pub(crate) mod test_support {
     }
 
     /// A work whose one page is a real, decodable image rather than the
-    /// shared `work` fixture's ASCII bytes.
+    /// shared `work` fixture's ASCII bytes, and the temp directory it was
+    /// built in.
     ///
     /// `work`'s pages are deliberately undecodable (see
     /// `cover.rs::bytes_that_are_not_an_image_fail_by_name`), which suits
     /// every route except one that actually has to generate a thumbnail. Named
     /// `w`/`a` — work id and edition key — to match the paths a thumb-route
     /// test addresses.
-    pub(crate) fn state_with_real_pages() -> std::sync::Arc<ServeState> {
+    ///
+    /// Split out from `state_with_real_pages` for the one test that hands a
+    /// `Vec<Work>` to `serve` rather than driving a built `ServeState`:
+    /// `Work` is deliberately not `Clone` (see `works.rs`), so the work cannot
+    /// be taken back out of an `Arc<ServeState>`, and a second copy of this
+    /// fixture is the thing that goes stale.
+    pub(crate) fn work_with_real_pages() -> (Work, std::path::PathBuf) {
         // A process id plus a monotonic per-process counter, not a fixed
         // name — the same pattern `cover.rs`'s `tempdir_for_test` uses, and
         // for the same reason. This helper used to open a single fixed
@@ -558,12 +604,20 @@ pub(crate) mod test_support {
         let path = root.join("taiyaku.json");
         std::fs::write(&path, json).unwrap();
 
+        let work = Work::new(
+            "w".into(),
+            path,
+            taiyaku_core::Sidecar::from_json(json).unwrap(),
+        );
+        (work, root)
+    }
+
+    /// The real-page work, wired to a `LocalLibrary` with its cache under the
+    /// same temp directory.
+    pub(crate) fn state_with_real_pages() -> std::sync::Arc<ServeState> {
+        let (work, root) = work_with_real_pages();
         std::sync::Arc::new(ServeState {
-            works: vec![Work::new(
-                "w".into(),
-                path,
-                taiyaku_core::Sidecar::from_json(json).unwrap(),
-            )],
+            works: vec![work],
             source: std::sync::Arc::new(crate::LocalLibrary),
             cache_dir: root.join("covers"),
             log: None,
@@ -864,10 +918,11 @@ mod tests {
     }
 
     /// The tile cache is a *sibling* of the cover cache, not the same
-    /// directory and not a child of it — O11's reasoning, which nothing
-    /// checked. `thumb_cache_dir` could return `PathBuf::default()`, the empty
-    /// path, and every tile in every library would share one directory in the
-    /// process's working directory.
+    /// directory and not a child of it — the arrangement `thumb_cache_dir`'s
+    /// own doc comment argues for, on the grounds that only one of the two is
+    /// cheap to rebuild, and which nothing checked. `thumb_cache_dir` could
+    /// return `PathBuf::default()`, the empty path, and every tile in every
+    /// library would share one directory in the process's working directory.
     #[test]
     fn the_tile_cache_is_a_sibling_of_the_cover_cache() {
         let state = crate::test_support::state("taiyaku-test-thumb-dir");
@@ -886,6 +941,46 @@ mod tests {
             !thumbs.as_os_str().is_empty(),
             "an empty path would put every library's tiles in one place"
         );
+    }
+
+    /// The sibling invariant above, re-asserted at a *resolved* root rather
+    /// than assumed to survive the move off the relative path. The two are
+    /// different claims: that one holds `cache_dir` fixed from the fixture,
+    /// this one takes whatever `cache_root` produced and checks the tiles
+    /// still land beside the covers and inside the application's directory.
+    ///
+    /// Minor 7 (whole-branch review): it used to build the shared two-member
+    /// cbz fixture on disk — four zip entries and a sidecar — to assert a
+    /// derivation that touches no file at all. The work is what the claim
+    /// never needed, so it is an empty `Vec` here; the archives are still
+    /// built, and the paths still exercised against real bytes, by
+    /// `serve_caches_covers_and_tiles_under_the_resolved_root` below.
+    #[test]
+    fn a_resolved_root_keeps_covers_and_thumbs_as_siblings() {
+        let state = crate::ServeState {
+            works: Vec::new(),
+            source: std::sync::Arc::new(crate::LocalLibrary),
+            cache_dir: crate::cache_root::cache_root(
+                None,
+                Some(std::ffi::OsStr::new("/var/cache/fixture")),
+                None,
+            )
+            .covers(),
+            log: None,
+        };
+        let covers = state.cache_dir.clone();
+        let thumbs = state.thumb_cache_dir();
+
+        assert_eq!(
+            covers,
+            std::path::PathBuf::from("/var/cache/fixture/taiyaku/covers")
+        );
+        assert_eq!(
+            thumbs,
+            std::path::PathBuf::from("/var/cache/fixture/taiyaku/thumbs"),
+            "tiles land beside the covers, inside the application's own directory"
+        );
+        assert_eq!(covers.parent(), thumbs.parent(), "siblings");
     }
 
     /// Aborting on the *last* work must say nothing: there is nothing left to
@@ -922,8 +1017,11 @@ mod tests {
     /// The one thing in this crate that opens a socket, and so — by the design
     /// its own doc comment states — the one thing every other test avoids
     /// driving. The cost of that is that `serve` could be replaced wholesale by
-    /// `Ok(())`, starting no server at all, with all 168 other tests green. A
-    /// composition root nothing composes is worth exactly one test.
+    /// `Ok(())`, starting no server at all, with every other test in the crate
+    /// at the time green. A composition root nothing composes is worth exactly
+    /// one test — two, since
+    /// `serve_caches_covers_and_tiles_under_the_resolved_root` below found the
+    /// second thing about this function that only a socket can observe.
     ///
     /// The port is taken by binding and releasing, which is racy in principle;
     /// the poll below is what makes it deterministic in practice, and a genuine
@@ -942,9 +1040,17 @@ mod tests {
         let addr = probe.local_addr().unwrap().to_string();
         drop(probe);
 
+        // The cache root is pinned by the flag rather than left to resolve,
+        // so this test neither reads the environment it happens to run under
+        // nor can write a cache into a real `$HOME`. It lives under the
+        // fixture's own temp directory, which `cleanup` below removes.
+        let cache = std::env::temp_dir()
+            .join("taiyaku-test-serve-bind")
+            .join("cache");
+
         let serving = tokio::spawn({
             let addr = addr.clone();
-            async move { crate::serve(works, &addr, None, None, false).await }
+            async move { crate::serve(works, &addr, None, None, false, Some(cache)).await }
         });
 
         // Poll rather than sleep a fixed time: the bind is the thing under
@@ -969,6 +1075,131 @@ mod tests {
         assert!(
             body.contains("\"t\""),
             "and answer with the works it was given: {body}"
+        );
+    }
+
+    /// Important 2 (whole-branch review): `serve` builds its `ServeState` from
+    /// the *resolved* root, and generated files really land under it.
+    ///
+    /// This is the whole subject of the branch, and until this test nothing
+    /// observed it. Replacing `cache_dir: resolved.covers()` with the old
+    /// `PathBuf::from(".taiyaku-cache/covers")` — leaving `resolved` in place
+    /// so the notice still compiles — leaves every other test in the workspace
+    /// green, and this one is the only failure: the sibling tests assign
+    /// `cache_dir` themselves, and the bind test asks for `/api/works`, which
+    /// writes nothing. Confirmed by making that mutation rather than by
+    /// reasoning about it.
+    ///
+    /// So it goes through a socket rather than a `oneshot` router. `serve` is
+    /// where the resolution meets the state, and a test that builds the state
+    /// itself cannot see that line at all.
+    ///
+    /// **Both leaves, not just the covers.** A cover exercises `cache_dir`
+    /// directly and a tile exercises `thumb_cache_dir`, which is derived from
+    /// it — so this also pins the sibling arrangement against a root that was
+    /// resolved rather than typed into a fixture, with real bytes on both
+    /// sides.
+    ///
+    /// The fixture's pages are real PNGs (`work_with_real_pages`) because both
+    /// routes decode: the shared two-member fixture's "jpegs" are their own
+    /// filenames, and every request here would 404 on the decode instead of
+    /// writing anything.
+    ///
+    /// It also carries Important 5's other half — that `serve` *creates* the
+    /// root rather than leaving the first request to — which is checkable only
+    /// from here, before any request that would create it in passing.
+    ///
+    /// `multi_thread` and the poll are `serve_binds_the_address_and_answers_on_it`'s,
+    /// for its reasons.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn serve_caches_covers_and_tiles_under_the_resolved_root() {
+        let (work, fixture) = crate::test_support::work_with_real_pages();
+        let sha = work
+            .sidecar()
+            .editions
+            .get("a")
+            .expect("the fixture's one edition")
+            .members[0]
+            .sha256
+            .clone();
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let addr = probe.local_addr().unwrap().to_string();
+        drop(probe);
+
+        // Pinned by the flag under the fixture's own temp directory: the test
+        // must not read the environment it happens to run under, and must not
+        // be able to write into a real `$HOME`.
+        let cache = fixture.join("cache");
+        let serving = tokio::spawn({
+            let addr = addr.clone();
+            let cache = cache.clone();
+            async move { crate::serve(vec![work], &addr, None, None, false, Some(cache)).await }
+        });
+
+        let mut bound = false;
+        for _ in 0..100 {
+            if serving.is_finished() {
+                break;
+            }
+            if ureq::get(&format!("http://{addr}/api/works"))
+                .call()
+                .is_ok()
+            {
+                bound = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        // Read *before* any request that would create it lazily, which is what
+        // makes it an observation of `cache_root::create` being called at all
+        // rather than of `cover.rs` making the directory on its way past.
+        // `serve` binds after it creates, so an answered request means it ran.
+        let created_at_startup = cache.join("covers").is_dir();
+
+        // `ureq` reports a non-2xx as an `Err` by default (see
+        // `stump::http::get_bytes`, which turns that off deliberately), so the
+        // status is carried as the message a failure prints rather than
+        // unwrapped here.
+        let cover = ureq::get(&format!("http://{addr}/opds/v1.2/works/w/a/cover"))
+            .call()
+            .map(|r| r.status().as_u16())
+            .map_err(|e| e.to_string());
+        let tile = ureq::get(&format!("http://{addr}/api/works/w/a/pages/0/thumb"))
+            .call()
+            .map(|r| r.status().as_u16())
+            .map_err(|e| e.to_string());
+
+        // Read before the fixture is removed, and before the assertions, so a
+        // failing assertion still leaves no server running and no temp tree.
+        let expected_cover = crate::cover::cache_path(&cache.join("covers"), &sha);
+        let expected_tile = crate::cover::thumb_cache_path(&cache.join("thumbs"), &sha, 0);
+        let cover_cached = expected_cover.is_file();
+        let tile_cached = expected_tile.is_file();
+
+        serving.abort();
+        let _ = std::fs::remove_dir_all(&fixture);
+
+        assert!(bound, "serve must bind before anything else is asserted");
+        assert!(
+            created_at_startup,
+            "Important 5: the cache root is created at startup, not by whichever request \
+             first happens to want it: {}",
+            cache.join("covers").display()
+        );
+        assert_eq!(cover, Ok(200), "the cover route must have answered");
+        assert_eq!(tile, Ok(200), "the tile route must have answered");
+        assert!(
+            cover_cached,
+            "the generated cover must be written under the root `serve` resolved, not \
+             under a path baked into the state: {}",
+            expected_cover.display()
+        );
+        assert!(
+            tile_cached,
+            "and the tile beside it, in the sibling `thumbs` under the same root: {}",
+            expected_tile.display()
         );
     }
 }

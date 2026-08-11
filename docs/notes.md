@@ -9473,3 +9473,105 @@ log gap then meant that inference rested on the local repro standing in for
 the forge, not on watching the forge do it directly. **That inference is now
 an observation**: job 3121's own log, quoted above, shows the `TIMEOUT` line
 at the configured period, on the runner itself.
+
+## The cache that followed the working directory, and four rules measured against a real server
+
+`ServeState`'s `cache_dir` was the relative `.taiyaku-cache/covers`, so where
+the served cache landed depended on where `taiyaku serve` had been launched
+from. That was cheap while the directory held covers. It stopped being cheap
+when `?w=` shipped: the sibling `thumbs` directory now holds every
+reading-size page as well as every filmstrip tile, and a cold page costs a
+decode and a resize at 126 ms median against 10 ms warm. Found by noticing
+120 MB of pages under `web/` after a session that had launched `serve` from
+there.
+
+It now resolves through four rules — `--cache DIR`, then `$XDG_CACHE_HOME/taiyaku`,
+then `$HOME/.cache/taiyaku`, then the old relative path with a line printed to
+say so. `docs/superpowers/specs/2026-08-11-serve-cache-root-design.md` is the
+design; what follows is the evidence, because none of it existed in this file
+before.
+
+### The four rules, driven against the built binary
+
+A scratch sidecar with absolute member paths outside the repository, two
+`.cbz` members of two real JPEGs each, the debug binary, and the tile route.
+Every figure below was read off a run rather than reasoned about.
+
+| Launch | Rule that fired | Where the tiles landed | Files under the launch directory |
+| ------ | --------------- | ---------------------- | -------------------------------- |
+| dir A, no flag | `$XDG_CACHE_HOME` | `~/.cache/taiyaku/thumbs` | 0 |
+| dir B, no flag | `$XDG_CACHE_HOME` | `~/.cache/taiyaku/thumbs` — **same two files, none added** | 0 |
+| dir A, `--cache W/pinned` | flag | `W/pinned/thumbs`, with `covers/` created beside it | 0 |
+| `env -u HOME -u XDG_CACHE_HOME` | fallback | `.taiyaku-cache/thumbs` under the launch directory | 1 |
+| dir B, `--cache ""` | `$XDG_CACHE_HOME` | `~/.cache/taiyaku/thumbs` | 0 |
+
+The second row is the defect, gone: two different launch directories produced
+one cache, and the second launch generated nothing because the first had
+already filled it. The fourth row is the only one that still follows the
+working directory, which is what the code comments now claim and what a
+`Fallback` variant exists to announce:
+
+```
+taiyaku: neither XDG_CACHE_HOME nor HOME is set; caching under .taiyaku-cache,
+which follows the working directory. Pass --cache DIR to pin it.
+```
+
+`--cache` pointed at an existing *file* now complains instead of degrading in
+silence, which is the shape O22 was filed for:
+
+```
+taiyaku: could not create the cache directory /etc/hosts/covers (Not a
+directory (os error 20)); covers, tiles and reading-size pages will be
+regenerated on every request rather than kept. Pass --cache DIR to name a
+directory that can be created.
+```
+
+It serves anyway. A cache is derived data, and the design's §3 argues that a
+server refusing to start over one converts a recoverable state into an
+unrecoverable one — the same trade `stump::cache::load` refuses two files away.
+
+### Two findings the gate could not see, and one of them was the whole branch
+
+**Nothing observed the thing being changed.** `cache_dir: resolved.covers()`
+in `serve` is the entire behavioural change. It could be mutated back to
+`PathBuf::from(".taiyaku-cache/covers")` — leaving `resolved` in place so the
+notice still compiled — and all 651 tests then in the workspace, plus
+`clippy -D warnings`, plus `check-all.sh`, stayed green. The test that looked
+like it covered this assigned `state.cache_dir` itself and never called
+`serve`. It is now covered by a real server spawned against a decodable
+fixture, asserting the generated cover and tile appear under the root `serve`
+resolved; the test was confirmed to fail under that mutation before being
+accepted. The mutation run also wrote `.taiyaku-cache` into
+`crates/taiyaku-serve/`, which is the defect demonstrating itself.
+
+**An empty `--cache` was worse than the defect being fixed.** `--cache ""`
+produced `Resolution::Flag(PathBuf::from(""))`, so `covers()` was the relative
+`covers` and `thumb_cache_dir()` the relative `thumbs` — with no `Fallback`
+variant, so nothing printed. Worse, because `.gitignore` names
+`.taiyaku-cache/` and not `covers/` or `thumbs/`: a `git add -A` after a
+reading session could stage the generated pages, which the original defect
+could not. Both environment variables were already filtered for emptiness by
+an argument that applied verbatim to the flag and had not been applied to it.
+The filter is now absoluteness rather than emptiness, which subsumes it and
+also implements the XDG rule the module cites — a relative `$XDG_CACHE_HOME`
+was being accepted while two comments asserted it could not be.
+
+### The count that drifted, four times, in the branch that was documenting count drift
+
+The design named five documentation sites. The plan's own verification grep,
+run against the unmodified tree, found a sixth. A reviewer reading the
+corrected O11 paragraph end to end found a seventh and an eighth — the
+paragraph had come to contradict itself 35 lines down. A ninth was in code
+rather than in `docs/`, where the grep could not reach it: `thumb_cache_dir`'s
+doc comment justified the sibling arrangement by the very O11 fact this branch
+retired, and `cache_root::covers()` deferred to that comment, so the new
+module's stated reason for existing pointed at a dead claim.
+
+Then the spec's §7 stated a test breakdown summing to thirteen against a total
+of twelve, one section below §6 recording count drift as this repository's
+recurring failure. And `status.md`'s own "639 tests" was left standing while
+the branch added seventeen.
+
+The lesson is not that counting is hard. It is the one §6 now carries: **a
+per-site list is checkable and a count is not**, and every one of these was
+found by running something rather than by reading.

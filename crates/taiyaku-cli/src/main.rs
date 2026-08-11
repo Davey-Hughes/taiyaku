@@ -114,7 +114,7 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("       taiyaku lookup <taiyaku.json> <from> <to> <page>...");
             println!(
                 "       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT] [--stump-url URL] \
-                 [--stump-key KEY] [--log-requests FILE] [--refresh-stump]"
+                 [--stump-key KEY] [--log-requests FILE] [--refresh-stump] [--cache DIR]"
             );
             println!(
                 "       taiyaku duplicates <copy>... -- <copy>... [--against <member>...] [--ltr]"
@@ -1095,6 +1095,7 @@ fn serve(args: &[String]) -> Result<(), String> {
         args,
         &[
             "--addr",
+            "--cache",
             "--log-requests",
             "--refresh-stump",
             "--stump-key",
@@ -1130,6 +1131,15 @@ fn serve(args: &[String]) -> Result<(), String> {
         (None, None) => None,
     };
     let log = option_value(args, "--log-requests", "a path")?.map(PathBuf::from);
+    // Read before `load_works` so `serve x.json --cache` with nothing after
+    // it is refused for the reason that is actually wrong, rather than for a
+    // sidecar that may also be missing.
+    //
+    // It names the *root*, and `taiyaku-serve` derives `covers` and `thumbs`
+    // under it — the same convention `align --cache .taiyaku-cache` uses.
+    // Naming the covers directory instead would put the tiles in a sibling of
+    // whatever was typed rather than inside it.
+    let cache = option_value(args, "--cache", "a directory")?.map(PathBuf::from);
     // Throws away every work's remembered Stump resolutions before this start
     // resolves them again. The escape hatch for a book added to Stump after a
     // work first resolved, which nothing here notices on its own.
@@ -1147,7 +1157,14 @@ fn serve(args: &[String]) -> Result<(), String> {
     }
     tokio::runtime::Runtime::new()
         .map_err(|e| format!("{e}"))?
-        .block_on(taiyaku_serve::serve(works, addr, stump, log, refresh_stump))
+        .block_on(taiyaku_serve::serve(
+            works,
+            addr,
+            stump,
+            log,
+            refresh_stump,
+            cache,
+        ))
 }
 
 /// How believable a route is, which depends on how it was reached.
@@ -4415,7 +4432,7 @@ mod tests {
         let err = serve(&argv(&["--bogus"])).unwrap_err();
         assert_eq!(
             err,
-            "serve has no flag `--bogus`; its flags are --addr, --log-requests, \
+            "serve has no flag `--bogus`; its flags are --addr, --cache, --log-requests, \
              --refresh-stump, --stump-key, --stump-url"
         );
     }

@@ -67,10 +67,23 @@ against 189 ms warm for one volume pair. The cache stores page dimensions and
 hashes, including both halves of every landscape page, so the spread rule can
 change without invalidating anything.
 
-`.taiyaku-cache/` is not the fingerprint cache alone. `taiyaku serve` keeps a
-second cache beside it, at `.taiyaku-cache/covers`, holding one generated JPEG
-per edition for the OPDS feed — see `status.md`'s note on the two on-disk
-caches for what it does and does not do (unbounded, never pruned).
+`.taiyaku-cache/` is the fingerprint cache alone wherever `$XDG_CACHE_HOME` or
+`$HOME` is set, which is every ordinary environment. `taiyaku serve` keeps its
+own cache — one generated JPEG per edition for the OPDS feed, plus filmstrip
+tiles and reading-size pages — under the platform cache root instead:
+`$XDG_CACHE_HOME/taiyaku`, or `$HOME/.cache/taiyaku` where that is unset, with
+`covers/` and `thumbs/` beneath it. `serve --cache DIR` overrides all three.
+It used to sit at `.taiyaku-cache/covers`, relative to wherever the server
+happened to be started from, which meant a second cache and a regenerated
+volume for every launch directory. That relative path survives as the last
+resort, for the case where neither variable is set — a `systemd` unit without
+`Environment=HOME`, a bare `env -i` — and there the two caches share a tree
+again, so clearing `.taiyaku-cache/` throws away the expensive half too. It is
+the one rule that prints: a line on stderr naming the directory it settled on
+and the `--cache` flag that pins it, because a cache landing somewhere
+surprising in silence is the defect the move exists to remove. See
+`status.md`'s note on the on-disk caches for what the server's does and does
+not do (unbounded, never pruned).
 
 `lookup` exists to prove the format carries what was solved: it reads the
 document with no archives present and no solving, and its answers match what
