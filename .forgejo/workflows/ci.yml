@@ -249,6 +249,26 @@ jobs:
             --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$'
           node scripts/coverage-floor.mjs target/rust-coverage.json
 
+      # docs/status.md states a total test count twice and nothing derived
+      # either figure, so both went stale on three consecutive branches in one
+      # day. This is the only documentation claim in the repository that is
+      # mechanically checkable, so it is the one that gets checked — the site
+      # counts and the open-item counts beside it are not derivable and stay
+      # the reviewer's job.
+      #
+      # Reads the run two steps up rather than running anything.
+      # .config/nextest.toml sets junit.path, so `cargo llvm-cov nextest`
+      # writes target/nextest/default/junit.xml on its way past and this step
+      # is one node process over an XML file — no build, no test run.
+      #
+      # It was a fresh `cargo nextest list` until 2026-08-11 and cost 14.3 s a
+      # push: llvm-cov builds with coverage instrumentation, so a plain `list`
+      # could not reuse the artifacts and rebuilt the workspace — 31% of this
+      # job's wall clock to check one number.
+      # scripts/status-test-count.mjs records why that was the wrong trade.
+      - name: Check the test count in docs/status.md
+        run: node scripts/status-test-count.mjs target/nextest/default/junit.xml docs/status.md
+
   # The core is required to stay WebAssembly-compatible so the browser reader
   # and a future native shell can share it. This is easy to break by accident —
   # one dependency pulling in threads or a native library does it — and the

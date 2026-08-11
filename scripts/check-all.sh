@@ -201,6 +201,40 @@ else
   fi
 fi
 
+# --- the test count docs/status.md states ---
+# `status.md` gives a total test count twice, and nothing derived either figure, so both went stale
+# on two consecutive branches in one day — 639 against 656, then 656 against 658 — caught by hand
+# both times and only because someone looked. Checked here instead.
+#
+# **This reads the run above rather than running anything.** `.config/nextest.toml` sets
+# `junit.path`, so the `cargo llvm-cov nextest` invocation a few lines up writes
+# `target/nextest/default/junit.xml` on its way past, and this is a `node` process over an XML file.
+# The marginal cost is approximately zero.
+#
+# It cost 14.3 seconds a push until 2026-08-11, when it shelled out to `cargo nextest list` for a
+# static enumeration instead — a genuinely more robust source that rebuilt the entire workspace to
+# get there, because the coverage step builds with instrumentation and a plain `nextest list` cannot
+# reuse those artifacts. `scripts/status-test-count.mjs` records why that trade was wrong and how
+# the robustness is recovered without it.
+#
+# **The guard has to match the condition that WRITES the report, not just the tools this step
+# itself needs**, and getting that wrong is a defect this check shipped with for one commit. The
+# report is written only on the coverage block's `else` branch, which needs *both* `cargo-llvm-cov`
+# and `cargo-nextest`; its fallback runs plain `cargo test` and writes nothing. A guard on
+# `cargo-nextest` alone therefore passed on a machine with nextest but no llvm-cov, ran this check
+# against a file the fallback never created, and failed the whole gate with an ENOENT about a
+# missing JUnit report — a message pointing at the wrong problem entirely.
+#
+# So all three are required, and the first two are named in the same order and with the same
+# `command -v` form as the block above, so the two conditions can be read against each other.
+if ! command -v cargo-llvm-cov >/dev/null 2>&1 \
+  || ! command -v cargo-nextest >/dev/null 2>&1 \
+  || ! command -v node >/dev/null 2>&1; then
+  note_skip "the status.md test-count check (cargo-llvm-cov, cargo-nextest or node not on PATH — the run above took its fallback path, which writes no JUnit report, so the count in the docs was not compared against the tests that ran)"
+else
+  run node scripts/status-test-count.mjs target/nextest/default/junit.xml docs/status.md
+fi
+
 # --- the standing corpus checks ---
 # Not a CI job: CI has no corpus, so these skip there and are the one thing this script measures
 # that the forge cannot. `cargo test` captures stderr for passing tests, so a check that skipped and

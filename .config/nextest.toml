@@ -16,6 +16,21 @@
 # slower than the machine that measured this by a factor nobody has measured —
 # the one guess here, and it says so.
 [profile.default]
+# A machine-readable summary of the run, at `target/nextest/default/junit.xml`,
+# written as a side effect of a run that was happening anyway. It is what
+# `scripts/status-test-count.mjs` reads to check the test count `docs/status.md`
+# states in two places, which went stale on two consecutive branches when
+# nothing derived it.
+#
+# **This one line replaced a step that cost 14.3 seconds a push.** That step
+# shelled out to `cargo nextest list` for a static enumeration, which is a more
+# robust source — it reads no environment and cannot be perturbed by a failing
+# suite — and it rebuilt the entire workspace to get there, because
+# `cargo llvm-cov nextest` builds with coverage instrumentation and a plain
+# `nextest list` cannot reuse those artifacts. 31% of the `test` job's wall
+# clock to check one number. The robustness it bought is recovered instead by
+# refusing to compare when the report shows a failure; see that script's header.
+junit = { path = "junit.xml" }
 slow-timeout = { period = "30s", terminate-after = 2 }
 
 # The exempt set is not a new list: it is exactly the four files

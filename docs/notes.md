@@ -9623,3 +9623,120 @@ than leaking.
 The 10,919 directories that had already accumulated were removed by hand; no
 code reclaims them, and nothing needed to, since the two helpers that made
 them no longer do.
+
+## The one count a gate could derive, and the four it cannot
+
+`docs/status.md` states a total test count twice — "Five crates, N tests" and
+"Thirteen of the N are standing checks" — and nothing derived either. Both went
+stale on two consecutive branches in one day: **639 stated against 656 actual**
+when the cache-root branch added seventeen tests, then **656 against 658** when
+the fixture branch added two. Both were caught by hand, and only because
+someone happened to look.
+
+That is the fourth place this repository has logged the same failure. The
+open-items preamble's count word drifted three times, by its own italic
+admission. The cache-root design's §6 miscounted its documentation sites, and
+its §7 the tests it shipped — the second of those in the section immediately
+below the one recording count drift as the recurring problem. The conclusion
+all of them reached was that **a per-site list is checkable and a count is
+not**. This is the exception, and it is worth being precise about why: this
+count is *mechanically derivable*, and none of the others are. So it gets
+derived; they stay a reviewer's job.
+
+### The expensive design, and why it was wrong
+
+The first version of this gate shelled out to `cargo nextest list
+--message-format json` for a **static enumeration** of the workspace's tests,
+rather than reading the run happening two steps above it. The argument was that
+a list is more robust than a run: it reads no environment, executes nothing, and
+cannot be perturbed by a failing suite. Three objections to using the run were
+written down to support it.
+
+**It cost 14.3 seconds a push, and that number was nearly not measured.** The
+forge run came back green and the step printed its line, which is where it
+would have been easy to stop. The line above it was `Finished \`test\` profile
+in 14.01s` — the step had rebuilt the whole workspace, because `cargo llvm-cov
+nextest` builds with coverage instrumentation and a plain `nextest list` cannot
+reuse those artifacts. Timestamps on run 224 put it at **14.3 s of a 46.3 s
+job, 31% of the `test` job's wall clock**, against documentation calling 1.18 s
+— the local, already-warm figure — "the whole cost".
+
+Sharing the artifacts was tried and does not work: `cargo llvm-cov nextest
+list` is parsed by llvm-cov as `nextest run` with `list` as a test *filter*, not
+as the `list` subcommand, and fails on `--message-format json`. Reordering the
+two steps does not help either, since whichever runs first pays the
+uninstrumented build. So the cost was unavoidable **given the approach** — which
+is what forced the approach to change rather than the cost to be accepted.
+
+**The three objections do not survive being looked at**, and that is the part
+worth keeping:
+
+- *"A run has two output formats."* In CI there is only ever one. The fallback
+  to plain `cargo test` exists only in `check-all.sh`, on a machine missing
+  `cargo-nextest`, and that branch skips this check exactly as it already skips
+  the per-file coverage floor.
+- *"A run's totals move with the environment."* The 271-against-658 measurement
+  behind this is real — `TAIYAKU_CORPUS` pointed at nothing makes binaries abort
+  and the ones after them never report. But both callers run the suite with that
+  variable removed, deliberately and for unrelated reasons, and CI has no corpus
+  at all. It cannot reach this.
+- *"A run's totals move when something fails."* True, and now **handled** rather
+  than avoided: the script refuses to compare when the report shows a failure or
+  an error, and names the failures instead. A red suite gets one clear message
+  rather than a second confusing one about documentation.
+
+What ships instead is one line in `.config/nextest.toml` — `junit = { path =
+"junit.xml" }` — so the run that was happening anyway writes
+`target/nextest/default/junit.xml`, and the check is a `node` process over an
+XML file. Verified under the exact CI invocation, not just under plain nextest:
+`tests="658" skipped="0" failures="0" errors="0"`.
+
+**The honest summary is that the expensive design was chosen first and defended
+afterwards.** Three plausible-sounding reasons were assembled for a decision
+already made, and none of them was tested against the actual deployment until a
+reader asked why checking one number took fourteen seconds. That is the reusable
+part; the fix is trivial by comparison.
+
+### Proved by regression, six ways
+
+Not by observing it pass. Each of these was run and its exit code checked:
+
+| Regression | Exit | What it said |
+| ---------- | :--: | ------------ |
+| A stated figure edited to 657 | 1 | named `docs/status.md:78` and both numbers |
+| A test added, docs untouched | 1 | 659 against 658, naming **both** lines |
+| A claim reworded out of existence | 2 | named the pattern it could no longer find |
+| A report of a run with 3 failures | 2 | named the failures, not the documentation |
+| A report with 0 tests | 2 | refused to compare rather than agreeing |
+| A report of the wrong shape | 2 | named the element it wanted |
+
+The three 2s are the ones worth having. A gate that can no longer find what it
+measures must say so rather than pass — the rule `coverage-floor.mjs` set when
+it found that a coverage report with no files in it satisfied every threshold.
+
+The second row nearly did not get proved. The first attempt regenerated the
+enumeration with `>`, which this shell refuses under `noclobber`, so the check
+read a **stale** JSON file and reported a pass. It was rerun with `>|`, which
+is when it produced the 659 above. A regression proof that quietly measures the
+previous state is the exact failure the proof exists to prevent.
+
+### What is deliberately not gated
+
+The same paragraph's "Thirteen of the N are standing checks gated on
+`TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs` and three in
+`crates/taiyaku-serve/src/corpus.rs`" is **correct**, verified by hand against
+the same enumeration: 16 tests are named `corpus::…`, of which 3 are
+`corpus::tests::…`, unit tests *of* the corpus-path helper rather than standing
+checks. 16 − 3 = 13, split 10 and 3 across the two crates exactly as written.
+
+It is not gated because the only rule separating those two populations is the
+`corpus::tests::` name prefix, and a gate resting on a naming convention starts
+lying the first time someone nests a module differently. A check that is subtly
+wrong is worse than no check, because it is believed.
+
+And `status.md`'s third test count — "nothing slower than 0.75 s in 639 tests",
+inside O39's record — must never be touched: it is a dated measurement of what
+was true when the slowest test was bisected. The two live sites are matched on
+their surrounding prose for that reason. A looser "a number near the word
+tests" pattern would sweep the historical one in and demand it be falsified on
+every branch, which is how a gate teaches people to edit the record.

@@ -470,6 +470,31 @@ alternative that lost.
   file count when adding a crate". The cost is that a deliberate exclusion can
   trip it; the rule is to re-derive the number beside the exclusion rather than
   widen it on reflex.
+- **The test count in this file is derived by a gate, because by hand it went
+  stale twice in one day** — 639 stated against 656 actual, then 656 against
+  658, each caught only because someone happened to look. `scripts/status-test-count.mjs`
+  compares both stated figures against the JUnit report `cargo llvm-cov nextest`
+  already writes — one line in `.config/nextest.toml` turns it on — so the check
+  adds no build and no test run, and it runs in the `test` job and
+  `check-all.sh` alike. **It cost 14.3 s a push until it did.** The first
+  version shelled out to `cargo nextest list` for a *static* enumeration, which
+  is genuinely the more robust source — it reads no environment and cannot be
+  perturbed by a failing suite — and rebuilt the entire workspace to get there,
+  since `llvm-cov` builds with instrumentation and a plain `list` cannot reuse
+  those artifacts. That is 31% of the `test` job to check one number, and the
+  three reasons written down for paying it did not survive being looked at:
+  two output shapes is a local-fallback problem on the one path where the check
+  is skipped anyway; the environment cannot reach a run both callers make with
+  `TAIYAKU_CORPUS` removed; and a red suite is now *handled* — the script
+  refuses to compare and names the failures — rather than avoided. The design
+  was chosen first and defended afterwards, which is the reusable part. Proved by
+  regression six ways: a stale figure and an added test each exit 1 naming the
+  line, and a reworded claim, a run with failures in it, a zero-test report or a
+  wrong shape each exit **2** rather than passing. It gates only the total,
+  deliberately: the "thirteen standing checks" beside it is correct but
+  separable only by a name prefix, and a gate resting on a naming convention
+  would start lying silently. `docs/ci.md`, "The one documentation claim a gate
+  can check", is the record.
 - **`clippy::pedantic` is on as an advisory step, never in `[workspace.lints]`.**
   420 sites measured at `df8cbd9`; 375 fixed or given a per-site
   `#[expect(…, reason = …)]` stating the bound, and 45 in the two one-off

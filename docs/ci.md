@@ -724,6 +724,95 @@ from coverage for the matching reason: its `rerender` half is reachable only
 from the `browser` project, so counting it would park test infrastructure
 permanently short of 100% for a structural reason rather than an untested one.
 
+## The one documentation claim a gate can check
+
+`docs/status.md` opens "What is built" with "Five crates, N tests", and repeats
+N once more a few lines below. Nothing derived either figure, and both went
+stale on **two consecutive branches in one day**: 639 stated against 656
+actual, then 656 against 658. Both were caught by hand, and only because
+someone happened to check.
+
+That is the fourth place this repository has logged the same failure. The
+open-items preamble's count word drifted three times by its own italic
+admission; the cache-root design's §6 miscounted its documentation sites, and
+its §7 the tests it shipped — the latter in the section immediately below the
+one recording count drift as the recurring problem. The conclusion those
+entries reached is that **a per-site list is checkable and a count is not**.
+This gate is the exception that proves the shape of it: this particular count
+*is* mechanically derivable, so it is derived instead of remembered.
+
+`scripts/status-test-count.mjs` reads a static enumeration of the workspace's
+tests and compares it against both stated figures, naming the file, the line
+and both numbers when they disagree. It runs in the `test` job after the
+coverage floor, and in `scripts/check-all.sh` at the same point.
+
+**It reads the run three steps above it**, rather than running anything.
+`.config/nextest.toml` sets `junit.path`, so `cargo llvm-cov nextest` writes
+`target/nextest/default/junit.xml` on its way past, and this step is one `node`
+process over an XML file. The marginal cost is approximately zero.
+
+**It cost 14.3 seconds a push until 2026-08-11, and the reasoning that got it
+there is the part worth keeping.** The first version shelled out to `cargo
+nextest list --message-format json` for a *static enumeration*, on the argument
+that a list is more robust than a run: it reads no environment, runs nothing,
+and cannot be perturbed by a failing suite. That argument is true. It was also
+not worth 14.3 seconds — `cargo llvm-cov nextest` builds with coverage
+instrumentation, so a plain `nextest list` could not reuse those artifacts and
+rebuilt the entire workspace. Observed on run 224: `coverage-floor` finished at
+16:46:13.74 and the count printed at 16:46:28.00, **14.3 s of a 46.3 s job, 31%
+of this job's wall clock**, to check one number in one sentence.
+
+The three objections that justified the expensive version do not survive being
+looked at:
+
+- *"A run has two output formats."* In CI there is only ever one. The fallback
+  to plain `cargo test` exists only in `check-all.sh`, on a machine missing
+  `cargo-nextest`, and that branch now skips this check the same way it already
+  skips the per-file coverage floor.
+- *"A run's totals move with the environment."* Both callers run the suite with
+  `TAIYAKU_CORPUS` removed, deliberately and for unrelated reasons, and CI has
+  no corpus at all. The variable cannot reach it.
+- *"A run's totals move when something fails."* True, and now **handled** rather
+  than avoided: the script refuses to compare when the report shows a failure or
+  an error, and says so. A red suite gets one clear message about the failing
+  tests instead of a second confusing one about documentation.
+
+Sharing the instrumented artifacts was tried before the design changed, and does
+not work: `cargo llvm-cov nextest list` is parsed by llvm-cov as `nextest run`
+with `list` as a test *filter*, not as the `list` subcommand, and fails on
+`--message-format json`. Reordering the two steps does not help either —
+whichever runs first pays the uninstrumented build. That dead end is what made
+the cost unavoidable *given the approach*, which is what forced the approach to
+change.
+
+**Proved by regression, six ways**, in the discipline the coverage gates
+established. A stale figure in `status.md` exits 1 naming the line. A test added
+without touching the docs exits 1 naming *both* lines — 659 against 658. A claim
+reworded out of existence exits **2**, not 0, because a gate that can no longer
+find what it measures must say so rather than pass. A report of a run with
+failures in it exits 2 and names the failures rather than the documentation. A
+report with zero tests exits 2, the same collapse `minFiles` exists to catch on
+the coverage side. A report of the wrong shape exits 2.
+
+**What it does not check, and why.** The same paragraph says "Thirteen of the N
+are standing checks gated on `TAIYAKU_CORPUS` — ten in
+`crates/taiyaku-cli/src/corpus.rs` and three in
+`crates/taiyaku-serve/src/corpus.rs`". All three figures are correct, verified
+by hand against the same enumeration: 16 tests are named `corpus::…`, of which
+3 are `corpus::tests::…` — unit tests *of* the corpus-path helper rather than
+standing checks. 16 − 3 = 13, split 10 and 3 exactly as stated. It is not
+gated because the only rule separating the two populations is a name prefix,
+and a gate resting on a naming convention starts lying the first time someone
+nests a module differently. A check that is subtly wrong is worse than none,
+because it is believed.
+
+**And one figure it must never touch.** `status.md` carries a third test
+count — "nothing slower than 0.75 s in 639 tests" — inside O39's record. That
+is a dated measurement, not a live claim: it says what was true when the
+slowest test was bisected. The two live sites are matched on their surrounding
+prose for exactly this reason; a looser "a number near the word tests" pattern
+would sweep the historical one in and demand it be falsified on every branch.
+
 ## Formatting, and the tool that checks it
 
 Until 2026-08-07 the TypeScript half had **no formatting check at all**, which
