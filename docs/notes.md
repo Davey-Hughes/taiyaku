@@ -9269,3 +9269,207 @@ A null result, but a measured one rather than an assumed one: every
 tried and why it doesn't apply — `solve.rs`'s `i_f32`/`j_f32` casts are two
 of them — closing the question for the next reader instead of leaving it
 looking untried.
+
+## O39: what the slowest test actually is, and the two bounds sized from it
+
+Nothing bounded a test's runtime anywhere in this repository until this branch.
+No `.config/nextest.toml`, no `timeout-minutes` in `.forgejo/workflows/ci.yml`,
+and CI does not run nextest — the `test` job runs `cargo llvm-cov`, which wraps
+`cargo test`, which has no timeout. The auto-timeout that made a hang legible
+existed only inside `cargo-mutants`, which is how the gap was found: it reports
+a mutant that stops a loop terminating as `TIMEOUT` rather than `MISSED`.
+
+**The slowest test was bisected, not estimated.** Running the whole workspace
+under a temporary `slow-timeout` and raising the period:
+
+| period | SLOW lines printed | distinct tests marked |
+| ------ | ------------------- | ---------------------- |
+| 250 ms | 4 | 2 |
+| 500 ms | 2 | 2 |
+| 750 ms | 0 | 0 |
+
+**"4" at 250 ms is a line count, not a test count — the first reading of this
+table conflated the two.** nextest re-prints a `SLOW` line at *every* multiple
+of the period a test is still running, not once per test: two tests finishing
+between 0.5 s and 0.75 s each print once at 250 ms and again at 500 ms, four
+lines from two tests. Re-measured on 2026-08-11 with `--config-file` at a
+250 ms period, output captured rather than counted by eye:
+
+```
+SLOW lines at 250ms: 4
+distinct tests marked: 2
+     0.250s] detect::tests::the_gap_does_not_grow_with_the_page
+     0.250s] cover::tests::a_cover_is_a_bounded_jpeg_whatever_the_page_was
+     0.500s] detect::tests::the_gap_does_not_grow_with_the_page
+     0.500s] cover::tests::a_cover_is_a_bounded_jpeg_whatever_the_page_was
+Summary [   0.838s] 639 tests run: 639 passed (2 slow), 0 skipped
+```
+
+nextest's own summary says `(2 slow)`. The two are
+`detect::tests::the_gap_does_not_grow_with_the_page` and
+`cover::tests::a_cover_is_a_bounded_jpeg_whatever_the_page_was` — the same pair
+the 500 ms row already named, which is why that row was never wrong: at a
+500 ms period only one multiple elapses before either test finishes, so line
+count and test count coincide there. **The corrected reading is stronger, not
+weaker:** the same two tests are marked at 250 ms and again at 500 ms, and none
+at 750 ms, so apart from those two, nothing in the workspace exceeds 0.25 s.
+30 s is still 40x that figure and 60 s still 80x — the bound was always sized
+from two tests, only ever miscounted as four by reading a reprint as a second
+test. This is the same error class as the `grep -c 'corpus::'` undercount
+below: output that repeats or recolours itself, miscounted by eye instead of
+read from the tool's own summary line.
+
+**A caution for anyone re-running this.** An early count of the exempt set said
+"3" and was wrong — nextest colours its output, so the literal bytes `corpus::`
+do not appear on every line it prints, and `grep -c 'corpus::'` undercounts.
+`--color never` is required. With it, `test(corpus::)` selects the same sixteen
+tests `cargo test corpus::` does.
+
+**Job durations, from the forge's own `/actions/tasks` API**, over the ten runs
+before this branch:
+
+| job | min | max |
+| --- | --- | --- |
+| `test` | 32 s | 134 s |
+| `lint` | 21 s | 85 s |
+| `wasm` | 33 s | 84 s |
+| `web` | 9 s | 25 s |
+
+`timeout-minutes: 10` is 4.5x the worst of those.
+
+**Switching the runner to nextest was measured, not assumed — and the first
+measurement was wrong.** llvm-cov runs each nextest test in its own process
+where `cargo test` threads them in one, which can move coverage. A single pair
+of runs suggested nextest *improved* coverage by two lines. Repeated three times
+each on an unchanged tree, with the same `--ignore-filename-regex`, that turns
+out to be noise:
+
+| | `cargo llvm-cov` | `cargo llvm-cov nextest` |
+| --- | --- | --- |
+| uncovered lines, three runs | 399, 399, 399 | 402, 397, 399 |
+| lines | 97.69% every run | 97.68%–97.71% |
+| per-file variance | none | `taiyaku-serve/src/lib.rs` 44/42/44, `routes.rs` 55/52/52 |
+| `--fail-under-lines 93` | pass | pass |
+| `scripts/coverage-floor.mjs` | pass, 38 files | pass, 38 files |
+| wall clock, warm | 1501 ms | 915 ms |
+
+**Coverage is unchanged; what nextest adds is nondeterminism.** `cargo test` is
+deterministic to the line. nextest is not, and both varying files are in the
+async server crate — process-per-test isolation changes tokio scheduling, which
+is the same property that makes the per-test timeout possible.
+
+**Neither gate is at risk, and that was checked rather than assumed.** The
+aggregate floor is 93 against 97.68–97.71: 4.7 points of margin against a
+0.03-point swing. The per-file floor is 57% lines, and the two varying files sit
+at 90.74% and 97.62% — a three-line swing moves the worse of them by about 0.6
+points, leaving 33 points of headroom.
+
+This is a cost, not a free win: the branch trades a deterministic coverage
+number for a bounded test runtime. Cheap at these margins, but anyone later
+tightening `--fail-under-lines` toward the measured figure needs to know the
+last digit moves on its own.
+
+The workspace has **zero doctests**, which nextest cannot run at all — free
+today, and a constraint on whoever adds the first one: they must add a
+`cargo test --doc` step beside it or CI will not run it.
+
+**The bound was also triggered on the forge itself, not only reasoned about.**
+PR #47 (`o39-test-timeout` against `main`) carried a deliberate hang for one
+run: a test named `tmp_hangs_to_trigger_the_ci_bound`, added in commit
+`77bcc7d` and reverted in `53b2083`. Run 213 (internal id 717), built from the
+hang commit, is the deliberate red run; run 214 (internal id 718), built from
+the revert, is the control it is compared against.
+
+- Red: https://forge.daveynet.xyz/davey/taiyaku/actions/runs/213
+- Green: https://forge.daveynet.xyz/davey/taiyaku/actions/runs/214
+
+| run | job | result | duration |
+| --- | --- | --- | --- |
+| 213 (red, hang commit) | `test` | failure | 153 s |
+| 213 (red) | `lint` | success | 65 s |
+| 213 (red) | `wasm` | success | 34 s |
+| 213 (red) | `web` | success | 9 s |
+| 214 (green, revert) | `test` | success | 117 s |
+| 214 (green) | `lint` | success | 74 s |
+| 214 (green) | `wasm` | success | 59 s |
+| 214 (green) | `web` | success | 24 s |
+
+Both are far under `timeout-minutes: 10` (600 s) — the job-level bound never
+fired here, only the per-test one did.
+
+**Run 215 is the only green CI run of the final tree, branch tip `71bc7cd`.**
+This final review's own fixes landed and the branch was pushed again: all four
+jobs succeeded — `lint` 28 s, `test` 37 s, `wasm` 36 s, `web` 9 s — comfortably
+under both bounds, with neither the temporary hang nor its revert present in
+this tree.
+
+**The CI log text could not be obtained when this was first written, and that
+was stated rather than implied away.** Against Forgejo `15.0.5~gitea-1.22.0`,
+this build registered no job-log endpoint and no job-listing endpoint under
+`/repos/{owner}/{repo}/actions/*` — verified against the instance's own
+`swagger.v1.json`, and re-probed independently by a reviewer who additionally
+tried `list_jobs` and `list_run_jobs`. All 404. The run-detail endpoint exposed
+no step data either. So the verbatim `TIMEOUT` line originally below came from
+the other end of the gap: the exact `ci.yml` command, run locally with the
+hanging test still present, exiting 100.
+
+```
+$ cargo llvm-cov nextest --workspace --all-features \
+    --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$' \
+    --fail-under-lines 93
+        SLOW [> 30.000s] (───────) taiyaku-core sidecar::tests::tmp_hangs_to_trigger_the_ci_bound
+ TERMINATING [> 60.000s] (───────) taiyaku-core sidecar::tests::tmp_hangs_to_trigger_the_ci_bound
+     TIMEOUT [  60.003s] (640/640) taiyaku-core sidecar::tests::tmp_hangs_to_trigger_the_ci_bound
+    (test timed out)
+     Summary [  60.122s] 640 tests run: 639 passed, 1 timed out, 0 skipped
+     TIMEOUT [  60.003s] (640/640) taiyaku-core sidecar::tests::tmp_hangs_to_trigger_the_ci_bound
+error: test run failed
+error: process didn't exit successfully: `/home/davey/.local/share/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo nextest run --manifest-path /home/davey/projects/taiyaku/Cargo.toml --target-dir /home/davey/projects/taiyaku/target/llvm-cov-target --workspace --all-features` (exit status: 100)
+```
+
+**The instance was since upgraded, and the inference is now an observation.**
+Forgejo went from `15.0.5~gitea-1.22.0` to `16.0.2+gitea-1.22.0`, which
+registers `/actions/runs/{id}/jobs` and `/actions/jobs/{id}/logs`. Verified
+2026-08-11: `GET /api/v1/repos/davey/taiyaku/actions/jobs/3121/logs` returns
+200. Job 3121 is run 213's `test` job — the hang commit, the same red run this
+section already reports at 153 s — and its log, retrieved directly from the
+forge, is:
+
+```
+        SLOW [> 30.000s] (───────) taiyaku-core sidecar::tests::tmp_hangs_to_trigger_the_ci_bound
+ TERMINATING [> 60.000s] (───────) taiyaku-core sidecar::tests::tmp_hangs_to_trigger_the_ci_bound
+     TIMEOUT [  60.003s] (640/640) taiyaku-core sidecar::tests::tmp_hangs_to_trigger_the_ci_bound
+    (test timed out)
+  Cancelling due to test failure: 
+     Summary [  61.243s] 640 tests run: 639 passed, 1 timed out, 0 skipped
+     TIMEOUT [  60.003s] (640/640) taiyaku-core sidecar::tests::tmp_hangs_to_trigger_the_ci_bound
+error: test run failed
+error: process didn't exit successfully: `/usr/local/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo nextest run --manifest-path /workspace/davey/taiyaku/Cargo.toml --target-dir /workspace/davey/taiyaku/target/llvm-cov-target --workspace --all-features` (exit status: 100)
+```
+
+`SLOW`, `TERMINATING` and `TIMEOUT` at exactly 30.000 s and 60.003 s, and exit
+status 100, are the values `.config/nextest.toml` configures — read on the
+runner, not stood in for. Against the local repro quoted above
+(`Summary [  60.122s]`), the runner's `Summary [  61.243s]` is 1.121 s slower —
+the delta the design guessed a shared docker runner would carry and never
+measured. It is small: 1.9% of the 60 s bound, nowhere near the 80x slack that
+bound already carries.
+
+**The strongest single piece of evidence is what the red job did not do.** It
+stopped at the failing "Tests, with coverage" step and never reached "Install
+node" or "Coverage floor, per file", both of which the green run executed —
+strictly less work. And yet it took **153 s against the green run's 117 s**,
+36 s *longer* to do less. A generic infrastructure flake does not produce that
+shape; a roughly-60-s per-test kill inside the test step does.
+
+**What is observed and what is inferred here are different claims, and both
+are now measured.** Observed at the time this was first written: a
+`test`-job-only failure at 153 s on the hang commit, and success at 117 s on
+its exact revert, both far under the 600 s job bound, on the same PR against
+the same runner. Inferred at the time: that the extra time was specifically
+nextest's `TIMEOUT` reading `.config/nextest.toml`'s 60 s `terminate-after`,
+rather than some other kill path producing a similar time signature — the CI
+log gap then meant that inference rested on the local repro standing in for
+the forge, not on watching the forge do it directly. **That inference is now
+an observation**: job 3121's own log, quoted above, shows the `TIMEOUT` line
+at the configured period, on the runner itself.

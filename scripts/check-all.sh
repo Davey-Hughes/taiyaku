@@ -31,7 +31,7 @@
 #
 # **This used to run the corpus checks twice, both times in debug, and that is why nobody could
 # finish the gate.** `TAIYAKU_CORPUS` is exported at the top of this file, so the `test` job
-# inherited it and ran all fifteen standing checks itself; the dedicated pass below then ran them
+# inherited it and ran all thirteen standing checks itself; the dedicated pass below then ran them
 # again for their output. Measured before this change: over 25 minutes without reaching the second
 # pass. After: about 11 seconds for both, warm. The `test` job now runs with the variable removed
 # from its environment, which also makes it a *truer* mirror of CI than it was — CI has no corpus
@@ -179,11 +179,14 @@ cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic || 
 # whitespace and any `run` / `run env -u TAIYAKU_CORPUS` prefix, and the two hash identically. The
 # `cargo test` fallback above is the one line with no CI counterpart, deliberately — CI always has
 # the tool, because it installs it.
-if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
-  note_skip "the Rust coverage gate on the test job (cargo-llvm-cov not on PATH — tests still ran, the threshold did not)"
+if ! command -v cargo-llvm-cov >/dev/null 2>&1 || ! command -v cargo-nextest >/dev/null 2>&1; then
+  command -v cargo-llvm-cov >/dev/null 2>&1 \
+    || note_skip "the Rust coverage gate on the test job (cargo-llvm-cov not on PATH — tests still ran, the threshold did not)"
+  command -v cargo-nextest >/dev/null 2>&1 \
+    || note_skip "the per-test timeout bound, and the Rust coverage gate with it (cargo-nextest not on PATH — the fallback is a plain cargo test, so nothing bounded how long any test could take and neither coverage threshold ran)"
   run env -u TAIYAKU_CORPUS cargo test --workspace --all-features
 else
-  run env -u TAIYAKU_CORPUS cargo llvm-cov --workspace --all-features \
+  run env -u TAIYAKU_CORPUS cargo llvm-cov nextest --workspace --all-features \
     --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$' \
     --fail-under-lines 93
   # Guarded the same way the tool above is, and for the same reason: a Rust-only machine without

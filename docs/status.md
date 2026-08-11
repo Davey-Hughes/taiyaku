@@ -1,6 +1,6 @@
 # Status
 
-Where the project is, what is settled, and what comes next. Updated 2026-08-08.
+Where the project is, what is settled, and what comes next. Updated 2026-08-11.
 
 The detailed evidence for everything asserted here is in [`notes.md`](notes.md),
 which is a working log rather than a summary — every claim below traces to a
@@ -75,7 +75,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 635 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
+Five crates, 639 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
 project and 296 in the `jsdom` one this branch added — and six more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -91,7 +91,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Thirteen of the 635 are standing checks gated on
+`rayon` exactly as `align` already did. Thirteen of the 639 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs` and three in
 `crates/taiyaku-serve/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
@@ -812,9 +812,9 @@ up by reading a file closely enough to write tests for it, or turned up while
 reading the code around a line a tool had pointed at, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Twenty-nine are now closed
+visible act rather than a thing someone remembers. **Thirty are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25, O26, O27, O28, O29, O30, O35, O36, O37 and O38 — leaving ten.**
+O21, O22, O25, O26, O27, O28, O29, O30, O35, O36, O37, O38 and O39 — leaving nine.**
 
 Three of those closed the same day they opened, which the "judged not worth
 blocking on" framing above does not fit: O35, O36 and O37 were found by the
@@ -866,7 +866,7 @@ each is in the detail below; the table is what a reader scans.
 | O36 | [x] | The two write debounces are never cancelled on unmount, so an unmounted `App` can still `PUT` up to 700 ms later — *a two-line fix, not an impossibility: `useFlushOnHide`'s cleanup already exists and `debounce` already exposes `cancel()`* — *closed on the branch that found it (4303dee): `useFlushOnHide`'s cleanup now flushes both, decided per call site: cancelling `writeProgress` drops the last page turn, cancelling `saveNotes` destroys up to 700 ms of prose that exists nowhere else* | `App.tsx`'s `writeProgress`/`saveNotes` handles, `hooks.ts::useFlushOnHide` | coverage-gate reading |
 | O37 | [x] | `reviewNotes`'s doc comment describes an arm of `toggleReview` no key can reach — it claims `a` closes the editor mid-edit, which `keyplan.ts` refuses; the code is right and the comment is wrong — *closed on the branch that found it (f4047b7): corrected, and the same wrong claim in `notes.ts` with it in `7cab6ec`* | `App.tsx::reviewNotes`'s doc comment | coverage-gate reading |
 | O38 | [x] | `unpaired_runs` counts a gap run's own `a` span as "mentioned", so asking the `from` side of an edge which of its pages have no counterpart answers `[]` for pages that demonstrably have none — reachable today as `taiyaku credits <hub member>... --sidecar F --against <spoke>`, which prints zero candidates — *closed by `run.b.map(|_| run.a)`, with a corpus drive that found it answering `[]` on **all twelve** volumes — 26 gap runs over 36 raw pages — and hiding a real `credits` verdict on kobayashi-v01's last page* | `credits.rs::unpaired_runs`, the `true => Some(run.a)` arm | the Task 7 mutation review, by probe |
-| O39 | [ ] | Nothing bounds a test's runtime, so a regression that stops a loop terminating hangs the forge instead of failing it — there is no `.config/nextest.toml`, no `timeout-minutes` in `ci.yml`, and CI does not run nextest at all but `cargo llvm-cov` over `cargo test` | `.forgejo/workflows/ci.yml`'s `test` job; no nextest config exists to name | the Tasks 2-6 mutation review |
+| O39 | [x] | Nothing bounds a test's runtime, so a regression that stops a loop terminating hangs the forge instead of failing it — there is no `.config/nextest.toml`, no `timeout-minutes` in `ci.yml`, and CI does not run nextest at all but `cargo llvm-cov` over `cargo test` — *closed by commits (`dadd6a2`, `bce5bf3`), PR #47: a 60 s per-test kill via `.config/nextest.toml` under `cargo llvm-cov nextest`, and `timeout-minutes: 10` on every job — the per-test bound was triggered on the forge itself (a deliberate hang failed the `test` job at 153 s, its exact revert passed at 117 s); the job-level bound was not, both runs finishing far under ten minutes* | `.config/nextest.toml`; `.forgejo/workflows/ci.yml`'s four `timeout-minutes` keys | the Tasks 2-6 mutation review |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -2320,7 +2320,7 @@ credits checks ask the `to` side, so neither could ever have seen this.
   defective arm and was hardened in `ddb6149` for being too weak, still cannot
   fail on this: its only run is paired, so both arms agree.
 
-- **O39 — nothing bounds a test's runtime, so a hang is not a failure. Open.**
+- **O39 — nothing bounded a test's runtime, so a hang was not a failure. Closed.**
   Mutation testing produced this one by accident. `cargo-mutants` reports a
   mutant that stops a loop terminating as `TIMEOUT` rather than `MISSED`, in its
   own bucket, and exits 3 — it is *not* counted as caught, though it is real
@@ -2338,15 +2338,44 @@ credits checks ask the `to` side, so neither could ever have seen this.
   cost of about 21 s on every future run of that file — measured at 20.5 s for
   that mutant and 21.5 s for the one already there, against the tool's
   auto-selected 20 s bound.
-  **Why it is open rather than fixed:** it is a CI change, and the branch that
-  found it changed no CI. It also wants a measured number rather than a guessed
-  one — the whole workspace suite is 552 tests in 0.76 s at this branch's head,
-  so a per-test bound is cheap to set, but the right value should come from the
+  **Why it was open rather than fixed:** it was a CI change, and the branch that
+  found it changed no CI. It also wanted a measured number rather than a guessed
+  one — the whole workspace suite was 552 tests in 0.76 s at that branch's head,
+  so a per-test bound was cheap to set, but the right value had to come from the
   slowest real test rather than from a round figure.
-  **What would close it:** a `.config/nextest.toml` with a `slow-timeout`
-  carrying `terminate-after`, or a `timeout-minutes` on the `test` job, chosen
-  against the measured slowest test and recorded the way the coverage
-  thresholds were.
+  **Closed, by two bounds sized from a measurement rather than a guess.**
+  Bisecting the whole workspace under a temporary short `slow-timeout` found
+  nothing slower than 0.75 s in 639 tests, so `.config/nextest.toml` carries a
+  30 s warn and a 60 s `terminate-after` — 40x and 80x the slowest test that
+  exists — and CI now runs the suite under `cargo llvm-cov nextest` rather than
+  plain `cargo llvm-cov`. Every job also carries `timeout-minutes: 10`, against
+  a worst observed job duration of 134 s. **The per-test half was triggered on
+  the forge itself, not only reasoned about**: PR #47 carried a deliberate hang
+  for one run, and the `test` job failed at 153 s on that commit and passed at
+  117 s on its exact revert — both far under the ten-minute job bound, so only
+  the per-test kill fired. **The `timeout-minutes` half is untriggered rather
+  than untested, and deliberately so**: proving it would fire means hanging a
+  job for the full ten minutes on the shared runner, where the per-test bound
+  above could be — and was — triggered in about a minute. **What was and was
+  not directly observed is worth separating honestly, and that has changed
+  since this was first written.** Against Forgejo `15.0.5~gitea-1.22.0`, this
+  build registered no job-log endpoint, so the CI log text itself could not be
+  retrieved; the log excerpt on record came from running the same `ci.yml`
+  command locally against the hanging test, not from reading the forge's own
+  output, and what the forge itself showed directly was only the
+  `test`-job-only failure at 153 s on the hang commit and the success at 117 s
+  on its revert. The instance has since been upgraded to
+  `16.0.2+gitea-1.22.0`, which registers `/actions/runs/{id}/jobs` and
+  `/actions/jobs/{id}/logs`; the log for job 3121 (run 213, the hang commit)
+  has now been retrieved directly from the forge, and it shows
+  `SLOW [> 30.000s]`, `TERMINATING [> 60.000s]`, `TIMEOUT [ 60.003s]` and
+  `Summary [ 61.243s] 640 tests run: 639 passed, 1 timed out` — the values
+  `.config/nextest.toml` configures, read on the runner rather than stood in
+  for. What was inferred is now observed. `notes.md`, "O39: what the slowest
+  test actually is, and the two bounds sized
+  from it", is the record, including why nextest's process-per-test isolation
+  makes coverage measurement nondeterministic by a few lines without moving
+  either coverage gate.
 
 ## What comes next
 
@@ -2862,21 +2891,21 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the ten open items tabled above — seven of them found by a
+What remains: the nine open items tabled above — seven of them found by a
 whole-branch review, now that O1 (found by one, closed by removing the round
 trip its own entry was arguing about), O12 (carried rather than found), O14
 (found by one, closed by M5b), O26 (found by one, closed on its own branch),
 O28 (found by walking the reader through every position it can hold, closed on
 its own branch), O29 (found by driving O26's own fix against the corpus, closed
 the same way), O35, O36 and O37 (found by reading `web/src` closely enough to
-write tests for it, and closed on that same branch) and O38 (found by a probe
+write tests for it, and closed on that same branch), O38 (found by a probe
 beside the survivors, closed on a branch of its own with the corpus drive its
-entry asked for) are all out of the count.
-Three are the exceptions: O23, turned up by measuring what a new surface produced
-against the corpus rather than by reviewing a branch; O34, turned up by asking a
-diagnosis about the one case it could not explain; and O39, turned up on
-the mutation branch beside its survivors rather than among them, by asking what
-a survivor's disposition would mean if it ever reached CI.
+entry asked for) and O39 (found beside the same survivors, closed by a
+per-test `slow-timeout` and a job-level `timeout-minutes`, both sized from a
+measurement) are all out of the count.
+Two are the exceptions: O23, turned up by measuring what a new surface produced
+against the corpus rather than by reviewing a branch; and O34, turned up by asking a
+diagnosis about the one case it could not explain.
 **Every milestone M5 named has now shipped.**
 
 *This paragraph said "the five open items" until 2026-08-08, having missed
@@ -2887,7 +2916,7 @@ and stayed at twelve after that same branch closed all three — the third time
 the word has drifted, and this time it was caught by a reviewer counting the
 table's rows against its own preamble rather than by the ritual.*
 
-**Four of the eleven wait on evidence rather than on code**, which is worth
+**Four of the nine wait on evidence rather than on code**, which is worth
 stating plainly now that the one item with a code-shaped exit has taken it:
 O6 needs an art book with a legitimate reason to be in a sidecar,
 O9 a client issuing concurrent requests for one key, O11 archives replaced
@@ -2901,7 +2930,7 @@ in it.
 real defect in `unpaired_runs` that no test covered because the branch that
 found it was a test-only branch, and O39, the absence of any bound on a test's
 runtime. Both are recorded above.
-*O38 has since closed — see its entry above. O39 stays open.*
+*O38 has since closed — see its entry above. O39 has since closed too — see its entry above.*
 
 **The remaining four are the detector's**, and they are held together rather
 than picked off: O31 (the axis is per page where the design says per cluster),

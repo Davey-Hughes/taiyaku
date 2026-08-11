@@ -31,10 +31,29 @@ env:
 # The block is repeated per job rather than factored out. Extracting it would
 # need either a composite action, which reintroduces the node problem, or a
 # script from the repository, which is not on disk until after the clone.
+#
+# Every job carries `timeout-minutes: 10`, and it is the outer half of a bound
+# that has two halves. `.config/nextest.toml` bounds a *test* — precisely, by
+# name, at 60 s. This bounds a *job*, which is the only thing that can catch a
+# hang outside a test: a stalled `curl` in one of the five tool-install steps
+# below, or a `cargo build` that never finishes. Neither subsumes the other.
+#
+# 10 minutes is 4.5x the worst honest job observed over the ten runs before
+# this branch (134 s). Measured from the forge's own /actions/tasks API over
+# those ten runs: `test` 32-134 s, `lint` 21-85 s, `wasm` 33-84 s, `web` 9-25 s.
+# Uniform across all four rather than tuned per job, because a per-job number
+# has to be re-tuned as jobs shift and the only property this number needs is
+# to sit between "any honest run" and "hours".
+#
+# **This key is untriggered rather than untested**, and deliberately so:
+# deliberately hanging a job for ten minutes to watch it die costs a
+# ten-minute CI run to verify one documented key, where the per-test bound
+# beside it can be triggered in sixty seconds and was. See docs/status.md, O39.
 
 jobs:
   lint:
     runs-on: docker
+    timeout-minutes: 10
     container:
       image: rust:1-bookworm
     steps:
@@ -95,6 +114,7 @@ jobs:
 
   test:
     runs-on: docker
+    timeout-minutes: 10
     container:
       image: rust:1-bookworm
     steps:
@@ -130,11 +150,31 @@ jobs:
           echo "967b5cc996c29d8baa52bbb4595ef1f53af35255af8e2036ddbc6468d7b523c7  /tmp/llvm-cov.tar.gz" | sha256sum -c -
           tar -xzf /tmp/llvm-cov.tar.gz -C /usr/local/bin
           cargo llvm-cov --version
+      - name: Install cargo-nextest
+        # A prebuilt release binary, the pattern this file already uses three
+        # times over — for cargo-llvm-cov above, node below in this same job,
+        # and wasm-pack in the `wasm` job below. The musl build is static, so
+        # it runs on the glibc bookworm container without a matching libc.
+        #
+        # **The checksum is not optional and it is not upstream's.** nextest
+        # publishes no checksum file for its release assets, and a GitHub
+        # release asset can be replaced in place by whoever owns the
+        # repository. The digest below was computed here, from the artefact
+        # this workflow was written against. Bump it together with the version,
+        # by downloading and re-computing — never by copying a value from an
+        # issue or a README.
+        run: |
+          curl -fsSL -o /tmp/nextest.tar.gz \
+            https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.140/cargo-nextest-0.9.140-x86_64-unknown-linux-musl.tar.gz
+          echo "bc2a998567816eef7b087b920036f49fb89aa2a8a603f6a3d84098be160b62c5  /tmp/nextest.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/nextest.tar.gz -C /usr/local/bin
+          cargo nextest --version
       - name: Tests, with coverage
-        # `cargo llvm-cov` runs the tests — this is the `cargo test` step, not
-        # an addition to it. Four files are ignored: two gated one-off
-        # measurement modules, and two that cannot execute without
-        # TAIYAKU_CORPUS, which CI does not have.
+        # `cargo llvm-cov nextest` runs the tests — this is the test step, not
+        # an addition to it, and the `nextest` subcommand is what applies
+        # `.config/nextest.toml`'s per-test timeout. Four files are ignored:
+        # two gated one-off measurement modules, and two that cannot execute
+        # without TAIYAKU_CORPUS, which CI does not have.
         #
         # Note the regex matches `/corpus.rs` by path segment, so a *new*
         # `corpus.rs` added to some crate that is not corpus-gated would be
@@ -143,7 +183,7 @@ jobs:
         # exclusion that grows on its own is the failure this list is shaped to
         # avoid. This used to ask the reader to check the file count by hand when
         # adding a crate; the "Coverage floor, per file" step below now asserts
-        # it (37 files today, 32 required), so a regex that quietly swallows more
+        # it (38 files today, 32 required), so a regex that quietly swallows more
         # than these four fails the job. The four are named with a reason each in
         # docs/ci.md, "The coverage gates".
         #
@@ -154,7 +194,7 @@ jobs:
         # Keep this in step with scripts/check-all.sh, which runs the same
         # invocation.
         run: |
-          cargo llvm-cov --workspace --all-features \
+          cargo llvm-cov nextest --workspace --all-features \
             --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$' \
             --fail-under-lines 93
       - name: Install node
@@ -191,7 +231,7 @@ jobs:
         # **`cargo llvm-cov --fail-under-file-lines` exists and is deliberately
         # not used.** It works, but it exits 1 having printed nothing at all —
         # measured, zero bytes on stdout and stderr beyond the ordinary table —
-        # naming neither the file nor the threshold. A red step above a 37-row
+        # naming neither the file nor the threshold. A red step above a 38-row
         # table with no indication which row is the reason is not a gate anyone
         # can act on.
         #
@@ -226,6 +266,7 @@ jobs:
   # this job only runs, never links against.
   wasm:
     runs-on: docker
+    timeout-minutes: 10
     container:
       image: rust:1-bookworm
     steps:
@@ -301,6 +342,7 @@ jobs:
   # ungated.
   web:
     runs-on: docker
+    timeout-minutes: 10
     container:
       image: node:26-bookworm
     steps:

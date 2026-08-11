@@ -31,7 +31,7 @@
 // for a measured reason.** It works — it exits 1 — but it says *nothing*: with
 // `--fail-under-file-lines 80` against this tree it wrote the ordinary coverage
 // table to stdout, zero bytes to stderr, and named neither the file that tripped
-// it nor the threshold it tripped. In CI that is a red step above a 37-row table
+// it nor the threshold it tripped. In CI that is a red step above a 38-row table
 // with no indication which row is the reason. Checked here instead, where the
 // failure can name the file and say what to open first.
 //
@@ -139,10 +139,10 @@ const FORMATS = [
     name: 'cargo llvm-cov json export',
     tree: 'the Rust workspace',
     detect: (report) => Array.isArray(report?.data?.[0]?.files),
-    // **37 files measured on a clean tree, across five crates; five of margin.**
+    // **38 files measured on a clean tree, across five crates; six of margin.**
     // The count can only fall three ways: the `--ignore-filename-regex` widens,
     // a crate leaves the workspace, or files are merged. Four files are excluded
-    // by name today, so five leaves room for that list to grow a little without
+    // by name today, so six leaves room for that list to grow a little without
     // a coverage edit becoming a gate edit.
     //
     // It trips when a crate of six files or more leaves the report —
@@ -151,7 +151,7 @@ const FORMATS = [
     // perform by hand ("check the file count when adding a crate").
     minFiles: 32,
     // **Lines only, and the other three are measured refusals, not oversights.**
-    // `branches` is `count: 0` on all 37 files — llvm-cov emits no branch data
+    // `branches` is `count: 0` on all 38 files — llvm-cov emits no branch data
     // without a nightly flag — so any floor on it would fail every file.
     // `regions` and `instantiations` read far below lines on `match`-heavy and
     // generic code (lowest measured: 66.80% and 39.39%, both

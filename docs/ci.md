@@ -8,7 +8,7 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 | Job | Runs |
 | --- | ---- |
 | `lint` | `cargo fmt --check`, `cargo clippy -D warnings` |
-| `test` | `cargo llvm-cov --workspace` — runs the tests *and* gates their aggregate coverage — then installs node and runs `scripts/coverage-floor.mjs` over a re-rendered JSON report for the per-file half |
+| `test` | `cargo llvm-cov nextest --workspace` — runs the tests under nextest's per-test timeout *and* gates their aggregate coverage — then installs node and runs `scripts/coverage-floor.mjs` over a re-rendered JSON report for the per-file half |
 | `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown`, builds the browser package with `wasm-pack`, and runs `scripts/smoke-wasm.mjs` against the compiled module |
 | `web` | `pnpm install --frozen-lockfile`, `biome check` (formatting **and** lint), `tsc -b` typecheck, `vitest run --coverage` in `web/`, then `scripts/coverage-floor.mjs` for the per-file half |
 
@@ -55,7 +55,7 @@ exception.
 The script exports it before the `test` job, and that job is an *unfiltered*
 `cargo test --workspace --all-features` — the `corpus::` filter belongs to the
 separate corpus job below it. So a local gate run with a corpus present ran all
-fifteen standing checks twice, both times in **debug**, and ran the two one-off
+thirteen standing checks twice, both times in **debug**, and ran the two one-off
 measurement modules as well. `geometry_experiment` fingerprints roughly 1.4
 million Lanczos3 crops: about a minute under `--release`, about forty without.
 Measured rather than estimated — one gate run was killed at **1h09m** still
@@ -103,7 +103,7 @@ in general:
   fetch into a fresh container, so every run compiles the workspace from
   nothing. There is no warm second run for a release profile to pay off across.
 - **There is no corpus.** CI's `test` job runs the unit suite alone — 4.4
-  seconds in debug. The tests release actually speeds up are the fifteen
+  seconds in debug. The tests release actually speeds up are the thirteen
   standing corpus checks, and CI skips every one.
 - **`[profile.release]` is tuned for the aligner, not for compiling.**
   `lto = "thin"` with `codegen-units = 1` is the slowest configuration to build,
@@ -143,6 +143,79 @@ existed and failed after it, naming the package:
 It is run directly rather than piped, because a pipe masks the exit code — which
 was caught while writing the probe, and is exactly how a gate stops gating.
 
+## Bounding a test's runtime: nextest and the job timeout
+
+Two independent bounds, added on `o39-test-timeout` to close O39: nothing in
+this repository bounded a test's runtime before this branch, and CI did not
+run nextest at all — the `test` job ran `cargo llvm-cov`, which wraps
+`cargo test`, which has no timeout. A regression that stopped a loop
+terminating would have hung the forge until the runner's own limit rather than
+failed it.
+
+`.config/nextest.toml` bounds a **test**, precisely and by name:
+`slow-timeout = { period = "30s", terminate-after = 2 }` marks a test `SLOW`
+at 30 s and kills it at 60 s, both sized off a bisection of the whole
+workspace rather than guessed — nothing in 639 tests exceeds 0.75 s, so 30 s
+is 40x that and 60 s is 80x. An override exempts exactly the four files
+`--ignore-filename-regex` already exempts from both coverage steps above — the
+thirteen standing corpus checks, three `corpus::tests::` helpers that only
+assert how `TAIYAKU_CORPUS` is validated and touch no material, and the two
+one-off experiment modules — at a 60 s `SLOW` mark with no `terminate-after`,
+which is what makes a `slow-timeout` advisory rather than a kill:
+`geometry_experiment` in the debug profile against a real corpus runs 40+
+minutes, and a global 60 s kill would destroy that measurement every time
+someone ran one.
+
+`timeout-minutes: 10` on all four jobs bounds a **job** — the only thing that
+can catch a hang outside a test, such as a stalled `curl` in one of the five
+tool-install steps across this file or a `cargo build` that never finishes.
+It is sized at 4.5x the worst honest job observed over the ten runs before
+this branch (134 s), applied uniformly rather than tuned per job. Neither
+bound subsumes the other: the per-test bound cannot see a hang outside a test,
+and a job timeout alone produces a red step naming nothing — the same defect
+this file already rejected once in `--fail-under-file-lines`'s own case, see
+"Proving the gate gates" below.
+
+`cargo-nextest` is installed the same way as the other three tool binaries in
+this file — a checksummed prebuilt release tarball rather than `cargo
+install`, the pattern `cargo-llvm-cov` sets directly above it in this same
+job and `wasm-pack` sets in the `wasm` job: this job only runs the tool,
+never links against it. `cargo-nextest-0.9.140-x86_64-unknown-linux-musl.tar.gz`
+is **9,605,767 bytes** (≈9.2 MiB), pinned to digest
+`bc2a998567816eef7b087b920036f49fb89aa2a8a603f6a3d84098be160b62c5`, computed
+here from that artefact rather than copied from upstream, since nextest
+publishes none of its own for its release assets. The URL was confirmed to
+resolve and download before being wired in:
+`get.nexte.st/0.9.140/x86_64-unknown-linux-musl`, nextest's own install
+shortlink, was tried first and **404s**, so the GitHub releases URL above is
+the one that works. `tar -tzf` confirms the archive holds `cargo-nextest` at
+the tarball root — the same shape as the `cargo-llvm-cov` step directly
+above it — which is why `tar -xzf … -C /usr/local/bin` places it correctly
+with no subdirectory to strip, and `cargo nextest --version` then reports
+`cargo-nextest 0.9.140`. It is the fourth such binary this workflow fetches,
+after `cargo-llvm-cov`, `node` and `wasm-pack`, a fourth install sized and
+checksummed the same way as those three.
+
+**Not measured:** no timing comparison against `cargo install cargo-nextest`
+was taken. The only paragraph on this pattern that measured the alternative
+it beat is `wasm-pack`'s above — a multi-minute compile, rejected in favour
+of a 2.9 MB prebuilt binary — and this step inherits that precedent rather
+than re-measuring it; the gap is stated rather than left silent.
+
+Switching the `test` job's runner from `cargo llvm-cov` to
+`cargo llvm-cov nextest` was measured for a side effect before it shipped:
+nextest runs each test in its own process, which can move coverage — see
+`docs/notes.md`, O39, for the comparison and why neither coverage gate is at
+risk from the resulting few lines of run-to-run variance.
+
+The per-test bound was triggered on the forge itself, not only reasoned
+about: the branch's first push carried a deliberately non-terminating test,
+and the `test` job failed by name at 153 s, then passed at 117 s on the exact
+revert. The job-level bound stays untriggered, deliberately — proving it
+fires would cost a ten-minute CI run to verify one documented key.
+`docs/status.md` and `docs/notes.md`, both under O39, carry the full
+measurement record.
+
 ## The coverage gates
 
 Two gates, one per language, and **four CI steps** — each language runs an
@@ -171,7 +244,7 @@ which catches what, because each is invisible to the others:
   glob taking 13 of 57 files out of the gate for less than half a point on every
   metric.
 
-Neither gate is a separate job. `cargo llvm-cov` *runs* the tests, so it
+Neither gate is a separate job. `cargo llvm-cov nextest` *runs* the tests, so it
 replaced the `test` job's `cargo test`; `vitest --coverage` runs the same two
 projects the `web` job already ran, so `pnpm -C web run test:coverage` replaced
 the separate `test` and `test:jsdom` steps. The cost is instrumentation on a
@@ -231,7 +304,7 @@ signal a re-measurement was owed.*
 | Rust | lines, aggregate | 95.75% | 93 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
 | Rust | lines, **per file** | 59.44%, `taiyaku-serve/src/stump/http.rs` | 57 | `scripts/coverage-floor.mjs` |
 | web | **files in the report** | 57 | 50 | `scripts/coverage-floor.mjs` |
-| Rust | **files in the report** | 37 | 32 | `scripts/coverage-floor.mjs` |
+| Rust | **files in the report** | 38 | 32 | `scripts/coverage-floor.mjs` |
 
 The four web per-file floors have their own table under "The other half" below,
 beside the lowest file each was derived from.
@@ -241,9 +314,9 @@ They are counts, not percentages, and the failure they exist to catch is not a
 slide — it is a collapse. Web carries seven of margin (50 against 57) because 40
 would have been too loose to catch the near miss recorded below, where a
 one-character edit to a glob dropped 13 files and every percentage stayed green.
-Rust carries five (32 against 37) because the count there can only fall three
+Rust carries six (32 against 38) because the count there can only fall three
 ways — the `--ignore-filename-regex` widens, a crate leaves the workspace, or
-files merge — and four files are excluded by name today, so five leaves that list
+files merge — and four files are excluded by name today, so six leaves that list
 room to grow without a coverage edit becoming a gate edit. Thirty-two also trips
 when any one of the three largest crates leaves the report: `taiyaku-serve` is
 15 files, `taiyaku-cli` 11, `taiyaku-core` 7.
@@ -258,7 +331,7 @@ catches is a module that stops being tested *at all* — see "Why the Rust
 per-file floor exists" below, which is the arithmetic that fixes the number.
 
 **Lines only on the Rust side, and the other three metrics are refusals rather
-than oversights.** `branches` is `count: 0` on all 37 files — llvm-cov emits no
+than oversights.** `branches` is `count: 0` on all 38 files — llvm-cov emits no
 branch data without a nightly flag, verified by counting: zero files report a
 non-zero branch count — so any floor on it would fail every file. `regions` and
 `instantiations` read far below lines on `match`-heavy and generic code (lowest
@@ -299,15 +372,15 @@ from the day it landed until this one. Here they are, with a reason each:
 A *new* `corpus.rs` added to a crate that is **not** corpus-gated would be
 excluded silently, and its coverage would leave the number without leaving a
 trace. Nothing like that exists today — verified, not assumed, and **re-measured
-on 2026-08-10 from `cargo llvm-cov report --json` with and without the flag: 41
-files without the regex, 37 with it, and the four that disappear are exactly the
+on 2026-08-10 from `cargo llvm-cov report --json` with and without the flag: 42
+files without the regex, 38 with it, and the four that disappear are exactly the
 four above.** The workspace reads 87.59% lines without the regex against 95.75%
 with it, both re-measured the same way.
 
 **That check is now half a gate rather than wholly a ritual.** This paragraph
 used to end "re-run that diff when adding a crate", and asking a reader to
 remember a thing is the weakest form of a check there is. The per-file floor
-script now asserts the file count itself — 37 today, 32 required — so a regex
+script now asserts the file count itself — 38 today, 32 required — so a regex
 that quietly swallows more than these four fails the job instead of waiting to be
 noticed. Only *half*, because the automated half sees the count and not the
 names: a regex that dropped one file while a new crate added one would net to
@@ -419,9 +492,9 @@ and `--fail-under-functions` — so the obvious question is why a script does wo
 a flag already does. Run against this tree at `--fail-under-file-lines 80` it
 exits **1** having written **7995 bytes to stdout, all of it the ordinary
 coverage table, and zero bytes to stderr.** It names neither the file that
-tripped it nor the threshold it tripped. That is a red step above a 37-row table
+tripped it nor the threshold it tripped. That is a red step above a 38-row table
 with no indication which row is the reason — the same defect as the paragraph
-above, one layer worse, because now there are 37 candidates rather than one
+above, one layer worse, because now there are 38 candidates rather than one
 `TOTAL`. Checked in `scripts/coverage-floor.mjs` instead, where the failure can
 say what to open first. **The cost of that choice** is a node install in a Rust
 container and a script kept in step with two workflows; it was paid because a
@@ -561,7 +634,7 @@ minimums:
 | format | files measured | `minFiles` |
 | ------ | -------------: | ---------: |
 | istanbul (web) | 57 | 50 |
-| llvm-cov (Rust) | 37 | 32 |
+| llvm-cov (Rust) | 38 | 32 |
 
 **The count is checked ahead of the floors, deliberately.** If the report
 collapsed then every per-file finding under it is noise and the count is the real

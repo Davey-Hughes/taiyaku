@@ -1,0 +1,41 @@
+# Nothing else in this repository bounds a test's runtime, and until this file
+# existed nothing did at all: CI runs `cargo llvm-cov`, which wraps `cargo
+# test`, which has no timeout. A regression that stopped a loop terminating
+# would hang the forge until the runner's own limit rather than fail it. See
+# docs/status.md, O39.
+#
+# 30 s is 40x the slowest test in the workspace and 60 s is 80x. Measured, not
+# guessed: running the whole suite under a temporary short `slow-timeout` and
+# raising the period, four SLOW lines print at 250 ms and two at 500 ms — but
+# that is two tests, not four: nextest re-prints a SLOW line at every multiple
+# of the period a test is still running, so the same two tests
+# (`detect::tests::the_gap_does_not_grow_with_the_page` and
+# `cover::tests::a_cover_is_a_bounded_jpeg_whatever_the_page_was`) are each
+# printed once at 250 ms and again at 500 ms, and neither at 750 ms. Nothing in
+# 639 tests exceeds 0.75 s. The slack is for a shared docker runner, which is
+# slower than the machine that measured this by a factor nobody has measured —
+# the one guess here, and it says so.
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+# The exempt set is not a new list: it is exactly the four files
+# `--ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$'`
+# already names in both coverage steps of ci.yml and check-all.sh. One exempt
+# set, two gates, one reason — these are gated one-off measurements against
+# 26 GB of real material, not unit tests.
+#
+# A global kill would destroy a deliberate measurement: `geometry_experiment`
+# in the debug profile with TAIYAKU_CORPUS set runs 40+ minutes, and one run
+# was killed by hand at 1 h 09 m. So these are marked SLOW and left alone —
+# omitting `terminate-after` is what makes a slow-timeout advisory, not a
+# separate key.
+#
+# `test(corpus::)` selects the same sixteen tests `cargo test corpus::` does:
+# thirteen standing checks against real archives (ten in taiyaku-cli, three in
+# taiyaku-serve) plus three `corpus::tests::` helpers that only assert how
+# TAIYAKU_CORPUS is validated. Matching cargo test's existing selection exactly
+# is the point — the exempt set must be the set the corpus step already runs,
+# or the two disagree silently.
+[[profile.default.overrides]]
+filter = "test(corpus::) + test(geometry_experiment) + test(region_experiment)"
+slow-timeout = { period = "60s" }
