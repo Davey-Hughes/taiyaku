@@ -146,7 +146,7 @@ predicted hub-gap case rather than a broken tool.
       "to": "en-mono",
       "by": "solver",
       "solver": { "hash": "dhash-16", "floor": 0.69921875 },
-      "quality": { "verdict": "sound", "slots": 195, "paired": 193, "avg_run": 64.33 },
+      "quality": { "verdict": "sound", "slots": 195, "paired": 193, "avg_run": 64.33333 },
       "runs": [
         { "a": "0",     "b": "0",     "margin": 0.08984375 },
         { "a": "1" },
@@ -171,20 +171,32 @@ floor of 0.75 would print as `0.75`.
 `avg_run` is stored differently, deliberately. It is an `f64` — widened, along
 with the spread-detection and run-length arithmetic behind it (`slot.rs`,
 `solve.rs`), to close a `cast_precision_loss` suppression that `f32` could not
-close without one — but it is *rounded to two decimal places* before it is
+close without one — but it is *rounded to five decimal places* before it is
 written, rather than left at whatever the arithmetic produced. The
 unrounded figure was never a considered precision: at `f32` it happened to
 round-trip at six-ish digits (`64.333336`), and at `f64` the same division
 prints sixteen (`64.33333333333333`) — neither digit count was chosen
 by anyone, both are just where a binary fraction's decimal expansion happens to
-stop being exact. Two decimals is chosen instead, because this field's whole
-job is to be read by a person without opening the archives — the design goals
-above put human-readable and diffable first — and a longer figure serves
-neither. Nothing reads the stored value back for a decision: `verdict` always
-recomputes from the runs, using the unrounded average, so rounding this field
-changes no verdict, only what a reader sees. Rounding also happens where a
-figure is *printed* rather than stored: `lookup`'s trust line reports this
-alignment as an average run of 64.3. Five runs for 195 pages.
+stop being exact. Five is chosen instead: this field's whole job is to be read
+by a person without opening the archives — the design goals above put
+human-readable and diffable first — and sixteen digits serves neither, while
+five reads at a glance and diffs cleanly.
+
+Five rather than the two this field's consumers would justify. Nothing reads
+the stored value back for a decision: `verdict` always recomputes from the
+runs, using the unrounded average, so rounding this field changes no verdict,
+only what a reader sees; `docs/status.md` reports these figures at two decimals
+and `lookup`'s trust line prints one. Two would have been the minimum that
+serves every current reader. Five is the house default — the extra digits cost
+three characters against sixteen, and keep the stored figure from ever being
+the reason a later reader has less precision than they wanted. It stays a
+five-decimal figure on the page, too, rather than a `64.33333000000001`:
+`avg_run` is a ratio of two slot counts, so the rounded quotient's shortest
+round-tripping form never runs past five decimals for any total and count a
+physical volume can produce — checked across all of them rather than assumed.
+Rounding also happens where a figure is *printed* rather than stored:
+`lookup`'s trust line reports this alignment as an average run of 64.3. Five
+runs for 195 pages.
 
 ## Why it is that short
 
@@ -450,13 +462,13 @@ report can show it. Anything worth writing down about an alignment is data.
 An alignment may carry a `quality` block:
 
 ```json
-"quality": { "verdict": "sound", "slots": 195, "paired": 193, "avg_run": 64.33 }
+"quality": { "verdict": "sound", "slots": 195, "paired": 193, "avg_run": 64.33333 }
 ```
 
 `verdict` is `"refused"`, `"fragmented"` or `"sound"`. `slots` and `paired`
 count the alignment's own `from` side — whichever edition the alignment itself
 calls `from`, not necessarily the side a caller looked from. `avg_run` is the
-mean length, in slots, of the runs that paired, rounded to two decimal places
+mean length, in slots, of the runs that paired, rounded to five decimal places
 for storage — see "Shape" above for why, and for how that differs from
 `margin` and `floor`.
 

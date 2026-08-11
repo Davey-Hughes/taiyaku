@@ -348,10 +348,20 @@ pub struct Quality {
 /// `average_run_length` to f64 (see its doc) would otherwise have let a raw
 /// figure like `64.33333333333333` reach the document, which is longer for
 /// no reason `docs/sidecar.md`'s "human-readable, diffable" goals can point
-/// to. Two decimals is enough: `docs/status.md` already reports these exact
-/// figures at two decimals (64.33 -> 32.00 -> 21.22), `stats.rs` only ever
-/// prints one, and nothing reads the stored field back for a decision —
-/// `verdict` always recomputes from `average_run_length` directly.
+/// to. Five decimals is the chosen bound rather than the least that would
+/// serve: no consumer needs the third digit — `docs/status.md` reports these
+/// figures at two (64.33 -> 32.00 -> 21.22), `stats.rs` prints one, and
+/// nothing reads the stored field back for a decision, since `verdict` always
+/// recomputes from `average_run_length` directly — but five costs three
+/// characters against sixteen and keeps the stored figure from ever being
+/// the reason a later reader has less precision than they wanted. That
+/// headroom is the house default here; two would have been the minimum.
+///
+/// Five also stays a *decimal* figure once written. `avg_run` is a ratio of
+/// two slot counts, so `(raw * 100_000.0).round()` peaks around 1e8 for any
+/// book — exact well below 2^53 — and the quotient's shortest round-tripping
+/// form never runs past five decimals. Checked across every total/count pair
+/// a physical volume could produce, not inferred.
 ///
 /// Called at each of the three places a `Quality` is built (`sidecar.rs`'s
 /// `rewrite` and `quality_of`, and `taiyaku-cli`'s `built_alignment`), rather
@@ -359,7 +369,7 @@ pub struct Quality {
 /// them.
 #[must_use]
 pub fn rounded_avg_run(raw: f64) -> f64 {
-    (raw * 100.0).round() / 100.0
+    (raw * 100_000.0).round() / 100_000.0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3322,6 +3332,37 @@ mod tests {
         assert!((recomputed.avg_run - 2.0).abs() < 1e-6, "{recomputed:?}");
         assert_eq!(recomputed.verdict, Verdict::Fragmented);
         assert_eq!(sidecar.trust("a", "b"), Some(Verdict::Fragmented));
+    }
+
+    /// The stored `avg_run` is written to five decimals, and to exactly five.
+    ///
+    /// Every other assertion on this field in this file compares against a
+    /// tolerance — `1e-6` above, `0.01` in the correction test — because what
+    /// they are checking is the arithmetic, not the presentation. So a
+    /// regression in `rounded_avg_run`, to two decimals or to none, passes all
+    /// of them in silence, and `verdict` cannot catch it either: it recomputes
+    /// from the unrounded `average_run_length` and never reads this field.
+    /// Asserting the serialised text is the only way the precision
+    /// `docs/sidecar.md` documents can fail when it changes.
+    ///
+    /// Five decimals is also a claim about the *text*, not only about the
+    /// arithmetic: `(raw * 100_000.0).round() / 100_000.0` is not an exactly
+    /// representable f64, and this pins that its shortest round-tripping form
+    /// is still `64.33333` rather than a sixteen-digit expansion.
+    #[test]
+    fn the_stored_average_run_length_is_written_to_five_decimals() {
+        let sidecar = Sidecar::from_json(REAL).expect("parses");
+
+        // The real fixture: 193 paired slots across 3 runs, so 64.33333...
+        // recurring — a figure with no exact decimal form at any width.
+        let quality = sidecar
+            .quality_of("raw-mono", "en-mono")
+            .expect("both editions exist");
+
+        assert_eq!(
+            serde_json::to_string(&quality).expect("serialises"),
+            r#"{"verdict":"sound","slots":195,"paired":193,"avg_run":64.33333}"#
+        );
     }
 
     /// A lookup from one spoke to another resolves through the hub, so it is
