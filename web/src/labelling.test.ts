@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  addBox,
+  newBox,
   boxesAt,
   cycleAt,
   removeBox,
@@ -21,11 +21,10 @@ const box = (id: string, x: number, y: number, w = 0.1, h = 0.1): LabelBox => ({
   ignore: false,
 })
 
-describe('addBox', () => {
+describe('newBox', () => {
   it('appends a box with a fresh id and the default kind', () => {
-    const after = addBox([], { x: 0.1, y: 0.2, w: 0.3, h: 0.4 })
-    expect(after).toHaveLength(1)
-    expect(after[0]).toMatchObject({
+    const after = newBox({ x: 0.1, y: 0.2, w: 0.3, h: 0.4 })
+    expect(after).toMatchObject({
       x: 0.1,
       y: 0.2,
       w: 0.3,
@@ -33,18 +32,18 @@ describe('addBox', () => {
       kind: 'dialogue',
       ignore: false,
     })
-    expect(after[0].id).toBeTruthy()
+    expect(after?.id).toBeTruthy()
   })
 
   it('normalises a rectangle dragged up and to the left', () => {
     // Dragging from bottom-right to top-left gives a negative width. A box
     // with a negative extent would fail every containment test downstream.
-    const after = addBox([], { x: 0.5, y: 0.6, w: -0.2, h: -0.3 })
-    expect(after[0]).toMatchObject({ x: 0.3, y: 0.3, w: 0.2, h: 0.3 })
+    const after = newBox({ x: 0.5, y: 0.6, w: -0.2, h: -0.3 })
+    expect(after).toMatchObject({ x: 0.3, y: 0.3, w: 0.2, h: 0.3 })
   })
 
   it('refuses a degenerate drag rather than storing a zero-area box', () => {
-    expect(addBox([], { x: 0.5, y: 0.5, w: 0, h: 0.2 })).toHaveLength(0)
+    expect(newBox({ x: 0.5, y: 0.5, w: 0, h: 0.2 })).toBeUndefined()
   })
 
   it('clamps a drag that ended in the letterbox to the page', () => {
@@ -56,24 +55,24 @@ describe('addBox', () => {
     // demotes to `Fragment` or `Missed`, and its prediction turns `spurious`.
     // Both terms of the promotion rule move, in the punishing direction, with
     // nothing anywhere saying so.
-    const after = addBox([], { x: 0.8, y: 0.9, w: 0.5, h: 0.4 })
-    expect(after[0].x).toBe(0.8)
-    expect(after[0].y).toBe(0.9)
-    expect(after[0].x + after[0].w).toBeLessThanOrEqual(1)
-    expect(after[0].y + after[0].h).toBeLessThanOrEqual(1)
-    expect(after[0].w).toBeCloseTo(0.2, 12)
-    expect(after[0].h).toBeCloseTo(0.1, 12)
+    const after = newBox({ x: 0.8, y: 0.9, w: 0.5, h: 0.4 })
+    expect(after!.x).toBe(0.8)
+    expect(after!.y).toBe(0.9)
+    expect(after!.x + after!.w).toBeLessThanOrEqual(1)
+    expect(after!.y + after!.h).toBeLessThanOrEqual(1)
+    expect(after!.w).toBeCloseTo(0.2, 12)
+    expect(after!.h).toBeCloseTo(0.1, 12)
   })
 
   it('clamps a drag that started in the letterbox to the page', () => {
     // The same failure at the near edge, and it needs its own case: a drag
     // starting above and left of the image clamps the *origin*, which is the
     // half that `Math.min`/`Math.abs` normalisation left alone entirely.
-    const after = addBox([], { x: -0.3, y: -0.2, w: 0.5, h: 0.4 })
-    expect(after[0].x).toBe(0)
-    expect(after[0].y).toBe(0)
-    expect(after[0].w).toBeCloseTo(0.2, 12)
-    expect(after[0].h).toBeCloseTo(0.2, 12)
+    const after = newBox({ x: -0.3, y: -0.2, w: 0.5, h: 0.4 })
+    expect(after!.x).toBe(0)
+    expect(after!.y).toBe(0)
+    expect(after!.w).toBeCloseTo(0.2, 12)
+    expect(after!.h).toBeCloseTo(0.2, 12)
   })
 
   it('stores a box drawn wholly on the page exactly as drawn', () => {
@@ -82,14 +81,44 @@ describe('addBox', () => {
     // `regionFromDrag` does, correctly, for a drag expressed as two points —
     // would turn this `0.3` into `0.30000000000000004` on every one of the
     // 1,500 boxes, none of which ever left the page.
-    const after = addBox([], { x: 0.1, y: 0.2, w: 0.3, h: 0.4 })
-    expect(after[0]).toMatchObject({ x: 0.1, y: 0.2, w: 0.3, h: 0.4 })
+    const after = newBox({ x: 0.1, y: 0.2, w: 0.3, h: 0.4 })
+    expect(after).toMatchObject({ x: 0.1, y: 0.2, w: 0.3, h: 0.4 })
   })
 
   it('drops a drag that never touched the page at all', () => {
     // Wholly in the letterbox. Clamping takes it to zero area, and a
     // zero-area box is a click that missed — it names nothing on the page.
-    expect(addBox([], { x: -0.4, y: -0.4, w: 0.2, h: 0.2 })).toHaveLength(0)
+    expect(newBox({ x: -0.4, y: -0.4, w: 0.2, h: 0.2 })).toBeUndefined()
+  })
+})
+
+describe('newBox takes carried defaults', () => {
+  it('takes the kind it is given rather than always dialogue', () => {
+    expect(
+      newBox({ x: 0.1, y: 0.1, w: 0.2, h: 0.2 }, { kind: 'sfx', axis: 'v' })
+        ?.kind,
+    ).toBe('sfx')
+  })
+
+  it('still defaults to dialogue reading vertically when none are named', () => {
+    const box = newBox({ x: 0.1, y: 0.1, w: 0.2, h: 0.2 })
+    expect(box?.kind).toBe('dialogue')
+    expect(box?.axis).toBe('v')
+  })
+
+  it('takes the axis it is given, not-applicable included', () => {
+    const box = newBox(
+      { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+      { kind: 'sfx', axis: null },
+    )
+    expect(box?.axis).toBeNull()
+  })
+
+  it('never carries ignore, which would drop boxes out of scoring unseen', () => {
+    expect(
+      newBox({ x: 0.1, y: 0.1, w: 0.2, h: 0.2 }, { kind: 'sfx', axis: null })
+        ?.ignore,
+    ).toBe(false)
   })
 })
 

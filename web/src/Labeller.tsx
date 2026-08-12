@@ -9,17 +9,17 @@ import { pageUrl } from './api'
 import { debounce } from './debounce'
 import { useConstant, useFlushOnHide, useWindowWidth } from './hooks'
 import {
-  addBox,
-  type BoxAxis,
+  type BoxDefaults,
   cycleAt,
-  type Kind,
+  FIRST_BOX,
   type LabelBox,
+  newBox,
+  normaliseRect,
   type Point,
-  removeBox,
-  setAxis,
-  setKind,
-  toggleIgnore,
+  type Rect,
 } from './labelling'
+import { keysOf, LABEL_KEYS } from './labelKeys'
+import { loadPrefs, savePrefs } from './prefs'
 import { pageBoxLongEdge, requestedLongEdge } from './pageSize'
 import { PageView } from './PageView'
 import { RegionOverlay } from './RegionOverlay'
@@ -39,16 +39,6 @@ import {
   type PixelFrame,
 } from './truthWrite'
 
-/** Index order is the `1`-`6` key order, and it matches `taiyaku-core`'s `Kind`. */
-const KINDS: readonly Kind[] = [
-  'dialogue',
-  'narration',
-  'sfx',
-  'logo',
-  'credits',
-  'other',
-]
-
 /**
  * How long a burst of box edits — or of page flips, which also count, see
  * the persistence effect below — waits for quiet before reaching the server.
@@ -57,6 +47,61 @@ const KINDS: readonly Kind[] = [
  * with the 400 ms reading position.
  */
 const TRUTH_DEBOUNCE_MS = 700
+
+/**
+ * How far the pointer must move before a press becomes a drag, in client
+ * pixels.
+ *
+ * **This is what makes a box selectable.** Capturing the pointer on
+ * `pointerdown` — which the previous version did, so that a drag running off
+ * the page still finished on the element that started it — retargets the
+ * compatibility mouse events to the capturing element for the life of the
+ * capture. `click` is one of them. So every click on a box was delivered to
+ * the page instead of to the box, `RegionOverlay`'s `onSelect` never fired,
+ * and nothing could be selected by pointer at all: the only way in was `Tab`,
+ * which reads the cursor ref rather than a click. Reported from a labelling
+ * session as "I can't edit any box I create".
+ *
+ * Capturing on the first *move past this distance* keeps both behaviours,
+ * because the two gestures no longer overlap: a click never captures, and a
+ * drag has always moved. The slop is what separates them — a mouse jitters by
+ * a pixel or two under a real finger, and treating that as a drag would put
+ * the bug straight back for anyone with an unsteady hand.
+ */
+const DRAG_SLOP = 4
+
+/** Whether the pointer has moved far enough from the press for this to be a drag. */
+function isDrag(
+  pressed: { x: number; y: number },
+  at: { clientX: number; clientY: number },
+): boolean {
+  return (
+    Math.abs(at.clientX - pressed.x) > DRAG_SLOP ||
+    Math.abs(at.clientY - pressed.y) > DRAG_SLOP
+  )
+}
+
+/**
+ * What the labeller remembers between sittings.
+ *
+ * Through `prefs.ts` rather than `localStorage` directly, which that module
+ * states as a rule and is worth keeping true: it is the only writer, so no key
+ * here is the first one nobody thought about on a shared origin.
+ *
+ * Where you were and what you were doing, and nothing about the work — the
+ * labels themselves are server-side, because they must survive a different
+ * machine, and this is the reader's own place in a long mechanical job.
+ * Losing it costs a page lookup; losing a label costs the page again.
+ */
+const PREFS_ID = 'labeller'
+
+interface LabellerPrefs extends BoxDefaults {
+  /** `undefined` until a work has been opened once. */
+  edition: string | undefined
+  page: number
+}
+
+const NO_PREFS: LabellerPrefs = { ...FIRST_BOX, edition: undefined, page: 0 }
 
 /** `App.tsx`'s `NO_WINDOW_WIDTH` — a desktop width, so a document-less environment gets the layout a real screen would rather than the narrowest one. */
 const NO_WINDOW_WIDTH = 1280
@@ -103,6 +148,49 @@ export function Labeller({
   const [selected, setSelected] = useState<string | undefined>(initialSelected)
   const pageRef = useRef<HTMLDivElement>(null)
   const dragStart = useRef<Point | undefined>(undefined)
+  /** Where the press landed in client pixels, for telling a drag from a click. */
+  const pressedAt = useRef<{ x: number; y: number } | undefined>(undefined)
+  /**
+   * Whether this gesture has passed `DRAG_SLOP` and become a drag.
+   *
+   * Gates all three of the preview, the capture and the box that gets
+   * committed — a press that never moved must leave nothing behind. It used to
+   * gate none of them, so a click on a box to select it also created a box two
+   * pixels wide wherever the hand wobbled, and those specks go into the ground
+   * truth like any other label.
+   */
+  const dragging = useRef(false)
+  /**
+   * Whether `work` and `edition` have settled once since mount.
+   *
+   * They arrive `undefined` and become real a round trip later, which the
+   * page-reset effect below would otherwise read as the reader changing
+   * edition.
+   */
+  const settled = useRef(false)
+  /** The box being dragged right now, or `undefined` when nothing is. */
+  const [drag, setDrag] = useState<Rect | undefined>(undefined)
+  /**
+   * The remembered slice, read once.
+   *
+   * Through `useConstant` rather than on each render, so a save made moments
+   * later cannot feed back in and fight what is on screen.
+   */
+  const remembered = useConstant(() => loadPrefs(PREFS_ID, NO_PREFS))
+  /**
+   * What the next drawn box starts as: kind and reading axis both.
+   *
+   * A page is rarely a mixture in equal parts — a spread of sound effects is a
+   * spread of sound effects, and a page of vertical Japanese is a page of it —
+   * so carrying the last one forward removes a keystroke per box across the run
+   * of them. It follows whatever the keys last did rather than being set by its
+   * own control, so there is nothing extra to remember to change and nothing
+   * that can disagree with the box on screen.
+   */
+  const [carried, setCarried] = useState<BoxDefaults>({
+    kind: remembered.kind,
+    axis: remembered.axis,
+  })
   const cursor = useRef<Point>({ x: 0, y: 0 })
 
   // --- Selection: work, edition, page. Populated only when `ports` is given. ---
@@ -110,7 +198,7 @@ export function Labeller({
   const [work, setWork] = useState<string>()
   const [sidecarInfo, setSidecarInfo] = useState<SidecarInfo>()
   const [edition, setEdition] = useState<string>()
-  const [page, setPage] = useState(0)
+  const [page, setPage] = useState(remembered.page)
   const [doc, setDoc] = useState<TruthDoc>()
   const [etag, setEtag] = useState<string>()
   /**
@@ -197,11 +285,16 @@ export function Labeller({
       .then((opened) => {
         if (cancelled) return
         setSidecarInfo(opened.info)
-        setEdition((current) =>
-          current && opened.info.editions.includes(current)
-            ? current
-            : opened.info.editions[0],
-        )
+        setEdition((current) => {
+          if (current && opened.info.editions.includes(current)) return current
+          // The remembered edition, but only if this work actually has one by
+          // that name: every sidecar in the corpus is `taiyaku.json`, so the
+          // work id cannot tell two volumes apart and a remembered `en-fan`
+          // must not survive onto a work that has no such edition.
+          const last = remembered.edition
+          if (last && opened.info.editions.includes(last)) return last
+          return opened.info.editions[0]
+        })
         setDoc(opened.doc)
         setEtag(opened.etag)
         // Stamped together with the two above, and never anywhere else: this
@@ -216,7 +309,10 @@ export function Labeller({
     return () => {
       cancelled = true
     }
-  }, [ports, work])
+    // `remembered.edition` never changes — `remembered` is read once through
+    // `useConstant` — so naming it here costs no extra run and keeps this
+    // honest rather than suppressed.
+  }, [ports, work, remembered.edition])
 
   /**
    * Whether the page on screen was *chosen* rather than merely landed on.
@@ -240,12 +336,32 @@ export function Labeller({
 
   // A different work or a different edition's page 40 is not the page the
   // reader was just looking at.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `work`/`edition` are triggers, not closure reads — the body always does the same thing, and must do it exactly when either changes.
+  // `work`/`edition` are triggers rather than closure reads: the body always
+  // does the same thing, and must do it exactly when either changes. The
+  // suppression that used to sit here went stale once `settled` was added and
+  // biome stopped asking, so it is gone rather than left saying nothing.
   useEffect(() => {
+    // The first time these settle is the restore, not a change: `work` and
+    // `edition` go from `undefined` to real values one round trip after mount,
+    // and resetting then would throw away the page just restored — the reader
+    // would land on page 0 every reload however carefully it was remembered.
+    if (!settled.current) {
+      if (work && edition !== undefined) settled.current = true
+      return
+    }
     setPage(0)
     // The page this resets to was chosen by nobody.
     deliberate.current = false
   }, [work, edition])
+
+  // Remember where this got to. `deliberate` is untouched by any of it: a page
+  // restored on load was chosen in some earlier sitting, not now, so it records
+  // no visit until the reader goes somewhere on purpose — the same rule that
+  // keeps the landing on page 0 out of the document.
+  useEffect(() => {
+    if (!ports || edition === undefined) return
+    savePrefs<LabellerPrefs>(PREFS_ID, { ...carried, edition, page })
+  }, [ports, edition, page, carried])
 
   // Enter (edition, page): load its boxes, or `[]` for a page never opened.
   //
@@ -422,28 +538,19 @@ export function Labeller({
         return
       }
       if (selected === undefined) return
-      const kind = KINDS[Number(event.key) - 1]
-      if (kind) return setBoxes((current) => setKind(current, selected, kind))
-      // `null` is a real axis value, set by `n` — a radial effect has no
-      // reading direction. `undefined` means "not an axis key at all". The
-      // two must stay apart: collapsing them with `axis ?? null` below would
-      // make `v`/`h`/`n` indistinguishable from every other keystroke.
-      const axis: BoxAxis | undefined =
-        event.key === 'v'
-          ? 'v'
-          : event.key === 'h'
-            ? 'h'
-            : event.key === 'n'
-              ? null
-              : undefined
-      if (axis !== undefined)
-        return setBoxes((current) => setAxis(current, selected, axis))
-      if (event.key === 'i')
-        return setBoxes((current) => toggleIgnore(current, selected))
-      if (event.key === 'Delete') {
-        setBoxes((current) => removeBox(current, selected))
-        setSelected(undefined)
-      }
+      const binding = LABEL_KEYS.find(
+        (b) => b.apply !== undefined && b.keys.includes(event.key),
+      )
+      const apply = binding?.apply
+      if (!apply) return
+      const next = apply(boxes, selected, event.key)
+      setBoxes(next)
+      // Whatever the edit did, the selected box's kind afterwards is the one
+      // to carry forward. Read off the result rather than special-cased to the
+      // digit row, so it cannot fall out of step with which keys set a kind.
+      const edited = next.find((box) => box.id === selected)
+      if (edited) setCarried({ kind: edited.kind, axis: edited.axis })
+      if (binding?.clearsSelection) setSelected(undefined)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -486,6 +593,18 @@ export function Labeller({
               ))}
             </select>
           </label>
+          {/*
+            The title, because the id beside it cannot tell the four works
+            apart: it is the sidecar's filename stem, and every sidecar in this
+            corpus is `taiyaku.json`. Restarting `serve` onto the next volume
+            mid-session therefore leaves the picker looking identical, and
+            labelling ten pages into the wrong volume is not noticed until the
+            page numbers stop making sense. This is the one thing on screen
+            that changes when the work does.
+          */}
+          {sidecarInfo?.title && (
+            <span data-testid="work-title">{sidecarInfo.title}</span>
+          )}
           <label>
             edition{' '}
             <select
@@ -535,23 +654,81 @@ export function Labeller({
         style={{ position: 'relative', flex: 1, minHeight: 0 }}
         onPointerDown={(e) => {
           dragStart.current = toFractions(e.clientX, e.clientY)
+          // Where the press landed, in client pixels, so the move handler can
+          // tell a drag from a click. Deliberately *not* captured here — see
+          // `DRAG_SLOP`.
+          pressedAt.current = { x: e.clientX, y: e.clientY }
         }}
         onPointerMove={(e) => {
-          cursor.current = toFractions(e.clientX, e.clientY)
+          const at = toFractions(e.clientX, e.clientY)
+          cursor.current = at
+          const from = dragStart.current
+          // The press becomes a drag here, once and for all, and `DRAG_SLOP`
+          // is what decides. Everything downstream keys off `dragging` rather
+          // than off the press: below the slop this gesture previews nothing,
+          // commits nothing and takes no capture — it is a click, and a click
+          // belongs to whatever is under it.
+          const pressed = pressedAt.current
+          if (from && pressed && !dragging.current && isDrag(pressed, e)) {
+            dragging.current = true
+            // Best-effort: the DOM spec requires `setPointerCapture` to throw
+            // `NotFoundError` when the id names no *active* pointer — a
+            // pointer that ended between dispatch and this handler, and every
+            // synthetic event a test sends. Capture is an enhancement, since
+            // without it the drag still draws and still commits and only a
+            // release outside the page is lost. Failing the move handler over
+            // it would take the preview with it.
+            try {
+              e.currentTarget.setPointerCapture(e.pointerId)
+            } catch {
+              // Nothing to do: see above.
+            }
+          }
+          if (!dragging.current) return
+          setDrag(
+            from &&
+              normaliseRect({
+                x: from.x,
+                y: from.y,
+                w: at.x - from.x,
+                h: at.y - from.y,
+              }),
+          )
         }}
         onPointerUp={(e) => {
           const from = dragStart.current
+          const wasDrag = dragging.current
           dragStart.current = undefined
-          if (!from) return
+          pressedAt.current = undefined
+          dragging.current = false
+          setDrag(undefined)
+          // A press that never became a drag adds nothing. `addBox` already
+          // refuses a zero extent, but a wobble is not zero.
+          if (!from || !wasDrag) return
           const to = toFractions(e.clientX, e.clientY)
-          setBoxes((current) =>
-            addBox(current, {
+          const box = newBox(
+            {
               x: from.x,
               y: from.y,
               w: to.x - from.x,
               h: to.y - from.y,
-            }),
+            },
+            carried,
           )
+          if (!box) return
+          setBoxes((current) => [...current, box])
+          // Selected as it is drawn, so the kind and axis keys land on it
+          // without a click or a `Tab` first.
+          setSelected(box.id)
+        }}
+        // A drag cancelled by the system — a gesture the browser took over, a
+        // window losing focus mid-drag — sends no `pointerup`, so without this
+        // the preview outlives the drag it was describing.
+        onPointerCancel={() => {
+          dragStart.current = undefined
+          pressedAt.current = undefined
+          dragging.current = false
+          setDrag(undefined)
         }}
       >
         {src && (
@@ -579,6 +756,29 @@ export function Labeller({
             selectedId={selected}
             onSelect={setSelected}
           />
+          {/*
+            The box as it is being drawn. Positioned in the same percentages
+            `RegionOverlay` uses and inside the same measured frame, so what is
+            on screen mid-drag is where the box lands — and drawn from
+            `normaliseRect`, the function that decides that, rather than from
+            the raw pointer delta. An upward drag, or one clamped at the sheet
+            edge, would otherwise preview a rectangle the labeller is not about
+            to get.
+          */}
+          {drag && (
+            <div
+              className="region-preview"
+              data-testid="region-preview"
+              style={{
+                position: 'absolute',
+                left: `${drag.x * 100}%`,
+                top: `${drag.y * 100}%`,
+                width: `${drag.w * 100}%`,
+                height: `${drag.h * 100}%`,
+                pointerEvents: 'none',
+              }}
+            />
+          )}
         </div>
       </div>
       <div className="labeller-readout">
@@ -595,6 +795,26 @@ export function Labeller({
         <span data-testid="axis-readout">
           {axisOf === null ? '—' : (axisOf ?? '')}
         </span>
+      </div>
+      {/*
+        The keys, on screen rather than in a document beside it. Every row is
+        generated from `labelKeys.ts`'s `LABEL_KEYS`, the same table the handler
+        dispatches from — `keys.ts`'s rule, applied here: one description, so a
+        binding cannot change what it does and keep an old label.
+      */}
+      <div className="labeller-legend" data-testid="labeller-legend">
+        {/*
+          The drag is not a key and so is not in the table, but a legend that
+          omits the primary action is not a legend. It is stated here, once.
+        */}
+        <span className="labeller-legend-row">
+          <kbd>drag</kbd> draw a box around one text run
+        </span>
+        {LABEL_KEYS.map((binding) => (
+          <span className="labeller-legend-row" key={binding.keys.join()}>
+            <kbd>{keysOf(binding)}</kbd> {binding.label}
+          </span>
+        ))}
       </div>
     </div>
   )

@@ -75,12 +75,12 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 715 tests, plus 1,277 in `web/`'s TypeScript — 949 in the `node`
-project and 328 in the `jsdom` one — and eight more in a
+Five crates, 715 tests, plus 1,306 in `web/`'s TypeScript — 963 in the `node`
+project and 343 in the `jsdom` one — and sixteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
-and `vite` in `web/`. The eight run under Vitest's browser mode over Playwright's
+and `vite` in `web/`. The sixteen run under Vitest's browser mode over Playwright's
 Chromium, and cover only what no Node environment can answer: `jsdom` has no
 layout engine and no real `HTMLImageElement.decode()`, and every defect the page
 area has shipped was one or the other. They are **not** a CI job — a cacheless
@@ -603,6 +603,43 @@ nothing at all. The vertical/horizontal split does not reliably follow the
 edition either — one volume comes back backwards on **both** sides at once, its
 Japanese raw reading 71% horizontal while its English edition reads 66%
 vertical.
+
+**Now measured against hand-drawn ground truth rather than by proxy, and the
+figure is 0.4%.** The dev set of `docs/superpowers/specs/…-l2-ground-truth-instrument-design.md`
+was labelled: 45 pages across the same nine editions, **480 boxes**, one per
+text run. `taiyaku score` over all of it:
+
+| outcome | boxes |
+| --- | --- |
+| 1:1 | **2** |
+| merged | 47 |
+| split | 0 |
+| fragment | 0 |
+| missed | **429** |
+| spurious | 3, or 0.07 per page |
+
+Two of 478 scored boxes, both on `oshinoko-v01/en-mono`. Every figure above
+this paragraph was a proxy for recall — `blocks_per_page`, the v/h split, block
+composition — and each was right about the direction; this is the quantity
+itself.
+
+**The shape of the failure is the useful part, and it is what the five outcomes
+were for.** `split` and `fragment` are both **zero**: the detector never
+over-segments, so it is not finding text and cutting it wrongly. It is not
+finding it. `spurious` is 3 across 45 pages, so it barely proposes anything at
+all — and the 47 merged are what happens when the little it does propose lands
+across several boxes at once. Counted directly on `gotoubun-v01/raw-mono`'s
+five labelled pages: **45 truth boxes against 3 proposals**, with pages 9, 48
+and 165 getting none whatever. Over that whole volume it emits 148 regions on
+195 pages, **135 of which get nothing**, and the median region it does emit
+covers **8.6% of the page** where a dialogue balloon covers about 1%.
+
+**This is a floor, not a tuning problem.** With spurious at 0.07 per page there
+is no precision traded against recall to recover, and `COVERAGE` — provisional
+at 0.5, and still unmeasured — cannot be the explanation: no threshold takes 3
+proposals to 45. Any candidate that proposes roughly one region per text run
+improves both promotion terms at once, which makes this a cheap number to beat
+and an honest one to be measured against.
 
 **The cause is measured rather than guessed, and it is not the one that was
 predicted.** The scale every gap is built from, `stroke_scale`, is the median

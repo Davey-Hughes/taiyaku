@@ -281,6 +281,27 @@ describe('editionsFromSidecar', () => {
       { sha256: 'bb' },
     ])
   })
+
+  it('carries the work title, the one field that differs between the four works', () => {
+    const titled = JSON.stringify({
+      hub: 'raw-mono',
+      work: { title: 'Go-Toubun no Hanayome v01', reading: 'rtl' },
+      editions: { 'raw-mono': { members: [{ sha256: 'aa', pages: 3 }] } },
+    })
+    expect(editionsFromSidecar(titled).title).toBe('Go-Toubun no Hanayome v01')
+  })
+
+  it('parses a sidecar with no work block at all rather than throwing', () => {
+    // `taiyaku-core`'s `Work::title` is a required `String`, so a sidecar this
+    // server wrote always has one. This text arrives over the wire and is
+    // parsed against a hand-written interface rather than a validated schema,
+    // and reaching into an absent `work` would throw inside `openWork` and
+    // take the edition and page pickers down with it — losing the whole
+    // instrument over a cosmetic field.
+    const info = editionsFromSidecar(sidecar())
+    expect(info.title).toBeUndefined()
+    expect(info.editions).toEqual(['raw-mono', 'en-mono'])
+  })
 })
 
 describe('openWork', () => {

@@ -1,8 +1,11 @@
 import { act } from 'react'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { FetchedTruth } from './api'
 import { Labeller } from './Labeller'
+import { LABEL_KEYS } from './labelKeys'
 import type { LabelBox } from './labelling'
+import { savePrefs } from './prefs'
+import { fakeStorage } from './testing/storage'
 import { mount } from './testing/mount'
 import type { TruthDoc } from './truth'
 import type { TruthPorts } from './truthWrite'
@@ -19,6 +22,24 @@ class StubResizeObserver {
 }
 globalThis.ResizeObserver =
   StubResizeObserver as unknown as typeof ResizeObserver
+
+/**
+ * jsdom implements no part of the Pointer Capture API. `Labeller` captures on
+ * `pointerdown` so a drag running past the page still finishes on the element
+ * that started it, and without this every drag test in this file throws
+ * `setPointerCapture is not a function` — as an *unhandled* error, which
+ * vitest reports beside a green run rather than failing it.
+ *
+ * Stubbed here rather than guarded in the component: `StubResizeObserver`
+ * above is the same accommodation for the same gap, and shaping production
+ * code around what jsdom lacks is how a real browser's behaviour stops being
+ * the thing under test.
+ */
+if (!Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = () => {}
+  Element.prototype.releasePointerCapture = () => {}
+  Element.prototype.hasPointerCapture = () => false
+}
 
 const one: LabelBox[] = [
   {
@@ -37,11 +58,116 @@ function region(host: HTMLElement, id: string): HTMLElement {
   return host.querySelector(`[data-testid="region-${id}"]`) as HTMLElement
 }
 
+/** A drag on the page element, past `DRAG_SLOP` so it counts as one. */
+function drawOn(
+  page: HTMLElement,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+) {
+  act(() => {
+    page.dispatchEvent(
+      new PointerEvent('pointerdown', {
+        clientX: x1,
+        clientY: y1,
+        bubbles: true,
+      }),
+    )
+    page.dispatchEvent(
+      new PointerEvent('pointermove', {
+        clientX: x2,
+        clientY: y2,
+        bubbles: true,
+      }),
+    )
+    page.dispatchEvent(
+      new PointerEvent('pointerup', {
+        clientX: x2,
+        clientY: y2,
+        bubbles: true,
+      }),
+    )
+  })
+}
+
 function press(key: string) {
   act(() => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
   })
 }
+
+// The labeller remembers its edition, page and box defaults through
+// `prefs.ts`, and this environment has no `localStorage` of its own — the
+// `jsdom` project leaves it `undefined`, which `prefs.ts` swallows by design.
+// Without a stub these tests would pass while persisting nothing.
+//
+// A fresh one per test, because the labeller writes on every page change: one
+// shared store would leave each test restoring whatever the last one was
+// doing, which is order dependence that only surfaces when a test is deleted.
+beforeEach(() => {
+  vi.stubGlobal('localStorage', fakeStorage())
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('the on-screen legend', () => {
+  it('lists every key the handler answers, generated from the one table', () => {
+    const host = mount(<Labeller initialBoxes={one} />)
+    const legend = host.querySelector(
+      '[data-testid="labeller-legend"]',
+    ) as HTMLElement
+    const text = legend.textContent ?? ''
+    // Not a fixed list of expected strings: that would be the second copy of
+    // the rule this table exists to prevent. Every row must appear, whatever
+    // the rows are.
+    for (const binding of LABEL_KEYS) {
+      expect(text).toContain(binding.label)
+    }
+    expect(legend.querySelectorAll('kbd')).toHaveLength(LABEL_KEYS.length + 1)
+  })
+
+  it('says drag, the primary action, which is not a key and so not in the table', () => {
+    const host = mount(<Labeller initialBoxes={one} />)
+    expect(
+      host.querySelector('[data-testid="labeller-legend"]')?.textContent,
+    ).toContain('drag')
+  })
+
+  it('dispatches every documented key through the table it is listed from', () => {
+    // The wiring guard, not a restatement of what each key means — that would
+    // be the second copy of the rule. For every key the legend shows, pressing
+    // it must leave exactly the boxes the row's own `apply` produces. What
+    // this can catch is a key the table names but the handler never reaches:
+    // swallowed by the `Tab` early return above it, lost to the
+    // `selected === undefined` guard, or left without its `clearsSelection`.
+    //
+    // Pressing `1` on a box that is already `dialogue` is a real no-op, so an
+    // assertion that "something changed" would be wrong rather than strict.
+    for (const binding of LABEL_KEYS) {
+      if (!binding.apply) continue
+      for (const key of binding.keys) {
+        const host = mount(<Labeller initialBoxes={one} initialSelected="a" />)
+        press(key)
+        const expected = binding.apply([...one], 'a', key)
+        const drawn = host.querySelectorAll('.region-box')
+        expect(drawn, `pressing ${key} left the wrong boxes`).toHaveLength(
+          expected.length,
+        )
+        if (expected.length === 1) {
+          expect(region(host, 'a').getAttribute('data-kind')).toBe(
+            expected[0].kind,
+          )
+          expect(region(host, 'a').getAttribute('data-ignore')).toBe(
+            String(expected[0].ignore),
+          )
+        }
+      }
+    }
+  })
+})
 
 describe('Labeller keys', () => {
   it('tags a kind by number', () => {
@@ -106,6 +232,137 @@ describe('Labeller keys', () => {
     expect(
       host.querySelector('[data-testid="kind-readout"]')?.textContent,
     ).toBe('')
+  })
+
+  it('selects the box it just drew, so the kind keys land on it', () => {
+    // Draw, then tag, with nothing in between. Two steps per box across ~900
+    // of them is the cost; the sharper problem is that the two-step version
+    // can tag the box drawn *before* this one, and nothing about that looks
+    // wrong on screen.
+    const host = mount(<Labeller />)
+    const page = host.querySelector('[data-testid="label-page"]') as HTMLElement
+    stubRect(page, { left: 0, top: 0, width: 400, height: 400 })
+    drawOn(page, 40, 40, 200, 200)
+    press('3')
+    const drawn = host.querySelector('.region-box') as HTMLElement
+    expect(drawn.dataset.selected).toBe('true')
+    expect(drawn.dataset.kind).toBe('sfx')
+  })
+
+  it('gives the next box the kind the last one was given', () => {
+    // A page is rarely a mixture in equal parts, so the run of sound effects
+    // should cost one keystroke rather than one per box.
+    const host = mount(<Labeller />)
+    const page = host.querySelector('[data-testid="label-page"]') as HTMLElement
+    stubRect(page, { left: 0, top: 0, width: 400, height: 400 })
+    drawOn(page, 40, 40, 120, 120)
+    press('3')
+    drawOn(page, 200, 200, 300, 300)
+    const kinds = [...host.querySelectorAll('.region-box')].map(
+      (b) => (b as HTMLElement).dataset.kind,
+    )
+    expect(kinds).toEqual(['sfx', 'sfx'])
+  })
+
+  it('gives the next box the reading axis the last one was given', () => {
+    // A page of vertical Japanese is a page of it, and a page of English is
+    // not: the axis is as worth carrying as the kind, and was the half that
+    // still cost a keystroke on every box.
+    const host = mount(<Labeller />)
+    const page = host.querySelector('[data-testid="label-page"]') as HTMLElement
+    stubRect(page, { left: 0, top: 0, width: 400, height: 400 })
+    drawOn(page, 40, 40, 120, 120)
+    press('h')
+    drawOn(page, 200, 200, 300, 300)
+    expect(
+      host.querySelector('[data-testid="axis-readout"]')?.textContent,
+    ).toBe('h')
+    const axes = [...host.querySelectorAll('.region-box')].map(
+      (b) => (b as HTMLElement).dataset.axis,
+    )
+    expect(axes).toEqual(['h', 'h'])
+  })
+
+  it('carries the remembered kind back down when it is changed again', () => {
+    // It follows the keys rather than latching, so a correction is not
+    // permanent for the rest of the page.
+    const host = mount(<Labeller />)
+    const page = host.querySelector('[data-testid="label-page"]') as HTMLElement
+    stubRect(page, { left: 0, top: 0, width: 400, height: 400 })
+    drawOn(page, 40, 40, 120, 120)
+    press('3')
+    press('1')
+    drawOn(page, 200, 200, 300, 300)
+    const kinds = [...host.querySelectorAll('.region-box')].map(
+      (b) => (b as HTMLElement).dataset.kind,
+    )
+    expect(kinds).toEqual(['dialogue', 'dialogue'])
+  })
+
+  it('creates nothing from a press that wobbled but never dragged', () => {
+    // `addBox` refuses a *zero* extent, and a wobble is not zero: before the
+    // drag threshold, clicking a box to select it left a two-pixel box behind
+    // wherever the hand moved, and a speck like that enters the ground truth
+    // as a label like any other.
+    const host = mount(<Labeller />)
+    const page = host.querySelector('[data-testid="label-page"]') as HTMLElement
+    stubRect(page, { left: 0, top: 0, width: 400, height: 400 })
+    act(() => {
+      page.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          clientX: 100,
+          clientY: 100,
+          bubbles: true,
+        }),
+      )
+      page.dispatchEvent(
+        new PointerEvent('pointermove', {
+          clientX: 102,
+          clientY: 101,
+          bubbles: true,
+        }),
+      )
+      page.dispatchEvent(
+        new PointerEvent('pointerup', {
+          clientX: 102,
+          clientY: 101,
+          bubbles: true,
+        }),
+      )
+    })
+    expect(host.querySelectorAll('.region-box')).toHaveLength(0)
+  })
+
+  it('does draw once the pointer passes the drag threshold', () => {
+    // The other side of the same line, so the threshold cannot be raised to
+    // infinity and still pass: five pixels is a drag.
+    const host = mount(<Labeller />)
+    const page = host.querySelector('[data-testid="label-page"]') as HTMLElement
+    stubRect(page, { left: 0, top: 0, width: 400, height: 400 })
+    act(() => {
+      page.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          clientX: 100,
+          clientY: 100,
+          bubbles: true,
+        }),
+      )
+      page.dispatchEvent(
+        new PointerEvent('pointermove', {
+          clientX: 106,
+          clientY: 106,
+          bubbles: true,
+        }),
+      )
+      page.dispatchEvent(
+        new PointerEvent('pointerup', {
+          clientX: 106,
+          clientY: 106,
+          bubbles: true,
+        }),
+      )
+    })
+    expect(host.querySelectorAll('.region-box')).toHaveLength(1)
   })
 
   it('drags a box against the page element when no image is on screen', () => {
@@ -332,6 +589,102 @@ describe('Labeller with ports', () => {
       'raw-mono',
       'en-mono',
     ])
+    expect(edition.value).toBe('raw-mono')
+  })
+
+  it('shows the work title, since the id cannot tell the four works apart', async () => {
+    // Every sidecar in the corpus is named `taiyaku.json`, and the work id is
+    // that filename's stem — so the picker reads `taiyaku` whichever volume is
+    // being served. Restarting `serve` onto the next work mid-session leaves
+    // this control identical, and the title is the only thing that changes.
+    const { ports } = fakePorts({
+      sidecar: () =>
+        Promise.resolve(
+          JSON.stringify({
+            hub: 'raw-mono',
+            work: { title: 'Kaguya-sama v01', reading: 'rtl' },
+            editions: {
+              'raw-mono': { members: [{ sha256: 'aa', pages: 3 }] },
+            },
+          }),
+        ),
+    })
+    const host = mount(<Labeller ports={ports} />)
+    await flush()
+    expect(host.querySelector('[data-testid="work-title"]')?.textContent).toBe(
+      'Kaguya-sama v01',
+    )
+  })
+
+  it('drives the pickers as usual when the sidecar carries no title', async () => {
+    // `fakePorts`' own sidecar has no `work` block. The title is a convenience
+    // and its absence must cost only itself — not the edition list beside it.
+    const { ports } = fakePorts()
+    const host = mount(<Labeller ports={ports} />)
+    await flush()
+    expect(host.querySelector('[data-testid="work-title"]')).toBeNull()
+    const [, edition] = selects(host)
+    expect([...edition.options].map((o) => o.value)).toEqual([
+      'raw-mono',
+      'en-mono',
+    ])
+  })
+
+  it('comes back to the edition and page it was left on', async () => {
+    savePrefs('labeller', {
+      edition: 'en-mono',
+      page: 2,
+      kind: 'sfx',
+      axis: 'h',
+    })
+    const { ports } = fakePorts()
+    const host = mount(<Labeller ports={ports} />)
+    await flush()
+    const [, edition] = selects(host)
+    expect(edition.value).toBe('en-mono')
+    expect(
+      (host.querySelector('input[type="number"]') as HTMLInputElement).value,
+    ).toBe('2')
+  })
+
+  it('does not count a restored page as a page anybody visited', async () => {
+    // The sharpest case of the same rule that keeps the landing on page 0 out
+    // of the document: the page was chosen in some earlier sitting, not now, so
+    // reopening the tool must not record an observation nobody made. Otherwise
+    // every reload would claim one more page had been examined and found empty.
+    savePrefs('labeller', {
+      edition: 'raw-mono',
+      page: 2,
+      kind: 'dialogue',
+      axis: 'v',
+    })
+    const { ports, puts } = fakePorts()
+    const host = mount(<Labeller ports={ports} />)
+    await flush()
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+    await flush()
+    expect(puts).toEqual([])
+    expect(
+      host.querySelector('[data-testid="truth-progress"]')?.textContent,
+    ).toBe('0 / 3 pages labelled')
+  })
+
+  it('ignores a remembered edition the opened work does not have', async () => {
+    // Every sidecar in the corpus is `taiyaku.json`, so the work id cannot tell
+    // two volumes apart: a remembered edition must not survive onto a work with
+    // no such name, or the picker would show a value its own list lacks.
+    savePrefs('labeller', {
+      edition: 'en-fan',
+      page: 0,
+      kind: 'dialogue',
+      axis: 'v',
+    })
+    const { ports } = fakePorts()
+    const host = mount(<Labeller ports={ports} />)
+    await flush()
+    const [, edition] = selects(host)
     expect(edition.value).toBe('raw-mono')
   })
 

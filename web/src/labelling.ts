@@ -75,14 +75,21 @@ function onPage(
 }
 
 /**
- * Add a box from a dragged rectangle.
+ * A dragged rectangle as it would be stored: dragged in any direction, with
+ * positive extents and both edges on the page. `undefined` for a drag that
+ * leaves nothing — one wholly in the letterbox, or one with no extent at all.
  *
- * The rectangle is normalised because a drag that runs up and to the left
- * gives negative extents, and a box with a negative width fails every
- * containment test downstream while looking fine in the JSON.
+ * Its own function so that the live preview drawn *during* a drag is the same
+ * arithmetic rather than a second copy of it. A preview computed separately
+ * would be a picture of a box the labeller is not about to get: each case
+ * below is one where a naive `to − from` and the stored box disagree.
  *
- * It is also **clamped to the page**, which normalising alone does not do and
- * this used to leave undone. `PageView` letterboxes the page, so a drag that
+ * **Normalised**, because a drag that runs up and to the left gives negative
+ * extents, and a box with a negative width fails every containment test
+ * downstream while looking fine in the JSON.
+ *
+ * **Clamped to the page**, which normalising alone does not do and the
+ * labeller once left undone. `PageView` letterboxes the page, so a drag that
  * starts or ends beside the image — natural when boxing a caption that bleeds
  * to the page edge — reads as a fraction outside `0..1`, and an unclamped box
  * stores area that is not on the page at all. `score.rs`'s
@@ -95,10 +102,10 @@ function onPage(
  * `0..1`, and `regionFromDrag` is what clamps a whole drag once both ends are
  * known" — and the labeller called nothing of the sort.
  *
- * A drag with no area at all is dropped rather than stored: a click that
+ * A drag with no area at all is refused rather than stored: a click that
  * missed, or one that lay wholly in the letterbox and clamped down to nothing.
  */
-export function addBox(boxes: readonly LabelBox[], rect: Rect): LabelBox[] {
+export function normaliseRect(rect: Rect): Rect | undefined {
   const { near: x, extent: w } = onPage(
     Math.min(rect.x, rect.x + rect.w),
     Math.abs(rect.w),
@@ -110,20 +117,49 @@ export function addBox(boxes: readonly LabelBox[], rect: Rect): LabelBox[] {
   // `<= 0` rather than `=== 0`: a drag wholly in the letterbox clamps to a
   // negative extent, not a zero one, and a negative width is the very thing
   // the normalisation above exists to keep out of the document.
-  if (w <= 0 || h <= 0) return [...boxes]
-  return [
-    ...boxes,
-    {
-      id: ulid(Date.now(), cryptoRandom),
-      x,
-      y,
-      w,
-      h,
-      kind: 'dialogue',
-      axis: 'v',
-      ignore: false,
-    },
-  ]
+  if (w <= 0 || h <= 0) return undefined
+  return { x, y, w, h }
+}
+
+/**
+ * A fresh box from a dragged rectangle, or `undefined` when nothing survives
+ * normalisation — a drag wholly in the letterbox, or one with no extent.
+ *
+ * Returns the box rather than an array with it appended, because the caller
+ * needs its `id`. A box is selected the moment it is drawn, so the kind and
+ * axis keys land on it without a click or a `Tab` first: over ~900 boxes that
+ * is one deliberate action per box rather than two, and the two-step version
+ * has a failure mode the one-step version cannot have — tagging the box you
+ * drew *before* this one.
+ */
+export interface BoxDefaults {
+  kind: Kind
+  axis: BoxAxis
+}
+
+/**
+ * What a box starts as when nothing has been drawn yet.
+ *
+ * `ignore` is deliberately not among these and must not become one: it excuses
+ * a box from scoring, so carrying it forward would silently drop boxes out of
+ * the measurement for as long as nobody noticed. Kind and axis are guesses a
+ * labeller corrects; `ignore` is a judgement about one box.
+ */
+export const FIRST_BOX: BoxDefaults = { kind: 'dialogue', axis: 'v' }
+
+export function newBox(
+  rect: Rect,
+  defaults: BoxDefaults = FIRST_BOX,
+): LabelBox | undefined {
+  const on = normaliseRect(rect)
+  if (!on) return undefined
+  return {
+    id: ulid(Date.now(), cryptoRandom),
+    ...on,
+    kind: defaults.kind,
+    axis: defaults.axis,
+    ignore: false,
+  }
 }
 
 const edit = (

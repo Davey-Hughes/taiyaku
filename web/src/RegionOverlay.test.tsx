@@ -55,6 +55,19 @@ describe('RegionOverlay', () => {
     expect(region(host, 'b').getAttribute('data-ignore')).toBe('true')
   })
 
+  it('carries the reading axis, including not-applicable, as its own value', () => {
+    // Three keys set this and nothing on the page showed it: the only readout
+    // described the *selected* box, so a page of boxes said nothing about
+    // which had an axis or whether a keystroke had landed.
+    //
+    // `null` gets a value of its own rather than an absent attribute, which
+    // would be indistinguishable from a box that predates the field — and
+    // "this text has no reading direction" is an answer, not a gap.
+    const host = mount(<RegionOverlay boxes={boxes} />)
+    expect(region(host, 'a').getAttribute('data-axis')).toBe('v')
+    expect(region(host, 'b').getAttribute('data-axis')).toBe('none')
+  })
+
   it('reports hover so the box can brighten out of the way of the artwork', () => {
     const onHover = vi.fn()
     const host = mount(<RegionOverlay boxes={boxes} onHover={onHover} />)

@@ -40,12 +40,30 @@ export interface SidecarInfo {
   /** Digit-key order — hub first, then the rest sorted. Same rule `App.tsx` reads editions by; not invented a second time. */
   editions: string[]
   byEdition: Record<string, SidecarEditionInfo>
+  /**
+   * The work's own title, for a person to read.
+   *
+   * The *id* beside it is derived from the sidecar's filename stem, and every
+   * sidecar across this corpus is named `taiyaku.json` — so the picker reads
+   * `taiyaku` for all four works, and a server restarted onto a different
+   * volume looks exactly like one that was never restarted. That is the whole
+   * reason this field is carried: it is the only thing on screen that changes
+   * when the work does.
+   *
+   * Optional, though `taiyaku-core`'s `Work::title` is a required `String`:
+   * this text arrives over the wire and is parsed against a hand-written
+   * interface rather than a validated schema, so a sidecar without it must
+   * degrade to showing the id rather than throwing and taking the whole picker
+   * down with it.
+   */
+  title?: string
 }
 
 /** The shape `JSON.parse`d sidecar text has, as much of it as this needs. */
 interface SidecarJson {
   hub: string
   editions: Record<string, { members: { sha256: string; pages: number }[] }>
+  work?: { title?: string }
 }
 
 /**
@@ -68,7 +86,7 @@ export function editionsFromSidecar(json: string): SidecarInfo {
       members: edition.members.map((m) => ({ sha256: m.sha256 })),
     }
   }
-  return { editions, byEdition }
+  return { editions, byEdition, title: parsed.work?.title }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,23 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NAMESPACE, loadPrefs, resetPrefs, savePrefs } from './prefs'
-
-function fakeStorage(): Storage {
-  const map = new Map<string, string>()
-  return {
-    get length() {
-      return map.size
-    },
-    clear: () => map.clear(),
-    getItem: (k) => map.get(k) ?? null,
-    key: (i) => [...map.keys()][i] ?? null,
-    removeItem: (k) => {
-      map.delete(k)
-    },
-    setItem: (k, v) => {
-      map.set(k, v)
-    },
-  }
-}
+import { fakeStorage } from './testing/storage'
 
 /** A storage that always throws, simulating a full or unavailable store. */
 function throwingStorage(): Storage {
