@@ -6866,6 +6866,19 @@ TAIYAKU_CORPUS="$PWD/corpus" cargo test -p taiyaku-cli region_experiment --relea
 (`b/p` is `blocks_per_page` over the 10-page sample; `scale` is the median
 `stroke_scale` the rule computed over that sample's pages that had one.)
 
+**The `all` column no longer sums to what the module now measures — added
+2026-08-12, not edited into the table.** These nine rows total **76** final
+blocks over the 90 sampled pages; L2b Task 5 made the staged pipeline smear
+both axes and dedupe with `detect::uncontained`, and it now lands on **73**,
+with zero-block pages going 55 of 90 to 58 and the v/h split of survivors
+moving **55/21 to 65/8**. `region_experiment.rs`'s module header records that
+delta and what it does *not* move — `kobayashi-v01/raw-mono` page 7 reproduces
+line for line, and every `MAX_BLOCK_AREA` figure stands — and
+`detect::uncontained`'s doc comment carries the account of the axis shift,
+which is mostly blocks both smears produce identically. The table above is left
+as measured, band-free and one-axis, because that is the diagnosis it belongs
+to.
+
 **`blocks_per_page` clears 2:** on none of the nine editions, under any of
 the three rules. `all` and `modal` both clear it on exactly the one edition
 that already cleared it before this task — gotoubun-v01/en-mono, 2.50 both
@@ -9748,3 +9761,396 @@ was true when the slowest test was bisected. The two live sites are matched on
 their surrounding prose for that reason. A looser "a number near the word
 tests" pattern would sweep the historical one in and demand it be falsified on
 every branch, which is how a gate teaches people to edit the record.
+
+## What text is made of, measured against 480 hand-drawn boxes
+
+Phase 1 of the detector redesign, 2026-08-12. Reproduce with:
+
+```sh
+TAIYAKU_CORPUS="$PWD/corpus" cargo test --release -p taiyaku-cli truth_population -- --nocapture
+```
+
+`crates/taiyaku-cli/src/truth_population.rs` partitions every labelled page's
+connected components by whether their centre falls inside a scored truth box,
+reading its pages through `score::resolve_labelled` so it measures **exactly the
+pages `taiyaku score` scores**. All nine editions, all 45 pages, 942,214
+components.
+
+| edition | inside boxes | outside |
+| --- | --- | --- |
+| gotoubun-v01/raw-mono | 1,166 | 4,698 |
+| gotoubun-v01/en-mono | 5,139 | 499,309 |
+| gotoubun-v01/en-fan | 3,240 | 20,066 |
+| kaguya-v01/raw-mono | 2,468 | 17,032 |
+| kaguya-v01/en-mono | 12,655 | 182,238 |
+| kobayashi-v01/raw-mono | 8,602 | 29,706 |
+| kobayashi-v01/en-mono | 3,033 | 135,903 |
+| oshinoko-v01/raw-mono | 978 | 4,890 |
+| oshinoko-v01/en-mono | 1,486 | 9,605 |
+| **total** | **38,767** | **903,447** |
+
+| quantity | p05 | p25 | med | p75 | p95 |
+| --- | --- | --- | --- | --- | --- |
+| inside, longer side (px) | 1 | 1 | 2 | 7 | 30 |
+| outside, longer side (px) | 1 | 1 | 2 | 2 | 4 |
+| inside, longer side (‱ page height) | 4 | 4 | 8 | 40 | 141 |
+| outside, longer side (‱ page height) | 3 | 4 | 6 | 6 | 17 |
+| components per truth box | 4 | 11 | 22 | 43 | 271 |
+| within-box merge gap (px) | 0 | 0 | 1 | 6 | 14 |
+| between-box merge gap (px) | 0 | 0 | 70 | 424 | 1062 |
+| true ink fraction in box | 0.054 | — | 0.127 | — | 0.303 |
+
+**The ink row read `0.050 | — | 0.127 | — | 0.310` until 2026-08-12, and the
+change is a percentile convention rather than a re-measurement.** Every other
+row here is indexed `round((n − 1) · p)`; the ink line alone indexed
+`trunc(n · p)`, one element apart at n = 478, so the table printed two
+definitions of "p05" under one heading. `truth_population.rs` now has one,
+`percentile_index`, and the row above is that convention. The median does not
+move. **`MIN_INK` is unchanged at 0.05** — but its doc comment cited the p05 as
+**0.050**, exactly the floor, which read as a constant set to a measured
+percentile. Under the one convention the p05 is 0.054, so the floor sits just
+below it rather than on it and excludes slightly fewer than 5% of real text
+boxes. Recorded here rather than restated in silence, which is the whole
+practice this section exists for.
+
+Page height, one figure per page rather than a percentile over components: across
+the 45 dev pages, min **1,024px**, median **2,160px**, max **3,056px**. Every
+pixel-to-‱ conversion below, and in `detect.rs`, stands on this range.
+**Per edition — which is the form that can answer a question this global range
+cannot — see "Page height per edition, and what it refuses" below**, beside the
+band sweep.
+
+### The components inside a text box are mostly not glyphs
+
+**This is the finding that changes the plan.** The population inside a
+hand-drawn box has a median longer side of **2px — identical to the population
+outside it**, and in page-height terms a median of 8 ten-thousandths, where a
+printed glyph is around 200. Both populations are dominated by the same
+sub-glyph material: stroke fragments, JPEG ringing, antialiasing.
+
+A whole glyph is *rare* even inside a box. Only the top few per cent of the
+inside population reaches glyph size — p95 is 30px, or 141‱ of page height.
+Everything below that is the pieces glyphs shatter into at the Otsu threshold,
+plus the ringing around them.
+
+So the premise phase 2 was to be built on — that a size band separates type from
+noise — **is not supported as stated**. The two distributions overlap almost
+completely at the low end, and no threshold divides them.
+
+### What a band does do, which is a different claim
+
+The tails differ sharply: inside p75=7 and p95=30 against outside p75=2 and
+p95=4. Cutting at 4px — the outside p95 — keeps roughly 35% of the inside
+population and **at most 5% of the outside**, taking the welding population from
+903,447 components to about 45,000.
+
+That 4px cut is a *pixel* threshold; the shipped band cuts in ‱ of page height
+instead, and until now nothing had measured the outside population in those
+units directly — only converted from the pixel figure at an assumed page
+height. Measured directly, the outside population's own ‱ percentiles are
+p05=3 p25=4 med=6 p75=6 **p95=17**. Page heights across the 45 dev pages run
+1,024px to 3,056px (median 2,160px), and converting the same 4px cut at each of
+those gives 39‱ at the small end, 18‱ at the median, and 13‱ at the large end
+— it is not one fixed ‱ figure, because the same pixel count is a different
+fraction of every page. `BAND`'s `lo = 16` was set from the pixel figure
+converted at an assumed page height, not from this population; it lands within
+one ‱ of the outside p95 measured directly, which is closer than the
+pixel-cut's own spread across the corpus's page heights would guarantee.
+
+**`lo` is no longer 16, and the sentence above is superseded rather than
+wrong — corrected in place on 2026-08-12.** Task 7's sweep moved it to **64**,
+nearly four times the outside p95 measured here, and says explicitly that 64 is
+*not* a boundary between these two populations: see "Where the band goes,
+measured at eight bands over 478 hand-drawn boxes" below, which is where the
+value now comes from. What the paragraph above measures is unchanged; only its
+`lo` is.
+
+That is a ~7× enrichment and a **~20× collapse in the density that does the
+welding**, which was always the band's actual job: `merge_along`'s transitive
+passes weld thousands of specks into one page-spanning blob because screentone
+is *dense*, not because it is small. Fewer components at the same gap is a
+weaker weld regardless of what the survivors are.
+
+**Stated plainly because the distinction matters:** the band does not isolate
+glyphs, and any doc comment claiming it does would be a defect under
+`detect.rs`'s own rule. What it does is thin the field.
+
+### The ceiling on any smear-based detector is about 74%
+
+The sharper limit is not the band, it is geometry. `merge_along` can only
+separate two text runs if some gap sits between them, so a run whose neighbour
+is closer than the gap needed *within* a run can never come back as its own
+region — it reports `merged`, by construction, at every gap.
+
+Within-box merge gap is 1px at the median and **14px at p95**. On a ~2000px page
+that is 0.7% of page height. Measured against the labels directly:
+
+| edition | boxes with a neighbour closer than 0.7% of page height |
+| --- | --- |
+| gotoubun-v01/en-fan | 7 / 39 (17.9%) |
+| gotoubun-v01/en-mono | 10 / 53 (18.9%) |
+| gotoubun-v01/raw-mono | 10 / 44 (22.7%) |
+| kaguya-v01/en-mono | **33 / 67 (49.3%)** |
+| kaguya-v01/raw-mono | 14 / 57 (24.6%) |
+| kobayashi-v01/en-mono | 12 / 64 (18.8%) |
+| kobayashi-v01/raw-mono | 14 / 55 (25.5%) |
+| oshinoko-v01/en-mono | 9 / 43 (20.9%) |
+| oshinoko-v01/raw-mono | 15 / 56 (26.8%) |
+| **total** | **124 / 478 (25.9%)** |
+
+Nearest-neighbour separation over all 478 scored boxes: p05 **−0.011** (they
+overlap), p25 0.0063, median 0.031, p95 0.182 of page height.
+
+**So a perfect smear scores at most about 354 of 478 one-to-one, and the rest
+are merges it cannot avoid.** The incumbent scores 2. The mechanism is nowhere
+near its ceiling; what fails is finding text at all.
+
+`kaguya-v01/en-mono` is the outlier at 49.3%, and it is the same edition
+carrying 12,655 inside components — by far the most of the nine. Both figures
+say the same thing about it: densely-set English lettering in tightly packed
+balloons.
+
+### What this does and does not establish
+
+It establishes the populations, the gaps and the geometric ceiling, over every
+labelled page rather than a sample. It does **not** establish that a band-passed
+smear finds text — that is a question for the scorer, and the promotion rule
+fixed on 2026-08-11 is unchanged and still the arbiter.
+
+It also does not measure any discriminator other than longer side. Screentone is
+characterised as much by *regularity and packing* as by size, and nothing here
+measures either.
+
+## Where the band goes, measured at eight bands over 478 hand-drawn boxes
+
+Task 7 of the detector redesign, 2026-08-12. `BAND` shipped provisional from
+Task 4 and `detect.rs`'s own header calls a constant asserted as measured
+without a distribution behind it a defect. This is the measurement that settles
+its `lo`. Reproduce with:
+
+```sh
+TAIYAKU_CORPUS="$PWD/corpus" cargo test --release -p taiyaku-cli band_sweep -- --nocapture
+```
+
+`crates/taiyaku-cli/src/band_sweep.rs` scores `detect::detect_page_with` at each
+band over all nine labelled editions — 45 pages, 478 scored boxes — reading its
+pages through `score::resolve_labelled` and scoring through `score::score_page`
+at `score::COVERAGE`, so it is the same instrument at the same threshold as
+`taiyaku score` and `scripts/score-dev-set.sh`. `hi` is held at 2,000 on every
+row: one parameter at a time.
+
+### The whole table, losing rows included
+
+| `lo` (‱ page height) | 1:1 | merged | split | fragment | missed | spurious | spurious/page |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 13 | 47 | 199 | 89 | 130 | 13,248 | 294.40 |
+| 8 | 31 | 55 | 200 | 92 | 100 | 8,795 | 195.44 |
+| 16 | 50 | 62 | 171 | 102 | 93 | 2,473 | 54.96 |
+| 32 | **57** | 70 | 165 | 83 | 103 | 580 | 12.89 |
+| **64** | **48** | 73 | 152 | 81 | 124 | 303 | **6.73** |
+| 128 | 14 | 62 | 69 | 52 | 281 | 159 | 3.53 |
+| 256 | 8 | 39 | 10 | 3 | 418 | 79 | 1.76 |
+| 512 | 2 | 19 | 2 | 1 | 454 | 19 | 0.42 |
+
+**`lo = 0` is the control arm, and it is not the incumbent.** The low cut is
+removed, but `hi` is still 2,000 where the band-free `NO_BAND`'s is `u32::MAX`,
+and the detector around it is Task 5's two-axis union with Task 6's pixel-counting
+`MIN_INK` rather than the one-axis detector the 0.4% baseline was measured on. It
+answers "does cutting at `lo` help", which is what this sweep asks. It is not a
+re-measurement of the incumbent, which scored 2.
+
+### The verdict against the rule
+
+The rule, fixed on 2026-08-11 and unchanged since:
+
+> A candidate replaces the incumbent only if, over the dev set, it increases the
+> count of 1:1 matches, **and** its spurious-per-page does not exceed the dev
+> set's own truth-boxes-per-page (10.7). Ties go to the incumbent.
+
+Term 1 is 1:1 > 2. Term 2 is spurious/page ≤ 10.7, i.e. total spurious ≤ 481.
+
+| `lo` | term 1 (1:1 > 2) | term 2 (≤ 10.7/page) | passes |
+| ---: | --- | --- | --- |
+| 0 | pass, 13 | **fail**, 294.40 | no |
+| 8 | pass, 31 | **fail**, 195.44 | no |
+| 16 | pass, 50 | **fail**, 54.96 | no |
+| 32 | pass, 57 | **fail**, 12.89 | no |
+| 64 | pass, 48 | pass, 6.73 | **yes** |
+| 128 | pass, 14 | pass, 3.53 | yes |
+| 256 | pass, 8 | pass, 1.76 | yes |
+| 512 | **fail**, 2 — a tie, and ties go to the incumbent | pass, 0.42 | no |
+
+**Three bands pass; the winner is the passing band with the highest 1:1, which
+is `lo = 64` at 48 one-to-one and 6.73 spurious per page.** `detect.rs`'s `BAND`
+is set to `{ lo: 64, hi: 2000 }`.
+
+**The row with the most 1:1 matches is refused.** `lo = 32` finds 57, nine more
+than the winner, at 12.89 spurious per page against a ceiling of 10.7 — it misses
+by 20%. It is written down here rather than quietly dropped because it is the
+row a rule chosen after the fact would have taken, and the rule was not chosen
+after the fact.
+
+### The nine editions at the promoted band
+
+`./scripts/score-dev-set.sh`, at `BAND = { lo: 64, hi: 2000 }`:
+
+| edition | 1:1 | merged | split | fragment | missed | spurious | /page |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| gotoubun-v01/raw-mono | 0 | 6 | 10 | 2 | 26 | 27 | 5.40 |
+| gotoubun-v01/en-mono | 13 | 12 | 7 | 12 | 9 | 73 | 14.60 |
+| gotoubun-v01/en-fan | 10 | 2 | 5 | 6 | 16 | 30 | 6.00 |
+| kaguya-v01/raw-mono | 2 | 11 | 28 | 6 | 10 | 33 | 6.60 |
+| kaguya-v01/en-mono | 8 | 12 | 28 | 10 | 9 | 24 | 4.80 |
+| kobayashi-v01/raw-mono | 0 | 3 | 17 | 7 | 28 | 8 | 1.60 |
+| kobayashi-v01/en-mono | 8 | 13 | 15 | 12 | 16 | 30 | 6.00 |
+| oshinoko-v01/raw-mono | 1 | 10 | 29 | 9 | 7 | 46 | 9.20 |
+| oshinoko-v01/en-mono | 6 | 4 | 13 | 17 | 3 | 32 | 6.40 |
+| **total** | **48** | **73** | **152** | **81** | **124** | **303** | **6.73** |
+
+The nine rows sum to exactly the sweep's `lo = 64` row, which is the cross-check
+worth having: the sweep drives `detect_page_with` from a test and the script
+drives the shipped `taiyaku score` binary, and a disagreement between them would
+mean one of the two was measuring something else.
+
+### Per kind, which is the part a later decision turns on
+
+`taiyaku score`'s own per-kind lines at the promoted band, summed over the nine:
+
+| kind | found 1:1 | drawn | recall |
+| --- | ---: | ---: | ---: |
+| Dialogue | 43 | 389 | 0.11 |
+| Sfx | 5 | 63 | 0.08 |
+| Other | 0 | 19 | 0.00 |
+| Credits | 0 | 3 | 0.00 |
+| Narration | 0 | 2 | 0.00 |
+| Logo | 0 | 2 | 0.00 |
+| **total** | **48** | **478** | **0.10** |
+
+**Every dialogue hit is on an English edition.** Per edition: gotoubun en-mono
+13/49, en-fan 9/30, kaguya en-mono 7/58, kobayashi en-mono 8/47, oshinoko
+en-mono 6/38 — and **0 of 38, 0 of 40, 0 of 45 and 0 of 44 on the four raw-mono
+editions**, which is every Japanese raw in the dev set. The sound effects run the
+other way, thinly: 2 of the 5 are on `kaguya-v01/raw-mono` and 1 on
+`oshinoko-v01/raw-mono`. So this candidate finds a little English typeset
+dialogue and essentially nothing else; it is not the "finds dialogue and no
+sound effects" result or the "a little of each" one, but a third, sharper split
+along the raw/English line. Vertical Japanese type in a balloon is not being
+found at all.
+
+### Page height per edition, and what it refuses
+
+The row above has two readings and the sweep cannot choose between them.
+Either **vertical Japanese type does not smear into one block**, or **the raw
+editions are simply scanned smaller** and `BAND`'s `lo` is a fraction of page
+height — 64‱ is a 6.5px cut on a 1,024px page and a 19.6px one on a 3,056px
+page, three times the absolute size at one end of the corpus than the other.
+The dev set's page heights had only ever been reported as one global
+1,024–3,056px range over all 45 pages, which cannot separate the two.
+
+`truth_population.rs` now prints page height per edition, inside the loop it
+already ran, together with that edition's own inside and outside percentiles in
+‱ of page height. No extra decode: the height is per page and the loop existed.
+
+```sh
+TAIYAKU_CORPUS="$PWD/corpus" cargo test --release -p taiyaku-cli truth_population -- --nocapture
+```
+
+Rows sorted by page height, with the dialogue recall from the section above
+beside each:
+
+| edition | page height px | dialogue 1:1 | inside ‱ p05/p25/med/p75/p95 | outside ‱ p05/p25/med/p75/p95 |
+| --- | ---: | ---: | --- | --- |
+| gotoubun-v01/raw-mono | 1,024 | **0 / 38** | 9 29 58 136 244 | 9 9 19 58 234 |
+| kaguya-v01/raw-mono | 1,200 | **0 / 40** | 8 16 25 100 175 | 8 8 16 16 66 |
+| oshinoko-v01/en-mono | 1,350 | 6 / 38 | 7 22 96 118 185 | 7 7 14 22 96 |
+| gotoubun-v01/en-fan | 1,364–1,600 | 9 / 30 | 6 12 12 75 278 | 6 6 6 12 56 |
+| oshinoko-v01/raw-mono | 2,160 | **0 / 44** | 13 46 101 134 185 | 4 9 18 37 199 |
+| kobayashi-v01/raw-mono | 2,164–2,168 | **0 / 45** | 4 4 4 9 133 | 4 4 9 9 50 |
+| kaguya-v01/en-mono | 2,250 | 7 / 58 | 4 4 4 8 115 | 4 4 4 8 13 |
+| gotoubun-v01/en-mono | 3,056 | 13 / 49 | 3 6 9 19 98 | 3 3 6 6 13 |
+| kobayashi-v01/en-mono | 3,056 | 8 / 47 | 3 6 19 94 153 | 3 6 6 6 13 |
+
+**The scan-scale explanation is refused. Page height does not track the zero;
+the script does, exactly.** Two rows do the refusing on their own:
+`kobayashi-v01/raw-mono` at 2,164–2,168px scores **0 of 45** while
+`oshinoko-v01/en-mono` at 1,350px scores **6 of 38** — a Japanese raw with 1.6
+times the page height of an English edition that finds text — and
+`oshinoko-v01/raw-mono` at 2,160px scores **0 of 44** against
+`gotoubun-v01/en-fan` at 1,364–1,600px scoring **9 of 30**. The four zeros sit
+at 1,024, 1,200, 2,160 and ~2,165px; the five non-zeros at 1,350, ~1,500,
+2,250, 3,056 and 3,056. Those interleave. The raw/English split does not: it is
+nine for nine.
+
+**No other column separates them either, which is worth stating because one
+nearly does.** Sorted by each edition's *own* inside population, the zeros run
+4, 25, 58 and 101‱ at the median against the hits' 4, 9, 12, 19 and 96 — a zero
+and a hit share the lowest value. So "the band is harsher relative to this
+edition's own type" is not the explanation: `oshinoko-v01/raw-mono`'s inside
+median is 101‱, meaning `lo = 64` keeps **more than half** of what that
+edition's own truth boxes contain, and it still finds no dialogue at all; while
+`kaguya-v01/en-mono`'s inside p75 is 8‱, meaning the same cut discards **over
+three quarters** of its inside population, and it finds 7. The closest any
+column comes is the outside p95 — zeros at 50, 66, 199, 234 against hits at 13,
+13, 13, 56, 96 — and it still fails, because `kobayashi-v01/raw-mono` (50) sits
+below two English editions that do find text (56 and 96).
+
+**A second thing the per-edition split shows, incidentally.** The global
+outside p95 of 17‱ that `BAND` and `glyph_band` are argued against is a
+*pooled* figure, and the pool is not balanced: three editions contribute
+817,450 of the 903,447 outside components, and all three are English mono
+scans with an outside p95 of 13. Per edition the outside p95 runs 13 to 234 —
+an eighteenfold spread — and on `gotoubun-v01/raw-mono` (234) and
+`oshinoko-v01/raw-mono` (199) the shipped `lo = 64` sits *below* it, where on
+the three en-monos it is nearly five times above. "64 is nearly four times the
+outside p95" is true of the corpus pooled and true of no single raw edition.
+
+**What is still unmeasured, and it is most of the mechanism.** Nothing has
+re-counted the inside and outside populations *at* `lo = 64` — the percentiles
+above bound what survives (over half of `oshinoko-v01/raw-mono`'s inside
+population, under a quarter of `kobayashi-v01/raw-mono`'s) but do not count it,
+and no measurement of what the band keeps per edition exists.
+
+And the four zeros are not one failure. Two of them are **text found and cut
+into pieces** rather than text missed: `kaguya-v01/raw-mono` scores 28 splits
+against 10 missed of 57 boxes, `oshinoko-v01/raw-mono` 29 splits against 7
+missed of 56. On those two the detector is putting predictions on the type and
+getting the *shape* wrong — a segmentation failure, not a detection one, and
+the same failure the whole candidate's largest column already names. The other
+two fail the other way: `gotoubun-v01/raw-mono` misses 26 of 44 and
+`kobayashi-v01/raw-mono` misses 28 of 55, so on those the type is not being
+reached at all. Nothing here says why the four Japanese raws split into two
+kinds of failure, and this branch cannot: it has one detector at one band, and
+the question is about what the smear does to a column of glyphs.
+
+### What this establishes, and what it does not
+
+It establishes that over the dev set spurious-per-page falls monotonically with
+`lo` across three orders of magnitude — 294.40 to 0.42 — while 1:1 rises to a
+peak at `lo = 32` and falls away, and that the rule's ceiling cuts between 32 and
+64. Under the rule fixed in advance, 64 wins. That is the whole of what the rule
+was asked.
+
+It does **not** establish that 64 generalises. This is a one-parameter fit to a
+fixed 45-page dev set, which is a mild overfit and is stated as one; the 30
+held-out pages are what would check it and were not opened here.
+
+It does not settle `hi`, which was held fixed at 2,000 throughout and remains a
+starting value, nor `COVERAGE`, still provisional at 0.5 — every figure above is
+at that threshold and nothing here swept it.
+
+**The failure mode has inverted, and the candidate is not close to working.** The
+incumbent missed 429 of 478 boxes and proposed almost nothing (0.07 spurious per
+page). At `lo = 64` the largest column is no longer `missed` (124) but `split`
+(152), with 81 more fragments beside it: 233 of 478 boxes now have a prediction
+sitting on them that is the wrong shape. 48 of 478 is 10%, against phase 1's
+geometric ceiling of roughly 354 of 478 for any smear-based detector — so the
+mechanism is at about 14% of what its own geometry allows, and what limits it is
+no longer that it finds nothing.
+
+**The band's `lo` is not a boundary between two measured populations, and the
+sweep is what shows that.** Phase 1 put the outside population's p95 at 17‱ and
+the inside population's median at 8‱; 64 is nearly four times the former, so the
+winning cut discards most of the components a person's own boxes contain. It wins
+anyway, and the reason is the one `glyph_band` already gives: what the cut removes
+is what welds. A value read off the inside population would have been 8 or 16, and
+both are measured here, and both lose.

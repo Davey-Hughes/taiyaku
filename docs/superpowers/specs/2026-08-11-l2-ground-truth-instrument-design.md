@@ -357,6 +357,36 @@ A raw count on the first term rather than a rate, because the dev set is fixed
 at 45 pages and a fixed denominator makes the two identical; a rate on the
 second, because a candidate may legitimately return more predictions in total.
 
+*Corrected on 2026-08-11, while settling sub-project B's design and before any
+candidate exists.* **Term 2 as written cannot be satisfied by any real
+detector**, and the reason is arithmetic rather than a candidate's numbers. The
+incumbent scores 0.07 spurious-per-page — 3 boxes across 45 pages — *because it
+proposes almost nothing*. A candidate proposing a realistic 10 per page makes
+about 480 predictions, of which at most 3 may miss every truth box; with only 2
+`ignore` boxes on the whole dev set to absorb a near-miss, that is 99.4%
+precision demanded of a first candidate. **Term 2 rewards silence, and the
+silent detector is the incumbent.** The sentence above states the intent — "a
+candidate may legitimately return more predictions in total" — that a *per-page*
+rate defeats, since it holds the absolute count of junk fixed however many
+predictions are made. Anchoring the term to the incumbent at all has the same
+defect whatever the denominator: its precision is high for exactly the reason
+its spurious count is low. The term is therefore re-anchored to the labelled
+material instead:
+
+> **A candidate replaces the incumbent only if, over the dev set, it increases
+> the count of 1:1 matches, and its spurious-per-page does not exceed the dev
+> set's own truth-boxes-per-page (10.7, measured 2026-08-11 over the four truth
+> documents). Ties go to the incumbent.**
+
+Term 1 is unchanged. The alternative term 2 beat was a precision floor at 50%,
+refused because 0.5 is a guess wearing a round number and three bars have
+already failed that way — `COVERAGE` above is still provisional at 0.5 and still
+unmeasured. A precision bar gets written once the first candidate's distribution
+exists, on the same terms this section already promises for the absolute bar.
+**After the first candidate is scored, this rule is frozen**; a change made then
+would be the thing pre-registration exists to prevent. See
+`2026-08-11-l2-detector-design.md` §1.
+
 **Relative to the incumbent, not an absolute bar**, and that is the central
 decision of this document. Three absolute bars have already failed — one that
 could not fire, one that ranked backwards, and one that inherited the second's

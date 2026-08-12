@@ -25,6 +25,33 @@
 //! section in `region_experiment.rs`. Each constant still says so where it is
 //! defined, and a constant in this file asserted as measured — here or
 //! anywhere else — remains a defect.
+//!
+//! *Corrected on 2026-08-12.* The paragraph above is no longer true of every
+//! constant, and the rule it ends with is why it is corrected rather than
+//! quietly left standing. Phase 1 of the L2b redesign measured the components
+//! inside 478 hand-drawn truth boxes over all 45 labelled pages
+//! (`truth_population.rs`; `docs/notes.md`, "What text is made of, measured
+//! against 480 hand-drawn boxes"), which makes the rule *satisfiable* rather
+//! than relaxing it. As of this commit:
+//!
+//! - **`MIN_STROKES` and `MIN_INK` cite that measurement.** Neither value
+//!   moved — both already sat where phase 1 says they should — so what changed
+//!   is the justification, and for `MIN_INK` the quantity it is a floor *on*.
+//! - **`MAX_BLOCK_AREA` cites the labels too**, as a ceiling checked against
+//!   them rather than derived from them; see its own comment.
+//! - **`SMEAR_K` and `MIN_BLOCK_STROKE_SPAN` are still starting values**, and
+//!   each says so and says why. Neither is stated in a unit phase 1 measured:
+//!   both are multiples of the page's own `stroke_scale`, and phase 1's merge
+//!   gaps are in pixels. `SMEAR_K` names those pixel figures anyway, as the
+//!   nearest thing to evidence about it that exists.
+//! - **`BAND`'s `lo` cites a sweep** — Task 7 scored the detector at eight
+//!   values of it over all 45 labelled pages and took the row a rule fixed in
+//!   advance selects. Its `hi` was held fixed throughout and is still a
+//!   starting value; the constant's own comment separates the two.
+//!
+//! The rule is unchanged and now has teeth in both directions: a constant here
+//! asserted as measured without a distribution named behind it is a defect,
+//! and so is one that names a distribution it was not actually read off.
 
 use image::GrayImage;
 use taiyaku_core::{Axis, Region};
@@ -459,7 +486,25 @@ pub fn merge_along(strokes: &[Bounds], axis: Axis, gap: u32) -> Vec<Bounds> {
 /// here has to be told which edition is the raw. A tie reads as vertical, so a
 /// single isolated glyph has a stable answer rather than one that follows
 /// iteration order.
-pub fn axis_of(strokes: &[Bounds], gap: u32) -> Axis {
+///
+/// **`detect_page_with` no longer calls this.** It smears both ways and unions
+/// the result (see there), so the page-wide answer this computes is not what
+/// any region is stamped with. The rule it states is still the one that change
+/// rests on — a block is kept over a block containing it precisely because
+/// text merges furthest along its own direction — and the two tests below pin
+/// it. `region_experiment.rs` still calls it, to report the direction the
+/// whole page merges furthest along beside its per-block figures.
+///
+/// `#[cfg(test)]`, like `size_floor`, `stroke_scale_above_floor`,
+/// `stroke_scale_modal` and `NO_BAND` above: every remaining caller is
+/// test-gated, so leaving it compiled into the production binary is dead code
+/// there and `cargo clippy --all-targets -- -D warnings` says so on the
+/// non-test build. Gated rather than deleted because `region_experiment.rs`
+/// calls it and its two tests below pin the rule; gated rather than
+/// `#[allow(dead_code)]` because the gate is the file's existing answer to
+/// exactly this question and an allow would hide the next one.
+#[cfg(test)]
+pub(crate) fn axis_of(strokes: &[Bounds], gap: u32) -> Axis {
     let vertical = merge_along(strokes, Axis::Vertical, gap).len();
     let horizontal = merge_along(strokes, Axis::Horizontal, gap).len();
     if vertical <= horizontal {
@@ -467,6 +512,116 @@ pub fn axis_of(strokes: &[Bounds], gap: u32) -> Axis {
     } else {
         Axis::Horizontal
     }
+}
+
+/// A smeared block and the axis whose smear produced it.
+///
+/// The pair is the unit the two-axis union carries from `merge_along` all the
+/// way to `Region`, which is the point of the union: the axis is a property of
+/// the block, not of the page it came from. Named so that
+/// `region_experiment.rs` — which runs the same stages one at a time and so
+/// spells this type out five times over — can say it once.
+pub(crate) type Block = (Bounds, Axis);
+
+/// The blocks left after dropping every one wholly inside a block from the
+/// other axis — the dedupe the two-axis union in `detect_page_with` needs.
+///
+/// A column of glyphs smeared *horizontally* comes back as its own separate
+/// pieces, each sitting inside the vertical block that already covers them.
+/// Dropping anything wholly contained in a different block leaves the survivor
+/// whose axis actually joined the strokes.
+///
+/// **Two limits of that sentence, both measured rather than argued, because
+/// the obvious reading over-claims.** Neither is a defect in this function —
+/// it does what it says — but "the axis that joined the strokes" is not always
+/// a thing the boxes distinguish:
+///
+/// 1. **An exact duplicate has no such axis.** When both smears land on the
+///    same box, both joined the same strokes identically and the axis reported
+///    is the tie-break's default, not a measurement. This is not a corner
+///    case. Over the 90 band-free corpus pages `region_experiment.rs` samples,
+///    the v/h split of surviving blocks moved from 55/21 to 65/8 across this
+///    change. 69 blocks survive both before and after; 13 of them changed
+///    axis, all horizontal to vertical, and all 13 on a block whose box,
+///    stroke count, median stroke and ink are identical in the two runs. An
+///    unchanged box that changes label is a duplicate being resolved by the
+///    rule below, not a reading direction being discovered.
+/// 2. **Containment does not separate blocks that merely overlap.** One
+///    balloon and one sound effect crossing is the shape this is wanted for,
+///    but a paragraph of several lines has the same shape: the wrong-axis
+///    smear returns strips across the lines, which no single line's block
+///    contains and which contain no line either, so both sets survive. Over
+///    `kobayashi-v01/raw-mono`'s 146 pages the banded detector goes from 4,137
+///    blocks to 6,116 across this change. Whether that is a text block found
+///    twice or two text blocks found once is not something a count can say,
+///    and nothing here has measured it against the truth boxes.
+///
+///    **Those two counts were measured at the provisional `lo = 16`, not at
+///    the shipped `BAND`.** Task 5 ran them (`8531d05`) while `lo` was still
+///    16; Task 7's sweep then moved it to 64, and between those two bands
+///    dev-set spurious falls 2,473 → 303 (`docs/notes.md`, "Where the band
+///    goes, measured at eight bands over 478 hand-drawn boxes"), so the
+///    shipped detector's block counts on this edition are an order of
+///    magnitude away from the pair above and nothing has re-run them. They are
+///    kept, relabelled, rather than restated: what they are here to show is
+///    that the union moves block *counts* and not merely labels, and a
+///    before/after pair at one fixed band shows that whichever band it is.
+///
+/// **A third limit, and it is not a property of this function at all**, which
+/// is why it sits outside the numbered pair above: **the dedupe runs before
+/// the four filters, not after them.** `detect_page_with` applies this to the
+/// raw union and then filters the survivors by `MIN_STROKES`,
+/// `MIN_BLOCK_STROKE_SPAN`, `MAX_BLOCK_AREA` and `MIN_INK`. So a block dropped
+/// here for sitting inside a larger block from the other axis is gone even
+/// when that larger block is itself rejected a step later — most obviously by
+/// `MAX_BLOCK_AREA`, which fires on 89 of 90 sampled pages (O33,
+/// `region_experiment.rs`). A contained block can therefore be removed by a
+/// container that never becomes a region.
+///
+/// **Unmeasured, and stated as unmeasured.** Nothing has counted how often a
+/// dropped block's container is later rejected. It is named here because it is
+/// new on this branch — the one-axis detector had no dedupe to order — and
+/// because it is the most likely mechanism behind the one movement
+/// `region_experiment.rs`'s header records without explaining: 76 → 73 final
+/// blocks and 55 → 58 zero-block pages over its 90 band-free sampled pages.
+/// Reordering the pipeline would be a behaviour change and is not made here.
+///
+/// **The tie-break is the part that is easy to get wrong**, and is why this is
+/// a named function with its own tests rather than a closure. An exact
+/// duplicate — the same box produced by both axes, which is what a single
+/// isolated stroke gives — is contained in the other *and* contains it, so a
+/// rule stated as "drop anything contained in another" drops both and the
+/// region vanishes. Containment alone is not enough; the comparison is
+/// **strictly larger, or equal-and-earlier**, so exactly one copy of a
+/// duplicate survives, and it is the earlier index — `Axis::Vertical`, given
+/// the order `detect_page_with` pushes them in.
+///
+/// Ties are broken on index rather than on axis so that this stays a statement
+/// about boxes: nothing here needs to know that vertical is pushed first, and
+/// a caller that pushed them the other way would still keep exactly one.
+///
+/// `pub(crate)` for the reason `merge_along` is: `region_experiment.rs` runs
+/// the same stages one at a time and must call this rather than restate it.
+/// This is algorithm, not the bookkeeping that module allows itself to copy.
+pub(crate) fn uncontained(blocks: &[Block]) -> Vec<Block> {
+    let contained = |inner: &Bounds, outer: &Bounds| {
+        inner.x0 >= outer.x0 && inner.x1 <= outer.x1 && inner.y0 >= outer.y0 && inner.y1 <= outer.y1
+    };
+    // u64 so the product cannot wrap: every factor is a u32 pixel extent, and
+    // `From<u32> for u64` is lossless, so this needs no cast and no bound.
+    let area = |b: &Bounds| u64::from(b.width()) * u64::from(b.height());
+    blocks
+        .iter()
+        .enumerate()
+        .filter(|(i, (block, _))| {
+            !blocks.iter().enumerate().any(|(j, (other, _))| {
+                j != *i
+                    && contained(block, other)
+                    && (area(other) > area(block) || (area(other) == area(block) && j < *i))
+            })
+        })
+        .map(|(_, entry)| *entry)
+        .collect()
 }
 
 /// How far apart two strokes may be, as a multiple of the page's stroke scale.
@@ -483,74 +638,325 @@ pub fn axis_of(strokes: &[Bounds], gap: u32) -> Axis {
 /// why it does not work yet", and `region_experiment.rs`, which reproduces the
 /// measurement in-tree.
 ///
+/// **Phase 1 measured the gaps, but not in this unit**, so it does not settle
+/// this either — recorded here because it is the nearest thing to evidence
+/// about `SMEAR_K` that exists. Over 478 hand-drawn boxes the *within*-box
+/// merge gap is p05 0, p25 0, median 1, p75 6, p95 14 pixels, and the
+/// *between*-box gap median 70, p95 424 (`docs/notes.md`, "What text is made
+/// of, measured against 480 hand-drawn boxes"). Those are pixels; this
+/// constant is a multiple of the page's own `stroke_scale`, and the ratio
+/// between them is exactly what the paragraph above says is not measuring type
+/// yet. Converting one into the other would be reading a value off a
+/// measurement of something else.
+///
 /// `pub(crate)` so `region_experiment.rs` can compute the same gap from this
 /// value rather than a restated copy of it.
 pub(crate) const SMEAR_K: u32 = 2;
 
-/// Fewest strokes a block may hold. **A starting value** (see `SMEAR_K`).
+/// Fewest strokes a block may hold.
 ///
 /// One stroke is a speck of dust, a screentone dot, or the tail of a balloon.
+///
+/// **Measured, and already at the measured value — nothing moved here.** Phase
+/// 1 counted the components inside each of 478 hand-drawn truth boxes and found
+/// p05 = **4**, p25 11, median 22, p75 43, p95 271 (`docs/notes.md`, "What text
+/// is made of, measured against 480 hand-drawn boxes"). The filter admits a
+/// block at `>= 4`, so it excludes at most the bottom 5% of real text boxes.
+///
+/// **Two ways the two populations are not the same population**, stated because
+/// the figure above is otherwise read as tighter than it is:
+///
+/// 1. Phase 1 counted *every* component whose centre lands in the box, before
+///    any band. `strokes_in` counts only the strokes `glyph_band` passed, so
+///    the count a block gets here is the smaller of the two on any page whose
+///    material the band cuts.
+/// 2. Phase 1 counts a component by its *centre*; `strokes_in` requires the
+///    whole box inside, so a stroke straddling a block's edge counts there and
+///    not here.
+///
+/// Both push the same way — this filter sees fewer strokes than phase 1
+/// counted — so 4 is a floor read off a more generous population than the one
+/// it is applied to, and that is the direction that costs recall rather than
+/// precision. It has not been re-measured over the banded, wholly-inside
+/// population.
+///
+/// Most screentone no longer reaches this filter at all: "a screentone dot"
+/// above describes the band-free detector this constant predates, not the
+/// population `detect_page` hands it today.
 pub(crate) const MIN_STROKES: usize = 4;
 
-/// Largest a block may be, as a fraction of page area. **A starting value.**
+/// Largest a block may be, as a fraction of page area.
 ///
-/// This is the disqualifier the L2 design names — a detector whose median
-/// region exceeds 0.15 of the page is not finding text — set here at the
-/// per-block level so such a block never reaches the median in the first place.
+/// The value comes from the disqualifier the L2 design names — a detector
+/// whose median region exceeds 0.15 of the page is not finding text — applied
+/// here at the per-block level so such a block never reaches the median in the
+/// first place. It was **not** read off the labels; what the labels do is
+/// check it.
+///
+/// **Checked against the labels, and kept.** Exactly 1 of 478 hand-drawn
+/// truth boxes exceeds 0.15 — a full-page sound effect on
+/// `kobayashi-v01/raw-mono` page 65, at 0.35 — so this ceiling excludes 0.2%
+/// of the target. It is not what was costing recall.
+///
+/// **O32: it also makes `median_area` vacuous as an acceptance rule**, because
+/// every region is clamped under 0.15 before the median is taken. That is why
+/// the promotion rule is stated in 1:1 matches and spurious-per-page instead;
+/// see `docs/superpowers/specs/2026-08-11-l2-detector-design.md` §1.
 pub(crate) const MAX_BLOCK_AREA: f32 = 0.15;
 
 /// Least ink a block may contain, as a fraction of its own area.
-/// **A starting value.**
 ///
-/// "Ink" here is the summed **bounding-box** area of the strokes inside the
-/// block, not a count of true ink pixels — `components` returns boxes, so a
-/// pixel-accurate tally is not available without giving it pixel access,
-/// which is a design change out of scope here. That makes this floor looser
-/// than true coverage: a hollow stroke (an outlined kanji, a screentone ring)
-/// or a diagonal one counts its whole box as ink even though most of the box
-/// is paper, so a block built from such strokes can clear this floor with
-/// less real ink on the page than the ratio suggests.
+/// **Measured, and measured on the right quantity — the value did not move
+/// but what it is a floor on did.** This floor used to sum the *bounding
+/// boxes* of the strokes inside a block, which double-counts every overlap:
+/// O34 in `docs/status.md` records 61 of 76 surviving blocks scoring above 1.0
+/// against a floor of 0.05, and the filter rejecting 0 blocks on 0 of 90
+/// sampled pages. It could not reject anything.
 ///
-/// It exists as a backstop against a filled box of type reading like an
-/// empty box with a drawn border. Most such borders never reach this filter —
-/// a drawn border is one connected ring, one stroke, and is already rejected
-/// by `MIN_STROKES` — so this is what catches the ones that survive that far.
+/// It now counts **ink pixels** — dark pixels at the page's own Otsu
+/// threshold, over the block's own pixel area — which is exactly the quantity
+/// `truth_population.rs::ink_fraction` measured inside 478 hand-drawn boxes,
+/// at the same threshold from the same `otsu`. That distribution is p05
+/// **0.054**, median 0.127, p95 0.303 (`docs/notes.md`, "What text is made of,
+/// measured against 480 hand-drawn boxes"), so 0.05 admits about 95% of real
+/// text boxes and the quantity is now bounded by 1.0 instead of running to
+/// 1.89.
+///
+/// *Corrected on 2026-08-12, and the correction is the point rather than a
+/// typo.* This doc comment cited a p05 of **0.050** — exactly the floor — and
+/// the constant reads as having been set to the measured p05. It was not: the
+/// p05 was printed by a line indexing `trunc(n · p)` while every other
+/// percentile in the same table indexed `round((n − 1) · p)`, one element apart
+/// at n = 478. Unified onto the second convention, this distribution's p05 is
+/// 0.054 and its p95 0.303; the median is unchanged. **`MIN_INK` is unchanged
+/// at 0.05**, and it is now a floor sitting just *below* the measured p05
+/// rather than exactly on it — so it excludes slightly fewer than 5% of real
+/// text boxes, and the "about 95%" claim survives with the coincidence gone.
+/// The old figure is left visible here rather than quietly replaced, because a
+/// constant whose justification was restated in silence is the defect this
+/// file's header exists to prevent.
+///
+/// **What that changes about which blocks it catches**, because the old
+/// wording described a different filter:
+///
+/// - It is no longer a floor on the band-passed strokes. `ink_in` reads the
+///   page, so every dark pixel inside the block counts — screentone the band
+///   dropped included. A block sitting on tone therefore scores *higher* here
+///   than its glyphs alone would, and this filter is not the one that rejects
+///   tone. `glyph_band` is.
+/// - What it does reject is a block that is mostly paper: strokes strung far
+///   enough apart that the box the smear drew around them is nearly empty.
+///   `a_sparse_diagonal_of_strokes_is_not_a_region` below is that shape, at
+///   0.044 against this floor.
+///
+/// It remains the backstop against a filled box of type reading like an empty
+/// box with a drawn border, and a drawn border is still usually gone before it
+/// — one connected ring is one stroke, rejected by `MIN_STROKES`, and at
+/// `BAND` a full-page border is dropped by `hi` before `merge_along` forms a
+/// block from it at all. The two filters describe an order of rejection, not a
+/// conflict.
 pub(crate) const MIN_INK: f32 = 0.05;
 
 /// Fewest stroke-scales a block must span on its longer side.
-/// **A starting value.**
+/// **Still a starting value**, unlike the three constants above.
 ///
 /// Expressed in strokes rather than pixels for the reason `stroke_scale`
 /// gives: the corpus spans an eightfold range of page widths.
+///
+/// **Phase 1 measured nothing this can be read off.** It measured longer
+/// sides, components per truth box, within- and between-box merge gaps and ink
+/// fraction — not the ratio this is stated in, a block's longer side over the
+/// page's own `stroke_scale`. Naming any of those distributions here would be
+/// a constant asserted as measured against a measurement of something else,
+/// which the header rules out. What has been measured about it is only how
+/// often it fires: over the 90 sampled band-free pages of
+/// `region_experiment.rs` it rejected 2 blocks on 1 page (O33).
 pub(crate) const MIN_BLOCK_STROKE_SPAN: u32 = 2;
+
+/// A component-size band, in ten-thousandths of page height.
+///
+/// Ten-thousandths because the quantities are small: phase 1 measured the
+/// inside-a-truth-box population at a median of 8 and a p95 of 141, so
+/// percent would round most of the distribution to zero.
+///
+/// Against page height rather than pixels because the corpus spans an
+/// eightfold range of page widths for editions of the same work —
+/// `stroke_scale`'s doc comment records 685 to 5343px — and screentone is
+/// printed at a fixed ruling, so a tone dot is a near-constant fraction of the
+/// printed page whatever the scan resolution. **Not the same claim as
+/// `SMEAR_K`'s**, which stays tied to the page's own strokes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Band {
+    pub lo: u32,
+    pub hi: u32,
+}
+
+/// The band `detect_page` ships with. **`lo` is fixed by Task 7's sweep, over
+/// the whole dev set** — it was provisional at 16 until 2026-08-12.
+///
+/// `band_sweep.rs` scored `detect_page_with` at eight values of `lo` over all
+/// nine labelled editions — 45 pages, 478 hand-drawn boxes — and **64 is the
+/// row the promotion rule selects**: 48 one-to-one matches at 6.73 spurious
+/// per page, the highest 1:1 of the three rows that clear the rule's ceiling of
+/// 10.7 spurious per page (the dev set's own truth-boxes-per-page). `lo = 32`
+/// scores higher on 1:1 — 57 — and is refused at 12.89 spurious per page. The
+/// whole table, losing rows included, is in `docs/notes.md`, "Where the band
+/// goes, measured at eight bands over 478 hand-drawn boxes".
+///
+/// **What this value is and is not.** It is the value that scored best under a
+/// rule fixed in advance, on a fixed 45-page dev set — a one-parameter fit,
+/// which is a mild overfit and is stated as one. It is *not* a boundary between
+/// two measured populations: phase 1 puts the outside population's p95 at 17‱
+/// and its inside median at 8‱ (`truth_population.rs`), so a cut at 64 discards
+/// most of the population a person's own boxes contain, and it wins anyway
+/// because what it removes is what welds. That is a result about the smear, not
+/// about glyph size — see `glyph_band`, which states the same limit from the
+/// other side. The 30 held-out pages are what would check it, and were not
+/// opened here.
+///
+/// `hi` is unchanged and was **not** swept — the sweep held it fixed so one
+/// parameter moved at a time. It is generous and not load-bearing: it exists to
+/// drop a panel border, which is one component spanning the whole page at
+/// ~10,000. Nothing has measured where it should sit.
+pub(crate) const BAND: Band = Band { lo: 64, hi: 2000 };
+
+/// The band that filters nothing: `detect_page_with`'s behaviour before the
+/// band existed.
+///
+/// Two callers, both of which need the *incumbent* rather than a nearly-off
+/// band. `region_experiment.rs` reproduces `docs/notes.md`'s diagnosis of the
+/// band-free detector and cross-checks its staged copy against this; the band
+/// sweep uses it as the control arm, so "the band did not help" is an outcome
+/// the sweep can actually report.
+///
+/// `#[cfg(test)]`, like `size_floor` above and `region_experiment.rs` itself:
+/// both current callers are test-gated, so leaving this compiled into the
+/// production binary would be dead code there — `cargo clippy --all-targets
+/// -- -D warnings` catches exactly that on the non-test build, since this
+/// constant has no reference outside `#[cfg(test)]` code.
+#[cfg(test)]
+pub(crate) const NO_BAND: Band = Band {
+    lo: 0,
+    hi: u32::MAX,
+};
+
+/// The components a band keeps.
+///
+/// **What this does, stated exactly, because the obvious reading is wrong.**
+/// It does *not* isolate glyphs. Phase 1 measured the population inside a
+/// hand-drawn truth box at a median longer side of 2px — **identical to the
+/// population outside one** — because a glyph shatters into stroke fragments
+/// and ringing at the Otsu threshold, and a whole glyph is rare even inside a
+/// box. No threshold separates the two. See `docs/notes.md`, "What text is
+/// made of, measured against 480 hand-drawn boxes".
+///
+/// What it does is **thin the field**. Phase 1 measured this for a fixed 4px
+/// cut over the outside population — not the fraction-of-page-height cut this
+/// function and `BAND` actually apply, which is a different cut on every page
+/// of a different height — and found it keeps about 35% of the inside
+/// population and at most 5% of the outside, taking the welding population
+/// from 903,447 components to roughly 45,000 over the 45 labelled pages.
+///
+/// **Those two percentages do not describe the cut this function now ships
+/// with, and are left here as the measurement they are rather than restated as
+/// this one.** They are for a 4px cut, which is around the outside population's
+/// directly-measured p95 of 17‱; Task 7's sweep fixed `BAND`'s `lo` at **64**,
+/// nearly four times that, so the shipped band keeps far less of *both*
+/// populations than the figures above — including most of what a person's own
+/// boxes contain. What has been measured about the shipped cut is its outcome,
+/// not its selectivity: `docs/notes.md`, "Where the band goes, measured at
+/// eight bands over 478 hand-drawn boxes", and `band_sweep.rs`. Nothing has
+/// re-counted the two populations at 64.
+///
+/// That a cut well above glyph-fragment size wins is consistent with what this
+/// function is for rather than surprising: `merge_along`'s transitive passes
+/// weld specks into a page-spanning blob because screentone is *dense*, not
+/// because it is small, so a thinner field is a weaker weld whatever the
+/// survivors are.
+///
+/// **Why this is not a third attempt at the two that were refused.** L2A Task
+/// 9 measured `above-floor` and `modal` against a bar fixed before either ran,
+/// and refused both. Both changed which components the *median scale* was
+/// taken over; neither changed which components were *smeared*. Screentone
+/// stayed in `merge_along`'s input both times, so the mechanism was never
+/// touched. This changes the smear input.
+pub(crate) fn glyph_band(strokes: &[Bounds], height: u32, band: Band) -> Vec<Bounds> {
+    if height == 0 {
+        return Vec::new();
+    }
+    strokes
+        .iter()
+        .filter(|s| {
+            let per_ten_thousand = u64::from(s.longer()) * 10_000 / u64::from(height);
+            per_ten_thousand >= u64::from(band.lo) && per_ten_thousand <= u64::from(band.hi)
+        })
+        .copied()
+        .collect()
+}
 
 /// Every text block on one page, in page fractions.
 ///
-/// Five stages: threshold, label, scale, smear, filter. The filters are what
-/// keeps a panel border and a speck of dust out, and each of them is a
-/// starting value the corpus survey settles.
+/// A thin wrapper over `detect_page_with`'s stages, fixed at `BAND` — see that
+/// function's doc comment for what actually runs, and `BAND`'s for the sweep
+/// that chose its `lo`.
 pub fn detect_page(page: &GrayImage) -> Vec<Region> {
+    detect_page_with(page, BAND)
+}
+
+/// `detect_page`, with the band as a parameter.
+///
+/// Six stages, none of them a model and none of them a new dependency:
+/// threshold (Otsu), label the connected components, band-pass them by size
+/// (`glyph_band`), take the page's own stroke scale from what the band kept,
+/// smear into blocks at a gap that is a multiple of that scale — **both ways,
+/// unioned and deduped by `uncontained`**, so one page can hold a vertical
+/// balloon and a horizontal sound effect at once — then filter what comes out.
+/// The filters are what keeps a panel border and a speck of dust out. Which of
+/// the constants along the way now cite a measurement and which are still
+/// starting values is in the module header; `BAND`'s `lo` is the one Task 7's
+/// sweep fixed, and its `hi` is not.
+///
+/// Exists so Task 7's sweep measures **this function** at several bands rather
+/// than a second copy of it that could drift — the discipline
+/// `region_experiment.rs`'s header states for `otsu`, `components`, `axis_of`
+/// and `merge_along`.
+pub(crate) fn detect_page_with(page: &GrayImage, band: Band) -> Vec<Region> {
     let (width, height) = page.dimensions();
     if width == 0 || height == 0 {
         return Vec::new();
     }
 
-    let strokes = components(page, otsu(page));
+    // `threshold` is kept rather than inlined into `components`: `ink_in`
+    // below counts ink pixels and must use the page's own Otsu level, the same
+    // one the components were labelled at, not a second cut of its own.
+    let threshold = otsu(page);
+    let strokes = components(page, threshold);
+    // The band comes first, before the scale and before the smear. The scale
+    // is meant to describe type, and the smear must never see the field it
+    // welds. See `glyph_band` for what this does and — importantly — what it
+    // does not do.
+    let strokes = glyph_band(&strokes, height, band);
     let Some(scale) = stroke_scale(&strokes) else {
         return Vec::new();
     };
     let gap = (scale * SMEAR_K).max(1);
 
-    // A block's ink is the summed bounding-box area of the strokes inside it
-    // — see `MIN_INK` for what that floor does and does not establish.
+    // Ink pixels, not summed stroke boxes. Summing boxes double-counts every
+    // overlap and so could exceed the block's own area, which is O34 and why
+    // this filter rejected nothing on any of 90 sampled pages. Counting
+    // pixels reads the page rather than the band-passed strokes, so it is
+    // bounded by the block's area by construction — see `MIN_INK` for what
+    // that does and does not now catch.
     let ink_in = |block: &Bounds| -> u64 {
-        strokes
-            .iter()
-            .filter(|s| {
-                s.x0 >= block.x0 && s.x1 <= block.x1 && s.y0 >= block.y0 && s.y1 <= block.y1
-            })
-            .map(|s| u64::from(s.width()) * u64::from(s.height()))
-            .sum()
+        let mut ink = 0u64;
+        for y in block.y0..=block.y1 {
+            for x in block.x0..=block.x1 {
+                if page.get_pixel(x, y).0[0] <= threshold {
+                    ink += 1;
+                }
+            }
+        }
+        ink
     };
     let strokes_in = |block: &Bounds| -> usize {
         strokes
@@ -562,30 +968,68 @@ pub fn detect_page(page: &GrayImage) -> Vec<Region> {
     };
 
     let page_area = f64::from(width) * f64::from(height);
-    let axis = axis_of(&strokes, gap);
 
-    merge_along(&strokes, axis, gap)
+    // Both axes, unioned. `axis_of` picks one direction for the whole page and
+    // stamps it on every region, which the L2 design records as a deviation it
+    // shipped without noting: a page carrying vertical dialogue beside a
+    // horizontal sound effect cannot report both. Smearing each way and
+    // keeping what survives lets a page hold both: `taiyaku_core::Axis`
+    // justifies storing the field on the grounds that "the clustering already
+    // knows it", and a page-wide answer stamped on every block was not that.
+    // A per-block answer is — with the one exception `uncontained` measures
+    // and states, that a block both smears produce identically has no axis to
+    // know and takes the tie-break's vertical.
+    //
+    // **This moves block counts, not only labels.** Measured over
+    // `kobayashi-v01`'s 146 pages with `taiyaku regions`: raw-mono 4,137
+    // blocks to 6,116, en-mono 4,112 to 3,997. Nothing here was tuned against
+    // the truth boxes and no scorer figure was consulted, so that is a
+    // recorded consequence rather than a claimed improvement.
+    //
+    // **Measured at the provisional `lo = 16`, before Task 7's sweep, not at
+    // the `BAND` this function ships with.** Task 5 took them at `8531d05`;
+    // `lo` moved to 64 afterwards, and dev-set spurious falls 2,473 → 303
+    // between those two bands, so these are not the shipped detector's counts
+    // and have not been re-run at 64. The claim they support is the
+    // before/after difference at one fixed band, which is unaffected. See
+    // `uncontained`'s doc comment, which carries the same pair and the same
+    // caveat.
+    //
+    // Vertical first, because `uncontained`'s tie-break keeps the earlier of
+    // two identical boxes and a single isolated stroke is exactly that case —
+    // the same answer `axis_of` gives a tie, for the same reason.
+    let mut blocks: Vec<Block> = Vec::new();
+    for axis in [Axis::Vertical, Axis::Horizontal] {
+        blocks.extend(
+            merge_along(&strokes, axis, gap)
+                .into_iter()
+                .map(|b| (b, axis)),
+        );
+    }
+
+    uncontained(&blocks)
         .into_iter()
-        .filter(|block| strokes_in(block) >= MIN_STROKES)
-        .filter(|block| block.longer() >= scale * MIN_BLOCK_STROKE_SPAN)
-        .filter(|block| {
+        .filter(|(block, _)| strokes_in(block) >= MIN_STROKES)
+        .filter(|(block, _)| block.longer() >= scale * MIN_BLOCK_STROKE_SPAN)
+        .filter(|(block, _)| {
             let area = f64::from(block.width()) * f64::from(block.height());
             area / page_area <= f64::from(MAX_BLOCK_AREA)
         })
-        .filter(|block| {
+        .filter(|(block, _)| {
             let area = f64::from(block.width()) * f64::from(block.height());
             #[expect(
                 clippy::cast_precision_loss,
-                reason = "ink_in sums each stroke's bounding-box area, filtered to \
-                          strokes inside `block`; those boxes can overlap — two \
-                          crossing diagonal strokes in one glyph is the easy case — \
-                          so the sum can exceed `block`'s own pixel area rather than \
-                          being bounded by it. Recorded as O34 in `docs/status.md`: \
-                          61 of 76 surviving blocks score above 1.0 against MIN_INK's \
-                          0.05 floor. The bound that does hold: at most \
-                          `strokes.len()` boxes, each at most page_area, so the sum \
-                          is bounded by strokes-on-page times page-area — still many \
-                          orders of magnitude below f64's 2^53 exact-integer limit; \
+                reason = "ink_in counts ink pixels inside `block`, incrementing at \
+                          most once per pixel of the rectangle it walks, so the \
+                          result is bounded by `block`'s own pixel area — which is \
+                          `area` itself, the divisor, and in turn at most page_area. \
+                          That is the bound the previous justification here said did \
+                          *not* hold, and it did not: this filter summed overlapping \
+                          stroke bounding boxes until O34 (`docs/status.md`) measured \
+                          61 of 76 surviving blocks scoring above 1.0 against a floor \
+                          of 0.05. Counting pixels makes the bound structural rather \
+                          than a property of the material, and page_area is many \
+                          orders of magnitude below f64's 2^53 exact-integer limit — \
                           see stroke_scale's doc comment above, real widths from 685 \
                           to 5343px. The lossless-From route is closed too: ink_in \
                           returns u64, and no From<u64> for f64 exists in std — only \
@@ -595,7 +1039,7 @@ pub fn detect_page(page: &GrayImage) -> Vec<Region> {
                 area > 0.0 && ink_in(block) as f64 / area >= f64::from(MIN_INK)
             }
         })
-        .map(|block| {
+        .map(|(block, axis)| {
             let x = f64::from(block.x0) / f64::from(width);
             let y = f64::from(block.y0) / f64::from(height);
             let w = f64::from(block.width()) / f64::from(width);
@@ -704,6 +1148,39 @@ mod tests {
             .iter()
             .map(|&(x0, y0, x1, y1)| Bounds { x0, y0, x1, y1 })
             .collect()
+    }
+
+    /// `glyph_band`'s own contract, pinned independently of whatever `BAND`
+    /// becomes: both `lo` and `hi` are inclusive boundaries (`>=`/`<=`, not
+    /// `>`/`<`). The `lo` boundary in particular is decision-critical for
+    /// Task 7's sweep's control arm — see `screentone_page`'s doc comment for
+    /// a fixture that landed exactly on it and passed the band as a result.
+    ///
+    /// height=1000 makes the ‱ conversion exact: `longer * 10_000 / 1000 ==
+    /// longer * 10`, so a longer side of 10 is exactly 100‱ and one of 20 is
+    /// exactly 200‱ — the band's own `lo` and `hi` below, hit precisely
+    /// rather than approximately.
+    #[test]
+    fn glyph_band_is_inclusive_at_both_ends() {
+        let band = Band { lo: 100, hi: 200 };
+        let strokes = boxes(&[
+            (0, 0, 9, 0),  // longer=10 -> 100‱, at lo
+            (0, 0, 8, 0),  // longer=9  ->  90‱, just below lo
+            (0, 0, 19, 0), // longer=20 -> 200‱, at hi
+            (0, 0, 20, 0), // longer=21 -> 210‱, just above hi
+        ]);
+        let kept = glyph_band(&strokes, 1000, band);
+        assert_eq!(
+            kept,
+            vec![strokes[0], strokes[2]],
+            "lo and hi are both inclusive boundaries"
+        );
+    }
+
+    #[test]
+    fn glyph_band_on_a_zero_height_page_is_empty() {
+        let strokes = boxes(&[(0, 0, 9, 9)]);
+        assert!(glyph_band(&strokes, 0, BAND).is_empty());
     }
 
     /// The median of the longer sides, which is a proxy for glyph size that
@@ -848,6 +1325,99 @@ mod tests {
         assert_eq!(axis_of(&boxes(&[(0, 0, 9, 9)]), 8), Axis::Vertical);
     }
 
+    /// The case the whole dedupe exists for: a column smeared the wrong way
+    /// comes back as its own pieces, each inside the block the right way
+    /// produced, and it is the pieces that must go — not the block.
+    #[test]
+    fn a_block_swallowing_pieces_from_the_other_axis_keeps_the_block() {
+        let column = Bounds {
+            x0: 10,
+            y0: 0,
+            x1: 19,
+            y1: 37,
+        };
+        let mut blocks = vec![(column, Axis::Vertical)];
+        for (y0, y1) in [(0, 9), (14, 23), (28, 37)] {
+            blocks.push((
+                Bounds {
+                    x0: 10,
+                    y0,
+                    x1: 19,
+                    y1,
+                },
+                Axis::Horizontal,
+            ));
+        }
+        assert_eq!(uncontained(&blocks), vec![(column, Axis::Vertical)]);
+    }
+
+    /// **The tie-break, checked rather than trusted.** The same box from both
+    /// axes is contained in the other *and* contains it, so "drop anything
+    /// contained in another block" drops both and the region disappears
+    /// entirely. This is what a single isolated stroke produces — it merges to
+    /// itself either way — so it is not a corner case the corpus never reaches.
+    #[test]
+    fn an_exact_duplicate_from_both_axes_keeps_one_copy_not_neither() {
+        let same = Bounds {
+            x0: 5,
+            y0: 5,
+            x1: 14,
+            y1: 14,
+        };
+        let kept = uncontained(&[(same, Axis::Vertical), (same, Axis::Horizontal)]);
+        assert_eq!(
+            kept,
+            vec![(same, Axis::Vertical)],
+            "one copy survives, and it is the earlier index"
+        );
+    }
+
+    /// Order decides a duplicate, not the axis label — `uncontained` is a
+    /// statement about boxes. Pushed the other way round, the horizontal copy
+    /// is the one that survives. `detect_page_with` pushes vertical first, so
+    /// in production this resolves the same way `axis_of` resolves a tie; that
+    /// is the caller's choice and not a rule hidden in here.
+    #[test]
+    fn a_duplicate_is_broken_on_order_not_on_axis() {
+        let same = Bounds {
+            x0: 5,
+            y0: 5,
+            x1: 14,
+            y1: 14,
+        };
+        let kept = uncontained(&[(same, Axis::Horizontal), (same, Axis::Vertical)]);
+        assert_eq!(kept, vec![(same, Axis::Horizontal)]);
+    }
+
+    /// Two blocks that overlap without either containing the other both
+    /// survive: containment is the rule, not intersection. A vertical balloon
+    /// crossing a horizontal sound effect is exactly this shape, and an
+    /// overlap-based rule would delete one of them.
+    ///
+    /// Pinned as behaviour, **not asserted to be desirable** — see limit 2 in
+    /// `uncontained`'s doc comment. A multi-line paragraph presents this same
+    /// shape, so this rule also keeps the wrong axis's strips beside the right
+    /// axis's lines, and the shipped block count rose by half on one raw
+    /// edition because of it. This test says what the rule does so that a
+    /// later change to it is a decision rather than an accident.
+    #[test]
+    fn blocks_that_merely_overlap_both_survive() {
+        let tall = Bounds {
+            x0: 10,
+            y0: 0,
+            x1: 19,
+            y1: 39,
+        };
+        let wide = Bounds {
+            x0: 0,
+            y0: 15,
+            x1: 39,
+            y1: 24,
+        };
+        let kept = uncontained(&[(tall, Axis::Vertical), (wide, Axis::Horizontal)]);
+        assert_eq!(kept, vec![(tall, Axis::Vertical), (wide, Axis::Horizontal)]);
+    }
+
     /// A page with one balloon's worth of vertical text and nothing else.
     fn page_with_a_column() -> GrayImage {
         let marks: Vec<(u32, u32, u32, u32)> =
@@ -903,10 +1473,26 @@ mod tests {
     /// stroke size or inter-cluster spacing. That independence is the whole
     /// point of the fixture; see `the_gap_does_not_grow_with_the_page` below
     /// for what it is for.
+    ///
+    /// **The marks are 24px, and were 10px until Task 7's sweep moved `BAND`'s
+    /// `lo` from 16 to 64.** A fixed pixel mark on a canvas that grows is a
+    /// *shrinking* fraction of page height, which is the one thing a band stated
+    /// in ‱ of page height must cut: 10px on the 3,000px canvas below is 33‱,
+    /// under 64, so `glyph_band` dropped every stroke and `detect_page` returned
+    /// nothing on the large page while still returning two blocks on the small
+    /// one. That is the band doing its job on a fixture whose marks had become
+    /// tone-sized in page-relative terms — a glyph on a 3,000px page is nearer
+    /// 60px, phase 1's inside p95 being 141‱ — rather than a defect in either.
+    ///
+    /// 24px is chosen against the band and not against the assertion: it is 80‱
+    /// on the 3,000px canvas, clear of `lo` on the page where the margin is
+    /// tightest. Everything else scales with it so the property below is
+    /// untouched — pitch 36 (the strokes still merge within a cluster), 72 blank
+    /// rows between the clusters (they still do not merge across).
     fn two_gapped_clusters(width: u32, height: u32) -> GrayImage {
         let marks: Vec<(u32, u32, u32, u32)> = (0..5)
-            .map(|k| (100u32, 40 + 15 * k, 10, 10))
-            .chain((0..5).map(|k| (100u32, 139 + 15 * k, 10, 10)))
+            .map(|k| (100u32, 40 + 36 * k, 24, 24))
+            .chain((0..5).map(|k| (100u32, 280 + 36 * k, 24, 24)))
             .collect();
         GrayImage::from_fn(width, height, |x, y| {
             let inked = marks
@@ -918,8 +1504,8 @@ mod tests {
 
     /// The smear gap is tied to the page's own strokes, never to its width.
     ///
-    /// `stroke_scale` is 10 on both pages — it is computed from the strokes,
-    /// which do not change — so the gap is `SMEAR_K * 10 = 20px` on both, and
+    /// `stroke_scale` is 24 on both pages — it is computed from the strokes,
+    /// which do not change — so the gap is `SMEAR_K * 24 = 48px` on both, and
     /// the clusters stay apart on both: two blocks, not one, at either size.
     /// A gap tied to page width would grow on the larger page and merge them
     /// there but not on the small one.
@@ -929,10 +1515,10 @@ mod tests {
     /// size and stroke size double together and any gap formula linear in
     /// *either* passes it; it can only catch a gap frozen as a pixel constant.
     ///
-    /// The clusters are separated by 29 rows of white — one ends at y=109, the
-    /// next begins at y=139 — but the figure that matters is **30**, because
-    /// `merge_along` bridges when `s0 <= g1 + gap`, so 30 is the smallest gap
-    /// that would weld them. It is 30 that the 20px smear gap is under.
+    /// The clusters are separated by 72 rows of white — one ends at y=207, the
+    /// next begins at y=280 — but the figure that matters is **73**, because
+    /// `merge_along` bridges when `s0 <= g1 + gap`, so 73 is the smallest gap
+    /// that would weld them. It is 73 that the 48px smear gap is under.
     #[test]
     fn the_gap_does_not_grow_with_the_page() {
         let small = two_gapped_clusters(400, 600);
@@ -972,6 +1558,15 @@ mod tests {
     /// block's box is far larger than the strokes filling it. This is the
     /// fixture `MIN_INK` exists for: pins that a block can pass every other
     /// filter and still be rejected for being mostly empty.
+    ///
+    /// **It does not pin what `MIN_INK` counts**, and says so rather than
+    /// leaving the next reader to assume it does. The marks here are solid
+    /// 6x6 squares that nowhere overlap, so their summed bounding boxes and
+    /// their true ink pixels are the same 360, and this block scores 0.044
+    /// against the 0.05 floor under either arithmetic — the one this filter
+    /// used before O34 and the one it uses now.
+    /// `a_block_of_hollow_strokes_is_mostly_paper` below is the fixture that
+    /// separates them.
     #[test]
     fn a_sparse_diagonal_of_strokes_is_not_a_region() {
         let marks: Vec<(u32, u32, u32, u32)> =
@@ -989,6 +1584,71 @@ mod tests {
         );
     }
 
+    /// A column of six 100x100 marks on a 110px pitch, drawn either as solid
+    /// squares or as 1px-thick outlines.
+    ///
+    /// The two pages are identical to every stage of the detector except the
+    /// ink filter: the same six components, the same bounding boxes, the same
+    /// `stroke_scale` of 100, the same single 100x650 block. Only the pixels
+    /// inside the outlines differ.
+    fn page_of_marks(hollow: bool) -> GrayImage {
+        GrayImage::from_fn(800, 1200, |x, y| {
+            let inked = (0..6).any(|k| {
+                let (x0, y0) = (100u32, 100 + 110 * k);
+                let inside = x >= x0 && x < x0 + 100 && y >= y0 && y < y0 + 100;
+                let edge = x == x0 || x == x0 + 99 || y == y0 || y == y0 + 99;
+                inside && (!hollow || edge)
+            });
+            Luma([if inked { 0 } else { 255 }])
+        })
+    }
+
+    /// **The fixture that pins what `MIN_INK` counts**, which is the change
+    /// O34 asked for and which no fixture in this file could previously fail.
+    ///
+    /// Both pages produce one 100x650 block holding six components: 65,000
+    /// pixels of block, and six stroke boxes of 10,000 each. Summing those
+    /// boxes — what this filter did before — gives 60,000/65,000 = 0.92 on
+    /// *both* pages, so the old arithmetic admitted both. Counting ink pixels
+    /// separates them: the solid marks are 60,000 pixels of ink and still
+    /// score 0.92, while the outlines are 396 pixels each — 2,376 in total,
+    /// 0.037 — and fall under the 0.05 floor.
+    ///
+    /// The paired assertion is the point. Asserting only that the hollow page
+    /// comes back empty would pass if any *other* filter rejected it, and this
+    /// file already carries fixtures that pass for the wrong reason (see O33).
+    /// The solid page differs in nothing but ink and comes back as one region,
+    /// so ink is the only thing that can be doing the rejecting.
+    #[test]
+    fn a_block_of_hollow_strokes_is_mostly_paper() {
+        let solid = detect_page(&page_of_marks(false));
+        assert_eq!(solid.len(), 1, "solid marks are one block, got {solid:?}");
+        let hollow = detect_page(&page_of_marks(true));
+        assert!(
+            hollow.is_empty(),
+            "outlines are mostly paper, got {hollow:?}"
+        );
+    }
+
+    /// One 4px mark alone on a 400x600 page. It is one component, and
+    /// `MIN_STROKES` wants four.
+    ///
+    /// **It clears the band by two ten-thousandths, and the empty-page
+    /// assertion cannot tell the difference.** 4px on a 600px page is 66‱ of
+    /// page height, against `BAND`'s `lo` of 64 — so the speck reaches
+    /// `MIN_STROKES` today and is refused there, which is what this fixture is
+    /// for. Any upward move of `lo` drops it at `glyph_band` instead, and
+    /// `detect_page` still returns nothing, and this test still passes while
+    /// pinning the band rather than the constant it is named for. That is the
+    /// vacuous-fixture shape O33 records and `1173466` fixed twice already.
+    ///
+    /// The first assertion is the guard, in the shape
+    /// `a_field_of_screentone_is_not_a_region` uses below: it fails loudly if
+    /// the speck stops reaching the filters. Kept at 4px rather than grown
+    /// clear of the band, because a mark with comfortable margin at any
+    /// plausible `lo` is 8px — 133‱, against phase 1's inside p95 of 141 — and
+    /// that is a glyph, not a speck. The fixture is named for what it is; the
+    /// assertion is what keeps it that.
     #[test]
     fn a_lone_speck_is_not_a_region() {
         let speck = GrayImage::from_fn(400, 600, |x, y| {
@@ -998,7 +1658,85 @@ mod tests {
                 255
             }])
         });
+        assert_eq!(
+            glyph_band(&components(&speck, otsu(&speck)), 600, BAND).len(),
+            1,
+            "fixture must bite: the speck must survive the band and reach \
+             MIN_STROKES, or this test pins the band instead"
+        );
         assert!(detect_page(&speck).is_empty());
+    }
+
+    /// A page-sized field of screentone: 2px dots on a 5px lattice, over a
+    /// canvas the size of a real scan.
+    ///
+    /// Sized deliberately. The outside population's own ‱ percentiles,
+    /// measured directly over the 45 labelled corpus pages, are p05=3 p25=4
+    /// med=6 p75=6 p95=17 (`docs/notes.md`, "What text is made of, measured
+    /// against 480 hand-drawn boxes"); 2px on 2400 is 8, inside that range
+    /// rather than at its edge. The earlier fixture used 2px on 1200 — 16‱, at
+    /// the outside population's own p95 rather than its middle — which is why
+    /// it exercised nothing **against the `lo` of 16 that shipped at the
+    /// time**: `glyph_band` keeps a component whose per-ten-thousand is `>=
+    /// lo`, so a 16‱ dot landed exactly on the boundary and passed the band
+    /// instead of being dropped by it. Task 7's sweep has since moved `lo` to
+    /// 64, which would drop that dot too — so the fixture is sized off the
+    /// measured population rather than off whatever `BAND` currently is, and
+    /// the assertion below is what pins the behaviour either way.
+    fn screentone_page(width: u32, height: u32, glyphs: &[(u32, u32, u32, u32)]) -> GrayImage {
+        GrayImage::from_fn(width, height, |x, y| {
+            let dot = x % 5 < 2 && y % 5 < 2;
+            let glyph = glyphs
+                .iter()
+                .any(|&(x0, y0, w, h)| x >= x0 && x < x0 + w && y >= y0 && y < y0 + h);
+            Luma([if dot || glyph { 0 } else { 255 }])
+        })
+    }
+
+    /// A page of nothing but screentone must produce no region.
+    ///
+    /// **This fixture bites**, which the one it replaces did not. Without the
+    /// band, `stroke_scale` is 2 and the gap 4, and a 5px lattice merges along
+    /// a column — a dot ends at x=1 and the next begins at x=5, and
+    /// `merge_along` bridges when `s0 <= g1 + gap` — so each column of tone
+    /// smears into one full-height strip that clears every filter and comes
+    /// back as a region. Hundreds of them. With the band, every dot is 8‱ and
+    /// drops before the smear ever runs.
+    ///
+    /// Note what it does *not* claim: a square lattice does not weld
+    /// page-wide, because `merge_along` also requires overlap *across* the
+    /// axis and adjacent columns have none. Real screentone welds across
+    /// because a real halftone is rotated and irregular. This fixture
+    /// reproduces the regions, not that mechanism.
+    #[test]
+    fn a_field_of_screentone_is_not_a_region() {
+        let page = screentone_page(1600, 2400, &[]);
+        assert!(
+            !detect_page_with(&page, NO_BAND).is_empty(),
+            "fixture must bite: without the band this page must produce regions"
+        );
+        let found = detect_page(&page);
+        assert!(found.is_empty(), "got {} regions", found.len());
+    }
+
+    /// Screentone under a column of glyphs must not take the glyphs with it.
+    ///
+    /// The band drops the tone and keeps the lettering, so the column comes
+    /// back as one region. Without the band this returns many — the tone
+    /// strips above, plus whatever the column merges into — so the assertion
+    /// on the count is what bites, not the assertion on the height.
+    #[test]
+    fn glyphs_survive_a_screentone_background() {
+        let marks: Vec<(u32, u32, u32, u32)> =
+            (0..8).map(|k| (200u32, 200 + 80 * k, 40, 40)).collect();
+        let page = screentone_page(1600, 2400, &marks);
+        assert!(
+            !detect_page_with(&page, NO_BAND).is_empty(),
+            "fixture must bite: without the band this page must produce regions"
+        );
+        let found = detect_page(&page);
+        assert_eq!(found.len(), 1, "one block, got {found:?}");
+        assert!(found[0].h > 0.2, "spans the column, got {}", found[0].h);
     }
 
     /// Two balloons a long way apart stay two regions. A detector that merged
@@ -1016,5 +1754,33 @@ mod tests {
             Luma([if inked { 0 } else { 255 }])
         });
         assert_eq!(detect_page(&page).len(), 2);
+    }
+
+    /// A vertical column beside a horizontal line must come back as two
+    /// regions carrying different axes. One axis per page cannot express
+    /// this, and no count can observe the difference — which is why the L2
+    /// design's own correction names it and why this test is geometric.
+    #[test]
+    fn a_column_beside_a_row_keeps_both_axes() {
+        let column: Vec<(u32, u32, u32, u32)> =
+            (0..6).map(|i| (80u32, 100 + i * 60, 40, 40)).collect();
+        let row: Vec<(u32, u32, u32, u32)> =
+            (0..6).map(|i| (500u32 + i * 60, 700, 40, 40)).collect();
+        let marks: Vec<_> = column.into_iter().chain(row).collect();
+        let page = GrayImage::from_fn(1000, 1400, |x, y| {
+            let inked = marks
+                .iter()
+                .any(|&(x0, y0, w, h)| x >= x0 && x < x0 + w && y >= y0 && y < y0 + h);
+            Luma([if inked { 0 } else { 255 }])
+        });
+        let found = detect_page(&page);
+        assert_eq!(found.len(), 2, "got {found:?}");
+        let mut axes: Vec<Axis> = found.iter().map(|r| r.axis).collect();
+        axes.sort_by_key(|a| format!("{a:?}"));
+        assert_eq!(
+            axes,
+            vec![Axis::Horizontal, Axis::Vertical],
+            "got {found:?}"
+        );
     }
 }

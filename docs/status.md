@@ -75,7 +75,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 715 tests, plus 1,306 in `web/`'s TypeScript — 963 in the `node`
+Five crates, 727 tests, plus 1,306 in `web/`'s TypeScript — 963 in the `node`
 project and 343 in the `jsdom` one — and sixteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -91,7 +91,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Seventeen of the 715 are standing checks gated on
+`rayon` exactly as `align` already did. Seventeen of the 727 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs`, three in
 `crates/taiyaku-serve/src/corpus.rs` and four in
 `crates/taiyaku-cli/src/score_corpus.rs` — one of which also needs
@@ -122,9 +122,24 @@ the unit tests are what exercise those and `--corpus-debug` puts the corpus
 checks back under them; `docs/ci.md`, "Two profiles, and the gate that took an
 hour", is the record.
 
-**Two further tests are gated on `TAIYAKU_CORPUS` and are deliberately not among
-those twelve.** Both are one-off measurements rather than checks, and both are
-built the same way for the same reason.
+**Four further tests are gated on `TAIYAKU_CORPUS` and are deliberately not
+among those twelve.** All four are one-off measurements rather than checks, and
+all four are built the same way for the same reason: gated, skipping cleanly
+when the variable is unset, calling `detect.rs`'s own functions rather than
+copies of them, and asserting only that they measured something — never a
+quality figure, because a check that fails when the thing it measures improves
+is not a measurement. Two are described below; the other two are L2b's, and are
+`crates/taiyaku-cli/src/truth_population.rs`, which measures what text is made
+of from inside 478 hand-drawn truth boxes, and
+`crates/taiyaku-cli/src/band_sweep.rs`, which scores the detector at eight
+values of `BAND`'s `lo` over all 45 labelled pages and is what fixed it. Both
+read their pages through `score::resolve_labelled`, so they measure exactly the
+pages `taiyaku score` scores. `notes.md`, "What text is made of, measured
+against 480 hand-drawn boxes" and "Where the band goes, measured at eight bands
+over 478 hand-drawn boxes", are what each one printed. The band sweep is about
+51 seconds under `--release`: it detects all eight bands inside one decode pass,
+where re-entering the decode per band would be 360 full-resolution decodes to
+score 45 pages.
 
 `crates/taiyaku-cli/src/region_experiment.rs` is L2a's: why the text-block
 detector fails, run against real pages. It prints, per sampled page, the
@@ -156,9 +171,12 @@ measurement rather than becoming a check: it asserts only that it measured
 something — a non-empty sample, a search that found a minimum in every volume,
 every residual finite — so that a glob matching no volume cannot print an empty
 table and pass, which is the one failure a measurement must not have.
-`check-all.sh` reaches neither of these two — its corpus job filters on
+`check-all.sh` reaches none of these four — its corpus job filters on
 `corpus::`, and its `test` job now runs with `TAIYAKU_CORPUS` removed from the
-environment — so the twelve above are still twelve. That second half is new:
+environment — so the twelve above are still twelve. All four are excluded from
+the per-file coverage floor by name, in the `--ignore-filename-regex` that
+appears twice in `check-all.sh` and twice in `ci.yml`; a gated experiment that
+skips in CI would otherwise report near-zero coverage and fail the floor. That second half is new:
 until 2026-08-08 the `test` job inherited the variable and ran both of these in
 **debug**, which is how a gate run came to be killed at 1h09m inside
 `geometry_experiment` alone. This one also wants `--release`, under which it
@@ -641,6 +659,59 @@ proposals to 45. Any candidate that proposes roughly one region per text run
 improves both promotion terms at once, which makes this a cheap number to beat
 and an honest one to be measured against.
 
+**The L2b candidate has now been measured against that floor and is promoted:
+48 of 478, at 6.73 spurious per page.** It is three changes to `detect_page`,
+not one — a component-size band before the smear, a two-axis smear unioned and
+deduped instead of one axis chosen per page, and `MIN_INK` counting ink pixels
+instead of summed stroke bounding boxes — and its band was fixed by a sweep over
+the same 45 pages rather than chosen. Both figures are sums over all nine
+editions:
+
+| outcome | incumbent | candidate |
+| --- | ---: | ---: |
+| 1:1 | 2 | **48** |
+| merged | 47 | 73 |
+| split | 0 | 152 |
+| fragment | 0 | 81 |
+| missed | **429** | 124 |
+| spurious | 3 (0.07/page) | 303 (**6.73**/page) |
+
+**The verdict, stated against the rule fixed on 2026-08-11 rather than against
+the outcome:** a candidate is promoted only if it increases 1:1 *and* keeps
+spurious-per-page at or under the dev set's own 10.7 truth boxes per page, ties
+to the incumbent. Term 1 is 48 against 2. Term 2 is 6.73 against 10.7. **Both
+pass, so it is promoted** — the first candidate on this problem that has been,
+after two refusals under rules fixed the same way.
+
+**The band was swept, and the losing rows are the deliverable as much as the
+winner.** Eight values of `BAND`'s `lo` were scored over all 45 pages;
+spurious-per-page falls monotonically from 294.40 to 0.42 across them while 1:1
+peaks at `lo = 32` and falls away. `lo = 32` finds the most 1:1 matches of any
+row — **57, nine more than the promoted band** — and is refused at 12.89
+spurious per page. The whole table is in `notes.md`, "Where the band goes,
+measured at eight bands over 478 hand-drawn boxes", and `band_sweep.rs`
+reproduces it.
+
+**What is promoted is still a detector that does not work, and the failure has
+inverted rather than closed.** The largest column is no longer `missed` (124)
+but `split` (152), with 81 fragments beside it: 233 of 478 boxes now carry a
+prediction of the wrong shape, where the incumbent carried none at all. 48 of
+478 is 10%, against phase 1's geometric ceiling of about 354 of 478 for any
+smear-based detector. **Per kind, every dialogue hit is on an English edition** —
+43 of 389 dialogue boxes overall, and 0 of 38, 0 of 40, 0 of 45 and 0 of 44 on
+the four Japanese raw-mono editions — with 5 of 63 sound effects and nothing at
+all among the 26 logo, credits, narration and other boxes. Vertical Japanese type
+in a balloon is not being found. That per-kind split is the evidence the L2
+design defers its C2 question (balloon-interior detection) to, which is why it is
+recorded beside the total rather than under it.
+
+**And `lo = 64` is not a boundary between two measured populations.** Phase 1 put
+the outside population's p95 at 17‱ of page height and the inside population's
+median at 8‱; the promoted cut is nearly four times the former and discards most
+of what a person's own boxes contain. It wins anyway, because what it removes is
+what welds — a result about the smear rather than about glyph size. 8 and 16 were
+both swept and both lose.
+
 **The cause is measured rather than guessed, and it is not the one that was
 predicted.** The scale every gap is built from, `stroke_scale`, is the median
 longer side over every ink component on the page — and 63% to 96% of those
@@ -875,9 +946,10 @@ up by reading a file closely enough to write tests for it, or turned up while
 reading the code around a line a tool had pointed at, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Thirty are now closed
+visible act rather than a thing someone remembers. **Thirty-one are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25, O26, O27, O28, O29, O30, O35, O36, O37, O38 and O39 — leaving nine.**
+O21, O22, O25, O26, O27, O28, O29, O30, O34, O35, O36, O37, O38 and O39 —
+leaving eight.**
 
 Three of those closed the same day they opened, which the "judged not worth
 blocking on" framing above does not fit: O35, O36 and O37 were found by the
@@ -921,10 +993,10 @@ each is in the detail below; the table is what a reader scans.
 | O28 | [x] | A forward arrow on the last group's second slot moves backward | `pairing.ts::stepToGroup` | credits-panel arrow simulation |
 | O29 | [x] | A failed `--write` names a temp path the caller never typed | `atomic.rs::write` | O26's corpus drive |
 | O30 | [x] | A relative `TAIYAKU_CORPUS` skipped every standing check and reported `ok` | `corpus.rs::corpus`, `corpus.rs::corpus_root` | O26's corpus drive |
-| O31 | [ ] | The text-block axis is decided per page, where the design says per cluster — so a page cannot report vertical dialogue beside a horizontal SFX, and the survey's `v`/`h` figures are per-page decisions counted per block | `detect.rs::detect_page` | L2a whole-branch review |
-| O32 | [ ] | The `median_area` disqualifier cannot fire — `MAX_BLOCK_AREA` clamps every region under it before the median is taken | `detect.rs::detect_page`, `regions.rs::median_area` | L2a whole-branch review |
+| O31 | [ ] | The text-block axis is decided per page, where the design says per cluster — so a page cannot report vertical dialogue beside a horizontal SFX, and the survey's `v`/`h` figures are per-page decisions counted per block — *all three of those consequences are addressed by L2b Task 5 (`8531d05`): `axis_of` is `#[cfg(test)]`, `detect_page_with` unions both axes and dedupes with `uncontained`, and `region_experiment::summarize` counts per surviving block. **Open on what replaced them**: where both smears produce an identical box the axis reported is the dedupe tie-break's default rather than a measurement — 13 of 69 blocks changed label on an unchanged box over the 90-page sample — so `Region::axis` is still not "what the clustering knows", which is what this item tracks* | `detect.rs::detect_page_with`, `detect.rs::uncontained`'s tie-break | L2a whole-branch review |
+| O32 | [ ] | The `median_area` disqualifier cannot fire — `MAX_BLOCK_AREA` clamps every region under it before the median is taken | `detect.rs::detect_page_with`, `regions.rs::median_area` | L2a whole-branch review |
 | O33 | [ ] | Two of the five detection constants reject nothing in any test, so a computation bug in either would ship unseen — *the gap is in the tests and stays open; against the corpus `MAX_BLOCK_AREA` fires on 89 of 90 pages and `MIN_BLOCK_STROKE_SPAN` on 1* | `detect.rs`, the `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` filters | L2a whole-branch review |
-| O34 | [ ] | `MIN_INK` cannot reject anything on real material — it sums overlapping stroke bounding boxes, so 61 of 76 surviving blocks score above 1.0 against a floor of 0.05, and it rejected 0 blocks on 0 of 90 sampled pages | `detect.rs::detect_page`, the `MIN_INK` filter | the survivor-composition measurement |
+| O34 | [x] | `MIN_INK` cannot reject anything on real material — it sums overlapping stroke bounding boxes, so 61 of 76 surviving blocks score above 1.0 against a floor of 0.05, and it rejected 0 blocks on 0 of 90 sampled pages — *closed by `aa0b479` (L2b Task 6) taking the first of the two routes this item named: it counts ink pixels at the page's own Otsu threshold, so the quantity is bounded by the block's own area by construction rather than by the material, and the ratio across the same sample fell from 0.38–1.89 to 0.09–0.56. It now rejects: 16 spurious blocks over the nine labelled editions, spurious-per-page 55.31 → 54.96. **Band-free it still rejects nothing on the 90 sampled pages** — the filter is live in the shipped, banded detector and not in the population `region_experiment.rs` samples* | `detect.rs::detect_page_with`, the `MIN_INK` filter and `ink_in` | the survivor-composition measurement |
 | O35 | [x] | A `PUT` response with no `ETag` turns every later note write into a silent no-op — the same "write without a validator" hole the 412 path was fixed for, left open on the response path — *closed on the branch that found it (178f3e5): the guard became `writeGate` with three arms — `wait` (no document, the only silent one), `refuse` (document but no validator, carrying a notice), `write` — after the correct-behaviour test was watched failing against a faithful port* | `api.ts::putNotes`, `App.tsx::writeNotes`'s `notesEtag === undefined` guard | coverage-gate reading |
 | O36 | [x] | The two write debounces are never cancelled on unmount, so an unmounted `App` can still `PUT` up to 700 ms later — *a two-line fix, not an impossibility: `useFlushOnHide`'s cleanup already exists and `debounce` already exposes `cancel()`* — *closed on the branch that found it (4303dee): `useFlushOnHide`'s cleanup now flushes both, decided per call site: cancelling `writeProgress` drops the last page turn, cancelling `saveNotes` destroys up to 700 ms of prose that exists nowhere else* | `App.tsx`'s `writeProgress`/`saveNotes` handles, `hooks.ts::useFlushOnHide` | coverage-gate reading |
 | O37 | [x] | `reviewNotes`'s doc comment describes an arm of `toggleReview` no key can reach — it claims `a` closes the editor mid-edit, which `keyplan.ts` refuses; the code is right and the comment is wrong — *closed on the branch that found it (f4047b7): corrected, and the same wrong claim in `notes.ts` with it in `7cab6ec`* | `App.tsx::reviewNotes`'s doc comment | coverage-gate reading |
@@ -2176,6 +2248,32 @@ wrong population:
   nominally correct" is pages, not the 148–402 blocks the table shows: the
   evidence is coarser than it reads. Shipped without being recorded as a
   deviation, which the design now corrects in place.
+  **All three consequences are addressed, and the item stays open on what
+  replaced them.** L2b Task 5 (`8531d05`) smears both axes, unions the results
+  and drops what `detect::uncontained` drops. `axis_of` is now `#[cfg(test)]`
+  and no longer reached by the detector at all; `detect_page_with` carries the
+  axis on the block rather than the page, so a page can report a vertical
+  balloon beside a horizontal sound effect, and no page is smeared end to end
+  on one resolved direction; and `region_experiment::summarize` counts `v`/`h`
+  over surviving blocks, so those figures are block counts of block decisions.
+  The paragraph above describes code the branch deleted, and is kept as written
+  in the present tense of when it was true.
+  **What keeps it open is a residue the branch measured, not a leftover of the
+  old design.** Where both smears produce an *identical* box, both joined the
+  same strokes identically and there is no axis to discover: the label reported
+  is `uncontained`'s tie-break default — the earlier index, which is
+  `Axis::Vertical` given the order `detect_page_with` pushes them in — rather
+  than a measurement. That is not a corner case. Over the 90 band-free corpus
+  pages `region_experiment.rs` samples, 69 blocks survive both before and after
+  the change and **13 of them changed axis**, all horizontal to vertical, every
+  one on a block whose box, stroke count, median stroke and ink are identical
+  in the two runs; the sample's v/h split moved 55/21 to 65/8.
+  `uncontained`'s own doc comment states and bounds this. So the design's §1
+  justification for storing `axis` on a region — "the clustering already knows
+  it" — is still not true of every region, which is the claim this item exists
+  to track. **What would close it:** an axis decided by something the
+  clustering measures on a duplicate box, or a `Region::axis` able to say it
+  does not know.
 - **O32 — The `median_area` disqualifier cannot fire. Open.** The L2 design
   names two absolute disqualifiers for a detector, one of them "median region
   area > 0.15 of the page". `MAX_BLOCK_AREA` discards any block above 0.15
@@ -2189,6 +2287,20 @@ wrong population:
   rule has one live disqualifier rather than the two its wording implies, and
   that is the reason this is tracked rather than left as a curiosity — it
   governs a decision nobody has made yet.
+  **Narrowed, not closed, by L2b.** The decision it governed has since been
+  made: Task 7 promoted the first candidate under a rule stated entirely in 1:1
+  matches and spurious-per-page, which never consults `median_area` — so the
+  disqualifier being vacuous cost that decision nothing, and `MAX_BLOCK_AREA`'s
+  own doc comment now records why the rule is written that way. Two further
+  measurements bear on it and neither closes it: exactly **1 of 478** hand-drawn
+  truth boxes exceeds 0.15 of the page (a full-page sound effect on
+  `kobayashi-v01/raw-mono` p65, at 0.35), so the ceiling excludes 0.2% of the
+  target and was never what cost recall; and against the corpus the filter fires
+  on 89 of 90 sampled pages, so it is doing real work rather than sitting inert.
+  **The code defect this item names is untouched** — every surviving region is
+  still clamped under 0.15 before the median is taken, and the fix named above
+  has not been written — so it stays open on its own terms rather than being
+  ticked because the decision it was blocking went ahead without it.
 - **O33 — Two of the five detection constants reject nothing in any test.
   Open.** `MIN_STROKES` and `MIN_INK` are each pinned by a fixture that reaches
   them and is refused by them. `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` are
@@ -2196,6 +2308,17 @@ wrong population:
   `MIN_STROKES` first, and the blocks that do survive sit at 0.015 against a
   0.15 cap and 180 against a span of 40 — so a factor-of-several error in either
   computation would ship green. Both were hand-checked and are correct today.
+  *Half of that sentence is no longer true, corrected here on 2026-08-12 rather
+  than rewritten: the **panel border** is not rejected by `MIN_STROKES` any
+  more.* Since Task 4 put the band before the smear, a 400×600 border is one
+  component spanning the whole page at 10,000‱ and `BAND`'s `hi` of 2,000 drops
+  it at `glyph_band`, before `stroke_scale` is reached and before any block
+  exists for `MIN_STROKES` to count. `MIN_INK`'s own doc comment states this
+  correctly and this entry did not. The item is unaffected — the border is
+  still rejected before `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` see it,
+  which is what the entry is about — only the named rejecter moves, and the
+  lone-speck fixture is still `MIN_STROKES`'s (by 2‱ of band margin, which
+  `a_lone_speck_is_not_a_region` now asserts rather than assumes).
   **One further trap worth recording rather than discovering later:**
   `MIN_INK`'s own fixture merges at *exactly* the smear threshold, so a future
   `SMEAR_K` below 2 leaves its strokes unmerged, rejected by `MIN_STROKES`
@@ -2213,9 +2336,10 @@ wrong population:
 **One came from asking a diagnosis about the case it did not explain** — O34,
 found by the measurement that answered why the noisiest edition was the only
 one clearing the detector's bar, and not blocking for the same reason O31 to
-O33 are not:
+O33 are not. It has since closed, on the redesign it was waiting for:
 
-- **O34 — `MIN_INK` cannot reject anything on real material. Open.** It is
+- **O34 — `MIN_INK` cannot reject anything on real material. Closed by
+  `aa0b479`.** It was
   written as a floor of 0.05 on a block's ink over its own area, and its
   "ink" is the summed **bounding-box** area of the strokes inside — which its
   own doc comment already flags as looser than true coverage. Measured, that
@@ -2228,10 +2352,29 @@ O33 are not:
   through today (the filtering is being done by `MAX_BLOCK_AREA`, which fires
   on 89 of 90 pages, and `MIN_STROKES`, which fires on 21), it is that a
   redesign counting on four backstops has two that do anything.
-  **What would close it:** either a true ink count, which needs pixel access
-  `components` does not currently hand back, or removing the filter and saying
-  so. Both are decisions for the detector's redesign rather than now, which is
-  why this is tracked rather than fixed — the same reasoning O31 and O32 carry.
+  **What closed it:** the first of the two routes this item named — a true ink
+  count. `detect_page_with` keeps the page's own Otsu threshold rather than
+  inlining it into `components`, and `ink_in` counts dark pixels inside the
+  block against the block's own pixel area, which is the same quantity
+  `truth_population.rs::ink_fraction` measured inside 478 hand-drawn boxes at the
+  same threshold. The bound is now structural instead of a property of the
+  material: a count incremented at most once per pixel of the rectangle it walks
+  cannot exceed that rectangle's area, so the `#[expect]` on that filter carries
+  a bound that holds where the old one did not. Across the same 90-page sample
+  the ratio fell from 0.38–1.89 to **0.09–0.56**, and 61 blocks above 1.0 became
+  none.
+  **What it rejects now, measured rather than assumed, including the half that
+  did not move.** Over the nine labelled editions it rejects 16 spurious blocks,
+  taking spurious-per-page from 55.31 to 54.96 — live, but not where the
+  precision problem is. **Band-free it still rejects nothing on any of the 90
+  sampled pages**, which is the population `region_experiment.rs` measures: at
+  0.09–0.56 nothing there comes near 0.05 from above. So the filter is doing work
+  in the shipped detector and none in the band-free one, and the item is closed
+  on the first of those rather than on both. What it catches is a block that is
+  mostly paper — strokes strung far enough apart that the box the smear drew
+  around them is nearly empty — and not screentone, which `glyph_band` removes
+  upstream; `MIN_INK`'s own doc comment states that distinction, because the
+  wording this item was opened against described a different filter.
 
 **O35 to O37 came from the coverage branch, and none of them was introduced by
 it.** They are what reading a file closely enough to write tests for it turns
@@ -2982,7 +3125,7 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the nine open items tabled above — seven of them found by a
+What remains: the eight open items tabled above — seven of them found by a
 whole-branch review, now that O1 (found by one, closed by removing the round
 trip its own entry was arguing about), O12 (carried rather than found), O14
 (found by one, closed by M5b), O26 (found by one, closed on its own branch),
@@ -2993,10 +3136,11 @@ write tests for it, and closed on that same branch), O38 (found by a probe
 beside the survivors, closed on a branch of its own with the corpus drive its
 entry asked for) and O39 (found beside the same survivors, closed by a
 per-test `slow-timeout` and a job-level `timeout-minutes`, both sized from a
-measurement) are all out of the count.
-Two are the exceptions: O23, turned up by measuring what a new surface produced
-against the corpus rather than by reviewing a branch; and O34, turned up by asking a
-diagnosis about the one case it could not explain.
+measurement) and O34 (turned up by asking a diagnosis about the one case it
+could not explain, closed by L2b Task 6 counting ink pixels) are all out of the
+count.
+One is the exception: O23, turned up by measuring what a new surface produced
+against the corpus rather than by reviewing a branch.
 **Every milestone M5 named has now shipped.**
 
 *This paragraph said "the five open items" until 2026-08-08, having missed
@@ -3031,6 +3175,17 @@ Each would sharpen an instrument that is measuring the wrong population, so
 none is worth fixing before the detector is redesigned — and what that
 redesign has to account for is now measured rather than assumed: see the two
 mechanism corrections under "What is known to be wrong or missing".
+*The redesign has since happened, and it closed one of the four: O34, by
+counting ink pixels. The other three are still open and still held together —
+O32's own fix is unwritten (the decision it was blocking was made under a rule
+that never consults `median_area`, which narrows it without closing it), the gap
+O33 names is in the tests, and O31's per-page axis was replaced by a two-axis
+union on the L2b branch. **O31's entry has since been rewritten against that
+change rather than left describing deleted code** (2026-08-12): all three of
+its consequences are addressed, and it stays open on the residue the union
+introduced — a block both smears produce identically has no axis to discover
+and takes the dedupe tie-break's default, which is 13 of 69 blocks over the
+90-page sample. See each entry above.*
 
 **Three more were the reader's, and they are closed rather than open** — O35,
 O36 and O37 were each a decision plus a few lines, and the branch that found

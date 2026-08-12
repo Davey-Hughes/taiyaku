@@ -338,6 +338,152 @@ which editions to draw — which is where a run of this command starts.
 ///
 /// Follows `regions::command` step for step — it is the closest sibling and
 /// already carries the reasoning for each guard.
+/// One edition's labelled pages, resolved and ready to decode.
+///
+/// Extracted from `command` so `truth_population.rs` measures **the same pages
+/// this command scores**. A measurement taken on a different page set than the
+/// score is a defect nothing would catch: both would print plausible numbers.
+///
+/// `truth` and `pages` are parallel and ascending. `pages` is undecoded bytes
+/// rather than `GrayImage`, because `decode_all` bounds memory by decoding
+/// large pages one at a time and the corpus holds 430 MB TIFFs.
+pub(crate) struct Labelled {
+    pub truth: Vec<Vec<taiyaku_core::TruthRegion>>,
+    pub pages: Vec<taiyaku_read::Page>,
+}
+
+pub(crate) fn resolve_labelled(
+    sidecar: &str,
+    members: &[std::path::PathBuf],
+) -> Result<Labelled, String> {
+    // Read and parse before a single page is decoded.
+    let text = std::fs::read_to_string(sidecar).map_err(|e| format!("{sidecar}: {e}"))?;
+    let doc = taiyaku_core::Sidecar::from_json(&text)?;
+
+    // A missing truth document is an error naming the path, not an empty
+    // report. Scoring against no labels would print perfect precision and zero
+    // recall, which reads like a broken detector rather than a missing file.
+    let truth_path = taiyaku_core::TruthDoc::path_beside(std::path::Path::new(sidecar));
+    let truth_text = std::fs::read_to_string(&truth_path).map_err(|e| {
+        format!(
+            "{}: {e} — nothing has been labelled here",
+            truth_path.display()
+        )
+    })?;
+    let truth = taiyaku_core::TruthDoc::from_json(&truth_text)?;
+
+    // Content, not order: the sorted sha256 set identifies the edition, so the
+    // order these were typed in does not matter for identification.
+    let mut digests = Vec::new();
+    for member in members {
+        digests.push(taiyaku_read::member_digest(member)?);
+    }
+    let edition = crate::edition_of_digests(&doc, sidecar, &digests)?;
+
+    let Some(labelled) = truth.editions.get(&edition) else {
+        return Err(format!(
+            "{} holds no labels for edition `{edition}`",
+            truth_path.display()
+        ));
+    };
+
+    // `docs/sidecar.md` rule 1 is normative: the matched edition's own
+    // `members` array *is* the page order and must not be re-sorted. Paths are
+    // relative to the sidecar and may point into unrelated trees, so their
+    // names need not sort into reading order at all. This is the block
+    // `regions::command` carries at `regions.rs:201-218`; it is restated
+    // rather than shared because that one is inline in a longer function.
+    let target = doc
+        .editions
+        .get(&edition)
+        .expect("edition_of_digests matched an edition of this document");
+    let by_digest: std::collections::BTreeMap<&str, &std::path::PathBuf> = digests
+        .iter()
+        .zip(members)
+        .map(|(sha256, path)| (sha256.as_str(), path))
+        .collect();
+    let mut ordered_members: Vec<std::path::PathBuf> = Vec::new();
+    let mut ordered_digests: Vec<String> = Vec::new();
+    for member in &target.members {
+        ordered_members.push(
+            (*by_digest
+                .get(member.sha256.as_str())
+                .expect("edition_of_digests matched this exact set of digests"))
+            .clone(),
+        );
+        ordered_digests.push(member.sha256.clone());
+    }
+
+    // Labels drawn on a replaced archive put a box on the wrong art on the
+    // *right* page, which is harder to notice than a wrong page.
+    //
+    // Against `ordered_digests` — the edition's own member order — and not
+    // against `digests`, which is argv order. `edition_of_digests` above
+    // matched by *sorted set*, deliberately, so that the order these were
+    // typed in does not decide which edition they are; `is_stale_for` compares
+    // element-wise, deliberately, because content-in-order is what says the
+    // labels describe these pages. Feeding argv order to an element-wise
+    // comparison makes the two rules contradict each other, and a shell glob
+    // is exactly where they disagree: `en-fan/*.cbz` expands to `…c004,
+    // c005.5, c005` (`5` sorts before `c`) while the sidecar lists `…c004,
+    // c005, c005.5`. That refused a perfectly good truth document on this
+    // corpus today, telling a person to redo hours of labelling.
+    if labelled.is_stale_for(&ordered_digests) {
+        return Err(format!(
+            "{} was drawn against different files; re-label or restore the archive",
+            truth_path.display()
+        ));
+    }
+
+    // **Only the labelled pages are decoded.** `decode_all` decodes
+    // everything it is handed, and five pages of 195 are labelled — handing it
+    // the whole edition would pay for 190 full-resolution decodes to score
+    // five. Moved rather than cloned, so `Page` needs no `Clone`.
+    let pages = taiyaku_read::read_members_in_order(&ordered_members)?;
+    let available = pages.len();
+
+    // A labelled page this edition cannot reach is named and refused, never
+    // dropped. The filter below keeps only pages the truth document mentions,
+    // so a truth key past the end simply never appears — and the report then
+    // prints a smaller `pages=` with nothing anywhere saying which page went
+    // unmeasured. Somebody's labelling silently not being measured is the
+    // exact failure this whole sub-project exists to catch, and
+    // `score_corpus.rs` already fails on it by name.
+    let unreachable: Vec<String> = labelled
+        .pages
+        .keys()
+        .filter(|number| usize::try_from(**number).is_ok_and(|n| n >= available))
+        .map(u32::to_string)
+        .collect();
+    if !unreachable.is_empty() {
+        return Err(format!(
+            "{} holds labels for page(s) {} of edition `{edition}`, which has {available} \
+             page(s) — the labels and the archives disagree about how long this edition is",
+            truth_path.display(),
+            unreachable.join(", ")
+        ));
+    }
+
+    let mut truth: Vec<Vec<taiyaku_core::TruthRegion>> = Vec::new();
+    let mut subset: Vec<taiyaku_read::Page> = Vec::new();
+    for (index, page) in pages.into_iter().enumerate() {
+        let number = u32::try_from(index).expect("a page index fits in u32");
+        // Pages absent from the truth document are skipped: nobody labelled
+        // them, and scoring against no labels is not zero recall, it is no
+        // measurement.
+        let Some(drawn) = labelled.pages.get(&number) else {
+            continue;
+        };
+        truth.push(drawn.clone());
+        subset.push(page);
+    }
+
+    Ok(Labelled {
+        truth,
+        pages: subset,
+    })
+}
+
 pub fn command(args: &[String]) -> Result<(), String> {
     // No `--cache`, for `regions::command`'s reason: the fingerprint cache
     // holds hashes and dimensions, not pixels, and a flag that cannot take
@@ -407,135 +553,13 @@ pub fn command(args: &[String]) -> Result<(), String> {
         );
     };
 
-    // Read and parse before a single page is decoded.
-    let text = std::fs::read_to_string(sidecar).map_err(|e| format!("{sidecar}: {e}"))?;
-    let doc = taiyaku_core::Sidecar::from_json(&text)?;
-
-    // A missing truth document is an error naming the path, not an empty
-    // report. Scoring against no labels would print perfect precision and zero
-    // recall, which reads like a broken detector rather than a missing file.
-    let truth_path = taiyaku_core::TruthDoc::path_beside(std::path::Path::new(sidecar));
-    let truth_text = std::fs::read_to_string(&truth_path).map_err(|e| {
-        format!(
-            "{}: {e} — nothing has been labelled here",
-            truth_path.display()
-        )
+    let resolved = resolve_labelled(sidecar, &members)?;
+    let detected = crate::fingerprint::decode_all(&resolved.pages, |_, luma| {
+        crate::detect::detect_page(luma)
     })?;
-    let truth = taiyaku_core::TruthDoc::from_json(&truth_text)?;
-
-    // Content, not order: the sorted sha256 set identifies the edition, so the
-    // order these were typed in does not matter for identification.
-    let mut digests = Vec::new();
-    for member in &members {
-        digests.push(taiyaku_read::member_digest(member)?);
-    }
-    let edition = crate::edition_of_digests(&doc, sidecar, &digests)?;
-
-    let Some(labelled) = truth.editions.get(&edition) else {
-        return Err(format!(
-            "{} holds no labels for edition `{edition}`",
-            truth_path.display()
-        ));
-    };
-
-    // `docs/sidecar.md` rule 1 is normative: the matched edition's own
-    // `members` array *is* the page order and must not be re-sorted. Paths are
-    // relative to the sidecar and may point into unrelated trees, so their
-    // names need not sort into reading order at all. This is the block
-    // `regions::command` carries at `regions.rs:201-218`; it is restated
-    // rather than shared because that one is inline in a longer function.
-    let target = doc
-        .editions
-        .get(&edition)
-        .expect("edition_of_digests matched an edition of this document");
-    let by_digest: std::collections::BTreeMap<&str, &std::path::PathBuf> = digests
-        .iter()
-        .zip(&members)
-        .map(|(sha256, path)| (sha256.as_str(), path))
-        .collect();
-    let mut ordered_members: Vec<std::path::PathBuf> = Vec::new();
-    let mut ordered_digests: Vec<String> = Vec::new();
-    for member in &target.members {
-        ordered_members.push(
-            (*by_digest
-                .get(member.sha256.as_str())
-                .expect("edition_of_digests matched this exact set of digests"))
-            .clone(),
-        );
-        ordered_digests.push(member.sha256.clone());
-    }
-
-    // Labels drawn on a replaced archive put a box on the wrong art on the
-    // *right* page, which is harder to notice than a wrong page.
-    //
-    // Against `ordered_digests` — the edition's own member order — and not
-    // against `digests`, which is argv order. `edition_of_digests` above
-    // matched by *sorted set*, deliberately, so that the order these were
-    // typed in does not decide which edition they are; `is_stale_for` compares
-    // element-wise, deliberately, because content-in-order is what says the
-    // labels describe these pages. Feeding argv order to an element-wise
-    // comparison makes the two rules contradict each other, and a shell glob
-    // is exactly where they disagree: `en-fan/*.cbz` expands to `…c004,
-    // c005.5, c005` (`5` sorts before `c`) while the sidecar lists `…c004,
-    // c005, c005.5`. That refused a perfectly good truth document on this
-    // corpus today, telling a person to redo hours of labelling.
-    if labelled.is_stale_for(&ordered_digests) {
-        return Err(format!(
-            "{} was drawn against different files; re-label or restore the archive",
-            truth_path.display()
-        ));
-    }
-
-    // **Only the labelled pages are decoded.** `decode_all` decodes
-    // everything it is handed, and five pages of 195 are labelled — handing it
-    // the whole edition would pay for 190 full-resolution decodes to score
-    // five. Moved rather than cloned, so `Page` needs no `Clone`.
-    let pages = taiyaku_read::read_members_in_order(&ordered_members)?;
-    let available = pages.len();
-
-    // A labelled page this edition cannot reach is named and refused, never
-    // dropped. The filter below keeps only pages the truth document mentions,
-    // so a truth key past the end simply never appears — and the report then
-    // prints a smaller `pages=` with nothing anywhere saying which page went
-    // unmeasured. Somebody's labelling silently not being measured is the
-    // exact failure this whole sub-project exists to catch, and
-    // `score_corpus.rs` already fails on it by name.
-    let unreachable: Vec<String> = labelled
-        .pages
-        .keys()
-        .filter(|number| usize::try_from(**number).is_ok_and(|n| n >= available))
-        .map(u32::to_string)
-        .collect();
-    if !unreachable.is_empty() {
-        return Err(format!(
-            "{} holds labels for page(s) {} of edition `{edition}`, which has {available} \
-             page(s) — the labels and the archives disagree about how long this edition is",
-            truth_path.display(),
-            unreachable.join(", ")
-        ));
-    }
-
-    let (numbers, subset): (Vec<u32>, Vec<_>) = pages
-        .into_iter()
-        .enumerate()
-        .map(|(index, page)| {
-            (
-                u32::try_from(index).expect("a page index fits in u32"),
-                page,
-            )
-        })
-        // Pages absent from the truth document are skipped: nobody labelled
-        // them, and scoring against no labels is not zero recall, it is no
-        // measurement.
-        .filter(|(number, _)| labelled.pages.contains_key(number))
-        .unzip();
-
-    let detected =
-        crate::fingerprint::decode_all(&subset, |_, luma| crate::detect::detect_page(luma))?;
 
     let mut report = Report::default();
-    for (number, found) in numbers.iter().zip(detected) {
-        let drawn = &labelled.pages[number];
+    for (drawn, found) in resolved.truth.iter().zip(detected) {
         report.add_page(drawn, &score_page(drawn, &found, coverage));
     }
 

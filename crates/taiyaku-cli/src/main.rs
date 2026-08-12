@@ -15,6 +15,16 @@
 //! `serve` is a thin front for `taiyaku-serve`: argument parsing and a runtime.
 //! Everything the server does lives in that crate.
 
+// Task 7 of the detector redesign: where the component-size band goes, scored
+// over the whole dev set at several bands. Gated on TAIYAKU_CORPUS exactly as
+// `corpus`, `geometry_experiment`, `region_experiment` and `truth_population`
+// are, and declared the same way, so no part of it is compiled into the binary.
+//
+// Unlike the two experiments below it takes no module-level lint suppression:
+// it does its arithmetic through `score::Report`, which already carries the
+// per-site #[expect] for the one division involved.
+#[cfg(test)]
+mod band_sweep;
 mod cache;
 #[cfg(test)]
 mod corpus;
@@ -84,6 +94,14 @@ mod score_corpus;
     reason = "one-off measurement; see above and docs/ci.md"
 )]
 mod region_experiment;
+
+// Phase 1 of the detector redesign: what text is made of, measured from the
+// boxes a person drew. Gated on TAIYAKU_CORPUS exactly as `corpus`,
+// `geometry_experiment` and `region_experiment` are, and declared the same
+// way, so no part of it is compiled into the binary.
+#[cfg(test)]
+mod truth_population;
+
 mod report;
 mod signature;
 mod stats;

@@ -24,11 +24,14 @@
 //! quality bar: those move when the detector changes, and a measurement that
 //! fails when the thing it measures improves is a check pretending to be a
 //! measurement. The one assertion specific to this module is a consistency
-//! check rather than a quality bar: the staged pipeline computed here must
-//! land on exactly the block count `detect_page` itself returns for the same
-//! page, because that equality is what "calling the real functions instead of
-//! copies" is for — if this module's bookkeeping ever drifted from
-//! `detect_page`'s own filter order, this is what would catch it.
+//! check rather than a quality bar: the staged pipeline computed here is
+//! deliberately band-free — it reproduces `docs/notes.md`'s diagnosis of the
+//! detector as it stood before Task 4's component-size band — so it must land
+//! on exactly the block count `detect::detect_page_with(page, detect::NO_BAND)`
+//! returns for the same page, not `detect_page` itself, which now applies that
+//! band. That equality is what "calling the real functions instead of copies"
+//! is for — if this module's bookkeeping ever drifted from
+//! `detect_page_with`'s own filter order, this is what would catch it.
 //!
 //! ```sh
 //! TAIYAKU_CORPUS="$PWD/corpus" cargo test --release -p taiyaku-cli region_experiment -- --nocapture
@@ -38,12 +41,12 @@
 //! `geometry_experiment.rs` gives for its own run: `components` is a
 //! flood-fill over every pixel of a full-resolution scan, run twice per
 //! sampled page (once for the staged pipeline below, once more inside
-//! `detect_page` itself, for the cross-check), and an unoptimised build pays
-//! for that twice over. **`check-all.sh` does not run this module** — see
-//! `geometry_experiment.rs`'s header, which carries the full account of a
-//! sentence that has now been each answer once. In short: the gate's *corpus*
-//! job filters on `corpus::` and so misses this module; for a while the gate
-//! also exported `TAIYAKU_CORPUS` before its unfiltered
+//! `detect_page_with`'s band-free configuration, for the cross-check), and an
+//! unoptimised build pays for that twice over. **`check-all.sh` does not run
+//! this module** — see `geometry_experiment.rs`'s header, which carries the
+//! full account of a sentence that has now been each answer once. In short:
+//! the gate's *corpus* job filters on `corpus::` and so misses this module;
+//! for a while the gate also exported `TAIYAKU_CORPUS` before its unfiltered
 //! `cargo test --workspace` and so ran it there in debug anyway, at about a
 //! minute; the `test` job now runs with that variable removed and this is out
 //! of the gate again. This one was never what made a local gate run slow —
@@ -94,6 +97,16 @@
 //! of it computed under `ScaleRule::All` — is still exactly what
 //! `taiyaku regions` does today.
 //!
+//! *Corrected on 2026-08-12.* That last sentence was true when Task 9 wrote
+//! it and is not true now: `taiyaku regions` calls `detect_page`, which now
+//! applies Task 4's `BAND`, so this module's "what it found" paragraph above
+//! — computed band-free, under `ScaleRule::All` — is no longer what
+//! `taiyaku regions` does today. Kept rather than deleted for the same reason
+//! the correction below keeps its own sentence: every figure in that
+//! paragraph was measured **before** the band and describes the band-free
+//! detector, which is what this module's staged pipeline still reproduces on
+//! purpose — see that correction, just below, for why.
+//!
 //! **It was extended once more before any redesign, for a hole in the
 //! diagnosis rather than for a new candidate.** Every figure above is a
 //! *count* of blocks, and a count cannot say what a block holds. That mattered
@@ -108,7 +121,61 @@
 //! over the whole sample. It answered the question and corrected the mechanism
 //! in two places; see `docs/notes.md`, "The edition that clears the bar is the
 //! one finding no text", for the account, and O34 for what it opened.
-//! `detect_page` is still unchanged and no constant moved.
+//!
+//! *Corrected on 2026-08-12.* This paragraph ended "`detect_page` is still
+//! unchanged and no constant moved", which was true of everything above it and
+//! is no longer true of the detector. L2b's band ships in `detect_page`, and
+//! the sentence is kept here rather than deleted because every figure this
+//! module reports — and every figure in the `notes.md` sections it backs — was
+//! measured **before** that change and describes the band-free detector.
+//!
+//! **That is why this module stays band-free on purpose.** Its staged pipeline
+//! reproduces the diagnosis, not the current detector, so it must not acquire
+//! the band; and its cross-check therefore compares against
+//! `detect_page_with(page, NO_BAND)` rather than `detect_page`, which would
+//! otherwise be two different pipelines asserted equal. Verified: pointing it
+//! back at `detect_page` fails on `gotoubun-v01/raw-mono` page 9, where the
+//! staged pipeline lands on 0 blocks and the banded detector returns 23.
+//!
+//! **Task 5 changed the smear, so the staged pipeline changed with it.** It
+//! now smears both axes, unions them and drops what `detect::uncontained`
+//! drops, because that is what `detect_page_with` does and the cross-check
+//! above is the whole reason this module calls the real functions. It stays
+//! band-free; the two divergences are not the same decision and only the band
+//! one is deliberate.
+//!
+//! *What that moved, measured before and after rather than assumed.* Almost
+//! nothing in the paragraphs above, which is why they stand unedited:
+//! **`kobayashi-v01/raw-mono` page 7 is identical** — 3,682 components, 63%
+//! under 5px, `stroke_scale` 3px giving a 6px gap, one final block, 51.6%
+//! discarded — so `notes.md`'s row still reproduces line for line. So are
+//! "82 of 90 pages have at least half their components under 5px" and every
+//! figure in the `MAX_BLOCK_AREA` sentence (89 of 90 pages; 21.3% to 100.0%;
+//! median 51.6%). **One figure above is now wrong and is corrected here rather
+//! than edited in place:** "55 of 90 (61%) come back with zero final blocks"
+//! is **58 of 90 (64%)**. Over the whole sample the final block count went
+//! from 76 to 73, and the v/h split of surviving blocks from 55/21 to 65/8 —
+//! the axis shift being mostly blocks both smears produce identically, which
+//! `detect::uncontained`'s doc comment states and bounds.
+//!
+//! **Task 6 changed what `MIN_INK` counts, and the staged pipeline changed
+//! with it** for the reason Task 5 did: `ink_pixels` below replaces the summed
+//! stroke bounding boxes O34 recorded, because `detect_page_with` no longer
+//! sums them and the cross-check would otherwise assert two different filters
+//! equal.
+//!
+//! *What that moved on these 90 pages — the figure, not the outcome, measured
+//! rather than assumed.* **Every count above stands unedited.** `MIN_INK`
+//! still rejects **0 blocks on 0 of 90 pages** band-free, the sample still
+//! ends on 73 blocks with the same 65/8 split, and `kobayashi-v01/raw-mono`
+//! page 7 still reads 3,682 components, 63% under 5px, 3px scale, 6px gap, one
+//! final block, 51.6% discarded. What moved is the ink *quantity*: over the 73
+//! survivors it now runs 0.09 to 0.56, median 0.28, where the summed boxes ran
+//! 0.38 to 1.89 with 61 of them above 1.0. So O34's arithmetic was wrong and
+//! correcting it does not, by itself, make this filter fire on the band-free
+//! detector — every block surviving here is genuinely well clear of a 0.05
+//! floor. Whether it fires on the *banded* detector is a different question,
+//! which this module does not ask; the Task 6 report scores that one.
 
 use std::path::{Path, PathBuf};
 
@@ -116,7 +183,7 @@ use image::GrayImage;
 use taiyaku_core::Axis;
 
 use crate::corpus::{corpus, members};
-use crate::detect::{self, Bounds};
+use crate::detect::{self, Block, Bounds};
 use crate::fingerprint::decode_luma;
 
 /// The nine editions `docs/notes.md`'s survey reports on, paired with the axis
@@ -140,10 +207,11 @@ const EDITIONS: [(&str, &str, Axis); 9] = [
 /// Pages sampled per edition.
 ///
 /// Each sampled page runs `components` — an O(pixels) flood fill — twice: once
-/// for the staged pipeline, once more inside `detect_page` for the
-/// cross-check. 10 pages across 9 editions is 90 pages, 180 flood fills, and
-/// keeps the whole run in the tens of seconds in release, the same budget
-/// `geometry_experiment`'s own `SAMPLE` reasons about.
+/// for the staged pipeline, once more inside `detect_page_with`'s band-free
+/// configuration for the cross-check. 10 pages across 9 editions is 90 pages,
+/// 180 flood fills, and keeps the whole run in the tens of seconds in
+/// release, the same budget `geometry_experiment`'s own `SAMPLE` reasons
+/// about.
 const SAMPLE: usize = 10;
 
 /// Longer side, in pixels, under which `notes.md` calls a component "tiny" —
@@ -155,9 +223,9 @@ const TINY_STROKE: u32 = 5;
 /// components so the comparison the L2A Task 9 brief asks for is
 /// like-for-like. `All` is `stroke_scale` itself, today's production
 /// behaviour, called by `detect_page`; `AboveFloor` and `Modal` are the two
-/// candidates. Only `All` is cross-checked against `detect_page` in
-/// `diagnose_from_strokes` — see `PageDiag::detect_page_len` — because
-/// only `All` is what `detect_page` actually calls today.
+/// candidates. Only `All` is cross-checked, against `detect_page`'s band-free
+/// configuration, in `diagnose_from_strokes` — see `PageDiag::band_free_len`
+/// — because only `All` is what `detect_page` actually calls today.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum ScaleRule {
     All,
@@ -229,6 +297,28 @@ fn strokes_in<'a>(strokes: &'a [Bounds], block: &Bounds) -> Vec<&'a Bounds> {
         .collect()
 }
 
+/// Ink pixels inside `block` — the quantity `MIN_INK` is a floor on since it
+/// stopped summing overlapping stroke bounding boxes (O34).
+///
+/// Restated here for the reason `strokes_in` above gives: in `detect.rs` this
+/// is an inline closure over a locally-borrowed `page` and `threshold`, not a
+/// function this module can call. What it does — count dark pixels in a
+/// rectangle at the page's own Otsu level — is bookkeeping rather than the
+/// detector's heuristic, and `threshold` is the *same* level the components
+/// were labelled at, threaded from `page_strokes` rather than recomputed, so
+/// this cannot drift onto a second cut of its own.
+fn ink_pixels(page: &GrayImage, threshold: u8, block: &Bounds) -> u64 {
+    let mut ink = 0u64;
+    for y in block.y0..=block.y1 {
+        for x in block.x0..=block.x1 {
+            if page.get_pixel(x, y).0[0] <= threshold {
+                ink += 1;
+            }
+        }
+    }
+    ink
+}
+
 /// One block's area as a fraction of the page — the same quantity
 /// `MAX_BLOCK_AREA` is compared against and a `Region`'s `w * h`.
 fn area_fraction(block: &Bounds, page_area: f64) -> f64 {
@@ -266,6 +356,11 @@ struct SurvivorDiag {
     area: f64,
     width: u32,
     height: u32,
+    /// The axis whose smear actually produced this block, which since Task 5
+    /// is what `detect_page` stamps on the `Region`. Per block, not per page:
+    /// `PageDiag::axis` is the page-wide figure and is no longer the same
+    /// thing. This is what the v/h columns are counted over.
+    axis: Axis,
     /// Components wholly inside it — the same population `MIN_STROKES`
     /// counted and `MIN_INK` summed.
     strokes: usize,
@@ -277,9 +372,11 @@ struct SurvivorDiag {
     /// Median longer side of those components, in pixels — the block's own
     /// stroke scale, against the page-wide one `stroke_scale` computed.
     median_stroke: Option<u32>,
-    /// Summed stroke bounding-box area over block area — the ratio `MIN_INK`
-    /// is compared against. See `MIN_INK`'s doc comment for what it does and
-    /// does not establish.
+    /// Ink pixels over block area — the ratio `MIN_INK` is compared against.
+    /// It was the summed stroke *bounding-box* area until O34 measured that
+    /// quantity at 0.38 to 1.89 over the 76 blocks then surviving, 61 of them
+    /// above 1.0. It is a true pixel count now, so it is bounded by 1.0. See
+    /// `MIN_INK`'s doc comment for what it does and does not catch.
     ink: f64,
 }
 
@@ -306,11 +403,22 @@ struct PageDiag {
     largest_component: f64,
     stroke_scale: Option<u32>,
     gap: Option<u32>,
+    /// The direction the *whole page* merges furthest along — `axis_of`'s own
+    /// answer, kept as a diagnostic.
+    ///
+    /// **Not what any block is stamped with any more.** Task 5 replaced the
+    /// one-axis-per-page smear with a union of both, so the axis a `Region`
+    /// carries is `SurvivorDiag::axis`, per block. This is still worth
+    /// printing — it is the page-level reading direction, and a Japanese raw
+    /// whose page-wide answer is horizontal is still saying something — but it
+    /// is a summary of the page, not a claim about a region on it.
     axis: Option<Axis>,
-    /// Blocks surviving, in order: smeared (no filter yet), `MIN_STROKES`,
+    /// Blocks surviving, in order: smeared (both axes, unioned and deduped by
+    /// `detect::uncontained`, before any of the four constants), `MIN_STROKES`,
     /// `MIN_BLOCK_STROKE_SPAN`, `MAX_BLOCK_AREA`, `MIN_INK`. The last entry is
-    /// what `detect_page` returns when `rule` is `ScaleRule::All`, and
-    /// `detect_page_len` below is the cross-check that it actually is.
+    /// what `detect_page`'s band-free configuration returns when `rule` is
+    /// `ScaleRule::All`, and `band_free_len` below is the cross-check that it
+    /// actually is.
     stages: [usize; 5],
     /// The largest block `MAX_BLOCK_AREA` discarded, as a fraction of the
     /// page — `None` when nothing reached that filter, or nothing that did
@@ -320,20 +428,30 @@ struct PageDiag {
     /// what an edition-level median area is taken over, and what says whether
     /// a surviving block is type or a patch of the same noise as the page.
     survivors: Vec<SurvivorDiag>,
-    /// `detect_page(page).len()`, computed independently of the staged
-    /// pipeline above — the cross-check the module header names. Only
-    /// meaningful for `ScaleRule::All`, the rule `detect_page` actually
-    /// calls today; `None` for the two candidates, which nothing in
-    /// production calls yet.
-    detect_page_len: Option<usize>,
+    /// `detect::detect_page_with(page, detect::NO_BAND).len()`, computed
+    /// independently of the staged pipeline above — the cross-check the
+    /// module header names. **Not** `detect_page(page).len()`: `detect_page`
+    /// applies Task 4's `BAND`, and the staged pipeline above deliberately
+    /// does not, so comparing against the banded function would fail on any
+    /// page the band changes rather than on a real drift in this module's
+    /// bookkeeping — see the module header. Only meaningful for
+    /// `ScaleRule::All`, the rule `detect_page` actually calls today; `None`
+    /// for the two candidates, which nothing in production calls yet.
+    band_free_len: Option<usize>,
 }
 
 /// The one expensive, per-pixel stage (`otsu` + `components`), computed once
 /// per page rather than once per scale rule — otherwise measuring three
 /// candidates would triple the flood fill for work that does not depend on
 /// which rule is under test.
-fn page_strokes(page: &GrayImage) -> Vec<Bounds> {
-    detect::components(page, detect::otsu(page))
+///
+/// Returns the Otsu level beside the components, because `ink_pixels` needs
+/// the *same* level rather than a second call to `otsu`: `detect_page_with`
+/// hoists exactly this variable for exactly this reason, and the cross-check
+/// below only means something if both sides cut the page at the same place.
+fn page_strokes(page: &GrayImage) -> (Vec<Bounds>, u8) {
+    let threshold = detect::otsu(page);
+    (detect::components(page, threshold), threshold)
 }
 
 /// Run `detect.rs`'s own pipeline on one page's strokes under one scale
@@ -343,11 +461,14 @@ fn page_strokes(page: &GrayImage) -> Vec<Bounds> {
 /// and `detect::merge_along` — never a copy of them — in the same order
 /// `detect_page` calls them, then applies its four filters one at a time
 /// instead of chained, so each stage's survivor count can be kept rather than
-/// only the last. For `ScaleRule::All`, `detect::detect_page` is also called
-/// on the same page, purely so `PageDiag::detect_page_len` can be checked
-/// against `stages[4]` — see the module header.
+/// only the last. For `ScaleRule::All`, `detect::detect_page_with(page,
+/// detect::NO_BAND)` is also called on the same page — band-free, matching
+/// this staged pipeline, which never applies the band either — purely so
+/// `PageDiag::band_free_len` can be checked against `stages[4]` — see the
+/// module header.
 fn diagnose_from_strokes(
     strokes: &[Bounds],
+    threshold: u8,
     page: &GrayImage,
     index: usize,
     rule: ScaleRule,
@@ -365,8 +486,8 @@ fn diagnose_from_strokes(
         .iter()
         .map(|s| area_fraction(s, page_area))
         .fold(0.0, f64::max);
-    let detect_page_len = match rule {
-        ScaleRule::All => Some(detect::detect_page(page).len()),
+    let band_free_len = match rule {
+        ScaleRule::All => Some(detect::detect_page_with(page, detect::NO_BAND).len()),
         ScaleRule::AboveFloor | ScaleRule::Modal => None,
     };
 
@@ -385,64 +506,72 @@ fn diagnose_from_strokes(
             stages: [0; 5],
             largest_area_discarded: None,
             survivors: Vec::new(),
-            detect_page_len,
+            band_free_len,
         };
     };
 
     let gap = (scale * detect::SMEAR_K).max(1);
     let axis = detect::axis_of(strokes, gap);
-    let merged = detect::merge_along(strokes, axis, gap);
+
+    // Both axes, unioned and deduped — `detect_page_with`'s smear stage since
+    // Task 5, called from `detect.rs` rather than restated here. `axis` above
+    // is no longer part of it and is kept purely as the page-wide diagnostic
+    // the table below prints; see `PageDiag::axis`.
+    let mut smeared: Vec<Block> = Vec::new();
+    for smear in [Axis::Vertical, Axis::Horizontal] {
+        smeared.extend(
+            detect::merge_along(strokes, smear, gap)
+                .into_iter()
+                .map(|b| (b, smear)),
+        );
+    }
+    let merged = detect::uncontained(&smeared);
     let stage0 = merged.len();
 
-    let after_strokes: Vec<Bounds> = merged
+    let after_strokes: Vec<Block> = merged
         .into_iter()
-        .filter(|b| strokes_in(strokes, b).len() >= detect::MIN_STROKES)
+        .filter(|(b, _)| strokes_in(strokes, b).len() >= detect::MIN_STROKES)
         .collect();
     let stage1 = after_strokes.len();
 
-    let after_span: Vec<Bounds> = after_strokes
+    let after_span: Vec<Block> = after_strokes
         .into_iter()
-        .filter(|b| b.longer() >= scale * detect::MIN_BLOCK_STROKE_SPAN)
+        .filter(|(b, _)| b.longer() >= scale * detect::MIN_BLOCK_STROKE_SPAN)
         .collect();
     let stage2 = after_span.len();
 
-    let (after_area, discarded_by_area): (Vec<Bounds>, Vec<Bounds>) = after_span
+    let (after_area, discarded_by_area): (Vec<Block>, Vec<Block>) = after_span
         .into_iter()
-        .partition(|b| area_fraction(b, page_area) <= f64::from(detect::MAX_BLOCK_AREA));
+        .partition(|(b, _)| area_fraction(b, page_area) <= f64::from(detect::MAX_BLOCK_AREA));
     let stage3 = after_area.len();
     let largest_area_discarded = discarded_by_area
         .iter()
-        .map(|b| area_fraction(b, page_area))
+        .map(|(b, _)| area_fraction(b, page_area))
         .fold(None, |acc: Option<f64>, v| {
             Some(acc.map_or(v, |a: f64| a.max(v)))
         });
 
-    let after_ink: Vec<Bounds> = after_area
+    let after_ink: Vec<Block> = after_area
         .into_iter()
-        .filter(|b| {
+        .filter(|(b, _)| {
             let area = f64::from(b.width()) * f64::from(b.height());
-            let ink: u64 = strokes_in(strokes, b)
-                .iter()
-                .map(|s| u64::from(s.width()) * u64::from(s.height()))
-                .sum();
+            let ink = ink_pixels(page, threshold, b);
             area > 0.0 && ink as f64 / area >= f64::from(detect::MIN_INK)
         })
         .collect();
     let stage4 = after_ink.len();
     let survivors: Vec<SurvivorDiag> = after_ink
         .iter()
-        .map(|b| {
-            let inside = strokes_in(strokes, b);
+        .map(|&(b, block_axis)| {
+            let inside = strokes_in(strokes, &b);
             let area = f64::from(b.width()) * f64::from(b.height());
-            let ink: u64 = inside
-                .iter()
-                .map(|s| u64::from(s.width()) * u64::from(s.height()))
-                .sum();
+            let ink = ink_pixels(page, threshold, &b);
             let tiny = inside.iter().filter(|s| s.longer() < TINY_STROKE).count();
             SurvivorDiag {
-                area: area_fraction(b, page_area),
+                area: area_fraction(&b, page_area),
                 width: b.width(),
                 height: b.height(),
+                axis: block_axis,
                 strokes: inside.len(),
                 tiny_fraction: match inside.len() {
                     0 => 0.0,
@@ -471,7 +600,7 @@ fn diagnose_from_strokes(
         stages: [stage0, stage1, stage2, stage3, stage4],
         largest_area_discarded,
         survivors,
-        detect_page_len,
+        band_free_len,
     }
 }
 
@@ -480,8 +609,8 @@ fn diagnose_from_strokes(
 /// need today's production rule and do not want to compute `page_strokes`
 /// themselves.
 fn diagnose(page: &GrayImage, index: usize) -> PageDiag {
-    let strokes = page_strokes(page);
-    diagnose_from_strokes(&strokes, page, index, ScaleRule::All)
+    let (strokes, threshold) = page_strokes(page);
+    diagnose_from_strokes(&strokes, threshold, page, index, ScaleRule::All)
 }
 
 /// Everything one edition contributed — one `[PageDiag; 3]` triple per
@@ -522,9 +651,9 @@ fn measure_edition(
             .get(index)
             .ok_or_else(|| format!("{work}/{edition}: page {index} is past the end"))?;
         let decoded = decode_luma(&page.bytes).map_err(|e| format!("{}: {e}", page.name))?;
-        let strokes = page_strokes(&decoded);
-        let triple =
-            ScaleRule::ALL.map(|rule| diagnose_from_strokes(&strokes, &decoded, index, rule));
+        let (strokes, threshold) = page_strokes(&decoded);
+        let triple = ScaleRule::ALL
+            .map(|rule| diagnose_from_strokes(&strokes, threshold, &decoded, index, rule));
         rows.push(triple);
     }
 
@@ -576,24 +705,23 @@ struct EditionSummary {
 /// Fold one edition's per-page diagnoses under `rule` into the figures the
 /// Task 9 acceptance rule and `notes.md`'s table are stated in terms of.
 ///
-/// Block-weighted, not page-counted: `detect_page` assigns one axis to every
-/// block on a page (`axis_of` runs once per page, ahead of the smear), so
-/// `regions.rs::survey_line`'s v/h — a count of *blocks* — is this page's
-/// final block count folded into whichever side its one axis landed on, not
-/// a count of pages.
+/// Block-weighted, not page-counted, and since Task 5 genuinely so: each
+/// surviving block is counted under the axis whose smear produced *it*.
+/// `regions.rs::survey_line`'s v/h is a count of blocks, and until Task 5
+/// `detect_page` stamped one page-wide axis on all of them, so this was that
+/// page's final count folded whole onto one side. It no longer is: a page can
+/// now contribute to both columns, which is the point of the change.
 fn summarize(e: &EditionDiag, rule: ScaleRule) -> EditionSummary {
     let rows: Vec<&PageDiag> = e.rule_rows(rule).collect();
     let blocks: usize = rows.iter().map(|r| r.stages[4]).sum();
-    let vertical: usize = rows
-        .iter()
-        .filter(|r| r.axis == Some(Axis::Vertical))
-        .map(|r| r.stages[4])
-        .sum();
-    let horizontal: usize = rows
-        .iter()
-        .filter(|r| r.axis == Some(Axis::Horizontal))
-        .map(|r| r.stages[4])
-        .sum();
+    let axis_blocks = |axis: Axis| {
+        rows.iter()
+            .flat_map(|r| r.survivors.iter())
+            .filter(|s| s.axis == axis)
+            .count()
+    };
+    let vertical = axis_blocks(Axis::Vertical);
+    let horizontal = axis_blocks(Axis::Horizontal);
     let mut scales: Vec<u32> = rows.iter().filter_map(|r| r.stroke_scale).collect();
     scales.sort_unstable();
     let median_scale = if scales.is_empty() {
@@ -660,7 +788,9 @@ fn region_experiment_reproduces_the_filter_pipeline() {
         "biggest",
         "stages 0>1>2>3>4",
         "max-area",
-        "axis"
+        // The page-wide `axis_of` answer, not what any block carries — see
+        // `PageDiag::axis`. The per-block axes are in the survivor table below.
+        "page axis"
     );
     for e in &measured {
         for row in e.rule_rows(ScaleRule::All) {
@@ -859,10 +989,15 @@ fn region_experiment_reproduces_the_filter_pipeline() {
     for e in &measured {
         for row in e.rule_rows(ScaleRule::All) {
             for s in &row.survivors {
-                let axis_note = match row.axis {
-                    Some(a) if a == e.expected_axis => format!("{a:?}"),
-                    Some(a) => format!("{a:?} WRONG"),
-                    None => "-".to_string(),
+                // The block's own axis, not the page's: since Task 5 that is
+                // what `detect_page` stamps, and "WRONG" here now means this
+                // block reads across the edition's grain — which on a raw is
+                // an ordinary horizontal sound effect as often as an error,
+                // and is why this column is printed rather than asserted on.
+                let axis_note = if s.axis == e.expected_axis {
+                    format!("{:?}", s.axis)
+                } else {
+                    format!("{:?} WRONG", s.axis)
                 };
                 println!(
                     "{:<24} {:>4} {:>11} {:>7.1}% {:>8} {:>7.0}% {:>8.0}% {:>6}px {:>7.2} {axis_note}",
@@ -1031,7 +1166,7 @@ fn region_experiment_reproduces_the_filter_pipeline() {
                 // staged pipeline says survived, or the table it prints is
                 // describing a different set of blocks than the counts above
                 // it — the same bookkeeping-not-quality assertion as the
-                // `detect_page_len` check below.
+                // `band_free_len` check below.
                 assert_eq!(
                     row.survivors.len(),
                     row.stages[4],
@@ -1066,23 +1201,24 @@ fn region_experiment_reproduces_the_filter_pipeline() {
                     );
                 }
                 // The check specific to this module: calling detect.rs's real
-                // functions has to reproduce detect.rs's real answer, or this
-                // module is measuring its own bookkeeping rather than the
-                // detector. Only `ScaleRule::All` has a `detect_page_len` to
-                // check against — the two candidates are not called by
-                // `detect_page` (see `PageDiag::detect_page_len`).
-                if let Some(detect_page_len) = row.detect_page_len {
+                // functions has to reproduce detect.rs's real answer under
+                // the band-free configuration this module's staged pipeline
+                // stays at, or this module is measuring its own bookkeeping
+                // rather than the detector. Only `ScaleRule::All` has a
+                // `band_free_len` to check against — the two candidates are
+                // not called by `detect_page` (see `PageDiag::band_free_len`).
+                if let Some(band_free_len) = row.band_free_len {
                     assert_eq!(
                         row.stages[4],
-                        detect_page_len,
+                        band_free_len,
                         "{}/{} page {} rule={}: the staged pipeline landed on {} blocks \
-                         but detect_page returned {} for the same page",
+                         but detect_page_with(NO_BAND) returned {} for the same page",
                         e.work,
                         e.edition,
                         row.page,
                         row.rule.label(),
                         row.stages[4],
-                        detect_page_len
+                        band_free_len
                     );
                 }
             }
@@ -1114,8 +1250,11 @@ mod tests {
     /// A page with one balloon's worth of vertical text and nothing else —
     /// the same fixture `detect.rs`'s own
     /// `a_column_of_glyphs_is_one_vertical_region` uses, so this pins that
-    /// `diagnose` reproduces `detect_page`'s answer on a fixture whose answer
-    /// is already known, before either is ever pointed at the corpus.
+    /// `diagnose` reproduces `detect_page`'s band-free answer on a fixture
+    /// whose answer is already known, before either is ever pointed at the
+    /// corpus. (Its 20px marks on a 400x600 page are 333‱ — well inside
+    /// `BAND` — so the banded and band-free answers agree here too; the
+    /// distinction only bites on corpus pages with small components.)
     fn page_with_a_column() -> GrayImage {
         let marks: Vec<(u32, u32, u32, u32)> =
             (0..6).map(|i| (100u32, 40 + i * 30, 20, 20)).collect();
@@ -1131,7 +1270,7 @@ mod tests {
     fn diagnose_reproduces_detect_page_on_a_known_fixture() {
         let diag = diagnose(&page_with_a_column(), 0);
         assert_eq!(diag.stages[4], 1, "one block, got {:?}", diag.stages);
-        assert_eq!(diag.detect_page_len, Some(diag.stages[4]));
+        assert_eq!(diag.band_free_len, Some(diag.stages[4]));
         assert_eq!(diag.axis, Some(Axis::Vertical));
         assert!(diag.stroke_scale.is_some());
         assert!(diag.gap.is_some());
@@ -1165,9 +1304,14 @@ mod tests {
             "the column's area, not the page's: {}",
             survivor.area
         );
+        // Ink *pixels* over the block's own box. The marks are solid and
+        // disjoint, so a pixel count and the summed bounding boxes this used
+        // to be come to the same 2,400 — which is exactly why this fixture
+        // does not pin that change and `detect.rs`'s
+        // `a_block_of_hollow_strokes_is_mostly_paper` does.
         assert!(
             (survivor.ink - 6.0 * 400.0 / (20.0 * 170.0)).abs() < 1e-9,
-            "six 20x20 marks over the block's own box: {}",
+            "six solid 20x20 marks over the block's own box: {}",
             survivor.ink
         );
     }
@@ -1201,28 +1345,29 @@ mod tests {
         assert_eq!(diag.stroke_scale, None);
         assert_eq!(diag.gap, None);
         assert_eq!(diag.stages, [0; 5]);
-        assert_eq!(diag.detect_page_len, Some(0));
+        assert_eq!(diag.band_free_len, Some(0));
     }
 
     /// The two candidates are exercised by `region_experiment_reproduces_the_
     /// filter_pipeline` against real corpus pages, but that test is gated on
     /// `TAIYAKU_CORPUS`; this fixture pins their wiring — that
     /// `diagnose_from_strokes` actually calls each rule's function and that
-    /// only `All` carries a `detect_page_len` — without the corpus.
+    /// only `All` carries a `band_free_len` — without the corpus.
     #[test]
     fn diagnose_from_strokes_wires_up_all_three_scale_rules() {
         let page = page_with_a_column();
-        let strokes = page_strokes(&page);
+        let (strokes, threshold) = page_strokes(&page);
 
-        let all = diagnose_from_strokes(&strokes, &page, 0, ScaleRule::All);
-        let above_floor = diagnose_from_strokes(&strokes, &page, 0, ScaleRule::AboveFloor);
-        let modal = diagnose_from_strokes(&strokes, &page, 0, ScaleRule::Modal);
+        let all = diagnose_from_strokes(&strokes, threshold, &page, 0, ScaleRule::All);
+        let above_floor =
+            diagnose_from_strokes(&strokes, threshold, &page, 0, ScaleRule::AboveFloor);
+        let modal = diagnose_from_strokes(&strokes, threshold, &page, 0, ScaleRule::Modal);
 
         assert!(all.stroke_scale.is_some());
         assert!(above_floor.stroke_scale.is_some());
         assert!(modal.stroke_scale.is_some());
-        assert_eq!(all.detect_page_len, Some(all.stages[4]));
-        assert_eq!(above_floor.detect_page_len, None);
-        assert_eq!(modal.detect_page_len, None);
+        assert_eq!(all.band_free_len, Some(all.stages[4]));
+        assert_eq!(above_floor.band_free_len, None);
+        assert_eq!(modal.band_free_len, None);
     }
 }
