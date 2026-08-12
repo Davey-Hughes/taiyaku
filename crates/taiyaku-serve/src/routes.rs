@@ -229,12 +229,17 @@ pub(crate) fn sidecar_etag(sidecar: &taiyaku_core::Sidecar) -> String {
     format!("\"{hex}\"")
 }
 
-/// A notes document's `ETag`: a SHA-256 over exactly the bytes being sent.
+/// A notes or truth document's `ETag`: a SHA-256 over exactly the bytes being
+/// sent.
 ///
 /// Takes the serialised text rather than the document, unlike `sidecar_etag`
-/// above, because both callers already hold it — `notes::to_json` is the one
-/// serialisation of a notes document, and hashing a second one built here
-/// would be the drift this exists to rule out.
+/// above, because both callers already hold it — `notes::to_json` and
+/// `truth::to_json` are each the one serialisation of their document, and
+/// hashing a second one built here would be the drift this exists to rule
+/// out. Shared by `get_truth`/`put_truth` rather than given a `truth_etag`
+/// wrapper of its own: the hash has nothing document-specific in it, so a
+/// second name for the same bytes would be indirection with no behaviour
+/// behind it.
 pub(crate) fn notes_etag(json: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -721,6 +726,179 @@ async fn put_notes(
     }
 }
 
+/// Why a truth request could not be answered.
+///
+/// `NoNotes`'s split, minus `Refused`: nothing here validates an incoming
+/// document against the sidecar the way `notes::validate` does — a truth
+/// document names no slot and no edition list to check a page against — so
+/// there is no third kind of client mistake to tell apart from a missing
+/// work.
+#[derive(Debug)]
+enum NoTruth {
+    NotFound(String),
+    Precondition(StatusCode, String),
+    Failed(String),
+}
+
+impl IntoResponse for NoTruth {
+    fn into_response(self) -> Response {
+        match self {
+            Self::NotFound(message) => not_found(message),
+            Self::Precondition(status, message) => (status, message).into_response(),
+            Self::Failed(message) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
+        }
+    }
+}
+
+/// Every text block a person has drawn on a work.
+///
+/// **A work nobody has labelled yet answers an empty document rather than a
+/// 404 or a 204**, `get_notes`'s reasoning exactly: writing truth requires
+/// `If-Match`, and a client that had never seen a document would have no
+/// validator to send for its first write. Synthesising the document here
+/// means the first write is an ordinary conditional write like every later
+/// one.
+async fn get_truth(
+    State(state): State<Arc<ServeState>>,
+    AxPath(id): AxPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    // A file read, on the same disk a page comes from and behind the same NFS
+    // mount — `get_page`'s reasoning about the async worker applies unchanged
+    // (O12).
+    let loaded = tokio::task::spawn_blocking(move || -> Result<String, NoTruth> {
+        let found = state.work_or_missing(&id).map_err(NoTruth::NotFound)?;
+        let doc = crate::truth::load(found)
+            .map_err(NoTruth::Failed)?
+            .unwrap_or_default();
+        Ok(crate::truth::to_json(&doc))
+    })
+    .await;
+
+    match loaded {
+        Ok(Ok(json)) => {
+            let tag = notes_etag(&json);
+            if if_none_match_hits(&headers, &tag) {
+                return not_modified(&tag, None);
+            }
+            (
+                [
+                    (header::CONTENT_TYPE, "application/json"),
+                    (header::ETAG, tag.as_str()),
+                ],
+                json,
+            )
+                .into_response()
+        }
+        Ok(Err(refusal)) => refusal.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("truth read panicked: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+/// Replace a work's truth document.
+///
+/// A whole-document `PUT`, `put_notes`'s reasoning unchanged: the document is
+/// small, a labeller edits it from one place at a time, and `If-Match` over
+/// the whole thing is one rule to hold rather than one per page. Two sessions
+/// labelling the same work at once is the same bargain `put_notes` and
+/// `patch_alignments` already make — the second is refused and has to re-read
+/// and re-apply rather than being merged.
+///
+/// `#[allow(clippy::result_large_err)]` for the reason `put_notes` carries it:
+/// the closure below resolves a `Response`-carrying error and clippy checks
+/// each closure as its own item.
+#[allow(clippy::result_large_err)]
+async fn put_truth(
+    State(state): State<Arc<ServeState>>,
+    AxPath(id): AxPath<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    // Taken as `Bytes` and deserialised here rather than through `Json`, so a
+    // malformed body is refused in this server's own words — O5's rule, and
+    // the shape `put_notes` already follows. `TruthDoc::from_json` already
+    // carries that wording (see its own doc comment), so its message is
+    // passed straight through rather than re-derived here.
+    let text = match std::str::from_utf8(&body) {
+        Ok(text) => text,
+        Err(why) => return bad_request(format!("truth body is not valid UTF-8: {why}")),
+    };
+    let incoming = match taiyaku_core::TruthDoc::from_json(text) {
+        Ok(doc) => doc,
+        Err(why) => return bad_request(why),
+    };
+
+    // Serialising, hashing and writing all block, and the read-compare-write
+    // below holds an exclusive lock across a file write — `get_page`'s
+    // reasoning about the async worker applies unchanged.
+    let written = tokio::task::spawn_blocking(move || {
+        let found = state.work_or_missing(&id).map_err(NoTruth::NotFound)?;
+
+        // Held across read, compare and write, on the same mutex
+        // `put_notes` holds for the same reason — `Work` has one
+        // read-modify-write guard per work, not one per document kind, and
+        // a truth write racing a notes write on the same work is exactly the
+        // case it exists to exclude. Two requests that both read the same
+        // document and both find their validator current would otherwise
+        // both write, and one labeller's session would vanish with nothing
+        // saying so.
+        let _guard = found.notes_guard();
+
+        let current = crate::truth::load(found)
+            .map_err(NoTruth::Failed)?
+            .unwrap_or_default();
+        let tag = notes_etag(&crate::truth::to_json(&current));
+        match if_match_hits(&headers, &tag) {
+            None => {
+                return Err(NoTruth::Precondition(
+                    StatusCode::PRECONDITION_REQUIRED,
+                    "writing truth must carry `If-Match` with the truth document's ETag, so two \
+                     labelling sessions on one work cannot silently overwrite each other"
+                        .to_string(),
+                ));
+            }
+            Some(false) => {
+                return Err(NoTruth::Precondition(
+                    StatusCode::PRECONDITION_FAILED,
+                    format!(
+                        "this truth document has changed since you read it; its ETag is now \
+                         {tag}. Re-read it and write again."
+                    ),
+                ));
+            }
+            Some(true) => {}
+        }
+
+        crate::truth::store(found, &incoming).map_err(NoTruth::Failed)?;
+        Ok(crate::truth::to_json(&incoming))
+    })
+    .await;
+
+    match written {
+        Ok(Ok(json)) => {
+            let tag = notes_etag(&json);
+            (
+                [
+                    (header::CONTENT_TYPE, "application/json"),
+                    (header::ETAG, tag.as_str()),
+                ],
+                json,
+            )
+                .into_response()
+        }
+        Ok(Err(refusal)) => refusal.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("truth write panicked: {e}"),
+        )
+            .into_response(),
+    }
+}
+
 async fn get_progress(
     State(state): State<Arc<ServeState>>,
     AxPath(id): AxPath<String>,
@@ -1080,6 +1258,7 @@ pub fn build_router(state: Arc<ServeState>) -> Router {
             get(get_progress).put(put_progress),
         )
         .route("/api/works/{work}/notes", get(get_notes).put(put_notes))
+        .route("/api/works/{work}/truth", get(get_truth).put(put_truth))
         .route(
             "/api/works/{work}/alignments",
             axum::routing::patch(patch_alignments),
@@ -3109,6 +3288,121 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(
             message.contains("these are not notes"),
+            "the refusal must be this server's own: {message}"
+        );
+    }
+
+    /// A work nobody has labelled yet still answers with a document, not a
+    /// 404 or a 204 — the same reasoning `get_notes`'s empty-document test
+    /// carries, so a client's first write has something to be conditional on.
+    #[tokio::test]
+    async fn a_work_nobody_has_labelled_answers_an_empty_document_with_a_tag() {
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
+        let router = build_router(state);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::get("/api/works/w/truth")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers().contains_key(header::ETAG),
+            "a client's first write needs a validator to be conditional on"
+        );
+    }
+
+    #[tokio::test]
+    async fn writing_truth_without_if_match_is_refused() {
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
+        let router = build_router(state);
+        let body = taiyaku_core::TruthDoc::new().to_json();
+        let response = router
+            .oneshot(
+                Request::put("/api/works/w/truth")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PRECONDITION_REQUIRED);
+    }
+
+    #[tokio::test]
+    async fn a_successful_truth_write_returns_an_etag() {
+        // O35: a PUT response with no ETag turns every later write into a
+        // silent no-op. The notes route was fixed for exactly this; truth has
+        // the same shape and must not repeat it.
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
+        let router = build_router(state);
+        let tag = etag_of(&router, "/api/works/w/truth").await;
+        let body = taiyaku_core::TruthDoc::new().to_json();
+        let response = router
+            .oneshot(
+                Request::put("/api/works/w/truth")
+                    .header("content-type", "application/json")
+                    .header("if-match", tag)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers().contains_key(header::ETAG),
+            "O35: without this every later write is a silent no-op"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stale_validator_is_refused_with_the_current_tag() {
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
+        let router = build_router(state);
+        let body = taiyaku_core::TruthDoc::new().to_json();
+        let response = router
+            .oneshot(
+                Request::put("/api/works/w/truth")
+                    .header("content-type", "application/json")
+                    .header("if-match", "\"not-the-current-tag\"")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+    }
+
+    #[tokio::test]
+    async fn a_malformed_truth_body_is_refused_in_this_servers_own_words() {
+        let (state, _fixture) = crate::test_support::state_with_real_pages();
+        let router = build_router(state);
+        let tag = etag_of(&router, "/api/works/w/truth").await;
+        let response = router
+            .oneshot(
+                Request::put("/api/works/w/truth")
+                    .header("content-type", "application/json")
+                    .header("if-match", tag)
+                    .body(Body::from("{\"nonsense\":true}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // The status alone does not establish what this test is named for.
+        // `{"nonsense":true}` is valid JSON missing a required field, so
+        // axum's default `Json` extractor would answer 422 rather than 400 —
+        // but a 400 carrying axum's wording would still pass a status-only
+        // check, and O5's rule is about the words, not the number.
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let message = String::from_utf8_lossy(&body);
+        assert!(
+            message.contains("not a readable truth document"),
             "the refusal must be this server's own: {message}"
         );
     }

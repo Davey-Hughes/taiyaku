@@ -187,7 +187,7 @@ if ! command -v cargo-llvm-cov >/dev/null 2>&1 || ! command -v cargo-nextest >/d
   run env -u TAIYAKU_CORPUS cargo test --workspace --all-features
 else
   run env -u TAIYAKU_CORPUS cargo llvm-cov nextest --workspace --all-features \
-    --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$' \
+    --ignore-filename-regex '(geometry_experiment|region_experiment|score_corpus|/corpus)\.rs$' \
     --fail-under-lines 93
   # Guarded the same way the tool above is, and for the same reason: a Rust-only machine without
   # node should not fail the whole gate over the half of it that node runs. CI has no such problem —
@@ -196,7 +196,7 @@ else
     note_skip "the Rust per-file coverage floor (node not on PATH — the aggregate threshold ran, the per-file one did not)"
   else
     run cargo llvm-cov report --json --output-path target/rust-coverage.json \
-      --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$'
+      --ignore-filename-regex '(geometry_experiment|region_experiment|score_corpus|/corpus)\.rs$'
     run node scripts/coverage-floor.mjs target/rust-coverage.json
   fi
 fi

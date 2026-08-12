@@ -75,12 +75,12 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 658 tests, plus 1,195 in `web/`'s TypeScript — 899 in the `node`
-project and 296 in the `jsdom` one this branch added — and six more in a
+Five crates, 715 tests, plus 1,274 in `web/`'s TypeScript — 949 in the `node`
+project and 325 in the `jsdom` one — and eight more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
-and `vite` in `web/`. The six run under Vitest's browser mode over Playwright's
+and `vite` in `web/`. The eight run under Vitest's browser mode over Playwright's
 Chromium, and cover only what no Node environment can answer: `jsdom` has no
 layout engine and no real `HTMLImageElement.decode()`, and every defect the page
 area has shipped was one or the other. They are **not** a CI job — a cacheless
@@ -91,9 +91,10 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Thirteen of the 658 are standing checks gated on
-`TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs` and three in
-`crates/taiyaku-serve/src/corpus.rs` — one of which also needs
+`rayon` exactly as `align` already did. Seventeen of the 715 are standing checks gated on
+`TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs`, three in
+`crates/taiyaku-serve/src/corpus.rs` and four in
+`crates/taiyaku-cli/src/score_corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
 needs is absent, so CI stays green without the corpus or a reachable Stump.
 One measures composition
@@ -3636,6 +3637,29 @@ mismatched pair said nothing at all.
   detector, measured against four works, and why it does not work yet". What
   remains before a reader sees anything is a detector whose scale is computed
   over glyphs rather than over screentone, and then L2b's pairing.
+  **The instrument that can judge such a detector shipped on 2026-08-11**, as
+  sub-project A of two;
+  `docs/superpowers/specs/2026-08-11-l2-ground-truth-instrument-design.md` is
+  the record. A `taiyaku.truth.json` format in `taiyaku-core`, `GET`/`PUT
+  /truth` on the server, a browser labeller at `/label.html`, and
+  `taiyaku score`, which reports **five outcomes per hand-drawn box** —
+  one-to-one, merged, split, fragment, missed — plus recall per kind and the
+  count of boxes flagged `ignore`. `taiyaku score --sample corpus` prints the
+  worklist: 45 dev pages over nine editions, and 30 sealed held-out pages over
+  six the survey has never touched.
+  **Why an instrument came before another candidate**: every acceptance rule
+  this project has stated for the detector has since failed *as a rule* —
+  `median_area` could not fire, `blocks_per_page` ranks the editions
+  backwards, and L2A Task 9's rule inherited the second one's blindness. A
+  fourth would have failed the same way, and nobody would have found out until
+  someone cropped boxes by hand again.
+  **The first cut of the scorer reproduced that failure exactly**, which is
+  worth recording rather than quietly fixing: it decided "merged" by *counting*
+  how many labelled boxes a prediction covered, so a whole-page prediction over
+  one balloon came back a clean hit — and three of the five panels in
+  `notes.md`'s cropping table hold exactly one balloon. Classification is
+  directional now; association is not. **Nothing is labelled yet**, so no
+  figure about the detector has changed and sub-project B has not begun.
 - **Art book linking**, if it is worth it — needs a different hash, and roughly one
   art book page in three has any manga counterpart at all.
 

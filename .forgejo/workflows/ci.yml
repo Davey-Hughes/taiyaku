@@ -195,7 +195,7 @@ jobs:
         # invocation.
         run: |
           cargo llvm-cov nextest --workspace --all-features \
-            --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$' \
+            --ignore-filename-regex '(geometry_experiment|region_experiment|score_corpus|/corpus)\.rs$' \
             --fail-under-lines 93
       - name: Install node
         # This job needs node for exactly one thing — the coverage floor script
@@ -246,7 +246,7 @@ jobs:
         # other side, and the two files hash identically.
         run: |
           cargo llvm-cov report --json --output-path target/rust-coverage.json \
-            --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$'
+            --ignore-filename-regex '(geometry_experiment|region_experiment|score_corpus|/corpus)\.rs$'
           node scripts/coverage-floor.mjs target/rust-coverage.json
 
       # docs/status.md states a total test count twice and nothing derived

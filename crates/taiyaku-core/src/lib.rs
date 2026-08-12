@@ -14,6 +14,7 @@ mod route;
 mod sidecar;
 mod slot;
 mod solve;
+mod truth;
 
 pub use credits::{UnpairedRun, unpaired_runs};
 pub use regions::{
@@ -30,6 +31,7 @@ pub use solve::{
     Calibration, PageConfidence, PageHash, Verdict, average_run_length, calibrate, confidence,
     paired_slots, similarity, solve, verdict,
 };
+pub use truth::{Kind, TruthDoc, TruthEdition, TruthRegion, VERSION as TRUTH_VERSION};
 
 /// An inclusive range of page indices within a single edition.
 ///

@@ -69,7 +69,12 @@ const STATUS_MD = process.argv[3] ?? 'docs/status.md'
 // wording rather than on a line number, which every edit above them shifts.
 const CLAIMS = [
   { name: 'the crate summary', pattern: /Five crates, ([\d,]+) tests/ },
-  { name: 'the corpus-check sentence', pattern: /Thirteen of the ([\d,]+) are standing checks/ },
+  // The leading count word is matched as `\w+` rather than spelled out.
+  // That word is exactly the thing that drifts — `status.md`'s own open-items
+  // section records the same word going wrong three times — so anchoring on it
+  // makes this check fail with "claim not found" every time the number of
+  // standing checks changes, which is a false alarm about the wrong thing.
+  { name: 'the corpus-check sentence', pattern: /\w+ of the ([\d,]+) are standing checks/ },
 ]
 
 function fail(code, lines) {

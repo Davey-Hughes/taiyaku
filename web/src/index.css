@@ -22,3 +22,88 @@ body,
 body {
   margin: 0;
 }
+
+/* Out of the way until you go for them: the requirement that killed the
+   sidebar box list. A box is a thin outline at low opacity until hovered or
+   selected, so the artwork underneath stays readable while labelling. */
+.region-box {
+  border: 1px solid currentColor;
+  opacity: 0.15;
+  transition: opacity 80ms ease-out;
+}
+.region-box:hover,
+.region-box[data-selected="true"] {
+  opacity: 1;
+}
+
+/* Which kind a box carries, on the box itself.
+ *
+ * `RegionOverlay` puts `data-kind` on every box precisely so this can exist —
+ * "a colour difference is invisible to a test and to a reader who cannot
+ * distinguish them" — and nothing rendered it, so pressing `1`-`6` gave no
+ * confirmation at all. That bears directly on label quality, which is the one
+ * input this whole instrument has.
+ *
+ * Two signals, neither of them colour.
+ *
+ * The kind's own name, printed from `attr(data-kind)` rather than from six
+ * hand-written `content` rules. There is nothing to keep in step: a kind added
+ * to `taiyaku-core`'s `Kind` and to `labelling.ts` labels itself the day it
+ * arrives, and no rule can be the one somebody forgot. It rides the box's own
+ * opacity, so the selected box says `sfx` in full while the rest of the page
+ * stays a faint outline.
+ *
+ * And a border style per kind, because at the 0.15 opacity an unselected box
+ * sits at, an 10px word is not legible while a dotted-versus-solid edge is.
+ * This half *is* six rules, and a kind without one falls back to the plain
+ * outline above — legible, and named by its badge, just not separable at a
+ * glance until a rule is added here. */
+.region-box::after {
+  content: attr(data-kind);
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 0 2px;
+  font-size: 10px;
+  line-height: 1.4;
+  font-weight: 700;
+  background: Canvas;
+  color: CanvasText;
+  border: 1px solid currentColor;
+}
+.region-box[data-kind="dialogue"] {
+  border-style: solid;
+}
+.region-box[data-kind="narration"] {
+  border-style: double;
+  border-width: 3px;
+}
+.region-box[data-kind="sfx"] {
+  border-style: dotted;
+  border-width: 2px;
+}
+.region-box[data-kind="logo"] {
+  border-style: groove;
+  border-width: 3px;
+}
+.region-box[data-kind="credits"] {
+  border-style: ridge;
+  border-width: 3px;
+}
+.region-box[data-kind="other"] {
+  border-style: dashed;
+}
+
+/* The ignore hatch, last so it wins the border style from every kind above —
+ * a box excused from scoring has to be tellable from one that is scored no
+ * matter what it holds, and its badge keeps saying which kind it is. Cross
+ * hatching rather than a colour, for the reason at the top of this block.
+ * `absorbs` in `score.rs` calls this "the ignore hatch"; this is it. */
+.region-box[data-ignore="true"] {
+  border-style: dashed;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent 0 4px,
+    currentColor 4px 5px
+  );
+}

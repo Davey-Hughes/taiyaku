@@ -25,15 +25,23 @@ export interface NotesPorts {
   get(work: string): Promise<FetchedNotes>
 }
 
-/** Whether the notes a component is holding can be written at all. */
-export type WriteGate =
+/**
+ * Whether a document a component is holding can be written at all.
+ *
+ * Generic over the document type — `truthWrite.ts`'s `saveTruth` reuses this
+ * exact function rather than a second copy of the same three-way rule, since
+ * a labelling session is the same shape as a notes edit: a document, a
+ * validator that may or may not still be current, and nothing to write
+ * before either has loaded.
+ */
+export type WriteGate<T = NotesDoc> =
   /**
    * There is a document and a validator. Both are handed back rather than
    * left for the caller to re-narrow: `saveNotes` below needs the pair, and a
    * caller that had to prove again what this already proved would be free to
    * prove it differently.
    */
-  | { kind: 'write'; etag: string; doc: NotesDoc }
+  | { kind: 'write'; etag: string; doc: T }
   /**
    * Nothing has been loaded yet. Not a refusal and not a failure — there is
    * no document to write and nobody has asked for one to be written, so this
@@ -80,13 +88,20 @@ const NO_VALIDATOR =
  * The principle is §4.1a's, taken from the 412 path rather than invented here:
  * **refuse rather than write without a validator, and tell the reader.** The
  * refusal was already right. What was missing was the second half.
+ *
+ * `notice` defaults to `NO_VALIDATOR` — every existing call site names only
+ * `doc` and `etag`, and gets the notes wording it always got. A caller
+ * writing a different kind of document (`truthWrite.ts`'s `saveTruth`) passes
+ * its own sentence, so a reader who cannot save their labels is not told
+ * "these notes are not being saved".
  */
-export function writeGate(
-  doc: NotesDoc | undefined,
+export function writeGate<T>(
+  doc: T | undefined,
   etag: string | undefined,
-): WriteGate {
+  notice: string = NO_VALIDATOR,
+): WriteGate<T> {
   if (!doc) return { kind: 'wait' }
-  if (etag === undefined) return { kind: 'refuse', notice: NO_VALIDATOR }
+  if (etag === undefined) return { kind: 'refuse', notice }
   return { kind: 'write', etag, doc }
 }
 

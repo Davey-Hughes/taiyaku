@@ -6,6 +6,7 @@
  * fetching them into memory first would defeat both.
  */
 import type { NotesDoc } from './notes'
+import type { TruthDoc } from './truth'
 
 const seg = (s: string) => encodeURIComponent(s)
 
@@ -229,4 +230,47 @@ export async function patchAlignment(
   if (!res.ok)
     throw new Error(`correcting ${work}: ${res.status} ${await res.text()}`)
   return { json: await res.text(), etag: res.headers.get('etag') ?? undefined }
+}
+
+export interface FetchedTruth {
+  doc: TruthDoc
+  /** Absent only from a server older than the truth route, or a proxy that stripped it. */
+  etag?: string
+}
+
+/** Every labelled box on a work. */
+export async function getTruth(work: string): Promise<FetchedTruth> {
+  const res = await fetch(`/api/works/${seg(work)}/truth`)
+  if (!res.ok)
+    throw new Error(`reading truth: ${res.status} ${await res.text()}`)
+  return {
+    doc: (await res.json()) as TruthDoc,
+    etag: res.headers.get('etag') ?? undefined,
+  }
+}
+
+/**
+ * Replace a work's truth document, conditionally.
+ *
+ * `If-Match` is required by the server rather than optional here, as for
+ * `putNotes`. The stakes are higher than notes: a labelling session is hours
+ * of human work that exists nowhere else, and last-write-wins would discard
+ * it silently.
+ */
+export async function putTruth(
+  work: string,
+  etag: string,
+  doc: TruthDoc,
+): Promise<FetchedTruth> {
+  const res = await fetch(`/api/works/${seg(work)}/truth`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'if-match': etag },
+    body: JSON.stringify(doc),
+  })
+  if (!res.ok)
+    throw new Error(`writing truth: ${res.status} ${await res.text()}`)
+  return {
+    doc: (await res.json()) as TruthDoc,
+    etag: res.headers.get('etag') ?? undefined,
+  }
 }

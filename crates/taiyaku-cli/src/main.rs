@@ -48,6 +48,18 @@ mod fingerprint;
 mod geometry_experiment;
 mod inventory;
 mod regions;
+// `sample.rs`'s three items (`DEV_EDITIONS`, `HELD_OUT_EDITIONS`, `dev_pages`)
+// used to be read by `score_corpus.rs` alone, and were gated on `cfg(test)`
+// for exactly that reason — a `mod sample;` compiled unconditionally would
+// have left those three genuinely unused in the plain `bin "taiyaku"` build.
+// `score --sample` (`score.rs`) now reads them from that plain build itself,
+// to print the labelling worklist a human runs the binary to see, so the
+// build this comment used to describe no longer exists: the always-on caller
+// it said would justify removing the gate has arrived.
+mod sample;
+mod score;
+#[cfg(test)]
+mod score_corpus;
 // A one-off measurement rather than a shipped command, gated on
 // `TAIYAKU_CORPUS` exactly as `corpus` and `geometry_experiment` are — so it
 // is declared the same way, and no part of it is compiled into the binary.
@@ -103,6 +115,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("inventory") => inventory::command(&args[1..]),
         Some("credits") => credits::command(&args[1..]),
         Some("regions") => regions::command(&args[1..]),
+        Some("score") => score::command(&args[1..]),
         Some(other) => Err(format!("unknown command `{other}`")),
         None => {
             println!("taiyaku {}", env!("CARGO_PKG_VERSION"));
@@ -125,6 +138,15 @@ fn run(args: &[String]) -> Result<(), String> {
                  [--cache DIR] [--write]"
             );
             println!("       taiyaku regions <member>... --sidecar FILE [--write]");
+            // `--sidecar` is a flag, not a positional: `score` refuses to run
+            // without it, and a bare path in its place would be taken for a
+            // member and die in `member_digest`. `--sample` gets its own line
+            // because it is the only way to discover which pages to label, and
+            // a person who cannot see it here has no way to find the worklist.
+            // `score.rs`'s own `USAGE` is the other statement of this; the two
+            // must not disagree.
+            println!("       taiyaku score <member>... --sidecar FILE [--coverage F]");
+            println!("       taiyaku score --sample <corpus-root>");
             println!();
             println!("align options: --ltr --stats --cache DIR --write FILE --title NAME");
             println!("               --name-a KEY --name-b KEY --direct --no-split-spreads");

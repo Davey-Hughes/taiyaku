@@ -106,6 +106,10 @@ export default defineConfig({
         'src/**/*.d.ts',
         // Entry point: ten lines that call createRoot. Nothing to assert.
         'src/main.tsx',
+        // The labeller's own entry point — the same shape as `main.tsx`
+        // above, for the same reason: a handful of lines binding `Labeller`
+        // to the real ports and calling `createRoot`, nothing to assert.
+        'src/label.tsx',
         // The vitest browser harness, not application code.
         'src/browser-setup.ts',
         // The shared mount/rerender helper: test harness, the same category
@@ -144,6 +148,17 @@ export default defineConfig({
         // the other half of this gate and catches exactly that; vitest cannot
         // express both here — a glob entry is aggregated over its matches, and
         // `perFile` inside one is ignored, both tried and measured.
+      },
+    },
+  },
+  build: {
+    rollupOptions: {
+      // Two entries. Without this Vite takes index.html alone and the
+      // labeller silently does not ship -- there is no error, just a missing
+      // page.
+      input: {
+        main: fileURLToPath(new URL('index.html', import.meta.url)),
+        label: fileURLToPath(new URL('label.html', import.meta.url)),
       },
     },
   },

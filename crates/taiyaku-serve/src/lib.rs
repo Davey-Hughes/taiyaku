@@ -33,6 +33,7 @@ mod reqlog;
 mod routes;
 mod source;
 mod stump;
+mod truth;
 mod works;
 
 use std::sync::Arc;

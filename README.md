@@ -82,6 +82,14 @@ taiyaku credits en-fan-c*.cbz --sidecar taiyaku.json
 # "What is known to be wrong or missing"
 taiyaku regions raw-v01.cbz --sidecar taiyaku.json
 
+# how well does it find them? scores what `regions` detects against boxes a
+# person drew in a sibling <stem>.truth.json, as five outcomes per box rather
+# than a hit-or-miss — a merged panel and a split word are different failures
+taiyaku score --sidecar taiyaku.json raw-v01.cbz
+
+# which pages should be labelled by hand in the first place?
+taiyaku score --sample corpus
+
 # reading raw page 47, which English page is in front of you?
 taiyaku lookup taiyaku.json raw en 47
 

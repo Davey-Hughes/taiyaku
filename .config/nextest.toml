@@ -33,8 +33,8 @@
 junit = { path = "junit.xml" }
 slow-timeout = { period = "30s", terminate-after = 2 }
 
-# The exempt set is not a new list: it is exactly the four files
-# `--ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$'`
+# The exempt set is not a new list: it is exactly the five files
+# `--ignore-filename-regex '(geometry_experiment|region_experiment|score_corpus|/corpus)\.rs$'`
 # already names in both coverage steps of ci.yml and check-all.sh. One exempt
 # set, two gates, one reason — these are gated one-off measurements against
 # 26 GB of real material, not unit tests.
@@ -51,6 +51,13 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # TAIYAKU_CORPUS is validated. Matching cargo test's existing selection exactly
 # is the point — the exempt set must be the set the corpus step already runs,
 # or the two disagree silently.
+#
+# `test(score_corpus)` joined them when the ground-truth scorer landed. It is
+# the same shape as the two experiments beside it: gated on TAIYAKU_CORPUS,
+# skipping cleanly without it, and decoding real full-resolution pages when it
+# has it. Its own `--sample` sibling takes ~14 s just to count pages across
+# fifteen editions, so the 30 s default would bound a measurement rather than
+# a bug.
 [[profile.default.overrides]]
-filter = "test(corpus::) + test(geometry_experiment) + test(region_experiment)"
+filter = "test(corpus::) + test(geometry_experiment) + test(region_experiment) + test(score_corpus)"
 slow-timeout = { period = "60s" }

@@ -3,11 +3,13 @@ import {
   getNotes,
   getProgress,
   getSidecar,
+  getTruth,
   listWorks,
   pageUrl,
   patchAlignment,
   putNotes,
   putProgress,
+  putTruth,
   thumbUrl,
 } from './api'
 
@@ -267,6 +269,88 @@ describe('network calls', () => {
       await expect(
         putNotes('w', '"old"', { work: 'w', notes: [] }),
       ).rejects.toThrow(/changed since you read them/)
+    })
+  })
+
+  describe('truth', () => {
+    // A work nobody has labelled answers with an empty document rather than
+    // a 204, the same rule `notes` follows above and for the same reason:
+    // the first write needs a validator to be conditional on.
+    it('reads the document and the validator a write has to carry', async () => {
+      const urls: string[] = []
+      vi.stubGlobal('fetch', (url: string) => {
+        urls.push(url)
+        return Promise.resolve(
+          new Response('{"taiyaku_truth":1,"editions":{}}', {
+            status: 200,
+            headers: { etag: '"t1"' },
+          }),
+        )
+      })
+
+      const fetched = await getTruth('w')
+
+      expect(urls[0]).toBe('/api/works/w/truth')
+      expect(fetched.etag).toBe('"t1"')
+      expect(fetched.doc).toEqual({ taiyaku_truth: 1, editions: {} })
+    })
+
+    it('writes conditionally, and sends the document verbatim', async () => {
+      const calls: RequestInit[] = []
+      vi.stubGlobal('fetch', (_url: string, init: RequestInit) => {
+        calls.push(init)
+        return Promise.resolve(
+          new Response('{"taiyaku_truth":1,"editions":{}}', {
+            status: 200,
+            headers: { etag: '"t2"' },
+          }),
+        )
+      })
+
+      const doc = {
+        taiyaku_truth: 1,
+        editions: {
+          'raw-mono': {
+            members: [{ sha256: 'aa' }],
+            pages: { '0': [] },
+          },
+        },
+      }
+      const fresh = await putTruth('w', '"t1"', doc)
+
+      expect(calls[0].method).toBe('PUT')
+      expect(new Headers(calls[0].headers).get('if-match')).toBe('"t1"')
+      expect(JSON.parse(calls[0].body as string)).toEqual(doc)
+      expect(fresh.etag).toBe('"t2"')
+    })
+
+    /** O35: a labelling session is hours of work nowhere else, so the lost-update answer is reported rather than retried through. */
+    it('reports a stale validator by name', async () => {
+      vi.stubGlobal('fetch', () =>
+        Promise.resolve(
+          new Response('this document has changed since you read it', {
+            status: 412,
+          }),
+        ),
+      )
+
+      await expect(
+        putTruth('w', '"old"', { taiyaku_truth: 1, editions: {} }),
+      ).rejects.toThrow(/changed since you read it/)
+    })
+
+    it('reports the etag as undefined when the response carries none — O35 leaves this to writeGate, not to this function', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(
+            new Response('{"taiyaku_truth":1,"editions":{}}', { status: 200 }),
+          ),
+      )
+
+      const fresh = await getTruth('w')
+      expect(fresh.etag).toBeUndefined()
     })
   })
 })
