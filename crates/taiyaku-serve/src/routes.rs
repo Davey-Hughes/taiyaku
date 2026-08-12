@@ -170,11 +170,35 @@ pub(crate) fn if_none_match_hits(headers: &HeaderMap, tag: &str) -> bool {
 /// The `ETag` covers revalidation; this covers freshness; there is no third
 /// question for a date to answer.
 ///
-/// One day is chosen from two ends rather than measured: long enough that a
-/// work read across an evening and reopened the next morning costs no round
-/// trip, short enough that a replaced archive corrects itself without anyone
-/// knowing to clear anything. Any value from an hour to a week satisfies both.
-pub(crate) const PAGE_CACHE_CONTROL: &str = "private, max-age=86400";
+/// **`no-cache` rather than a freshness lifetime, because the URL is not a
+/// unique name for these bytes.** This was `private, max-age=86400`, chosen so
+/// that a replaced archive would correct itself inside a day. The paragraph
+/// above had the shape of the problem right — "the URL names a work, an
+/// edition and an index" — and one thing wrong: a **work id is not unique**.
+/// It is the sidecar's filename stem, and every sidecar across this corpus is
+/// `taiyaku.json`, so `/api/works/taiyaku/raw-mono/pages/10` addresses a
+/// different volume's page 10 depending only on which sidecar the server was
+/// started with.
+///
+/// Measured on two of them: the same URL returned images with SHA-256s
+/// `ab5da993…` and `17655ca0…`, under `ETag`s the server had already derived
+/// from different member digests. The server could tell them apart the whole
+/// time; the client was told not to ask for a day. A labeller restarting the
+/// server onto the next volume — which this corpus requires, since two works
+/// cannot be served at once for the same reason — saw the previous volume's
+/// artwork with the new volume's page numbers, and the only symptom was
+/// recognising the pictures.
+///
+/// That is worse than a stale read. Boxes drawn against it would be labels on
+/// the wrong art, which `TruthEdition::is_stale_for` calls the sharpest form
+/// of the staleness problem, and nothing downstream could detect it.
+///
+/// `no-cache` does not mean "do not store": the entry is kept and revalidated,
+/// so the `ETag` above does the work it was always able to do and a page that
+/// really is unchanged comes back as a bodiless `304`. The cost is one
+/// conditional request per page rather than none; the alternative is a client
+/// that cannot be told it is looking at the wrong book.
+pub(crate) const PAGE_CACHE_CONTROL: &str = "private, no-cache";
 
 /// The reply to a validator that already matches: the tag, and no body —
 /// sending the very bytes the header exists to avoid transferring would
@@ -2085,7 +2109,7 @@ mod tests {
     /// entry exactly as stale as it was and cost a round trip on the very
     /// next read.
     #[tokio::test]
-    async fn every_route_serving_a_member_s_bytes_says_how_long_they_may_be_reused() {
+    async fn every_route_serving_a_member_s_bytes_makes_the_client_revalidate() {
         let (state, _fixture) = crate::test_support::state_with_real_pages();
         let app = build_router(state);
 
@@ -2101,11 +2125,28 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let policy = response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
             assert_eq!(
-                response.headers().get(header::CACHE_CONTROL),
-                Some(&header::HeaderValue::from_static(PAGE_CACHE_CONTROL)),
-                "{uri} serves bytes fixed by a member's content and must say \
-                 so; without it every reuse asks the network first"
+                policy, PAGE_CACHE_CONTROL,
+                "{uri} serves a member's bytes and must state a caching policy"
+            );
+            // The property, not just the constant. Asserting only that the
+            // header equals `PAGE_CACHE_CONTROL` passes for *any* value that
+            // constant takes, so it could not have caught what it was there
+            // to catch: this was `max-age=86400`, and a work id is the
+            // sidecar's filename stem, which every sidecar in the corpus
+            // shares. One URL, two volumes, and a day before the client asks.
+            assert!(
+                policy.contains("no-cache"),
+                "{uri} must be revalidated rather than assumed fresh: a work id \
+                 is not unique, so this URL does not name these bytes — it was \
+                 measured serving two different volumes' page 10 under two \
+                 different ETags. Got: {policy}"
             );
         }
 

@@ -1047,6 +1047,15 @@ local parse:
   reopening was that a validator shrinks a response and does not remove the
   round trip; `PAGE_CACHE_CONTROL` — `private, max-age=86400`, on
   `get_page`, `get_thumb`, the OPDS stream and the OPDS cover — removes it.
+  **That freshness lifetime was later withdrawn and the round trip is back**,
+  as `private, no-cache`: a work id is the sidecar's filename stem and every
+  sidecar in the corpus is `taiyaku.json`, so one URL addresses a different
+  volume's page depending only on which sidecar `serve` was started with.
+  Measured on two of them — the same URL, SHA-256s `ab5da993…` and
+  `17655ca0…`, under ETags the server had already derived from different
+  member digests. The reasoning recorded here was sound and rested on a
+  premise that was not: that the URL names the bytes. See the constant's own
+  doc in `routes.rs`.
   With freshness in hand there is no reuse left to count, so the question
   "how many revisits does real reading produce?" stops gating the item: the
   answer costs nothing either way.

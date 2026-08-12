@@ -5978,6 +5978,14 @@ count, and the question stops gating anything.
 the OPDS stream and the OPDS cover. Two of those four had no validator of any
 kind before this.
 
+**Superseded: the value is now `private, no-cache`.** The four call sites and
+the validators all stand; only the freshness lifetime went. A work id is not
+unique — it is the sidecar's filename stem, and every sidecar in this corpus
+is `taiyaku.json` — so `/api/works/taiyaku/raw-mono/pages/10` served a
+different volume's artwork depending on which sidecar the server was started
+with, for up to a day, with no symptom but recognising the pictures. A
+labeller hit it on the first switch between works.
+
 **`Last-Modified` is named in the item and is deliberately not shipped.** Two
 reasons, and the first is the one that would have hurt. It needs the member
 file's mtime, which needs a `stat`, on the async worker, on every request —
