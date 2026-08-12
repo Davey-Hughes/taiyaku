@@ -218,11 +218,33 @@ export function Labeller({
     }
   }, [ports, work])
 
+  /**
+   * Whether the page on screen was *chosen* rather than merely landed on.
+   *
+   * Landing is not labelling. `setPage(0)` below fires on mount and again on
+   * every work or edition change, so without this the act of opening the
+   * labeller — or switching from `raw-mono` to `en-mono` — wrote a present,
+   * empty key for page 0. That key is a claim, and a strong one: the
+   * absent/empty distinction reads a present `[]` as *"a person looked at this
+   * page and there is no text on it"*.
+   *
+   * Measured against the real dev set, that is nine phantom pages against 45
+   * real ones — one per edition a labeller opens. `score` counts every
+   * prediction on a page whose truth is empty as **spurious**, and page 0 is a
+   * cover, which carries a title logo and an author's name. So nine covers'
+   * worth of *correct* detections would have been charged against every
+   * candidate, in the one term — `spurious_per_page` — that the promotion rule
+   * states per page rather than as a raw count.
+   */
+  const deliberate = useRef(false)
+
   // A different work or a different edition's page 40 is not the page the
   // reader was just looking at.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `work`/`edition` are triggers, not closure reads — the body always does the same thing, and must do it exactly when either changes.
   useEffect(() => {
     setPage(0)
+    // The page this resets to was chosen by nobody.
+    deliberate.current = false
   }, [work, edition])
 
   // Enter (edition, page): load its boxes, or `[]` for a page never opened.
@@ -252,6 +274,17 @@ export function Labeller({
   // biome-ignore lint/correctness/useExhaustiveDependencies: `ports`/`work`/`edition`/`page`/`shownDoc`/`sidecarInfo`/`etag` are read fresh from the closure, not tracked — the trigger is `boxes` changing. Tracking `doc` here would also fire this on the `setDoc` two lines below, looping forever.
   useEffect(() => {
     if (!ports || !work || !edition || !shownDoc) return
+    // An automatic landing on an empty page this document has never keyed
+    // writes nothing — see `deliberate` above for the nine phantom pages this
+    // is here to keep out of the ground truth.
+    //
+    // `alreadyKeyed` is the third term rather than a redundant one: once a box
+    // has been drawn here the page *is* keyed, and deleting that last box must
+    // still persist. Guarding on `deliberate` and emptiness alone would have
+    // made the delete a silent no-op, leaving the box in the document with
+    // nothing on screen to show for it.
+    const alreadyKeyed = pageRegions(shownDoc, edition, page) !== undefined
+    if (!deliberate.current && boxes.length === 0 && !alreadyKeyed) return
     const members = sidecarInfo?.byEdition[edition]?.members ?? []
     const next = withPage(
       shownDoc,
@@ -474,7 +507,13 @@ export function Labeller({
               min={0}
               max={pageCount !== undefined ? pageCount - 1 : undefined}
               value={page}
-              onChange={(e) => setPage(clampPage(Number(e.target.value)))}
+              onChange={(e) => {
+                // Typing a page number is the choice `deliberate` is about: a
+                // page reached this way records an empty key on arrival, which
+                // is how "I looked here and there is no text" gets said at all.
+                deliberate.current = true
+                setPage(clampPage(Number(e.target.value)))
+              }}
             />
           </label>
           {pageCount !== undefined && (

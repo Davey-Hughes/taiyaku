@@ -75,8 +75,8 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 715 tests, plus 1,274 in `web/`'s TypeScript — 949 in the `node`
-project and 325 in the `jsdom` one — and eight more in a
+Five crates, 715 tests, plus 1,277 in `web/`'s TypeScript — 949 in the `node`
+project and 328 in the `jsdom` one — and eight more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`

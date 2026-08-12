@@ -262,6 +262,32 @@ function twoWorkPorts(): {
 const selects = (host: HTMLElement) =>
   [...host.querySelectorAll('select')] as HTMLSelectElement[]
 
+/**
+ * Send the labeller to a page the way a person does — by typing into the page
+ * input.
+ *
+ * React tracks a controlled input's value through its own property setter, so
+ * mutating `.value` directly leaves that tracker stale and the subsequent
+ * `input` event a no-op. The native setter, taken off the prototype, is what a
+ * real keystroke goes through instead.
+ *
+ * It matters here beyond convenience: choosing a page is exactly what
+ * distinguishes a recorded observation from a page the labeller merely landed
+ * on, so a test that reached `setPage` by any other route would not be
+ * exercising the thing under test.
+ */
+function goToPage(host: HTMLElement, page: string) {
+  const input = host.querySelector('input[type="number"]') as HTMLInputElement
+  const nativeSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    'value',
+  )?.set
+  act(() => {
+    nativeSetter?.call(input, page)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
 /** `Annotations.test.tsx`'s `stubRect`/`stubNatural`, for the same reason:
  * jsdom has no layout engine, so a real `<img>`'s `getBoundingClientRect()`
  * and `naturalWidth`/`naturalHeight` are zero until stubbed. */
@@ -309,13 +335,26 @@ describe('Labeller with ports', () => {
     expect(edition.value).toBe('raw-mono')
   })
 
-  it('shows progress against the sidecar page count — landing on page 0 already counts it visited', async () => {
+  it('shows progress against the sidecar page count — landing on page 0 counts nothing', async () => {
     const { ports } = fakePorts()
     const host = mount(<Labeller ports={ports} />)
     await flush()
-    // Arriving marks the page visited in local state at once (Task 10's
-    // absent/empty rule), ahead of the debounced write actually landing —
-    // the same optimism `putProgress`'s own debounce carries.
+    // Landing is not labelling. The labeller opens on page 0 because it has to
+    // open somewhere, and nobody chose it — so the progress readout starts at
+    // zero and the document stays empty.
+    expect(
+      host.querySelector('[data-testid="truth-progress"]')?.textContent,
+    ).toBe('0 / 3 pages labelled')
+  })
+
+  it('counts a page the labeller was actually sent to, even with no boxes on it', async () => {
+    const { ports } = fakePorts()
+    const host = mount(<Labeller ports={ports} />)
+    await flush()
+    goToPage(host, '2')
+    await flush()
+    // The other half of the same rule: a page reached on purpose and found to
+    // hold no text is a real observation, and must still be recorded.
     expect(
       host.querySelector('[data-testid="truth-progress"]')?.textContent,
     ).toBe('1 / 3 pages labelled')
@@ -356,9 +395,11 @@ describe('Labeller with ports', () => {
     )
   })
 
-  it('writes a present-but-empty key for a page opened and left with no edits, on hide', async () => {
+  it('writes a present-but-empty key for a page navigated to and left with no edits, on hide', async () => {
     const { ports, puts } = fakePorts()
-    mount(<Labeller ports={ports} />)
+    const host = mount(<Labeller ports={ports} />)
+    await flush()
+    goToPage(host, '1')
     await flush()
     act(() => {
       window.dispatchEvent(new Event('pagehide'))
@@ -366,10 +407,10 @@ describe('Labeller with ports', () => {
     await flush()
     expect(puts.length).toBeGreaterThan(0)
     const written = puts[puts.length - 1].doc
-    expect(written.editions['raw-mono'].pages['0']).toEqual([])
+    expect(written.editions['raw-mono'].pages['1']).toEqual([])
   })
 
-  it('never writes a key for a page nobody has navigated to', async () => {
+  it('writes nothing at all for a session that only ever landed on page 0', async () => {
     const { ports, puts } = fakePorts()
     mount(<Labeller ports={ports} />)
     await flush()
@@ -377,8 +418,79 @@ describe('Labeller with ports', () => {
       window.dispatchEvent(new Event('pagehide'))
     })
     await flush()
+    // Not "wrote an empty document" — wrote *nothing*. A put here would carry a
+    // `pages` key for page 0, and this is the write that put one phantom page
+    // into each of the nine dev editions.
+    expect(puts).toEqual([])
+  })
+
+  it('persists deleting the last box on a page, rather than silently keeping it', async () => {
+    const { ports, puts } = fakePorts({
+      get: () =>
+        Promise.resolve({
+          doc: {
+            taiyaku_truth: 1,
+            editions: {
+              'raw-mono': {
+                members: [{ sha256: 'aa' }],
+                pages: {
+                  '0': [
+                    {
+                      x: 0.1,
+                      y: 0.1,
+                      w: 0.2,
+                      h: 0.2,
+                      axis: 'v',
+                      kind: 'dialogue',
+                      ignore: false,
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          etag: 'v1',
+        }),
+    })
+    const host = mount(<Labeller ports={ports} />)
+    await flush()
+    // Page 0 was landed on, not chosen, and removing the one box leaves it
+    // empty — the exact shape the `deliberate` guard would swallow if it did
+    // not also ask whether the document already keys this page.
+    const box = host.querySelector('[data-testid^="region-"]') as HTMLElement
+    act(() => {
+      box.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete' }))
+    })
+    await flush()
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+    await flush()
+    expect(puts.length).toBeGreaterThan(0)
+    expect(puts[puts.length - 1].doc.editions['raw-mono'].pages['0']).toEqual(
+      [],
+    )
+  })
+
+  it('never writes a key for a page nobody has navigated to', async () => {
+    const { ports, puts } = fakePorts()
+    const host = mount(<Labeller ports={ports} />)
+    await flush()
+    // Visit exactly one page, so there is a real write to inspect and the
+    // absence of the other two keys means something. Asserting against a
+    // document nothing ever wrote would pass no matter what this code did.
+    goToPage(host, '1')
+    await flush()
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+    await flush()
     const written = puts[puts.length - 1].doc
-    expect(written.editions['raw-mono'].pages['1']).toBeUndefined()
+    expect(written.editions['raw-mono'].pages['1']).toEqual([])
+    expect(written.editions['raw-mono'].pages['0']).toBeUndefined()
     expect(written.editions['raw-mono'].pages['2']).toBeUndefined()
   })
 
@@ -446,6 +558,11 @@ describe('Labeller with ports', () => {
     })
     const host = mount(<Labeller ports={ports} />)
     await flush()
+    // A deliberate visit, because landing on page 0 no longer attempts a write
+    // at all — and with nothing attempted there would be nothing for the
+    // missing validator to refuse, so this test would pass without measuring.
+    goToPage(host, '1')
+    await flush()
     act(() => {
       window.dispatchEvent(new Event('pagehide'))
     })
@@ -467,9 +584,13 @@ describe('Labeller with ports', () => {
     ).toMatch(/disk is full/)
   })
 
-  it('resets to page 0 and loads the new edition when the reader switches editions', async () => {
-    const { ports } = fakePorts()
+  it('resets to page 0 on an edition switch, and does not count that page as visited', async () => {
+    const { ports, puts } = fakePorts()
     const host = mount(<Labeller ports={ports} />)
+    await flush()
+    // Choose a page in the first edition, so the switch below is crossing from
+    // a deliberate visit rather than from the mount's own landing.
+    goToPage(host, '2')
     await flush()
     const [, edition] = selects(host)
     act(() => {
@@ -477,11 +598,21 @@ describe('Labeller with ports', () => {
       edition.dispatchEvent(new Event('change', { bubbles: true }))
     })
     await flush()
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+    await flush()
     const page = host.querySelector('input[type="number"]') as HTMLInputElement
     expect(page.value).toBe('0')
     expect(
       host.querySelector('[data-testid="truth-progress"]')?.textContent,
-    ).toBe('1 / 3 pages labelled')
+    ).toBe('0 / 3 pages labelled')
+    // The switch must not carry the previous page's deliberateness with it.
+    // One of these per edition is what put nine phantom pages into a 45-page
+    // dev set.
+    const written = puts[puts.length - 1].doc
+    expect(written.editions['en-mono']).toBeUndefined()
+    expect(written.editions['raw-mono'].pages['2']).toEqual([])
   })
 
   it('clamps a page number typed past the edition’s last page', async () => {
