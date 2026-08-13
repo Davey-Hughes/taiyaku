@@ -176,3 +176,16 @@ crates/taiyaku-wasm/pkg/
 # Vitest browser mode writes a screenshot beside a test when it fails. Useful
 # while debugging, never source.
 web/src/__screenshots__/
+
+# The same rule, for the directory Vitest actually uses for attachments —
+# content-addressed filenames, written on a failing or screenshotting run.
+# Seven of them were committed across two PRs (#35 and #59) before this line
+# existed, and referenced by nothing. The rule above was written for the right
+# reason and pointed at the wrong path.
+web/.vitest-attachments/
+
+# A screenshot of the labeller's toolbar, committed in #59 and referenced by no
+# markdown, HTML, CSS, TypeScript, Rust or config file. Named rather than
+# glob-ignored, so that adding a *deliberate* image to the repository root
+# stays a decision somebody makes rather than something this line swallows.
+/controls.png
