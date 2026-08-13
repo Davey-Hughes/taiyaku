@@ -1,0 +1,18 @@
+{
+  "work": "gotoubun-v01",
+  "edition": "en-fan",
+  "against": "raw-mono",
+  "pages": 235,
+  "slots": 240,
+  "swept": true,
+  "runs": [
+    { "pages": [1, 43],    "member": 0, "local": [1, 43],   "at_member_end": false, "slots": null },
+    { "pages": [95, 96],   "member": 1, "local": [51, 52],  "at_member_end": true,  "slots": null },
+    { "pages": [168, 169], "member": 3, "local": [31, 32],  "at_member_end": true,  "slots": null },
+    { "pages": [198, 199], "member": 4, "local": [29, 30],  "at_member_end": true,  "slots": null },
+    { "pages": [225, 226], "member": 5, "local": [26, 27],  "at_member_end": true,  "slots": null },
+    { "pages": [226, 230], "member": 6, "local": [0, 4],    "at_member_end": false, "slots": null }
+  ],
+  "credit_pages": [43, 95, 168, 198, 225],
+  "notes": "Page 43 is c000 local 43, the pink underdogscans + BOSEN SCAN disc. It is a credits page the solver paired, so it appears in no unpaired run and signal 1 cannot reach it. It is the recall ceiling, confirmed by extraction. Page 226-229 is the volume's own front matter. Pages 1-42 are the prototype one-shot. c002 local 40 carries credits typeset into a story page and is deliberately not counted: there is no page to classify."
+}

@@ -1,0 +1,183 @@
+{
+  "against": "raw-mono",
+  "credit_pages": [
+    16,
+    31,
+    46,
+    59,
+    74,
+    91,
+    104,
+    119,
+    134,
+    152
+  ],
+  "edition": "en-fan",
+  "notes": "Cirno9baka prints a credits card at the end of nearly every chapter: ten in one volume, against five across both previously surveyed editions. Six of the ten are byte-identical (one entry sha256, 398,900 bytes, 1028x663); the other four are variants of the same design, one adding PROOFREAD BY: MESDAGAR, VOLANDUM. ComicInfo.xml names the same group. Signal 1 finds nine of the ten. THE MISS IS PAGE 152, and it is the corpus's first measured credits page inside a run longer than 1: c10 ends on a run of two, page 151 the publisher's greyscale colophon (Futabasha imprint, ISBN, print date) and page 152 a Cirno9baka card, so MAX_CREDIT_RUN = 1 rejects both. Raising the bound to 2 would take this true positive and the colophon with it. Swept exhaustively three ways: all 153 pages ranked by mean luminance and by standard deviation (darkest are ordinary story pages, flattest are the volume's decorative half-title dividers), and all 11 landscape pages enumerated, since this group's cards are landscape where story pages are portrait - 10 cards and the 4852x2144 wraparound dust jacket at page 0. The alignment this was surveyed through is FRAGMENTED (14 runs, average 11.8 slots), so these rows are evidence about positioning and weaker evidence about run length. Every card is in COLOUR and the one non-credits page in the candidate region is greyscale, which is the reverse of what kaguya-v01 suggested.",
+  "pages": 153,
+  "runs": [
+    {
+      "at_member_end": true,
+      "local": [
+        16,
+        17
+      ],
+      "member": 0,
+      "pages": [
+        16,
+        17
+      ],
+      "slots": [
+        16,
+        18
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        14,
+        15
+      ],
+      "member": 1,
+      "pages": [
+        31,
+        32
+      ],
+      "slots": [
+        32,
+        34
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        14,
+        15
+      ],
+      "member": 2,
+      "pages": [
+        46,
+        47
+      ],
+      "slots": [
+        48,
+        50
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        12,
+        13
+      ],
+      "member": 3,
+      "pages": [
+        59,
+        60
+      ],
+      "slots": [
+        62,
+        64
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        14,
+        15
+      ],
+      "member": 4,
+      "pages": [
+        74,
+        75
+      ],
+      "slots": [
+        78,
+        80
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        16,
+        17
+      ],
+      "member": 5,
+      "pages": [
+        91,
+        92
+      ],
+      "slots": [
+        96,
+        98
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        12,
+        13
+      ],
+      "member": 6,
+      "pages": [
+        104,
+        105
+      ],
+      "slots": [
+        110,
+        112
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        14,
+        15
+      ],
+      "member": 7,
+      "pages": [
+        119,
+        120
+      ],
+      "slots": [
+        126,
+        128
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        14,
+        15
+      ],
+      "member": 8,
+      "pages": [
+        134,
+        135
+      ],
+      "slots": [
+        142,
+        144
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        16,
+        18
+      ],
+      "member": 9,
+      "pages": [
+        151,
+        153
+      ],
+      "slots": [
+        160,
+        163
+      ]
+    }
+  ],
+  "slots": 163,
+  "swept": true,
+  "work": "kobayashi-v01"
+}

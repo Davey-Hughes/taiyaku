@@ -1,0 +1,11 @@
+{
+  "against": "raw-mono",
+  "credit_pages": [],
+  "edition": "en-fan",
+  "notes": "Oak, translating the Japanese web release. Carries no credits PAGE at all - its credit is a small note set onto existing pages - so every candidate here would be a false positive. Volume-packaged: one member, so signal 1 has one position it could fire on and zero unpaired runs to fire from. The alignment is unusually clean at 3 runs and 216 whole pairings. NOT EXHAUSTIVELY SWEPT: only pages some rule flagged were viewed (plus every chapter-final page on kobayashi-v08, kaguya-v03 and kaguya-v08), so this edition contributes to precision and its credit_pages is a floor, not a proven denominator. See the design's section 8.",
+  "pages": 219,
+  "runs": [],
+  "slots": 222,
+  "swept": false,
+  "work": "oshinoko-v01"
+}

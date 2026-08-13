@@ -1,0 +1,28 @@
+{
+  "against": "raw-mono",
+  "credit_pages": [],
+  "edition": "en-fan",
+  "notes": "TSHH, a DIFFERENT group from the Cirno9baka that scanlated v01 and v03 of this same series - which retires the assumption that a series' fan edition is one group's habit. No credits card on any chapter-final page; the last page of each chapter is ordinary manga carrying the magazine's own continuation footer. Signal 1 proposes nothing. NOT EXHAUSTIVELY SWEPT: only pages some rule flagged were viewed (plus every chapter-final page on kobayashi-v08, kaguya-v03 and kaguya-v08), so this edition contributes to precision and its credit_pages is a floor, not a proven denominator. See the design's section 8.",
+  "pages": 152,
+  "runs": [
+    {
+      "at_member_end": false,
+      "local": [
+        0,
+        1
+      ],
+      "member": 9,
+      "pages": [
+        135,
+        136
+      ],
+      "slots": [
+        136,
+        137
+      ]
+    }
+  ],
+  "slots": 153,
+  "swept": false,
+  "work": "kobayashi-v08"
+}

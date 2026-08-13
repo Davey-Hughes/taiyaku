@@ -1,0 +1,167 @@
+{
+  "against": "raw-mono",
+  "credit_pages": [
+    20,
+    35,
+    48,
+    61,
+    76,
+    91,
+    106,
+    121,
+    136,
+    152
+  ],
+  "edition": "en-fan",
+  "notes": "Cirno9baka, the same group as v01, printing the same card at the end of nine of ten chapters plus one more: ten cards at 1022x705, five sharing one sha256. SIGNAL 1 FINDS EIGHT OF THE TEN. It misses page 91 and page 152, and NOT for kobayashi-v01's reason: neither sits in any unpaired run, so no bound could admit them. The solver paired both, and signal 1 only ever reads unpaired runs. That is gotoubun-v01 page 43's ceiling, and these are its second and third measured instances - so the paired-credits-page ceiling is a recurring shape rather than a one-off. All ten were flagged by both the area and aspect size tests and adjudicated by the owner. NOT EXHAUSTIVELY SWEPT: only pages some rule flagged were viewed (plus every chapter-final page on kobayashi-v08, kaguya-v03 and kaguya-v08), so this edition contributes to precision and its credit_pages is a floor, not a proven denominator. See the design's section 8.",
+  "pages": 153,
+  "runs": [
+    {
+      "at_member_end": true,
+      "local": [
+        20,
+        21
+      ],
+      "member": 0,
+      "pages": [
+        20,
+        21
+      ],
+      "slots": [
+        20,
+        22
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        14,
+        15
+      ],
+      "member": 1,
+      "pages": [
+        35,
+        36
+      ],
+      "slots": [
+        36,
+        38
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        12,
+        13
+      ],
+      "member": 2,
+      "pages": [
+        48,
+        49
+      ],
+      "slots": [
+        50,
+        52
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        12,
+        13
+      ],
+      "member": 3,
+      "pages": [
+        61,
+        62
+      ],
+      "slots": [
+        64,
+        66
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        14,
+        15
+      ],
+      "member": 4,
+      "pages": [
+        76,
+        77
+      ],
+      "slots": [
+        80,
+        82
+      ]
+    },
+    {
+      "at_member_end": false,
+      "local": [
+        0,
+        1
+      ],
+      "member": 6,
+      "pages": [
+        92,
+        93
+      ],
+      "slots": [
+        98,
+        99
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        14,
+        15
+      ],
+      "member": 6,
+      "pages": [
+        106,
+        107
+      ],
+      "slots": [
+        112,
+        114
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        14,
+        15
+      ],
+      "member": 7,
+      "pages": [
+        121,
+        122
+      ],
+      "slots": [
+        128,
+        130
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        14,
+        15
+      ],
+      "member": 8,
+      "pages": [
+        136,
+        137
+      ],
+      "slots": [
+        144,
+        146
+      ]
+    }
+  ],
+  "slots": 163,
+  "swept": false,
+  "work": "kobayashi-v03"
+}

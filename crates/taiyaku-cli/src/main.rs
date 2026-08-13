@@ -31,6 +31,11 @@ mod cache;
 #[cfg(test)]
 mod corpus;
 mod credits;
+// Only `credits.rs`'s own tests consume this, and the crate runs clippy at
+// pedantic level — an ungated module would be dead code outside test builds
+// and fail that gate.
+#[cfg(test)]
+mod credit_fixture;
 mod detect;
 mod duplicates;
 mod fingerprint;

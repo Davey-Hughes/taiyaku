@@ -175,6 +175,34 @@ fn label_of(path: &str) -> &str {
         .unwrap_or(path)
 }
 
+/// What a `--emit-fixture`d fixture's `work` field holds: the corpus
+/// directory a `--sidecar` path names, not the document's display title.
+///
+/// `corpus/gotoubun-v01/taiyaku.json`'s immediate parent directory is
+/// `gotoubun-v01` — the slug the two checked-in fixtures key on
+/// (`gotoubun-v01-en-fan.json` and `kaguya-v01-en-fan.json` both hold
+/// `"work": "gotoubun-v01"` / `"work": "kaguya-v01"`, and the
+/// `CreditFixture` test at `gotoubun_v01` asserts exactly that string).
+/// `doc.work.title` is a different, unrelated string — the human display
+/// title (`Go-Toubun no Hanayome v01`), which is why it is never the right
+/// source for this field even though it is what `classify`'s printed line
+/// carries under `work=`.
+///
+/// Falls back to the whole sidecar path when there is no usable parent
+/// directory component — a bare `taiyaku.json` with no leading directory,
+/// or a path whose parent is the filesystem root — the same fallback
+/// `label_of` takes for a path with no file name of its own. Visibly wrong
+/// rather than silently empty: a fixture nobody can trace to its corpus
+/// directory is a defect worth noticing, and an empty string would not be
+/// noticed until something downstream choked on it.
+fn work_of(sidecar: &str) -> &str {
+    Path::new(sidecar)
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or(sidecar)
+}
+
 /// One unpaired run, as the table prints it.
 ///
 /// Built up rather than formatted in place so the column widths can be taken
@@ -316,6 +344,76 @@ fn resolve_counterpart(
     })
 }
 
+/// The scanlation group `ComicInfo.xml` claims, from the first member that
+/// carries one.
+///
+/// **Survey context only.** It names a group and never a page, so there is no
+/// sound way for it to promote or demote a candidate, and nothing in
+/// `is_candidate` or `credit_pages` reads it. It tells a reviewer whose habit
+/// they are adjudicating.
+///
+/// Absent file, absent element and empty value are all `None` — an edition
+/// whose ComicInfo carries `<ScanInformation></ScanInformation>` claims no
+/// more than one carrying no element at all.
+fn scan_information(entries: &[(String, Vec<u8>)]) -> Option<String> {
+    const OPEN: &str = "<ScanInformation>";
+    const CLOSE: &str = "</ScanInformation>";
+    for (name, bytes) in entries {
+        if !name.eq_ignore_ascii_case("ComicInfo.xml") {
+            continue;
+        }
+        let text = String::from_utf8_lossy(bytes);
+        let Some(start) = text.find(OPEN) else {
+            continue;
+        };
+        let rest = &text[start + OPEN.len()..];
+        let Some(end) = rest.find(CLOSE) else {
+            continue;
+        };
+        let value = rest[..end].trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+/// The one fixed-field line a survey collects, and the only stdout this
+/// command produces.
+///
+/// `work=` is last because a work title holds spaces and runs to end of line,
+/// which leaves every field before it positionally fixed —
+/// `duplicate-survey.sh` and `margin-survey.sh` established that discipline
+/// and `the_work_title_is_last_so_its_spaces_cannot_shift_another_field`
+/// holds it. `scan=` holds spaces too — "Psylocke Scans" — so it is quoted
+/// and placed immediately before `work=`, and omitted entirely when absent so
+/// a collector reading positionally sees a stable prefix either way.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per printed field, in the fixed order the line prints them in; a \
+              bundled struct would still need every field named at the one call site and would \
+              lose the field-order-is-the-line-order correspondence this function exists to keep"
+)]
+fn credits_line(
+    edition: &str,
+    against: &str,
+    pages: u32,
+    slots: u32,
+    runs: usize,
+    candidates: usize,
+    scan: Option<&str>,
+    work: &str,
+) -> String {
+    let scan = match scan {
+        Some(group) => format!(" scan=\"{group}\""),
+        None => String::new(),
+    };
+    format!(
+        "credits: edition={edition} against={against} pages={pages} slots={slots} \
+         runs={runs} candidates={candidates} bound={MAX_CREDIT_RUN}{scan} work={work}"
+    )
+}
+
 /// The post-fingerprint half of `command`: everything driven by the document
 /// and the members' hashes, with no filesystem or archive access, so it can be
 /// tested without either.
@@ -328,11 +426,16 @@ fn resolve_counterpart(
 /// which chapter is first, and a shell glob orders `c10.5` before `c1` in any
 /// case. `page_order_comes_from_the_editions_own_member_order` pins this by
 /// handing the two hashes in reverse and checking nothing moves.
+///
+/// `scan` is `scan_information`'s already-computed answer, passed in rather
+/// than read here, for the same reason `fingerprinted` is: reading an archive
+/// is the caller's job, so this stays testable without one.
 fn classify(
     doc: &Sidecar,
     edition: &str,
     counterpart: &str,
     fingerprinted: &[(String, Vec<PageHash>)],
+    scan: Option<&str>,
 ) -> Result<(Vec<Row>, String, Vec<u32>), String> {
     let runs = unpaired_runs(doc, edition, counterpart)?;
 
@@ -408,32 +511,80 @@ fn classify(
     // identify itself without the collector tracking state. `candidates` counts
     // pages rather than runs because it is the length of the list `--write`
     // writes; with `MAX_CREDIT_RUN` at 1 the two coincide.
-    let line = format!(
-        "credits: edition={edition} against={counterpart} pages={} slots={} runs={} \
-         candidates={} bound={MAX_CREDIT_RUN} work={}",
+    let line = credits_line(
+        edition,
+        counterpart,
         target.total_pages(),
-        target.slots(doc.work.reading).len(),
+        page_index(target.slots(doc.work.reading).len()),
         runs.len(),
         pages.len(),
-        doc.work.title
+        scan,
+        &doc.work.title,
     );
 
     Ok((rows, line, pages))
 }
 
+/// The structural half of a `credit_fixture::CreditFixture`, as JSON.
+///
+/// `credit_pages` and `swept` are deliberately empty and false: they are a
+/// person's adjudication, and a fixture whose verdicts came from the code
+/// under test would assert nothing. `notes` is empty for the same reason.
+fn emit_fixture_json(
+    work: &str,
+    edition: &str,
+    against: &str,
+    pages: u32,
+    slots: u32,
+    runs: &[UnpairedRun],
+) -> String {
+    let rows: Vec<serde_json::Value> = runs
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "pages": [r.pages.start, r.pages.end],
+                "member": r.member,
+                "local": [r.local.start, r.local.end],
+                "at_member_end": r.at_member_end,
+                "slots": [r.slots.start, r.slots.end],
+            })
+        })
+        .collect();
+    let doc = serde_json::json!({
+        "work": work,
+        "edition": edition,
+        "against": against,
+        "pages": pages,
+        "slots": slots,
+        "swept": false,
+        "runs": rows,
+        "credit_pages": [],
+        "notes": "",
+    });
+    serde_json::to_string_pretty(&doc).expect("a fixture is always serialisable")
+}
+
 /// `taiyaku credits` — propose the credit pages of one edition.
 ///
-/// Prints; writes only under `--write`, the discipline `inventory` and
-/// `duplicates` set. Both signals are reported on every row — including the
-/// rows nothing classifies, since signal 2 is what a person judges a candidate
-/// *by* — but only signal 1 classifies, for the reason this module's own doc
-/// comment gives.
+/// Prints; writes the sidecar only under `--write`, the discipline `inventory`
+/// and `duplicates` set. `--emit-fixture PATH` writes a second, unrelated
+/// file — the structural half of a `credit_fixture::CreditFixture` — and does
+/// so independently of `--write`, since a fixture is not the sidecar. Both
+/// signals are reported on every row — including the rows nothing classifies,
+/// since signal 2 is what a person judges a candidate *by* — but only signal 1
+/// classifies, for the reason this module's own doc comment gives.
 ///
 /// The table goes to stderr and the one fixed-field `credits:` line to stdout,
 /// so a survey can collect the lines without the tables, exactly as
 /// `duplicates` splits its tables from its `set:` line.
 pub fn command(args: &[String]) -> Result<(), String> {
-    const KNOWN: &[&str] = &["--sidecar", "--against", "--cache", "--write"];
+    const KNOWN: &[&str] = &[
+        "--sidecar",
+        "--against",
+        "--cache",
+        "--write",
+        "--emit-fixture",
+    ];
     crate::reject_unknown_flags("credits", args, KNOWN)?;
 
     // Every valued flag resolves before a member is opened, so a typo does not
@@ -441,6 +592,8 @@ pub fn command(args: &[String]) -> Result<(), String> {
     let sidecar = crate::option_value(args, "--sidecar", "a path to a taiyaku.json")?;
     let against = crate::option_value(args, "--against", "an edition name")?;
     let cache = crate::option_value(args, "--cache", "a directory")?;
+    let emit_fixture =
+        crate::option_value(args, "--emit-fixture", "a path to write the fixture to")?;
     let write = args.iter().any(|a| a == "--write");
 
     if write && sidecar.is_none() {
@@ -449,8 +602,18 @@ pub fn command(args: &[String]) -> Result<(), String> {
     if against.is_some() && sidecar.is_none() {
         return Err("--against names an edition of a sidecar, so it needs --sidecar too".into());
     }
+    if emit_fixture.is_some() && sidecar.is_none() {
+        return Err(
+            "--emit-fixture writes the runs a sidecar's alignment produced, so it needs \
+             --sidecar too"
+                .into(),
+        );
+    }
 
-    let members = member_args(args, &[sidecar, against, cache]);
+    // Four consumed flags now, not three. A path this list forgets becomes a
+    // member, and a member that is really a flag argument fingerprints as a
+    // missing file rather than refusing.
+    let members = member_args(args, &[sidecar, against, cache, emit_fixture]);
     if members.is_empty() {
         return Err(USAGE.into());
     }
@@ -480,13 +643,28 @@ pub fn command(args: &[String]) -> Result<(), String> {
     // pages, rather than the flat slot list `cached_edition` returns:
     // `recurrences` needs the members kept apart to tell a recurrence from a
     // chapter repeating its own page, and both signals index pages.
+    //
+    // `ComicInfo.xml` is gathered in this same loop, member by member, rather
+    // than in a pass of its own: the cache above only ever keeps a member's
+    // page hashes, so it can answer nothing about a non-page entry and
+    // `member_entry` opens the archive on every run, cache hit or miss. There
+    // is no already-open handle downstream of this loop for a later pass to
+    // reuse either. Folding the read in here is what "already being opened"
+    // can mean given that: one loop over `members`, not two — and the extra
+    // open is accepted because `scan` is survey context that classifies
+    // nothing, so it costs a survey and never a page turn.
     let cache_root = PathBuf::from(cache.unwrap_or(".taiyaku-cache"));
     let mut fingerprinted: Vec<(String, Vec<PageHash>)> = Vec::new();
+    let mut comic_infos: Vec<(String, Vec<u8>)> = Vec::new();
     for member in &members {
         let digest = taiyaku_read::member_digest(member)?;
         let (pages, _hit) = crate::cache::member_pages(&cache_root, member)?;
         fingerprinted.push((digest, pages.iter().map(|page| page.hash).collect()));
+        if let Some(bytes) = taiyaku_read::member_entry(member, "ComicInfo.xml")? {
+            comic_infos.push(("ComicInfo.xml".to_string(), bytes));
+        }
     }
+    let scan = scan_information(&comic_infos);
 
     // Content, not paths: `edition_of` compares the sorted sha256 set, which is
     // the idiom `merge_spoke`'s own guard states. A renamed but byte-identical
@@ -495,9 +673,38 @@ pub fn command(args: &[String]) -> Result<(), String> {
     let edition = crate::edition_of_digests(&doc, sidecar, &digests)?;
     let counterpart = resolve_counterpart(&doc, &edition, against)?;
 
-    let (rows, line, pages) = classify(&doc, &edition, &counterpart, &fingerprinted)?;
+    let (rows, line, pages) = classify(
+        &doc,
+        &edition,
+        &counterpart,
+        &fingerprinted,
+        scan.as_deref(),
+    )?;
 
     eprint!("{}", table(&rows));
+
+    if let Some(path) = emit_fixture {
+        // Recomputed rather than threaded out of `classify`: the runs it
+        // built `rows` from carry no `slots` range and name a member by its
+        // printed label rather than its index, so `Row` cannot supply what a
+        // `CreditFixture` needs back. `unpaired_runs` is pure structure over
+        // `doc.alignments` — no archive, no fingerprint — so asking it twice
+        // costs nothing an edition's page count would notice.
+        let runs = unpaired_runs(&doc, &edition, &counterpart)?;
+        let target = doc
+            .editions
+            .get(&edition)
+            .expect("edition_of_digests named an edition of this document");
+        let json = emit_fixture_json(
+            work_of(sidecar),
+            &edition,
+            &counterpart,
+            target.total_pages(),
+            page_index(target.slots(doc.work.reading).len()),
+            &runs,
+        );
+        std::fs::write(path, json).map_err(|e| format!("{path}: {e}"))?;
+    }
 
     if write {
         // Wholesale rather than merged: the field holds no hand entries, so a
@@ -521,14 +728,17 @@ pub fn command(args: &[String]) -> Result<(), String> {
 }
 
 const USAGE: &str = "\
-taiyaku credits <member>... --sidecar FILE [--against EDITION] [--cache DIR] [--write]
+taiyaku credits <member>... --sidecar FILE [--against EDITION] [--cache DIR] [--write] \
+[--emit-fixture PATH]
 
 Propose the pages of one edition that are a scanlation group's own matter
-rather than the work. Prints what it found; writes nothing without --write.";
+rather than the work. Prints what it found; writes the sidecar only under
+--write, and --emit-fixture PATH writes a fixture file independently of it.";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credit_fixture::CreditFixture;
 
     #[test]
     fn write_without_a_sidecar_is_refused() {
@@ -587,6 +797,19 @@ mod tests {
         let err = command(&args).expect_err("refuses");
         assert!(
             err.contains("--against") && err.contains("--sidecar"),
+            "the refusal must name both flags: {err}"
+        );
+    }
+
+    #[test]
+    fn emit_fixture_without_a_sidecar_is_refused() {
+        let args: Vec<String> = ["a.cbz", "--emit-fixture", "out.json"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let err = command(&args).expect_err("refuses");
+        assert!(
+            err.contains("--emit-fixture") && err.contains("--sidecar"),
             "the refusal must name both flags: {err}"
         );
     }
@@ -1090,9 +1313,9 @@ mod tests {
         let reversed = vec![("c2".to_string(), c2_hashes), ("c1".to_string(), c1_hashes)];
 
         let (rows_fwd, line_fwd, pages_fwd) =
-            classify(&doc, "fan", "raw", &forward).expect("classifies");
+            classify(&doc, "fan", "raw", &forward, None).expect("classifies");
         let (rows_rev, line_rev, pages_rev) =
-            classify(&doc, "fan", "raw", &reversed).expect("classifies");
+            classify(&doc, "fan", "raw", &reversed, None).expect("classifies");
 
         assert_eq!(
             pages_fwd, pages_rev,
@@ -1129,7 +1352,7 @@ mod tests {
             ("c2".to_string(), vec![hash_with_bits_set(0); 4]),
         ];
 
-        let (_, line, _) = classify(&doc, "fan", "raw", &fingerprinted).expect("classifies");
+        let (_, line, _) = classify(&doc, "fan", "raw", &fingerprinted, None).expect("classifies");
 
         assert!(
             line.starts_with("credits: edition=fan against=raw"),
@@ -1158,6 +1381,50 @@ mod tests {
             line.split_once(" work=").map(|(_, title)| title),
             Some("Reversed Order Co."),
             "the title must run unambiguously to end of line, spaces and all: {line}"
+        );
+    }
+
+    #[test]
+    fn scan_information_is_read_from_comicinfo_and_absent_where_there_is_none() {
+        let with = br#"<ComicInfo><Series>X</Series><ScanInformation>Cirno9baka</ScanInformation><PageCount>17</PageCount></ComicInfo>"#;
+        assert_eq!(
+            scan_information(&[("ComicInfo.xml".into(), with.to_vec())]),
+            Some("Cirno9baka".into())
+        );
+        let without = br#"<ComicInfo><Series>X</Series></ComicInfo>"#;
+        assert_eq!(
+            scan_information(&[("ComicInfo.xml".into(), without.to_vec())]),
+            None,
+            "a ComicInfo with no ScanInformation is absent, not empty"
+        );
+        assert_eq!(
+            scan_information(&[("001.jpg".into(), vec![])]),
+            None,
+            "an archive with no ComicInfo at all is absent"
+        );
+    }
+
+    #[test]
+    fn the_scan_field_precedes_work_so_a_group_name_with_spaces_cannot_shift_it() {
+        // `work=` holds spaces and runs to end of line, which is why it is last.
+        // A group name holds spaces too - "Psylocke Scans" - so `scan=` cannot be
+        // last as well. It is quoted, and it sits before `work=`.
+        let line = credits_line(
+            "en-fan",
+            "raw-mono",
+            226,
+            231,
+            9,
+            1,
+            Some("Psylocke Scans"),
+            "Kaguya-sama v01",
+        );
+        let scan_at = line.find("scan=").expect("scan= is present");
+        let work_at = line.find("work=").expect("work= is present");
+        assert!(scan_at < work_at, "scan= must precede work=: {line}");
+        assert!(
+            line.contains("scan=\"Psylocke Scans\""),
+            "a group name with a space must be quoted: {line}"
         );
     }
 
@@ -1249,7 +1516,7 @@ mod tests {
             .collect();
         let fingerprinted = vec![("c1".to_string(), c1), ("c2".to_string(), c2)];
 
-        let (rows, _, _) = classify(&doc, "fan", "raw", &fingerprinted).expect("classifies");
+        let (rows, _, _) = classify(&doc, "fan", "raw", &fingerprinted, None).expect("classifies");
 
         assert_eq!(rows.len(), 1, "one unpaired run");
         let row = &rows[0];
@@ -1260,6 +1527,208 @@ mod tests {
         assert!(
             !row.credits,
             "three pages is longer than any credits card measured"
+        );
+    }
+
+    #[test]
+    fn the_gotoubun_fixture_reproduces_the_four_candidates_notes_md_records() {
+        let fixture = CreditFixture::gotoubun_v01();
+        assert_eq!(fixture.work, "gotoubun-v01");
+        assert_eq!(fixture.edition, "en-fan");
+        assert_eq!(fixture.against, "raw-mono");
+        assert_eq!(
+            (fixture.pages, fixture.slots),
+            (235, 240),
+            "docs/notes.md's `credits:` line for gotoubun-v01 en-fan against \
+             raw-mono, under \"The two `credits:` lines\""
+        );
+        assert!(
+            !fixture.notes.is_empty(),
+            "notes carries why page 43 is unreachable and why c002 local 40 is \
+             excluded; a fixture that lost it would lose the reasoning"
+        );
+        let tally = fixture.tally();
+        assert_eq!(
+            tally.candidates,
+            vec![95, 168, 198, 225],
+            "signal 1's candidates on gotoubun-v01 en-fan are fixed by extraction, \
+             not by whatever the rule currently emits"
+        );
+        assert_eq!(tally.hits, 4, "all four candidates are true positives");
+        assert_eq!(
+            tally.known, 5,
+            "five credit pages are known to exist, and page 43 is the one signal 1 \
+             cannot reach"
+        );
+    }
+
+    #[test]
+    fn the_kaguya_fixture_reproduces_its_one_candidate_and_it_is_a_false_positive() {
+        let fixture = CreditFixture::kaguya_v01();
+        let tally = fixture.tally();
+        assert_eq!(
+            tally.candidates,
+            vec![212],
+            "c10 19/20 is the one page signal 1 takes here"
+        );
+        assert_eq!(
+            tally.hits, 0,
+            "page 212 is the publisher's colour announcement, not the group's matter"
+        );
+        assert_eq!(tally.known, 0, "this group prints no credit page at all");
+    }
+
+    #[test]
+    fn the_kobayashi_fixture_reproduces_its_nine_candidates_and_the_run_of_two_it_cannot_reach() {
+        let fixture = CreditFixture::kobayashi_v01();
+        let tally = fixture.tally();
+        assert_eq!(
+            tally.candidates,
+            vec![16, 31, 46, 59, 74, 91, 104, 119, 134],
+            "signal 1's candidates on kobayashi-v01 en-fan are fixed by \
+             extraction, not by whatever the rule currently emits"
+        );
+        assert_eq!(tally.hits, 9, "all nine candidates are true positives");
+        assert_eq!(
+            tally.known, 10,
+            "ten credit pages are known to exist. Page 152 is the tenth and the \
+             one signal 1 cannot reach: c10 ends on a run of two, the publisher's \
+             greyscale colophon at 151 and the group's card at 152, and \
+             MAX_CREDIT_RUN = 1 rejects both"
+        );
+    }
+
+    #[test]
+    fn the_kobayashi_v03_fixture_reproduces_its_eight_candidates_and_the_two_it_cannot_reach() {
+        let fixture = CreditFixture::kobayashi_v03();
+        let tally = fixture.tally();
+        assert_eq!(
+            tally.candidates,
+            vec![20, 35, 48, 61, 76, 106, 121, 136],
+            "signal 1's candidates on kobayashi-v03 en-fan are fixed by \
+             extraction, not by whatever the rule currently emits"
+        );
+        assert_eq!(tally.hits, 8, "all eight candidates are true positives");
+        assert_eq!(
+            tally.known, 10,
+            "ten credit pages are known to exist. Pages 91 and 152 are the two \
+             signal 1 cannot reach, and NOT for kobayashi-v01's reason: neither \
+             sits in any unpaired run at all, so no bound could admit them. The \
+             solver paired both, and signal 1 only ever reads unpaired runs. \
+             That is gotoubun-v01 page 43's ceiling, and these are its second \
+             and third measured instances — the case where a credits page \
+             happens to resemble something in the other edition well enough to \
+             be matched"
+        );
+    }
+
+    #[test]
+    fn the_kaguya_v08_fixture_reproduces_its_one_candidate_and_it_is_a_false_positive() {
+        let fixture = CreditFixture::kaguya_v08();
+        let tally = fixture.tally();
+        assert_eq!(
+            tally.candidates,
+            vec![37],
+            "signal 1's one candidate on kaguya-v08 en-fan is fixed by \
+             extraction, not by whatever the rule currently emits"
+        );
+        assert_eq!(
+            tally.hits, 0,
+            "page 37 is signal 1's second false positive ever — this edition, \
+             worked by three scanlation groups, carries no credit page at all"
+        );
+        assert_eq!(tally.known, 0, "no group prints a credit page here");
+    }
+
+    #[test]
+    fn the_corpus_figures_are_twenty_one_of_twenty_three_precision_and_thirteen_of_fifteen_recall()
+    {
+        let mut candidates = 0usize;
+        let mut hits = 0usize;
+        let mut known_swept = 0usize;
+        let mut hits_swept = 0usize;
+        for fixture in CreditFixture::all() {
+            let tally = fixture.tally();
+            candidates += tally.candidates.len();
+            hits += tally.hits;
+            if tally.swept {
+                known_swept += tally.known;
+                hits_swept += tally.hits;
+            }
+        }
+        assert_eq!(
+            (hits, candidates),
+            (21, 23),
+            "precision: twenty-one of twenty-three candidates across the corpus \
+             are true positives — the seven new editions add candidates and hits \
+             but not a single false positive beyond kaguya-v01's and kaguya-v08's"
+        );
+        assert_eq!(
+            (hits_swept, known_swept),
+            (13, 15),
+            "recall, over swept editions only: thirteen of the fifteen known \
+             credit pages are found — gotoubun's paired page 43 and kobayashi-v01's \
+             run-of-two page 152 are the two signal 1 cannot reach. The seven new \
+             editions are all unswept (design's §8) so none of them move this figure"
+        );
+    }
+
+    #[test]
+    fn work_of_derives_the_corpus_directory_not_the_display_title() {
+        // The value the two checked-in fixtures key on: `work` is the corpus
+        // directory slug, never the human display title
+        // (`doc.work.title` holds `Go-Toubun no Hanayome v01`, an unrelated
+        // string with spaces in it). This is the derivation `command` skipped
+        // when it passed `&doc.work.title` straight to `emit_fixture_json`
+        // instead — a bug the old test for `emit_fixture_json` could not have
+        // caught, since it passed a literal `"gotoubun-v01"` rather than
+        // exercising this function.
+        assert_eq!(work_of("corpus/gotoubun-v01/taiyaku.json"), "gotoubun-v01");
+        assert_eq!(work_of("corpus/kaguya-v01/taiyaku.json"), "kaguya-v01");
+        assert_eq!(
+            work_of("/abs/path/to/corpus/gotoubun-v01/taiyaku.json"),
+            "gotoubun-v01",
+            "an absolute path derives the same slug from its immediate parent"
+        );
+    }
+
+    #[test]
+    fn work_of_falls_back_to_the_whole_path_with_no_usable_parent() {
+        // A bare filename with no directory component, and a path whose
+        // parent is the filesystem root: neither has a directory-name
+        // component to hand back. The fallback must stay non-empty and
+        // visibly wrong rather than silently emit "".
+        assert_eq!(work_of("taiyaku.json"), "taiyaku.json");
+        assert_eq!(work_of("/taiyaku.json"), "/taiyaku.json");
+    }
+
+    #[test]
+    fn an_emitted_fixture_leaves_the_verdicts_empty_for_a_person_to_fill() {
+        let runs = vec![run(95, 51, 1, true), run(1, 1, 42, false)];
+        let json = emit_fixture_json("gotoubun-v01", "en-fan", "raw-mono", 235, 240, &runs);
+        let back: crate::credit_fixture::CreditFixture =
+            serde_json::from_str(&json).expect("an emitted fixture must parse as one");
+        assert_eq!(back.runs.len(), 2, "every run is emitted, candidate or not");
+        assert!(
+            back.credit_pages.is_empty(),
+            "the tool must not supply the verdicts it is being measured against"
+        );
+        assert!(
+            !back.swept,
+            "an edition is not swept until someone sweeps it"
+        );
+        assert!(
+            back.runs.iter().all(|r| r.slots.is_some()),
+            "an emitted run knows its slot range, unlike a hand-written one"
+        );
+    }
+
+    #[test]
+    fn emit_fixture_with_no_value_is_refused_before_any_member_is_read() {
+        let err = command(&["--emit-fixture".into()]).unwrap_err();
+        assert!(
+            err.contains("--emit-fixture"),
+            "the refusal must name the flag: {err}"
         );
     }
 }

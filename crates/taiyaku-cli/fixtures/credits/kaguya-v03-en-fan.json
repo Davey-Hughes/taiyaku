@@ -1,0 +1,140 @@
+{
+  "against": "raw-mono",
+  "credit_pages": [],
+  "edition": "en-fan",
+  "notes": "Psylocke Scans, matching the no-credits habit measured on kaguya-v01. Eight unpaired runs, none at a member end, so signal 1 proposes nothing. NOT EXHAUSTIVELY SWEPT: only pages some rule flagged were viewed (plus every chapter-final page on kobayashi-v08, kaguya-v03 and kaguya-v08), so this edition contributes to precision and its credit_pages is a floor, not a proven denominator. See the design's section 8.",
+  "pages": 215,
+  "runs": [
+    {
+      "at_member_end": false,
+      "local": [
+        0,
+        11
+      ],
+      "member": 7,
+      "pages": [
+        128,
+        139
+      ],
+      "slots": [
+        128,
+        139
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        12,
+        19
+      ],
+      "member": 7,
+      "pages": [
+        140,
+        147
+      ],
+      "slots": [
+        140,
+        147
+      ]
+    },
+    {
+      "at_member_end": false,
+      "local": [
+        0,
+        5
+      ],
+      "member": 8,
+      "pages": [
+        147,
+        152
+      ],
+      "slots": [
+        147,
+        152
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        6,
+        18
+      ],
+      "member": 8,
+      "pages": [
+        153,
+        165
+      ],
+      "slots": [
+        153,
+        165
+      ]
+    },
+    {
+      "at_member_end": false,
+      "local": [
+        0,
+        1
+      ],
+      "member": 11,
+      "pages": [
+        201,
+        202
+      ],
+      "slots": [
+        201,
+        202
+      ]
+    },
+    {
+      "at_member_end": false,
+      "local": [
+        2,
+        4
+      ],
+      "member": 11,
+      "pages": [
+        203,
+        205
+      ],
+      "slots": [
+        203,
+        205
+      ]
+    },
+    {
+      "at_member_end": false,
+      "local": [
+        9,
+        10
+      ],
+      "member": 11,
+      "pages": [
+        210,
+        211
+      ],
+      "slots": [
+        210,
+        211
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        11,
+        14
+      ],
+      "member": 11,
+      "pages": [
+        212,
+        215
+      ],
+      "slots": [
+        212,
+        215
+      ]
+    }
+  ],
+  "slots": 215,
+  "swept": false,
+  "work": "kaguya-v03"
+}

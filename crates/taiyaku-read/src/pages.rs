@@ -596,6 +596,69 @@ pub fn member_page_sizes(path: &Path) -> Result<Vec<u64>, String> {
         .collect()
 }
 
+/// One named entry's raw bytes, read directly rather than filtered through
+/// `is_page_name` — for a member's metadata, `ComicInfo.xml` above all, which
+/// `page_names_from` deliberately excludes from the page sequence and which no
+/// page-reading function in this module can see.
+///
+/// Matched case-insensitively and only at the member's own level — an archive
+/// entry's bare name, or a directory's direct child — since that is where
+/// every `ComicInfo.xml` this crate has read sits: beside the pages, never
+/// nested under them the way `directory_page_paths` walks to find images.
+///
+/// `Ok(None)`, never an error, means the member opened fine but holds no entry
+/// of that name — the common case, since most members carry no `ComicInfo.xml`
+/// at all, and that absence is not a failure to read them.
+///
+/// # Errors
+///
+/// For a directory, returns an error if it cannot be listed, or if the
+/// matched entry cannot be read back. For an archive, returns an error if it
+/// cannot be opened, if its leading bytes identify a recognised-but-
+/// unsupported container — 7-Zip, RAR, or tar, named as such rather than
+/// reported as a corrupt cbz — if it does not parse as a zip archive, or if
+/// the matched entry cannot be read back.
+pub fn member_entry(path: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
+    if path.is_dir() {
+        let dir = std::fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        for entry in dir {
+            let entry = entry.map_err(|e| format!("{}: {e}", path.display()))?;
+            let matches = entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(name);
+            if matches && entry.path().is_file() {
+                let bytes = std::fs::read(entry.path())
+                    .map_err(|e| format!("{}: {e}", entry.path().display()))?;
+                return Ok(Some(bytes));
+            }
+        }
+        return Ok(None);
+    }
+
+    let mut zip = open_archive(path)?;
+    let matched = (0..zip.len()).find_map(|i| {
+        let entry = zip.by_index(i).ok()?;
+        (entry.is_file() && entry.name().eq_ignore_ascii_case(name))
+            .then(|| entry.name().to_string())
+    });
+    let Some(matched) = matched else {
+        return Ok(None);
+    };
+    let mut entry = zip
+        .by_name(&matched)
+        .map_err(|e| format!("{}: {matched}: {e}", path.display()))?;
+    // Same reasoning as `read_archive` and `member_page` above: `entry.size()`
+    // is unverified archive metadata, clamped to `MAX_ENTRY_CAPACITY_HINT` so
+    // the hint it drives is bounded by construction.
+    let hint = entry.size().min(MAX_ENTRY_CAPACITY_HINT) as usize;
+    let mut bytes = Vec::with_capacity(hint);
+    entry
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("{}: {matched}: {e}", path.display()))?;
+    Ok(Some(bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1099,6 +1162,85 @@ mod tests {
             page.bytes.capacity() < RESERVATION_CEILING,
             "a declared ~2 GiB must not reserve anywhere near it; got {} bytes reserved",
             page.bytes.capacity()
+        );
+    }
+
+    /// `member_entry` is what `taiyaku-cli::credits` reads `ComicInfo.xml`
+    /// through, so this pins the one property that function relies on: it
+    /// finds a non-page entry `page_names_from` would have filtered out, and
+    /// reads back the bytes of that entry specifically rather than whichever
+    /// happened to be first.
+    #[test]
+    fn member_entry_finds_a_named_archive_entry_among_pages_and_reads_its_own_bytes() {
+        let path = cbz(
+            "taiyaku-test-member-entry.cbz",
+            &["p1.jpg", "ComicInfo.xml", "p2.jpg"],
+        );
+
+        let found = member_entry(&path, "ComicInfo.xml").unwrap();
+        let missing = member_entry(&path, "Nonexistent.xml").unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            found,
+            Some(b"ComicInfo.xml".to_vec()),
+            "`cbz`'s helper writes each entry's own name as its bytes, so this \
+             also proves the *matched* entry was read rather than any other"
+        );
+        assert_eq!(
+            missing, None,
+            "an entry that is not there is absent, not an error"
+        );
+    }
+
+    /// A scanning tool's own case convention for the file name is not
+    /// anything this crate controls, so the match must not depend on it.
+    #[test]
+    fn member_entry_matches_an_archive_entrys_name_case_insensitively() {
+        let path = cbz("taiyaku-test-member-entry-case.cbz", &["comicinfo.xml"]);
+
+        let found = member_entry(&path, "ComicInfo.xml").unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(found, Some(b"comicinfo.xml".to_vec()));
+    }
+
+    /// The directory branch of `member_entry` — a fan edition stored as loose
+    /// files rather than a `.cbz` — must find the same named entry the
+    /// archive branch does.
+    #[test]
+    fn member_entry_reads_a_directory_members_own_file() {
+        let dir = std::env::temp_dir().join("taiyaku-test-member-entry-dir");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("001.jpg"), b"page").unwrap();
+        std::fs::write(dir.join("ComicInfo.xml"), b"<ComicInfo/>").unwrap();
+
+        let found = member_entry(&dir, "ComicInfo.xml").unwrap();
+        let missing = member_entry(&dir, "Nonexistent.xml").unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(found, Some(b"<ComicInfo/>".to_vec()));
+        assert_eq!(missing, None);
+    }
+
+    /// Deliberately not a recursive walk: unlike `directory_page_paths`,
+    /// which descends into a chapter-foldered edition to find images,
+    /// `member_entry` only looks beside the pages at the member's own level —
+    /// every `ComicInfo.xml` this crate has read sits there, never nested.
+    #[test]
+    fn member_entry_does_not_descend_into_a_directorys_subdirectories() {
+        let dir = std::env::temp_dir().join("taiyaku-test-member-entry-nested");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Chapter 1")).unwrap();
+        std::fs::write(dir.join("Chapter 1").join("ComicInfo.xml"), b"nested").unwrap();
+
+        let found = member_entry(&dir, "ComicInfo.xml").unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            found, None,
+            "a nested ComicInfo.xml is not this member's own"
         );
     }
 }

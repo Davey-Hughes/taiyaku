@@ -78,7 +78,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 745 tests, plus 1,343 in `web/`'s TypeScript — 982 in the `node`
+Five crates, 762 tests, plus 1,343 in `web/`'s TypeScript — 982 in the `node`
 project and 361 in the `jsdom` one — and sixteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -96,7 +96,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Seventeen of the 745 are standing checks gated on
+`rayon` exactly as `align` already did. Seventeen of the 762 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs`, three in
 `crates/taiyaku-serve/src/corpus.rs` and four in
 `crates/taiyaku-cli/src/score_corpus.rs` — one of which also needs
@@ -314,6 +314,21 @@ run of exactly 1 and the only run of length 2 or 3 is a volume's front matter.
 announcement, so precision across the corpus is four of five. That group prints
 no credit page at all. See `notes.md`, "A second group's habits, and what the
 bound is worth".
+
+**Re-measured 2026-08-13 over ten fan editions**, and the paragraph above is
+kept rather than rewritten because three of the things it argues from turned out
+to be properties of two groups rather than of scanlations. 1,938 pages, eight
+scanlation groups, 25 known credit pages, every candidate extracted and looked
+at: **signal 1 is precision 21 of 23, and recall 13 of 15 over the three
+editions swept exhaustively** — the other seven had only flagged pages viewed,
+so their denominators are floors. `MAX_CREDIT_RUN`'s justification no longer
+holds either: `kobayashi-v01` page 152 is a credits card inside a run of 2,
+which the doc comment says had never been measured. And a page's **size** turns
+out to beat its position — area below half the volume's median *and* aspect more
+than 15% off it is 25 of 25 on both counts, reads no alignment, and was
+pre-registered against three held-out editions before they were viewed. See
+`notes.md`, "Ten fan editions, and the three signals that did not survive them",
+and `docs/superpowers/specs/2026-08-13-credit-size-rule-prediction.md`.
 
 `regions` keeps that discipline for a fourth question and is **the first command
 here whose answer is not yet good enough to use**. It proposes the text blocks
@@ -951,21 +966,23 @@ both are waiting on L2.
 
 ### Open items
 
-Forty, each found by a whole-branch review, carried as a deferral,
+Forty-one, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
 produced against the corpus, turned up by designing the fix for another one,
 turned up by checking a diagnosis against the one case it did not explain,
 turned up by simulating the reader from every position it can hold, turned
-up by reading a file closely enough to write tests for it, or turned up while
-reading the code around a line a tool had pointed at, and
+up by reading a file closely enough to write tests for it, turned up while
+reading the code around a line a tool had pointed at, or turned up by
+hashing the pages a survey's own column described and finding it disagreed
+with them, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
 visible act rather than a thing someone remembers. **Thirty-one are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
 O21, O22, O25, O26, O27, O28, O29, O30, O34, O35, O36, O37, O38 and O39 —
-leaving nine.**
+leaving ten.**
 
 Three of those closed the same day they opened, which the "judged not worth
 blocking on" framing above does not fit: O35, O36 and O37 were found by the
@@ -2661,6 +2678,53 @@ it today:
   way `stepToGroup` already passes over one — rather than teaching a second,
   independent module the invariant `skippedApartFrom`'s doc already states is
   meant to live in one place.
+- **O41 — a page's hash depends on which archive the page sits in, and the
+  duplicate detector compares across archives. Open.**
+  `crates/taiyaku-cli/src/fingerprint.rs`'s `describe_pages` computes
+  `common_border(pages)` — the median flat border over about twelve sampled
+  pages, symmetrised — and crops **every** page by it before hashing. The
+  fingerprint cache is keyed on a member's `sha256`, so `describe_pages` runs
+  per member and each chapter file derives its own border from its own pages.
+  A page is therefore hashed as a function of itself *and* of the archive it
+  was distributed in.
+  That is right for the job it was written for. A per-edition crop is what
+  removes scan letterboxing consistently so two editions can be aligned, and
+  `flat_border`'s own `MAX_SIDE` bound exists to keep it conservative. But
+  `credits.rs`'s `recurrences` — signal 2, "the nearest page in a *different*
+  member" — is the one consumer that compares hashes **across** members, which
+  is exactly the axis the border is allowed to vary along.
+  **Measured on 2026-08-13, on material where re-encoding is ruled out by the
+  bytes.** `corpus/kobayashi-v01/en-fan` carries one credits card at the end of
+  six chapters, byte-identical in all six: entry `sha256` `2da7969ae253…`,
+  398,900 bytes, 1028x663, in six archives with six distinct `sha256`. The
+  cache records it at 1028x663, 1028x661, 1028x659 and 1016x661 depending on
+  the chapter, and `recurrences` reports its distance to the nearest copy as
+  0, 0, 0, 0, **2 and 3**. Identical input, six different answers, and the two
+  wrong ones cannot be blamed on encoding because there is only one encoding.
+  **The error is signed.** A crop that varies pushes two copies apart and never
+  together, so signal 2 under-reports recurrence and never over-reports it. Its
+  measured precision of three in five is therefore a floor rather than an
+  estimate — a page it missed may be a duplicate it failed to see rather than a
+  page that does not recur.
+  **What this does not overturn.** `notes.md`'s "the pleas sit at 14-24 rather
+  than near zero" is not explained away by this: those three Go-Toubun cards
+  have three different `sha256` and three different byte lengths, so the
+  re-encoding that section names is real. Cropping is a second contributor it
+  did not consider, and plausibly the larger one there — a 600x600 card cropped
+  by a border derived from 1465x2162 story pages — but that ordering is
+  unmeasured and this entry does not claim it. The section is corrected in
+  place rather than rewritten.
+  **What would close it:** hashing uncropped for the recurrence pass.
+  `describe_pages` already decodes each page exactly once and already computes
+  more than one hash per page for landscape pages, so a second, uncropped hash
+  costs a resize rather than a decode, and `CachedPage` is versioned. The
+  alternative — making the border edition-wide rather than member-wide — was
+  considered and is worse: it would change what every alignment in the corpus
+  hashes, to fix the one consumer that reads across members.
+  **What it blocks:** nothing that has shipped. Signal 2 is a diagnostic
+  `credits.rs` is explicit about never letting decide, and signal 1 reads the
+  alignment rather than any hash. It does bear on the credit-detection tier
+  design, whose fallback corroborator is this signal.
 
 ## What comes next
 
@@ -3339,6 +3403,13 @@ known:** `c000`'s page 43 is a credits page for a second group that the solver
 out of twelve pages anybody has looked at. `MAX_CREDIT_RUN` is **1, measured**
 over 461 pages and four scanlation groups, and one of those four groups prints no
 credit page at all. Two volumes are not the population.
+
+*Ten volumes are a better one, and the re-measurement on 2026-08-13 changed both
+halves of this paragraph. Recall is 13 of 15 over the swept subset and precision
+21 of 23 overall; the paired-page ceiling is no longer a single case, since
+`kobayashi-v03` pages 91 and 152 are the second and third; and `MAX_CREDIT_RUN`
+now has the counterexample its doc says does not exist. Kept rather than
+rewritten — the reasoning was sound on the evidence it had.*
 
 **The reader's half has now shipped too, and both toggles govern something.**
 `C` opens a panel listing the viewed edition's credit pages — a thumbnail and a

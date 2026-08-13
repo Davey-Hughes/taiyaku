@@ -2780,6 +2780,134 @@ One caution learned the expensive way: **compare all pairs within a duplicate se
 not every copy against the first. Anchoring on the first copy reported volume 77 as
 three unrelated files when two of them are an exact identity.
 
+### `kobayashi-v01/en-fan`, ingested 2026-08-13
+
+Ten members, copied with `scripts/ingest-fan-edition.sh` into
+`corpus/kobayashi-v01/en-fan` from `/mnt/daveynet/nfs/media 1/Manga (Chapters)/Kobayashi-san cno Meidoragon - Fan Translated`,
+filter `' - v1 c'`:
+
+| sha256 | Member |
+| ------ | ------ |
+| `6dc84b196cddbcf448e0ee9dacc6fcb93af9f9bb21410dceef979ae3e5781cca` | `Kobayashi-san Chi no Meidoragon - v1 c10.cbz` |
+| `e0b19c9776e712f723fbe1769d0c910bbe84e4fa32807ab839665a5c0545b8bf` | `Kobayashi-san Chi no Meidoragon - v1 c1.cbz` |
+| `a8a7b5638b833ccce7e143543489d9ca9547280f617f344a4ccee98adedefcd0` | `Kobayashi-san Chi no Meidoragon - v1 c2.cbz` |
+| `eb84da520cdaf73aea8ba1b400377f5abc9fd7482422252c8c3c2fb6ac9c1be5` | `Kobayashi-san Chi no Meidoragon - v1 c3.cbz` |
+| `9e405bd0f2d13402781461c26c32dc6080d6be14e37acd0b98565f2b70367978` | `Kobayashi-san Chi no Meidoragon - v1 c4.cbz` |
+| `c975a7cfafea6d040ee5fac43807a3890654fe1e0eae8d1ab8ce59f2577a3ac5` | `Kobayashi-san Chi no Meidoragon - v1 c5.cbz` |
+| `2092a14515db0b5c233674958898d1d6fc001c67eb37d1e380a63fbc39d7c188` | `Kobayashi-san Chi no Meidoragon - v1 c6.cbz` |
+| `f98d33b422976445e944554c3aac0dad0f15ccbffee58b30b45ee14199296b85` | `Kobayashi-san Chi no Meidoragon - v1 c7.cbz` |
+| `5f7f1b0f22d2ccf49f16331e136188a41540be544e0566a16d93f3a979aac8fa` | `Kobayashi-san Chi no Meidoragon - v1 c8.cbz` |
+| `4247a4a48798b75372572d926f387dc689dbc4357f0341cef907c69886a6a7c8` | `Kobayashi-san Chi no Meidoragon - v1 c9.cbz` |
+
+### `kobayashi-v03/en-fan`, ingested 2026-08-13
+
+Ten members, copied with `scripts/ingest-fan-edition.sh` into
+`corpus/kobayashi-v03/en-fan` from `/mnt/daveynet/nfs/media 1/Manga (Chapters)/Kobayashi-san cno Meidoragon - Fan Translated`,
+filter `' - v3 c'`:
+
+| sha256 | Member |
+| ------ | ------ |
+| `5193a712d832b691987f6fd4878d670f12248bac5265f96c28af9972bfae8047` | `Kobayashi-san Chi no Meidoragon - v3 c21.cbz` |
+| `69083d610f96daab41e68b766cc97659ee6e038e001599245331ef30755fc596` | `Kobayashi-san Chi no Meidoragon - v3 c22.cbz` |
+| `7cba0093b3e7673b8722f67ff1b044996c970510ffef8d107e1ff0c97be5b0e3` | `Kobayashi-san Chi no Meidoragon - v3 c23.cbz` |
+| `768f2330a78017153ddbddc530858b8fcdc99dd1b5c2f6c9c22a00f1c7558ee4` | `Kobayashi-san Chi no Meidoragon - v3 c24.cbz` |
+| `b85132e98559b8df1eb8cce2cef02515bb970498223293bfd16e40a60af7285e` | `Kobayashi-san Chi no Meidoragon - v3 c25.cbz` |
+| `25f2ce0a32cdd4af9ae3cd4543176b7fad3b4177af5c9a91d26b202b705d492b` | `Kobayashi-san Chi no Meidoragon - v3 c26.cbz` |
+| `43334b97af064da79bcfaafa2b1cb8acc36a8340566f236850a737cca5ad37a5` | `Kobayashi-san Chi no Meidoragon - v3 c27.cbz` |
+| `f54e15e1993cd3d3b3d6f86889df8d96eea3e66e3e5ca29f3ba12d821a6a4ad2` | `Kobayashi-san Chi no Meidoragon - v3 c28.cbz` |
+| `be09e25bcc1f201d317841f3ec00a4b8e8b35d2363bea366811f704c430a92f6` | `Kobayashi-san Chi no Meidoragon - v3 c29.cbz` |
+| `2da874103200cd8cb8130ee9eef27802d91b0d5aaf93830f23df9a6a2c3f0e1c` | `Kobayashi-san Chi no Meidoragon - v3 c30.cbz` |
+
+### `kobayashi-v08/en-fan`, ingested 2026-08-13
+
+Ten members, copied with `scripts/ingest-fan-edition.sh` into
+`corpus/kobayashi-v08/en-fan` from `/mnt/daveynet/nfs/media 1/Manga (Chapters)/Kobayashi-san cno Meidoragon - Fan Translated`,
+filter `' - v8 c'`:
+
+| sha256 | Member |
+| ------ | ------ |
+| `f11e87842d9dfd5f36440f5ba52be449230c72612bbc9baa088173d4ab205395` | `Kobayashi-san Chi no Meidoragon - v8 c69.cbz` |
+| `fd384c9c7ba9db14451fd74ba0979ade993b2ec518179b132b46d37021a8e6d2` | `Kobayashi-san Chi no Meidoragon - v8 c70.cbz` |
+| `f2099e22b25850e7e82bf4ec0e0f6b869eae0d831f6526716d6390f19f55d1a6` | `Kobayashi-san Chi no Meidoragon - v8 c71.cbz` |
+| `309f0e92795662aaf291e824e8151509c8c86fc59252654a1859c0dd6903d3a4` | `Kobayashi-san Chi no Meidoragon - v8 c72.cbz` |
+| `c06c8d568951563142d1c611c0dc1db38885c3d1fb13274e97070b023b5de027` | `Kobayashi-san Chi no Meidoragon - v8 c73.cbz` |
+| `7a1445748ccbc62a066c2c72d8a6b13d71e5ef138c3b601af08ccf8ca262101f` | `Kobayashi-san Chi no Meidoragon - v8 c74.cbz` |
+| `3c322023e10bbeb30df9b725a895e0f2f48388ec9b7ffa3a600f8ad680462b16` | `Kobayashi-san Chi no Meidoragon - v8 c75.cbz` |
+| `dbe952f6ce79a65af0e81fd8821d301ec71216e439cf5c84573e3091cc6a3de1` | `Kobayashi-san Chi no Meidoragon - v8 c76.cbz` |
+| `78c35a2bb61b5ad0985e007ad65726fed52f0278fcad785af15f05b71670ba9a` | `Kobayashi-san Chi no Meidoragon - v8 c77.cbz` |
+| `811c3fd5d79e9174e02cc5f41e0ad33bb5e280977a4b2c0eb2cfe18f31798890` | `Kobayashi-san Chi no Meidoragon - v8 c78.cbz` |
+
+### `kaguya-v03/en-fan`, ingested 2026-08-13
+
+Twelve members, copied with `scripts/ingest-fan-edition.sh` into
+`corpus/kaguya-v03/en-fan` from `/mnt/daveynet/nfs/media 1/Manga (Chapters)/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - Fan Translated`,
+filter `' - v3 c'`:
+
+| sha256 | Member |
+| ------ | ------ |
+| `e139234e69ade3abfc80fb3726a6172b2fc65a20f32ef6b3d13c212b037bc140` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v3 c21.cbz` |
+| `883e835967c7f2979f8a7099a08f7c93b78ed03d5e2d8475ab001fdb97ac4fa0` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v3 c22.cbz` |
+| `71dd0122b77a78fad420f28717c13d9e1be91d8400bcaf59d06d90019445b01e` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v3 c23.cbz` |
+| `af0a10e85f64703e5f01c20c8aecba6ee7974bba4e7e8dfa64652d542160907d` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v3 c24.cbz` |
+| `d90bd672370544370074248872458a2c78e9d29331e38a1383adae4f1c2a8d9a` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v3 c25.cbz` |
+| `852ecca2db9d28cf0f8826bfd84491bd697a501fe8f8207df10c0e8d33e23011` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v3 c26.cbz` |
+| `2959129bcc1e3bb0dacc77f996324e1163133350d92c1a3962de841cca1cc09b` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v3 c27.5.cbz` |
+| `5fcccded2c4a2a02c31a6934feea05388c846f9e36b3e9d6076439c69e5b1d40` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v3 c27.cbz` |
+| `03f7ff00916e03d650f2db9d5e8a05322904edebfa4857792b587855aa7b6957` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v3 c28.cbz` |
+| `69f886c2794e267861d0301a86349f331083cf47ae86ee60a74f17165d0f5328` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v3 c29.cbz` |
+| `19d7ad6bd6d6c899089c895bc30a91877195ac981719156e6744509f460774bc` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v3 c30.5.cbz` |
+| `2a62c3777a05823c43a304b8160ccaec6bfbc2ab3fab7fe70a08d60f8811ac89` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v3 c30.cbz` |
+
+### `kaguya-v08/en-fan`, ingested 2026-08-13
+
+Eleven members, copied with `scripts/ingest-fan-edition.sh` into
+`corpus/kaguya-v08/en-fan` from `/mnt/daveynet/nfs/media 1/Manga (Chapters)/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - Fan Translated`,
+filter `' - v8 c'`:
+
+| sha256 | Member |
+| ------ | ------ |
+| `76477194dc606897be36109b8781bdc359efbc70586264c09f7f267b3e586988` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v8 c71.cbz` |
+| `7da4e53ccbab743c2450e072a22c7523b249d885d461014ed12a98ebd291eb57` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v8 c72.cbz` |
+| `5ba96e07037ac0d9e9cf0d1801f5840097372a485fef59f72c1a04202e8087da` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v8 c73.cbz` |
+| `db495317f355793860f09e34f5a41bb46035ead53b3f675364ca8ad4ed9c9e27` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v8 c74.cbz` |
+| `03899b7b6dab5d435b639beda55188c0a9415d51f08708d9ba3920ee9c93a52b` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v8 c75.cbz` |
+| `0b37fd6cce291c99f40ad1775588d598dd9f4cc7f30b9e9adcc458300e663deb` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v8 c76.cbz` |
+| `87632dd9153bf3e1f7327b1d4a3d2322cd07c088b35edae8ceeac7e3bb7958a1` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v8 c77.cbz` |
+| `a1e930a74552b93db1ed06589d6ebb8dfaba3f0b63b3136ece238080dff79d4e` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v8 c78.cbz` |
+| `1677f123a1c618bd9b006e3bc8419dc01414617cdc67be89fa259c632c8aade6` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v8 c79.cbz` |
+| `9b7033df529df82053213af2523173c9acb58e7f68b2b7324166a6423d8dc109` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v8 c80.5.cbz` |
+| `18948b0841e8973cbda10670c032ada92c961bd1ca543ae34043b8ae122e80f8` | `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v8 c80.cbz` |
+
+### `oshinoko-v01/en-fan`, ingested 2026-08-13
+
+One member, copied with `scripts/ingest-fan-edition.sh` into
+`corpus/oshinoko-v01/en-fan` from `/mnt/daveynet/nfs/media 1/Manga/[Oshi no Ko] - Fan Translated`,
+filter `' - v01'`:
+
+| sha256 | Member |
+| ------ | ------ |
+| `21187541783b0cebe40e550ff359bd117f682615c564db8ad9ccf962788c6ff4` | `[Oshi no Ko] - v01.cbz` |
+
+### `oshinoko-v03/en-fan`, ingested 2026-08-13
+
+One member, copied with `scripts/ingest-fan-edition.sh` into
+`corpus/oshinoko-v03/en-fan` from `/mnt/daveynet/nfs/media 1/Manga/[Oshi no Ko] - Fan Translated`,
+filter `' - v03'`:
+
+| sha256 | Member |
+| ------ | ------ |
+| `91322444a6dc02d53e957ce239b2a9cf3d3957a9b806f1c09f4dc3bd10f0d63e` | `[Oshi no Ko] - v03.cbz` |
+
+### `oshinoko-v08/en-fan`, ingested 2026-08-13
+
+One member, copied with `scripts/ingest-fan-edition.sh` into
+`corpus/oshinoko-v08/en-fan` from `/mnt/daveynet/nfs/media 1/Manga/[Oshi no Ko] - Fan Translated`,
+filter `' - v08'`:
+
+| sha256 | Member |
+| ------ | ------ |
+| `8d79504339924ee2dfcd5b7a0f7bead640fc1d72f3756e899b09f1d7311bfb42` | `[Oshi no Ko] - v08.cbz` |
+
 ## The extension lies about a page's format too, and the server was believing it
 
 `taiyaku serve` has to state a content type for every page it hands out. The
@@ -2964,6 +3092,34 @@ other perfectly and lie about it": a blank page's hash is stable and meaningless
 and a nearly-blank page's hash is unstable. Both failures come from the same
 property, and neither is visible to a check that compares dhash to dhash.
 
+**Incomplete, marked 2026-08-13 rather than rewritten: a second cause was
+never considered, and it acts on every cross-member comparison this section
+makes.** The paragraph above is not withdrawn — the three pleas do carry three
+different `sha256` and three different byte lengths (175,385 / 174,117 /
+170,889), so the re-encoding it names is real and measured. What it misses is
+that `fingerprint.rs`'s `describe_pages` crops every page by
+`common_border(pages)` before hashing it, and the fingerprint cache is keyed
+per member, so **each chapter file derives its own border from its own pages
+and a page is hashed as a function of itself and of the archive it arrived
+in.** Every distance in this section is a comparison across members, which is
+precisely the axis that border varies along. See O41 in `status.md`.
+
+The isolating case came later and from another edition:
+`corpus/kobayashi-v01/en-fan` carries one credits card at the end of six
+chapters, **byte-identical in all six** — one entry `sha256`, 398,900 bytes,
+1028x663 — and it is recorded at four different sizes and reported at
+distances 0, 0, 0, 0, 2 and 3. There is one encoding there, so cropping is the
+whole of the effect.
+
+Which cause dominates *here* is **unmeasured**, and this note does not guess.
+The pleas are 600x600 cards sitting in members whose story pages run about
+1465x2162, so the border applied to them is derived from something a different
+shape entirely, which is a reason to suspect cropping is the larger term and
+not evidence that it is. What can be said without measuring further is that
+the error is signed: a crop that varies pushes two copies apart and never
+together, so **three of five is a floor on signal 2's precision rather than an
+estimate of it**.
+
 **What is still not measured:** the other 223 pages of this edition, the whole of
 `corpus/kaguya-v01/en-fan`'s 12 chapter files from a third group, groups that put
 credits at a member's *first* index rather than its last, and the false-positive
@@ -2976,7 +3132,10 @@ near-duplicate of a page in a sibling member, by dhash — is three for five, an
 needs no alignment, so it is the only thing that works on an edition with no
 counterpart. Neither is a subset of the other and neither confirms the other;
 what signal 2 is really good for is saying *why* a page recurs, which a person
-reviewing candidates wants to know.
+reviewing candidates wants to know. *Signal 2's three for five is a floor
+rather than an estimate since 2026-08-13 — see the marked paragraph above and
+O41 — because the crop it hashes through varies per member and can only push
+two copies of a page apart.*
 
 ## A second group's habits, and what the bound is worth
 
@@ -3141,6 +3300,134 @@ unpaired runs, four scanlation groups, one of which prints no credits. Five true
 credit pages exist; signal 1 finds four of them and adds one false positive.
 Precision four of five, recall four of five. Both denominators are of *known*
 credit pages, and the corpus has been swept for unknown ones on Kaguya only.
+
+*Superseded 2026-08-13 by the ten-edition survey below, which is the figure to
+quote. This section is kept because it is where the bound and both signals were
+first measured, and because three of the four things it argues from turned out
+to be properties of two groups rather than of scanlations.*
+
+## Ten fan editions, and the three signals that did not survive them
+
+Measured 2026-08-13. The two-edition survey above was judged too small to
+support turning page-skipping on by default — one page moves either of its
+figures by twenty points — so eight more fan editions were ingested from the
+NAS and adjudicated by extraction. **Every candidate below was extracted and
+looked at by a person.**
+
+| edition | group | pages | runs | candidates | true | known cards | swept |
+| ------- | ----- | ----: | ---: | ---------: | ---: | ----------: | ----- |
+| `gotoubun-v01` | lhtranslation, underdogscans+BOSEN | 235 | 6 | 4 | 4 | 5 | yes |
+| `kaguya-v01` | Psylocke Scans | 226 | 9 | 1 | 0 | 0 | yes |
+| `kaguya-v03` | Psylocke Scans | 215 | 8 | 0 | 0 | 0 | no |
+| `kaguya-v08` | /a/nonymous, Jaimini's box & Fans Scans, Psylocke | 195 | 5 | 1 | 0 | 0 | no |
+| `kobayashi-v01` | Cirno9baka | 153 | 10 | 9 | 9 | 10 | yes |
+| `kobayashi-v03` | Cirno9baka | 153 | 9 | 8 | 8 | 10 | no |
+| `kobayashi-v08` | TSHH | 152 | 1 | 0 | 0 | 0 | no |
+| `oshinoko-v01` | Oak | 219 | 0 | 0 | 0 | 0 | no |
+| `oshinoko-v03` | Oak | 195 | 1 | 0 | 0 | 0 | no |
+| `oshinoko-v08` | Oak | 195 | 0 | 0 | 0 | 0 | no |
+
+**1,938 pages, ten editions, eight groups, 25 known credit pages.**
+
+**Signal 1: precision 21 of 23, recall 13 of 15.** The two denominators differ
+on purpose. Precision is over every candidate on all ten editions; recall is
+over *swept* editions only — the three whose every page was ranked and whose
+every extreme was adjudicated. The other seven had only flagged pages viewed,
+so their `credit_pages` is a floor and not a proven denominator, and quoting a
+recall over them would be quoting a number nobody earned.
+
+### A page's size beats its position, and that was not on anyone's list
+
+Two page-geometry tests, neither of which reads the alignment at all:
+
+- **area** — pixel area below half the volume's median page area
+- **aspect** — aspect ratio more than 15% off the volume's median
+
+| rule | precision | recall |
+| ---- | --------- | ------ |
+| signal 1 | 21/23 | 13/15 |
+| area alone | 25/60 | 25/25 |
+| aspect alone | 25/43 | 25/25 |
+| **area AND aspect** | **25/25** | **25/25** |
+
+The conjunction is principled rather than fitted, which is the only reason it is
+recorded here at all: **a credits card is a canvas the group made, not a scan of
+a printed page**, so it is both smaller than a page and a different shape. Each
+single test's failure mode is exactly what the other rejects. Oshi no Ko mixes
+`[web]` MANGA Plus pages at 1464x2100 with `[raw-d]` pages at 844x1200 in one
+volume, and the small ones are still page-*shaped*, so aspect rejects all 35
+that area wrongly took. Joined spreads are oddly shaped but full size, so area
+rejects the 13 that aspect wrongly took.
+
+**Held out and pre-registered.** After the rule scored 25/25 on seven editions,
+its prediction for the remaining three — no credits card in `kaguya-v03`,
+`kaguya-v08` or `kobayashi-v08` — was written to
+`docs/superpowers/specs/2026-08-13-credit-size-rule-prediction.md` and committed
+at `80350bf` *before any page of them was viewed*, together with the failure
+mode expected if it was wrong. Every chapter-final page of all three was then
+adjudicated and the prediction held.
+
+**What that test did not establish, and the document said so in advance.** All
+three volumes are low resolution — 1.00 to 1.07 MPx median against
+`kobayashi-v01`'s 3.18 — so a 0.72 MPx card sits *above* the half-median cut and
+the area half cannot fire in them whatever the page is. The prediction was right
+because those editions carry no cards, not because the rule would have caught
+them. **A low-resolution volume that does carry cards is unfound, and is the
+sharpest test remaining.**
+
+### Three signals died here, and one of them was this survey's own
+
+**Colour, refuted.** The tier design argued from Kaguya that colour marks
+publisher and magazine matter while a scanlation group's card is
+near-universally greyscale. Every one of Cirno9baka's twenty cards is in colour,
+and the one non-credits page in `kobayashi-v01`'s candidate region — the
+Futabasha colophon — is greyscale. The sign is the opposite of what was argued.
+
+**dhash recurrence, demoted.** See O41: `describe_pages` crops by a per-member
+`common_border` before hashing, so a page is hashed as a function of itself and
+of the archive it arrived in, while `recurrences` is the one consumer comparing
+across members. Its three-of-five is a floor.
+
+**Area alone, killed by the corpus it was found on.** It scored 25/25 on the
+three editions it was derived from and 25/60 once Oshi no Ko was added. That is
+the same overfitting objection this file made against the colour bet, landing on
+a rule this survey proposed itself.
+
+### What the bound is worth now, and it is not what it was
+
+The `MAX_CREDIT_RUN = 1` doc says "every credit page found anywhere is a run of
+exactly 1, all five of them, so there is no measured run of 2 or 3 to raise this
+for." **That is no longer true.** `kobayashi-v01` page 152 is a Cirno9baka card
+sharing a run of two with the publisher's colophon at page 151, so the bound
+rejects both. Raising it to 2 would take one true positive and one false
+positive together, so the trade is now measurable rather than absent — and it is
+still the only run of 2 known to hold a card.
+
+**The paired-credits-page ceiling is a recurring shape, not a one-off.**
+`gotoubun-v01` page 43 was recorded as the single case of a credits page the
+solver paired, invisible to signal 1 because it reads only unpaired runs.
+`kobayashi-v03` pages 91 and 152 are the second and third. No bound reaches
+these: they sit in no unpaired run at all.
+
+### Three things this survey retires
+
+**That a series' fan edition is one group's habit.** `kobayashi-v08` is TSHH,
+not the Cirno9baka that scanlated v01 and v03 of the same series, and
+`kaguya-v08` names three groups on one volume. Group identity is per volume, and
+`ComicInfo.xml` is the only thing that says so — 12 of 57 archives carry one.
+
+**That the luminance sweep generalises.** It was calibrated on Go-Toubun's
+near-black donation card and Kaguya's flat notice page. On `kobayashi-v01` the
+missed page 152 ranks 76th of 153 by mean luminance and 62nd by standard
+deviation, and of that volume's nine known cards only one would have made a
+top-twenty cut on either measure. Aspect found it immediately. The sweep in the
+plan was corrected accordingly.
+
+**That volume-packaged editions align badly.** Oshi no Ko ships one archive per
+volume and aligns *better* than the chapter-packaged editions — 3 runs and 216
+whole pairings on v01 against `kaguya-v03`'s 30 runs. What a single member costs
+is signal 1, which has no member boundaries to fire at: three editions, 219 to
+195 pages each, and zero candidates between them.
 
 ## M3: what the Stump instance actually offers, measured 2026-07-31
 

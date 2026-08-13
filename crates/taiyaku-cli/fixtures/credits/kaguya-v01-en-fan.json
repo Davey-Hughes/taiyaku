@@ -1,0 +1,21 @@
+{
+  "work": "kaguya-v01",
+  "edition": "en-fan",
+  "against": "raw-mono",
+  "pages": 226,
+  "slots": 231,
+  "swept": true,
+  "runs": [
+    { "pages": [0, 1],     "member":  0, "local": [0, 1],   "at_member_end": false, "slots": null },
+    { "pages": [2, 5],     "member":  0, "local": [2, 5],   "at_member_end": false, "slots": null },
+    { "pages": [7, 8],     "member":  0, "local": [7, 8],   "at_member_end": false, "slots": null },
+    { "pages": [105, 112], "member":  5, "local": [0, 7],   "at_member_end": false, "slots": null },
+    { "pages": [113, 119], "member":  5, "local": [8, 14],  "at_member_end": false, "slots": null },
+    { "pages": [157, 158], "member":  8, "local": [1, 2],   "at_member_end": false, "slots": null },
+    { "pages": [212, 213], "member": 10, "local": [19, 20], "at_member_end": true,  "slots": null },
+    { "pages": [213, 221], "member": 11, "local": [0, 8],   "at_member_end": false, "slots": null },
+    { "pages": [222, 223], "member": 11, "local": [9, 10],  "at_member_end": false, "slots": null }
+  ],
+  "credit_pages": [],
+  "notes": "Psylocke Scans prints no credit page at all, earned three ways: all twelve chapter-final pages, all twelve chapter-opening pages, and a sweep of all 226 pages ranked by mean luminance and by standard deviation. Page 212 is c10 19/20, the publisher's full-colour magazine announcement - the single false positive, and the predicted failure against colour inserts. The alignment this was surveyed through is FRAGMENTED (23 runs, average 13.3 slots), so these rows are evidence about positioning and weak evidence about run length."
+}

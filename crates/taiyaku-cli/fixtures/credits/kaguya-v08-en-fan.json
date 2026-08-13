@@ -1,0 +1,92 @@
+{
+  "against": "raw-mono",
+  "credit_pages": [],
+  "edition": "en-fan",
+  "notes": "Three groups on one volume - /a/nonymous, Jaimini's box & Fans Scans and Psylocke Scans - and still no credits card. SIGNAL 1's SECOND FALSE POSITIVE EVER is here: page 37, an isolated unpaired run at a member end that is not the group's matter. The size rule rejects it. NOT EXHAUSTIVELY SWEPT: only pages some rule flagged were viewed (plus every chapter-final page on kobayashi-v08, kaguya-v03 and kaguya-v08), so this edition contributes to precision and its credit_pages is a floor, not a proven denominator. See the design's section 8.",
+  "pages": 195,
+  "runs": [
+    {
+      "at_member_end": true,
+      "local": [
+        19,
+        20
+      ],
+      "member": 1,
+      "pages": [
+        37,
+        38
+      ],
+      "slots": [
+        37,
+        38
+      ]
+    },
+    {
+      "at_member_end": false,
+      "local": [
+        10,
+        11
+      ],
+      "member": 3,
+      "pages": [
+        66,
+        67
+      ],
+      "slots": [
+        66,
+        67
+      ]
+    },
+    {
+      "at_member_end": false,
+      "local": [
+        0,
+        2
+      ],
+      "member": 10,
+      "pages": [
+        184,
+        186
+      ],
+      "slots": [
+        184,
+        186
+      ]
+    },
+    {
+      "at_member_end": false,
+      "local": [
+        3,
+        7
+      ],
+      "member": 10,
+      "pages": [
+        187,
+        191
+      ],
+      "slots": [
+        187,
+        191
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        8,
+        11
+      ],
+      "member": 10,
+      "pages": [
+        192,
+        195
+      ],
+      "slots": [
+        192,
+        195
+      ]
+    }
+  ],
+  "slots": 195,
+  "swept": false,
+  "work": "kaguya-v08"
+}
