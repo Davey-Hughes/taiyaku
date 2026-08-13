@@ -133,16 +133,20 @@ export interface FilmstripProps {
   /**
    * A slot of `edition` to centre the rail on when nothing is current.
    *
-   * Set only while showing a gap, where there is no current tile to centre on
-   * — a gap has no slot in the viewed edition at all — and the nearest slot
-   * that does resolve is the closest thing to "where the reader is".
-   * `App.tsx` passes `nearestPaired`'s `before?.at ?? after?.at`, which is the
-   * same page `Gap`'s own `←` button offers.
+   * Set whenever the viewed edition has no slot for the reader's position at
+   * all — a gap, or the borrowed page `modules/borrow.ts` now draws in place
+   * of one — where there is no current tile to centre on, and the nearest slot
+   * that does resolve is the closest thing to "where the reader is". With that
+   * module at its default the borrowed case is the ordinary one and the gap
+   * the rare one, so reading this as "only in a gap" would describe the
+   * exception. `App.tsx` passes `nearestPaired`'s `before?.at ?? after?.at`,
+   * which is the same page `Gap`'s own `←` button offers.
    *
    * Centring only. The anchor tile gets **no border**: the solid one means
    * "where you are" and the dashed one means "where the alignment says this
-   * lands", and in a gap neither is true — it lands nowhere, which is what
-   * the gap is. Marking it either way would put a claim on screen in the one
+   * lands", and in either state neither is true — the position lands nowhere
+   * in this edition, which is what made it a gap and what a borrowed page has
+   * not changed. Marking it either way would put a claim on screen in the one
    * state that exists to say the claim cannot be made.
    */
   anchor?: number
@@ -213,13 +217,14 @@ export interface FilmstripProps {
  * thumbnail is lazy-loaded, not even requested. `currentRef` is attached to
  * whichever tile is current and centred into view whenever that changes or
  * the strip becomes visible. `pairedRef` plays the same role for the dashed
- * tile, and `anchorRef` for a gap's neighbourhood. At most one of the three
- * is ever attached at a time — `App.tsx` sets `anchor` only in a gap, where
- * `currentIndex` is `-1` and nothing is correcting, and `isAnchor` below
- * re-tests that rather than assuming it — so centring on "whichever is
+ * tile, and `anchorRef` for the neighbourhood of a position this edition has
+ * no slot for. At most one of the three is ever attached at a time — `App.tsx`
+ * sets `anchor` only in a gap or on the borrowed page that now stands in for
+ * one, where `currentIndex` is `-1` and nothing is correcting, and `isAnchor`
+ * below re-tests that rather than assuming it — so centring on "whichever is
  * attached" is exactly the tile a reader needs on screen for the state they
  * are in: the one to disagree with while correcting, and the nearest page
- * that exists while standing in a gap.
+ * that exists while standing where this edition has none.
  */
 export function Filmstrip({
   reading,

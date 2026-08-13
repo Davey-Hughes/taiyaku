@@ -11006,3 +11006,205 @@ branch pointed at, and nothing here displaces it.
 - **What Panels' Live Translations is actually built on is unknown.** The
   inference above is from what the public APIs can and cannot do, not from
   anything Panels has published.
+
+## A borrowed page is not a reading position, and might one day want to be
+
+Recorded on 2026-08-12 while settling
+`docs/superpowers/specs/2026-08-12-gap-fallback-design.md`. **Nothing here is
+measured** — it is a note about a limitation the design chose deliberately, so
+that choosing differently later starts from what it would cost rather than from
+scratch.
+
+The gap fallback draws another edition's page in place of a gap. It does so as
+a *view*, in the slot `Gap` occupies in `App.tsx`'s tree, leaving `at`
+undefined exactly as a gap does. The consequence is that a borrowed page is not
+a page as far as the rest of the reader is concerned: **no annotations overlay,
+no zoom, and not a prefetch target.** Every rule that guards on `at` is
+therefore unchanged, which is the entire reason the feature does not touch the
+correction UI, note anchoring, `pairing.ts`'s grouping or the filmstrip.
+
+That is a limitation rather than an ideal. A borrowed page is a real page and a
+reader may well want to zoom it, or read the lender's notes on it. **What
+making it a full position would have to answer, and why neither is a small
+edit:**
+
+- **Which edition's slot does a note on a borrowed page belong to?** Notes are
+  anchored to an `(edition, slot)` pair. The lender's slot is the honest
+  anchor — the note is on the lender's artwork — but then a note made while
+  reading `en-mono` lands in `raw-mono`'s note list and is invisible from where
+  it was written. Anchoring to the viewed edition is worse: that edition has no
+  slot here, which is what made this a gap.
+- **`mapRect` gains a case where the drawn page is neither the viewed nor the
+  authority edition.** L1's transform was measured, and the measurement went
+  against the design's own two candidates (`status.md` §5). A third edition in
+  the middle of it is not a parameter change.
+- **Prefetch would have to warm a page from an edition the reader is not
+  reading**, against `cover.rs`'s two-permit `GENERATION_LIMIT` — the same
+  contention that keeps page-size pre-warming unbuilt under `status.md`'s
+  "Later".
+
+**Deliberately not filed as an open item or a "Later" entry.** No reading has
+yet produced the complaint, and the count that would say whether it matters —
+how often a gap arises at all in real reading — is itself unmeasured (§10 of
+the design). This note exists so that if the complaint does arrive, the three
+questions above are already written down.
+
+## The lender rule in a browser: two directions, and the authority lending in neither
+
+Recorded on 2026-08-13, verifying `gap-fallback` against the corpus before it
+shipped. `status.md`'s "Fall back to another edition…" entry cites the two
+lender results below; this is the session they come from.
+
+**What kind of evidence this is, stated first.** One session, on one volume,
+driven by an agent through Chrome DevTools, with no second observer and nothing
+re-run. It is weaker than a test — a test runs on every commit and this ran
+once — and its value is that it is the only thing that exercised the real
+resolver, the real sidecar and real page bytes end to end, which no test in this
+repository does for `App.tsx`. Every figure below was read out of the DOM rather
+than off a screenshot, because an `<img>`'s `src` names the edition and its `alt`
+names the page, and that is what settles which edition lent. Read the "What is
+not established" section at the end before citing any of it.
+
+### The material, and why it had to be this volume
+
+`gotoubun-v01` is the only corpus volume with three editions — `raw-mono` (the
+hub), `en-fan`, `en-mono` — and therefore the only material where `lenderFor`'s
+rule does anything the rejected "the authority always lends" rule would not.
+Everything else in the corpus has two, where the two rules agree by construction.
+
+Ground truth, read out of the sidecar's own `alignments` block before touching
+the reader, so the expected answers were fixed in advance rather than rationalised
+after:
+
+| pairing | verdict | paired | unpaired `raw-mono` slots |
+| --- | --- | --- | --- |
+| `raw-mono -> en-mono` | `sound` | 193 / 195 | **1, 6** |
+| `raw-mono -> en-fan` | `fragmented` | 190 / 195 | **2-3, 7, 193-194** |
+
+No slot is unpaired in *both*, which matters twice below: it is why every gap
+here has a third edition available to lend, and it is why the swap-between-two-
+borrowed-positions case that `Borrowed`'s `key` exists for is not reachable on
+this volume.
+
+### Corpus isolation, because a stray write here is invisible
+
+`corpus/` is gitignored, so a write into it would not show in `git status` and
+would not be recoverable. The sidecar was **copied** to a scratch path with every
+member path rewritten absolute, and the copy served; progress, notes and
+corrections then land beside the copy. `taiyaku serve <scratch> --addr
+127.0.0.1:8123 --cache <scratch>/cache`, with vite proxying to it via
+`TAIYAKU_SERVE` on `127.0.0.1:5199`. Afterwards **`find corpus -newermt today`
+returned nothing**, which is the check that says the isolation held. The work id
+the reader sees is `gotoubun-v01-taiyaku`, derived from the scratch filename
+rather than from the volume — worth knowing before re-running this.
+
+The browser console carried **no errors and no warnings** for the whole session.
+
+### The measurement the rule rests on: two directions, neither lent by the authority
+
+This is the finding. Both cases were chosen from the ground-truth table above,
+one at each end of the volume, and in each the authority (`raw-mono`) was a
+legal lender that the rule was supposed to pass over in favour of a third
+edition:
+
+| authority | slot | viewing | drew | `alt` |
+| --- | --- | --- | --- | --- |
+| `raw-mono` | 1 | `en-mono` | `…/en-fan/pages/43` | `page 44, borrowed from en-fan` |
+| `raw-mono` | 193 | `en-fan` | `…/en-mono/pages/185` | `page 186, borrowed from en-mono` |
+
+**The authority lent in neither direction.** The first case cross-checks against
+the sidecar's run `{a: "1", b: "43"}`, which is where `raw-mono` slot 1 lands in
+`en-fan`; the second is its mirror, with the roles of the two English editions
+swapped, and it is the one that rules out the result being an artefact of
+`en-fan` simply sorting earlier. Had either drawn `raw-mono`, the rule would be
+wrong. The mark read `borrowed from en-fan page 44` and `borrowed from en-mono
+page 186` respectively — 1-based, matching the `alt`.
+
+### The other six checks
+
+- **The mark reveals the `Gap`, offers intact.** Pressing it replaced the page
+  with `No en-mono page for raw-mono page 2.`, the verdict line `This pairing is
+  sound overall — this is one isolated gap, not a sign of trouble.` (matching
+  `sound` from the table above), and two buttons: `→ en-mono page 1` and
+  `en-mono page 2 ←`, running the way an RTL work does.
+- **An offer lands on a real page and moves authority.** Clicking `en-mono page
+  2 ←` drew `…/en-mono/pages/1` unmarked, and `GET …/progress` answered
+  `{"edition":"en-mono","slot":1}` — authority genuinely moved, not just the
+  view, since progress is written from the authority.
+- **The switch.** `taiyaku.prefs.borrow` → `{"enabled":false}` put the `Gap` back
+  at the same position with zero page images; `{"enabled":true}` brought the
+  borrowed page and its mark back. The generated settings section is one
+  `enabled` toggle, thirteenth and last, from registration alone.
+- **Solo, and filling the page area, in all three modes.** The borrowed arm is
+  tested before `mode` is consulted, and this is what that looks like from
+  outside:
+
+  | mode | page images in the page area | borrowed box | page area |
+  | --- | --- | --- | --- |
+  | `single` | 1 — `…/en-mono/pages/185` | 1646×534 | 1646×534 |
+  | `two` | 1 — same | 1646×534 | 1646×534 |
+  | `scroll` | 1 — same | 1646×534 | 1646×534 |
+
+  Exactly one image in each, and the box identical to the page area rather than
+  merely inside it. Repeating the switch in `two` and in `scroll` gave zero
+  images and `No en-fan page for raw-mono page 194.` with the module off, and the
+  marked page back with it on.
+
+- **The arrows are inert on a borrowed page**, which was not anticipated.
+  `session.ts`'s `step` calls the *unwrapped* `display` and refuses anything that
+  is not `at`; a borrowed state is a gap there, so `ArrowLeft` left the page
+  exactly where it was. The consequence is practical: "turn a page away and back"
+  cannot be done from the borrowed page itself. Doing it via the viewed edition —
+  reveal the offers, swap to `raw-mono`, step away, step back, swap to `en-mono` —
+  showed the **mark** again rather than the revealed `Gap`, so the toggle does
+  reset on a page turn. It resets by *unmount*, though, not by the `key`: every
+  move reachable on this volume unmounts `Borrowed` entirely.
+
+### The filmstrip anchor, and how it was established
+
+The method is the valuable half here, because the obvious measurement is wrong
+twice. `Filmstrip`'s anchor is **centring only — deliberately no border and no
+`aria-current`** (its own doc says why: in a gap neither "where you are" nor
+"where this lands" is true). So `aria-current` was absent and that is correct,
+not a failure. And the rail is `flex-direction: row-reverse`, so a naive
+`scrollLeft` read misleads — the useful measurement is which tiles actually
+intersect the rail's box.
+
+The discriminator is that **`Chrome` unmounts the strip while hidden**, so
+revealing it is always a fresh mount. A fresh mount with no anchor sits at the
+rail's natural origin, showing tiles 0–14. Measured at `raw-mono` slot 193
+viewing `en-fan` (235 tiles):
+
+| state | visible tile window |
+| --- | --- |
+| borrowed, module on | **220 – 234** |
+| gap, module off, same position | **220 – 234** |
+
+220–234 rather than 0–14 is what says the anchor is set and honoured in a
+borrowed state, and the two states agreeing is what says the borrowed case did
+not change the gap's behaviour. The anchor itself is the nearest paired slot
+behind — `raw-mono` 192, which is `en-fan` slot 234.
+
+### What is not established
+
+- **One session, one volume, one observer.** Nothing here was repeated, and no
+  second person watched it. A test would be stronger; two of these behaviours now
+  have jsdom tests (`App.test.tsx`, "a borrowed page where the viewed edition has
+  none") and the rest do not.
+- **Only the three-edition case was exercised for the rule.** The two-edition
+  degeneration — where the authority lends because there is no third — was
+  observed only in the jsdom fixture, not in a browser. That is most of the
+  corpus.
+- **The mirror case the rule gets wrong was not reached.** Authority `en-fan`,
+  viewed `en-official`, third `raw-mono` draws the raw over the other English
+  edition; no corpus volume has two English editions plus a raw in that
+  arrangement, so this session could not have found it and did not.
+- **`Borrowed`'s `key` was never exercised.** It exists for a swap straight from
+  one borrowed position to another, which needs a slot two editions both lack,
+  and `gotoubun-v01` has none. That path is unexercised rather than dead.
+- **No geometry claim beyond the box comparison.** 1646×534 is one viewport at
+  one window size; it says the page area was filled, not that any fit rule is
+  right.
+- **How often a gap arises in real reading is still unmeasured**, which is the
+  number that would say whether any of this is felt or theoretical. The design's
+  §10 says the same, and this session did not change it.

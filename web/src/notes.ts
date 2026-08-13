@@ -623,9 +623,12 @@ export interface DragStart {
  * being drawn to move the rect over. It is the same predicate the three zoom
  * keys are gated on, and keeping it one argument is what stops the pan and the
  * keys drifting apart. `drawn` rather than "not scroll mode" because it
- * subsumes it: nothing is drawn in scroll mode *or* in a gap, where `Gap`
- * renders inside the page area — without it, a drag anywhere over a gap,
- * including off one of `Gap`'s own buttons, pans a rect nobody is drawing.
+ * subsumes it: nothing is drawn in scroll mode *or* where the viewed edition
+ * has no slot, whether the page area is filling that with `Gap` or with
+ * `Borrowed` — without it, a drag anywhere over one, including off one of
+ * `Gap`'s own buttons, pans a rect nobody is drawing. `Borrowed` is the case
+ * that makes this least obvious and most necessary: there is a real page image
+ * under the pointer, and it is still not a rect anything here is moving.
  *
  * **`onControl` excludes rather than requires.** "The editor is closed" is not
  * the same set as "the pointer is over the page", and `zoomable` does not

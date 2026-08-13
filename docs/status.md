@@ -1,6 +1,6 @@
 # Status
 
-Where the project is, what is settled, and what comes next. Updated 2026-08-12.
+Where the project is, what is settled, and what comes next. Updated 2026-08-13.
 
 The detailed evidence for everything asserted here is in [`notes.md`](notes.md),
 which is a working log rather than a summary — every claim below traces to a
@@ -20,9 +20,12 @@ from a Stump instance as well as local disk and publish an OPDS feed grouping a
 work's editions. M5a shipped the browser reader that draws it: single-page,
 two-page spread and continuous-scroll modes, a swap between editions that
 never writes position, a gap state that names an unpaired slot rather than
-silently landing near it, and a floating chrome — filmstrip and slot readout —
-that never reflows the page underneath. M5d shipped the correction UI: a
-reader can point at the right counterpart in the filmstrip and have the fix
+silently landing near it — *no longer the default since `gap-fallback`, marked
+here rather than rewritten: another edition's page is drawn there and that gap
+is one press of its mark away, per the "Fall back to another edition…" entry
+below* — and a floating chrome — filmstrip and slot readout — that never
+reflows the page underneath. M5d shipped the correction UI: a reader can point
+at the right counterpart in the filmstrip and have the fix
 written into the sidecar as `by: "hand"`, surviving a re-solve. `verify`'s
 contact sheet remains read-only, but it is no longer the only way to see or
 change what the aligner decided. A defect M5a had carried since it shipped
@@ -75,8 +78,8 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 741 tests, plus 1,306 in `web/`'s TypeScript — 963 in the `node`
-project and 343 in the `jsdom` one — and sixteen more in a
+Five crates, 741 tests, plus 1,326 in `web/`'s TypeScript — 973 in the `node`
+project and 353 in the `jsdom` one — and sixteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, `react`
@@ -220,7 +223,7 @@ is not shaped by what can cross the JavaScript boundary.
 | `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, notes (`<stem>.notes.json`, read and written whole under `If-Match`), an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below). A caching split runs the length of the file: the four routes whose bytes are fixed by a member's `sha256` carry a day's freshness — two of them an `ETag` as well, and the thumbnail and cover neither, since both find the member only inside `spawn_blocking`, too late for a validator to save the work it would be skipping — while every route answering a document this server rewrites carries no freshness at all, on the `304` as well as the `200`, which is the half that is easy to get wrong (O1) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
-| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a gap state offering the nearest paired slots either side as moves rather than jumps, and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of nine `ReaderModule`s — of twelve the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint — the tab in the letterbox beside the page, moving to the *outer* margin in two-page mode since closing the seam leaves a page no margin on its seam side — with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the artwork it sits over rather than the element around it — the same box, until `fit` made the element the whole cell and the two routinely different (§6 below); a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself), `fit` (§6 below: how large a page is drawn inside its own box, and how far the two pages of a spread sit apart — `upscaleToFit` **on** by default, reversing the M5 design, so a 685×1024 scan fills a 1263px box instead of sitting at 1:1 in the middle of it, with `upscaleFilter` exposed beside it because that is a 23% enlargement of line art; and `gap` at `0`, where it is the two pages' *artwork* that meets rather than their elements — a distinction the design got wrong and a browser corrected), `layout` (which of the three reading modes is drawn — a module purely so that it *persists*, since it was component state and so was forgotten on every reload), and `zoom` (§5 below: free continuous zoom and pan in single-page and two-page mode — wheel or pinch anchored at the pointer, a drag to pan with the note editor closed or a modifier held, and `=`, `-` and `0`; the view is one rect in *group* space, since a viewport can straddle both halves of a pair, and it is drawn as a single CSS transform on a wrapper, so `PageView`, `paintedBox` and every existing measurement are untouched — by zoom, which is what this claim was about; `fit` later changed both, §6; a page turn carries the rect and re-clamps, and a swap carries the visible content onto the other edition's page through the derived transform, or throws it away, a preference either way; continuous scroll keeps fit-whole, deliberately — its zoom is a different mechanism, since the strip's layout height is a function of scale and pan competes with scroll rather than sitting beside it). The other three registry entries claim no reading behaviour. `settings` claims only the panel's own key. The remaining two are panels rather than page treatments. `credits` (§4 below): `C` lists the viewed edition's credit pages, a thumbnail and a page number each and no labels the sidecar cannot support, and `skip` keeps them out of the reading flow by being handed to `groups` rather than filtering its result — so the page area, the arrows and the filmstrip skip together, and two-page mode re-pairs around a skipped slot instead of stranding its neighbour. `help` (§6 below): `?` or `h` opens a list of every key the reader answers, generated from `keys.ts`'s one ordered table and from the registry rather than written out — so a binding that changes what it does cannot keep an old description, because there is one description — and listing only the modules that are switched on. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
+| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a slot the edition being read has no page for filled from another edition and marked as borrowed (the gap state that used to stand there, offering the nearest paired slots either side as moves rather than jumps, is one press of that mark away), and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of ten `ReaderModule`s — of thirteen the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint — the tab in the letterbox beside the page, moving to the *outer* margin in two-page mode since closing the seam leaves a page no margin on its seam side — with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the artwork it sits over rather than the element around it — the same box, until `fit` made the element the whole cell and the two routinely different (§6 below); a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself), `fit` (§6 below: how large a page is drawn inside its own box, and how far the two pages of a spread sit apart — `upscaleToFit` **on** by default, reversing the M5 design, so a 685×1024 scan fills a 1263px box instead of sitting at 1:1 in the middle of it, with `upscaleFilter` exposed beside it because that is a 23% enlargement of line art; and `gap` at `0`, where it is the two pages' *artwork* that meets rather than their elements — a distinction the design got wrong and a browser corrected), `layout` (which of the three reading modes is drawn — a module purely so that it *persists*, since it was component state and so was forgotten on every reload), `zoom` (§5 below: free continuous zoom and pan in single-page and two-page mode — wheel or pinch anchored at the pointer, a drag to pan with the note editor closed or a modifier held, and `=`, `-` and `0`; the view is one rect in *group* space, since a viewport can straddle both halves of a pair, and it is drawn as a single CSS transform on a wrapper, so `PageView`, `paintedBox` and every existing measurement are untouched — by zoom, which is what this claim was about; `fit` later changed both, §6; a page turn carries the rect and re-clamps, and a swap carries the visible content onto the other edition's page through the derived transform, or throws it away, a preference either way; continuous scroll keeps fit-whole, deliberately — its zoom is a different mechanism, since the strip's layout height is a function of scale and pan competes with scroll rather than sitting beside it), and `borrow` (the "Later" entry below is the record: where the viewed edition has no page for the slot, another edition's is drawn there and marked, and the mark is a button revealing the `Gap` view it replaced — hub-first order minus the viewed edition and minus the authority, with the authority lending when none of the rest resolves, which it always can; on by default, so a gap now reaches a reader only through that mark or with this switched off). The other three registry entries claim no reading behaviour. `settings` claims only the panel's own key. The remaining two are panels rather than page treatments. `credits` (§4 below): `C` lists the viewed edition's credit pages, a thumbnail and a page number each and no labels the sidecar cannot support, and `skip` keeps them out of the reading flow by being handed to `groups` rather than filtering its result — so the page area, the arrows and the filmstrip skip together, and two-page mode re-pairs around a skipped slot instead of stranding its neighbour. `help` (§6 below): `?` or `h` opens a list of every key the reader answers, generated from `keys.ts`'s one ordered table and from the registry rather than written out — so a binding that changes what it does cannot keep an old description, because there is one description — and listing only the modules that are switched on. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
 
 `taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
 a member becomes pages" — so two consumers deriving it separately is a defect the
@@ -3795,7 +3798,10 @@ mismatched pair said nothing at all.
   `corepack enable` in place of `npm i -g pnpm@11.3.0` on the strength of
   that sentence would die on the `web` job the same way.
 
-- **Fall back to another edition where this one has no page, marked as such.**
+- **Fall back to another edition where this one has no page, marked as such.
+  Shipped 2026-08-13** on `gap-fallback`;
+  `docs/superpowers/specs/2026-08-12-gap-fallback-design.md` is the record, and
+  this entry is kept as the opportunity that opened it.
   The reader shows `Gap` when the edition being read has no counterpart for the
   slot — an honest answer, and a missed opportunity. The alignment already
   knows which *other* editions do hold that page: `route` will answer for any
@@ -3812,6 +3818,101 @@ mismatched pair said nothing at all.
   silently drawn from another edition would be worse than a gap. Raised while
   reviewing the two-page work, where the four solo groups the aligned pairing
   produces are the same fact seen from the other side.
+  **What shipped** is `web/src/modules/borrow.ts`'s `lenderFor`: candidates are
+  `orderedEditions`' hub-first order minus the viewed edition and minus the
+  authority, the first that resolves lends, and the authority lends when none
+  of them does. It is layered onto `display` by `withBorrow` rather than built
+  into it, because `nearest.ts` reads `display`'s own answer to decide whether
+  an offer lands on a *real* page, and a `display` that returned `borrowed`
+  would have turned every gap offer into a jump to a third edition. The mark is
+  a tinted leading edge and a button naming the lender and its page, with the
+  page's `alt` text saying so **unconditionally**, so the substitution is never
+  a purely visual signal; and that button **is** the way back, since pressing
+  it reveals the `Gap` view for that slot, offers intact, rather than spending
+  a keybinding on a screen most readers meet rarely. **The revealed side
+  carries a control back to the borrowed page**, which the first cut did not
+  and which a whole-branch review caught: pressing the mark is looking, not
+  choosing, and with the arrows inert (below) and `Gap` taking no dismiss
+  handler, a reader who looked could only get the page back by swapping to
+  another edition and back again. The setting the entry
+  asked for exists and defaults **on** — the case it made, that a reader
+  comparing translations may want to *see* a page is missing, is served by the
+  switch existing rather than by its default, and a reader who never opens
+  settings is better served by the page than by the gap.
+  **Two findings from reading the code shaped all of it, and this entry knew
+  neither.** The authority edition can always lend: `display`'s `from` is
+  `resolver.slotAt(authority, slot)`, so wherever it is defined the authority
+  holds that exact position by construction — which means **the only gap that
+  survives the feature is the one where the authority's own slot is invalid**,
+  a state `restore`'s validation and `navigate`'s resolver-derived slots
+  already prevent. And a gap is a single-position state rather than a per-page
+  one: `App.tsx` consults `shown.kind` *before* it consults the mode, so a gap
+  replaces the whole page area in every mode and a borrowed page is therefore
+  drawn **solo**. **The entry was written expecting the opposite**, and that is
+  worth the same keeping as L1 geometry's wrong line below: "draw the
+  counterpart from whichever edition has one" pictures a borrowed page woven
+  into the sequence beside real ones, and there is no scroll column with a hole
+  in it and no half-borrowed pair for one to be woven into. An early
+  brainstorming sketch drew exactly that state; it is not reachable.
+  **What the rule gets wrong, recorded rather than left to be discovered.**
+  Preferring a third edition over the authority is right when the authority is
+  the raw and the third is another English release — the case the feature
+  exists for — and wrong in the mirror case, authority `en-fan`, viewed
+  `en-official`, third `raw-mono`, where it draws the raw over the other
+  English edition. **Nothing available distinguishes them**: the sidecar's
+  `editions` block carries a free-text `label` and no language, script or kind
+  field (`docs/sidecar.md`), so "prefer a same-language edition" is not
+  expressible at all. A reader-set order per work is the escape hatch, deferred
+  until reading produces the case rather than built against a guess.
+  **Verified in a browser against `gotoubun-v01`**, the only corpus material
+  with three editions and so the only place the rule does anything the rejected
+  "authority always" rule would not: viewing `en-mono` at `raw-mono` slot 1
+  draws `en-fan` page 44, and viewing `en-fan` at `raw-mono` slot 193 draws
+  `en-mono` page 186. **The authority lent in neither direction** — which is
+  exactly what preferring a third edition exists to produce, measured rather
+  than assumed. The session is `notes.md`, "The lender rule in a browser: two
+  directions, and the authority lending in neither", including what it does not
+  establish — one volume, one session, and the mirror case the rule gets wrong
+  is not reachable on any corpus material.
+  **The two-edition degeneration, stated rather than hidden.** With only two
+  editions there is no third to prefer, so the rule draws the page the reader
+  just swapped away from, marked — and that is most of the corpus. The mark is
+  what distinguishes it from the swap having done nothing; whether a reader
+  finds it useful or irritating is a question only reading answers, and neither
+  the design nor this entry claims to know. It carries a consequence larger
+  than "adds a branch", which the design did not state: with the module on,
+  **`Gap` is now reachable only through the mark**, and on a two-edition work
+  it is otherwise seen only with the module switched off.
+  **A borrowed page is still not a reading position.** `at` stays `undefined`
+  exactly as in a gap, so annotations do not draw, zoom does not engage, and
+  the page is not a prefetch target — every rule that guards on `at` is
+  unchanged, which is what keeps this off the correction UI, note anchoring,
+  `pairing.ts`'s grouping and the filmstrip.
+  **And the arrow keys do nothing**, which is the one item on that list a
+  reader meets without going looking for it. `session.ts`'s `step` calls the
+  *unwrapped* `display` and refuses anything that is not `at`, so from a
+  borrowed page ← and → are silently inert while an apparently ordinary page
+  fills the screen. Measured in the browser rather than reasoned about:
+  `ArrowLeft` left the page exactly where it was, and the design had not
+  anticipated it (`notes.md`, "The lender rule in a browser: two directions,
+  and the authority lending in neither").
+  **That is the feature's real cost, and it is a discoverability cost rather
+  than a mechanical one.** `Gap` announced its dead end in a sentence and put
+  both escapes on screen beside it, so an arrow that did nothing was explained
+  by the screen it did nothing on. A borrowed page announces nothing. Its only
+  in-page escape is `Borrowed`'s mark, whose label reads as a caption rather
+  than as a control, and a reader who does not press it has nothing on screen
+  to tell them why the arrows are silent — they have been handed a page that
+  looks like every other page and behaves like none of them. The trade was
+  made knowingly, and the entry's own premise is that the page is worth more
+  than the gap; it is still a trade rather than a free win, and any complaint
+  that arrives about this feature will most likely be this one.
+  That the page is not a reading position is a limitation rather than an ideal,
+  and it is **deliberately a note rather than an open item or a new entry in
+  this list**: no reading has produced the complaint, and how often a
+  gap arises at all is itself unmeasured (the design's §10). `notes.md`,
+  "A borrowed page is not a reading position, and might one day want to be",
+  carries the three questions making it one would have to answer first.
 
 - **Pre-warm a work's page sizes on load.** Since `?w=` shipped, the first read
   of a page at a given size costs the server a decode and a resize —

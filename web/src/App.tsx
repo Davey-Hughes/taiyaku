@@ -17,6 +17,7 @@ import {
 } from './alignedPairs'
 import { PageAnnotations } from './Annotations'
 import { pageBoxLongEdge, requestedLongEdge } from './pageSize'
+import { Borrowed } from './Borrowed'
 import { Chrome } from './Chrome'
 import {
   applyLanded,
@@ -69,6 +70,7 @@ import {
   toggleReveal,
   UNDO_INTENT,
 } from './modules/annotations'
+import { borrowModule, withBorrow } from './modules/borrow'
 import {
   creditSlotsIn,
   creditsModule,
@@ -261,11 +263,13 @@ const STARTUP_PORTS: StartupPorts = {
  * `navigate` (for `step`) — never both for one keypress. So `viewing` really
  * can diverge from `authority`, and `display` really can report `'gap'`:
  * landing, after a swap, on a slot with no counterpart in the edition just
- * swapped to. That state is drawn by `Gap`, in place of the page area, rather
- * than by an early return out of this whole function (that was O25) — a gap
- * has no slot to draw and no group to belong to, but `Chrome`, `Settings` and
- * the note panel below still mount, so `at` (below) is what the rest of this
- * function narrows on wherever a slot is actually needed.
+ * swapped to. That state is drawn in place of the page area rather than by an
+ * early return out of this whole function (that was O25) — by `Borrowed` where
+ * `withBorrow` below found an edition to lend the page, and by `Gap` where it
+ * did not or where the reader has switched `borrow` off. Neither has a slot to
+ * draw or a group to belong to, but `Chrome`, `Settings` and the note panel
+ * below still mount, so `at` (below) is what the rest of this function narrows
+ * on wherever a slot is actually needed.
  */
 function App() {
   const [session, setSession] = useState<Session>()
@@ -443,6 +447,7 @@ function App() {
   const annotationsPrefs = sliceFor(prefsMap, annotationsModule)
   const regroupPrefs = sliceFor(prefsMap, regroupModule)
   const fitPrefs = sliceFor(prefsMap, fitModule)
+  const borrowPrefs = sliceFor(prefsMap, borrowModule)
   // Read here rather than beside `creditsPrefs` further down, because two
   // effects declared above the `if (!session) return null` guard close over
   // it — the wheel subscription and the swap's own geometry — and a binding
@@ -577,9 +582,13 @@ function App() {
   //
   // `undefined` is not "not measured yet": it is exactly the two states with
   // no page to zoom into. Scroll mode keeps fit-whole and mounts no
-  // `Viewport` (the spec's scope decision), and a gap draws `Gap` in place of
-  // the page area. Both read the same way at every use — there is nothing on
-  // screen for a zoom, a pan or a swap's arithmetic to be about.
+  // `Viewport` (the spec's scope decision), and where the viewed edition has
+  // no slot the page area draws `Borrowed` or `Gap` in place of the group.
+  // Both read the same way at every use — there is nothing on screen for a
+  // zoom, a pan or a swap's arithmetic to be about. **A borrowed page is a
+  // page and still leaves this `undefined`**, which is the whole of "a
+  // borrowed page is not a reading position": the image the reader sees is not
+  // one this ref will ever describe.
   const drawnRef = useRef<DrawnPage | undefined>(undefined)
 
   // The page area itself, for the two things that genuinely need the box
@@ -1152,9 +1161,14 @@ function App() {
       // `ZOOM_IN_INTENT` case above states in full. Checked inside the handler
       // rather than beside `zoomPrefs.enabled` above, because `drawnRef` is
       // assigned during render and none of this effect's dependencies changes
-      // when it flips: the page area still renders in a gap — it just draws
-      // `Gap` in place of the group — so the listener stays attached across
+      // when it flips: the page area still renders where the viewed edition
+      // has no slot — it just draws `Borrowed`, or `Gap` where nothing can
+      // lend, in place of the group — so the listener stays attached across
       // one, and so does the `currentIndex === -1` case that draws nothing.
+      // A borrowed page makes that guard matter more rather than less: there
+      // *is* an image under the pointer now, and `drawnRef` staying `undefined`
+      // is the only thing that keeps a wheel from zooming a page `zoomable`
+      // refuses to engage on.
       //
       // Ahead of `preventDefault()`, so a wheel this declines is left to the
       // browser rather than swallowed. That is what scroll mode already does,
@@ -1261,7 +1275,15 @@ function App() {
 
   if (!session) return null
   const { work, resolver, reading, state, alignments, editions } = session
-  const shown = display(state, resolver)
+  // `editions` is already `orderedEditions`' output — `startup.ts` builds it
+  // that way — so the hub is first and `withBorrow` needs no second ordering.
+  const shown = withBorrow(
+    display(state, resolver),
+    state,
+    resolver,
+    editions,
+    borrowPrefs,
+  )
 
   // The page-drawing half of `Display`, or `undefined` while showing a gap.
   //
@@ -1690,8 +1712,10 @@ function App() {
   //
   // And only on a page. The gap branch used to return before this line; now
   // that it does not, `at` is what keeps a gap from paying one resolve per
-  // note on every render to build a map nothing consumes — the page area
-  // draws `Gap` there, and no group is mounted to read it.
+  // note on every render to build a map nothing consumes — the page area draws
+  // `Borrowed` there (or `Gap`, where nothing can lend), and neither mounts a
+  // group to read it. A borrowed page is drawn solo in every mode, `scroll`
+  // included, so there is no column of groups here even then.
   const scrolledNotes =
     at && mode === 'scroll'
       ? notesBySlot(notesForHere, at.edition, resolver)
@@ -1766,6 +1790,32 @@ function App() {
     pageBoxLongEdge(viewportWidth, window.innerHeight, mode),
     window.devicePixelRatio,
     1 / view.w,
+  )
+  // The same question for a **borrowed** page, and neither of the two inputs
+  // above is right for one — which is why this is a second binding rather than
+  // a reuse of `pageLongEdge`.
+  //
+  // `1 / view.w` would be a magnification the page can never be drawn at.
+  // `swapStep` answers `drop` when the swap lands somewhere with nothing drawn,
+  // and `drop` does not call `setView` — so a reader who was zoomed to 4× when
+  // they swapped onto this arrives with `view` still at 4×, on a page `zoomable`
+  // refuses to engage on. They cannot zoom back out to undo it. Multiplied
+  // through, that walks up the ladder and, past its top rung, `requestedLongEdge`
+  // answers `undefined` — **the original bytes**, a full-resolution generation
+  // behind `cover.rs`'s two-permit `GENERATION_LIMIT`, for a page drawn
+  // fit-whole. `1` is what it is actually drawn at.
+  //
+  // `'single'` rather than `mode` for the mirror reason: `pageBoxLongEdge`
+  // halves the width in `'two'` because each cell there holds one page, and a
+  // borrowed page is drawn **solo across the whole page area in every mode** —
+  // `App.tsx` tests this arm before it consults `mode` at all. Passing `mode`
+  // would ask for a box half the size of the one it is drawn into, which is the
+  // one direction `pageSize.ts` refuses to err in: erring high costs a rung of
+  // decode, erring low is a visibly soft page.
+  const borrowedLongEdge = requestedLongEdge(
+    pageBoxLongEdge(viewportWidth, window.innerHeight, 'single'),
+    window.devicePixelRatio,
+    1,
   )
   const pageAt = (slot: number) =>
     pageUrl(work, shown.edition, slots[slot].page, pageLongEdge)
@@ -2086,11 +2136,16 @@ function App() {
     />
   )
 
-  // The gap's offered moves, and where the strip should sit. Computed only in
-  // a gap; the scan is bounded by the authority's slot count so a wholly
-  // unpaired edition costs one scan rather than one per render.
+  // The gap's offered moves, and where the strip should sit. Computed in a
+  // borrowed state as well as in a gap: the mark reveals the same offers, and
+  // the filmstrip still anchors on `stripAnchor` — a reader looking at a
+  // borrowed page is standing in exactly the place a gap would have put them,
+  // and the page under them being drawn from elsewhere does not make the
+  // nearest real page of their own edition any less the way out. The scan is
+  // bounded by the authority's slot count so a wholly unpaired edition costs
+  // one scan rather than one per render.
   const gapMoves =
-    shown.kind === 'gap'
+    shown.kind === 'gap' || shown.kind === 'borrowed'
       ? nearestPaired(
           state,
           resolver,
@@ -2106,9 +2161,85 @@ function App() {
   // follows.
   const toMove = (offer: NearestOffer | undefined) =>
     offer && { slot: offer.slot, page: offer.page + 1 }
-  // The tile the strip centres on while showing a gap: the nearest page that
-  // exists, which is the same page `Gap`'s own button offers. `before` first —
-  // a reader who has just walked forward into a gap came from behind it.
+  // One `<Gap>`, built from whichever arm is showing: rendered directly in a
+  // gap, and handed to `Borrowed` as the thing its mark reveals. Two call
+  // sites constructing the same seven props is the shape that lets them
+  // drift.
+  const gapView = (
+    edition: string,
+    from: { edition: string; slot: number },
+  ) => (
+    <Gap
+      reading={effectiveReading}
+      edition={edition}
+      from={{
+        edition: from.edition,
+        page: resolver.slotAt(from.edition, from.slot)!.page + 1,
+      }}
+      verdict={verdictFor(alignments, from.edition, edition)}
+      before={toMove(gapMoves?.before)}
+      after={toMove(gapMoves?.after)}
+      onTake={take}
+    />
+  )
+  // The borrowed page, and the one `slotAt` all three of its page values are
+  // built from. `Borrowed` wants the lender's page 1-based for the mark and the
+  // `alt`, 0-based for the URL, and its `half` beside both — and asking the
+  // resolver three times for one slot is the shape that lets those answers
+  // disagree.
+  //
+  // The assertion holds for either arm `lenderFor` can return through: a
+  // resolved lender's slot came back from `indexOf`, and the authority fallback
+  // carries the slot `lenderFor` had already proved exists before it returned
+  // anything at all. Taken as parameters rather than read off `shown`, so the
+  // narrowing the caller has already done is what types them — `gapView`'s
+  // shape, immediately above, for the same reason.
+  const borrowedView = (
+    edition: string,
+    from: { edition: string; slot: number },
+    lender: { edition: string; slot: number },
+  ) => {
+    const { page, half } = resolver.slotAt(lender.edition, lender.slot)!
+    return (
+      <Borrowed
+        // For the swap that goes straight from one borrowed position to
+        // another — two editions both lacking the slot under the reader —
+        // which is the only *move* that leaves this mounted and changes what
+        // it is showing. Every other move unmounts it and takes the mark's
+        // toggle with it; see `Borrowed`'s own doc for why that covers the
+        // rest.
+        //
+        // **A move is not the only way, and this key does not cover the other
+        // one.** Replacing the resolver answers a different lender for the same
+        // three values: `wasmResolver`'s own doc names both paths — a
+        // correction landing, and a stale-`ETag` re-read — and either can carry
+        // a document where this slot now resolves elsewhere. The key would be
+        // identical while `src` changed, under a `buffered={false}` `PageView`
+        // whose own comment says no mounted instance ever sees that happen.
+        //
+        // Unreachable today, and by a guard rather than by luck: both paths run
+        // inside `correction.ts`'s `commitCorrection`, which only a pending
+        // correction reaches, and `beginCorrection` above returns unless
+        // `display` answers `at` — which a borrowed page does not. Written down
+        // rather than fixed because the fix has a price: adding the lender to
+        // the key remounts the borrowed page on every re-read, discarding a
+        // decoded image and the mark's own toggle for a document that usually
+        // says the same thing. Whoever makes a correction reachable from this
+        // state pays it then.
+        key={`${state.authority}:${state.slot}:${edition}`}
+        lender={{ edition: lender.edition, page: page + 1, half }}
+        src={pageUrl(work, lender.edition, page, borrowedLongEdge)}
+        fit={fitPrefs}
+        offers={gapView(edition, from)}
+      />
+    )
+  }
+  // The tile the strip centres on while showing a gap or a borrowed page: the
+  // nearest page that exists, which is the same page `Gap`'s own button
+  // offers. `before` first — a reader who has just walked forward into a gap
+  // came from behind it. Borrowed included for the reason `gapMoves` above
+  // gives: the page drawn there belongs to another edition, so it is no more a
+  // tile in this strip than a gap was.
   const stripAnchor = gapMoves && (gapMoves.before?.at ?? gapMoves.after?.at)
 
   return (
@@ -2241,19 +2372,9 @@ function App() {
             <NoteList here={here} placement="side" onOpen={openNote} />
           )}
         {shown.kind === 'gap' ? (
-          <Gap
-            reading={effectiveReading}
-            edition={shown.edition}
-            from={{
-              edition: shown.from.edition,
-              page:
-                resolver.slotAt(shown.from.edition, shown.from.slot)!.page + 1,
-            }}
-            verdict={verdictFor(alignments, shown.from.edition, shown.edition)}
-            before={toMove(gapMoves?.before)}
-            after={toMove(gapMoves?.after)}
-            onTake={take}
-          />
+          gapView(shown.edition, shown.from)
+        ) : shown.kind === 'borrowed' ? (
+          borrowedView(shown.edition, shown.from, shown.lender)
         ) : mode === 'scroll' ? (
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {grouped.map((g, i) => (

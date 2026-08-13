@@ -1,5 +1,6 @@
 import { buildRegistry } from '../module'
 import { annotationsModule } from './annotations'
+import { borrowModule } from './borrow'
 import { creditsModule } from './credits'
 import { directionModule } from './direction'
 import { fitModule } from './fit'
@@ -114,6 +115,14 @@ import { zoomModule } from './zoom'
  * one way of remembering anything about a person. A `loadPrefs('mode', …)` in
  * `App.tsx` would have been shorter and would have been the first stored value
  * that was not a module's.
+ *
+ * `borrowModule` is the thirteenth, and follows `helpModule`'s shape rather
+ * than `credits`' earlier one: it claims no keys, its generated section is the
+ * one `enabled` toggle, and `App.tsx` wraps `display` with its `withBorrow` in
+ * the same commit as this entry, so nothing here is inert for a while. It is
+ * also the first module whose behaviour is a *pure function over `Display`*
+ * rather than a keypress or a style — which is why registration plus one
+ * wrapped binding is the whole of it.
  */
 const modules = [
   directionModule,
@@ -128,6 +137,7 @@ const modules = [
   fitModule,
   helpModule,
   layoutModule,
+  borrowModule,
 ]
 
 export const registry = buildRegistry(modules)

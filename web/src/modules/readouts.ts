@@ -250,10 +250,19 @@ export function healthReadout(
  * function reports the `hub`↔`viewing` pair and answers `undefined` while
  * `viewing` is the hub itself; `Gap.tsx` reports the `from`↔`viewing` pair,
  * where `from` is the authority the gap was found at. In a gap those disagree:
- * a reader whose authority is a spoke and who swaps to the hub would see
- * `Gap`'s verdict sentence with silence in the readout row directly beneath
- * it. This reports the same pair `Gap` does, so the view and the row cannot
- * contradict each other.
+ * a reader whose authority is a spoke and who swaps to the hub would get
+ * silence in the readout row while `Gap` printed a verdict sentence about a
+ * different pairing. This reports the same pair `Gap` does, so the view and
+ * the row cannot contradict each other.
+ *
+ * **`Gap` is usually not on screen when this runs, and the rule survives
+ * that.** With `modules/borrow.ts` at its default a borrowed page stands where
+ * the gap would have been, and this line still reports the `from`↔`viewing`
+ * pairing — which is now the row's *only* statement that the position is
+ * unpaired at all, since nothing in the page area says so until the mark is
+ * pressed and `Gap` appears. The two must agree the moment it is, and reaching
+ * for `healthReadout` here because "there is no `Gap` to contradict" would put
+ * silence under exactly the screen that needs the sentence most.
  *
  * `hasCounterpart` is `false` unconditionally, which is what a gap *is* — and
  * it is why this returns `string` rather than `string | undefined`:
@@ -434,7 +443,20 @@ export function readoutRow(lines: RowLines): string {
  * `name` is set so the change of scale is never silent: the line reports one
  * edition's slot and slot count while the reader is looking at another, and
  * `positionLine` prefixes the edition to say so. `Gap.tsx` says the same thing
- * in words directly above the row.
+ * in words directly above the row — where a gap is what is on screen, which
+ * since `modules/borrow.ts` is no longer the common case (see below).
+ *
+ * **`Display` has three arms and this has two, and what makes that sound is a
+ * property of the third rather than of this function.** `withBorrow` copies a
+ * gap's `from` into the `borrowed` it returns unchanged — same field, same
+ * shape, same units, still the authority position the gap was found at — so
+ * the `else` here answers for `gap` and `borrowed` together and answers the
+ * same thing. That is load-bearing and is asserted nowhere: a `borrowed` arm
+ * that renamed `from`, or set it to the **lender** (which is the obvious thing
+ * to reach for, since the lender is whose page is on screen), would move every
+ * readout onto a different edition's slot scale, with the edition prefix
+ * dutifully naming the wrong one. It would still typecheck, and the row would
+ * still render.
  *
  * `undefined` for `name` while reading, which is every other case: the edition
  * is the one on screen, and naming it in every frame would be noise.

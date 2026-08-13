@@ -996,17 +996,59 @@ describe('the preference keys', () => {
 
 // ---- the gap ----------------------------------------------------------------
 
+/**
+ * The one route into a slot the viewed edition has no page for: stand on `raw`
+ * slot 5 — the single hole `corpus()` leaves, and the one the spread fixture
+ * further down preserves when it substitutes its own resolver — and press `2`
+ * to look at `en` from it.
+ *
+ * **At sibling scope because the two blocks below are the same swap under
+ * opposite module defaults, and that is the whole point of the pair.** Written
+ * once per block it was two identical functions with different names, and the
+ * relationship between them lived only in a doc comment; written once here, a
+ * change to the route cannot land in one block and not the other, and the only
+ * thing left differing between them is the `beforeEach` that switches `borrow`
+ * off — which is exactly the difference being preserved.
+ *
+ * Deliberately *not* paired with a hoisted `beforeEach`. The seeding is what
+ * distinguishes the two blocks; hoisting it would erase the distinction this
+ * helper exists to make visible.
+ */
+async function swapOntoUnpaired(): Promise<HTMLElement> {
+  ports.getProgress.mockResolvedValue({ edition: 'raw', slot: 5 })
+  const host = await open()
+  press('2')
+  await settle()
+  return host
+}
+
 describe('a swap onto a slot with no counterpart', () => {
-  async function intoTheGap(): Promise<HTMLElement> {
-    ports.getProgress.mockResolvedValue({ edition: 'raw', slot: 5 })
-    const host = await open()
-    press('2')
-    await settle()
-    return host
-  }
+  /**
+   * **The borrow module is switched off for this whole block, deliberately.**
+   *
+   * Every assertion below is about the `Gap` view, and `modules/borrow.ts`
+   * defaults *on* — under which this fixture never reaches one. Its two
+   * editions leave `lenderFor` no third to prefer, so it falls through to "the
+   * authority can always lend" and the gap becomes a borrowed `raw` page. That
+   * is the design's two-edition degeneration working as written, not a defect.
+   *
+   * The gap is still live code — it is what a reader sees with this switch off,
+   * and what `withBorrow` returns when `lenderFor` finds nobody at all — so it
+   * keeps its tests. Turning the module off here is what keeps them pointed at
+   * it. The borrowed path has its own tests below, with the default left alone.
+   *
+   * So: do not delete this to make the block "simpler". It is load-bearing, and
+   * without it three of the tests below assert against a page that is drawn.
+   */
+  beforeEach(() => {
+    localStorage.setItem(
+      'taiyaku.prefs.borrow',
+      JSON.stringify({ enabled: false }),
+    )
+  })
 
   it('draws Gap in place of the page, and keeps the rest of the reader', async () => {
-    const host = await intoTheGap()
+    const host = await swapOntoUnpaired()
     expect(pages(host)).toEqual([])
     // O25: the gap used to return `Gap` *instead of* the reader's own tree, so
     // the toolbar, the settings panel and the note panel were never rendered
@@ -1021,7 +1063,7 @@ describe('a swap onto a slot with no counterpart', () => {
   })
 
   it('leaves the reader-space keys inert and the arrows still', async () => {
-    const host = await intoTheGap()
+    const host = await swapOntoUnpaired()
     // `c`, `n` and `b` all need a slot on screen to name — there is nothing to
     // correct, nothing to anchor to and nothing to break the pairing at — so
     // all three are claimed and do nothing. `applyIntent`'s `step` refuses a
@@ -1037,7 +1079,7 @@ describe('a swap onto a slot with no counterpart', () => {
   })
 
   it('takes one of the offered moves back onto a page', async () => {
-    const host = await intoTheGap()
+    const host = await swapOntoUnpaired()
     const offer = [...host.querySelectorAll('button')].find((b) =>
       b.textContent?.includes('page'),
     )
@@ -1050,9 +1092,110 @@ describe('a swap onto a slot with no counterpart', () => {
   })
 
   it('a review list still opens in a gap, because the work still has notes', async () => {
-    const host = await intoTheGap()
+    const host = await swapOntoUnpaired()
     press('a')
     expect(dialog(host, 'All notes')).not.toBeNull()
+  })
+})
+
+// ---- the borrowed page ------------------------------------------------------
+
+/**
+ * The same swap as the block above, with `modules/borrow.ts` left at its
+ * default. Every test here is here rather than in a unit test because none is
+ * reachable from one: `withBorrow` and `Borrowed` are each tested on their own,
+ * and what is unproven is the wiring between them — that `App.tsx` asks the
+ * module at all, hands `Borrowed` the lender's page rather than the viewed
+ * edition's, resolves that page's `half` from the lender's own slot table, and
+ * gives its mark a `Gap` to reveal.
+ *
+ * **The lender here is the authority**, which is the two-edition degeneration
+ * the design records: this fixture has `raw` and `en` and nothing else, so
+ * `lenderFor` skips both — one is the authority, one is being viewed — and
+ * falls through to its "the authority can always lend" arm. Preferring a third
+ * edition is the rule's interesting half and `modules/borrow.test.ts` is where
+ * it is exercised; reshaping this fixture to reach it here would be testing the
+ * rule a second time instead of the wiring.
+ */
+describe('a borrowed page where the viewed edition has none', () => {
+  it('draws the lender page, marked, instead of the Gap', async () => {
+    const host = await swapOntoUnpaired()
+    // `raw` slot 5, not `en` anything: the page on screen belongs to the
+    // edition that lent it. Getting this wrong by handing `Borrowed` the viewed
+    // edition would still draw *something* — `pageUrl` takes any edition — so
+    // the assertion has to name whose page it is.
+    expect(pages(host)).toEqual([
+      expect.stringContaining('/vol-01/raw/pages/5'),
+    ])
+    // 1-based at the boundary, like every other page number a person reads.
+    expect(button(host, 'borrowed from raw page 6')).toBeDefined()
+    // And the Gap is not also on screen. `Borrowed` returns one or the other,
+    // never both, and this is the half that says which.
+    expect(host.textContent).not.toContain('No en page for')
+  })
+
+  it('the mark reveals the Gap and its offers', async () => {
+    const host = await swapOntoUnpaired()
+    click(button(host, 'borrowed from raw page 6'))
+    await settle()
+    // The borrowed page is gone and the gap's own view is in its place —
+    // `offers` reaching `Borrowed` as a built element rather than as props it
+    // would have to assemble itself.
+    expect(pages(host)).toEqual([])
+    expect(host.textContent).toContain('No en page for raw page 6')
+    // The offers are computed in a borrowed state, which is the widened
+    // `gapMoves` guard: with it still reading `kind === 'gap'` the view would
+    // reveal with no buttons at all and nowhere for a reader to go.
+    //
+    // Asserted as the exact labels rather than as a count, because the count
+    // here is one and the reason is the fixture: slot 5 is the last `raw` slot,
+    // so `nearestPaired` finds slot 4 behind — which pairs to `en` page 5 — and
+    // nothing ahead. A `length > 0` could not tell one offer from two, nor this
+    // absent `after` from a broken one. The arrow runs the way an RTL work
+    // does, which is `effectiveReading` reaching `Gap` through the same helper
+    // the gap arm uses.
+    expect(
+      [...host.querySelectorAll('button')]
+        .map((b) => b.textContent)
+        .filter((text) => text?.includes('en page')),
+    ).toEqual(['→ en page 5'])
+  })
+
+  it('names the lent half when the lender slot is one side of a joined spread', async () => {
+    // A lender slot can be half a joined spread, and `corpus()` has no spread
+    // anywhere — so the `half` `borrowedView` reads off `slotAt` is `undefined`
+    // in every other test in this file, and passing it or dropping it look the
+    // same. This is the fixture that tells them apart: `raw`'s last page is
+    // joined, making slot 5 its `R` half, and that slot is still the one `en`
+    // has no counterpart for.
+    resolver = {
+      ...fakeResolver(
+        {
+          raw: [...whole(5), { page: 5, half: 'R' }, { page: 5, half: 'L' }],
+          en: whole(6),
+        },
+        Object.fromEntries(
+          [0, 1, 2, 3, 4].flatMap((i) => [
+            [`raw|en|${i}`, i],
+            [`en|raw|${i}`, i],
+          ]),
+        ),
+      ),
+      dispose: vi.fn<() => void>(),
+    }
+    const host = await swapOntoUnpaired()
+    // Still the lender's own page index in the URL — a `half` is a slot's
+    // property, and both halves of a spread are the same file.
+    expect(pages(host)).toEqual([
+      expect.stringContaining('/vol-01/raw/pages/5'),
+    ])
+    // `page 6 R`, which is `altAt`'s format for the same slot. Without the
+    // `half` a screen reader hears the whole spread's number for one side of
+    // it, and there is nothing else on screen that would say otherwise.
+    expect(button(host, 'borrowed from raw page 6 R')).toBeDefined()
+    expect([...host.querySelectorAll('img')].map((img) => img.alt)).toContain(
+      'page 6 R, borrowed from raw',
+    )
   })
 })
 
@@ -1386,6 +1529,18 @@ describe('the wheel over the page', () => {
   })
 
   it('is left to the browser in a gap, where nothing is drawn', async () => {
+    // Off for this test only — its siblings never swap and so never reach the
+    // unpaired slot. Without it "in a gap" is not what this reaches: the borrow
+    // module fills the gap with a `raw` page and something *is* drawn, so the
+    // test would still pass — `zoomable` is gated on `at`, which is `undefined`
+    // either way — but for a different reason than the one it names, and the
+    // gap's own wheel behaviour would be covered by nothing. See the
+    // `beforeEach` in "a swap onto a slot with no counterpart" for the full
+    // reasoning.
+    localStorage.setItem(
+      'taiyaku.prefs.borrow',
+      JSON.stringify({ enabled: false }),
+    )
     ports.getProgress.mockResolvedValue({ edition: 'raw', slot: 5 })
     const host = await open()
     const area = pageArea(host)
@@ -1472,6 +1627,22 @@ describe('carrying the view across a swap', () => {
   })
 
   it('drops a swap that lands on a gap', async () => {
+    // Off for this test only — its sibling above swaps onto a real page and is
+    // unaffected. **Not because the module changes the answer**: `swapStep`
+    // drops on an absent `to`, `to` is `drawnRef`, and `App.tsx` assigns that
+    // only when `at` is set — which `borrowed` leaves `undefined` exactly as
+    // `gap` does. The carry is dropped identically either way.
+    //
+    // What the module changes is whether this test can *say* which state it
+    // dropped in. With it on, a `raw` page is drawn where the gap was, and the
+    // `pages(host)` assertion below — the one line that establishes there is
+    // nothing on screen to land the view onto — fails against it. See the
+    // `beforeEach` in "a swap onto a slot with no counterpart" for the full
+    // reasoning; this is the same argument at one test's scope.
+    localStorage.setItem(
+      'taiyaku.prefs.borrow',
+      JSON.stringify({ enabled: false }),
+    )
     ports.getProgress.mockResolvedValue({ edition: 'raw', slot: 5 })
     const host = await zoomedInto()
     const zoomed = drawnRect(host)

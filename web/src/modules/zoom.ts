@@ -148,8 +148,10 @@ export function anchorIn(
  * One predicate, because it is asked in four places that must agree — the
  * three zoom keys and the pan press. `drawn` rather than `mode !== 'scroll'`
  * for the reason the press's own guard gives: what the page area is drawing is
- * already absent in scroll mode *and* in a gap, where `Gap` renders inside the
- * page area and would otherwise pan a rect nobody is drawing.
+ * already absent in scroll mode *and* where the viewed edition has no slot,
+ * whether that is filled by `Gap` or by `Borrowed`, either of which would
+ * otherwise pan a rect nobody is drawing. The borrowed case is the one worth
+ * stating: a page really is on screen there, and it is still not zoomable.
  *
  * This is `notes.ts`'s `pressTakesPan`'s `zoomable` field, and the two must
  * stay one rule: the *decision* to pan is part of what a press on the page

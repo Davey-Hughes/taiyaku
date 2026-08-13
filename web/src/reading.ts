@@ -75,6 +75,24 @@ export function restore(
 
 export type Display =
   | { kind: 'at'; edition: string; slot: number; via: Landed['via'] }
+  /**
+   * The viewed edition has no page here and another edition's is drawn in
+   * its place — `modules/borrow.ts` decides whose, and `Borrowed.tsx` draws
+   * it marked.
+   *
+   * `edition` is the edition being *viewed*, exactly as in the other two
+   * arms, and not the lender. `App.tsx` passes `shown.edition` to `allSlots`
+   * and to `alignedBreaksCached`, so naming the lender here would group and
+   * index against the wrong edition — invisibly, since nothing is drawn from
+   * that grouping while this arm is showing.
+   */
+  | {
+      kind: 'borrowed'
+      edition: string
+      from: { edition: string; slot: number }
+      /** Whose page is drawn, and which slot of it. */
+      lender: { edition: string; slot: number }
+    }
   | { kind: 'gap'; edition: string; from: { edition: string; slot: number } }
 
 /** Show a different edition. Authority is untouched — that is the whole rule. */

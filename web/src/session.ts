@@ -42,8 +42,28 @@ export type ReadingIntent = Exclude<
  * calls `navigate`, and only after confirming `display` actually landed
  * somewhere (`kind: 'at'`) in the edition being stepped through — there is no
  * slot to add `by` to while showing a gap, so arrows are deliberately inert
- * there. `Gap`'s offered moves (`before`/`after`, taken via `takeOffered`) are
- * the way out of one, not a repurposed arrow key.
+ * there. The offered moves (`before`/`after`, taken via `takeOffered`) are the
+ * way out of one, not a repurposed arrow key.
+ *
+ * **This is the only place that behaviour is written down, and since
+ * `modules/borrow.ts` it costs more than it used to.** The `display` called
+ * below is the *unwrapped* one — `withBorrow` is applied in `App.tsx`, above
+ * this — so a borrowed page is a `gap` here and the arrows are inert on it
+ * too. Which is correct, and unavoidable: a borrowed page has no slot in the
+ * edition being stepped through, which is precisely what made it a gap.
+ * Wrapping this call would not produce a slot to step from.
+ *
+ * What changes is what the reader meets. `Gap` announced the dead end in words
+ * and put both escapes on screen beside it, so an arrow that did nothing was
+ * explained by the screen it did nothing on. A borrowed page announces
+ * nothing: an apparently ordinary page fills the area, ← and → are silent, and
+ * the only escape in the page itself is `Borrowed`'s mark, whose label reads
+ * as a caption. That is a cost of the feature rather than a defect in this
+ * function; the fix, if reading ever produces the complaint, is a move the
+ * borrowed state defines — not a looser guard here, which would navigate into
+ * a slot that does not exist. Recorded in `docs/status.md` under "Fall back to
+ * another edition where this one has no page", and measured in `docs/notes.md`
+ * under "The lender rule in a browser".
  *
  * `previous` is MRU, not "the authority": it means "the edition being left,"
  * so it is captured on every change to `viewing` — `toggle` and `view` alike —
