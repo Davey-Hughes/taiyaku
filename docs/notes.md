@@ -3332,13 +3332,20 @@ looked at by a person.**
 | `solo-leveling-v01` | Flame Scans vs Yen Press | 61 | 3 | 0 | 0 | **9** | no |
 
 **2,557 pages, fourteen editions, twelve groups, 41 known credit pages.** The
-last three are wave 2: series with no raw anywhere on the NAS, so the fan
-edition is aligned against **official English** and the work lives under
-`corpus/incoming/wave2/` rather than as a settled directory — `corpus/README.md`
+last four are series with no raw anywhere on the NAS, so the fan edition is
+aligned against **official English** and the work lives under
+`corpus/incoming/fan-vs-official/` rather than as a settled directory — `corpus/README.md`
 reserves those for works holding every edition that exists with `raw-mono` as
 the hub, and a work with no raw cannot serve the zero-drift baseline that makes
 one useful. All three aligned **sound**, at 178 to 182 whole pairings, which is
 cleaner than any raw-hub edition here: same language, same chapters.
+
+**Rebuilt with two invocations, not one.** `scripts/credit-survey.sh` walks one
+level below the root it is given and looks for `<work>/en-fan`, so the settled
+works need `scripts/credit-survey.sh corpus` and the four no-raw works need
+`scripts/credit-survey.sh corpus/incoming/fan-vs-official` — the first call
+reports `incoming` as skipped rather than descending into it, which is the
+script working as written and not a bug to chase.
 
 **Signal 1: precision 23 of 25, recall 13 of 15.** The two denominators differ
 on purpose. Precision is over every candidate on all ten editions; recall is

@@ -2,7 +2,7 @@
 
 Three series with no raw anywhere on the NAS, so the fan edition is aligned
 against **official English** rather than `raw-mono`. They live under
-`corpus/incoming/wave2/` rather than as settled works: `corpus/README.md` says a
+`corpus/incoming/fan-vs-official/` rather than as settled works: `corpus/README.md` says a
 settled directory holds one volume in every edition that exists for it with
 `raw-mono` as the hub, and a work with no raw cannot serve the zero-drift
 baseline that makes that useful.

@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **SUPERSEDED 2026-08-13, and kept as the record of what was planned rather than what happened.** Phase A is finished; its result is `docs/notes.md`, "Fourteen fan editions, and the four signals that did not survive them". **Do not execute the tasks below as written.** Three things diverged: the sweep step's luminance ranking was found to miss cards and aspect replaced it as the primary instrument (corrected in Task 6 below); Sono Bisque Doll left the scope for want of any counterpart; and the rule that actually survived — a page's *size* against its volume's median — did not exist when this was written and appears nowhere in it. The unchecked boxes below are historical, not outstanding work.
+
 **Goal:** Take credit-page detection's measured precision and recall from a denominator of five known credit pages across two fan editions to a denominator over fourteen, and pin the result in a test that fails when the rule moves.
 
 **Architecture:** A checked-in JSON fixture per surveyed edition holds that edition's unpaired-run structure and a person's adjudication of every candidate. `corpus/` is gitignored, so fixtures carry run shapes and page indices and never images — which is what lets the regression test run in CI. `credits` gains a mode that emits the structural half of a fixture so only the verdicts are hand-written. Twelve fan editions are then ingested from the NAS in three waves and surveyed.
