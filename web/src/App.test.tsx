@@ -1024,21 +1024,25 @@ async function swapOntoUnpaired(): Promise<HTMLElement> {
 
 describe('a swap onto a slot with no counterpart', () => {
   /**
-   * **The borrow module is switched off for this whole block, deliberately.**
+   * **The borrow module is switched off for this whole block — belt and
+   * braces rather than load-bearing since Task 2.** `modules/borrow.ts`
+   * defaults *on*. Before Task 2 that mattered here: this fixture's two
+   * editions left `lenderFor` no third to prefer, so with the module on it
+   * fell through to "the authority can always lend" and the gap became a
+   * borrowed `raw` page — the design's two-edition degeneration, working as
+   * written. Task 2 removed that fallback, so `lenderFor` now answers nothing
+   * for this fixture whether the module is on or off, and every assertion
+   * below reaches `Gap` either way.
    *
-   * Every assertion below is about the `Gap` view, and `modules/borrow.ts`
-   * defaults *on* — under which this fixture never reaches one. Its two
-   * editions leave `lenderFor` no third to prefer, so it falls through to "the
-   * authority can always lend" and the gap becomes a borrowed `raw` page. That
-   * is the design's two-edition degeneration working as written, not a defect.
-   *
-   * The gap is still live code — it is what a reader sees with this switch off,
-   * and what `withBorrow` returns when `lenderFor` finds nobody at all — so it
-   * keeps its tests. Turning the module off here is what keeps them pointed at
-   * it. The borrowed path has its own tests below, with the default left alone.
-   *
-   * So: do not delete this to make the block "simpler". It is load-bearing, and
-   * without it three of the tests below assert against a page that is drawn.
+   * Left switched off anyway: it is still the more direct way to guarantee
+   * `Gap` regardless of what `corpus()` might grow a third edition to look
+   * like later, and it keeps this block's intent legible without a reader
+   * having to reason about `lenderFor` to see why it lands on `Gap`. The gap
+   * is still live code — it is what a reader sees with the module off, and
+   * what `withBorrow` returns when `lenderFor` finds nobody at all — so it
+   * keeps its tests either way. The borrowed path has its own tests below,
+   * with the default left alone and a third edition added so it still reaches
+   * one.
    */
   beforeEach(() => {
     localStorage.setItem(
@@ -1102,33 +1106,68 @@ describe('a swap onto a slot with no counterpart', () => {
 
 /**
  * The same swap as the block above, with `modules/borrow.ts` left at its
- * default. Every test here is here rather than in a unit test because none is
- * reachable from one: `withBorrow` and `Borrowed` are each tested on their own,
- * and what is unproven is the wiring between them — that `App.tsx` asks the
- * module at all, hands `Borrowed` the lender's page rather than the viewed
- * edition's, resolves that page's `half` from the lender's own slot table, and
- * gives its mark a `Gap` to reveal.
+ * default — and a third edition, `fan`, added by the `beforeEach` below.
+ * Every test here is here rather than in a unit test because none is
+ * reachable from one: `withBorrow` and `Borrowed` are each tested on their
+ * own, and what is unproven is the wiring between them — that `App.tsx` asks
+ * the module at all, hands `Borrowed` the lender's page rather than the
+ * viewed edition's, resolves that page's `half` from the lender's own slot
+ * table, and gives its mark a `Gap` to reveal.
  *
- * **The lender here is the authority**, which is the two-edition degeneration
- * the design records: this fixture has `raw` and `en` and nothing else, so
- * `lenderFor` skips both — one is the authority, one is being viewed — and
- * falls through to its "the authority can always lend" arm. Preferring a third
- * edition is the rule's interesting half and `modules/borrow.test.ts` is where
- * it is exercised; reshaping this fixture to reach it here would be testing the
- * rule a second time instead of the wiring.
+ * **`fan` exists only because Task 2 removed the authority fallback.** This
+ * fixture used to have just `raw` and `en`, so `lenderFor` skipped both — one
+ * the authority, one being viewed — and fell through to "the authority can
+ * always lend". That arm is gone: with only two editions this describe block
+ * would now reach `Gap`, which the block above already covers, leaving the
+ * wiring above untested by anything. A third edition is the minimum fixture
+ * that still reaches a borrowed page, the same reason `modules/borrow.test.ts`
+ * carries a `d`.
  */
 describe('a borrowed page where the viewed edition has none', () => {
+  beforeEach(() => {
+    ports.getSidecarWithEtag.mockResolvedValue({
+      json: JSON.stringify({
+        work: { reading: 'rtl' },
+        editions: { en: {}, raw: {}, fan: {} },
+        hub: 'raw',
+        alignments: [
+          { from: 'raw', to: 'en', quality: { verdict: 'sound' } },
+          { from: 'raw', to: 'fan', quality: { verdict: 'sound' } },
+        ],
+      }),
+      etag: 's1',
+    })
+    const pairs: Record<string, number> = {}
+    for (let i = 0; i < 5; i++) {
+      pairs[`raw|en|${i}`] = i
+      pairs[`en|raw|${i}`] = i
+    }
+    pairs['en|raw|5'] = 5
+    // `raw` slot 5 — the one `en` has no counterpart for — pairs into `fan`
+    // instead, so `lenderFor` has exactly one candidate to find.
+    pairs['raw|fan|5'] = 5
+    resolver = {
+      ...fakeResolver(
+        { raw: whole(6), en: whole(6), fan: whole(6) },
+        pairs,
+        {},
+        { raw: [4] },
+      ),
+      dispose: vi.fn<() => void>(),
+    }
+  })
+
   it('draws the lender page, marked, instead of the Gap', async () => {
     const host = await swapOntoUnpaired()
-    // `raw` slot 5, not `en` anything: the page on screen belongs to the
+    // `fan` slot 5, not `en` anything: the page on screen belongs to the
     // edition that lent it. Getting this wrong by handing `Borrowed` the viewed
     // edition would still draw *something* — `pageUrl` takes any edition — so
     // the assertion has to name whose page it is.
     expect(pages(host)).toEqual([
-      expect.stringContaining('/vol-01/raw/pages/5'),
+      expect.stringContaining('/vol-01/fan/pages/5'),
     ])
     // 1-based at the boundary, like every other page number a person reads.
-    expect(button(host, 'borrowed from raw page 6')).toBeDefined()
+    expect(button(host, 'borrowed from fan page 6')).toBeDefined()
     // And the Gap is not also on screen. `Borrowed` returns one or the other,
     // never both, and this is the half that says which.
     expect(host.textContent).not.toContain('No en page for')
@@ -1136,11 +1175,13 @@ describe('a borrowed page where the viewed edition has none', () => {
 
   it('the mark reveals the Gap and its offers', async () => {
     const host = await swapOntoUnpaired()
-    click(button(host, 'borrowed from raw page 6'))
+    click(button(host, 'borrowed from fan page 6'))
     await settle()
     // The borrowed page is gone and the gap's own view is in its place —
     // `offers` reaching `Borrowed` as a built element rather than as props it
-    // would have to assemble itself.
+    // would have to assemble itself. `from` names `raw`, the authority, not
+    // the lender — a gap is a hole in the edition being read, unaffected by
+    // who filled it a moment ago.
     expect(pages(host)).toEqual([])
     expect(host.textContent).toContain('No en page for raw page 6')
     // The offers are computed in a borrowed state, which is the widened
@@ -1165,36 +1206,41 @@ describe('a borrowed page where the viewed edition has none', () => {
     // A lender slot can be half a joined spread, and `corpus()` has no spread
     // anywhere — so the `half` `borrowedView` reads off `slotAt` is `undefined`
     // in every other test in this file, and passing it or dropping it look the
-    // same. This is the fixture that tells them apart: `raw`'s last page is
-    // joined, making slot 5 its `R` half, and that slot is still the one `en`
-    // has no counterpart for.
+    // same. `fan` carries its own page numbering here (page 13, not `raw`'s
+    // page 6) precisely so a test that read `half` off the wrong edition's
+    // slot table — `raw`'s or `en`'s instead of the lender's own — would show
+    // it: the assertions below could not pass by coincidentally matching
+    // `raw`'s numbering the way they could when the authority itself was the
+    // fallback lender.
     resolver = {
       ...fakeResolver(
         {
           raw: [...whole(5), { page: 5, half: 'R' }, { page: 5, half: 'L' }],
           en: whole(6),
+          fan: [...whole(5), { page: 12, half: 'R' }, { page: 12, half: 'L' }],
         },
-        Object.fromEntries(
-          [0, 1, 2, 3, 4].flatMap((i) => [
+        Object.fromEntries([
+          ...[0, 1, 2, 3, 4].flatMap((i) => [
             [`raw|en|${i}`, i],
             [`en|raw|${i}`, i],
           ]),
-        ),
+          ['raw|fan|5', 5],
+        ]),
       ),
       dispose: vi.fn<() => void>(),
     }
     const host = await swapOntoUnpaired()
-    // Still the lender's own page index in the URL — a `half` is a slot's
-    // property, and both halves of a spread are the same file.
+    // The lender's own page index in the URL — a `half` is a slot's property,
+    // and both halves of a spread are the same file.
     expect(pages(host)).toEqual([
-      expect.stringContaining('/vol-01/raw/pages/5'),
+      expect.stringContaining('/vol-01/fan/pages/12'),
     ])
-    // `page 6 R`, which is `altAt`'s format for the same slot. Without the
+    // `page 13 R`, which is `altAt`'s format for the same slot. Without the
     // `half` a screen reader hears the whole spread's number for one side of
     // it, and there is nothing else on screen that would say otherwise.
-    expect(button(host, 'borrowed from raw page 6 R')).toBeDefined()
+    expect(button(host, 'borrowed from fan page 13 R')).toBeDefined()
     expect([...host.querySelectorAll('img')].map((img) => img.alt)).toContain(
-      'page 6 R, borrowed from raw',
+      'page 13 R, borrowed from fan',
     )
   })
 })

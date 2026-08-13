@@ -2188,12 +2188,15 @@ function App() {
   // resolver three times for one slot is the shape that lets those answers
   // disagree.
   //
-  // The assertion holds for either arm `lenderFor` can return through: a
-  // resolved lender's slot came back from `indexOf`, and the authority fallback
-  // carries the slot `lenderFor` had already proved exists before it returned
-  // anything at all. Taken as parameters rather than read off `shown`, so the
-  // narrowing the caller has already done is what types them — `gapView`'s
-  // shape, immediately above, for the same reason.
+  // There is one arm `lenderFor` can return through now, and the assertion
+  // holds for it: a resolved lender's slot came back from `indexOf`, which
+  // only answers when the position it was asked about actually exists. (It
+  // used to hold for a second arm too — the authority fallback carried the
+  // slot `lenderFor` had already proved exists before it returned anything at
+  // all — but Task 2 removed that arm, not the reason the assertion is sound.)
+  // Taken as parameters rather than read off `shown`, so the narrowing the
+  // caller has already done is what types them — `gapView`'s shape,
+  // immediately above, for the same reason.
   const borrowedView = (
     edition: string,
     from: { edition: string; slot: number },

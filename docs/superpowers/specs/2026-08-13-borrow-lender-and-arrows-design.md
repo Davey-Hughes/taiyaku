@@ -80,7 +80,7 @@ work leaves none:
 
 | volume shape | candidates | volumes |
 | --- | ---: | ---: |
-| 2 editions | 0 | 9 |
+| 2 editions | 0 | 10 |
 | 3 editions | 1 | 2 |
 
 So the priority ordering §2 of the previous design reasoned about — prefer a
@@ -88,7 +88,7 @@ third edition, and the mirror case it gets wrong — **has never chosen between
 two candidates on real material**. It needs four editions to do anything, and
 no corpus work has four.
 
-Of the 228 fallbacks, **54 are in the nine two-edition volumes, where the
+Of the 228 fallbacks, **54 are in the ten two-edition volumes, where the
 authority is by construction the edition the reader just left.** The other 174
 are in the two three-edition volumes.
 
@@ -141,7 +141,7 @@ that were on screen before the press**, with a tinted edge and a caption. The
 swap appears to do nothing but add a label, and the arrows stop working.
 
 **The cost, stated plainly.** With no third edition to lend, `borrow` becomes
-inert: 228 of 276 positions revert to `Gap`, and on the nine two-edition
+inert: 228 of 276 positions revert to `Gap`, and on the ten two-edition
 volumes the module does nothing at all. It becomes a feature of works with
 three or more editions, of which the corpus has two. That is a partial
 un-shipping of `gap-fallback`'s headline behaviour, taken deliberately, and the
@@ -319,7 +319,7 @@ edition is welcome. Only reading answers that, and no reading has.
 one case where the removed fallback carried information — the authority's page
 would not then be the page they just left. The sweep enumerated edition
 *pairs*, not reader trajectories, so this is unmeasured. It is bounded above by
-the 174 three-edition fallbacks and is zero in the other nine volumes.
+the 174 three-edition fallbacks and is zero in the other ten volumes.
 
 **Whether four or more editions would exercise the lender ordering sensibly.**
 No corpus work has four. `gotoubun-v01` has unused `en-color` and `raw-color`

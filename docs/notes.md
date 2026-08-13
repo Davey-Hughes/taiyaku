@@ -11208,3 +11208,110 @@ behind — `raw-mono` 192, which is `en-fan` slot 234.
 - **How often a gap arises in real reading is still unmeasured**, which is the
   number that would say whether any of this is felt or theoretical. The design's
   §10 says the same, and this session did not change it.
+
+## How often a reader meets a gap, and who actually lends
+
+Recorded on 2026-08-13, running
+`crates/taiyaku-cli/src/borrow_frequency.rs`'s
+`how_often_a_reader_meets_a_gap` against the corpus — the harness
+`docs/superpowers/specs/2026-08-12-gap-fallback-design.md`'s §10 said did not
+exist, and the session above closed by naming still unmeasured —
+
+```
+TAIYAKU_CORPUS="$PWD/corpus" cargo test -p taiyaku-cli borrow_frequency -- --nocapture --test-threads=1
+```
+
+— which answers `docs/superpowers/specs/2026-08-12-gap-fallback-design.md`'s
+§10 directly. This is the session behind
+`docs/superpowers/specs/2026-08-13-borrow-lender-and-arrows-design.md`'s §1.
+The harness reads every corpus volume's `taiyaku.json` where `align --write`
+already left one, rather than re-solving, so what is counted is the reader's
+own `display`/`withBorrow` logic — ported to Rust against a `Binding` rather
+than driven through the browser's WASM `Resolver` — over material the solver
+was not being re-measured on.
+
+**What kind of evidence this is.** Twelve corpus volumes, every ordered pair of
+editions, every slot of the authority — 6,340 reader positions. It answers
+what a reader would be shown at each one; it does not say whether they would
+want it, which is unmeasured before and after this session.
+
+### What a reader saw, before this branch's fix
+
+| | count | share |
+| --- | ---: | ---: |
+| real page (`at`) | 6,064 | 95.65% |
+| borrowed | 276 | 4.35% |
+| gap surviving `borrow` | 0 | 0.00% |
+
+Zero gaps survived — confirming on real material what `borrow.ts` had only
+argued by reasoning: the authority's own slot always exists for its own
+authority, so the only gap the module could leave standing was one where that
+slot itself was invalid, and `restore`/`navigate` already prevent that.
+
+Borrowing was concentrated, not evenly spread:
+
+| reading | borrowed |
+| --- | ---: |
+| a fan translation (`en-fan` as authority) | 13.42%–21.67% |
+| an official edition against another | 0.45%–4.46% |
+
+The worst pair is `gotoubun-v01`, `en-fan → en-mono`: 52 of 240 positions,
+21.67% — roughly one in five. The same volume read the other way,
+`raw-mono → en-fan`, is 2.56%: the authority defines the slot space, and the
+fan release carries 240 slots against the official volume's 194.
+
+### Who actually lent
+
+| lender | count | share |
+| --- | ---: | ---: |
+| the authority (the fallback) | 228 | 82.6% |
+| a third edition | 48 | 17.4% |
+
+**The candidate list never had more than one entry anywhere in the corpus.**
+`lenderFor`'s candidates were `orderedEditions` minus the viewed edition minus
+the authority, so a two-edition work left none and a three-edition work left
+exactly one:
+
+| volume shape | candidates | volumes |
+| --- | ---: | ---: |
+| 2 editions | 0 | 10 |
+| 3 editions | 1 | 2 |
+
+So the priority ordering the previous design reasoned about — prefer a third
+edition, and the mirror case it gets wrong — never had two candidates to choose
+between on real material; it needs four editions to do anything, and no corpus
+work has four. Of the 228 fallbacks, 54 are in the ten two-edition volumes,
+where the authority is by construction the edition the reader just left; the
+other 174 are in the two three-edition volumes.
+
+### The runs an arrow would have had to cross
+
+104 unpaired runs across the corpus:
+
+| run length | count |
+| --- | ---: |
+| 1 position | 64 |
+| 2–3 | 28 |
+| 4 or more | 12 |
+| longest | 43 |
+
+The 43-slot run is `gotoubun-v01`, `en-fan → en-mono` again — the fan release
+ships a 44-page `c000` member the official volume has no counterpart for.
+
+### What the 228 figure decided
+
+82.6% of what the mark labelled "borrowed" was the page the reader had just
+swapped away from — `applyIntent`'s toggle already lands on `state.authority`
+whenever `viewing !== authority`, true of every gap — drawn without arrows,
+annotations, zoom or prefetch, in place of the `Gap` view that named the
+missing edition and offered both escapes. That is what turned "the two-edition
+degeneration" from a caveat in `status.md`'s "Later" entry into a defect: the
+fallback never showed a reader anything they could not already reach with one
+`Space`, and showed it worse. `borrow-lender-and-arrows`'s Task 2 removed it —
+`lenderFor`'s final arm answers `undefined` rather than the authority — and
+re-running the same harness afterward reproduces the same total against the
+new split: `positions 6340 | at 6064 | borrowed 48 | gap 228`, all 48 a third
+edition, none the authority. `at` unchanged at 6,064, which is the check that
+the fix moved borrows into gaps without touching whether a real page was
+found. `status.md`'s "Fall back to another edition…" entry carries the
+after-figures in place and points back here.

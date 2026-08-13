@@ -14,9 +14,10 @@ export interface BorrowPrefs {
  * than toggling it mid-read — `readouts`' and `prefetch`'s reasoning, against
  * `direction`'s `d` and `regroup`'s `b`.
  *
- * Defaults on, matching `zoom`, `prefetch` and `help`. The switch exists
- * because a reader comparing translations may want to *see* that a page is
- * missing; that is served by it existing, not by it defaulting off.
+ * Defaults on, matching `zoom`, `prefetch` and `help`. Since the authority
+ * stopped lending it governs only borrowing from a *third* edition, so on a
+ * work with two editions it changes nothing — the switch is honest rather
+ * than useless, and `Gap` is what a reader sees either way.
  */
 export const borrowModule: ReaderModule<BorrowPrefs> = {
   id: 'borrow',
@@ -30,22 +31,26 @@ export const borrowModule: ReaderModule<BorrowPrefs> = {
  *
  * Candidates are `order` — `App.tsx` passes `Session.editions`, which
  * `startup.ts` builds with `orderedEditions`, so the hub is first — minus the
- * viewed edition and minus the authority. The first that resolves wins; if
- * none does, the authority lends.
+ * viewed edition and minus the authority. The first that resolves wins.
  *
- * **The authority can always lend**, which is why the fallback needs no
- * resolution: `from` below is its own slot, so there is nothing to route. The
- * one case with no lender at all is `from` being undefined, meaning the
- * authority slot does not exist — and that is the only gap that survives this
- * module being enabled.
+ * **Nothing lends where no third edition does.** The authority is skipped like
+ * the viewed edition, and there is no fallback to it: `applyIntent`'s toggle
+ * goes to `state.authority` whenever `viewing !== authority` — true of every
+ * gap — so lending it drew a page one keypress away, and drew it without
+ * arrows, annotations, zoom or prefetch, in place of the `Gap` view that
+ * explains the state. Measured at 228 of 276 corpus borrows before it was
+ * removed; see the 2026-08-13 design, §2. A two-edition work therefore never
+ * borrows at all, which is most of the corpus.
  *
- * **The authority is tried last rather than first, and that rule is
- * imperfect.** It is right when the authority is the raw and a third edition
- * is another English release, which is the case the feature exists for. It is
- * wrong in the mirror case — authority `en-fan`, viewed `en-official`, third
- * `raw-mono` — where it draws the raw over the other English edition. Nothing
- * available distinguishes them: the sidecar's `editions` block carries a
- * free-text `label` and no language or kind field. See the design's §2.
+ * **Which third edition lends, where more than one could, is still
+ * imperfect.** The order among candidates is `order`'s own — hub first, then
+ * alphabetical — and nothing distinguishes a same-language edition from a
+ * raw: the sidecar's `editions` block carries a free-text `label` and no
+ * language or kind field. So an alphabetically-earlier raw can lend over a
+ * same-language edition that would have been the more useful page, decided
+ * by nothing meaningful. No corpus work has more than three editions, so
+ * this has never actually had two candidates to choose between. See the
+ * design's §2.
  */
 export function lenderFor(
   state: ReadingState,
@@ -60,7 +65,7 @@ export function lenderFor(
     const slot = landed && resolver.indexOf(edition, landed)
     if (slot !== undefined) return { edition, slot }
   }
-  return { edition: state.authority, slot: state.slot }
+  return undefined
 }
 
 /**
