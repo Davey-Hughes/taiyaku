@@ -413,6 +413,64 @@ model candidate, scored against the same 45 pages". In short:
   `BLK_CONF` and `BLK_IOU` are upstream's defaults, taken rather than fitted, so
   no threshold here was chosen against these 45 pages.
 
+### 4.3 The survey the deferral asked for, 2026-08-12
+
+Promotion was deferred the same day the score landed, and not on the score: *a
+text detector may not be this project's to own*, since Panels appears to lean on
+an OS capability and the platforms may hand this over for nothing. That deferral
+named three questions and recorded that **nobody had looked**. This section is
+the looking. `notes.md`, "What the platforms already do, and the two halves no
+public API puts together", carries the citations.
+
+**This is documentation, not a measurement, and it is the weakest evidence in
+this design.** No API was run; there was no Apple device to run one on. It
+settles what an API is *documented to return* and not how well it does it on a
+manga page.
+
+- **The browser: nothing, and not for the reason expected.** Shape Detection's
+  `TextDetector` is flag-only in Chrome, absent from Safari and Firefox, and its
+  spec is explicitly not on the standards track — but the detail that ends it is
+  that the spec scopes the API to **Latin-1 text**. Japanese is outside what it
+  is specified to do. WebNN is origin-trial only and estimated at 2027. Safari's
+  Live Text on an `<img>` is user-invoked and returns no coordinate to the page.
+- **Apple has two text APIs and each has exactly one of the two properties L2
+  needs.** `Vision`'s `RecognizeTextRequest` returns boxes and **cannot read
+  vertical Japanese** — Apple's DTS answer is to de-rotate the page yourself
+  first, which presumes the detection this sub-project is trying to do.
+  `VisionKit`'s `ImageAnalyzer` (Live Text) **does** read vertical CJK and
+  **exposes no positions**; the geometry is private to
+  `ImageAnalysisOverlayView`. Nothing public joins them.
+- **The Panels comparison does not transfer.** Panels needs *selection*, which
+  Apple's overlay draws without ever handing the app a rectangle. Taiyaku needs
+  a rectangle on both editions to pair them. The capability being envied is the
+  one that returns nothing pairable.
+- **`RecognizeDocumentsRequest`** (WWDC 2025) is the first Apple API at block
+  granularity — 26 languages, lines grouped into paragraphs — and it is Vision,
+  so it inherits the vertical limitation, and a manga page is not a document.
+  **Android's ML Kit v2** returns `TextBlock`→`Line`→`Element` with boxes and
+  supports the Japanese script: the right shape, on a platform this reader does
+  not target, silent about writing direction, and unmeasured on manga.
+- **The question's premise was the wrong shape.** "What can the browser PWA use"
+  assumed detection must happen where the reading happens. The PWA is served by
+  `taiyaku serve`, which already decodes, caches and serves per-work JSON; a
+  `regions` route beside `/truth` is the same shape, and 4 s/page is a cached
+  server cost. The OS-API question binds only in an architecture — static PWA,
+  or native app — that is neither built nor planned.
+
+**What it settles about §9's deferral.** Its first half does not survive: no
+platform hands this over, for this writing system, and none at all to a browser.
+Its second half is untouched — 95 MB, the fetch, the licence obligation, the
+dependency and 4 s/page cost exactly what they did. So the deferral no longer
+has an alternative to wait for, and that is **not** an argument to promote: the
+model finds 47 of 167 Japanese dialogue boxes and §4.2's sweep showed the other
+120 are under no threshold. The position is that no route is free. The cheapest
+unexplored one is still the `seg` head, out of the same forward pass at no extra
+cost, and nothing here displaces it.
+
+**Cheap and worth re-running before citing this:** Apple could add tategaki to
+Vision in any release; the check is `supportedRecognitionLanguages` plus one
+rotated fixture on a corpus page.
+
 ## 5. The held-out set
 
 The 30 sealed pages — six editions across regimes deliberately absent from the
@@ -504,7 +562,10 @@ settles it, is the habit this whole sub-project exists to break.
 
 - **C2, balloon interiors.** A real candidate, deferred to evidence. See §3.4.
 - **Promoting the model into the binary.** A separate decision, made against the
-  number phase 3 produces. See §4.2.
+  number phase 3 produces. See §4.2. — *Taken on 2026-08-12 and the answer is
+  not yet, on the grounds that the platforms might already do this. §4.3
+  surveyed them and they do not; the deferral now stands on cost alone, with no
+  alternative left to wait for.*
 - **OCR.** Unchanged from the instrument design: real character selection needs
   a transformer plus Python/PyTorch or a cloud API. The `text` field stays
   reserved so adding it later costs no relabelling.
@@ -529,6 +590,11 @@ settles it, is the habit this whole sub-project exists to break.
   in §4.1. The spike also returned something this list did not think to ask for:
   the model has two usable heads at different granularities, and which one phase
   3 scores is now a settled choice rather than an open one.*
+- **Every platform API named in §4.3.** None was run, on any device, against any
+  page of this corpus. The section settles what the vendors document and
+  nothing about how any of it behaves on a manga raw — including the one that
+  would matter most if the documentation is stale, whether `ImageAnalysis` has
+  since gained a public position API.
 - **`COVERAGE`.** Still provisional at 0.5, still unmeasured, and this design
   does not settle it. Every figure above is at that value, and a candidate that
   wins only at one particular coverage is a result this design would not be able

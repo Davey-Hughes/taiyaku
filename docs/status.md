@@ -1,6 +1,6 @@
 # Status
 
-Where the project is, what is settled, and what comes next. Updated 2026-08-11.
+Where the project is, what is settled, and what comes next. Updated 2026-08-12.
 
 The detailed evidence for everything asserted here is in [`notes.md`](notes.md),
 which is a working log rather than a summary — every claim below traces to a
@@ -3973,6 +3973,51 @@ mismatched pair said nothing at all.
   shell is close enough to change that; and what such an API returns — lines,
   words, or the *blocks* pairing needs. A native text API that returns word
   boxes solves a different problem from the one measured here.
+  **That survey ran on 2026-08-12 and all three questions are answered, in the
+  direction that removes the alternative rather than supplying it.** `notes.md`,
+  "What the platforms already do, and the two halves no public API puts
+  together"; spec §4.3 carries the dated settlement. **The browser: nothing.**
+  Shape Detection's `TextDetector` is flag-only in Chrome, absent from Safari
+  and Firefox, on no standards track — and its specification scopes it to
+  **Latin-1 text**, so Japanese is not badly supported, it is out of scope by
+  definition. WebNN is origin-trial only, estimated at 2027. Safari's Live Text
+  on an `<img>` is user-invoked and hands the page no coordinate.
+  **The headline is on the native side: Apple has two text APIs and each has
+  exactly one of the two properties L2 needs.** `Vision`'s
+  `RecognizeTextRequest` returns bounding boxes and **cannot read vertical
+  Japanese** — Apple's own DTS answer is to rotate the page upright yourself
+  first, which presumes the detection this sub-project exists to do.
+  `VisionKit`'s `ImageAnalyzer`, the Live Text framework, **does** read vertical
+  CJK and **exposes no positions at all**; the geometry is private to
+  `ImageAnalysisOverlayView`. The API that can read the writing system returns
+  no coordinates; the API that returns coordinates cannot read the writing
+  system. **So the Panels comparison does not transfer**: Panels needs
+  *selection*, which Apple's overlay draws without ever handing the app a
+  rectangle, and taiyaku needs a rectangle on both editions or there is nothing
+  to pair. Android's ML Kit v2 does return `TextBlock`→`Line`→`Element` with
+  boxes and supports the Japanese script — the right shape, on a platform this
+  reader does not target, silent about writing direction and unmeasured on
+  manga.
+  **And the question's own premise was the wrong shape**, which is the part
+  worth keeping: "what the browser PWA can use" assumed detection has to happen
+  where the reading happens. It does not — the PWA is served by `taiyaku serve`,
+  which already decodes, caches and serves per-work JSON, so a `regions` route
+  beside `/truth` is the same shape as what is there and 4 s/page is a cached
+  server cost. The OS-API question binds only in an architecture that is neither
+  built nor planned: a static PWA against Stump, or a native app.
+  **What it changes about the decision is less than it looks.** The deferral's
+  first half — the platforms may do this for nothing — does not survive. Its
+  second half is untouched: 95 MB, the fetch, the Manga109-s obligation, the
+  dependency and 4 s/page cost exactly what they did. There is simply no cheaper
+  alternative left to wait for, and that is **not** an argument to promote,
+  because the model still finds only 47 of 167 Japanese dialogue boxes and the
+  confidence sweep showed the other 120 are under no threshold. **No route is
+  free.** The cheapest unexplored one is unchanged: the `seg` head, out of the
+  same forward pass at no extra cost, firing on lettering `blk` proposes nothing
+  for. **This survey is weaker evidence than anything else cited here and says
+  so** — no API was run, on any device, against any page of this corpus; it
+  settles what the vendors document and nothing about how it behaves on a manga
+  raw.
   The 30 sealed held-out pages were **not** opened. `notes.md`,
   "comic-text-detector through `tract`: four questions, and the head that
   answers them", "The model candidate, scored against the same 45 pages" and

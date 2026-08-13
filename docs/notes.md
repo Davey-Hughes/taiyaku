@@ -10797,3 +10797,212 @@ question moves off `blk` entirely. The spike's overlays showed the `seg` mask
 firing on lettering `blk` proposes nothing for, and `seg` comes out of the same
 forward pass at no extra cost. That is the next thing to measure, and it is a
 different question from tuning — it is whether we are reading the whole model.
+
+## What the platforms already do, and the two halves no public API puts together
+
+The model was measured, it won on both terms of the promotion rule, and it was
+deliberately **not** promoted on 2026-08-12 for a reason that was not about the
+measurement: *a text detector may not be this project's to own.* Panels, the iOS
+comic reader, has text selection that appears to lean on an OS capability rather
+than on a bundled model, and if the platforms hand text detection over for
+nothing then 95 MB of weights, a fetch step, a licence obligation and 4 s/page of
+inference is a large cost to take on. The deferral said, in as many words,
+**nobody has looked.** This is the looking.
+
+**What kind of evidence this is, stated first, because it is weaker than every
+other entry in this file.** Nothing here was run. There was no iPhone, iPad or
+Mac to run it on, so every claim below is a citation to a vendor document, a
+specification, or a vendor engineer's answer on a public forum, read on
+2026-08-12. That is enough to answer *what an API is documented to return* and
+**not** enough to answer *how well it does it on a manga page*, which is the
+question this project would otherwise insist on measuring. Where the two differ
+this entry says so. What would upgrade it is small and specific: twenty minutes
+on any Apple device, one Japanese `raw-mono` page from the corpus, and the two
+API calls named below.
+
+The three questions came from `status.md` and are answered in the order that
+turned out to matter, which is not the order they were asked.
+
+### The browser, first, because it closes fastest
+
+The reader is a PWA, so the only interesting web API would be one that runs in
+Safari and Chrome today. There is one candidate and it fails on its own terms.
+
+**Shape Detection's `TextDetector`.** In Chrome it is behind
+`#enable-experimental-web-platform-features` — "only barcode detection is
+available by default, starting in Chrome 83". It has never shipped in Safari or
+Firefox. Its specification is a WICG Draft Community Group Report which states
+outright that it "is not a W3C Standard nor is it on the W3C Standards Track",
+and Chrome's own writeup explains the split: text detection "is not considered
+stable enough across either computing platforms or character sets to be
+standardized at the moment, which is why text detection has been moved to a
+separate informative specification."
+
+And then the detail that ends it before any of that matters. The spec defines
+the API's scope as detection **"in images of Latin-1 text as defined in
+[iso8859-1]"**. Japanese is not poorly supported by `TextDetector`; it is
+outside what `TextDetector` is specified to do. A manga raw is the one input the
+only web text-detection API declares out of scope.
+
+**WebNN**, the route by which a browser could instead run a model well, reached
+Candidate Recommendation in January 2026 and is origin-trial only in Chrome
+147–149, with nothing shipped in Safari or Firefox and production estimated at
+2027. In-browser ML today means WebGPU with ONNX Runtime Web or transformers.js
+— which is not a platform capability, it is shipping the same weights through a
+slower runtime.
+
+**Safari's Live Text on an `<img>` is real and is not an API.** A reader can
+long-press an image in a web page and pick "Show Text", and on macOS drag to
+select over the picture. It is user-invoked, it hands the *user* the string, and
+there is no JavaScript entry point and no coordinate that reaches the page. It
+is a competing affordance for a reader who only wants to copy a line — worth
+knowing it exists, worth not confusing with something this project could build
+on.
+
+**Answer to question 1: nothing in the browser detects Japanese text**, and the
+one API that exists excludes it by specification rather than by quality.
+
+### What the native APIs return, which is the question that decides it
+
+Question 3 was "does such an API return lines, words, or the *blocks* pairing
+needs" and it was expected to be a nuance. It is the finding.
+
+**Apple has two text APIs and they split the two properties this project needs
+between them, one each.**
+
+`Vision`'s `RecognizeTextRequest` (`VNRecognizeTextRequest`) returns observations
+with bounding boxes and quads — coordinates, which is half of what pairing wants
+— and **does not read vertical Japanese.** This is not inferred from a
+complaint; it is Apple's own answer. Asked directly whether tategaki can be read
+with Vision, a DTS engineer replied that the Vision framework has no native
+support for it and that the way through is to pre-process the image yourself:
+rotate each line of characters ninety degrees, rotate each character ninety
+degrees so it stands upright, read the lines right-to-left, re-render into
+conventional horizontal text, and *then* run the request. A second thread
+reports the same for Chinese in blunter terms — horizontal text recognises
+fine, and "if even two characters are written vertically, then nothing is
+recognized."
+
+`VisionKit`'s `ImageAnalyzer`/`ImageAnalysis` — the framework behind Live Text —
+**does** read vertical East Asian text, and **exposes no positions at all.** The
+capability gap in Apple's favour is documented from the outside: "starting in
+Sonoma the text recognition now supports vertical text for CJK languages
+(Japanese, Chinese, Korean) which is not yet supported in Vision." The missing
+half is documented from the inside, by a developer who wanted exactly what this
+project wants: `ImageAnalysis` "does not appear to have functionality to get the
+position of extracted text (words, etc.). This functionality appears to be in
+place in a private unexposed API, since the `ImageAnalysisOverlayView` is able to
+leverage it to show the live text interface." The public surface is the
+transcript and Apple's own selection UI. The rectangles exist; they are Apple's,
+and they stay there.
+
+**So the API that can read the writing system returns no coordinates, and the API
+that returns coordinates cannot read the writing system.** Taiyaku needs both at
+once, on both editions, or there is nothing to pair. No public Apple API puts
+them together, and the workaround Apple itself suggests — de-rotate the page
+before recognising it — presumes you already know where the vertical text is,
+which is the detection problem this whole sub-project is about. It is circular
+for this use.
+
+Two more, for completeness:
+
+- **`RecognizeDocumentsRequest`** (Vision, WWDC 2025) groups lines into
+  paragraphs and reads tables and lists across 26 languages, which is the first
+  Apple API to return anything at *block* granularity — the level L2 pairs on.
+  It is Vision, so it inherits Vision's vertical limitation, and a manga page is
+  not a document: there are no paragraphs, no reading order across balloons, and
+  the structure it exists to recover is not the structure a page has.
+- **Android's ML Kit Text Recognition v2** is the one that returns the right
+  shape: `TextBlock` → `Line` → `Element`, each with `boundingBox`,
+  `cornerPoints` and a confidence, with Japanese among the supported scripts. It
+  is a Google library rather than an OS capability, its documentation says
+  nothing about writing direction for any language, and general-purpose OCR on
+  manga is reported at roughly 40% without vertical-text handling. Android is
+  also not a platform this reader targets. It is the closest thing to a free
+  answer that exists and it is on the wrong device, undocumented on the one
+  property that matters.
+
+### Whether a native shell changes it — and why the Panels comparison does not transfer
+
+Question 2 asked whether a native shell is close enough to change the answer.
+It is moot in the direction it was asked: a full native iOS app, not a shell,
+gets the same two halves and the same gap between them.
+
+What the survey found instead is that **Panels is not doing what taiyaku needs,
+and the difference is exactly the missing half.** Panels offers *selection*: a
+reader drags over a balloon and gets a string, a translate button, a share
+sheet. Apple's overlay draws that interaction and never hands the app a
+rectangle — which is why `ImageAnalysis` can ship without exposing one. Taiyaku
+needs a rectangle on the raw and a rectangle on the English page, in page
+coordinates, to map one to the other. The capability Panels leans on is
+precisely the capability that returns nothing pairable. Panels' newer
+on-device Live Translations overlays translated text back into the balloons,
+which does imply *someone* has the geometry; if it is built on `ImageAnalysis`
+it is built on the part of it this project cannot reach.
+
+That is the whole answer to the deferral's premise: the platforms do not hand
+this over for nothing, and the reader whose feature prompted the comparison is
+getting a different thing.
+
+### The premise underneath the question, which was the wrong shape
+
+"What can the browser PWA use, since a native iOS capability does not reach it
+and the reader is a PWA first" contains an assumption worth naming, because it
+is what made the OS-API question feel binding: **that detection would have to
+happen where the reading happens.**
+
+It does not. The PWA is served by `taiyaku serve`, a native Rust process running
+on the reader's own machine, which already decodes pages, resizes them, caches
+them under `$XDG_CACHE_HOME/taiyaku`, and already serves per-work JSON on
+`/api/works/{work}/notes` and `/api/works/{work}/truth`. A `regions` route
+alongside those is the same shape as what is there, and detection at 4 s/page is
+a server cost paid once per page and cached, next to the ~126 ms/page decode
+that is already paid and cached. The browser would receive boxes, which is all
+it ever needed.
+
+So the OS-API question binds only in a future that does not exist: a static PWA
+reading from Stump or an OPDS feed with no taiyaku process behind it, or a
+native app. Both are real possibilities and neither is built or planned. Asking
+what iOS offers was asking what to do in an architecture this project has not
+chosen.
+
+### What it does to the decision, which is less than it looks
+
+The deferral had two parts. The first — *the platforms may already do this* — is
+now answered no, on every platform, for this writing system, and doubly no for a
+browser. That part does not survive.
+
+The second is untouched: 95 MB of weights, a fetch step and its checksum, a
+Manga109-s attribution obligation, a heavyweight dependency and 4 s/page. Every
+one of those costs is exactly what it was. What has changed is that there is no
+longer a cheap alternative waiting to be found, so the comparison the deferral
+was holding out for cannot come.
+
+And the model does not redeem itself on the strength of that. It finds **47 of
+167** Japanese dialogue boxes — better than the classical detector's 0, and not
+a solution. The confidence sweep showed the other 120 are not under any
+threshold. So the position after this survey is not "promote the model"; it is
+that **no route is free**, and the cheapest unexplored one is still the `seg`
+head, which comes out of the same forward pass at no extra cost and fires on
+lettering `blk` proposes nothing for. That measurement was already the one this
+branch pointed at, and nothing here displaces it.
+
+### What is not established
+
+- **No API was run.** Every Apple and Google claim above is documentation and
+  vendor forum answers. None of it has met a manga page on this project's
+  corpus.
+- **The private-API observation about `ImageAnalysis` positions dates to
+  December 2022**, re-checked here only against current documentation, which
+  still exposes no position API. If Apple has since added one, this section is
+  wrong in the direction that matters most, and one call in a playground would
+  say so.
+- **Vertical support is a moving target with a cheap check.** Apple could add
+  tategaki to Vision in any release. The check is `supportedRecognitionLanguages`
+  plus one rotated fixture, and it should be re-run before anyone cites this
+  entry as a reason.
+- **ML Kit on manga is unmeasured**, by this project and by its own
+  documentation, on both accuracy and writing direction.
+- **What Panels' Live Translations is actually built on is unknown.** The
+  inference above is from what the public APIs can and cannot do, not from
+  anything Panels has published.
