@@ -1,6 +1,6 @@
 # The lender that lends nothing, and the arrows that do nothing — design
 
-**Status: settled in brainstorming on 2026-08-13. Not yet built.**
+**Status: settled in brainstorming on 2026-08-13. Built, and shipped on `borrow-lender-and-arrows`.**
 
 Written in the style of the rest of `docs/`: every decision records the
 alternative it beat and what it cost, a figure asserted here was measured on

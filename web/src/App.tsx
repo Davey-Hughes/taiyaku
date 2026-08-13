@@ -70,7 +70,7 @@ import {
   toggleReveal,
   UNDO_INTENT,
 } from './modules/annotations'
-import { borrowModule, withBorrow } from './modules/borrow'
+import { borrowModule, borrowNote, withBorrow } from './modules/borrow'
 import {
   creditSlotsIn,
   creditsModule,
@@ -1285,6 +1285,18 @@ function App() {
     borrowPrefs,
   )
 
+  // The one entry `<Settings>`'s `notes` map carries today — `editions.length`
+  // is exactly the count `lenderFor`'s candidates come from (`editions` minus
+  // the edition being viewed minus the authority), so this is computed here,
+  // beside `shown`, from the same `editions` `withBorrow` was just handed.
+  // `borrowNote` returns `undefined` at three editions or more, which is what
+  // keeps `borrow` out of this object entirely rather than in it with an empty
+  // string.
+  const borrowingNote = borrowNote(editions.length)
+  const settingsNotes = borrowingNote
+    ? { [borrowModule.id]: borrowingNote }
+    : undefined
+
   // The page-drawing half of `Display`, or `undefined` while showing a gap.
   //
   // Narrowed here rather than by a branch that returns early. The early return
@@ -2234,6 +2246,11 @@ function App() {
         src={pageUrl(work, lender.edition, page, borrowedLongEdge)}
         fit={fitPrefs}
         offers={gapView(edition, from)}
+        viewing={edition}
+        reading={effectiveReading}
+        before={toMove(gapMoves?.before)}
+        after={toMove(gapMoves?.after)}
+        onTake={take}
       />
     )
   }
@@ -2566,10 +2583,20 @@ function App() {
           setEditing((open) => ({ ...open, panel: undefined }))
         }}
       />
+      {/*
+        `borrowNote` takes `editions.length` alone, not `state` or
+        `shown.edition` — a property of the work, not of the page on screen —
+        so this map does not need to be recomputed as a reader turns pages,
+        only as editions themselves change. `undefined` from `borrowNote`
+        (three editions or more) leaves `settingsNotes` with no entry for
+        `borrowModule.id`, and `Settings` renders that module's section
+        exactly as it always has.
+      */}
       <Settings
         visible={settingsVisible}
         modules={registry.all()}
         prefs={prefsMap}
+        notes={settingsNotes}
         onChange={handleSettingChange}
         onReset={handleSettingReset}
       />

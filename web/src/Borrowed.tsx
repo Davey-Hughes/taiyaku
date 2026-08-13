@@ -1,4 +1,7 @@
 import { type ReactNode, useState } from 'react'
+import { GapOffers } from './GapOffers'
+import type { GapMove } from './Gap'
+import type { Direction } from './modules/direction'
 import type { FitPrefs } from './modules/fit'
 import { PageView } from './PageView'
 
@@ -33,6 +36,12 @@ export interface BorrowedProps {
    * including the one place it really is the whole state, with `borrow` off.
    */
   offers: ReactNode
+  /** The edition being viewed — the one with no page here. */
+  viewing: string
+  reading: Direction
+  before?: GapMove
+  after?: GapMove
+  onTake: (slot: number) => void
 }
 
 /**
@@ -77,12 +86,13 @@ const MARK_STYLE = {
  * `useState` rather than a prop lifted into `App.tsx`, and nothing here clears
  * it *on a move* (the return control clears it on a press), because on every
  * move a reader can make today this component is *unmounted* rather than
- * re-rendered. The arrows do not move at all from a
- * borrowed page — `session.ts`'s `step` refuses anything that is not `at`, and
- * a borrowed page is not — and every move that does work (taking one of the
- * offers, a filmstrip tile) goes through `navigate`, which makes the viewed
- * edition the authority and so always lands on a real page. Either way the
- * toggle goes with the unmount.
+ * re-rendered. Every move that does work — an arrow (`session.ts`'s `step`,
+ * since `borrow-lender-and-arrows`'s "An arrow on a gap takes the offered
+ * move, on both screens" — before that it was inert here), one of
+ * `GapOffers`' own buttons, or a filmstrip tile — takes the offered move
+ * through `takeOffered`, which goes through `navigate` and makes the viewed
+ * edition the authority, so it always lands on a real page. The toggle goes
+ * with the unmount every time.
  *
  * The `key` in `App.tsx` covers the one case that does not: a swap straight
  * from one borrowed position to another, when two editions both lack the slot
@@ -91,7 +101,17 @@ const MARK_STYLE = {
  * borrowed page would still be revealed on the second's. `gotoubun-v01` has no
  * such slot, so that path is unexercised rather than dead.
  */
-export function Borrowed({ lender, src, fit, offers }: BorrowedProps) {
+export function Borrowed({
+  lender,
+  src,
+  fit,
+  offers,
+  viewing,
+  reading,
+  before,
+  after,
+  onTake,
+}: BorrowedProps) {
   const [showingOffers, setShowingOffers] = useState(false)
   // Exactly `App.tsx`'s `altAt`'s format, and it has to stay exactly that: the
   // two name the same thing — which slot of an edition a drawn image is — and
@@ -102,10 +122,15 @@ export function Borrowed({ lender, src, fit, offers }: BorrowedProps) {
     : `page ${lender.page}`
   // **The reveal goes both ways, and the return is a control rather than a
   // key.** A reader who presses the mark to see what they are missing and then
-  // wants the page back had nowhere to go: `Gap` takes no dismiss handler, the
-  // arrows are inert on this state (`session.ts`'s `step`), and the only route
-  // left was swapping to another edition and back. The design calls the mark
-  // "the way back"; without this it was the way back in one direction only.
+  // wants the borrowed page back had nowhere to go at the time this was built:
+  // `Gap` takes no dismiss handler, the arrows were inert on this state
+  // (`session.ts`'s `step`, before `borrow-lender-and-arrows`'s "An arrow on a
+  // gap takes the offered move, on both screens"), and the only route left was
+  // swapping to another edition and back. An arrow reaches this screen now
+  // too, but it takes the offered move onto a *different* real page rather
+  // than dismissing back to the one borrowed here — this control is still the
+  // only way back to it. The design calls the mark "the way back"; without
+  // this it was the way back in one direction only.
   //
   // Labelled for a reader who has forgotten how they got here — "the borrowed
   // page" names the thing returned to, where naming the lender ("back to raw
@@ -156,6 +181,58 @@ export function Borrowed({ lender, src, fit, offers }: BorrowedProps) {
         buffered={false}
         fit={fit}
       />
+      {/* The mark alone read as a caption, which the previous design named as
+          this feature's real cost. This says the situation in words and puts
+          both escapes beside it, the same two the arrows now take.
+
+          **Directly under the mark, top-left, not a full-width bottom bar.**
+          A bar pinned across the foot of the page area was tried first and
+          measured against real art (`gotoubun-v01`, `en-mono`, hub slot 6, at
+          1400×620): at that height it covered roughly the bottom 13% of a
+          colour spread half, sitting over the largest text on the page, with
+          its white text competing against whatever artwork was behind it. A
+          block sized to its own content and stacked below the mark instead
+          covers only the one corner every borrowed page already spends on the
+          mark, leaving the rest of the artwork alone at any viewport height.
+
+          `top: 32` clears MARK_STYLE's own rendered height rather than
+          reserving space for it through layout: that button is
+          `position: absolute` (so the two marks in this file share one
+          object, per MARK_STYLE's own doc) and an absolutely positioned
+          sibling never contributes to another element's flow, so nothing
+          here can push this block down automatically. 32 is MARK_STYLE's
+          text (0.85em over the 1.5 line-height it inherits from `index.css`'s
+          root) plus its 4px top and bottom padding, rounded up a few px for a
+          visible gap — a duplicated number, not a shared one, so a change to
+          MARK_STYLE's size needs a matching change here. No explicit `width`
+          for the same reason: unset, an absolutely positioned block shrinks
+          to its content instead of stretching to fill its containing block,
+          which is what keeps this corner small instead of redrawing the bar
+          it replaced one row higher. */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 32,
+          left: 0,
+          zIndex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-start',
+          gap: 8,
+          padding: '6px 10px',
+          background: 'rgba(0, 0, 0, 0.65)',
+          color: '#f2f2f2',
+        }}
+      >
+        <p style={{ margin: 0 }}>No {viewing} page here.</p>
+        <GapOffers
+          reading={reading}
+          edition={viewing}
+          before={before}
+          after={after}
+          onTake={onTake}
+        />
+      </div>
     </div>
   )
 }

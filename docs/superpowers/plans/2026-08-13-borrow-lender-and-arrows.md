@@ -915,6 +915,7 @@ git commit -m "The borrowed page says what it is, and shares Gap's two escapes"
 ## Verification before calling this done
 
 - [ ] `env -u TAIYAKU_CORPUS scripts/check-all.sh` passes on the final branch.
-- [ ] `TAIYAKU_CORPUS="$PWD/corpus" cargo test --workspace --all-features corpus:: -- --nocapture --test-threads=1` passes, printing `borrowed 48 | gap 228`.
+- [ ] `TAIYAKU_CORPUS="$PWD/corpus" cargo test --workspace --all-features corpus:: -- --nocapture --test-threads=1` passes — the twelve pre-existing standing checks.
+- [ ] `TAIYAKU_CORPUS="$PWD/corpus" cargo test -p taiyaku-cli borrow_frequency -- --nocapture --test-threads=1` passes, printing `borrowed 48 | gap 228`. **A separate command, because the filter above does not reach it:** the sweep lives in `borrow_frequency`, not under `corpus::`, so running only the first command would report success while never exercising the figures this branch turns on. Caught during Task 4 — the plan asserted a command it had never run.
 - [ ] Drive it in a browser against `gotoubun-v01`, which is the only corpus material where a third edition can lend: reach a borrowed page, confirm the line and both buttons are visible without pressing the mark, and confirm `←`/`→` move rather than doing nothing.
 - [ ] Grep `docs/` and `web/src/` for `borrow` and read every hit — the open-items ritual's rule that a sweep for expected phrasing misses prose that never used it.

@@ -5423,6 +5423,16 @@ for it; two of its segments were only in the check table below, split apart.
 | arrows inert | `ArrowRight` left slot 194 and the gap unchanged |
 | a tile click leaves the gap | `slot 102 / 240 · p. 100 · 43% · fragmented pair · …`, one tile `aria-current`, solid white border |
 
+**The `arrows inert` row above is no longer true — corrected in place on
+2026-08-13 rather than deleted, since this is a measurement recorded at the
+time rather than a claim about today.** `session.ts`'s `step` now takes the
+offered move on any non-`at` display, gaps included, on
+`borrow-lender-and-arrows`'s "An arrow on a gap takes the offered move, on
+both screens" — so `ArrowRight` at Gap B would now move rather than leaving
+slot 194 unchanged. What the row measured is unchanged: at the time of this
+session, `step` called the unwrapped `display` and refused anything that was
+not `at`, and a gap is exactly that, so the arrow did nothing.
+
 **The reading case was checked too, as the negative half.** On `raw-mono`
 unswapped the row reads `slot 2 / 195 · p. 2 · 1% · 2m read · ~c000 · 1 of 7`:
 no edition prefix, and no health segment at all, since `healthReadout` is
@@ -11046,8 +11056,12 @@ edit:**
 **Deliberately not filed as an open item or a "Later" entry.** No reading has
 yet produced the complaint, and the count that would say whether it matters —
 how often a gap arises at all in real reading — is itself unmeasured (§10 of
-the design). This note exists so that if the complaint does arrive, the three
-questions above are already written down.
+the design). *That count is no longer unmeasured — corrected in place on
+2026-08-13 rather than deleted, since this was accurate when written. It is
+"How often a reader meets a gap, and who actually lends", below; the three
+questions above are unaffected by it and still stand.* This note exists so
+that if the complaint does arrive, the three questions above are already
+written down.
 
 ## The lender rule in a browser: two directions, and the authority lending in neither
 
@@ -11151,7 +11165,15 @@ page 186` respectively — 1-based, matching the `alt`.
   marked page back with it on.
 
 - **The arrows are inert on a borrowed page**, which was not anticipated.
-  `session.ts`'s `step` calls the *unwrapped* `display` and refuses anything that
+  **No longer true — corrected in place on 2026-08-13 rather than deleted, since
+  this is a measurement recorded at the time rather than a claim about today.**
+  `session.ts`'s `step` now takes `nearestPaired`'s before/after offer on the
+  pressed side when `display` is not `at`, on `borrow-lender-and-arrows`'s "An
+  arrow on a gap takes the offered move, on both screens" — so on this same
+  volume `ArrowLeft`/`ArrowRight` from a borrowed page now move, the same
+  destinations the revealed `Gap`'s own buttons offer. What this bullet measured
+  is unchanged: at the time of this session, `session.ts`'s `step` called the
+  *unwrapped* `display` and refused anything that
   is not `at`; a borrowed state is a gap there, so `ArrowLeft` left the page
   exactly where it was. The consequence is practical: "turn a page away and back"
   cannot be done from the borrowed page itself. Doing it via the viewed edition —
@@ -11194,7 +11216,15 @@ behind — `raw-mono` 192, which is `en-fan` slot 234.
 - **Only the three-edition case was exercised for the rule.** The two-edition
   degeneration — where the authority lends because there is no third — was
   observed only in the jsdom fixture, not in a browser. That is most of the
-  corpus.
+  corpus. **No longer true — corrected in place on 2026-08-13 rather than
+  deleted, since this is a measurement recorded at the time rather than a
+  claim about today.** The degeneration itself is gone:
+  `borrow-lender-and-arrows` removed the authority fallback, so `lenderFor`
+  now answers nothing on a two-edition work rather than the authority's own
+  page (`status.md`, "The authority stops lending"). The jsdom fixture this
+  bullet names no longer demonstrates it either — it now carries a third
+  edition, `fan`, for the same reason (`App.test.tsx`, "a borrowed page where
+  the viewed edition has none").
 - **The mirror case the rule gets wrong was not reached.** Authority `en-fan`,
   viewed `en-official`, third `raw-mono` draws the raw over the other English
   edition; no corpus volume has two English editions plus a raw in that

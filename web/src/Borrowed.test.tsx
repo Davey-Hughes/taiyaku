@@ -10,6 +10,11 @@ const props = {
   src: '/api/works/w/raw-mono/pages/46',
   fit: fitModule.defaults,
   offers: <p>the offers</p>,
+  viewing: 'en-mono',
+  reading: 'rtl' as const,
+  before: { slot: 97, page: 89 },
+  after: { slot: 104, page: 91 },
+  onTake: () => {},
 }
 
 describe('Borrowed', () => {
@@ -99,5 +104,39 @@ describe('Borrowed', () => {
     const mark = host.querySelector('button')
     expect(mark?.tagName).toBe('BUTTON')
     expect(mark?.getAttribute('type')).toBe('button')
+  })
+
+  it('says which edition has no page here, without the mark being pressed', () => {
+    const host = mount(<Borrowed {...props} />)
+    expect(host.textContent).toContain('No en-mono page here')
+  })
+
+  it('offers both escapes beside that line, the two the arrows also take', () => {
+    const host = mount(<Borrowed {...props} />)
+    const labels = [...host.querySelectorAll('button')].map(
+      (b) => b.textContent,
+    )
+    expect(labels.some((l) => l?.includes('en-mono page 89'))).toBe(true)
+    expect(labels.some((l) => l?.includes('en-mono page 91'))).toBe(true)
+  })
+
+  it('hands the pressed offer slot to onTake, not its display page', () => {
+    // `before` is `{ slot: 97, page: 89 }` — asserting the slot rather than
+    // the page rules out a swap that returned the wrong one, which would
+    // look identical here since the button is labelled with the page, not
+    // the slot. Its own spy, not the shared `props.onTake`, so the other
+    // cases above stay unaffected.
+    const taken: number[] = []
+    const host = mount(
+      <Borrowed {...props} onTake={(slot) => taken.push(slot)} />,
+    )
+    const before = [...host.querySelectorAll('button')].find((b) =>
+      b.textContent?.includes('en-mono page 89'),
+    )
+    expect(before).toBeDefined()
+    act(() => {
+      before?.click()
+    })
+    expect(taken).toEqual([97])
   })
 })

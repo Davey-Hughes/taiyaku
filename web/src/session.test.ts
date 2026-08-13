@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { fakeResolver, whole, bSlots } from './fixtures'
+import { stepFor } from './modules/direction'
 import type { ReadingState } from './reading'
 import {
   alignmentsOf,
@@ -105,6 +106,64 @@ describe('applyIntent', () => {
 
     ;({ state, previous } = applyIntent({ kind: 'toggle' }, state, previous, r)) // Space
     expect(state.viewing).toBe('b') // back to C, not a no-op onto the hub
+  })
+})
+
+describe('applyIntent: an arrow on a gap or a borrowed page', () => {
+  // `a` is the authority and hub; `b` has no counterpart for slot 2, so a
+  // reader viewing `b` is in a gap there, with real `b` pages at slots 1 and 3.
+  const slots = { a: whole(5), b: whole(5) }
+  const pairs = { 'a|b|0': 0, 'a|b|1': 1, 'a|b|3': 3, 'a|b|4': 4 }
+  const resolver = fakeResolver(slots, pairs)
+  const inGap: ReadingState = { authority: 'a', slot: 2, viewing: 'b' }
+
+  it('takes the offer after it on by: 1', () => {
+    const { state } = applyIntent({ kind: 'step', by: 1 }, inGap, 'a', resolver)
+    // `takeOffered` navigates, so the viewed edition becomes the authority.
+    expect(state).toEqual({ authority: 'b', slot: 3, viewing: 'b' })
+  })
+
+  it('takes the offer before it on by: -1', () => {
+    const { state } = applyIntent(
+      { kind: 'step', by: -1 },
+      inGap,
+      'a',
+      resolver,
+    )
+    expect(state).toEqual({ authority: 'b', slot: 1, viewing: 'b' })
+  })
+
+  it('stays put when that side has no offer', () => {
+    // Nothing in `b` pairs at all, so neither side offers anything.
+    const nothing = fakeResolver({ a: whole(3), b: whole(3) }, {})
+    const stuck: ReadingState = { authority: 'a', slot: 1, viewing: 'b' }
+    const { state } = applyIntent({ kind: 'step', by: 1 }, stuck, 'a', nothing)
+    expect(state).toBe(stuck)
+  })
+
+  it('is unchanged on a real page', () => {
+    const onPage: ReadingState = { authority: 'a', slot: 0, viewing: 'b' }
+    const { state } = applyIntent(
+      { kind: 'step', by: 1 },
+      onPage,
+      'a',
+      resolver,
+    )
+    expect(state).toEqual({ authority: 'b', slot: 1, viewing: 'b' })
+  })
+
+  // The spec's §6 asks for this specifically. `applyIntent` takes `by` already
+  // rtl-mapped, and nothing inside it could tell if that stopped being true —
+  // the arrows would silently invert on a gap and nowhere else. Composing
+  // `stepFor` here is what pins the contract without reaching for `App.tsx`.
+  it('takes the earlier offer for a physical right arrow in a rtl work', () => {
+    const { state } = applyIntent(
+      { kind: 'step', by: stepFor(1, 'rtl') },
+      inGap,
+      'a',
+      resolver,
+    )
+    expect(state).toEqual({ authority: 'b', slot: 1, viewing: 'b' })
   })
 })
 

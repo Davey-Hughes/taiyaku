@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { borrowModule, lenderFor, withBorrow } from './borrow'
+import { borrowModule, borrowNote, lenderFor, withBorrow } from './borrow'
 import { fakeResolver, whole } from '../fixtures'
 import { display, type ReadingState } from '../reading'
 
@@ -7,7 +7,7 @@ import { display, type ReadingState } from '../reading'
 // order `App.tsx` passes. Slot 2 is the interesting one: `b` has no
 // counterpart for it, so a reader viewing `b` from authority `a` is in a gap
 // there. `c` has no counterpart either; `d` does. That shape is what lets one
-// fixture exercise the order, the skip and the fallback rather than three.
+// fixture exercise the order and the skip rather than two.
 const slots = { a: whole(4), b: whole(4), c: whole(4), d: whole(4) }
 const order = ['a', 'b', 'c', 'd']
 
@@ -40,10 +40,6 @@ describe('lenderFor', () => {
     // 228 of 276 corpus borrows were this. See the 2026-08-13 design, §2.
     const twoEditions = fakeResolver({ a: whole(4), b: whole(4) }, pairs)
     expect(lenderFor(inGap, twoEditions, ['a', 'b'])).toBeUndefined()
-  })
-
-  it('still lends a third edition where one resolves', () => {
-    expect(lenderFor(inGap, resolver, order)).toEqual({ edition: 'd', slot: 2 })
   })
 
   it('never lends the edition being viewed', () => {
@@ -101,5 +97,27 @@ describe('borrowModule', () => {
   it('starts enabled and claims no keys', () => {
     expect(borrowModule.defaults).toEqual({ enabled: true })
     expect(borrowModule.keys).toBeUndefined()
+  })
+})
+
+describe('borrowNote', () => {
+  it('names a two-edition work’s own situation, true of most of the corpus', () => {
+    expect(borrowNote(2)).toBe(
+      'This work has two editions, so there is no third edition to borrow a page from.',
+    )
+  })
+
+  it('says nothing once a third edition exists for lenderFor to try', () => {
+    expect(borrowNote(3)).toBeUndefined()
+    expect(borrowNote(4)).toBeUndefined()
+  })
+
+  it('still answers, worded correctly, for edition counts the corpus does not have', () => {
+    expect(borrowNote(1)).toBe(
+      'This work has one edition, so there is no third edition to borrow a page from.',
+    )
+    expect(borrowNote(0)).toBe(
+      'This work has no editions, so there is no third edition to borrow a page from.',
+    )
   })
 })

@@ -17,7 +17,9 @@ export interface BorrowPrefs {
  * Defaults on, matching `zoom`, `prefetch` and `help`. Since the authority
  * stopped lending it governs only borrowing from a *third* edition, so on a
  * work with two editions it changes nothing — the switch is honest rather
- * than useless, and `Gap` is what a reader sees either way.
+ * than useless, and `Gap` is what a reader sees either way. Since
+ * `borrow-lender-and-arrows` that honesty is on screen and not just in this
+ * comment: `borrowNote` below says so under the toggle itself.
  */
 export const borrowModule: ReaderModule<BorrowPrefs> = {
   id: 'borrow',
@@ -66,6 +68,40 @@ export function lenderFor(
     if (slot !== undefined) return { edition, slot }
   }
   return undefined
+}
+
+const EDITION_COUNT_WORDS: Record<number, string> = {
+  0: 'no',
+  1: 'one',
+  2: 'two',
+}
+
+/**
+ * The sentence `App.tsx` hands `Settings` (keyed by `borrowModule.id` in its
+ * `notes` map) to say why the toggle above it can do nothing on this work —
+ * `lenderFor`'s own limit, worded for a reader who has never heard "authority"
+ * and does not need to: its candidates are `order` minus the edition being
+ * viewed minus the authority, which is empty whenever `order` holds fewer
+ * than three editions in the first place, regardless of which page a reader
+ * is looking at or which edition they are viewing it in.
+ *
+ * `undefined` at three editions or more, where a third candidate exists for
+ * `lenderFor` to try — whether or not it happens to resolve for the slot in
+ * front of a reader right now, which is a fact about one gap and not about
+ * the work, and not this function's job to know. `Settings` renders no note
+ * at all for `undefined` rather than one that would need to flicker on and
+ * off as a reader turns pages.
+ *
+ * A property of the work, so this takes the edition count alone — not a
+ * `ReadingState`, not the edition being viewed — the same reasoning the
+ * design calls out by name: the note must not depend on which edition is on
+ * screen.
+ */
+export function borrowNote(editionCount: number): string | undefined {
+  if (editionCount >= 3) return undefined
+  const word = EDITION_COUNT_WORDS[editionCount] ?? String(editionCount)
+  const plural = editionCount === 1 ? 'edition' : 'editions'
+  return `This work has ${word} ${plural}, so there is no third edition to borrow a page from.`
 }
 
 /**

@@ -405,10 +405,23 @@ export function cellOf(
  * it read as correct. One rule now covers both ends rather than two rules
  * meeting in the middle, which is how this was missed in the first place.
  *
- * An arrow still cannot *put* a reader on a second slot — that is the cost
- * named above — but a swap, a confirmed correction or a restored progress
- * record can, and an arrow now leaves them there rather than moving them off
- * it in whichever direction the nearest boundary happens to face.
+ * `stepToGroup` itself still cannot *put* a reader on a second slot — that is
+ * the cost named above — but a swap, a confirmed correction or a restored
+ * progress record can, and an arrow now leaves them there rather than moving
+ * them off it in whichever direction the nearest boundary happens to face.
+ *
+ * **That is no longer the whole story for an arrow.** Out of a gap or a
+ * borrowed page, `session.ts`'s `applyIntent` `step` case bypasses this
+ * function entirely: it takes `nearestPaired`'s offer through `takeOffered`,
+ * which navigates to `resolveOffered`'s `landed.slot` verbatim, and that slot
+ * can be a group's second slot. An arrow *can* now put a reader on a second
+ * slot — never through `stepToGroup`'s own path, whose first-slot rule above
+ * is unchanged, but through the offered move instead. That exposure is not
+ * new: `Gap`'s offer buttons have called `takeOffered` since the offers
+ * shipped, so a click could always land a reader on a second slot — the
+ * paragraph above was already incomplete in naming only a swap, a correction
+ * and a restored progress record as the ways there. What changed is that a
+ * key reaches it too.
  *
  * A slot no group claims goes to the nearest group in the direction of travel
  * (`nearestGroup` below) rather than staying put. **That branch is a backstop,

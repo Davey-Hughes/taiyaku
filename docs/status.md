@@ -78,8 +78,8 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 745 tests, plus 1,328 in `web/`'s TypeScript — 975 in the `node`
-project and 353 in the `jsdom` one — and sixteen more in a
+Five crates, 745 tests, plus 1,343 in `web/`'s TypeScript — 982 in the `node`
+project and 361 in the `jsdom` one — and sixteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `wasm-bindgen` in the binding, `react`
@@ -223,7 +223,7 @@ is not shaped by what can cross the JavaScript boundary.
 | `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, notes (`<stem>.notes.json`, read and written whole under `If-Match`), an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below). A caching split runs the length of the file: the four routes whose bytes are fixed by a member's `sha256` carry a day's freshness — two of them an `ETag` as well, and the thumbnail and cover neither, since both find the member only inside `spawn_blocking`, too late for a validator to save the work it would be skipping — while every route answering a document this server rewrites carries no freshness at all, on the `304` as well as the `200`, which is the half that is easy to get wrong (O1) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
-| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a slot the edition being read has no page for filled from another edition and marked as borrowed (the gap state that used to stand there, offering the nearest paired slots either side as moves rather than jumps, is one press of that mark away), and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of ten `ReaderModule`s — of thirteen the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint — the tab in the letterbox beside the page, moving to the *outer* margin in two-page mode since closing the seam leaves a page no margin on its seam side — with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the artwork it sits over rather than the element around it — the same box, until `fit` made the element the whole cell and the two routinely different (§6 below); a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself), `fit` (§6 below: how large a page is drawn inside its own box, and how far the two pages of a spread sit apart — `upscaleToFit` **on** by default, reversing the M5 design, so a 685×1024 scan fills a 1263px box instead of sitting at 1:1 in the middle of it, with `upscaleFilter` exposed beside it because that is a 23% enlargement of line art; and `gap` at `0`, where it is the two pages' *artwork* that meets rather than their elements — a distinction the design got wrong and a browser corrected), `layout` (which of the three reading modes is drawn — a module purely so that it *persists*, since it was component state and so was forgotten on every reload), `zoom` (§5 below: free continuous zoom and pan in single-page and two-page mode — wheel or pinch anchored at the pointer, a drag to pan with the note editor closed or a modifier held, and `=`, `-` and `0`; the view is one rect in *group* space, since a viewport can straddle both halves of a pair, and it is drawn as a single CSS transform on a wrapper, so `PageView`, `paintedBox` and every existing measurement are untouched — by zoom, which is what this claim was about; `fit` later changed both, §6; a page turn carries the rect and re-clamps, and a swap carries the visible content onto the other edition's page through the derived transform, or throws it away, a preference either way; continuous scroll keeps fit-whole, deliberately — its zoom is a different mechanism, since the strip's layout height is a function of scale and pan competes with scroll rather than sitting beside it), and `borrow` (the "Later" entry below is the record: where the viewed edition has no page for the slot, another edition's is drawn there and marked, and the mark is a button revealing the `Gap` view it replaced — hub-first order minus the viewed edition and minus the authority *(no fallback to the authority itself since 2026-08-13, marked here rather than rewritten: it used to lend when nothing else resolved, which it always could, and that was 228 of 276 corpus borrows — the page the reader had just left — so it was removed; the "Later" entry below is the record)*; on by default, so a gap now reaches a reader only through that mark on a work with a third edition, and directly otherwise, which is most of the corpus). The other three registry entries claim no reading behaviour. `settings` claims only the panel's own key. The remaining two are panels rather than page treatments. `credits` (§4 below): `C` lists the viewed edition's credit pages, a thumbnail and a page number each and no labels the sidecar cannot support, and `skip` keeps them out of the reading flow by being handed to `groups` rather than filtering its result — so the page area, the arrows and the filmstrip skip together, and two-page mode re-pairs around a skipped slot instead of stranding its neighbour. `help` (§6 below): `?` or `h` opens a list of every key the reader answers, generated from `keys.ts`'s one ordered table and from the registry rather than written out — so a binding that changes what it does cannot keep an old description, because there is one description — and listing only the modules that are switched on. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
+| `web/` | the browser reader (React, Vite): single page, two-page spread and continuous-scroll modes, an arrow that steps by what is drawn rather than by slot, a swap that never writes position, a slot the edition being read has no page for filled from another edition and marked as borrowed (the gap state that used to stand there, offering the nearest paired slots either side as moves rather than jumps, is one press of that mark away), and a floating chrome — filmstrip and five independently-switchable readouts (position, reading time, chapter, alignment health, note count) — behind the `Resolver` interface `taiyaku-wasm` implements. Every reading behaviour not yet in this list is one of ten `ReaderModule`s — of thirteen the registry holds — against a single declarative contract (`module.ts`): `direction` (a per-edition reading-direction override), `motion` (animate on/off, transition duration), `regroup` (parity breaks a reader inserts by hand), `readouts` (which of the five lines show), `prefetch` (depth ahead/behind plus a double-buffered, decode-before-swap image so a fast flick presents no blank frame), `annotations` (notes anchored to a slot of one edition and travelling to every other through the alignment, several to a page, each in a colour of the reader's choosing — a name in the file, never pixels — drawn as margin tabs plus an on-demand region tint — the tab in the letterbox beside the page, moving to the *outer* margin in two-page mode since closing the seam leaves a page no margin on its seam side — with five keys — write, reveal, review, and step back and forth through what has been written — and revealing off by default, since the margin tabs already say where the notes are without drawing on the page; notes save themselves a moment after the last change rather than on a button, so `history.ts`'s snapshots are what a reader abandons a change with; a region is swept out with a drag and pushed around with another, and while the editor is open every region on the page is visible and grabbable with one Save writing all of them, on an overlay that measures the artwork it sits over rather than the element around it — the same box, until `fit` made the element the whole cell and the two routinely different (§6 below); a note anchors to the whole slot, a point or an area, and its words are readable in a numbered list beside or below the page as well as in the region itself), `fit` (§6 below: how large a page is drawn inside its own box, and how far the two pages of a spread sit apart — `upscaleToFit` **on** by default, reversing the M5 design, so a 685×1024 scan fills a 1263px box instead of sitting at 1:1 in the middle of it, with `upscaleFilter` exposed beside it because that is a 23% enlargement of line art; and `gap` at `0`, where it is the two pages' *artwork* that meets rather than their elements — a distinction the design got wrong and a browser corrected), `layout` (which of the three reading modes is drawn — a module purely so that it *persists*, since it was component state and so was forgotten on every reload), `zoom` (§5 below: free continuous zoom and pan in single-page and two-page mode — wheel or pinch anchored at the pointer, a drag to pan with the note editor closed or a modifier held, and `=`, `-` and `0`; the view is one rect in *group* space, since a viewport can straddle both halves of a pair, and it is drawn as a single CSS transform on a wrapper, so `PageView`, `paintedBox` and every existing measurement are untouched — by zoom, which is what this claim was about; `fit` later changed both, §6; a page turn carries the rect and re-clamps, and a swap carries the visible content onto the other edition's page through the derived transform, or throws it away, a preference either way; continuous scroll keeps fit-whole, deliberately — its zoom is a different mechanism, since the strip's layout height is a function of scale and pan competes with scroll rather than sitting beside it), and `borrow` (the "Later" entry below is the record: where the viewed edition has no page for the slot, another edition's is drawn there and marked, and the mark is a button revealing the `Gap` view it replaced — hub-first order minus the viewed edition and minus the authority *(no fallback to the authority itself since 2026-08-13, marked here rather than rewritten: it used to lend when nothing else resolved, which it always could, and that was 228 of 276 corpus borrows — the page the reader had just left — so it was removed; the "Later" entry below is the record)*; on by default, so a gap now reaches a reader only through that mark on a work with a third edition, and directly otherwise, which is most of the corpus). The other three registry entries claim no reading behaviour. `settings` claims only the panel's own key. The remaining two are panels rather than page treatments. `credits` (§4 below): `C` lists the viewed edition's credit pages, a thumbnail and a page number each and no labels the sidecar cannot support, and `skip` keeps them out of the reading flow by being handed to `groups` rather than filtering its result — so the page area, the arrows and the filmstrip skip together *(not always, marked here rather than rewritten: an arrow taken from a gap or a borrowed page reaches its destination through `nearestPaired` rather than `groups`/`stepToGroup`, which knows nothing about a skipped slot, so it can land on a credit page the reader asked to skip; unreachable on today's corpus, since `skip` defaults false and no corpus edition names credit pages)*, and two-page mode re-pairs around a skipped slot instead of stranding its neighbour. `help` (§6 below): `?` or `h` opens a list of every key the reader answers, generated from `keys.ts`'s one ordered table and from the registry rather than written out — so a binding that changes what it does cannot keep an old description, because there is one description — and listing only the modules that are switched on. `Settings.tsx` is generated from each module's `defaults` — a value's runtime type decides its control, never the module's id, and a string a module declares `options` for becomes a select — with a reset per section |
 
 `taiyaku-read` exists because the page sequence is normative — `sidecar.md`, "How
 a member becomes pages" — so two consumers deriving it separately is a defect the
@@ -951,7 +951,7 @@ both are waiting on L2.
 
 ### Open items
 
-Thirty-nine, each found by a whole-branch review, carried as a deferral,
+Forty, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -965,7 +965,7 @@ are tracked here rather than left in a scratch file so that closing one is a
 visible act rather than a thing someone remembers. **Thirty-one are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
 O21, O22, O25, O26, O27, O28, O29, O30, O34, O35, O36, O37, O38 and O39 —
-leaving eight.**
+leaving nine.**
 
 Three of those closed the same day they opened, which the "judged not worth
 blocking on" framing above does not fit: O35, O36 and O37 were found by the
@@ -1018,6 +1018,7 @@ each is in the detail below; the table is what a reader scans.
 | O37 | [x] | `reviewNotes`'s doc comment describes an arm of `toggleReview` no key can reach — it claims `a` closes the editor mid-edit, which `keyplan.ts` refuses; the code is right and the comment is wrong — *closed on the branch that found it (f4047b7): corrected, and the same wrong claim in `notes.ts` with it in `7cab6ec`* | `App.tsx::reviewNotes`'s doc comment | coverage-gate reading |
 | O38 | [x] | `unpaired_runs` counts a gap run's own `a` span as "mentioned", so asking the `from` side of an edge which of its pages have no counterpart answers `[]` for pages that demonstrably have none — reachable today as `taiyaku credits <hub member>... --sidecar F --against <spoke>`, which prints zero candidates — *closed by `run.b.map(|_| run.a)`, with a corpus drive that found it answering `[]` on **all twelve** volumes — 26 gap runs over 36 raw pages — and hiding a real `credits` verdict on kobayashi-v01's last page* | `credits.rs::unpaired_runs`, the `true => Some(run.a)` arm | the Task 7 mutation review, by probe |
 | O39 | [x] | Nothing bounds a test's runtime, so a regression that stops a loop terminating hangs the forge instead of failing it — there is no `.config/nextest.toml`, no `timeout-minutes` in `ci.yml`, and CI does not run nextest at all but `cargo llvm-cov` over `cargo test` — *closed by commits (`dadd6a2`, `bce5bf3`), PR #47: a 60 s per-test kill via `.config/nextest.toml` under `cargo llvm-cov nextest`, and `timeout-minutes: 10` on every job — the per-test bound was triggered on the forge itself (a deliberate hang failed the `test` job at 153 s, its exact revert passed at 117 s); the job-level bound was not, both runs finishing far under ten minutes* | `.config/nextest.toml`; `.forgejo/workflows/ci.yml`'s four `timeout-minutes` keys | the Tasks 2-6 mutation review |
+| O40 | [ ] | An arrow out of a gap or a borrowed page can land on a credit page the reader asked to skip — the new `step` branch reaches `nearestPaired` instead of `groups`/`stepToGroup`, and `nearestPaired` knows nothing about the skipped set | `session.ts::applyIntent`'s `step` case, `nearest.ts::nearestPaired` | borrow-lender-and-arrows whole-branch review |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -2627,6 +2628,40 @@ credits checks ask the `to` side, so neither could ever have seen this.
   makes coverage measurement nondeterministic by a few lines without moving
   either coverage gate.
 
+**One came from the independent review of `borrow-lender-and-arrows` itself**
+— O40, turned up while checking the new arrow-on-a-gap path against what
+`credits` promises, and not blocking because nothing in the corpus can reach
+it today:
+
+- **O40 — An arrow out of a gap or a borrowed page can land on a credit page
+  the reader asked to skip. Open.** `modules/credits.ts`'s doc states the
+  mechanism — `skip` is carried out by handing the skipped slots to
+  `pairing.ts`'s `groups` rather than by filtering its result — and
+  `docs/status.md`'s own module description states the promise it buys: "the
+  page area, the arrows and the filmstrip skip together." That promise holds
+  for every arrow that goes through `groups`/`stepToGroup`, which is the only
+  path that ever consults the skipped set. It does not hold for the branch
+  this same review's Fix 1 added a paragraph about: out of a gap or a borrowed
+  page, `session.ts`'s `applyIntent` `step` case reaches `nearest.ts`'s
+  `nearestPaired` instead, which resolves a candidate slot straight off the
+  `Resolver` — `display`'s `at`/not-`at` split, nothing else — with no
+  knowledge of `skippedApartFrom`'s set. A reader standing in a gap or on a
+  borrowed page whose nearest resolving neighbour is a credit page they asked
+  to skip lands on it anyway.
+  **Unreachable today, on purpose left that way rather than fixed
+  speculatively**: `skip` defaults `false`, and no corpus edition names any
+  credit pages, so `skippedApartFrom` never has anything in it for
+  `nearestPaired` to fail to consult.
+  **What would make it reachable:** a corpus edition (or a future one) with
+  credit pages named by `crates/taiyaku-cli/src/credits.rs`'s heuristic and
+  `skip` switched on, positioned so a gap or a borrowed page's nearest
+  resolving neighbour is one of them.
+  **What would close it:** giving `nearestPaired`'s scan the same skipped set
+  `groups` already receives, so a candidate slot in it is passed over the same
+  way `stepToGroup` already passes over one — rather than teaching a second,
+  independent module the invariant `skippedApartFrom`'s doc already states is
+  meant to live in one place.
+
 ## What comes next
 
 Roughly in order. All four are now settled — one closed by a measurement that
@@ -3141,7 +3176,7 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the eight open items tabled above — seven of them found by a
+What remains: the nine open items tabled above — eight of them found by a
 whole-branch review, now that O1 (found by one, closed by removing the round
 trip its own entry was arguing about), O12 (carried rather than found), O14
 (found by one, closed by M5b), O26 (found by one, closed on its own branch),
@@ -3919,7 +3954,11 @@ mismatched pair said nothing at all.
   unchanged, which is what keeps this off the correction UI, note anchoring,
   `pairing.ts`'s grouping and the filmstrip.
   **And the arrow keys do nothing**, which is the one item on that list a
-  reader meets without going looking for it. `session.ts`'s `step` calls the
+  reader meets without going looking for it. *False since
+  `borrow-lender-and-arrows`'s "An arrow on a gap takes the offered move, on
+  both screens", kept rather than deleted per this file's own convention —
+  see the paragraph after the next one for what replaced it.* `session.ts`'s
+  `step` calls the
   *unwrapped* `display` and refuses anything that is not `at`, so from a
   borrowed page ← and → are silently inert while an apparently ordinary page
   fills the screen. Measured in the browser rather than reasoned about:
@@ -3927,7 +3966,8 @@ mismatched pair said nothing at all.
   anticipated it (`notes.md`, "The lender rule in a browser: two directions,
   and the authority lending in neither").
   **That is the feature's real cost, and it is a discoverability cost rather
-  than a mechanical one.** `Gap` announced its dead end in a sentence and put
+  than a mechanical one.** *Also false as of the same commit — see the
+  paragraph after this one.* `Gap` announced its dead end in a sentence and put
   both escapes on screen beside it, so an arrow that did nothing was explained
   by the screen it did nothing on. A borrowed page announces nothing. Its only
   in-page escape is `Borrowed`'s mark, whose label reads as a caption rather
@@ -3937,10 +3977,27 @@ mismatched pair said nothing at all.
   made knowingly, and the entry's own premise is that the page is worth more
   than the gap; it is still a trade rather than a free win, and any complaint
   that arrives about this feature will most likely be this one.
+  **Both fixed on the same branch.** `session.ts`'s `step` no longer refuses a
+  state that is not `at`: on a gap or a borrowed page it now takes
+  `nearestPaired`'s before/after offer on the pressed side via `takeOffered` —
+  the same destination `Gap`'s own buttons use — so ← and → move rather than
+  sitting inert (`borrow-lender-and-arrows`, "An arrow on a gap takes the
+  offered move, on both screens"). And `Borrowed` no longer waits for the mark
+  to be pressed to say anything: a line reading "No {viewing} page here." sits
+  along the bottom of the page, with the same two escape buttons beside it —
+  `GapOffers` (`web/src/GapOffers.tsx`), extracted so `Gap` and `Borrowed`
+  share one component rather than risk the two drifting apart, now that the
+  arrows take the identical destinations on both. A reader who never presses
+  the mark now sees why the page behaves differently and has both ways out on
+  screen, the same as `Gap` always offered (`borrow-lender-and-arrows`, "The
+  borrowed page says what it is, and shares Gap's two escapes").
   That the page is not a reading position is a limitation rather than an ideal,
   and it is **deliberately a note rather than an open item or a new entry in
   this list**: no reading has produced the complaint, and how often a
-  gap arises at all is itself unmeasured (the design's §10). `notes.md`,
+  gap arises at all is itself unmeasured (the design's §10). *That last clause
+  is false since `borrow-lender-and-arrows`, kept rather than deleted per this
+  file's own convention — the count is `notes.md`'s "How often a reader meets
+  a gap, and who actually lends".* `notes.md`,
   "A borrowed page is not a reading position, and might one day want to be",
   carries the three questions making it one would have to answer first.
 

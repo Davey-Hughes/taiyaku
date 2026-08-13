@@ -64,14 +64,24 @@ export const READER_KEYS: ReaderBinding[] = [
     label: 'swap to the last edition and back',
     resolve: () => ({ kind: 'toggle' }),
   },
+  // The clause after the dash is not decoration: out of a gap or a borrowed
+  // page `session.ts`'s `step` case takes `nearest.ts`'s `nearestPaired`
+  // offer instead of moving by one, and that offer can sit many slots away —
+  // measured at 43 on `gotoubun-v01`. Leaving the label at "next page" would
+  // have `modules/help.ts`'s `helpGroups` and `Help.tsx` repeat a claim that
+  // is only true from an ordinary page, which is exactly what `stepFor`
+  // having three consumers — `App.tsx`, `Filmstrip`, this table — exists to
+  // prevent.
   {
     keys: ['ArrowRight'],
-    label: 'next page',
+    label:
+      'next page — or the nearest one forward, out of a gap or a borrowed page',
     resolve: () => ({ kind: 'step', by: 1 }),
   },
   {
     keys: ['ArrowLeft'],
-    label: 'previous page',
+    label:
+      'previous page — or the nearest one back, out of a gap or a borrowed page',
     resolve: () => ({ kind: 'step', by: -1 }),
   },
   {

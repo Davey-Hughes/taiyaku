@@ -263,8 +263,12 @@ describe('helpGroups and the reading direction', () => {
 
   it('says the right arrow advances in a left-to-right work', () => {
     const rows = reading('ltr')
-    expect(rows['→']).toBe('next page')
-    expect(rows['←']).toBe('previous page')
+    expect(rows['→']).toBe(
+      'next page — or the nearest one forward, out of a gap or a borrowed page',
+    )
+    expect(rows['←']).toBe(
+      'previous page — or the nearest one back, out of a gap or a borrowed page',
+    )
   })
 
   // The bug this exists for: in a right-to-left work the next page is drawn to
@@ -272,8 +276,12 @@ describe('helpGroups and the reading direction', () => {
   // press the key that goes back.
   it('swaps them in a right-to-left work', () => {
     const rows = reading('rtl')
-    expect(rows['←']).toBe('next page')
-    expect(rows['→']).toBe('previous page')
+    expect(rows['←']).toBe(
+      'next page — or the nearest one forward, out of a gap or a borrowed page',
+    )
+    expect(rows['→']).toBe(
+      'previous page — or the nearest one back, out of a gap or a borrowed page',
+    )
   })
 
   it('leaves every non-arrow row alone in both directions', () => {

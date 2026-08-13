@@ -1,3 +1,4 @@
+import { GapOffers } from './GapOffers'
 import type { Direction } from './modules/direction'
 import type { Verdict } from './session'
 
@@ -85,35 +86,13 @@ export function Gap({
       {verdict && (
         <p style={{ margin: 0, opacity: 0.8 }}>{sentence[verdict]}</p>
       )}
-      {before === undefined && after === undefined ? (
-        <p style={{ margin: 0, opacity: 0.8 }}>
-          No paired page nearby in {edition} either.
-        </p>
-      ) : (
-        <div
-          style={{
-            display: 'flex',
-            gap: 12,
-            // The earlier page is on the right in a right-to-left work, so the
-            // two offers sit the way the pages do. Same rule as the filmstrip's
-            // rail and for the same reason: this is the one screen a reader
-            // reaches by being lost, and it should not also be the one that
-            // points the wrong way.
-            flexDirection: reading === 'rtl' ? 'row-reverse' : 'row',
-          }}
-        >
-          {before && (
-            <button type="button" onClick={() => onTake(before.slot)}>
-              {reading === 'rtl' ? '→' : '←'} {edition} page {before.page}
-            </button>
-          )}
-          {after && (
-            <button type="button" onClick={() => onTake(after.slot)}>
-              {edition} page {after.page} {reading === 'rtl' ? '←' : '→'}
-            </button>
-          )}
-        </div>
-      )}
+      <GapOffers
+        reading={reading}
+        edition={edition}
+        before={before}
+        after={after}
+        onTake={onTake}
+      />
     </div>
   )
 }

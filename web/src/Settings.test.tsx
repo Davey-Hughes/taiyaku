@@ -289,4 +289,40 @@ describe('Settings', () => {
     act(() => resetButton.click())
     expect(onReset).toHaveBeenCalledWith('modA')
   })
+
+  it('renders a note below a module’s fields when notes has an entry for its id', () => {
+    const host = mount(
+      <Settings
+        visible
+        modules={[modA]}
+        prefs={{}}
+        notes={{ modA: 'This module does nothing on this particular work.' }}
+        onChange={vi.fn()}
+        onReset={vi.fn()}
+      />,
+    )
+    const section = host.querySelector('section')
+    // `<p>` is the note's own element — nothing else `Settings` renders inside
+    // a section uses one, so finding it is enough to show it landed inside
+    // modA's own section rather than floating outside it.
+    const note = section?.querySelector('p')
+    expect(note?.textContent).toBe(
+      'This module does nothing on this particular work.',
+    )
+  })
+
+  it('renders no note for a module notes has no entry for — unchanged from before notes existed', () => {
+    const host = mount(
+      <Settings
+        visible
+        modules={[modA]}
+        prefs={{}}
+        notes={{ someOtherModule: 'Not modA’s note.' }}
+        onChange={vi.fn()}
+        onReset={vi.fn()}
+      />,
+    )
+    const section = host.querySelector('section')
+    expect(section?.querySelector('p')).toBeNull()
+  })
 })

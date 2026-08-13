@@ -1,4 +1,5 @@
 import type { Intent } from './keys'
+import { nearestPaired } from './nearest'
 import { stepToGroup, type Group } from './pairing'
 import { display, navigate, swap, type ReadingState } from './reading'
 import type { Resolver } from './resolver'
@@ -39,31 +40,37 @@ export type ReadingIntent = Exclude<
  *
  * Never conflates `swap` and `navigate` — `notes.md`'s swap gotcha is exactly
  * what happens if a `toggle`/`view` is allowed to write `slot`. Only `step`
- * calls `navigate`, and only after confirming `display` actually landed
- * somewhere (`kind: 'at'`) in the edition being stepped through — there is no
- * slot to add `by` to while showing a gap, so arrows are deliberately inert
- * there. The offered moves (`before`/`after`, taken via `takeOffered`) are the
- * way out of one, not a repurposed arrow key.
+ * calls `navigate`, and never onto a slot it has not confirmed first — but
+ * there are two confirmations now, not one. On a real page it is `display`
+ * reporting `kind: 'at'` for the position the reader is standing on. On a gap
+ * or a borrowed page it is `takeOffered`'s own `resolveOffered`, which asks
+ * about the *offered* slot instead. The rule they share is what matters:
+ * nothing navigates to a slot the viewed edition does not hold.
  *
- * **This is the only place that behaviour is written down, and since
- * `modules/borrow.ts` it costs more than it used to.** The `display` called
- * below is the *unwrapped* one — `withBorrow` is applied in `App.tsx`, above
- * this — so a borrowed page is a `gap` here and the arrows are inert on it
- * too. Which is correct, and unavoidable: a borrowed page has no slot in the
- * edition being stepped through, which is precisely what made it a gap.
- * Wrapping this call would not produce a slot to step from.
+ * **An arrow on a gap takes the offered move, and this reverses a decision
+ * recorded here on purpose.** That decision read: "the offered moves … are the
+ * way out of one, *not a repurposed arrow key*," and its reasoning was sound —
+ * there is genuinely no slot to add `by` to. What changed is the evidence
+ * about its consequence. `modules/borrow.ts` removed the screen that made an
+ * inert arrow self-explanatory, and 64 of 104 unpaired runs in the corpus are
+ * a single position, so the offer and the next page are the same destination
+ * most of the time. The 2026-08-13 design, §3.1, carries the argument.
  *
- * What changes is what the reader meets. `Gap` announced the dead end in words
- * and put both escapes on screen beside it, so an arrow that did nothing was
- * explained by the screen it did nothing on. A borrowed page announces
- * nothing: an apparently ordinary page fills the area, ← and → are silent, and
- * the only escape in the page itself is `Borrowed`'s mark, whose label reads
- * as a caption. That is a cost of the feature rather than a defect in this
- * function; the fix, if reading ever produces the complaint, is a move the
- * borrowed state defines — not a looser guard here, which would navigate into
- * a slot that does not exist. Recorded in `docs/status.md` under "Fall back to
- * another edition where this one has no page", and measured in `docs/notes.md`
- * under "The lender rule in a browser".
+ * The `display` called below is the *unwrapped* one — `withBorrow` is applied
+ * in `App.tsx`, above this — so a borrowed page is a `gap` here and one branch
+ * serves both screens, which is what keeps them from answering one key two
+ * ways.
+ *
+ * What changed for the reader: `Gap` announced the dead end in words and put
+ * both escapes on screen beside it, so an arrow that did nothing was explained
+ * by the screen it did nothing on. A borrowed page announced nothing — an
+ * apparently ordinary page filled the area, ← and → were silent, and the only
+ * escape in the page itself was `Borrowed`'s mark, whose label read as a
+ * caption. That asymmetry is what the paragraph above fixes: an arrow now
+ * takes the offered move on both screens, not only the one that used to
+ * explain its own silence. Recorded in `docs/status.md` under "Fall back to
+ * another edition where this one has no page", and measured in
+ * `docs/notes.md` under "The lender rule in a browser".
  *
  * `previous` is MRU, not "the authority": it means "the edition being left,"
  * so it is captured on every change to `viewing` — `toggle` and `view` alike —
@@ -88,7 +95,22 @@ export function applyIntent(
       return { state: swap(state, intent.edition), previous: state.viewing }
     case 'step': {
       const shown = display(state, resolver)
-      if (shown.kind !== 'at') return { state, previous }
+      if (shown.kind !== 'at') {
+        // No slot in the viewed edition to add `by` to — so the arrow takes
+        // the move the screen is already offering instead. `by` arrives
+        // rtl-mapped (`App.tsx` runs it through `stepFor`), so `1` is the
+        // next slot in reading order and `after` is its offer.
+        // Must match `App.tsx`'s `gapMoves` bound exactly, or an arrow could
+        // refuse a move the screen's own offer buttons are showing.
+        const within = resolver.slotCount(state.authority) ?? state.slot + 1
+        const { before, after } = nearestPaired(state, resolver, within)
+        const offer = intent.by === 1 ? after : before
+        if (offer === undefined) return { state, previous }
+        return {
+          state: takeOffered(state, offer.slot, resolver),
+          previous,
+        }
+      }
       // By group where the caller knows the grouping, by slot where it does
       // not. A group is one image on screen, so an arrow moves to the next
       // *image* — see `pairing.ts`'s `stepToGroup` for what that fixes and

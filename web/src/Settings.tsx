@@ -56,6 +56,15 @@ const rowStyle: CSSProperties = {
   fontSize: '0.9em',
 }
 
+// `opacity: 0.7` is `FieldControl`'s own muted styling for the `'object'`-kind
+// summary below — reused here rather than a second shade invented for the
+// same purpose, of a module's own note about itself.
+const noteStyle: CSSProperties = {
+  margin: '4px 0 0',
+  fontSize: '0.9em',
+  opacity: 0.7,
+}
+
 /** One field's control — inferred purely from `field.kind`, which `settingsPanel.ts`'s `fieldKind` already derived from the preference's own runtime type. Nothing here branches on which module or which key this is. */
 function FieldControl({
   field,
@@ -155,6 +164,21 @@ export interface SettingsProps {
    * with a cast at the one place a key is actually looked up by name.
    */
   prefs: Record<string, object>
+  /**
+   * One sentence about a module's own situation on this work, keyed by
+   * `ReaderModule.id`, shown below that module's fields as secondary text.
+   *
+   * A caller-computed map rather than something this file derives, the same
+   * way `App.tsx`'s `<CreditsPanel>` a few lines below its `<Settings>` call
+   * is handed `work`/`edition`/`pages` rather than working them out itself:
+   * this panel is generated from every module's `defaults` and must stay
+   * ignorant of what any one module's fields *mean*, so a module whose toggle
+   * can be a no-op for reasons specific to the work being read (`modules/borrow.ts`'s
+   * `borrowNote`, today) hands the finished sentence in rather than this file
+   * learning that module's id. A module with no entry here renders exactly as
+   * it always has — this is additive, not a replacement for any field.
+   */
+  notes?: Record<string, string>
   /** One field changed for one module — `raw` is whatever the control's own change event handed back; `settingsPanel.ts`'s `withFieldValue` is what a caller coerces it with. */
   onChange: (id: string, key: string, raw: unknown) => void
   /** Reset one module's whole preference slice back to its defaults. */
@@ -178,6 +202,7 @@ export function Settings({
   visible,
   modules,
   prefs,
+  notes,
   onChange,
   onReset,
 }: SettingsProps) {
@@ -193,6 +218,7 @@ export function Settings({
             string,
             unknown
           >
+          const note = notes?.[mod.id]
           return (
             <section key={mod.id} style={sectionStyle}>
               <div style={sectionHeaderStyle}>
@@ -209,6 +235,7 @@ export function Settings({
                   onChange={(raw) => onChange(mod.id, field.key, raw)}
                 />
               ))}
+              {note && <p style={noteStyle}>{note}</p>}
             </section>
           )
         })}
