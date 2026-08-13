@@ -1,0 +1,70 @@
+{
+  "against": "en-official",
+  "credit_pages": [
+    0,
+    19,
+    20,
+    21,
+    38,
+    39,
+    40,
+    59,
+    60
+  ],
+  "edition": "en-fan",
+  "notes": "Flame Scans, a Korean webtoon against Yen Press's paginated volume 1. THREE cards per chapter: a staff banner at the START (1778x1000, different each chapter because it names the chapter), a patron thank-you listing donor tiers at local n-2 (900x1440, byte-identical across all three), and a recruiting card at the END (1575x1050, also byte-identical). NINE cards in 61 pages, by far the densest in the corpus - and found in two passes, the patron page only when a threshold sweep flagged it as a false positive and it turned out not to be one. SIGNAL 1 CANNOT WORK HERE AT ALL: the alignment is REFUSED - 0 whole pairings of 321 slots - because 61 vertical scroll strips do not correspond to 314 print pages. Not a miss, an absence of the input it needs. THE SIZE RULE MISSES ALL SIX, as pre-registered at 32a242b before any page was viewed. Tall strips make the median page 2.39 MPx, so cards at 1.65-1.78 MPx are 0.69-0.74x median - above the 0.5x cut - and the area half cannot fire. The blind spot the wave-1 pre-registration called low-resolution is really RELATIVE: an unusually LARGE median page defeats the rule exactly as a small card does. Aspect alone catches all six; the conjunction catches none, so the precision the conjunction buys costs recall on formats like this. NOT exhaustively swept.",
+  "pages": 61,
+  "runs": [
+    {
+      "at_member_end": true,
+      "local": [
+        0,
+        21
+      ],
+      "member": 0,
+      "pages": [
+        0,
+        21
+      ],
+      "slots": [
+        0,
+        21
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        0,
+        19
+      ],
+      "member": 1,
+      "pages": [
+        21,
+        40
+      ],
+      "slots": [
+        21,
+        40
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        0,
+        21
+      ],
+      "member": 2,
+      "pages": [
+        40,
+        61
+      ],
+      "slots": [
+        40,
+        61
+      ]
+    }
+  ],
+  "slots": 61,
+  "swept": false,
+  "work": "solo-leveling-v01"
+}

@@ -1,0 +1,79 @@
+{
+  "against": "en-official",
+  "credit_pages": [
+    40,
+    65
+  ],
+  "edition": "en-fan",
+  "notes": "Fan chapters c001-c007 against the Yen Press digital volume 1, compiled by 1r0n. Two cards, both at a member's LAST index - the conventional position - and signal 1 and the size rule agree on both. Aligned SOUND at 181 whole pairings. Adjudicated by the owner over every page either rule flagged plus every chapter-final page. NOT exhaustively swept, so credit_pages is a floor and this edition contributes to precision only.",
+  "pages": 187,
+  "runs": [
+    {
+      "at_member_end": false,
+      "local": [
+        2,
+        3
+      ],
+      "member": 0,
+      "pages": [
+        2,
+        3
+      ],
+      "slots": [
+        3,
+        4
+      ]
+    },
+    {
+      "at_member_end": false,
+      "local": [
+        24,
+        25
+      ],
+      "member": 0,
+      "pages": [
+        24,
+        25
+      ],
+      "slots": [
+        26,
+        27
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        40,
+        41
+      ],
+      "member": 0,
+      "pages": [
+        40,
+        41
+      ],
+      "slots": [
+        42,
+        44
+      ]
+    },
+    {
+      "at_member_end": true,
+      "local": [
+        24,
+        25
+      ],
+      "member": 1,
+      "pages": [
+        65,
+        66
+      ],
+      "slots": [
+        68,
+        69
+      ]
+    }
+  ],
+  "slots": 190,
+  "swept": false,
+  "work": "dungeon-meshi-v01"
+}

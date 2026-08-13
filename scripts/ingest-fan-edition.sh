@@ -12,6 +12,17 @@
 # not a regex: the names hold brackets, apostrophes and multiplication signs,
 # and every one of those is a metacharacter to something.
 #
+# It may also be a COMMA-SEPARATED LIST of fixed strings, and a file is taken
+# when any one of them matches:
+#
+#   scripts/ingest-fan-edition.sh "$src" ' - c001., - c002., - c003.' <work>
+#
+# Volume-marked editions need one substring - ' - v1 c' takes a whole volume.
+# Editions numbered only by chapter need the range spelled out, because there
+# is no substring that takes c001 through c007 and stops: ' - c00' would take
+# c008 and c009 as well. Which chapters make up a volume is read off the
+# official edition's own filenames, which encode it as `c001 (v01)`.
+#
 # **The source is read-only.** It is the user's media library. This script
 # copies out of it and never writes, moves or deletes anything under it.
 set -euo pipefail
@@ -44,10 +55,19 @@ printf '# ingest %s\n# from   %s\n# filter %s\n' "$work/en-fan" "$src" "$filter"
 copied=0
 while IFS= read -r -d '' file; do
   name="$(basename "$file")"
-  case "$name" in
-    *"$filter"*) ;;
-    *) continue ;;
-  esac
+  # Any one of the comma-separated fixed strings matching is enough. Split on
+  # comma alone, so a filter may hold spaces - ' - v1 c' is one of them.
+  matched=0
+  rest="$filter"
+  while [ -n "$rest" ]; do
+    one="${rest%%,*}"
+    if [ "$one" = "$rest" ]; then rest=""; else rest="${rest#*,}"; fi
+    [ -n "$one" ] || continue
+    case "$name" in
+      *"$one"*) matched=1; break ;;
+    esac
+  done
+  [ "$matched" -eq 1 ] || continue
   cp -- "$file" "$dest/"
   printf '%s  %s\n' "$(sha256sum < "$file" | cut -d' ' -f1)" "$name"
   copied=$((copied + 1))

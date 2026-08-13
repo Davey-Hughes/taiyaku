@@ -156,6 +156,33 @@ impl CreditFixture {
         Self::from_json(include_str!("../fixtures/credits/oshinoko-v08-en-fan.json"))
     }
 
+    // Wave 2: aligned against an official English edition rather than
+    // raw-mono, since none of these three series has a raw in the corpus.
+    // Loading is unaffected — a fixture carries page indices and run shapes,
+    // never images or a corpus path.
+    pub fn dungeon_meshi_v01() -> Self {
+        Self::from_json(include_str!(
+            "../fixtures/credits/dungeon-meshi-v01-en-fan.json"
+        ))
+    }
+
+    pub fn frieren_v01() -> Self {
+        Self::from_json(include_str!("../fixtures/credits/frieren-v01-en-fan.json"))
+    }
+
+    pub fn domestic_v01() -> Self {
+        Self::from_json(include_str!("../fixtures/credits/domestic-v01-en-fan.json"))
+    }
+
+    // Wave 3: a Korean webtoon whose alignment is REFUSED (0 of 321 slots
+    // paired), so signal 1 has no unpaired-run input at all — an absence of
+    // input, not a miss. Six credit pages, the densest edition in the corpus.
+    pub fn solo_leveling_v01() -> Self {
+        Self::from_json(include_str!(
+            "../fixtures/credits/solo-leveling-v01-en-fan.json"
+        ))
+    }
+
     /// Every fixture, for the aggregate figures.
     pub fn all() -> Vec<Self> {
         vec![
@@ -169,6 +196,10 @@ impl CreditFixture {
             Self::oshinoko_v01(),
             Self::oshinoko_v03(),
             Self::oshinoko_v08(),
+            Self::dungeon_meshi_v01(),
+            Self::frieren_v01(),
+            Self::domestic_v01(),
+            Self::solo_leveling_v01(),
         ]
     }
 }

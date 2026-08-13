@@ -37,6 +37,23 @@ pub struct UnpairedRun {
     /// The only positional test that classifies. Measured four for four on
     /// `corpus/gotoubun-v01`'s fan edition, where the first-index version is
     /// zero for four — what accumulates at a member's start is front matter.
+    ///
+    /// *Corrected 2026-08-13.* That "zero for four" was gotoubun-v01 alone,
+    /// and it does not generalise: `domestic-v01`'s fan edition (wave 2, en-fan
+    /// against en-official) is five for five the other way. All five of its
+    /// known credit pages sit at a member's *start* — local index 1 in four of
+    /// five, local 2 in the first — so the first-index version of this rule
+    /// would have caught every one of them there, and the last-index version
+    /// this field actually implements catches none. See
+    /// `taiyaku-cli/fixtures/credits/domestic-v01-en-fan.json` and
+    /// `taiyaku-cli/src/credits.rs`'s
+    /// `the_domestic_v01_fixture_is_a_direct_counterexample_to_the_first_index_claim`.
+    /// The original claim is left standing above rather than rewritten: it was
+    /// sound on the one edition it was measured against, and a doc comment
+    /// whose justification changes without a visible trace is the defect this
+    /// module's own header exists to avoid. What it no longer supports is
+    /// stated as general: a scanlation group's own front matter is *one*
+    /// group's habit, not a property of the shape.
     pub at_member_end: bool,
 }
 

@@ -1,0 +1,98 @@
+{
+  "against": "en-official",
+  "credit_pages": [
+    2,
+    54,
+    95,
+    130,
+    157
+  ],
+  "edition": "en-fan",
+  "notes": "Fan chapters c001-c005 plus c005.5 against the Kodansha digital volume 1, compiled by danke-Empire. FIVE cards, all 752x700 and all at the START of a chapter - local index 1 in four of five, local 2 in the first. Page indices here are the SIDECAR's member order, which is not the shell's: c005.5 sorts before c005 in a glob, so the last card is page 157 and not the 166 a glob reports. SIGNAL 1 FINDS NONE OF THEM, because its rule is 'at a member's LAST index', and this is a direct counterexample to UnpairedRun's doc claim that 'the first-index version is zero for four - what accumulates at a member's start is front matter', which was measured on gotoubun-v01 alone. PAGE 189 (c005.5 local 8) IS NOT A CARD and must not be skipped: it is an OFFICIAL page of c005.5 carrying translator credits typeset onto it, full size at 869x1300 and page-shaped, so the size rule leaves it alone by construction rather than by luck. It is the official-page analogue of the credits-on-a-story-page ceiling notes.md already records. Aligned SOUND at 182 whole pairings. Adjudicated by the owner over every page either rule flagged plus every chapter-final page. NOT exhaustively swept, so credit_pages is a floor and this edition contributes to precision only.",
+  "pages": 190,
+  "runs": [
+    {
+      "at_member_end": false,
+      "local": [
+        1,
+        4
+      ],
+      "member": 0,
+      "pages": [
+        1,
+        4
+      ],
+      "slots": [
+        1,
+        5
+      ]
+    },
+    {
+      "at_member_end": false,
+      "local": [
+        1,
+        2
+      ],
+      "member": 1,
+      "pages": [
+        54,
+        55
+      ],
+      "slots": [
+        56,
+        57
+      ]
+    },
+    {
+      "at_member_end": false,
+      "local": [
+        1,
+        2
+      ],
+      "member": 2,
+      "pages": [
+        95,
+        96
+      ],
+      "slots": [
+        97,
+        99
+      ]
+    },
+    {
+      "at_member_end": false,
+      "local": [
+        1,
+        2
+      ],
+      "member": 3,
+      "pages": [
+        130,
+        131
+      ],
+      "slots": [
+        133,
+        134
+      ]
+    },
+    {
+      "at_member_end": false,
+      "local": [
+        1,
+        2
+      ],
+      "member": 4,
+      "pages": [
+        157,
+        158
+      ],
+      "slots": [
+        160,
+        161
+      ]
+    }
+  ],
+  "slots": 193,
+  "swept": false,
+  "work": "domestic-v01"
+}

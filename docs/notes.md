@@ -3306,7 +3306,7 @@ quote. This section is kept because it is where the bound and both signals were
 first measured, and because three of the four things it argues from turned out
 to be properties of two groups rather than of scanlations.*
 
-## Ten fan editions, and the three signals that did not survive them
+## Fourteen fan editions, and the four signals that did not survive them
 
 Measured 2026-08-13. The two-edition survey above was judged too small to
 support turning page-skipping on by default — one page moves either of its
@@ -3326,10 +3326,21 @@ looked at by a person.**
 | `oshinoko-v01` | Oak | 219 | 0 | 0 | 0 | 0 | no |
 | `oshinoko-v03` | Oak | 195 | 1 | 0 | 0 | 0 | no |
 | `oshinoko-v08` | Oak | 195 | 0 | 0 | 0 | 0 | no |
+| `dungeon-meshi-v01` | 1r0n vs Yen Press | 187 | 4 | 2 | 2 | 2 | no |
+| `frieren-v01` | vs VIZ Media | 181 | 0 | 0 | 0 | 0 | no |
+| `domestic-v01` | danke-Empire vs Kodansha | 190 | 5 | 0 | 0 | **5** | no |
+| `solo-leveling-v01` | Flame Scans vs Yen Press | 61 | 3 | 0 | 0 | **9** | no |
 
-**1,938 pages, ten editions, eight groups, 25 known credit pages.**
+**2,557 pages, fourteen editions, twelve groups, 41 known credit pages.** The
+last three are wave 2: series with no raw anywhere on the NAS, so the fan
+edition is aligned against **official English** and the work lives under
+`corpus/incoming/wave2/` rather than as a settled directory — `corpus/README.md`
+reserves those for works holding every edition that exists with `raw-mono` as
+the hub, and a work with no raw cannot serve the zero-drift baseline that makes
+one useful. All three aligned **sound**, at 178 to 182 whole pairings, which is
+cleaner than any raw-hub edition here: same language, same chapters.
 
-**Signal 1: precision 21 of 23, recall 13 of 15.** The two denominators differ
+**Signal 1: precision 23 of 25, recall 13 of 15.** The two denominators differ
 on purpose. Precision is over every candidate on all ten editions; recall is
 over *swept* editions only — the three whose every page was ranked and whose
 every extreme was adjudicated. The other seven had only flagged pages viewed,
@@ -3343,12 +3354,18 @@ Two page-geometry tests, neither of which reads the alignment at all:
 - **area** — pixel area below half the volume's median page area
 - **aspect** — aspect ratio more than 15% off the volume's median
 
-| rule | precision | recall |
-| ---- | --------- | ------ |
-| signal 1 | 21/23 | 13/15 |
-| area alone | 25/60 | 25/25 |
-| aspect alone | 25/43 | 25/25 |
-| **area AND aspect** | **25/25** | **25/25** |
+| rule | precision | finds |
+| ---- | --------- | ----- |
+| signal 1 | 23/25 | 23/41 |
+| area alone | 32/67 | 32/41 |
+| aspect alone | 41/87 | **41/41** |
+| **area AND aspect, area < 0.5x median** | **32/32** | 32/41 |
+| **area AND aspect, area < 0.8x median** | 41/45 | **41/41** |
+
+The second column is "how many of the 32 known cards it finds" rather than
+recall, because only three editions were swept exhaustively — everywhere else
+`credit_pages` is a floor, so a miss count is a floor too. Signal 1's recall
+over the swept three is 13 of 15.
 
 The conjunction is principled rather than fitted, which is the only reason it is
 recorded here at all: **a credits card is a canvas the group made, not a scan of
@@ -3374,6 +3391,166 @@ the area half cannot fire in them whatever the page is. The prediction was right
 because those editions carry no cards, not because the rule would have caught
 them. **A low-resolution volume that does carry cards is unfound, and is the
 sharpest test remaining.**
+
+### Wave 2: a group that prints its card at the chapter's start
+
+`domestic-v01` is the edition where the two rules disagreed, and the
+disagreement was pre-registered at `d8b93c8` before a page of it was viewed:
+signal 1 proposed nothing, the size rule proposed five. **The size rule was
+right on all five.**
+
+All five are 752x700, all five are the same card, and all five sit at a
+member's **start** — local index 1 in four of six chapters, local 2 in the
+first. Signal 1's rule is "isolated, unpaired, at a member's *last* index", so
+it cannot see any of them. That is a **direct counterexample to a claim in the
+code**: `UnpairedRun`'s doc says the first-index version of the rule "is zero
+for four — what accumulates at a member's start is front matter". That was
+gotoubun-v01 alone. Here it is five for five the other way, and the doc is
+corrected in place.
+
+So a card's *position* is a per-group habit — start or end — while its *size*
+is not. That is the strongest argument yet that the size rule is measuring the
+thing itself rather than a correlate: eleven groups, two opposite positional
+conventions, one geometric signature.
+
+**A page carrying translator credits is not always a card.** `domestic-v01`
+page 189 — `c005.5` local 8 — is an **official** page with the translator
+credits typeset onto it, and it must not be skipped: the reader wants that
+page. The size rule leaves it alone by construction rather than by luck, since
+at 869x1300 it is exactly the volume's median area and page-shaped. It is the
+official-edition analogue of the credits-on-a-story-page ceiling this file
+already records for Go-Toubun `c002` local 40, and it is the case that shows
+why "carries credits" and "is a credits page" are different questions.
+
+**A trap worth writing down, because it caught three separate measurements on
+this branch.** Page indices are the *sidecar's* member order, which is not the
+shell's. `c005.5` sorts before `c005` in a glob, and `c10.5` before `c10`, so a
+glob-ordered scan shifts every page after the reordered member. It put four
+wrong member indices into kaguya-v01's fixture, reported gotoubun-v01's staff
+credits page as 234 rather than 225, and numbered domestic-v01's last card 166
+rather than 157. The adjudicated images were consistent each time; only the
+numbers moved. Read member order from `taiyaku.json`, never from a glob.
+
+### Wave 3: the format that defeats a size rule, predicted before it was seen
+
+`solo-leveling-v01` is a Korean webtoon against Yen Press's paginated volume 1,
+ingested as a deliberate stress case. It stresses something the design never
+anticipated.
+
+**Its alignment is REFUSED** — 1 run, **0 whole pairings**, 321 unmatched slots
+— because 61 vertical scroll strips do not correspond to 314 print pages. So
+this is the first edition where **signal 1 cannot run at all**: not a rule that
+fails, an input that does not exist.
+
+**It carries six credit pages, the densest in the corpus.** Flame Scans prints
+two per chapter: a staff banner at each chapter's start, naming translator,
+proofreader, cleaner, typesetter, quality checker and raws provider, and a
+recruiting card at each chapter's end carrying Discord, Patreon, Ko-fi and
+PayPal links. The end cards are byte-identical across all three chapters.
+
+**The size rule misses all six, and the mechanism was named in advance** at
+`32a242b` before any page was viewed. Tall strips make the median page 2.39
+MPx, so cards at 1.65 to 1.78 MPx are 0.69 to 0.74 of that — above the 0.5 cut
+— and the area half cannot fire whatever is printed on them.
+
+**The blind spot is relative, not about resolution.** The wave-1
+pre-registration described it as a low-resolution failure: "a 0.72 MPx card
+sits above the half-median cut". That was the right mechanism read off the
+wrong axis. What matters is the card's size *against the median page*, so a
+format with unusually **large** pages defeats the rule exactly as one with
+unusually small pages does, and this edition arrived from the opposite
+direction to the one predicted.
+
+**And it makes the conjunction's cost visible for the first time.** Aspect
+alone catches all six and is now 38 of 38 across the whole corpus, at precision
+38 of 87. The conjunction is 32 of 32 precision and 32 of 38. Every earlier
+edition had the two agreeing on recall, so the conjunction looked free; it is
+not. For skipping-on-by-default the trade still favours it — this file's own
+argument is that a swept-up story page costs a reader more than a missed card
+costs them — but it is a choice with a documented hole rather than a rule that
+works everywhere.
+
+### The blind spot both rules share is real in principle and empty in fact
+
+A credits page typeset at full page size defeats the size rule completely:
+neither half fires, because it is neither small nor oddly shaped. `sidecar.md`
+and this file both name it, and nothing had ever looked for one.
+
+**Searched 2026-08-13, and nothing turned up.** Every card in this corpus sits
+at local index 0, 1 or 2 of its member, or in its last two pages, so the search
+took all 421 pages in those positions that neither size test flags and that
+nobody has called a card, and looked for near-duplicates across members — a
+group reusing a card prints it once per chapter, which is the one property that
+survives the card being page-sized. The hash is a plain dhash-16 computed on the
+**uncropped** image, so O41's per-member border cannot distort it.
+
+**44 near-duplicate pairs came back and not one is a credits page.** They are:
+
+- Go-Toubun's volume cover, carried by both `c000` and `c005.5` at distance 2 —
+  the pair this file already records under signal 2
+- Kaguya's inside-cover omake, in both `c1` and `c10.5` at distance 0
+- **Kobayashi's decorative half-title divider**, at distance 0 to 9 across seven
+  chapters of v01 and distance 0 across seven of v03 — a mostly-white page
+  carrying the series logo in grey, reused as a chapter divider
+
+So the blind spot stands as a *principled* limitation and an *unmeasured* one:
+fourteen editions and twelve groups, and no group in any of them prints a
+full-page credits card. That does not make the rule safe on the next edition. It
+does mean the `credit_pages` floors on the eleven unswept editions are tighter
+than "unswept" suggests, at the positions where every known card actually sits.
+
+**It also settles why signal 2 was never going to work.** This file says
+"duplicated front matter is as common as duplicated credits"; the search
+quantifies it. Restricted to exactly the positions where cards live, and
+excluding every page a size test already explains, recurrence across chapters
+returns **44 pairs, all of them the volume's own matter and none of them a
+card.** Recurrence is a property of anything a compiler reuses, and a decorative
+divider is reused far more reliably than a credits card is.
+
+### Where this stands: a measured frontier, and no rule that clears it
+
+**IN PROGRESS.** Phase A's survey is recorded; the rule is not settled and
+nothing in the binary depends on it. What follows is the state as of
+2026-08-13, so a later session starts from the numbers rather than from the
+reasoning that produced them.
+
+**No rule is correct on all fourteen editions.** Holding the aspect test at 15%
+off the volume's median and sweeping the area threshold gives a frontier:
+
+| area threshold | precision | finds | misses |
+| -------------- | --------- | ----- | ------ |
+| 0.50x median | **32/32** | 32/41 | 9, all `solo-leveling-v01` |
+| 0.60x | **35/35** | 35/41 | 6 |
+| 0.70x | 38/42 | 38/41 | 3 |
+| **0.80x to 1.00x** | 41/45 | **41/41** | none |
+
+Either end is clean and the middle is not: zero false positives at 0.50 to
+0.60, or zero misses at 0.80 to 1.00 for the price of four. The 0.80-to-1.00
+plateau is three consecutive values with identical results, so it is not a
+knife-edge — unlike the margin threshold this file could not ship, where the
+one confirmed needle sat one bit below the weakest confirmed-good pairing.
+
+**The four false positives at 0.80.** One is `oshinoko-v08` page 190, which the
+sidecar already marks as a spread — and that exclusion is *not* usable, because
+`kobayashi-v01`'s sidecar marks all ten of its cards as spreads too, they being
+landscape. The other three are ordinary Solo Leveling panels at 720x2289, tall
+strips slightly off their volume's median.
+
+**`solo-leveling-v01` has now been under-counted twice.** Wave 3 predicted three
+cards, adjudication found six, and the threshold sweep found nine — the patron
+thank-you at local n-2, discovered only because it appeared as a false positive
+at 0.80 and turned out not to be one. Three cards per chapter: staff banner,
+patron list, recruiting card. **That is the strongest argument for treating
+every unswept edition's `credit_pages` as a floor.** Eleven of the fourteen are
+unswept, and the one edition looked at hardest kept yielding more.
+
+**What is unbuilt.** None of this is in the binary. `MAX_CREDIT_RUN` is still 1
+with its justification withdrawn; the size rule exists only in fixtures and
+this note; and Phase B's tier design still names two corroborators that died
+here. A later session picking this up should decide the frontier question first
+— zero false positives or zero misses — because everything else follows from
+it, and the design's own argument that a swept-up story page costs a reader
+more than a missed card favours the left-hand end.
 
 ### Three signals died here, and one of them was this survey's own
 

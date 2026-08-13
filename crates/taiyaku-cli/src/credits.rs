@@ -1640,8 +1640,93 @@ mod tests {
         assert_eq!(tally.known, 0, "no group prints a credit page here");
     }
 
+    /// `domestic-v01` is a direct counterexample to `UnpairedRun::at_member_end`'s
+    /// own doc comment, not merely a miss.
+    ///
+    /// That comment says the first-index version of the position rule "is zero
+    /// for four — what accumulates at a member's start is front matter",
+    /// measured on `corpus/gotoubun-v01`'s fan edition alone. Here it is five
+    /// for five: all five of this edition's known credit pages — 2, 54, 95,
+    /// 130 and 157 — sit at the *start* of a chapter (local index 1 in four of
+    /// five, local 2 in the first), and signal 1's rule reads only a member's
+    /// *last* index, so it structurally cannot see any of them. Candidates is
+    /// empty, not merely short of five.
     #[test]
-    fn the_corpus_figures_are_twenty_one_of_twenty_three_precision_and_thirteen_of_fifteen_recall()
+    fn the_domestic_v01_fixture_is_a_direct_counterexample_to_the_first_index_claim() {
+        let fixture = CreditFixture::domestic_v01();
+        assert_eq!(fixture.work, "domestic-v01");
+        assert_eq!(fixture.against, "en-official");
+
+        assert!(
+            fixture.runs().iter().all(|r| !r.at_member_end),
+            "every one of this fixture's unpaired runs ends short of its \
+             member's last index, which is *why* signal 1 finds nothing here: \
+             is_candidate reads at_member_end and nothing else"
+        );
+
+        let tally = fixture.tally();
+        assert_eq!(
+            tally.candidates,
+            Vec::<u32>::new(),
+            "signal 1 proposes zero candidates on domestic-v01 en-fan"
+        );
+        assert_eq!(tally.hits, 0, "zero candidates, so zero hits");
+        assert_eq!(
+            tally.known, 5,
+            "five credit pages are known by extraction: 2, 54, 95, 130 and 157 \
+             — direct counterexample to UnpairedRun's doc comment, which was \
+             measured on gotoubun-v01 alone and says the first-index version of \
+             the rule 'is zero for four'. Here it is five for five at a \
+             member's start"
+        );
+        assert_eq!(
+            fixture.credit_pages,
+            vec![2, 54, 95, 130, 157],
+            "the five pages themselves, in ascending order"
+        );
+    }
+
+    /// `solo-leveling-v01` is the first edition in the corpus where signal
+    /// 1's input does not exist, rather than its rule failing to reach a page
+    /// it can see.
+    ///
+    /// The alignment is `REFUSED` — 0 whole pairings of 321 slots, because 61
+    /// vertical scroll strips do not correspond to 314 print pages — so there
+    /// are no meaningful unpaired runs for signal 1 to read at all. Six
+    /// credit pages are known by extraction (0, 20, 21, 39, 40 and 60, two
+    /// per chapter), and signal 1 proposes none of them. A future reader
+    /// seeing "0 candidates, 6 known" without this context would reasonably
+    /// mistake it for the rule breaking; it is instead the absence of the
+    /// input the rule needs.
+    #[test]
+    fn the_solo_leveling_v01_fixture_has_no_alignment_for_signal_1_to_read() {
+        let fixture = CreditFixture::solo_leveling_v01();
+        let tally = fixture.tally();
+        assert_eq!(
+            tally.candidates,
+            Vec::<u32>::new(),
+            "signal 1 proposes zero candidates on solo-leveling-v01 en-fan — \
+             not because its rule misses these nine pages, but because the \
+             alignment underneath it is REFUSED (0 of 321 slots paired), so \
+             there is no meaningful unpaired-run input for signal 1 to read"
+        );
+        assert_eq!(tally.hits, 0, "zero candidates, so zero hits");
+        assert_eq!(
+            tally.known, 9,
+            "nine credit pages are known by extraction, by far the densest \
+             edition in the corpus: THREE per chapter, at local 0, n-2 and \
+             n-1 — a staff banner at each chapter's start, a patron thank-you \
+             listing donor tiers, and a recruiting card at each chapter's end. \
+             Six were found first and the patron pages only later, when a \
+             threshold sweep flagged them as false positives and they turned \
+             out not to be. This edition has yielded more every time it was \
+             looked at, which is why the unswept editions' credit_pages are \
+             floors rather than counts"
+        );
+    }
+
+    #[test]
+    fn the_corpus_figures_are_twenty_three_of_twenty_five_precision_and_thirteen_of_fifteen_recall()
     {
         let mut candidates = 0usize;
         let mut hits = 0usize;
@@ -1658,18 +1743,26 @@ mod tests {
         }
         assert_eq!(
             (hits, candidates),
-            (21, 23),
-            "precision: twenty-one of twenty-three candidates across the corpus \
-             are true positives — the seven new editions add candidates and hits \
-             but not a single false positive beyond kaguya-v01's and kaguya-v08's"
+            (23, 25),
+            "precision: twenty-three of twenty-five candidates across the corpus \
+             are true positives — wave 2 adds dungeon-meshi-v01's two true-positive \
+             candidates at 40 and 65, while frieren-v01 proposes nothing and \
+             domestic-v01 proposes nothing, so neither moves this figure. No wave-2 \
+             edition adds a false positive beyond kaguya-v01's and kaguya-v08's. \
+             Wave 3 adds solo-leveling-v01, which proposes nothing either — its \
+             alignment is REFUSED, so signal 1 has no input to read — and so it \
+             does not move this figure"
         );
         assert_eq!(
             (hits_swept, known_swept),
             (13, 15),
             "recall, over swept editions only: thirteen of the fifteen known \
              credit pages are found — gotoubun's paired page 43 and kobayashi-v01's \
-             run-of-two page 152 are the two signal 1 cannot reach. The seven new \
-             editions are all unswept (design's §8) so none of them move this figure"
+             run-of-two page 152 are the two signal 1 cannot reach. All three wave-2 \
+             editions carry \"swept\": false (design's §8) so none of them move this \
+             figure, even domestic-v01's five known-but-unreached pages. \
+             solo-leveling-v01 also carries \"swept\": false, so its six known \
+             pages are excluded here too, despite none being reachable"
         );
     }
 

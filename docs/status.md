@@ -78,7 +78,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 762 tests, plus 1,343 in `web/`'s TypeScript — 982 in the `node`
+Five crates, 764 tests, plus 1,343 in `web/`'s TypeScript — 982 in the `node`
 project and 361 in the `jsdom` one — and sixteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -96,7 +96,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Seventeen of the 762 are standing checks gated on
+`rayon` exactly as `align` already did. Seventeen of the 764 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs`, three in
 `crates/taiyaku-serve/src/corpus.rs` and four in
 `crates/taiyaku-cli/src/score_corpus.rs` — one of which also needs
@@ -321,7 +321,23 @@ to be properties of two groups rather than of scanlations. 1,938 pages, eight
 scanlation groups, 25 known credit pages, every candidate extracted and looked
 at: **signal 1 is precision 21 of 23, and recall 13 of 15 over the three
 editions swept exhaustively** — the other seven had only flagged pages viewed,
-so their denominators are floors. `MAX_CREDIT_RUN`'s justification no longer
+so their denominators are floors. *Wave 2 has since taken this to thirteen
+editions, and wave 3 to fourteen: 2,557 pages, twelve groups, 41 known cards.
+Signal 1 is precision 23 of 25 and finds 23 of the 41 now known. **No rule is
+correct on all of them, and the trade is a measured frontier rather than a gap
+to close by trying harder:** holding the aspect test and sweeping the area
+threshold gives zero false positives at 0.5x to 0.6x the volume's median page
+area, missing 9 of 41, or zero misses at 0.8x to 1.0x for the price of four
+false positives. **This is in progress and nothing in the binary depends on
+it.**
+Wave 2 added a group printing its card at a chapter's **start**, which signal
+1's last-index rule cannot see and which contradicts `UnpairedRun`'s own doc.
+Wave 3 added a webtoon whose alignment is **refused outright** — 0 whole
+pairings of 321 slots, so signal 1 has no input at all — and whose six cards
+the size rule misses, because tall scroll strips make the median page large
+enough that a card clears the half-median cut. That blind spot was
+pre-registered before the edition was viewed, and it is **relative** rather
+than about resolution.* `MAX_CREDIT_RUN`'s justification no longer
 holds either: `kobayashi-v01` page 152 is a credits card inside a run of 2,
 which the doc comment says had never been measured. And a page's **size** turns
 out to beat its position — area below half the volume's median *and* aspect more
