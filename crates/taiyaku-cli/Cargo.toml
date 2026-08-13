@@ -43,5 +43,16 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 tract-onnx = "0.23.4"
 zip = "7.2.0"
 
+# `taiyaku-wasm` is here for `borrow_frequency.rs` alone — the gap-frequency
+# measurement — and a dev-dependency is what keeps it out of the `taiyaku`
+# binary while leaving the module inside the workspace, compiled by CI, and
+# unable to rot. The same reasoning as `tract-onnx` above.
+#
+# It is the *reader's own* resolver rather than a second copy: `binding.rs`
+# holds the routing logic as ordinary Rust and the wasm layer above it decides
+# nothing, so measuring through it measures what the browser does. Only
+# `display` and `withBorrow` are ported by hand, and the design's §5 says so.
+taiyaku-wasm = { path = "../taiyaku-wasm" }
+
 [lints]
 workspace = true

@@ -25,6 +25,8 @@
 // per-site #[expect] for the one division involved.
 #[cfg(test)]
 mod band_sweep;
+#[cfg(test)]
+mod borrow_frequency;
 mod cache;
 #[cfg(test)]
 mod corpus;

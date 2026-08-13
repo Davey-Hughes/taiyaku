@@ -78,7 +78,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 741 tests, plus 1,326 in `web/`'s TypeScript — 973 in the `node`
+Five crates, 744 tests, plus 1,326 in `web/`'s TypeScript — 973 in the `node`
 project and 353 in the `jsdom` one — and sixteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -96,7 +96,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Seventeen of the 741 are standing checks gated on
+`rayon` exactly as `align` already did. Seventeen of the 744 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs`, three in
 `crates/taiyaku-serve/src/corpus.rs` and four in
 `crates/taiyaku-cli/src/score_corpus.rs` — one of which also needs
