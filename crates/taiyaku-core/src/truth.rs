@@ -15,6 +15,49 @@
 //! Nothing here scores anything. Comparing a detector's regions against these
 //! is `taiyaku-cli`'s `score.rs`, which is native-only because nothing in the
 //! browser has a use for it.
+//!
+//! # The labelling convention, written down after the fact
+//!
+//! **A box is the text block, not the balloon.** A balloon detector is blind to
+//! the borderless narration manga uses constantly, so what is drawn is the run
+//! of type, and the balloon around it — where there is one — is not part of the
+//! box.
+//!
+//! The 480 boxes this repository holds were drawn on 2026-08-11 under
+//! conventions **nobody wrote down at the time**, and they are recorded here
+//! because they turned out to be load-bearing:
+//!
+//! - **One box per balloon, including where two balloons touch or overlap.**
+//!   Where the artwork shows two balloons joined into a cluster, the labeller
+//!   drew two boxes.
+//! - **Sound effects were labelled thoroughly**, more completely than the
+//!   project expects any detector to find them — 63 of the 480.
+//! - **They were drawn to characterise the problem, not to specify a target.**
+//!   At the time nothing in this project had detected anything, so the labelling
+//!   was deliberately general and exploratory.
+//!
+//! **Why this is load-bearing rather than trivia.** The convention decides
+//! `score.rs`'s boundary between `one_to_one` and `merged`. A detector that
+//! emits one box per *connected balloon group* scores `merged` against a
+//! per-balloon convention **even when it found exactly the right text** — that
+//! is a disagreement about units, and the five outcomes cannot tell it apart
+//! from a detector that genuinely over-reached. Measured on 2026-08-12: the
+//! model candidate takes 87 `merged` beside 118 `one_to_one`, and how many of
+//! those 87 are unit disagreement is not knowable from the score alone.
+//!
+//! **The open question, and it is not settled here.** What L2 pairing needs is a
+//! unit that is *consistent across editions* — a reader points at a balloon on
+//! the raw and lands on the English one, region to region. Consistency across
+//! editions and one-box-per-balloon are not the same requirement, and they can
+//! disagree. Which one the convention should encode is deferred to a
+//! measurement rather than argued: see `model_experiment.rs`.
+//!
+//! **Changing the convention is not free.** Every figure this project has
+//! stated about a detector is denominated in these boxes — 2 of 478, 48 of 478,
+//! 118 of 478, and every row of the band sweep. Redrawing them makes those
+//! figures incomparable, and the 30 sealed held-out pages carry the old
+//! convention besides. A new convention should therefore **add** a document
+//! rather than redraw this one, so the history stays readable.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

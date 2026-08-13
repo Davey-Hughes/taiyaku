@@ -156,7 +156,7 @@ failed it.
 `slow-timeout = { period = "30s", terminate-after = 2 }` marks a test `SLOW`
 at 30 s and kills it at 60 s, both sized off a bisection of the whole
 workspace rather than guessed — nothing in 639 tests exceeds 0.75 s, so 30 s
-is 40x that and 60 s is 80x. An override exempts exactly the four files
+is 40x that and 60 s is 80x. An override exempts exactly the **eight** files
 `--ignore-filename-regex` already exempts from both coverage steps above — the
 thirteen standing corpus checks, three `corpus::tests::` helpers that only
 assert how `TAIYAKU_CORPUS` is validated and touch no material, and the two
@@ -301,10 +301,10 @@ signal a re-measurement was owed.*
 | web | branches, aggregate | 94.38% | 92 | `web/vite.config.ts` |
 | web | functions, aggregate | 99.29% | 97 | `web/vite.config.ts` |
 | web | lines, aggregate | 99.53% | 97 | `web/vite.config.ts` |
-| Rust | lines, aggregate | 95.75% | 93 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
+| Rust | lines, aggregate | 97.50% | 93 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
 | Rust | lines, **per file** | 59.44%, `taiyaku-serve/src/stump/http.rs` | 57 | `scripts/coverage-floor.mjs` |
 | web | **files in the report** | 57 | 50 | `scripts/coverage-floor.mjs` |
-| Rust | **files in the report** | 38 | 32 | `scripts/coverage-floor.mjs` |
+| Rust | **files in the report** | 43 | 32 | `scripts/coverage-floor.mjs` |
 
 The four web per-file floors have their own table under "The other half" below,
 beside the lowest file each was derived from.
@@ -314,12 +314,12 @@ They are counts, not percentages, and the failure they exist to catch is not a
 slide — it is a collapse. Web carries seven of margin (50 against 57) because 40
 would have been too loose to catch the near miss recorded below, where a
 one-character edit to a glob dropped 13 files and every percentage stayed green.
-Rust carries six (32 against 38) because the count there can only fall three
+Rust carries eleven (32 against 43) because the count there can only fall three
 ways — the `--ignore-filename-regex` widens, a crate leaves the workspace, or
-files merge — and four files are excluded by name today, so six leaves that list
-room to grow without a coverage edit becoming a gate edit. Thirty-two also trips
-when any one of the three largest crates leaves the report: `taiyaku-serve` is
-15 files, `taiyaku-cli` 11, `taiyaku-core` 7.
+files merge — and eight files are excluded by name today, so eleven leaves
+that list room to grow without a coverage edit becoming a gate edit.
+Thirty-two also trips when any one of the three largest crates leaves the
+report: `taiyaku-serve` is 15 files, `taiyaku-cli` 11, `taiyaku-core` 7.
 
 **The Rust per-file floor is loose by construction and that is stated rather than
 apologised for.** The spread between the workspace's best-covered file and its
@@ -331,15 +331,15 @@ catches is a module that stops being tested *at all* — see "Why the Rust
 per-file floor exists" below, which is the arithmetic that fixes the number.
 
 **Lines only on the Rust side, and the other three metrics are refusals rather
-than oversights.** `branches` is `count: 0` on all 38 files — llvm-cov emits no
+than oversights.** `branches` is `count: 0` on all 43 files — llvm-cov emits no
 branch data without a nightly flag, verified by counting: zero files report a
 non-zero branch count — so any floor on it would fail every file. `regions` and
 `instantiations` read far below lines on `match`-heavy and generic code (lowest
 measured 66.80% and **39.39%**, both `taiyaku-serve/src/stump/http.rs`), so they
 would need their own numbers for no signal the line floor does not already give.
 
-The Rust figure is the workspace total with the four files below ignored;
-without them it is **87.59%** lines, and the difference is not work anyone did
+The Rust figure is the workspace total with the eight files below ignored;
+without them it is **88.59%** lines, and the difference is not work anyone did
 — it is code nobody intends to run in CI, which is the whole reason the
 exclusions exist. `taiyaku-cli/src/main.rs`, this branch's long pole, went from
 43.79% to **95.82%** regions and 97.23% lines.
@@ -351,11 +351,11 @@ regress in silence. The margin is a compromise and the regression proofs below
 record exactly what it does and does not catch.
 
 **Lines, not regions, for Rust.** llvm-cov reports regions well below lines on
-`match`-heavy code — 94.97% against 95.75% here — so gating both would mean two
+`match`-heavy code — 96.93% against 97.50% here — so gating both would mean two
 numbers to maintain and re-derive for no additional signal. One gate, on the
 metric whose meaning a reader guesses correctly.
 
-### The four ignored Rust files, named
+### The ignored Rust files, named
 
 `ci.yml`'s comment used to say these were "named in `docs/ci.md`". They were
 not — the claim was a forward reference to a section nobody had written, false
@@ -365,23 +365,45 @@ from the day it landed until this one. Here they are, with a reason each:
 | ------- | ------ |
 | `taiyaku-cli/src/geometry_experiment.rs` | a gated one-off measurement module; it fingerprints roughly 1.4 million crops when it runs, and a gate run was once killed at 1h09m inside it |
 | `taiyaku-cli/src/region_experiment.rs` | the same: a gated one-off measurement, not a code path the reader takes |
+| `taiyaku-cli/src/truth_population.rs` | the same: a gated one-off measurement, reading 480 hand-drawn boxes over 45 pages to derive `detect.rs`'s size band, ink floor and smear gap rather than guess them |
+| `taiyaku-cli/src/model_experiment.rs` | the same: a gated one-off measurement, scoring phase 3's model candidate against the same 45 pages for a head-to-head table a person reads — asserts only that it measured something, never which detector wins |
+| `taiyaku-cli/src/band_sweep.rs` | the same: a gated one-off measurement, scoring eight component-size bands over those 45 pages so `BAND` is read off a table rather than argued for |
 | `taiyaku-cli/src/corpus.rs` | cannot execute without `TAIYAKU_CORPUS`, which CI does not have |
 | `taiyaku-serve/src/corpus.rs` | the same |
+| `taiyaku-cli/src/score_corpus.rs` | the same |
 
 **The regex matches `/corpus.rs` by path segment, and that is the sharp edge.**
 A *new* `corpus.rs` added to a crate that is **not** corpus-gated would be
 excluded silently, and its coverage would leave the number without leaving a
 trace. Nothing like that exists today — verified, not assumed, and **re-measured
-on 2026-08-10 from `cargo llvm-cov report --json` with and without the flag: 42
-files without the regex, 38 with it, and the four that disappear are exactly the
-four above.** The workspace reads 87.59% lines without the regex against 95.75%
-with it, both re-measured the same way.
+on 2026-08-12 from `cargo llvm-cov report --json` with and without the flag: 51
+files without the regex, 43 with it, and the eight that disappear are exactly the
+eight above.** The workspace reads **88.59%** lines without the regex
+(19,340 of 21,830) against **97.50%** with it (18,581 of 19,057), both
+re-measured the same way.
+
+*Why the raw counts are here and the percentages alone are not.* An earlier
+pass of this section carried 88.62% and 97.53%, taken from profile data one
+commit older. Nothing was wrong with either number when it was written, and a
+reader re-measuring today would get neither — which is indistinguishable from
+a stale document. The counts make the claim checkable: divide them.
+
+**This table said "four" while listing six, and that is worth recording rather
+than quietly correcting.** `band_sweep.rs` and `score_corpus.rs` were in the
+regex and had never been in the table; `truth_population.rs` and
+`model_experiment.rs` were added on 2026-08-12 without the paragraph below them
+being re-read. So a count written once as a measurement drifted three times
+while the list beside it stayed authoritative — the same lesson
+`scripts/status-test-count.mjs` exists for, arriving in the one document that
+explains that script. **A per-site list is checkable; a count is not.** The
+eight rows above are the list; every number in this paragraph is derived from
+them and was re-measured, not carried forward.
 
 **That check is now half a gate rather than wholly a ritual.** This paragraph
 used to end "re-run that diff when adding a crate", and asking a reader to
 remember a thing is the weakest form of a check there is. The per-file floor
-script now asserts the file count itself — 38 today, 32 required — so a regex
-that quietly swallows more than these four fails the job instead of waiting to be
+script now asserts the file count itself — 43 today, 32 required — so a regex
+that quietly swallows more than these eight fails the job instead of waiting to be
 noticed. Only *half*, because the automated half sees the count and not the
 names: a regex that dropped one file while a new crate added one would net to
 zero and pass. So the diff is still worth running when adding a crate, and it is
@@ -390,7 +412,7 @@ and silent growth:
 
     env -u TAIYAKU_CORPUS cargo llvm-cov --workspace --all-features --summary-only > /tmp/all.txt
     env -u TAIYAKU_CORPUS cargo llvm-cov --workspace --all-features --summary-only \
-      --ignore-filename-regex '(geometry_experiment|region_experiment|/corpus)\.rs$' > /tmp/gated.txt
+      --ignore-filename-regex '(band_sweep|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus)\.rs$' > /tmp/gated.txt
     diff <(awk '{print $1}' /tmp/all.txt) <(awk '{print $1}' /tmp/gated.txt)
 
 Both commands above run the tests. To diff the file lists alone against profile

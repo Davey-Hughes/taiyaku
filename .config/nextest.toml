@@ -33,11 +33,27 @@
 junit = { path = "junit.xml" }
 slow-timeout = { period = "30s", terminate-after = 2 }
 
-# The exempt set is not a new list: it is exactly the five files
-# `--ignore-filename-regex '(geometry_experiment|region_experiment|score_corpus|/corpus)\.rs$'`
-# already names in both coverage steps of ci.yml and check-all.sh. One exempt
-# set, two gates, one reason — these are gated one-off measurements against
-# 26 GB of real material, not unit tests.
+# The exempt set matches the seven-alternative regex both coverage steps of
+# ci.yml and check-all.sh carry today —
+# `--ignore-filename-regex '(band_sweep|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus)\.rs$'`
+# — which names the eight files `docs/ci.md` tables under "The ignored Rust
+# files, named". This is not one exempt set shared three ways: the two
+# coverage steps share one regex string, but nextest's `filter` selects by
+# test name rather than by file, so this file cannot reuse that string — the
+# same set is expressed a second way, by module, and has to be kept in step
+# with the regex by hand rather than by sharing it.
+#
+# It fell out of step. `band_sweep`, `truth_population` and `model_experiment`
+# were all missing below until this correction — the first two pre-dating this
+# branch, the third landing without this filter being updated for it — so
+# their tests ran under the default
+# `slow-timeout = { period = "30s", terminate-after = 2 }` rather than the
+# 60 s advisory mark meant for them. `the_model_candidate_scored` was measured
+# at **42.2 s on 32 cores**: past the 30 s SLOW mark but comfortably inside a
+# real 60 s advisory, and instead killed at that same 60 s by the default
+# `terminate-after`. Passing on a fast machine and dying on a slower one is
+# exactly the failure this override exists to prevent, and for this test it
+# was not preventing it.
 #
 # A global kill would destroy a deliberate measurement: `geometry_experiment`
 # in the debug profile with TAIYAKU_CORPUS set runs 40+ minutes, and one run
@@ -58,6 +74,16 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # has it. Its own `--sample` sibling takes ~14 s just to count pages across
 # fifteen editions, so the 30 s default would bound a measurement rather than
 # a bug.
+#
+# `test(band_sweep)`, `test(truth_population)` and `test(model_experiment)`
+# are the same shape again, and each was missing from this filter until the
+# correction above: `band_sweep` scores eight component-size bands over the
+# 45 labelled pages so `BAND` is read off a table rather than argued for;
+# `truth_population` reads 480 hand-drawn boxes over those same pages to
+# derive `detect.rs`'s size band, ink floor and smear gap; `model_experiment`
+# scores phase 3's model candidate against the same 45 pages for the
+# head-to-head table in `docs/notes.md`. Each is `#[cfg(test)]`, gated on
+# TAIYAKU_CORPUS, and none of the three is a unit test with a normal budget.
 [[profile.default.overrides]]
-filter = "test(corpus::) + test(geometry_experiment) + test(region_experiment) + test(score_corpus)"
+filter = "test(band_sweep) + test(corpus::) + test(geometry_experiment) + test(model_experiment) + test(region_experiment) + test(score_corpus) + test(truth_population)"
 slow-timeout = { period = "60s" }

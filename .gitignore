@@ -20,6 +20,20 @@ thumbs/
 # tree anyway; this is the second line of defence, not the first.
 mutants.out/
 
+# Model weights fetched by the L2 phase-3 spike, and the overlays it draws.
+# The weights are 95 MB and come out of a GPL-3.0 project whose author states
+# he has no right to redistribute the training material; we fetch them, record
+# the sha256, and never commit them. (`out/` below already matches
+# `spike/out/`; it is named here so a reader of this section is not relying on
+# a Node rule to cover a Rust directory.)
+spike/models/
+spike/out/
+
+# Model weights for the L2 phase-3 measurement, fetched by
+# scripts/fetch-model.sh and verified against a recorded sha256. 95 MB, from a
+# GPL-3.0 project whose training data may not be redistributed. Never committed.
+models/
+
 # Agent scratch. `.claude/worktrees/` holds a full checkout per agent and
 # reached 7.4 GB on the branch that added this line — a `git add -A` away from
 # being staged, since nothing else here was ignoring it.

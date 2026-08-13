@@ -3,7 +3,9 @@ name = "taiyaku-spike"
 version = "0.1.0"
 edition = "2024"
 
+# One dependency, because this crate does one thing now. The 2026-07-28 L1
+# hashing spike and the 2026-08-12 L2 model spike both lived here and both are
+# gone: their findings are in docs/notes.md, and the code that outlived them is
+# in the workspace.
 [dependencies]
-image = "0.25.10"
-rayon = "1.12.0"
-zip = "8.6.0"
+tract-onnx = "0.23.4"

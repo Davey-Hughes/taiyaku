@@ -102,6 +102,17 @@ mod region_experiment;
 #[cfg(test)]
 mod truth_population;
 
+// Phase 3 of the detector redesign: the model candidate, scored against the
+// same 45 pages as phase 2's sweep. Gated the same way and for the same
+// reason, and additionally on TAIYAKU_MODEL, because the weights are 95 MB and
+// are fetched rather than committed.
+#[cfg(test)]
+#[allow(
+    clippy::pedantic,
+    reason = "one-off measurement; see docs/ci.md and region_experiment.rs"
+)]
+mod model_experiment;
+
 mod report;
 mod signature;
 mod stats;

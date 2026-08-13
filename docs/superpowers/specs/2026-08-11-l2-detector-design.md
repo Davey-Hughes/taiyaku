@@ -318,6 +318,43 @@ any design commits to it:
   but the weights' own terms are a separate question and must be read before
   anything is fetched into a build.
 
+**Settled by the spike, 2026-08-12.** All three answers, and one the spike added.
+The measurements and the quoted licence text are in `notes.md`,
+"comic-text-detector through `tract`: four questions, and the head that answers
+them". In short:
+
+- **Which runtime — `tract`, and it was never close.** It parses, builds and runs
+  `comictextdetector.pt.onnx` at 1×3×1024×1024. Seventeen distinct operators,
+  all supported, opset 11. The reason the worry was misplaced is worth keeping:
+  a YOLO export's hard operators come *after* the decoded grid, and this export
+  has none of them — there is no `NonMaxSuppression` in the file, because
+  upstream suppresses in Python. So `ort` is not needed and the offline stance
+  holds. **3.8–4.0 s per page on CPU, flat across page sizes**, since everything
+  is letterboxed to 1024 first.
+- **Which model — comic-text-detector, and the general detectors were never
+  reached.** It emits three heads, and the choice between two of them is the
+  design decision this paragraph did not know existed: `seg` (a full-resolution
+  text mask) recalls the text but at glyph granularity, while `blk` (the YOLO
+  grid) is at the **block** granularity the promotion rule counts. Phase 3 scores
+  `blk`. `det`, a DBNet-style line head, is below the level L2 pairs on.
+- **Licence — redistributable, with an attribution obligation, and the page has
+  two licences on it.** The restrictive "solely for academic purposes" clause a
+  reader meets first governs **Manga109**; the training data is **Manga109-s**,
+  the 87-volume commercially-approved subset, whose conditions explicitly
+  contemplate publishing results "including pre-trained models" provided the use
+  of Manga109-s "must be indicated clearly within the published work". That
+  attribution is **new work this design did not carry**. Two residual risks are
+  recorded in `notes.md` and both concern *distributing* the weights, which
+  §4.2's fetch-not-vendor choice already avoids.
+- **And the question this section did not ask: does a model find what C1
+  cannot?** Over the 20 pages of the four Japanese `raw-mono` editions — the
+  population where the promoted classical candidate scores **0 of 167** dialogue
+  boxes — `blk` proposes **147 blocks against 167 dialogue boxes**, and on the
+  four overlays that were cropped and read they sit on the balloons, one box per
+  balloon. This is a count of proposals and a look at pixels, **not** a score:
+  nothing here has been through `score_page`, which is phase 3's job and the
+  reason phase 3 exists.
+
 ### 4.2 How it lands
 
 A `#[cfg(test)]` module gated on `TAIYAKU_CORPUS`, the same shape as phase 1 and
@@ -335,6 +372,46 @@ three, and promoting it is a separate decision made with the evidence in hand.
 **The alternative it also beat: leave it in `spike/`.** Zero repo cost and the
 same number. It loses because a result nobody can reproduce without rebuilding a
 throwaway is exactly the failure `region_experiment.rs` was written to undo.
+
+**Landed 2026-08-12.** `crates/taiyaku-cli/src/model_experiment.rs` exists in
+the shape this section describes: `#[cfg(test)]`, gated on `TAIYAKU_CORPUS` and
+`TAIYAKU_MODEL`, skipping cleanly when either is unset, not compiled into the
+binary, `detect_page` untouched, weights fetched by `scripts/fetch-model.sh`,
+checksummed and gitignored. The table and the caveats are in `notes.md`, "The
+model candidate, scored against the same 45 pages". In short:
+
+- **The number this phase exists for.** Same 45 pages, same nine editions, same
+  478 scored boxes, same `score_page` at `COVERAGE = 0.5`: `model/blk` takes
+  **130 one-to-one against the classical candidate's 48**, at **0.07 spurious
+  per page against 6.73**. Against the rule fixed on 2026-08-11 — 1:1 must
+  increase *and* spurious-per-page must stay at or under 10.7, ties to the
+  incumbent — **both terms pass**. That row read 118 until `14cb71c`, which made
+  suppression class-agnostic; it was class-aware and faithful to YOLOv5, but
+  upstream follows NMS with `group_output(...)` and this port does not, so a
+  block whose grid cells disagreed about the winning class reached the scorer
+  twice. `missed` and `spurious` did not move, which is the check.
+- **On the population this phase was scoped around.** The classical detector's
+  0 of 167 dialogue boxes over the four Japanese `raw-mono` editions is 47 of
+  167 for the model, and the model wins 1:1 in **every** edition, English
+  included, at 0.00 spurious per page on all four Japanese raws.
+- **What is worse, recorded beside what is better.** `fragment` rose from 81 to
+  137 — a different failure shape, not an absent one — and Sfx recall moved the
+  wrong way, 5 of 63 to 2 of 63. The model's 0.07 spurious per page is
+  numerically the incumbent's figure and reached from the opposite cause; the
+  distinction is drawn in `notes.md` and in `status.md`.
+- **Promoting the model into the binary is still a separate decision**, as §9
+  says, and this section's fetch-not-vendor choice stands. That decision now
+  carries the **Manga109-s attribution obligation** §4.1 records — anything
+  shipped carrying these weights must indicate clearly that Manga109-s was used.
+  It is new work and it did not exist in this design.
+- **`COVERAGE` is still provisional at 0.5 and still unmeasured** (§10), and
+  this is the result most sensitive to it so far: `blk` hugs the glyphs where a
+  hand-drawn box carries margin, so the model's predictions are systematically
+  tighter than the truth, and the boundary that costs is `fragment`'s.
+  Predictable in direction, unmeasured in size, and not swept here.
+- **The held-out set was not opened** (§5). Every figure is over the dev set.
+  `BLK_CONF` and `BLK_IOU` are upstream's defaults, taken rather than fitted, so
+  no threshold here was chosen against these 45 pages.
 
 ## 5. The held-out set
 
@@ -448,7 +525,10 @@ settles it, is the habit this whole sub-project exists to break.
 - **Whether `tract` can run a YOLO-derived detector**, and **whether the model
   weights are redistributable under GPL-3.0-or-later.** Both are the spike's,
   both are named as unverified in §4.1, and neither is assumed anywhere in this
-  document.
+  document. — *Both measured on 2026-08-12 and answered yes; see the dated block
+  in §4.1. The spike also returned something this list did not think to ask for:
+  the model has two usable heads at different granularities, and which one phase
+  3 scores is now a settled choice rather than an open one.*
 - **`COVERAGE`.** Still provisional at 0.5, still unmeasured, and this design
   does not settle it. Every figure above is at that value, and a candidate that
   wins only at one particular coverage is a result this design would not be able

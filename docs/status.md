@@ -75,12 +75,14 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 727 tests, plus 1,306 in `web/`'s TypeScript — 963 in the `node`
+Five crates, 741 tests, plus 1,306 in `web/`'s TypeScript — 963 in the `node`
 project and 343 in the `jsdom` one — and sixteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
-`tower` and `ureq` in the server, `wasm-bindgen` in the binding, and `react`
-and `vite` in `web/`. The sixteen run under Vitest's browser mode over Playwright's
+`tower` and `ureq` in the server, `wasm-bindgen` in the binding, `react`
+and `vite` in `web/`, and `tract-onnx` as a dev-dependency of `taiyaku-cli`
+alone, for phase 3's gated measurement — it reaches no binary and no other
+crate. The sixteen run under Vitest's browser mode over Playwright's
 Chromium, and cover only what no Node environment can answer: `jsdom` has no
 layout engine and no real `HTMLImageElement.decode()`, and every defect the page
 area has shipped was one or the other. They are **not** a CI job — a cacheless
@@ -91,7 +93,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Seventeen of the 727 are standing checks gated on
+`rayon` exactly as `align` already did. Seventeen of the 741 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs`, three in
 `crates/taiyaku-serve/src/corpus.rs` and four in
 `crates/taiyaku-cli/src/score_corpus.rs` — one of which also needs
@@ -122,13 +124,24 @@ the unit tests are what exercise those and `--corpus-debug` puts the corpus
 checks back under them; `docs/ci.md`, "Two profiles, and the gate that took an
 hour", is the record.
 
-**Four further tests are gated on `TAIYAKU_CORPUS` and are deliberately not
-among those twelve.** All four are one-off measurements rather than checks, and
-all four are built the same way for the same reason: gated, skipping cleanly
-when the variable is unset, calling `detect.rs`'s own functions rather than
+**Seven further tests are gated on `TAIYAKU_CORPUS` and are deliberately not
+among those twelve.** All seven are one-off measurements rather than checks, and
+all seven are built the same way for the same reason: gated, skipping cleanly
+when the variable is unset, calling the detector's own functions rather than
 copies of them, and asserting only that they measured something — never a
 quality figure, because a check that fails when the thing it measures improves
-is not a measurement. Two are described below; the other two are L2b's, and are
+is not a measurement. **Three of the seven are phase 3's**, all in
+`crates/taiyaku-cli/src/model_experiment.rs` and additionally gated on
+`TAIYAKU_MODEL`: the head-to-head table against `detect_page`; — added
+2026-08-12 — the measurement of whether the model groups a page's balloons the
+same way on the raw and on the English edition, which is a pairing question
+rather than a labelling one and reads no truth boxes at all; and, the same day,
+a sweep of the model's confidence floor `BLK_CONF` over eight values, which is
+`band_sweep.rs`'s shape applied to a constant taken verbatim from upstream and
+never measured here. All three are described in the L2 entry below. This
+sentence said "four" until the second landed, having missed the first one; the
+count is not gate-checked, only the two totals above are. Two more are
+described below; the remaining two are L2b's, and are
 `crates/taiyaku-cli/src/truth_population.rs`, which measures what text is made
 of from inside 478 hand-drawn truth boxes, and
 `crates/taiyaku-cli/src/band_sweep.rs`, which scores the detector at eight
@@ -3859,8 +3872,177 @@ mismatched pair said nothing at all.
   how many labelled boxes a prediction covered, so a whole-page prediction over
   one balloon came back a clean hit — and three of the five panels in
   `notes.md`'s cropping table hold exactly one balloon. Classification is
-  directional now; association is not. **Nothing is labelled yet**, so no
-  figure about the detector has changed and sub-project B has not begun.
+  directional now; association is not. The line that stood here read
+  "**Nothing is labelled yet**, so no figure about the detector has changed and
+  sub-project B has not begun", and it was true when written and is no longer:
+  478 boxes over nine editions are labelled, and the figures above — the
+  incumbent's 2 of 478 and the promoted candidate's 48 — are what the labelling
+  produced.
+  **Phase 3's spike ran on 2026-08-12 and answered all three of its questions,
+  plus one it was not asked.** `tract` runs comic-text-detector unchanged —
+  seventeen operators, all supported, opset 11, no `NonMaxSuppression` in the
+  file at all because upstream suppresses in Python — so the `ort` fallback was
+  never reached and the offline stance holds, at 3.8–4.0 s per page on CPU, flat
+  across page sizes. The weights are redistributable and carry an **attribution
+  obligation** the design did not know about: the training data is Manga109-s,
+  the commercially-approved subset, not the academic-only Manga109 whose clause a
+  reader meets first. And the question the spike was scoped to add: over the
+  20 pages of the four Japanese `raw-mono` editions, where the promoted classical
+  candidate scores **0 of 167** dialogue boxes, the model's block head proposes
+  **147 blocks against 167 dialogue boxes**, sitting on the balloons. That is a
+  count of proposals and a look at four overlays — **not a score**.
+  **Phase 3 produced the score the same day, and the model clears the rule on
+  both terms.** `model_experiment.rs` ran both candidates over the same 45
+  pages, the same nine editions, the same 478 scored boxes, through the same
+  `score_page` at the same provisional `COVERAGE = 0.5`:
+
+  | outcome | `detect_page` (L2b) | `model/blk` |
+  | --- | ---: | ---: |
+  | 1:1 | 48 | **130** |
+  | merged | 73 | 97 |
+  | split | 152 | 6 |
+  | fragment | 81 | **137** |
+  | missed | 124 | 108 |
+  | spurious | 303 (6.73/page) | 3 (**0.07**/page) |
+
+  **The model row above is the second measurement of it, and the first was
+  wrong.** It read `118 87 32 133 108 3` until `14cb71c`, which fixed a defect
+  in this project's port: `suppress` was class-aware, faithfully to YOLOv5, so a
+  block whose grid cells disagreed about which of the two class channels won
+  survived **twice**, as two boxes at an IoU of 0.94 to 0.99. Upstream gets away
+  with that because `inference.py` follows NMS with `group_output(...)`, which
+  regroups the survivors; this port has no such stage, so the duplicates reached
+  the scorer. The fix is `agnostic=True` on an existing YOLOv5 flag — the other
+  setting of something already there, not a new mechanism and not a new
+  constant. The classical row did not move. **The score could not see this**; the
+  cross-edition grouping measurement below found it, and the pixels confirmed it
+  (`gotoubun-v01` raw 165 against `en-mono` 157: one balloon, two boxes), at
+  **40 of 161 English regions carrying such a twin against 0 of 147 Japanese
+  ones**. **The reasoning was written down before the re-run**, deliberately,
+  because the numbers move in the direction that flatters the model. **`missed`
+  and `spurious` did not move** — 108 and 3 in both measurements — and that is
+  the check, since removing duplicate boxes cannot change what was never found.
+  **Every one of the twelve extra dialogue hits is English**, which is the
+  second check: the Japanese pool is 47 of 167 before and after, per edition as
+  well as pooled, while the English pool moves 65 of 222 to 77 of 222 — exactly
+  where the twins were, so the arithmetic corroborates the diagnosis rather than
+  merely failing to contradict it.
+  **The verdict, stated against the rule fixed on 2026-08-11 rather than
+  against the outcome:** term 1 is 130 against 48, term 2 is 0.07 against 6.73,
+  and both sit inside the ceiling of 10.7 truth boxes per page. **Both pass.**
+  The **0 of 167** dialogue boxes this entry has quoted since L2b is **47 of
+  167** for the model — untouched by the fix above — and it is not bought by
+  trading the English side away: the English pool moves 43 of 222 to 77 of 222
+  at the same time, and the model takes more 1:1 than the classical detector in
+  every one of the nine editions.
+  **Three things are recorded beside that, because a summary without them would
+  be dishonest.** `fragment` rose from 81 to 137: the model's failure shape is
+  different, not absent. Sfx recall moved the **wrong way**, 5 of 63 to 2 of 63
+  — the classical detector finds more sound effects than the model does. And
+  the model's 0.07 spurious per page is numerically the **incumbent's** figure
+  from the "8.6% of the page" paragraph above, reached from the opposite cause:
+  the incumbent's 0.07 was that it barely proposed anything at all, while 137
+  fragments prove this one proposes plenty. The rule's second term cannot tell
+  those apart; the first term is what does.
+  **Promoting the model into the binary remains a separate decision** (design
+  §9), and it now carries two things with it: the **Manga109-s attribution
+  obligation** — anything shipped with these weights must state clearly that
+  Manga109-s was used — and a `COVERAGE` this result is more sensitive to than
+  any before it, since `blk` hugs the glyphs where a hand-drawn box carries
+  margin, so the model's predictions are systematically *tighter* than the
+  truth. That interaction is predictable in direction and unmeasured in size.
+  **That decision was taken on 2026-08-12, and the answer is not yet — for a
+  reason that is not about the measurement.** The model stays a `#[cfg(test)]`
+  experiment; `detect.rs` keeps shipping; nothing gains a 95 MB dependency. The
+  reasoning, recorded because a deferral without one decays into a to-do:
+  **a text detector may not be this project's to own.** Panels, the iOS comic
+  reader, has a text-selection mode that appears to lean on a native iOS
+  capability rather than a bundled model — Apple's on-device text recognition —
+  and if the platforms that matter already carry text detection, then shipping
+  95 MB of weights, a fetch step, a licence obligation and a 4 s/page inference
+  is a large cost to take on for something the operating system may hand over
+  for nothing. Nobody has looked. Until somebody has, committing to a
+  text-finding model would be choosing a mechanism before surveying the
+  alternatives, which is the failure this whole sub-project has been correcting
+  for.
+  **This does not block anything, and that is the point.** L2b's pairing works
+  against `Region`s and does not care what produced them; the model is
+  measurable today, gated, and reproducible in one command. What a survey
+  would have to answer: what the browser PWA can use, since a native iOS
+  capability does not reach it and the reader is a PWA first; whether a native
+  shell is close enough to change that; and what such an API returns — lines,
+  words, or the *blocks* pairing needs. A native text API that returns word
+  boxes solves a different problem from the one measured here.
+  The 30 sealed held-out pages were **not** opened. `notes.md`,
+  "comic-text-detector through `tract`: four questions, and the head that
+  answers them", "The model candidate, scored against the same 45 pages" and
+  "The model against itself across the two editions: does it group the same way";
+  spec §4.1 and §4.2 carry the dated settlements.
+  **The confidence floor was swept on 2026-08-12 and `BLK_CONF` stays at 0.4**,
+  which is a refusal rather than an oversight. The premise was sound — the rule
+  caps spurious at 10.7 per page and the model sits at 0.07, so there was ~150x
+  of unused precision to trade for recall — and the trade is real: at a floor of
+  0.02, `missed` falls 108 to 57 and 1:1 rises 130 to 147, still 19x under the
+  ceiling. **But Japanese dialogue is flat at 47 of 167 across seven of the
+  eight rows.** Every extra hit is English. The 120 Japanese boxes the model
+  misses are not low-confidence detections under the floor; `blk` does not
+  propose them at any floor, so no threshold reaches them. The gain also worsens
+  the failure *shape* — `split` 6 to 36, `fragment` 137 to 162 — so it would
+  trade 17 English matches for 55 more wrongly-shaped boxes and zero Japanese
+  ones. **The promotion rule cannot arbitrate this**: its second term is slack
+  across the whole table, so by term 1 alone the rule would adopt 0.02, and
+  applying it here is using a rule written to compare a candidate against an
+  incumbent to pick a parameter inside one candidate. `notes.md`, "Where the
+  confidence floor goes, and the thing it turns out not to buy". The sweep is a
+  dev-set overfit and says so; the held-out 30 stay sealed.
+  **The `merged` 97 above was then asked the only question that decides whether
+  it costs anything, on 2026-08-12.** The model draws one box over two adjacent
+  balloons where the labeller drew two. That is free if it merges the *same* two
+  on the raw and on the English page — L2 pairs region to region, so both sides
+  agree and a reader still lands on the right balloon — and it breaks pairing if
+  it merges on one side only, which no relabelling could fix because it is model
+  behaviour rather than a labelling convention. A second gated test in
+  `model_experiment.rs` runs the model over the five labelled `raw-mono` pages of
+  each of the four works and over each page's English counterpart, resolved
+  through `Sidecar::runs_of` and `counterpart` in **slots** rather than file
+  pages, and compares by **centroid containment** — not IoU, which would be
+  measuring the writing system, since a vertical Japanese balloon and its
+  horizontal English counterpart share a centre and share almost no area.
+  **19 of the 20 pairs compared**, one skipped because its counterpart slot fell
+  on a joined spread and splitting that page is L2b's problem, not this one's;
+  147 raw regions against 141 English. Of 147 raw centroids, **124 land in
+  exactly one English region**, 23 in none and 0 in two or more; of 141 English
+  centroids, 115 land in exactly one raw region, 25 in none and 1 in two or more.
+  **The headline is 5 of 147 raw regions holding two or more English centroids,
+  all 5 of them real grouping disagreements, and 0 of 141 the other way.**
+  **This measurement found a defect before it answered its own question.** Its
+  headline first read 23 of 147 of which only 5 were real, and the other 18 were
+  the class-aware suppression fixed at `14cb71c` and recorded above — one balloon
+  carrying two English boxes. After the fix the two printed figures, raw
+  containment and containment after discounting near-identical twins, are **5 and
+  5: they converged**. That convergence is the check, and a stronger one than the
+  number merely falling: the two routes measure the same thing and disagreed only
+  because of the artefact, so their agreeing says it is *gone* where a smaller
+  number would only have said it was *smaller*. Both figures still print, and so
+  does the twin line — now 0 of 147 and 0 of 141 — so a regression shows up as
+  them parting again.
+  **What it says: the labelling-convention mismatch costs almost nothing.** About
+  3% of raw regions are genuine grouping disagreements and the mirror case is
+  zero, so when the model draws one box over two touching balloons it
+  overwhelmingly does the same on both editions and pairing maps region to region
+  cleanly. That **retires relabelling as something this project needs to do for
+  that reason** — the labelling convention itself is written down at `f165521`,
+  in `crates/taiyaku-core/src/truth.rs`, and the open question it left was
+  whether L2 pairing needs a unit consistent *across editions* rather than one
+  per balloon. It does not, here. `kobayashi-v01` raw 36 against `en-mono` 38 is
+  one of the five real ones: two adjacent balloons boxed separately in English
+  and together on the raw. The test asserts none of this — whether 5 in 147 is
+  tolerable is a person's call, and a check that fails when the model improves is
+  not a measurement. **What this does not settle:** page fractions correspond only
+  approximately across editions of different aspect (0.669 against 0.703 on one
+  real pair, deltas of ±0.02 to ±0.04 printed per pair), which the test
+  deliberately does not correct for — fitting that transform is L2b's job — and
+  one page pair is unmeasured because its counterpart landed on a joined spread.
 - **Art book linking**, if it is worth it — needs a different hash, and roughly one
   art book page in three has any manga counterpart at all.
 
