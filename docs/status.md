@@ -4276,6 +4276,63 @@ mismatched pair said nothing at all.
   real pair, deltas of ±0.02 to ±0.04 printed per pair), which the test
   deliberately does not correct for — fitting that transform is L2b's job — and
   one page pair is unmeasured because its counterpart landed on a joined spread.
+- **In-volume chapter detection.** `Sidecar::chapter_at` answers "which chapter
+  is this slot in" only by routing the slot into a *chapter-organised* edition
+  and reading off which member it lands in, so it is silent for the common
+  case, which its own doc says plainly: `None` covers "this work has no
+  chapter-organised edition (the common case, and not an error)". It also
+  **names a member, not a chapter number** — recorded as a shortcoming where
+  the readout shipped, and separate from the `~` that readout carries, which
+  marks the *alignment*'s standing rather than the label's. Four things want
+  the boundaries a volume already carries: a readout on a work with no chapter
+  edition, a filmstrip and a key that step by chapter, the chapter-to-volume
+  map `notes.md` argues a tracker needs, and sampling that steps over front
+  matter because it knows where chapter one starts rather than because
+  `spread_sample` spreads evenly to avoid the front of a volume.
+  **Three tiers, in order of cost and certainty, and the first two are nearly
+  free.** (1) *Entry names inside the archive*: `notes.md`, "What the archives
+  actually contain", records that the EN official encodes chapter and role in
+  every filename — `c001 (v01) - p000 [Cover]`, `[ToC]` — and that the EN Full
+  Colour nests pages under per-chapter folders; it calls this "a plausible
+  source of coarse chapter boundaries" and nothing has taken it up.
+  `sidecar.md` measured the nesting case at **2 of the 7** archives that nest,
+  Go-Toubun's Full Colour under `Chapter 15 - What They Have Accumulated/`.
+  **12 of 57** archives also carry a `ComicInfo.xml`, which rule 1
+  deliberately excludes from the page count and nothing has ever opened.
+  (2) *The alignment*, which is `chapter_at` today and already exact wherever
+  a chapter edition exists. (3) *A content signal*, only where neither is.
+  **Where it goes: a `chapters` field on `Edition`, beside `spreads` and
+  `credits`** — but a struct rather than a bare index list, a start page plus
+  an optional name, because both the tracker map and a readout saying `c005.5`
+  instead of `member 6 of 7` need the chapter's identity and not just its
+  position. Written by a command of its own that prints and writes nothing
+  without `--write`, the discipline `credits`, `inventory` and `duplicates`
+  set. The name is optional by construction: tiers 1 and 2 yield one, tier 3
+  yields only a position, and a mixed edition has both.
+  **Four hazards, each already measured somewhere in this repository.**
+  *Declared metadata is wrong here* — `notes.md`, "It also derives the
+  chapter-to-volume map", found both corpus volumes mislabelled by their own
+  filenames, so reading `ComicInfo.xml` for chapter starts inherits a source
+  this project has already caught lying. *The front of a volume is not chapter
+  one* — `credits` measured that what accumulates at a member's *start* is
+  front matter, and page 0 is a cover. *A recurrence signal will not classify
+  this either* — `credits::recurrences` is a diagnostic and never a classifier
+  because its two tightest matches in a whole edition are the volume cover,
+  and `sidecar.md` makes the same point from the other side: "a chapter
+  divider that resembles all nine of its siblings scores 0.98 and means
+  nothing". *The unit needs deciding* — `chapters` in pages, like `spreads`
+  and `credits`, cannot express a boundary falling at a joined spread's
+  midpoint, and projecting a fan release's member boundary through the
+  alignment lands on a slot rather than a page.
+  **What it must not repeat is L2's lesson.** Every acceptance rule stated for
+  the text-block detector before the ground-truth instrument existed failed
+  *as a rule*, and nobody found out until boxes were cropped by hand. Here the
+  ground truth is free and wants no labeller: where a chapter-organised
+  edition is aligned to a volume the boundaries are already known, so a tier-3
+  detector can be scored against them before any rule is stated. The primary
+  corpus supplies seven such files against one raw volume. Two works is not
+  the population, which is the same bound `MAX_CREDIT_RUN` carries.
+
 - **Art book linking**, if it is worth it — needs a different hash, and roughly one
   art book page in three has any manga counterpart at all.
 
