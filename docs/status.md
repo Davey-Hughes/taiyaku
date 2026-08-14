@@ -483,15 +483,39 @@ alternative that lost.
   Neither of the two candidates the design named won, and `pillarbox` was not
   one of them; §5 below and `notes.md`, "Which derived transform maps a rect
   between editions", are the record.
+- **Every `#[cfg(test)]` module lives in its own file**, declared `#[cfg(test)]
+  mod tests;` beside the code it tests and written at `<stem>/tests.rs` — or
+  `src/tests.rs` for a `lib.rs`, `main.rs` or `mod.rs`. Fifty modules moved on
+  2026-08-14 and the 764 tests kept their names to the character, because a
+  child module in a file has exactly the module path the inline block had and
+  the same access to its parent's private items; `tests/` was not the
+  alternative, since an integration test sees only the public API. The reason
+  it is settled rather than cosmetic is that it changed what the coverage gate
+  measures: cargo-llvm-cov drops a source file whose basename contains `tests`,
+  so the test code stopped being counted as coverage of the code it tests and
+  the workspace figure fell from 97.40% to **93.95%** with no test altered. Two
+  `pub(crate) mod test_support` modules survived the tool's own rule for want of
+  an `s` and are named in the `--ignore-filename-regex` instead, so the rule
+  holds over the whole report: no `#[cfg(test)]` code is measured.
 - **Coverage thresholds set at what was achieved, minus two points**, and
   proven by regression rather than asserted. Web: 96/92/97/97 under a measured
   98.03% statements, 94.38% branches, 99.29% functions, 99.53% lines. Rust:
-  `--fail-under-lines 93` under a measured 95.75% with four files ignored —
-  87.59% without them, a difference that is exclusions rather than work — plus a
-  **per-file floor of 57% lines** under a lowest measured 59.44%
-  (`taiyaku-serve/src/stump/http.rs`) and a **minimum of 32 files** against 37 in
-  the report. Both gates were deliberately regressed: `#[ignore]` on `main.rs`'s
-  84 tests takes the workspace to 82.19% and exits 1; skipping
+  `--fail-under-lines 93` under a measured 93.95% with eleven files ignored —
+  71.46% without them, a difference that is exclusions rather than work — plus a
+  **per-file floor of 57% lines** under a lowest measured 73.68%
+  (`taiyaku-serve/src/truth.rs`) and a **minimum of 32 files** against 43 in
+  the report. Those four Rust figures are implementation-only and were
+  re-measured on 2026-08-14, when the test modules moved out of the files they
+  test and stopped counting as their coverage; the same bullet read 95.75%,
+  87.59%, 59.44% and 37 while they were inline, over a report of which roughly
+  two thirds was test code measuring itself. **The aggregate's remaining margin
+  is 68 lines**, not the 857 it was, and 93 was kept rather than re-derived to
+  92 — a deliberate tightening, with the arithmetic and the escape hatch in
+  `docs/ci.md`. Both gates were deliberately regressed and both proofs were
+  re-run on the split tree: `#[ignore]` on all 100 tests in
+  `taiyaku-cli/src/tests.rs` takes `main.rs` to 11.84% and the workspace to
+  81.32%, exiting 1 with **zero bytes on stderr** while the per-file floor beside
+  it names the file; skipping
   `viewport.test.ts` takes the web figures below all four thresholds and exits 1.
   It beat picking a round number up front, which is either unreachable or
   vacuous, and it beat gating Rust regions as well as lines, which needs a second

@@ -21,17 +21,63 @@
 // --- and the Rust side, which had the same hole ------------------------------
 //
 // `cargo llvm-cov --fail-under-lines 93` is workspace-aggregate and has exactly
-// the same blind spot, larger because the workspace is larger. Measured: 15041
-// lines, 14402 covered. If `taiyaku-read/src/pages.rs` (432 lines, 406 covered)
-// lost every one of its tests, the workspace lands at 13996/15041 = 93.05% and
-// the gate stays green. Any module up to roughly 410 covered lines can go
-// entirely dark unnoticed.
+// the same blind spot. Measured 2026-08-14, after the test modules moved into
+// their own files and the two `test_support` modules joined the exclusion list:
+// 7169 lines, 6735 covered, 93.95%. A module can go entirely dark and the
+// aggregate still passes as long as it accounts for **67 covered lines or
+// fewer**, which is 17 of the 43 files in the report.
+//
+// **That blind spot used to be an order of magnitude wider, and the reason is
+// worth knowing.** Until this branch every `#[cfg(test)] mod tests` lived inline
+// in the file it tested, so its own lines — executed by definition, and
+// therefore ~100% covered — were counted as that file's coverage. The report
+// read 19486 lines at 97.40%, of which roughly 12000 were test code measuring
+// itself, and a module of up to **857** covered lines could go dark unnoticed
+// (39 of the 44 files then in the report). cargo-llvm-cov 0.8.7 drops a source
+// file from the report when its basename contains `tests`, with no flag
+// involved — demonstrated by two files in one directory, where
+// `stump/http/test_support.rs` is present and `stump/http/ureq_tests.rs` is
+// not — so moving the modules out took the test code with them and left the
+// figure measuring implementation only.
+//
+// Two `#[cfg(test)] pub(crate) mod test_support` modules survived that by
+// accident — `taiyaku-serve/src/test_support.rs` and
+// `stump/http/test_support.rs`, no `s`, so the default exclusion does not see
+// them — and are named in the `--ignore-filename-regex` instead, which is why
+// that list holds eleven files rather than nine. They were counted before the
+// split too, folded into `lib.rs` and `http.rs`; excluding them explicitly cost
+// 252 lines and 0.19 points (94.14% over 45 files → 93.95% over 43) and makes
+// one rule true of the whole report rather than nearly all of it: no
+// `#[cfg(test)]` code is measured.
+//
+// The threshold stayed at 93 across that shift rather than being re-derived
+// from the new figure less two points, which would have given 92. It now leaves
+// 0.95 points — **68 lines** — where it used to leave 4.40 points and 857
+// lines, so the same number bites about twelve times harder: a branch that adds
+// a module of any size materially untested is now red, and was not before.
+//
+// **That margin has about five lines of noise in it, and the noise was measured
+// rather than assumed.** Two runs of the same command on the same tree gave
+// 6735 and 6740 covered lines — 93.95% and 94.02% — and the difference is
+// entirely one file: `taiyaku-serve/src/cover.rs`, lines 257-260, which are
+// `Semaphore::acquire`'s `while *available == 0 { … wait … }` contention branch.
+// They are covered when two decodes actually collide on the permit and
+// uncovered when the scheduler happens not to overlap them. So the figures
+// quoted here are the lower of the two runs, and the honest margin is 67 lines
+// rather than 68.
+//
+// The two-point rule was not applied on top of that, and the reason it gives
+// does not transfer: docs/ci.md derives it from v8 counting what a run loaded,
+// so an unrelated import moves the *web* figures by fractions. The Rust noise
+// above is 0.07 points against a 0.95-point margin — real, named, and an order
+// of magnitude short of the threshold. If the gate does start costing honest
+// branches their afternoon, 92 is the number the rule would have given.
 //
 // **`cargo llvm-cov` has a `--fail-under-file-lines` flag and it is not used,
 // for a measured reason.** It works — it exits 1 — but it says *nothing*: with
 // `--fail-under-file-lines 80` against this tree it wrote the ordinary coverage
 // table to stdout, zero bytes to stderr, and named neither the file that tripped
-// it nor the threshold it tripped. In CI that is a red step above a 38-row table
+// it nor the threshold it tripped. In CI that is a red step above a 43-row table
 // with no indication which row is the reason. Checked here instead, where the
 // failure can name the file and say what to open first.
 //
@@ -139,30 +185,55 @@ const FORMATS = [
     name: 'cargo llvm-cov json export',
     tree: 'the Rust workspace',
     detect: (report) => Array.isArray(report?.data?.[0]?.files),
-    // **38 files measured on a clean tree, across five crates; six of margin.**
-    // The count can only fall three ways: the `--ignore-filename-regex` widens,
-    // a crate leaves the workspace, or files are merged. Four files are excluded
-    // by name today, so six leaves room for that list to grow a little without
-    // a coverage edit becoming a gate edit.
+    // **43 files measured on a clean tree, across five crates; eleven of
+    // margin.** The count can only fall three ways: the
+    // `--ignore-filename-regex` widens, a crate leaves the workspace, or files
+    // are merged. Eleven files are excluded by name today — counted from the
+    // reports, against nine alternations in the regex, because `/corpus` matches
+    // two and `test_support` matches two — so the margin leaves room for that
+    // list to grow a little without a coverage edit becoming a gate edit.
     //
-    // It trips when a crate of six files or more leaves the report —
-    // `taiyaku-serve` is 15, `taiyaku-cli` 11, `taiyaku-core` 7 — and this is
-    // also the check ci.yml's exclusion comment used to ask a *reader* to
-    // perform by hand ("check the file count when adding a crate").
+    // It read 44 immediately before 2026-08-14 — the 38 this comment used to
+    // claim was itself four crates and six files stale. Moving the test modules
+    // into their own files then moved the count three ways at once: the two
+    // `test_support` modules became rows of their own (+2), `taiyaku-read/src/lib.rs`
+    // left the report entirely (−1) because once its test module was elsewhere
+    // the file held nothing but `mod` declarations, a `pub use` and a `const`,
+    // and llvm-cov records no coverage for a file with no executable lines, and
+    // then the same two `test_support` rows were excluded by name (−2). Net −1,
+    // 44 to 43. The 50 new `tests.rs` files do not appear at all — see the note
+    // at the top of this file.
+    //
+    // It trips when a crate of twelve files or more leaves the report, which
+    // today is `taiyaku-serve` at 17 or `taiyaku-cli` at 14 but not
+    // `taiyaku-core` at 8 — and this is also the check ci.yml's exclusion
+    // comment used to ask a *reader* to perform by hand ("check the file count
+    // when adding a crate").
     minFiles: 32,
     // **Lines only, and the other three are measured refusals, not oversights.**
-    // `branches` is `count: 0` on all 38 files — llvm-cov emits no branch data
+    // `branches` is `count: 0` on all 43 files — llvm-cov emits no branch data
     // without a nightly flag — so any floor on it would fail every file.
     // `regions` and `instantiations` read far below lines on `match`-heavy and
-    // generic code (lowest measured: 66.80% and 39.39%, both
-    // `taiyaku-serve/src/stump/http.rs`), so they would need their own numbers
-    // for no gain the line floor does not already give. Lines is also what
-    // `--fail-under-lines` uses, for the reason recorded in ci.yml.
+    // generic code (lowest measured 2026-08-14: 72.22% for regions on
+    // `taiyaku-serve/src/truth.rs`, and 25.00% for instantiations on
+    // `stump/cache.rs`), so they would need their own numbers for no gain the
+    // line floor does not already give. Lines is also what `--fail-under-lines`
+    // uses, for the reason recorded in ci.yml.
     floors: {
-      // **Two points under the lowest measured, and loose by construction.**
-      // Lowest on a clean tree: taiyaku-serve/src/stump/http.rs, 59.44%; then
-      // taiyaku-wasm/src/lib.rs 72.64%, taiyaku-cli/src/inventory.rs 75.82%,
-      // taiyaku-serve/src/lib.rs 83.09%, taiyaku-read/src/naming.rs 93.02%.
+      // **Well under the lowest measured, and loose by construction.**
+      // Lowest on a clean tree, 2026-08-14: taiyaku-serve/src/truth.rs 73.68%,
+      // then taiyaku-serve/src/lib.rs 77.85%, taiyaku-cli/src/credits.rs
+      // 82.51%, taiyaku-core/src/regions.rs 85.71%, stump/resolve.rs 87.61%.
+      //
+      // Every one of those figures fell on 2026-08-14 without a line of
+      // implementation changing, because that is when the `#[cfg(test)] mod
+      // tests` blocks left these files and stopped counting as their coverage.
+      // The three largest drops were taiyaku-serve/src/lib.rs (90.91% →
+      // 77.85%), taiyaku-cli/src/credits.rs (93.13% → 82.51%) and
+      // taiyaku-core/src/regions.rs (95.65% → 85.71%). The floor was left at 57
+      // rather than re-derived: it is a collapse detector, not a regression
+      // detector, and 16 points of slack under the worst file is what it needs
+      // to be. See the note at the top of this file.
       //
       // So it does **not** catch a module sliding from 95% to 80%; the spread
       // between the best-covered file and the worst is too wide for one number

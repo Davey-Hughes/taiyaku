@@ -106,6 +106,31 @@ if [ -n "${TAIYAKU_CORPUS:-}" ]; then
   export TAIYAKU_CORPUS
 fi
 
+# --- a source file the repository cannot see, which is not a CI job ---
+# CI catches this and catches it *late*: a `.rs` file that exists on disk but is
+# gitignored compiles perfectly here and fails on the forge with `E0583: file not
+# found for module`, three minutes after the push. Nothing else in this gate can
+# see it, because every other check reads the working tree rather than the index.
+#
+# It is not hypothetical. `.gitignore` carried a bare `corpus/` to keep manga
+# archives out, and a bare pattern matches a directory of that name at any depth,
+# so when the test modules moved into their own files on 2026-08-14 it swallowed
+# `crates/taiyaku-cli/src/corpus/tests.rs` — silently, with no complaint from
+# `git add -A`. The rule is anchored now; this is the check that would have said
+# so before the push rather than after.
+#
+# `--others --ignored --exclude-standard` lists exactly the files git is hiding,
+# and the filter is deliberately narrow: `crates/**/*.rs` only. Generated
+# artefacts under `crates/taiyaku-wasm/pkg/` are `.js` and `.ts`, and
+# `.taiyaku-cache/` holds no Rust, so neither trips this.
+hidden_rust=$(git ls-files --others --ignored --exclude-standard -- 'crates/*.rs' || true)
+if [ -n "${hidden_rust}" ]; then
+  echo "error: Rust sources exist on disk but are gitignored — they will not reach CI:" >&2
+  echo "${hidden_rust}" | sed 's/^/  /' >&2
+  echo "Check .gitignore for an unanchored pattern matching one of their parent directories." >&2
+  exit 1
+fi
+
 # --- the `lint` job ---
 run cargo fmt --all -- --check
 run cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -164,8 +189,15 @@ cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic || 
 # tool nobody installed.
 #
 # **The per-file floor is the second command, and it is not a second test run.** `--fail-under-lines`
-# is workspace-aggregate and cannot see one module go dark: measured, if `taiyaku-read/src/pages.rs`
-# (432 lines, 406 covered) lost every test, the workspace lands at 93.05% and the gate stays green.
+# is workspace-aggregate and cannot see one module go dark, though it sees rather more of it than it
+# used to. Measured 2026-08-14, with the test modules in their own files and no `#[cfg(test)]` code
+# in the report at all: the workspace is 7169 lines at 93.95%, so a module going dark passes only if
+# it accounts for 67 covered lines or fewer — true of 17 of the 43 files, the largest being
+# `taiyaku-core/src/lib.rs` at 63 covered (93.07%, still green), and false from
+# `taiyaku-serve/src/works.rs` at 70 upwards (92.97%, red). `taiyaku-read/src/pages.rs` losing every
+# test now lands the workspace at 89.85% and fails; on the inline-test tree it landed at 93.05% and
+# passed. See scripts/coverage-floor.mjs for why the figure moved without any implementation
+# changing.
 # `cargo llvm-cov report` re-renders the profile data the run above already produced — no rebuild, no
 # re-run — and measured **0.13 seconds** against 7.8 for the run. `--text` and `--json` are mutually
 # exclusive, which is why this is a second command rather than another flag on the first.
@@ -187,7 +219,7 @@ if ! command -v cargo-llvm-cov >/dev/null 2>&1 || ! command -v cargo-nextest >/d
   run env -u TAIYAKU_CORPUS cargo test --workspace --all-features
 else
   run env -u TAIYAKU_CORPUS cargo llvm-cov nextest --workspace --all-features \
-    --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus)\.rs$' \
+    --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
     --fail-under-lines 93
   # Guarded the same way the tool above is, and for the same reason: a Rust-only machine without
   # node should not fail the whole gate over the half of it that node runs. CI has no such problem —
@@ -196,7 +228,7 @@ else
     note_skip "the Rust per-file coverage floor (node not on PATH — the aggregate threshold ran, the per-file one did not)"
   else
     run cargo llvm-cov report --json --output-path target/rust-coverage.json \
-      --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus)\.rs$'
+      --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'
     run node scripts/coverage-floor.mjs target/rust-coverage.json
   fi
 fi

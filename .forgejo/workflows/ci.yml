@@ -172,30 +172,56 @@ jobs:
       - name: Tests, with coverage
         # `cargo llvm-cov nextest` runs the tests — this is the test step, not
         # an addition to it, and the `nextest` subcommand is what applies
-        # `.config/nextest.toml`'s per-test timeout. Four files are ignored:
-        # two gated one-off measurement modules, and two that cannot execute
-        # without TAIYAKU_CORPUS, which CI does not have.
+        # `.config/nextest.toml`'s per-test timeout. Eleven files are ignored,
+        # in three groups: gated one-off measurement modules, the ones that
+        # cannot execute without TAIYAKU_CORPUS which CI does not have, and two
+        # `#[cfg(test)] pub(crate) mod test_support` modules. Counted from the
+        # reports rather than from the nine alternations in the regex, which is
+        # what the "four" here used to say — `band_sweep.rs`,
+        # `borrow_frequency.rs`, `geometry_experiment.rs`, `model_experiment.rs`,
+        # `region_experiment.rs`, `score_corpus.rs` and `truth_population.rs` in
+        # taiyaku-cli, plus `corpus.rs` in both taiyaku-cli and taiyaku-serve and
+        # `test_support.rs` in taiyaku-serve twice, which is two alternations
+        # matching two files each.
+        #
+        # `test_support` is named here only because cargo-llvm-cov's own default
+        # exclusion misses it: that default drops a source file whose basename
+        # contains `tests`, which takes every `tests.rs` in the workspace out of
+        # the report but leaves `test_support.rs` in, for want of an `s`. Naming
+        # it makes one rule true of the whole report — no `#[cfg(test)]` code is
+        # measured — rather than nearly all of it.
         #
         # Note the regex matches `/corpus.rs` by path segment, so a *new*
         # `corpus.rs` added to some crate that is not corpus-gated would be
         # silently excluded too. Nothing like that exists today — the whole
-        # workspace holds exactly these four matching files — but a coverage
+        # workspace holds exactly these eleven matching files — but a coverage
         # exclusion that grows on its own is the failure this list is shaped to
         # avoid. This used to ask the reader to check the file count by hand when
         # adding a crate; the "Coverage floor, per file" step below now asserts
-        # it (38 files today, 32 required), so a regex that quietly swallows more
-        # than these four fails the job. The four are named with a reason each in
+        # it (43 files today, 32 required), so a regex that quietly swallows more
+        # than these eleven fails the job. They are named with a reason each in
         # docs/ci.md, "The coverage gates".
         #
-        # `--fail-under-lines 93` is the gate: measured 95.75% lines over the
-        # workspace with those four ignored, less two points. Lines rather than
-        # regions because llvm-cov reports regions far below lines on `match`-
-        # heavy code and the two would need different numbers for no gain.
+        # `--fail-under-lines 93` is the gate. It was derived as the measured
+        # figure less two points, but the figure it was derived from — 95.75%
+        # over a report that still contained every inline `#[cfg(test)] mod
+        # tests` — no longer exists. Since 2026-08-14 the test modules live in
+        # their own files, no `#[cfg(test)]` code reaches the report at all, and
+        # the workspace measures 7169 lines at **93.95%** implementation-only.
+        # The threshold was deliberately not re-derived downward to 92: leaving
+        # it at 93 keeps the gate at least as strict as it was, on a number that
+        # now moves about twelve times as far for the same untested code — the
+        # slack under the threshold is 68 lines, against 857 while the tests were
+        # inline. That is deliberate and it is tight; docs/ci.md, "Why the Rust
+        # per-file floor exists", carries the arithmetic and says what to do if
+        # it starts costing honest branches. Lines rather than regions because
+        # llvm-cov reports regions far below lines on `match`-heavy code and the
+        # two would need different numbers for no gain.
         # Keep this in step with scripts/check-all.sh, which runs the same
         # invocation.
         run: |
           cargo llvm-cov nextest --workspace --all-features \
-            --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus)\.rs$' \
+            --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
             --fail-under-lines 93
       - name: Install node
         # This job needs node for exactly one thing — the coverage floor script
@@ -214,12 +240,27 @@ jobs:
           node --version
       - name: Coverage floor, per file
         # **The step above is workspace-aggregate and cannot see one module go
-        # dark.** Measured: if `taiyaku-read/src/pages.rs` (432 lines, 406
-        # covered) lost every one of its tests, the workspace lands at
-        # 13996/15041 = 93.05% and `--fail-under-lines 93` still passes. Any
-        # module up to roughly 410 covered lines can go entirely dark unnoticed.
+        # dark.** Measured 2026-08-14 over 7169 lines, 6735 covered: a module
+        # going entirely dark still passes as long as it accounts for 67 covered
+        # lines or fewer, which is 17 of the 43 files. The largest that gets away
+        # with it is `taiyaku-core/src/lib.rs` at 63 covered (93.07%); the
+        # smallest that does not is `taiyaku-serve/src/works.rs` at 70 (92.97%).
         # This is the Rust counterpart of the web job's identically named step,
         # and it runs the identical script.
+        #
+        # The blind spot was `taiyaku-read/src/pages.rs`-sized until that date —
+        # 406 covered lines going dark landed the workspace at 93.05% and passed,
+        # against 89.85% and a red step today. Nothing about the tests changed;
+        # the test modules moved into their own files and stopped being counted
+        # as coverage of the code they test. scripts/coverage-floor.mjs carries
+        # the arithmetic.
+        #
+        # **This step is also the one that says something when the aggregate
+        # fires.** Re-measured on this tree by `#[ignore]`-ing all 100 tests in
+        # `taiyaku-cli/src/tests.rs`: the step above exits 1 having written 9,165
+        # bytes to stdout — the ordinary table — and **zero to stderr**, while
+        # this one prints `crates/taiyaku-cli/src/main.rs lines 11.84% < 57%` and
+        # names what to open.
         #
         # **`cargo llvm-cov report` is not a second test run.** It re-renders the
         # profile data the step above already produced — no rebuild, no re-run —
@@ -231,7 +272,7 @@ jobs:
         # **`cargo llvm-cov --fail-under-file-lines` exists and is deliberately
         # not used.** It works, but it exits 1 having printed nothing at all —
         # measured, zero bytes on stdout and stderr beyond the ordinary table —
-        # naming neither the file nor the threshold. A red step above a 38-row
+        # naming neither the file nor the threshold. A red step above a 43-row
         # table with no indication which row is the reason is not a gate anyone
         # can act on.
         #
@@ -246,7 +287,7 @@ jobs:
         # other side, and the two files hash identically.
         run: |
           cargo llvm-cov report --json --output-path target/rust-coverage.json \
-            --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus)\.rs$'
+            --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'
           node scripts/coverage-floor.mjs target/rust-coverage.json
 
       # docs/status.md states a total test count twice and nothing derived

@@ -11816,3 +11816,212 @@ edition, none the authority. `at` unchanged at 6,064, which is the check that
 the fix moved borrows into gaps without touching whether a real page was
 found. `status.md`'s "Fall back to another edition…" entry carries the
 after-figures in place and points back here.
+
+## Fifty test modules moved into their own files, and the coverage figure that fell without a test changing
+
+Every `#[cfg(test)] mod tests { … }` in the workspace was inline in the file it
+tested. Fifty of them — 48 named `tests`, plus `model_experiment`'s
+`block_tests` and `letterbox_tests`, `stump/http`'s `ureq_tests`, and the two
+`pub(crate) mod test_support` blocks — now sit in their own files, declared
+`#[cfg(test)] mod tests;` where the block used to open. A child module in a file
+has the same module path and the same access to its parent's private items as an
+inline one, so this is a move and nothing else. `crates/*/tests/` was never the
+alternative: an integration test is a separate crate and sees only the public
+API.
+
+### That it was only a move
+
+Three checks, because "it still compiles" is not one of them.
+
+| check | result |
+| --- | --- |
+| `cargo nextest` test names, before against after | 764 both sides, **identical to the character** |
+| added lines across the 47 edited files | 50, every one of them a `mod …;` declaration |
+| `cargo fmt --all -- --check`, `cargo clippy … -D warnings` | clean |
+
+The name check is the load-bearing one. `atomic::tests::two_temp_paths_for_one_destination_differ`
+is spelled the same whether the module is a block or a file, so a filter, a
+`#[ignore]`, or a CI invocation naming a test by path keeps working — and had
+the path changed, this comparison is what would have said so rather than a
+green run.
+
+The mechanical pass tokenised Rust rather than matching text, because two things
+would have been silently wrong otherwise: a `}` inside a string literal moves a
+brace counter that does not know about strings, and dedenting a raw string's
+interior by four spaces **edits the string**. Lines whose first character sits
+inside a string or comment were left at their original indentation; 45,919 lines
+of Rust produced no such line needing manual attention, which is luck rather
+than a property, but the pass would have named them.
+
+### The figure that moved on its own
+
+`cargo llvm-cov` 0.8.7 drops a source file from its report when the file's
+**basename contains `tests`**, with no flag involved and nothing said about it.
+Demonstrated inside one directory rather than inferred: `src/stump/http/`
+now holds `test_support.rs`, which is in the report, and `ureq_tests.rs`, which
+is not. So moving the modules out took every one of them out of coverage.
+
+| | files | lines | covered | lines % |
+| --- | ---: | ---: | ---: | ---: |
+| inline, 174619c | 44 | 19486 | 18979 | 97.40% |
+| in their own files | 45 | 7421 | 6986 | **94.14%** |
+
+**Roughly 12,000 of the 19,486 lines were test code measuring itself.** Test
+code is executed by definition, so it reported near 100% and lifted every file
+that carried it. What is left is implementation.
+
+The count went up by one while the lines fell by 62%, and both halves are worth
+naming: the two `test_support` modules became rows of their own (`taiyaku-serve`
+17 → 19), and `taiyaku-read/src/lib.rs` **left the report entirely** — once its
+test module was elsewhere the file held only `mod` declarations, a `pub use` and
+a `const`, and llvm-cov records nothing for a file with no executable lines.
+
+Per-file, the largest drops, none of which are a test that stopped running:
+
+| file | before | after |
+| --- | ---: | ---: |
+| `taiyaku-serve/src/lib.rs` | 90.91% | 77.85% |
+| `taiyaku-cli/src/credits.rs` | 93.13% | 82.51% |
+| `taiyaku-core/src/regions.rs` | 95.65% | 85.71% |
+| `taiyaku-serve/src/stump/resolve.rs` | 95.07% | 87.61% |
+| `taiyaku-serve/src/routes.rs` | 97.22% | 90.79% |
+
+The lowest file in the workspace is now `taiyaku-serve/src/truth.rs` at 73.68%,
+against a per-file floor of 57. The floor was left where it is: it is a collapse
+detector, not a regression detector, and it still has sixteen points of slack.
+
+### The gate got stricter without its numbers changing
+
+`--fail-under-lines 93` is workspace-aggregate, so its blind spot is a function
+of how many lines the report holds. Shrinking the report shrank the blind spot:
+
+| | a module can go dark unnoticed if it has | files inside that |
+| --- | ---: | ---: |
+| inline | ≤ 857 covered lines | 39 of 44 |
+| own files | ≤ **84** covered lines | 25 of 45 |
+
+Concretely, `taiyaku-read/src/pages.rs` losing every test used to land the
+workspace at 93.05% — green. It now lands at **90.18%** and the step is red. The
+largest file that still gets away with it is `taiyaku-wasm/src/binding.rs` at 84
+covered lines (93.01%); the smallest that does not is
+`taiyaku-cli/src/credit_fixture.rs` at 87 (92.97%).
+
+The threshold was **not** re-derived. This repository's rule for coverage
+thresholds is "what was achieved, less two points", which against 94.14% gives
+92. Leaving it at 93 keeps the gate no weaker than it was, on a number that now
+moves about three times as far for the same untested code, and costs a margin of
+1.14 points where there used to be 4.40. That is a deliberate tightening and the
+first branch to add a large untested path will feel it — which is the gate
+working, not a reason to move the number.
+
+### What is still test code in the report
+
+`taiyaku-serve/src/test_support.rs` (168 lines, 99.40%) and
+`stump/http/test_support.rs` (84 lines, 100%) are `#[cfg(test)]` and counted, for
+want of an `s` in the filename. They were counted before this change too, folded
+into `lib.rs` and `http.rs`, so the split made them visible rather than
+introducing them. Together they hold the aggregate about 0.19 points above where
+an implementation-only figure would sit. Excluding them is a one-line change to
+the `--ignore-filename-regex` in `check-all.sh` and `ci.yml` — both, or the two
+copies disagree — and was not made here.
+
+### The documented figures were already stale before any of this
+
+`15041 lines, 14402 covered, 95.75%`, `38 files` and a `413 covered lines` blind
+spot appear in `scripts/coverage-floor.mjs`, `.forgejo/workflows/ci.yml`,
+`docs/ci.md` and `docs/status.md`. Measured at 174619c, before this branch
+touched anything, the tree was already at 19486 lines, 18979 covered, 97.40%
+over 44 files with an 857-line blind spot. Nothing derives those numbers, and
+the test count beside them — the one figure a gate does derive — has been correct
+throughout. Every one of them has been re-measured and rewritten here; the
+`#[ignore]` regression proof in `docs/ci.md` is marked as measured on the inline
+tree rather than restated, because replacing its four observed numbers takes
+re-running it.
+
+### The two loose ends, closed the same day
+
+**`test_support` joined the exclusion list.** Two `#[cfg(test)] pub(crate) mod
+test_support` modules had survived cargo-llvm-cov's own rule by spelling — its
+default drops a basename containing `tests`, and `test_support` has no `s` — so
+they were the last `#[cfg(test)]` code in the report. Naming `test_support` in
+the `--ignore-filename-regex`, in `check-all.sh` and `ci.yml` both, costs 252
+lines and 0.19 points:
+
+| | files | lines | covered | lines % |
+| --- | ---: | ---: | ---: | ---: |
+| test modules split out | 45 | 7421 | 6986 | 94.14% |
+| `test_support` excluded too | 43 | 7169 | 6735 | **93.95%** |
+
+The value is not the 0.19: it is that one sentence is now true of the whole
+report rather than nearly all of it. The exclusion list holds eleven files in
+three groups — gated one-off measurement modules, corpus-gated modules, and
+these two — and `docs/ci.md` names each with a reason.
+
+**The margin under `--fail-under-lines 93` is now 68 lines.** It was 857 while
+the tests were inline. Stated in lines because 0.95% sounds like room and 68
+lines is not: a branch adding a 200-line module at 60% coverage turns the step
+red. The threshold was kept rather than re-derived to 92, because the two-point
+rule's stated reason is v8 counting what a run loaded — an instability llvm-cov
+does not have, its line counts being deterministic on a fixed tree. So a tight
+margin here fails honestly rather than flapping. 92 remains the number the rule
+would give, and would still leave a gate six times tighter than the one standing
+before this branch.
+
+**The `#[ignore]` regression proof was re-run rather than annotated.** All 100
+tests in `taiyaku-cli/src/tests.rs` ignored:
+
+| | tests | `main.rs` lines | workspace lines | `--fail-under-lines 93` |
+| --- | ---: | ---: | ---: | :--: |
+| inline, as first measured | 84 | 97.23% → 2.12% | 95.75% → 82.19% | **1** |
+| split, 2026-08-14 | 100 | 95.83% → **11.84%** | 93.95% → **81.32%** | **1** |
+
+`main.rs` bottomed out near zero the first time because the ignored tests were
+*in* it and took their own covered lines with them. They are in another file now,
+so the 11.84% left is `main.rs` genuinely exercised by `tests/cli.rs` and by other
+modules' tests — a truer reading of what one module's suite is worth. The
+workspace figures barely differ (82.19% against 81.32%) because the same work
+vanished from a report a third the size.
+
+Two things were confirmed on that run rather than carried forward. `cargo
+llvm-cov` still says **nothing**: 9,165 bytes to stdout, all of it the ordinary
+table, and **zero to stderr**. And the per-file floor beside it does say
+something —
+
+    coverage-floor: 1 file/metric pair(s) below the per-file floor:
+      crates/taiyaku-cli/src/main.rs  lines 11.84% < 57%
+
+— exiting 1 and naming what to open. Both halves of the Rust gate were observed
+firing on one regression, which is the first time that pair has been recorded
+together.
+
+### The one file that did not reach CI, and why nothing local could see it
+
+`crates/taiyaku-cli/src/corpus/tests.rs` was written, compiled, tested and
+covered on this machine, and was never committed. `.gitignore` line 8 read
+`corpus/` — unanchored, and a bare pattern matches a directory of that name at
+**any** depth — so the directory the splitter created for `corpus.rs`'s test
+module was ignored along with the top-level corpus of manga archives it was
+written for. `git add -A` said nothing. `git status` said nothing.
+
+The local gate could not see it either, and the reason is structural rather than
+an oversight: `cargo fmt`, `cargo clippy`, `cargo llvm-cov nextest`, the coverage
+floors and the test-count check all read the **working tree**, where the file is
+present and correct. Only something reading the **index** can tell that git is
+hiding it. So the first thing to notice was CI, three minutes after the push:
+
+    error[E0583]: file not found for module `tests`
+     --> crates/taiyaku-cli/src/corpus.rs:833:1
+
+Two fixes, and the second is the one that generalises. The pattern is now
+`/corpus/`, anchored to the repository root, which is all it ever meant —
+`fixtures/` and `testdata/` beside it stay unanchored deliberately, because those
+names carry the copyright risk wherever they appear and the one legitimate
+`fixtures/` is re-admitted by name. And `scripts/check-all.sh` now fails, before
+`cargo fmt` and ahead of everything else, on any `crates/**/*.rs` that
+`git ls-files --others --ignored --exclude-standard` reports. Proven both ways:
+it names the file on the pre-fix tree and is silent on the fixed one.
+
+It is a local-only check, like the corpus and browser passes, and for the
+opposite reason to theirs: CI *does* catch this, and catches it late and
+expensively. The point is to fail in one second on the machine that made the
+mistake rather than in three minutes on the forge.

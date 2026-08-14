@@ -301,8 +301,8 @@ signal a re-measurement was owed.*
 | web | branches, aggregate | 94.38% | 92 | `web/vite.config.ts` |
 | web | functions, aggregate | 99.29% | 97 | `web/vite.config.ts` |
 | web | lines, aggregate | 99.53% | 97 | `web/vite.config.ts` |
-| Rust | lines, aggregate | 97.50% | 93 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
-| Rust | lines, **per file** | 59.44%, `taiyaku-serve/src/stump/http.rs` | 57 | `scripts/coverage-floor.mjs` |
+| Rust | lines, aggregate | 93.95% | 93 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
+| Rust | lines, **per file** | 73.68%, `taiyaku-serve/src/truth.rs` | 57 | `scripts/coverage-floor.mjs` |
 | web | **files in the report** | 57 | 50 | `scripts/coverage-floor.mjs` |
 | Rust | **files in the report** | 43 | 32 | `scripts/coverage-floor.mjs` |
 
@@ -316,17 +316,21 @@ would have been too loose to catch the near miss recorded below, where a
 one-character edit to a glob dropped 13 files and every percentage stayed green.
 Rust carries eleven (32 against 43) because the count there can only fall three
 ways — the `--ignore-filename-regex` widens, a crate leaves the workspace, or
-files merge — and eight files are excluded by name today, so eleven leaves
+files merge — and eleven files are excluded by name today, so the margin leaves
 that list room to grow without a coverage edit becoming a gate edit.
-Thirty-two also trips when any one of the three largest crates leaves the
-report: `taiyaku-serve` is 15 files, `taiyaku-cli` 11, `taiyaku-core` 7.
+Thirty-two also trips when either of the two largest crates leaves the report:
+`taiyaku-serve` is 17 files and `taiyaku-cli` 14, though `taiyaku-core` at 8 is
+now under the margin and would not.
 
 **The Rust per-file floor is loose by construction and that is stated rather than
 apologised for.** The spread between the workspace's best-covered file and its
 worst is too wide for one number to catch a module sliding from 95% to 80%. The
-five lowest on a clean tree: `taiyaku-serve/src/stump/http.rs` 59.44%,
-`taiyaku-wasm/src/lib.rs` 72.64%, `taiyaku-cli/src/inventory.rs` 75.82%,
-`taiyaku-serve/src/lib.rs` 83.09%, `taiyaku-read/src/naming.rs` 93.02%. What 57
+five lowest on a clean tree, measured 2026-08-14: `taiyaku-serve/src/truth.rs`
+73.68%, `taiyaku-serve/src/lib.rs` 77.85%, `taiyaku-cli/src/credits.rs` 82.51%,
+`taiyaku-core/src/regions.rs` 85.71%, `stump/resolve.rs` 87.61%. Every one of
+those fell that day without a line of implementation changing, when the test
+modules moved out of the files they test — see "Why the Rust per-file floor
+exists" below. What 57
 catches is a module that stops being tested *at all* — see "Why the Rust
 per-file floor exists" below, which is the arithmetic that fixes the number.
 
@@ -335,14 +339,17 @@ than oversights.** `branches` is `count: 0` on all 43 files — llvm-cov emits n
 branch data without a nightly flag, verified by counting: zero files report a
 non-zero branch count — so any floor on it would fail every file. `regions` and
 `instantiations` read far below lines on `match`-heavy and generic code (lowest
-measured 66.80% and **39.39%**, both `taiyaku-serve/src/stump/http.rs`), so they
-would need their own numbers for no signal the line floor does not already give.
+measured 2026-08-14: 72.22% regions on `taiyaku-serve/src/truth.rs` and
+**25.00%** instantiations on `stump/cache.rs`), so they would need their own
+numbers for no signal the line floor does not already give.
 
-The Rust figure is the workspace total with the eight files below ignored;
-without them it is **88.59%** lines, and the difference is not work anyone did
+The Rust figure is the workspace total with the eleven files below ignored;
+without them it is **71.46%** lines, and the difference is not work anyone did
 — it is code nobody intends to run in CI, which is the whole reason the
 exclusions exist. `taiyaku-cli/src/main.rs`, this branch's long pole, went from
-43.79% to **95.82%** regions and 97.23% lines.
+43.79% to **95.82%** regions and 97.23% lines when it was measured; its test
+module now lives in `taiyaku-cli/src/tests.rs` and the file reads 95.83% lines,
+1,012 of the 1,056 that remain.
 
 **Two points, rather than one or five.** v8 counts what the run loaded, so an
 unrelated change to which files a test imports moves the web figures by
@@ -350,8 +357,8 @@ fractions; one point would make the gate flap. Five would let a whole module
 regress in silence. The margin is a compromise and the regression proofs below
 record exactly what it does and does not catch.
 
-**Lines, not regions, for Rust.** llvm-cov reports regions well below lines on
-`match`-heavy code — 96.93% against 97.50% here — so gating both would mean two
+**Lines, not regions, for Rust.** llvm-cov reports regions below lines on
+`match`-heavy code — 92.27% against 93.95% here — so gating both would mean two
 numbers to maintain and re-derive for no additional signal. One gate, on the
 metric whose meaning a reader guesses correctly.
 
@@ -368,19 +375,30 @@ from the day it landed until this one. Here they are, with a reason each:
 | `taiyaku-cli/src/truth_population.rs` | the same: a gated one-off measurement, reading 480 hand-drawn boxes over 45 pages to derive `detect.rs`'s size band, ink floor and smear gap rather than guess them |
 | `taiyaku-cli/src/model_experiment.rs` | the same: a gated one-off measurement, scoring phase 3's model candidate against the same 45 pages for a head-to-head table a person reads — asserts only that it measured something, never which detector wins |
 | `taiyaku-cli/src/band_sweep.rs` | the same: a gated one-off measurement, scoring eight component-size bands over those 45 pages so `BAND` is read off a table rather than argued for |
+| `taiyaku-cli/src/borrow_frequency.rs` | the same: a gated one-off measurement, walking the corpus to count how often a reader meets a gap and who lends the page — added to the regex in `ca20d05` and to this table on 2026-08-14, having matched in between without being listed |
 | `taiyaku-cli/src/corpus.rs` | cannot execute without `TAIYAKU_CORPUS`, which CI does not have |
 | `taiyaku-serve/src/corpus.rs` | the same |
 | `taiyaku-cli/src/score_corpus.rs` | the same |
+| `taiyaku-serve/src/test_support.rs` | `#[cfg(test)]` scaffolding, and a third category rather than a gated module: cargo-llvm-cov's default exclusion drops a file whose basename contains `tests` and so misses this one, for want of an `s` |
+| `taiyaku-serve/src/stump/http/test_support.rs` | the same |
 
 **The regex matches `/corpus.rs` by path segment, and that is the sharp edge.**
 A *new* `corpus.rs` added to a crate that is **not** corpus-gated would be
 excluded silently, and its coverage would leave the number without leaving a
 trace. Nothing like that exists today — verified, not assumed, and **re-measured
-on 2026-08-12 from `cargo llvm-cov report --json` with and without the flag: 51
-files without the regex, 43 with it, and the eight that disappear are exactly the
-eight above.** The workspace reads **88.59%** lines without the regex
-(19,340 of 21,830) against **97.50%** with it (18,581 of 19,057), both
+on 2026-08-14 from `cargo llvm-cov report --json` with and without the flag: 54
+files without the regex, 43 with it, and the eleven that disappear are exactly
+the eleven above.** The workspace reads **71.46%** lines without the regex
+(7,573 of 10,598) against **93.95%** with it (6,735 of 7,169), both
 re-measured the same way.
+
+Both pairs of counts are roughly 40% of what this paragraph carried on
+2026-08-12, and no test was deleted: 2026-08-14 is the day the `#[cfg(test)]`
+modules moved into their own files and left the report. The *gap* between the two
+figures widened from 8.91 points to 22.68, which is the same effect read from
+the other side — the nine ignored files are nearly all test-driven measurement
+modules, so removing test code from the report left them looking far worse than
+the code that stays.
 
 *Why the raw counts are here and the percentages alone are not.* An earlier
 pass of this section carried 88.62% and 97.53%, taken from profile data one
@@ -388,23 +406,30 @@ commit older. Nothing was wrong with either number when it was written, and a
 reader re-measuring today would get neither — which is indistinguishable from
 a stale document. The counts make the claim checkable: divide them.
 
-**This table said "four" while listing six, and that is worth recording rather
-than quietly correcting.** `band_sweep.rs` and `score_corpus.rs` were in the
-regex and had never been in the table; `truth_population.rs` and
-`model_experiment.rs` were added on 2026-08-12 without the paragraph below them
-being re-read. So a count written once as a measurement drifted three times
-while the list beside it stayed authoritative — the same lesson
-`scripts/status-test-count.mjs` exists for, arriving in the one document that
-explains that script. **A per-site list is checkable; a count is not.** The
-eight rows above are the list; every number in this paragraph is derived from
-them and was re-measured, not carried forward.
+**This table said "four" while listing six, then listed eight while nine
+matched, and that is worth recording rather than quietly correcting.**
+`band_sweep.rs` and `score_corpus.rs` were in the regex and had never been in
+the table; `truth_population.rs` and `model_experiment.rs` were added on
+2026-08-12 without the paragraph below them being re-read; `borrow_frequency.rs`
+entered the regex with `ca20d05` and reached this table on 2026-08-14, found by
+counting the two reports rather than by reading the list. So a count written
+once as a measurement has now drifted four times while the list beside it
+stayed authoritative — the same lesson `scripts/status-test-count.mjs` exists
+for, arriving in the one document that explains that script. **A per-site list
+is checkable; a count is not** — and the fourth drift shows the converse edge:
+the list is only authoritative if something puts new entries *into* it, which is
+why the diff below is worth running when a file joins the regex and not only
+when a crate joins the workspace. The eleven rows above are the list; every
+number
+in this paragraph is derived from them and was re-measured, not carried
+forward.
 
 **That check is now half a gate rather than wholly a ritual.** This paragraph
 used to end "re-run that diff when adding a crate", and asking a reader to
 remember a thing is the weakest form of a check there is. The per-file floor
 script now asserts the file count itself — 43 today, 32 required — so a regex
-that quietly swallows more than these eight fails the job instead of waiting to be
-noticed. Only *half*, because the automated half sees the count and not the
+that quietly swallows more than these eleven fails the job instead of waiting to
+be noticed. Only *half*, because the automated half sees the count and not the
 names: a regex that dropped one file while a new crate added one would net to
 zero and pass. So the diff is still worth running when adding a crate, and it is
 now a confirmation rather than the only thing standing between the exclusion list
@@ -412,7 +437,7 @@ and silent growth:
 
     env -u TAIYAKU_CORPUS cargo llvm-cov --workspace --all-features --summary-only > /tmp/all.txt
     env -u TAIYAKU_CORPUS cargo llvm-cov --workspace --all-features --summary-only \
-      --ignore-filename-regex '(band_sweep|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus)\.rs$' > /tmp/gated.txt
+      --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' > /tmp/gated.txt
     diff <(awk '{print $1}' /tmp/all.txt) <(awk '{print $1}' /tmp/gated.txt)
 
 Both commands above run the tests. To diff the file lists alone against profile
@@ -492,20 +517,39 @@ check: the two aggregates fire (and one of them says nothing useful when it
 does), and the two per-file steps exist because of what the aggregates were
 measured *failing* to notice.
 
-**Rust — fires, and says nothing.** `#[ignore]` on all 84 tests in
-`taiyaku-cli/src/main.rs`'s test module took `main.rs` from 97.23% to 2.12%
-lines and the workspace from 95.75% to **82.19%**. `--fail-under-lines 93`
-exited **1**, and restoring the file returned it to 0.
+**Rust — fires, and says nothing.** Re-measured 2026-08-14 on the tree where
+the test module lives in `taiyaku-cli/src/tests.rs`: `#[ignore]` on all **100**
+of its tests took `main.rs` from 95.83% to **11.84%** lines and the workspace
+from 93.95% to **81.32%**. `--fail-under-lines 93` exited **1**, and restoring
+the file returned it to 0.
+
+It read differently while that module was inline in `main.rs`, and the
+difference is worth keeping rather than overwriting: 84 tests then, taking
+`main.rs` to **2.12%** and the workspace to **82.19%**. `main.rs` bottomed out
+near zero because the ignored tests were *in* it, so their own covered lines
+went with them; today they are in another file, and the 11.84% that remains is
+`main.rs` being exercised by `tests/cli.rs` and by the other modules' tests —
+which is a truer reading of what one module's suite is worth. The workspace
+figure barely moved between the two (82.19% against 81.32%) because the same
+work disappeared from a report a third the size.
 
 Its failure output is worth knowing: **cargo-llvm-cov prints no message at all.**
-It exits non-zero with the ordinary summary table and nothing naming the
-threshold, the metric or the shortfall. A CI log will show a red step whose
-output looks exactly like a passing one, so read the `TOTAL` row against the 93
-in `ci.yml`. vitest, by contrast, names each unmet threshold explicitly.
+Counted on that same run: **9,165 bytes to stdout, all of it the ordinary
+coverage table, and zero bytes to stderr.** Nothing names the threshold, the
+metric or the shortfall. A CI log will show a red step whose output looks exactly
+like a passing one, so read the `TOTAL` row against the 93 in `ci.yml`. vitest,
+by contrast, names each unmet threshold explicitly.
 
 That is still true of `--fail-under-lines`, but the Rust half is no longer silent
-end to end: the per-file floor step after it names the file, the metric and the
-number it missed, in the same format the web half uses.
+end to end, and this is the run that shows it: with those 100 tests ignored, the
+per-file floor step after it printed
+
+    coverage-floor: 1 file/metric pair(s) below the per-file floor:
+      crates/taiyaku-cli/src/main.rs  lines 11.84% < 57%
+
+and exited 1 — the file, the metric and the number it missed, in the same format
+the web half uses. Both halves of the Rust gate were therefore observed firing on
+one regression: the aggregate silently, and the floor by name.
 
 **`cargo llvm-cov --fail-under-file-lines` exists and was rejected, measured
 rather than assumed.** The flag is present in the pinned 0.8.7 — `cargo llvm-cov
@@ -514,9 +558,9 @@ and `--fail-under-functions` — so the obvious question is why a script does wo
 a flag already does. Run against this tree at `--fail-under-file-lines 80` it
 exits **1** having written **7995 bytes to stdout, all of it the ordinary
 coverage table, and zero bytes to stderr.** It names neither the file that
-tripped it nor the threshold it tripped. That is a red step above a 38-row table
+tripped it nor the threshold it tripped. That is a red step above a 45-row table
 with no indication which row is the reason — the same defect as the paragraph
-above, one layer worse, because now there are 38 candidates rather than one
+above, one layer worse, because now there are 45 candidates rather than one
 `TOTAL`. Checked in `scripts/coverage-floor.mjs` instead, where the failure can
 say what to open first. **The cost of that choice** is a node install in a Rust
 container and a script kept in step with two workflows; it was paid because a
@@ -592,27 +636,56 @@ reflex.
 
 ### Why the Rust per-file floor exists
 
-`--fail-under-lines 93` is workspace-aggregate, and the workspace is large enough
-that the blind spot is not a corner case. Measured against the clean report —
-15041 lines, 14402 covered, 95.75% — the arithmetic is: a module going entirely
-dark still passes as long as it accounts for **413 covered lines or fewer**.
-
-**Twenty-two modules of 100 or more covered lines can go entirely dark with the
-aggregate still green.** The largest three:
+`--fail-under-lines 93` is workspace-aggregate, and an aggregate cannot see one
+module go dark. Measured against the clean report on 2026-08-14 — 7169 lines,
+6735 covered, 93.95% — the arithmetic is: a module going entirely dark still
+passes as long as it accounts for **67 covered lines or fewer**. That is 17 of
+the 43 files; the other 26 now turn the aggregate red on their own.
 
 | module | covered lines | workspace after it goes dark |
 | ------ | -------------: | ---------------------------- |
-| `taiyaku-read/src/pages.rs` | 406 | 93.05% |
-| `taiyaku-core/src/solve.rs` | 391 | 93.15% |
-| `taiyaku-serve/src/notes.rs` | 375 | 93.26% |
+| `taiyaku-core/src/lib.rs` | 63 | 93.07% |
+| `taiyaku-serve/src/works.rs` | 70 | **92.97%** |
 
-and the tail runs down through `stump/resolve.rs`, `composite.rs`,
-`inventory.rs`, `binding.rs`, `credits.rs` and the rest to
-`stump/cache.rs` at 100. Only seven files in the whole workspace are large enough
-that losing them trips the aggregate at all, and three of those are
-`routes.rs`, `sidecar.rs` and `main.rs` at roughly two thousand covered lines
-each. **Every one of the 22 trips the per-file floor**, because a dark file
-reports 0% lines against a floor of 57.
+are the largest that gets away with it and the smallest that does not, and the
+tail of the first group runs down through `progress.rs` at 19, `serve/truth.rs`
+at 14 and `sample.rs` at 12. **Every one of the 17 trips the per-file floor**,
+because a dark file reports 0% lines against a floor of 57.
+
+**The margin under the threshold is 68 lines**, and that is worth stating in
+lines rather than points, because 0.95% sounds like room and 68 lines is not. A
+branch adding a module of 200 lines at 60% coverage turns this step red. That is
+deliberate: the number stayed at 93 while what it measures narrowed.
+
+**About five of those lines are noise, and the noise has a name.** Two runs of
+the identical command on the identical tree gave 6735 and 6740 covered lines —
+93.95% and 94.02%. The whole difference is `taiyaku-serve/src/cover.rs` lines
+257-260, `Semaphore::acquire`'s `while *available == 0 { … wait … }`, which is
+covered when two cover decodes actually collide on the permit and uncovered when
+the scheduler does not overlap them. Every figure in this section is quoted from
+the lower run, so the honest margin is **67 lines**. This is the one place the
+Rust gate is not reproducible, and it is 0.07 points against a 0.95-point
+margin.
+
+The two-point rule was not re-applied on top of that, because its stated reason
+above is v8 counting what a run loaded — a different and much larger
+instability than four lines behind a mutex. If the gate starts costing honest
+branches their afternoon rather than catching untested ones, 92 is the number
+the rule would have given, and it would still leave a gate six times tighter
+than the one that stood before 2026-08-14.
+
+**This section read very differently before 2026-08-14, and no test changed.**
+The report then held 19486 lines at 95.75–97.40%, because every inline
+`#[cfg(test)] mod tests` counted its own executed lines as coverage of the file
+it was testing. The blind spot was **413 covered lines** on the figures this
+document was first written against and **857** by the time it was re-measured,
+with 39 of 44 files inside it — `taiyaku-read/src/pages.rs` at 406 covered lines
+could go entirely dark and land the workspace at 93.05%, green. Moving the test
+modules into their own files took them out of the report (cargo-llvm-cov 0.8.7
+excludes any source file whose basename contains `tests`), and the two
+`test_support.rs` modules that survived that by spelling were then named in the
+regex, so the same `pages.rs` regression now lands at 89.85% and fails. The
+number in the gate did not move; what it measures did.
 
 That is the division of labour, stated plainly: `--fail-under-lines` catches the
 workspace sliding; it structurally cannot catch one module being switched off.
@@ -651,12 +724,12 @@ minimums:
 | istanbul (web) | branches | 78 | `api.ts`, 80.76% |
 | istanbul (web) | functions | 91 | `decode.ts`, 93.33% |
 | istanbul (web) | lines | 92 | `api.ts`, 94.28% |
-| llvm-cov (Rust) | lines | 57 | `taiyaku-serve/src/stump/http.rs`, 59.44% |
+| llvm-cov (Rust) | lines | 57 | `taiyaku-serve/src/truth.rs`, 73.68% |
 
 | format | files measured | `minFiles` |
 | ------ | -------------: | ---------: |
 | istanbul (web) | 57 | 50 |
-| llvm-cov (Rust) | 38 | 32 |
+| llvm-cov (Rust) | 43 | 32 |
 
 **The count is checked ahead of the floors, deliberately.** If the report
 collapsed then every per-file finding under it is noise and the count is the real

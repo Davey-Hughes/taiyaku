@@ -5,7 +5,20 @@
 *.cbr
 *.cb7
 *.zip
-corpus/
+# Anchored with a leading slash, and that is not cosmetic. A bare `corpus/`
+# matches a directory of that name at **any** depth, so when the test modules
+# moved into their own files on 2026-08-14 it swallowed
+# `crates/taiyaku-cli/src/corpus/tests.rs` — a source file, silently, with no
+# warning from `git add -A`. The local gate passed because the file was on disk;
+# CI cloned the repository without it and failed with `E0583: file not found for
+# module 'tests'`. Only the top-level corpus directory was ever meant here.
+#
+# `fixtures/` and `testdata/` below are deliberately left unanchored: those names
+# carry the copyright risk this block exists for wherever they appear, and the
+# one legitimate `fixtures/` in the tree is re-admitted by name just below. If a
+# source directory ever needs one of those names, re-admit it the same way rather
+# than loosening the rule.
+/corpus/
 fixtures/
 testdata/
 
