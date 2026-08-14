@@ -499,7 +499,9 @@ alternative that lost.
   holds over the whole report: no `#[cfg(test)]` code is measured.
 - **Coverage thresholds set at what was achieved, minus two points**, and
   proven by regression rather than asserted. Web: 96/92/97/97 under a measured
-  98.03% statements, 94.38% branches, 99.29% functions, 99.53% lines. Rust:
+  97.49% statements, 93.99% branches, 99.10% functions, 99.17% lines —
+  re-measured 2026-08-14, having been set against 98.03/94.38/99.29/99.53, so
+  the statements margin is 1.49 rather than the two points the rule asks. Rust:
   `--fail-under-lines 93` under a measured 93.95% with eleven files ignored —
   71.46% without them, a difference that is exclusions rather than work — plus a
   **per-file floor of 57% lines** under a lowest measured 73.68%

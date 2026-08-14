@@ -123,43 +123,62 @@ const FORMATS = [
     // report as "not an istanbul summary". It still failed, but it failed
     // saying the wrong thing. `total` is a count and is `0` there.
     detect: (report) => typeof report?.total?.lines?.total === 'number',
-    // **57 files measured on a clean tree; seven of margin.** Growth only ever
-    // moves this the safe way, so the margin has only to cover a deliberate
-    // exclusion, and the block this guards names its exclusions one file at a
-    // time on purpose — two named files and one directory today, beside three
-    // test-and-declaration wildcards. Counted rather than recalled: an earlier
-    // version of this comment said "three entries and one directory", which
-    // matched no reading of the list.
+    // **66 files measured on a clean tree, 2026-08-14; seven of margin.** The
+    // margin has only to cover a deliberate exclusion, and the block this guards
+    // names its exclusions one file at a time on purpose — three named files and
+    // one directory today, beside three test-and-declaration wildcards. Counted
+    // rather than recalled: an earlier version of this comment said "three
+    // entries and one directory", which matched no reading of the list.
     //
     // Seven rather than seventeen, because the failure to catch is not only the
     // bare collapse. Measured, by mutating `coverage.include` and re-running:
     //
     //   ['nope/**/*.ts']       →  0 files. Vitest prints `Unknown% ( 0/0 )` for
     //                             all four metrics and **exits 0**.
-    //   ['src/*.ts']           → 44 files. One deleted `*`, and all 13 files of
+    //   ['src/*.ts']           → 52 files. One deleted `*`, and all 14 files of
     //                             `src/modules` leave the gate. Vitest reports
-    //                             97.79/93.90/99.20/99.48 — every threshold
-    //                             passed, and so did the per-file floor below,
-    //                             because a file that is absent is a file no
-    //                             per-file check visits.
-    //   ['src/**/*.ts']        → 57 files, unchanged. Dropping the `.tsx` glob
+    //                             97.20/93.52/99.00/99.09 — every threshold
+    //                             passed, because a file that is absent is a
+    //                             file no per-file check visits.
+    //   ['src/**/*.ts']        → 66 files, unchanged. Dropping the `.tsx` glob
     //                             costs nothing: vitest's coverage `include`
     //                             resolves `*.ts` across its extension list, so
     //                             it still matches `.tsx`. Assumed otherwise
     //                             first; measured, and it was wrong.
     //
-    // 50 catches the first two. 40 would have caught only the first.
+    // **This number was 50 and had gone stale into a hole, which is the thing it
+    // exists to prevent.** It was derived when the clean tree held 57 files, so
+    // it tolerated seven lost and caught the 44-file near-miss above. web/src has
+    // since grown to 66 and the near-miss with it, to 52 — above 50, so the
+    // second row of that table passed this check on 2026-08-14: fourteen files
+    // left the gate, every vitest threshold stayed green, and so did this script.
+    // Re-derived by re-running the experiment rather than by scaling the old
+    // number: 66 measured, seven of margin, **59**, which catches 52 with room.
+    //
+    // The lesson is in the arithmetic, not the number. A fixed `minFiles` against
+    // a growing tree loosens on its own, silently, and nothing here derives it —
+    // so re-run the three rows above when web/src grows by roughly ten files, and
+    // treat "the near-miss still trips it" as the property to check rather than
+    // "the count is still above the floor".
     //
     // If a deliberate exclusion ever does trip this, that is the check working:
     // re-derive the number beside the exclusion rather than widening it on
     // reflex.
-    minFiles: 50,
-    /** Two points below the lowest measured figure for each metric. */
+    minFiles: 59,
+    /**
+     * Two points below the lowest measured figure for each metric — the rule
+     * these were set by, and no longer quite true of all four. Re-measured
+     * 2026-08-14: the margins are now 0.85 statements, 1.41 branches, 2.33
+     * functions and 1.02 lines. They are left where they are because every one
+     * still passes and lowering a floor to restore a margin is how a gate stops
+     * gating; `statements` is the one to watch, and the fix when it fires is a
+     * test for `Labeller.tsx` rather than an 89 here.
+     */
     floors: {
-      statements: 91, // lowest measured: fixtures.ts, 93.10
-      branches: 78, // lowest measured: api.ts, 80.76
+      statements: 91, // lowest measured: Labeller.tsx, 91.85
+      branches: 78, // lowest measured: api.ts, 79.41
       functions: 91, // lowest measured: decode.ts, 93.33
-      lines: 92, // lowest measured: api.ts, 94.28
+      lines: 92, // lowest measured: api.ts, 93.02
     },
     check: 'the `coverage.include` and `coverage.exclude` lists in web/vite.config.ts',
     *entries(report) {

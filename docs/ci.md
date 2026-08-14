@@ -228,7 +228,7 @@ because an unproven gate is indistinguishable from no gate.
 
 | | aggregate step | per-file step | set in |
 | --- | -------------- | ------------- | ------ |
-| web | four thresholds — `statements`/`branches`/`functions`/`lines` | four floors, and ≥50 files in the report | `web/vite.config.ts`; `scripts/coverage-floor.mjs` |
+| web | four thresholds — `statements`/`branches`/`functions`/`lines` | four floors, and ≥59 files in the report | `web/vite.config.ts`; `scripts/coverage-floor.mjs` |
 | Rust | `--fail-under-lines 93` | one floor, on lines, and ≥32 files in the report | `ci.yml` and `check-all.sh`; `scripts/coverage-floor.mjs` |
 
 Four steps, but **three kinds of failure**, and it is worth being plain about
@@ -241,8 +241,8 @@ which catches what, because each is invisible to the others:
 - **files that have left the report entirely** — which no *per-file* check can
   see either, because a file that is absent is a file nothing visits. Only the
   count sees a collapse, and only the count catches a one-character edit to a
-  glob taking 13 of 57 files out of the gate for less than half a point on every
-  metric.
+  glob taking 14 of 66 files out of the gate for less than half a point on every
+  metric — and, until 2026-08-14, doing it without tripping the count either.
 
 Neither gate is a separate job. `cargo llvm-cov nextest` *runs* the tests, so it
 replaced the `test` job's `cargo test`; `vitest --coverage` runs the same two
@@ -297,13 +297,13 @@ signal a re-measurement was owed.*
 
 | gate | metric | measured | threshold | set in |
 | ---- | ------ | -------- | --------- | ------ |
-| web | statements, aggregate | 98.03% | 96 | `web/vite.config.ts` |
-| web | branches, aggregate | 94.38% | 92 | `web/vite.config.ts` |
-| web | functions, aggregate | 99.29% | 97 | `web/vite.config.ts` |
-| web | lines, aggregate | 99.53% | 97 | `web/vite.config.ts` |
+| web | statements, aggregate | 97.49% | 96 | `web/vite.config.ts` |
+| web | branches, aggregate | 93.99% | 92 | `web/vite.config.ts` |
+| web | functions, aggregate | 99.10% | 97 | `web/vite.config.ts` |
+| web | lines, aggregate | 99.17% | 97 | `web/vite.config.ts` |
 | Rust | lines, aggregate | 93.95% | 93 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
 | Rust | lines, **per file** | 73.68%, `taiyaku-serve/src/truth.rs` | 57 | `scripts/coverage-floor.mjs` |
-| web | **files in the report** | 57 | 50 | `scripts/coverage-floor.mjs` |
+| web | **files in the report** | 66 | 59 | `scripts/coverage-floor.mjs` |
 | Rust | **files in the report** | 43 | 32 | `scripts/coverage-floor.mjs` |
 
 The four web per-file floors have their own table under "The other half" below,
@@ -311,9 +311,12 @@ beside the lowest file each was derived from.
 
 **The two minimums do not follow the two-points rule, and are not meant to.**
 They are counts, not percentages, and the failure they exist to catch is not a
-slide — it is a collapse. Web carries seven of margin (50 against 57) because 40
-would have been too loose to catch the near miss recorded below, where a
-one-character edit to a glob dropped 13 files and every percentage stayed green.
+slide — it is a collapse. Web carries seven of margin (59 against 66) because a
+looser number is too loose to catch the near miss recorded below, where a
+one-character edit to a glob drops 14 files and every percentage stays green.
+**It was 50 against 57 until 2026-08-14, and by then the tree had grown past
+it**: the same near miss reached 52 files and 50 let it through. Seven is the
+rule; the number under it has to be re-derived as web/src grows.
 Rust carries eleven (32 against 43) because the count there can only fall three
 ways — the `--ignore-filename-regex` widens, a crate leaves the workspace, or
 files merge — and eleven files are excluded by name today, so the margin leaves
@@ -478,14 +481,14 @@ That is why `include` is set explicitly and why exclusions are named one at a
 time with a reason, never as a wildcard. It is also why the gate grew a minimum
 file count: no threshold *value* can defend against `0/0`, because `0/0` is not a
 number that failed a comparison — it is a comparison that never happened. See
-"Why `minFiles` is 50 and not 40" below.
+"Why `minFiles` is 59, and was 50 for too long" below.
 
 **The `.tsx` half of that glob is inert, and was assumed rather than measured
 until 2026-08-10.** `include` reads `['src/**/*.ts', 'src/**/*.tsx']`, and the
 second entry contributes nothing: vitest's coverage `include` resolves a `*.ts`
 pattern across its whole extension list, so `['src/**/*.ts']` alone reports the
-same **57 files** and the same 98.03 / 94.38 / 99.29 / 99.53. Measured by running
-it. The entry is kept because it is what a reader expects to see and costs
+same file count and the same figures. Measured by running it, at 57 files then
+and re-confirmed at 66 since. The entry is kept because it is what a reader expects to see and costs
 nothing, but the document should not have claimed it was doing work.
 
 **`--coverage.include` cannot be repeated on the command line.** Passing the
@@ -500,7 +503,8 @@ reach for the flag.
 `reporter: ['text', 'json-summary']` produces two views and they do not agree on
 what a file list is. **The text table omits every file at 100% on all four
 metrics.** At the thresholds above it printed **18 file rows against the JSON's
-57 files** — 39 fully covered files simply absent, measured by counting both.
+57 files** — 39 fully covered files simply absent, measured by counting both; the
+JSON holds 66 files today and the table's omission rule is unchanged.
 The gap was recorded as 28 rows against 50 files when this branch began, which
 is the earlier reading carried forward rather than a second measurement here.
 
@@ -600,7 +604,7 @@ from the `viewport.test.ts` run:
 *(Those last three lines sat orphaned at the end of the next section until
 2026-08-10, detached from the run that produced them. Rejoined here, unchanged.)*
 
-### Why `minFiles` is 50 and not 40
+### Why `minFiles` is 59, and was 50 for too long
 
 The collapse to zero files is not the only failure a file count has to catch, and
 picking the number for the collapse alone would have left the interesting one
@@ -608,31 +612,40 @@ through. **Deleting one `*` from the include glob is a one-character edit.**
 Measured by making it, three times, and reading
 `web/coverage/coverage-summary.json` rather than the text table:
 
-| `coverage.include` | files | vitest |
-| ------------------ | ----- | ------ |
-| `['nope/**/*.ts']` | 0 | `Unknown% ( 0/0 )` on all four metrics, **exit 0** |
-| `['src/*.ts']` | 44 | 97.79 / 93.90 / 99.20 / 99.48 — every threshold passed, **exit 0** |
-| `['src/**/*.ts']` | 57 | 98.03 / 94.38 / 99.29 / 99.53, unchanged |
+| `coverage.include` | files | vitest | `coverage-floor.mjs` at 50 | at 59 |
+| ------------------ | ----- | ------ | :--: | :--: |
+| `['nope/**/*.ts']` | 0 | `Unknown% ( 0/0 )` on all four metrics, **exit 0** | 1 | 1 |
+| `['src/*.ts']` | 52 | 97.20 / 93.52 / 99.00 / 99.09 — every threshold passed, **exit 0** | **0** | **1** |
+| `['src/**/*.ts']` | 66 | 97.49 / 93.99 / 99.10 / 99.17, unchanged | 0 | 0 |
 
-**The middle row is the one that fixes the number.** One deleted `*` drops all
-13 files of `src/modules` — `annotations`, `credits`, `direction`, `fit`, `help`,
+**The middle row is the one that fixes the number, and on 2026-08-14 it was the
+row that showed the number had stopped working.** One deleted `*` drops all 14
+files of `src/modules` — `annotations`, `credits`, `direction`, `fit`, `help`,
 `layout`, `motion`, `prefetch`, `readouts`, `registry`, `regroup`, `settings`,
-`zoom` — out of the gate entirely, and **it costs less than half a point on every
-metric**: −0.24 statements, −0.48 branches, −0.09 functions, −0.05 lines, against
-margins of 1.79, 1.90, 2.20 and 2.48 to the thresholds. Nearly a quarter of the
-files in the gate leave, and the aggregate barely twitches, because it is an
-average over what remains and what left was well covered. Nothing in the run is
-red. The per-file floor sees nothing either: a file that is absent is a file no
-per-file check visits. Only a count can see it.
+`zoom` and one since added — out of the gate entirely, and **it costs less than
+half a point on every metric**. Nearly a quarter of the files in the gate leave,
+and the aggregate barely twitches, because it is an average over what remains and
+what left was well covered. Nothing in the run is red. The per-file floor sees
+nothing either: a file that is absent is a file no per-file check visits. Only a
+count can see it — and at `minFiles: 50` the count did not, because the tree had
+grown from 57 files to 66 and taken the near miss from 44 to **52**, clear of the
+floor set for it.
 
-So 50 rather than 40: 40 catches the collapse and lets the 44 through. Fifty
-leaves seven of margin over the 57 measured, which is enough for a deliberate
-exclusion — beside the three test-and-declaration patterns, the `exclude` list
-names `main.tsx`, `browser-setup.ts` and the `src/testing/**` directory, each
-with a reason — and not so much that dropping a directory passes. Growth only ever moves the count
-the safe way. **If a deliberate exclusion ever does trip this, that is the check
-working**: re-derive the number beside the exclusion rather than widening it on
-reflex.
+So 59 rather than 50: seven of margin over the 66 measured, which is enough for a
+deliberate exclusion — beside the three test-and-declaration patterns, the
+`exclude` list names `main.tsx`, `label.tsx`, `browser-setup.ts` and the
+`src/testing/**` directory, each with a reason — and not so much that dropping a
+directory passes. The right-hand columns above are the proof, re-run at both
+values: 50 passes the near miss and 59 fails it, naming the config to open.
+
+**A fixed count against a growing tree loosens on its own**, which is the one
+thing the original derivation got wrong — it said "growth only ever moves the
+count the safe way", and that is true of the count and false of the *gap* between
+the count and the number under it. Re-run the three rows when web/src grows by
+roughly ten files, and check the property ("the near miss still trips it") rather
+than the reading ("the count is still above the floor"). **If a deliberate
+exclusion ever does trip this, that is the check working**: re-derive the number
+beside the exclusion rather than widening it on reflex.
 
 ### Why the Rust per-file floor exists
 
@@ -720,15 +733,15 @@ minimums:
 
 | format | metric | floor | lowest measured |
 | ------ | ------ | ----- | --------------- |
-| istanbul (web) | statements | 91 | `fixtures.ts`, 93.10% |
-| istanbul (web) | branches | 78 | `api.ts`, 80.76% |
+| istanbul (web) | statements | 91 | `Labeller.tsx`, 91.85% |
+| istanbul (web) | branches | 78 | `api.ts`, 79.41% |
 | istanbul (web) | functions | 91 | `decode.ts`, 93.33% |
-| istanbul (web) | lines | 92 | `api.ts`, 94.28% |
+| istanbul (web) | lines | 92 | `api.ts`, 93.02% |
 | llvm-cov (Rust) | lines | 57 | `taiyaku-serve/src/truth.rs`, 73.68% |
 
 | format | files measured | `minFiles` |
 | ------ | -------------: | ---------: |
-| istanbul (web) | 57 | 50 |
+| istanbul (web) | 66 | 59 |
 | llvm-cov (Rust) | 43 | 32 |
 
 **The count is checked ahead of the floors, deliberately.** If the report

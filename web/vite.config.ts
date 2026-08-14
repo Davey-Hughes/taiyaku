@@ -134,12 +134,20 @@ export default defineConfig({
       //
       // Read these from `coverage/coverage-summary.json`, not from the text
       // table — the table omits every file at 100% on all four metrics, and
-      // showed 18 rows against the JSON's 57 files when these were set.
+      // showed 18 rows against the JSON's 57 files when these were set. The
+      // report holds 66 files as of 2026-08-14.
+      //
+      // **The margins have narrowed since these were set, and the figures below
+      // are re-measured rather than the ones they were derived from.** Every
+      // threshold still passes, but `statements` now sits 1.49 above its
+      // measured value rather than the two points the rule asks for. The
+      // thresholds were not lowered to restore it: the number to move when this
+      // fires is the coverage, not the bar.
       thresholds: {
-        statements: 96, // measured 98.03
-        branches: 92, // measured 94.38
-        functions: 97, // measured 99.29
-        lines: 97, // measured 99.53
+        statements: 96, // measured 97.49, was 98.03 when set
+        branches: 92, // measured 93.99, was 94.38 when set
+        functions: 97, // measured 99.10, was 99.29 when set
+        lines: 97, // measured 99.17, was 99.53 when set
         // **These are aggregate, and an aggregate cannot see one module go
         // dark.** Measured: skipping the whole of `pairing.test.ts` drops
         // `pairing.ts` from 100% to 83.58% and the total only 98.03% → 97.49%,

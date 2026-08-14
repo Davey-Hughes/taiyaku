@@ -12025,3 +12025,55 @@ It is a local-only check, like the corpus and browser passes, and for the
 opposite reason to theirs: CI *does* catch this, and catches it late and
 expensively. The point is to fail in one second on the machine that made the
 mistake rather than in three minutes on the forge.
+## The web file count had gone stale into a hole, and the hole was open
+
+`scripts/coverage-floor.mjs` requires a minimum *number* of files in each
+coverage report, because a file that has left the report is one no per-file check
+visits and no aggregate notices. The web side's number was `minFiles: 50`,
+derived when `web/src` reported 57 files: seven of margin, chosen so that the
+near miss it was written for — one deleted `*` in `coverage.include`, dropping
+all of `src/modules` — would trip it at 44.
+
+`web/src` has since grown to 66 files. Re-running the same three-row experiment
+on 2026-08-14:
+
+| `coverage.include` | files | vitest | floor at 50 | floor at 59 |
+| --- | ---: | --- | :--: | :--: |
+| `['nope/**/*.ts']` | 0 | `Unknown%` on all four, exit 0 | 1 | 1 |
+| `['src/*.ts']` | **52** | 97.20 / 93.52 / 99.00 / 99.09, exit 0 | **0** | **1** |
+| `['src/**/*.ts']` | 66 | 97.49 / 93.99 / 99.10 / 99.17 | 0 | 0 |
+
+**The middle row passed every check.** Fourteen files — the whole of
+`src/modules` — leave the gate, vitest reports four green thresholds, the
+per-file floor visits nothing that is missing, and the count that exists for
+exactly this case reads 52 against a floor of 50. The gate was measuring 52 of 66
+files and saying so nowhere.
+
+Nothing broke it. The tree grew, both numbers grew with it, and the *gap* between
+the near miss and the floor closed on its own — 44 against 50 is caught, 52
+against 50 is not. The original derivation said "growth only ever moves the count
+the safe way", which is true of the count and false of the gap. That sentence is
+the defect, not the 50.
+
+Re-derived by re-running rather than by scaling: 66 measured, seven of margin,
+**59**. Proven at both values, which is why the table above has two verdict
+columns — 50 lets the near miss through, 59 stops it and names
+`web/vite.config.ts` as the file to open. The property to re-check when web/src
+grows another ten files is "the near miss still trips it", not "the count is
+still above the floor".
+
+### Two things measured on the way past
+
+**The four web thresholds have narrowed.** They were set at 98.03 / 94.38 /
+99.29 / 99.53 less two points; the clean tree now reads **97.49 / 93.99 / 99.10 /
+99.17**, so the statements margin is 1.49 rather than 2. Every threshold still
+passes and none was lowered — the number to move when this fires is the coverage,
+not the bar — but the two-point rule is no longer quite true of the tree it was
+derived from.
+
+**Three of the four per-file floors have narrowed the same way**, and the lowest
+files have changed hands: statements is now `Labeller.tsx` at 91.85% against a
+floor of 91 (0.85 of margin, where it was `fixtures.ts` at 93.10), branches
+`api.ts` at 79.41 against 78, functions `decode.ts` at 93.33 against 91, lines
+`api.ts` at 93.02 against 92. `statements` is the one to watch; the fix when it
+fires is a test for `Labeller.tsx` rather than an 89 in the script.
