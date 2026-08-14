@@ -41,15 +41,34 @@ export interface NearestOffer {
  *
  * `within` bounds the search so a wholly unpaired edition costs one scan
  * rather than one per render; it is the authority edition's slot count.
+ *
+ * `skipped` is the `credits` module's set of slots the reader has asked to
+ * keep out of the reading flow, in the **viewed** edition's slot space — the
+ * same set and the same space `pairing.ts`'s `groups` is handed, which is why
+ * it is passed in rather than derived here. A candidate landing in it is
+ * passed over and the scan carries on, exactly as `groups`' partner search
+ * steps past one; it is not merely rejected at the end, or a skipped page
+ * between the reader and a real one would leave them with no offer at all.
+ *
+ * **This is `docs/status.md`'s O40.** `skip` is carried out by handing the
+ * skipped slots to `groups`, so every path through `groups`/`stepToGroup`
+ * honoured it and this one — the arrow out of a gap or a borrowed page, which
+ * reaches here instead — did not: a reader whose nearest resolving neighbour
+ * was a credit page landed on it anyway. Both of `App.tsx`'s call sites pass
+ * the same set, so the arrow and the offer buttons on the `Gap` screen cannot
+ * name different destinations. Empty by default, so every caller that does not
+ * skip is unaffected and pays nothing — the same default `groups` takes.
  */
 export function nearestPaired(
   state: ReadingState,
   resolver: Resolver,
   within: number,
+  skipped: Set<number> = NOTHING_SKIPPED,
 ): { before?: NearestOffer; after?: NearestOffer } {
   const landingAt = (slot: number): NearestOffer | undefined => {
     const landed = display({ ...state, slot }, resolver)
     if (landed.kind !== 'at') return undefined
+    if (skipped.has(landed.slot)) return undefined
     return {
       slot,
       page: resolver.slotAt(landed.edition, landed.slot)!.page,
@@ -73,3 +92,11 @@ export function nearestPaired(
   }
   return found
 }
+
+/**
+ * One empty set, so the default argument does not allocate per call — the same
+ * constant `pairing.ts` keeps for `groups`' own `skipped` default, kept
+ * separately rather than exported across so neither module has to import the
+ * other for a value that is `new Set()`.
+ */
+const NOTHING_SKIPPED: Set<number> = new Set()

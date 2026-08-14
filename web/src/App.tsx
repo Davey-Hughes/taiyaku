@@ -537,6 +537,17 @@ function App() {
   // `stepToGroup`), and only this component knows what the groups are.
   const groupedRef = useRef<Group[]>(undefined)
 
+  // The slots the `credits` module has set aside, for the same handler and by
+  // the same route as `groupedRef` above — and it is not derivable from that
+  // grouping, which is why it is a second ref rather than a lookup through the
+  // first. `groups` is given this set and emits nothing for what is in it, so
+  // a skipped slot is absent from the result and so is a slot past the end;
+  // the arrow out of a gap has to tell those apart. `docs/status.md`'s O40 is
+  // what happens when the gap branch has neither: it reaches `nearestPaired`,
+  // which resolves candidates straight off the resolver, and lands on a credit
+  // page the reader asked to skip.
+  const skippedRef = useRef<Set<number>>(EMPTY_SLOTS)
+
   // The memo behind `derivedBreaks` below, which cannot be a `useMemo`: hooks
   // have to sit above this component's `if (!session) return null`, and every
   // input that derivation takes is bound below it. Held rather than recomputed
@@ -928,6 +939,7 @@ function App() {
           prev.previous,
           resolver,
           groupedRef.current,
+          skippedRef.current,
         )
         return { ...prev, state, previous }
       })
@@ -1650,6 +1662,9 @@ function App() {
   // is recomputed from props and state every render, so a discarded render
   // simply writes the same thing the retained one will.
   groupedRef.current = grouped
+  // Assigned beside the grouping it was just used to build, so the arrow keys
+  // and the page area can never disagree about what is set aside.
+  skippedRef.current = skippedSlots
   creditsPrefsRef.current = creditsPrefs
   // The reading direction the *arrows* must follow, for the keydown listener —
   // which subscribes once at load and cannot see `effectiveReading`, computed
@@ -2156,12 +2171,18 @@ function App() {
   // nearest real page of their own edition any less the way out. The scan is
   // bounded by the authority's slot count so a wholly unpaired edition costs
   // one scan rather than one per render.
+  //
+  // `skippedSlots` is passed for O40: these are the buttons the arrow keys
+  // take, so a set consulted by one and not the other would have the screen
+  // naming a destination the key refuses. `session.ts`'s `step` case is given
+  // the same set through `skippedRef`, and its doc says so from the other end.
   const gapMoves =
     shown.kind === 'gap' || shown.kind === 'borrowed'
       ? nearestPaired(
           state,
           resolver,
           resolver.slotCount(state.authority) ?? state.slot + 1,
+          skippedSlots,
         )
       : undefined
   // `nearestPaired` already resolved each offer against the edition being

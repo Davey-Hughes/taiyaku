@@ -58,6 +58,33 @@ describe('nearestPaired', () => {
     expect(found).toEqual({ before: { slot: 3, page: 2, at: 2 } })
   })
 
+  // O40. The scan passes over a slot the `credits` module has set aside, the
+  // same way `pairing.ts`'s partner search already does, rather than offering
+  // a page the reader asked to keep out of the reading flow. Both halves of
+  // `b`'s joined spread are in the set because `creditSlotsIn` matches by
+  // page, which is what a real skipped set looks like here.
+  it('passes over a skipped slot and offers the next one that resolves', () => {
+    expect(
+      nearestPaired(
+        { authority: 'a', slot: 4, viewing: 'b' },
+        r,
+        8,
+        new Set([2, 3]),
+      ),
+    ).toEqual({ before: { slot: 2, page: 1, at: 1 } })
+  })
+
+  it('offers nothing on that side where every candidate is skipped', () => {
+    expect(
+      nearestPaired(
+        { authority: 'a', slot: 4, viewing: 'b' },
+        r,
+        8,
+        new Set([0, 1, 2, 3]),
+      ),
+    ).toEqual({})
+  })
+
   it('reports `at` in the viewed edition, not in the authority', () => {
     // `a` slot 3 pairs to `b` slot 2. The two numbers differ, so a
     // confusion between the spaces would be visible here and nowhere in the

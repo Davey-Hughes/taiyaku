@@ -1135,6 +1135,76 @@ describe('a swap onto a slot with no counterpart', () => {
     press('a')
     expect(dialog(host, 'All notes')).not.toBeNull()
   })
+
+  /**
+   * `docs/status.md`'s O40, and the reason it is here rather than only in
+   * `nearest.test.ts` and `session.test.ts`: the defect was never in either
+   * function on its own but in `App.tsx` calling `nearestPaired` from two
+   * places — the arrow, through `applyIntent`, and the `Gap` screen's own
+   * offer buttons — and handing the skipped set to neither. A unit test can
+   * pin what each function does with a set it is given; only a mounted reader
+   * can say whether both call sites give it one, and whether the two agree.
+   *
+   * **The fixture is the one this file could not previously build.** No corpus
+   * edition names credit pages and `skip` defaults off, which is exactly why
+   * O40 was recorded as unreachable rather than fixed speculatively: `en` is
+   * given page 4 — the page the offer before the gap lands on — and `skip` is
+   * switched on, so the nearest resolving neighbour is one the reader has
+   * asked to keep out of the reading flow.
+   */
+  describe('with the page the offer lands on skipped', () => {
+    beforeEach(() => {
+      localStorage.setItem(
+        'taiyaku.prefs.credits',
+        JSON.stringify({ skip: true, panel: true }),
+      )
+      const pairs: Record<string, number> = {}
+      for (let i = 0; i < 5; i++) {
+        pairs[`raw|en|${i}`] = i
+        pairs[`en|raw|${i}`] = i
+      }
+      pairs['en|raw|5'] = 5
+      resolver = {
+        ...fakeResolver(
+          { raw: whole(6), en: whole(6) },
+          pairs,
+          {},
+          {
+            raw: [4],
+            en: [4],
+          },
+        ),
+        dispose: vi.fn<() => void>(),
+      }
+    })
+
+    it('an arrow key passes over it and takes the next page instead', async () => {
+      const host = await swapOntoUnpaired()
+      // Same keypress as the sibling test above, which lands on `en` page 4
+      // with nothing skipped. `en` page 4 is now set aside, so the scan carries
+      // on to `raw` slot 3 and the reader lands on `en` page 3 — a page they
+      // did not ask to skip, rather than the credit page they did.
+      press('ArrowRight')
+      await settle()
+      expect(pages(host)).toEqual([
+        expect.stringContaining('/vol-01/en/pages/3'),
+      ])
+    })
+
+    it('the offer the screen shows is the same one the arrow takes', async () => {
+      // The two call sites, compared. An arrow that honoured the skipped set
+      // while the buttons beside it still advertised the skipped page would be
+      // the same defect wearing the opposite face: the screen would name a
+      // destination the key refuses. 1-based in the label, 0-based in the URL
+      // the test above asserts — both are `en` page index 3.
+      const host = await swapOntoUnpaired()
+      expect(
+        [...host.querySelectorAll('button')]
+          .map((b) => b.textContent)
+          .filter((text) => text?.includes('en page')),
+      ).toEqual(['→ en page 4'])
+    })
+  })
 })
 
 // ---- the borrowed page ------------------------------------------------------

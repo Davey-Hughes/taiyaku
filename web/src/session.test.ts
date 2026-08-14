@@ -141,6 +141,35 @@ describe('applyIntent: an arrow on a gap or a borrowed page', () => {
     expect(state).toBe(stuck)
   })
 
+  // O40. `b` slot 3 is the offer after the gap and the reader has asked for it
+  // to be set aside, so the arrow takes the next one that is not — the same
+  // set `groups` is handed, consulted by the one path that used to be blind to
+  // it. Nothing else in this block passes a set, which is what pins the
+  // default: an arrow on a gap in an edition with nothing skipped is unmoved.
+  it('does not take an offer the reader asked to skip', () => {
+    const { state } = applyIntent(
+      { kind: 'step', by: 1 },
+      inGap,
+      'a',
+      resolver,
+      undefined,
+      new Set([3]),
+    )
+    expect(state).toEqual({ authority: 'b', slot: 4, viewing: 'b' })
+  })
+
+  it('stays put when every offer on that side is skipped', () => {
+    const { state } = applyIntent(
+      { kind: 'step', by: 1 },
+      inGap,
+      'a',
+      resolver,
+      undefined,
+      new Set([3, 4]),
+    )
+    expect(state).toBe(inGap)
+  })
+
   it('is unchanged on a real page', () => {
     const onPage: ReadingState = { authority: 'a', slot: 0, viewing: 'b' }
     const { state } = applyIntent(

@@ -61,6 +61,18 @@ export type ReadingIntent = Exclude<
  * serves both screens, which is what keeps them from answering one key two
  * ways.
  *
+ * **`skipped` is what makes that branch honour `skip`, and it is `docs/status.md`'s
+ * O40.** The `groups` route below already does: `skip` is carried out by
+ * handing the skipped slots to `pairing.ts`'s `groups`, so `stepToGroup` steps
+ * over one without being told anything. The gap branch reaches `nearestPaired`
+ * instead, which resolves candidates straight off the `Resolver` and knew
+ * nothing about them — so an arrow out of a gap or a borrowed page could land
+ * on a credit page the reader had asked to skip. The same set both routes need
+ * is now passed to both, rather than a second module being taught an invariant
+ * `skippedApartFrom`'s doc says lives in one place. In the *viewed* edition's
+ * slot space, like `groups`' own, and optional: a caller with nothing skipped
+ * passes nothing and the scan is what it was.
+ *
  * What changed for the reader: `Gap` announced the dead end in words and put
  * both escapes on screen beside it, so an arrow that did nothing was explained
  * by the screen it did nothing on. A borrowed page announced nothing — an
@@ -85,6 +97,7 @@ export function applyIntent(
   previous: string,
   resolver: Resolver,
   groups?: Group[],
+  skipped?: Set<number>,
 ): { state: ReadingState; previous: string } {
   switch (intent.kind) {
     case 'toggle': {
@@ -100,10 +113,16 @@ export function applyIntent(
         // the move the screen is already offering instead. `by` arrives
         // rtl-mapped (`App.tsx` runs it through `stepFor`), so `1` is the
         // next slot in reading order and `after` is its offer.
-        // Must match `App.tsx`'s `gapMoves` bound exactly, or an arrow could
-        // refuse a move the screen's own offer buttons are showing.
+        // Must match `App.tsx`'s `gapMoves` call exactly — both the `within`
+        // bound and the skipped set — or an arrow could refuse a move the
+        // screen's own offer buttons are showing, or take one they are not.
         const within = resolver.slotCount(state.authority) ?? state.slot + 1
-        const { before, after } = nearestPaired(state, resolver, within)
+        const { before, after } = nearestPaired(
+          state,
+          resolver,
+          within,
+          skipped,
+        )
         const offer = intent.by === 1 ? after : before
         if (offer === undefined) return { state, previous }
         return {
