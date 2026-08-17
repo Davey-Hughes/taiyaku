@@ -4,17 +4,7 @@
 //! is what lets taiyaku run beside Stump now and replace it later without a
 //! redesign. See `docs/superpowers/specs/2026-07-30-reader-design.md`.
 
-/// Write a file so a crash cannot publish half of one.
-///
-/// Public where most of this crate's modules are private, and unlike `notes`,
-/// which is public to keep three vague names off the crate root rather than
-/// for any caller outside this crate. This one is genuinely cross-crate:
-/// `taiyaku-cli`'s `credits --write` rewrites a whole sidecar in place, the
-/// exact case this module's own doc names as the worst one, and the
-/// alternative to exporting it is a fifth copy of write-and-rename in another
-/// crate. The module path says what the function guarantees, which a re-export
-/// at the crate root as a bare `write` would not.
-pub mod atomic;
+mod alignments;
 mod cache_root;
 mod composite;
 #[cfg(test)]
@@ -39,15 +29,40 @@ mod works;
 use std::sync::Arc;
 
 pub use composite::{CompositeSource, StumpSide};
-pub use progress::Progress;
 pub use reqlog::{Entry, Log};
 pub use routes::build_router;
 pub use source::{LocalLibrary, PageSource, ServedPage};
+// `Progress` moved to `taiyaku-library` (Task 9's `state::progress` needs it
+// there); re-exported from its new home so `crate::Progress` still resolves.
+pub use taiyaku_library::Progress;
+// No `from_library` here. It existed as the named entry point for "a
+// `ServeState` off the database" and never acquired a production caller:
+// `taiyaku serve <sidecar>...` builds its `Work`s one path at a time in
+// `taiyaku-cli`'s `serve_work`, because it serves the works it was *handed*
+// rather than every work the library holds, and it already has each work's
+// path from the command line. Two projections of one thing is how they come
+// to disagree, and this was the one nothing ran (whole-branch review 2,
+// Minor 4). A `serve --db` with no paths would want it back; it is six lines
+// of `SELECT id, slug, sidecar_path` and `project::sidecar`, and it should be
+// written then, against whatever that command decides about a work whose
+// `sidecar_path` is NULL.
 pub use works::{Work, load_works, work_id};
 
 /// Everything a request needs: which works exist, and where pages come from.
 #[derive(Debug)]
 pub struct ServeState {
+    /// Where the progress, notes and truth routes (Task 13) read and write
+    /// through — and, since Task 15, the same library `works` below was
+    /// imported into (`taiyaku-cli`'s `serve` opens it, imports every
+    /// sidecar path it was handed through `library::import_canonical`, and
+    /// passes the open library in here), rather than a fresh in-memory one
+    /// this function used to open for itself. That is what makes a bridge
+    /// row `works::row_id_for_write` might still mint (a write reaching a
+    /// work through some path that bypassed import — `test_support::state`'s
+    /// fixtures do this on purpose, to test the bridge in isolation) land on
+    /// the *same* database a later `taiyaku library import` reconciles
+    /// against, rather than one that vanishes with the process.
+    pub library: Arc<taiyaku_library::Library>,
     pub works: Vec<Work>,
     pub source: Arc<dyn PageSource>,
     /// Where generated covers are kept between runs.
@@ -177,6 +192,16 @@ impl StumpConfig {
 /// with none, this whole function could be replaced by `Ok(())`, starting no
 /// server at all, and nothing else in the crate would notice.
 ///
+/// `library` is the caller's already-open library — `taiyaku-cli`'s `serve`
+/// opens it at the resolved `--db` path and imports every `works` entry into
+/// it before calling this, which is Task 15's "`taiyaku serve <sidecar>...`
+/// keeps working: it imports those paths and serves them." This function no
+/// longer opens one of its own; the tests in this crate that build a
+/// `ServeState` without going through an import (`test_support::state`, most
+/// of this file's own fixtures) still work unchanged, by passing an empty
+/// `Library::open_in_memory()` — this parameter only says *which* library to
+/// serve out of, not that one must hold every work already.
+///
 /// # Errors
 ///
 /// Returns an error if `log_requests` is `Some` and the file it names cannot
@@ -188,6 +213,7 @@ impl StumpConfig {
 /// may serve several addresses over its life prints nothing else to say
 /// which one failed.
 pub async fn serve(
+    library: Arc<taiyaku_library::Library>,
     works: Vec<Work>,
     addr: &str,
     stump: Option<StumpConfig>,
@@ -274,6 +300,7 @@ pub async fn serve(
     }
 
     let state = Arc::new(ServeState {
+        library,
         works,
         source,
         cache_dir: resolved.covers(),

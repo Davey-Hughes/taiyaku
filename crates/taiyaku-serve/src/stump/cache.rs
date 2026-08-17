@@ -33,6 +33,17 @@ struct Document {
 ///
 /// The convention M2 established for progress. `taiyaku.json` stays a pure
 /// alignment document that diffs meaningfully in git.
+///
+/// **The fourth copy of that arithmetic, and the last sibling file left.**
+/// `taiyaku_core::TruthDoc::path_beside`, `RegionDoc::path_beside` and
+/// `taiyaku_library::export::stem_of` are the other three, each naming the
+/// others. `taiyaku-serve`'s own `Work::sibling` used to carry the warning for
+/// this one — "three files now live to this rule: `taiyaku.progress.json`,
+/// `taiyaku.stump.json` and `taiyaku.notes.json`" — and was deleted with the
+/// two named beside it once progress and notes became rows. This one did not
+/// move: a Stump resolution is a cache of another server's ids, not something
+/// the library store holds. Deleting that comment left it with no warning
+/// attached at all, which is what this paragraph restores (delta review M7).
 pub fn path_for(work: &Work) -> PathBuf {
     let stem = work.path.file_stem().map_or_else(
         || "taiyaku".to_string(),

@@ -64,6 +64,7 @@ mod fingerprint;
 )]
 mod geometry_experiment;
 mod inventory;
+mod library;
 mod regions;
 // `sample.rs`'s three items (`DEV_EDITIONS`, `HELD_OUT_EDITIONS`, `dev_pages`)
 // used to be read by `score_corpus.rs` alone, and were gated on `cfg(test)`
@@ -126,6 +127,7 @@ mod stats;
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use taiyaku_core::{
     Alignment, Anchor, Direction, Edition, Half, Member, Merged, Run, Sidecar, Slot, SolverInfo,
@@ -141,6 +143,16 @@ fn main() {
 }
 
 fn run(args: &[String]) -> Result<(), String> {
+    // Checked before dispatch, and for every command rather than one at a
+    // time, so `taiyaku serve --help` answers the same way `taiyaku --help`
+    // does: the usage this binary already prints for no arguments at all.
+    // A second, command-scoped usage line would drift from this one the way
+    // `score.rs`'s own `USAGE` almost did (its doc comment states the two
+    // must not disagree); one function printed from two call sites cannot.
+    if args.iter().any(|a| a == "--help") {
+        print_usage();
+        return Ok(());
+    }
     match args.first().map(String::as_str) {
         Some("align") => align(&args[1..]),
         Some("verify") => verify(&args[1..]),
@@ -150,56 +162,62 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("duplicates") => duplicates::command(&args[1..]),
         Some("inventory") => inventory::command(&args[1..]),
         Some("credits") => credits::command(&args[1..]),
+        Some("library") => library::command(&args[1..]),
         Some("regions") => regions::command(&args[1..]),
         Some("score") => score::command(&args[1..]),
         Some(other) => Err(format!("unknown command `{other}`")),
         None => {
-            println!("taiyaku {}", env!("CARGO_PKG_VERSION"));
-            println!("usage: taiyaku align  <a-member>... -- <b-member>...");
-            println!(
-                "       taiyaku verify <a-member>... -- <b-member>... [--out FILE] [--sidecar FILE]"
-            );
-            println!("       taiyaku topology <hub>... -- <spoke>... -- <spoke>...");
-            println!("       taiyaku lookup <taiyaku.json> <from> <to> <page>...");
-            println!(
-                "       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT] [--stump-url URL] \
-                 [--stump-key KEY] [--log-requests FILE] [--refresh-stump] [--cache DIR]"
-            );
-            println!(
-                "       taiyaku duplicates <copy>... -- <copy>... [--against <member>...] [--ltr]"
-            );
-            println!("       taiyaku inventory <root> [--min-pages N] [--pattern SPEC]");
-            println!(
-                "       taiyaku credits <member>... --sidecar FILE [--against EDITION] \
-                 [--cache DIR] [--write]"
-            );
-            println!("       taiyaku regions <member>... --sidecar FILE [--write]");
-            // `--sidecar` is a flag, not a positional: `score` refuses to run
-            // without it, and a bare path in its place would be taken for a
-            // member and die in `member_digest`. `--sample` gets its own line
-            // because it is the only way to discover which pages to label, and
-            // a person who cannot see it here has no way to find the worklist.
-            // `score.rs`'s own `USAGE` is the other statement of this; the two
-            // must not disagree.
-            println!("       taiyaku score <member>... --sidecar FILE [--coverage F]");
-            println!("       taiyaku score --sample <corpus-root>");
-            println!();
-            println!("align options: --ltr --stats --cache DIR --write FILE --title NAME");
-            println!("               --name-a KEY --name-b KEY --direct --no-split-spreads");
-            println!();
-            println!("align splits joined spreads by default. --no-split-spreads gives the");
-            println!("page-level diagnostic instead, which cannot write a sidecar: a sidecar");
-            println!("records which pages are joined spreads, and that path does not detect");
-            println!("them. So --write, --cache and --ltr are refused alongside it, and");
-            println!("--title, --name-a, --name-b and --direct describe a sidecar and so need");
-            println!("--write. Each is refused rather than ignored where it cannot take effect.");
-            println!();
-            println!("--write merges into an existing FILE rather than overwriting it. On a");
-            println!("merge the a-side is the document's hub, so --name-a is optional;");
-            println!("--direct records a spoke-to-spoke edge instead and requires it.");
+            print_usage();
             Ok(())
         }
     }
+}
+
+/// The whole-binary usage: every command's shape, one line each, printed for
+/// no arguments and for `--help` anywhere on the line.
+fn print_usage() {
+    println!("taiyaku {}", env!("CARGO_PKG_VERSION"));
+    println!("usage: taiyaku align  <a-member>... -- <b-member>...");
+    println!("       taiyaku verify <a-member>... -- <b-member>... [--out FILE] [--sidecar FILE]");
+    println!("       taiyaku topology <hub>... -- <spoke>... -- <spoke>...");
+    println!("       taiyaku lookup <taiyaku.json> <from> <to> <page>...");
+    println!(
+        "       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT] [--db PATH] \
+         [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump] \
+         [--cache DIR]"
+    );
+    println!("       taiyaku library import <taiyaku.json> [--db PATH]");
+    println!("       taiyaku library export <work>|--all [--dir DIR|--in-place] [--db PATH]");
+    println!("       taiyaku duplicates <copy>... -- <copy>... [--against <member>...] [--ltr]");
+    println!("       taiyaku inventory <root> [--min-pages N] [--pattern SPEC]");
+    println!(
+        "       taiyaku credits <member>... --sidecar FILE [--against EDITION] \
+         [--cache DIR] [--write]"
+    );
+    println!("       taiyaku regions <member>... --sidecar FILE [--write]");
+    // `--sidecar` is a flag, not a positional: `score` refuses to run
+    // without it, and a bare path in its place would be taken for a
+    // member and die in `member_digest`. `--sample` gets its own line
+    // because it is the only way to discover which pages to label, and
+    // a person who cannot see it here has no way to find the worklist.
+    // `score.rs`'s own `USAGE` is the other statement of this; the two
+    // must not disagree.
+    println!("       taiyaku score <member>... --sidecar FILE [--coverage F]");
+    println!("       taiyaku score --sample <corpus-root>");
+    println!();
+    println!("align options: --ltr --stats --cache DIR --write FILE --title NAME");
+    println!("               --name-a KEY --name-b KEY --direct --no-split-spreads");
+    println!();
+    println!("align splits joined spreads by default. --no-split-spreads gives the");
+    println!("page-level diagnostic instead, which cannot write a sidecar: a sidecar");
+    println!("records which pages are joined spreads, and that path does not detect");
+    println!("them. So --write, --cache and --ltr are refused alongside it, and");
+    println!("--title, --name-a, --name-b and --direct describe a sidecar and so need");
+    println!("--write. Each is refused rather than ignored where it cannot take effect.");
+    println!();
+    println!("--write merges into an existing FILE rather than overwriting it. On a");
+    println!("merge the a-side is the document's hub, so --name-a is optional;");
+    println!("--direct records a spoke-to-spoke edge instead and requires it.");
 }
 
 /// Split `a... -- b...` into the two editions, pulling off trailing options.
@@ -996,7 +1014,7 @@ fn sidecar_dir(out: &Path) -> &Path {
 /// **The one writer both `align --write` (O26) and `credits --write` go
 /// through**, which is why it sits here rather than in either command's module.
 ///
-/// Through `taiyaku_serve::atomic::write`, never `fs::write`. `fs::write` opens
+/// Through `taiyaku_read::atomic::write`, never `fs::write`. `fs::write` opens
 /// for truncation and then writes, so a crash or a full disk inside that window
 /// leaves a short file where a whole sidecar was — and this is the worst file in
 /// the project to lose half of. It holds *every* edition of the work, every
@@ -1024,7 +1042,7 @@ fn sidecar_dir(out: &Path) -> &Path {
 /// on the pair `credits` rewrites. Neither proves its command still *calls*
 /// this; that was driven against the corpus instead, and `notes.md` records it.
 fn write_sidecar(out: &str, sidecar: &Sidecar) -> Result<(), String> {
-    taiyaku_serve::atomic::write(Path::new(out), sidecar.to_json().as_bytes(), "json")
+    taiyaku_read::atomic::write(Path::new(out), sidecar.to_json().as_bytes(), "json")
 }
 
 /// Describe one edition for the sidecar: its members, their content hashes,
@@ -1154,6 +1172,7 @@ fn serve(args: &[String]) -> Result<(), String> {
         &[
             "--addr",
             "--cache",
+            "--db",
             "--log-requests",
             "--refresh-stump",
             "--stump-key",
@@ -1203,7 +1222,17 @@ fn serve(args: &[String]) -> Result<(), String> {
     // work first resolved, which nothing here notices on its own.
     let refresh_stump = flag_present(args, "--refresh-stump");
 
-    let works = taiyaku_serve::load_works(&paths)?;
+    // `taiyaku serve <sidecar>...` keeps working, and now means it: every
+    // path it is handed is imported into the real, on-disk library — through
+    // `library::import_canonical`, the same function `taiyaku library
+    // import` calls, so a work this command imports and one a person imports
+    // by hand agree on what row it is (see `library.rs`'s own doc comment on
+    // the placeholder-path hazard this closes). This is the migration path
+    // for an existing install, and it is what keeps `serve/src/corpus.rs`'s
+    // three corpus-gated tests alive — they call `taiyaku_serve::load_works`
+    // directly rather than through this function, so they are untouched by
+    // this change.
+    let (db_library, works) = serve_works(&paths, option_value(args, "--db", "a path")?)?;
     for work in &works {
         let sidecar = work.sidecar();
         eprintln!(
@@ -1216,6 +1245,7 @@ fn serve(args: &[String]) -> Result<(), String> {
     tokio::runtime::Runtime::new()
         .map_err(|e| format!("{e}"))?
         .block_on(taiyaku_serve::serve(
+            Arc::new(db_library),
             works,
             addr,
             stump,
@@ -1223,6 +1253,145 @@ fn serve(args: &[String]) -> Result<(), String> {
             refresh_stump,
             cache,
         ))
+}
+
+/// Canonicalise every sidecar path, open the resolved library, import each
+/// one, and build the `Work`s `serve` passes to `taiyaku_serve::serve`.
+///
+/// Split out of `serve` itself so this — the part that touches a real
+/// filesystem and a real database — is directly testable without ever
+/// reaching `tokio::runtime::Runtime::new()` and binding a port, the same
+/// reason `align_flags` is split out of `align`.
+///
+/// Every path is validated first — canonicalised, which requires it to exist
+/// — before the library is touched at all, so a mistyped path still fails
+/// exactly where it always has (`serve_reaches_load_works_with_...`'s own
+/// tests pin this) rather than as a side effect of provisioning a database
+/// nobody asked for yet.
+///
+/// **One sidecar that cannot be imported is skipped, not fatal.** It used to
+/// propagate with `?` from inside the loop, so a single hand-edited
+/// `taiyaku.json` — a renamed edition the `hub` no longer names, a truncated
+/// file — took the whole server down and with it every other work on the
+/// command line, which is not a trade a reader would make (review 2, I3).
+/// Each failure is named on stderr as it happens; the start only refuses when
+/// *nothing* could be imported, since there is then no library to serve.
+///
+/// # Errors
+///
+/// Returns an error if any path cannot be canonicalised, if `db_flag`
+/// resolves to nowhere (see `library::resolve_db_path`), if the library
+/// cannot be opened, or if **every** path failed to import (see
+/// `library::import_canonical`).
+fn serve_works(
+    paths: &[PathBuf],
+    db_flag: Option<&str>,
+) -> Result<(taiyaku_library::Library, Vec<taiyaku_serve::Work>), String> {
+    let canonical_paths: Vec<PathBuf> = paths
+        .iter()
+        .map(|p| library::canonical_sidecar_path(p))
+        .collect::<Result<_, _>>()?;
+
+    let db = library::resolve_db_path(db_flag)?;
+    let db_library =
+        taiyaku_library::Library::open(&db).map_err(|e| format!("opening the library: {e}"))?;
+    let mut works = Vec::with_capacity(canonical_paths.len());
+    let mut imported: Vec<(i64, PathBuf)> = Vec::new();
+    let mut refused = 0usize;
+    for path in &canonical_paths {
+        match serve_work(&db_library, path, &mut imported) {
+            Ok(Some(work)) => works.push(work),
+            // The same work named twice on this command line — see
+            // `serve_work`, which owns that rule and names both paths.
+            Ok(None) => {}
+            Err(e) => {
+                refused += 1;
+                eprintln!("taiyaku: {}: not served: {e}", path.display());
+            }
+        }
+    }
+    if works.is_empty() {
+        return Err(format!(
+            "no work could be served: all {refused} sidecar(s) failed to import, \
+             each named above"
+        ));
+    }
+    Ok((db_library, works))
+}
+
+/// Import one canonical path and build the `Work` for it, or `None` when this
+/// command line has already served the work that path imports to.
+///
+/// `imported` is the work ids built so far, each with the path that built it,
+/// and is appended to here. The same row must not back two `Work`s: `Work` is
+/// deliberately not `Clone` because two of them over one document could
+/// correct it twice and see two different answers, so the second mention of
+/// one work is skipped rather than served.
+///
+/// **The skip is announced, naming both paths.** Two different files can
+/// import to one work — that is the whole point of matching on content, and
+/// `taiyaku serve raw/taiyaku.json raw/../raw/taiyaku.json` is not the only
+/// way to reach it: a copy of a library under a second path imports to the
+/// same row by `content_key`. Dropping the second silently meant a person
+/// passed two paths, got one work, and had nothing to tell them which of the
+/// two the server was actually reading — the same failure `load_works`'
+/// refusal already names both sides of. It is a notice rather than a refusal
+/// because the outcome is correct: one row, one `Work`, everything the
+/// command line asked for is being served.
+///
+/// Split out of `serve_works`' loop so that one fallible unit — import,
+/// slug, projection — has one `Err` for the caller to skip past, rather than
+/// three `?`s that each abort the whole start.
+fn serve_work(
+    db_library: &taiyaku_library::Library,
+    path: &Path,
+    imported: &mut Vec<(i64, PathBuf)>,
+) -> Result<Option<taiyaku_serve::Work>, String> {
+    let (work_id, _outcomes, migration) = library::import_canonical(db_library, path)?;
+    for line in library::malformed_sibling_warnings(path, &migration) {
+        eprintln!("{line}");
+    }
+    let summary = library::migration_summary(&migration);
+    if !summary.is_empty() {
+        eprintln!("taiyaku: {}: imported{summary}", path.display());
+    }
+    if let Some((_, first)) = imported.iter().find(|(id, _)| *id == work_id) {
+        eprintln!("{}", already_served_notice(path, first));
+        return Ok(None);
+    }
+    imported.push((work_id, path.to_path_buf()));
+    let conn = db_library.conn();
+    let slug: String = conn
+        .query_row("SELECT slug FROM work WHERE id = ?1", [work_id], |row| {
+            row.get(0)
+        })
+        .map_err(|e| format!("reading the imported work's slug: {e}"))?;
+    let sidecar = taiyaku_library::project::sidecar(&conn, work_id)?;
+    drop(conn);
+    Ok(Some(taiyaku_serve::Work::new(
+        slug,
+        path.to_path_buf(),
+        sidecar,
+    )))
+}
+
+/// What `serve_work` says on stderr when a path imports to a work already
+/// being served from another path.
+///
+/// A pure function, and a separate one, for the reason `skipping_notice`
+/// (`taiyaku-serve/src/lib.rs`) is: the property worth pinning is that the
+/// sentence names **both** paths, and a message built inline inside a branch
+/// that returns `Ok(None)` can only be tested by capturing stderr. Naming one
+/// side would be almost as bad as naming neither — "this path was skipped"
+/// leaves the reader with no way to know which file the server is actually
+/// reading.
+fn already_served_notice(path: &Path, first: &Path) -> String {
+    format!(
+        "taiyaku: {}: already served as {} — both import to the same work, so \
+         it is served once, from the first",
+        path.display(),
+        first.display()
+    )
 }
 
 /// How believable a route is, which depends on how it was reached.
@@ -1708,6 +1877,17 @@ fn write_aligned_sidecar(w: &AlignWrite<'_>) -> Result<(), String> {
                 Merged::CarriedHandRuns(n) => format!("replaced, carrying {n} hand run(s)"),
                 Merged::DroppedCredits(n) => {
                     format!("replaced, dropping {n} credits page(s)")
+                }
+                // `merge_spoke` itself never returns this — see its own doc
+                // comment — so this call site can never actually reach the
+                // arm. Only `taiyaku_library::import::reimport` constructs
+                // it, catching a `merge_spoke` refusal rather than
+                // propagating it, which is not what this command does: a
+                // refusal here reaches the caller through the `?` two lines
+                // above instead. Handled anyway because the match must be
+                // exhaustive over every `Merged` this crate can see.
+                Merged::DroppedHandRuns(n) => {
+                    format!("replaced, dropping {n} stale hand run(s)")
                 }
             };
             let note = format!(

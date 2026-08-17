@@ -96,7 +96,10 @@ taiyaku lookup taiyaku.json raw en 47
 # and between two editions that were never aligned to each other directly
 taiyaku lookup taiyaku.json en en-fan 45
 
-# hand a reader the sidecar, its pages, and where you were, over HTTP
+# hand a reader the sidecar, its pages, and where you were, over HTTP —
+# every path given is imported into an on-disk SQLite library first
+# ($XDG_DATA_HOME/taiyaku/library.db, or --db PATH), so reading progress,
+# notes and hand corrections persist there across restarts
 taiyaku serve taiyaku.json --addr 127.0.0.1:8484
 
 # beside Stump: English editions come from the instance, raws from disk,
@@ -106,6 +109,19 @@ TAIYAKU_STUMP_URL=https://stump.example TAIYAKU_STUMP_KEY=… \
 
 # point an OPDS reader at
 #   http://<host>:8484/opds/v1.2/catalog
+
+# the same import, without starting a server — for a library `serve` has
+# already populated, or a one-off migration
+taiyaku library import taiyaku.json
+
+# and back out again: every document a work round-trips through,
+# taiyaku.json plus its <stem>.notes/progress/truth/library.json siblings —
+# and only the ones there is anything to say: a work with no reading position,
+# no labelling and no hand-fixed metadata exports two files, not five.
+# --dir gives each work a subdirectory of its own, named for its slug, since
+# every library names every sidecar taiyaku.json: ./export/<slug>/taiyaku.json
+taiyaku library export go-toubun-no-hanayome --dir ./export
+taiyaku library export --all --dir ./export
 ```
 
 To read in the browser, build the WebAssembly binding first, then run the reader

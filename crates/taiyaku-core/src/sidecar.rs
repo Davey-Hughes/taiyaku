@@ -430,6 +430,21 @@ pub enum Merged {
     /// decision that re-running nothing can recover, while a `credits` list
     /// is a tool's output that `taiyaku credits` reproduces in one command.
     DroppedCredits(usize),
+    /// `merge_spoke` itself never returns this — every other variant above is
+    /// built into its `Ok` return, this one is not. It exists for a caller
+    /// that catches a `merge_spoke` refusal and, rather than propagate it,
+    /// drops the stored alignment `merge_spoke` could not safely merge onto
+    /// and takes the freshly-solved one instead: `taiyaku_library::import::
+    /// reimport` (C1), because `serve` must never fail to start over a stale
+    /// alignment. Most often this is a hub that moved underneath a spoke —
+    /// the guard at `merge_spoke`'s from-side check refuses precisely
+    /// because the stored runs address a page sequence that no longer
+    /// exists — but whatever the refusal, the stored edge is what could not
+    /// be trusted, not what should keep blocking a start. The count is how
+    /// many hand-corrected runs the dropped edge held: a human decision, not
+    /// a tool's output, so — like `CarriedHandRuns` and unlike
+    /// `DroppedCredits` — it is always reported rather than dropped quietly.
+    DroppedHandRuns(usize),
 }
 
 /// What a correction did.
@@ -502,8 +517,60 @@ impl Sidecar {
     /// an alignment entry whose span notation `SlotSpan::parse` rejects, and
     /// so on. The message embeds `serde_json`'s own, which names the field
     /// and byte offset.
+    ///
+    /// **Also if the document declares a format version this build does not
+    /// read** — see [`Sidecar::readable_version`], which this calls once the
+    /// shape is known to be right.
     pub fn from_json(text: &str) -> Result<Self, String> {
-        serde_json::from_str(text).map_err(|e| format!("not a readable taiyaku.json: {e}"))
+        let doc: Self =
+            serde_json::from_str(text).map_err(|e| format!("not a readable taiyaku.json: {e}"))?;
+        doc.readable_version()?;
+        Ok(doc)
+    }
+
+    /// **A document declaring a format version newer than this build reads is
+    /// refused.**
+    ///
+    /// Unknown *keys* are ignored on purpose — an L0 reader must tolerate the
+    /// L1 and L2 fields it has no use for, which is what [`Sidecar`]'s own doc
+    /// comment describes. A version bump is by definition the change that is
+    /// not additive, and tolerating one stops being free the moment anything
+    /// writes the document back: every command that reads a `taiyaku.json`,
+    /// changes part of it and writes it out — `align --write`,
+    /// `credits --write`, `regions`, `library import` followed by
+    /// `export --in-place` — would write a copy stripped of every field it had
+    /// no name for, stamped [`VERSION`], over the reader's only one, with
+    /// nothing anywhere saying a field had been dropped.
+    ///
+    /// **Called from [`Sidecar::from_json`], which is why it is checked once
+    /// rather than per command.** It is `pub` as well because a `Sidecar` can
+    /// be built without being parsed — `taiyaku_library::project::sidecar`
+    /// assembles one out of rows, and a caller can construct the struct
+    /// outright — so the boundary a library crate wants to guard is not always
+    /// one `from_json` was on the way in to.
+    ///
+    /// Refusing is the same stance `taiyaku_library::schema::migrate` already
+    /// takes on a database "written by a newer taiyaku", for the same reason:
+    /// running an older binary over newer data corrupts what it does not
+    /// understand. Only *newer* is refused. There is no older version to
+    /// accept yet — `VERSION` has been 1 since the format existed — and
+    /// whoever bumps it owns the question of what reading a 1 means, which is
+    /// an upgrade path, not a comparison.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming both versions if `self.taiyaku` exceeds
+    /// [`VERSION`].
+    pub fn readable_version(&self) -> Result<(), String> {
+        if self.taiyaku > VERSION {
+            return Err(format!(
+                "this document declares taiyaku format version {}, and this build reads {VERSION}. \
+                 Refusing to read it rather than dropping the fields it does not understand and \
+                 writing them back out as version {VERSION} — upgrade taiyaku instead",
+                self.taiyaku
+            ));
+        }
+        Ok(())
     }
 
     /// # Panics

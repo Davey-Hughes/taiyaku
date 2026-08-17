@@ -531,11 +531,25 @@ per-page transform, L2 adds matched text regions, and an L0-only reader consumes
 neither. Version bumps of `taiyaku` are reserved for changes that would make an
 old reader wrong rather than merely incomplete.
 
+**Which is why this build refuses to parse a document declaring a `taiyaku`
+newer than its own.** The tolerance above is for unknown *keys*; a version bump
+is by definition the change that is not additive, so an older binary reading one
+is wrong rather than incomplete — and every command that reads a document,
+changes part of it and writes it back (`align --write`, `credits --write`,
+`regions`, `library import` followed by `export --in-place`) would write a copy
+stripped of everything it had no name for, stamped with its own version, over
+the reader's only one. `Sidecar::from_json` refuses it, so the refusal is the
+same in every command rather than in whichever one remembered to ask; the
+library's own import checks it a second time, because a document can reach that
+crate as a value rather than as text. Only *newer* is refused: there is no older
+version yet, and whoever bumps the number owns what reading a 1 means.
+
 *Corrected again on 2026-08-08, when L2a shipped.* "L2 adds matched text
 regions" is wrong about both halves and is kept rather than rewritten, because
 what it assumed is the part worth reading. **L2 adds nothing to this document at
 all.** Regions live in a sibling file, `<stem>.regions.json` — same directory,
-same stem, the convention `<stem>.notes.json` and `taiyaku.stump.json` already
+same stem, the convention `<stem>.notes.json`, `<stem>.progress.json`,
+`<stem>.truth.json`, `<stem>.library.json` and `taiyaku.stump.json` already
 use — on grounds of size: they are per *page*, and one edition of 195 pages at a
 handful of blocks apiece is two orders of magnitude more JSON than a file whose
 first two design goals are human-readable and diffable in git. That is a
@@ -562,6 +576,68 @@ would reopen it is a pair the derived transform cannot serve: it was measured
 over twelve corpus volumes and can say nothing about an edition nobody has
 looked at. See `notes.md`, "Which derived transform maps a rect between
 editions", and `docs/status.md`, §5 of "What comes next".
+
+**A database is now a second consumer of this format.** `taiyaku-library`
+projects `taiyaku.json` into SQLite rows — `taiyaku library import` and
+`taiyaku serve <sidecar>...` both do it, through the one function that
+reconciles a sidecar against existing rows by content identity first — and
+`taiyaku library export` projects rows back out to `taiyaku.json` and its
+siblings, `<stem>.library.json` (§4.4 of
+`docs/superpowers/specs/2026-08-14-library-store-design.md`) among them.
+
+The format remains the interchange, and an existing install that only ever reads
+`taiyaku.json` files directly is unaffected: every rule in this document still
+describes what a reader must be able to parse, and a library that loses its
+database is rebuilt from these files.
+
+**It is not, however, merely a cache.** An earlier version of this paragraph
+said the database was "a cache of what a sidecar says … not a second source of
+truth for it", and that is not what was built. Import is a *merge*, not a load:
+`Sidecar::merge_spoke` reconciles the incoming document against what the rows
+already hold, carrying hand-corrected runs forward across a re-solve. So after
+one import the rows can differ from the file they came from — deliberately,
+that being the correction the reader made — and `taiyaku serve` serves the
+merged projection, not the file. The file catches up when someone runs
+`taiyaku library export`.
+
+**A hand correction now lands in both copies in the one request.** The reader's
+alignment editor writes `taiyaku.json` — the file is still first, being the copy
+a person can read, diff and back up — and then the `alignment` and `run` rows,
+before the corrected document is swapped into the server's memory. It used to
+write the file and memory alone, so until the next `serve` start re-imported
+that file the database every request is actually answered from did not know the
+correction had happened.
+
+Which is authoritative is therefore a question with a real answer rather than a
+nominal one: **for anything a reader edits through the server, the rows are, until
+an export**. That is why `library export` refuses to write over a work's source
+sidecar without `--in-place`, and why `--in-place` removes a sibling document
+whose state is now empty rather than leaving a stale one beside a current
+sidecar.
+
+**A document with nothing in it is not written at all**, which is the same rule
+read forwards. `<stem>.progress.json` and `<stem>.truth.json` have always
+worked this way — a reading position nobody recorded is the absence of a
+document, not a smaller one — and `<stem>.library.json` now does too. It used
+to be written unconditionally, so every `--in-place` export created a
+`{"taiyaku_library": 1, "updated": "…"}` in every work directory in the
+reader's library, one whose only field changed on every run: a permanently
+dirty file asserting nothing, in a project whose README promises the library is
+not modified. `<stem>.notes.json` is the exception and stays one, because the
+reader's own `getNotes` reads an empty notes document rather than treating an
+absent file as empty.
+
+**The rows are authoritative for a document they have actually held, and for no
+other.** A sibling file this library has never read — restored from a backup
+after the first import, copied back from another machine, or malformed and
+therefore skipped by design — is not a stale copy of anything the database
+holds, and `--in-place` leaves it exactly where it is and names it rather than
+overwriting or deleting it. That is also what keeps the documented recovery for
+a malformed sibling real: fixing the file and importing it again is only a
+recovery if the file is still there to fix. Nothing about the *format* changes;
+what changes is that a
+`taiyaku.json` on disk is now one of two copies, and knowing which is newer is
+the reader's to track.
 
 ## Previously open, now settled
 

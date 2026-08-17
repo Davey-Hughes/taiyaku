@@ -60,6 +60,82 @@ async fn the_reader_can_list_a_work_read_its_sidecar_and_fetch_a_page() {
     crate::test_support::cleanup("taiyaku-test-routes");
 }
 
+/// Task 14: `GET /api/works` answers objects rather than a bare list of ids.
+#[tokio::test]
+async fn listing_works_answers_objects_rather_than_bare_ids() {
+    let (router, _state) = crate::test_support::router_over_a_library().await;
+    let body =
+        crate::test_support::body_string(crate::test_support::get(&router, "/api/works").await)
+            .await;
+    let parsed: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let first = &parsed[0];
+    assert!(first["slug"].is_string());
+    assert!(first["title"].is_string());
+    assert!(first["editions"].is_array());
+}
+
+/// `series` and `volume` are answered as `null` — a present key whose value
+/// is `null` — rather than being left out of the object. Spec B's scanner is
+/// what would give either a value; nothing here invents one. Driven over
+/// `router_over_a_library`, the one fixture with a real library row: `w`'s
+/// row is inserted by `import::sidecar`, which never sets `series_id` or
+/// `volume`, so even a row that exists says nothing about either.
+#[tokio::test]
+async fn series_and_volume_answer_null_rather_than_being_omitted() {
+    let (router, _state) = crate::test_support::router_over_a_library().await;
+    let body =
+        crate::test_support::body_string(crate::test_support::get(&router, "/api/works").await)
+            .await;
+    let parsed: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let first = &parsed[0];
+    assert!(
+        first.get("series").is_some_and(serde_json::Value::is_null),
+        "series must be a present, null field: {first}"
+    );
+    assert!(
+        first.get("volume").is_some_and(serde_json::Value::is_null),
+        "volume must be a present, null field: {first}"
+    );
+}
+
+/// The cover is a URL, not bytes: page 0 of the hub edition, through the
+/// thumbnail route that already exists — no new route, and nothing here
+/// decodes or generates an image just to build a listing.
+#[tokio::test]
+async fn the_cover_url_addresses_page_zero_of_the_hub_edition() {
+    let (router, _state) = crate::test_support::router_over_a_library().await;
+    let body =
+        crate::test_support::body_string(crate::test_support::get(&router, "/api/works").await)
+            .await;
+    let parsed: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(parsed[0]["cover"], "/api/works/w/raw/pages/0/thumb");
+}
+
+/// A work loaded the pre-Task-15 way — `load_works`, paired with an empty
+/// library and no row at all (`test_support::state`) — still answers a slug
+/// and a title; only `series` and `volume` degrade, and to the same `null` a
+/// row nothing has scanned yet would answer. `taiyaku serve <sidecar>...`
+/// itself no longer takes this path since Task 15 (it imports first, so a
+/// served work always has a row) — but `load_works` is still public, still
+/// used directly by this crate's own fixtures and by the corpus-gated tests
+/// in `corpus.rs`, and must not regress to a null title for whoever still
+/// calls it that way.
+#[tokio::test]
+async fn a_work_with_no_library_row_still_lists_with_a_title() {
+    let state = Arc::new(crate::test_support::state(
+        "taiyaku-test-routes-list-no-row",
+    ));
+    let app = build_router(state);
+    let body =
+        crate::test_support::body_string(crate::test_support::get(&app, "/api/works").await).await;
+    let parsed: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(parsed[0]["slug"], "t");
+    assert_eq!(parsed[0]["title"], "T");
+    assert!(parsed[0]["series"].is_null());
+    assert!(parsed[0]["volume"].is_null());
+    crate::test_support::cleanup("taiyaku-test-routes-list-no-row");
+}
+
 /// `status.md` previously claimed no test dispatched an out-of-range
 /// page index through the router — true of the `/api/…` route
 /// specifically (the OPDS stream route had its own such test since Task
@@ -299,52 +375,68 @@ async fn the_last_slot_of_a_spread_carrying_edition_is_in_range() {
     );
 }
 
-/// O12: a progress read must not run on the async worker.
+/// O12/O8: a progress read must not run on the async worker.
 ///
-/// `get_page` has handed its work to `spawn_blocking` since M2 and these
-/// two handlers did not, so a position read — a file open on the same disk
-/// a page comes from, behind the same NFS mount — stalled a runtime thread
-/// for its whole duration. With a `current_thread` runtime, which is what
-/// this test pins deliberately, "a runtime thread" is the whole runtime.
+/// Restores `a_progress_read_does_not_stall_the_runtime`, removed when Task
+/// 13 moved progress off files and onto `taiyaku-library`'s SQLite
+/// connection, on the premise — recorded then, and wrong — that "an
+/// in-memory SQLite call has no comparable primitive to block a thread on
+/// for a controlled duration." `Library::conn()` returns a
+/// `MutexGuard<'_, Connection>` from a `Mutex<Connection>`
+/// (`taiyaku-library/src/lib.rs`): a lock a spawned thread can hold for a
+/// controlled span exactly as the old test held a FIFO open, and any
+/// handler that calls `library.conn()` inside its `spawn_blocking` closure
+/// blocks on it for as long as the guard is held. `get_progress` does
+/// exactly that (`crate::progress::load` → `library.conn()`), so this is
+/// O8's failure class — a blocking call inside an async handler stalling
+/// the reactor — proven on the same code path, with the mutex standing in
+/// for the FIFO as the controlled block.
 ///
-/// Staged with a FIFO at the progress path, because opening one for
-/// reading blocks until a writer arrives — a real block on the real code
-/// path, rather than an injected one. If the read runs on the worker,
-/// nothing else on that runtime runs at all, so the canary task never gets
-/// scheduled; a watchdog OS thread then rescues the request and records
-/// that it had to, so the failure is an assertion rather than a hung test
-/// run.
-///
-/// **The write path gets the same treatment and is not measured here.**
-/// `store` writes through a temp file whose name is unique per attempt
-/// (see `atomic::temp_path`), so there is no path a test can pre-create
-/// as a FIFO. It is covered by inspection and by sharing this one's
-/// shape.
+/// **The block's release is gated on the canary, not a fixed sleep.** A
+/// fixed sleep shorter than the watchdog's own deadline would let an
+/// unwrapped handler's block happen to end before the deadline fires,
+/// passing for the wrong reason — the same trap a fixed duration would set
+/// here that the old FIFO test avoided by having its own watchdog decide
+/// when to open the FIFO. Here the watchdog thread is the one holding
+/// `library.conn()`: it waits for the canary or half a second, whichever
+/// comes first, and only then drops the guard — so how long the block
+/// actually lasts is decided by whether the reactor was ever free to run
+/// anything else, which is the property under test, rather than by a
+/// duration picked in advance.
 #[tokio::test(flavor = "current_thread")]
 async fn a_progress_read_does_not_stall_the_runtime() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let state = crate::test_support::state("taiyaku-test-progress-blocking");
-    let fifo = crate::progress::progress_path(&state.works[0]);
-    let made = std::process::Command::new("mkfifo").arg(&fifo).status();
-    if !matches!(&made, Ok(status) if status.success()) {
-        crate::test_support::cleanup("taiyaku-test-progress-blocking");
-        eprintln!(
-            "NOT MEASURED: a_progress_read_does_not_stall_the_runtime \
-                 (mkfifo unavailable: {made:?})"
-        );
-        return;
-    }
-    let app = build_router(Arc::new(state));
+    let (router, state) = crate::test_support::router_over_a_library().await;
+
+    // A position to read back, so the eventual read proves more than "no
+    // content" — it proves the value written before the block still comes
+    // back correctly once the block lifts.
+    let put = router
+        .clone()
+        .oneshot(
+            Request::put("/api/works/w/progress")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"edition":"raw","slot":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put.status(), StatusCode::NO_CONTENT);
 
     let canary_ran = Arc::new(AtomicBool::new(false));
     let rescued_by_deadline = Arc::new(AtomicBool::new(false));
+    let (lock_taken_tx, lock_taken_rx) = std::sync::mpsc::channel();
 
     let watchdog = {
-        let fifo = fifo.clone();
+        let library = Arc::clone(&state.library);
         let canary_ran = Arc::clone(&canary_ran);
         let rescued_by_deadline = Arc::clone(&rescued_by_deadline);
         std::thread::spawn(move || {
+            let guard = library.conn();
+            lock_taken_tx
+                .send(())
+                .expect("the test thread is still waiting on this channel");
             // Half a second for a task on an idle runtime to be polled
             // once. Passing costs the first 10 ms of it; only a failure
             // waits the whole way out.
@@ -356,45 +448,56 @@ async fn a_progress_read_does_not_stall_the_runtime() {
             if !canary_ran.load(Ordering::SeqCst) {
                 rescued_by_deadline.store(true, Ordering::SeqCst);
             }
-            // Read *and* write. Opening a FIFO for writing alone blocks
-            // until a reader arrives, which would make this rescue the
-            // hang it exists to prevent; `O_RDWR` never blocks. Held
-            // briefly so a reader that has not opened yet still finds a
-            // writer, then dropped — the drop is what gives the read its
-            // EOF and lets the request finish.
-            let end = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&fifo);
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            drop(end);
+            drop(guard);
         })
     };
+    // Do not fire the request until the guard is confirmed held — otherwise
+    // the request's own `spawn_blocking` closure could win the mutex first
+    // and this would measure nothing.
+    lock_taken_rx
+        .recv()
+        .expect("the watchdog thread is still running");
 
-    // Spawned before the canary, so the runtime polls it first: by the
-    // time the canary would be scheduled, a read on the worker has
-    // already blocked.
-    let request = tokio::spawn(
-        app.oneshot(
-            Request::get("/api/works/t/progress")
-                .body(Body::empty())
-                .unwrap(),
-        ),
-    );
+    // Spawned before the canary, so the runtime polls it first: by the time
+    // the canary would be scheduled, a read behind `spawn_blocking` has
+    // already blocked on the mutex.
+    let request = tokio::spawn({
+        let router = router.clone();
+        async move {
+            router
+                .oneshot(
+                    Request::get("/api/works/w/progress")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+    });
     let canary = tokio::spawn({
         let canary_ran = Arc::clone(&canary_ran);
         async move { canary_ran.store(true, Ordering::SeqCst) }
     });
 
-    request.await.unwrap().unwrap();
+    let response = request.await.unwrap();
     canary.await.unwrap();
     watchdog.join().unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-progress-blocking");
     assert!(
         !rescued_by_deadline.load(Ordering::SeqCst),
         "the runtime polled nothing else for half a second: the progress read is \
              running on the async worker rather than behind spawn_blocking"
+    );
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 16)
+        .await
+        .unwrap();
+    let back: crate::Progress = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(back.edition, "raw");
+    assert_eq!(
+        back.slot, 1,
+        "the value written before the block still comes back correctly"
     );
 }
 
@@ -1265,6 +1368,94 @@ async fn a_correction_is_written_and_read_back() {
     );
 }
 
+/// How many runs in `work_id`'s **rows** were decided by hand.
+///
+/// Read through `taiyaku_library::project::sidecar` rather than off the `run`
+/// table directly: the projection is what `taiyaku serve` starts from and what
+/// `taiyaku library export` writes out, so a count taken here is a count of
+/// what a reader would actually get back.
+fn hand_runs_in_rows(library: &taiyaku_library::Library, work_id: i64) -> usize {
+    let conn = library.conn();
+    taiyaku_library::project::sidecar(&conn, work_id)
+        .expect("projecting the corrected work")
+        .alignments
+        .iter()
+        .flat_map(|a| &a.runs)
+        .filter(|r| r.by == Some(taiyaku_core::Source::Hand))
+        .count()
+}
+
+/// **O43: a hand correction reaches the library, not only the file.**
+///
+/// `serve` answers every request from the rows, so a correction the database
+/// has never heard of is a correction the next reader does not see — the file
+/// and the database disagree until something restarts and re-imports. The
+/// assertion is on the projection, immediately after the request, with nothing
+/// restarted in between.
+#[tokio::test]
+async fn a_correction_reaches_the_library_rows_without_a_restart() {
+    let (router, state, work_id, _fixture) =
+        crate::test_support::router_over_a_library_with_two_editions();
+    assert_eq!(
+        hand_runs_in_rows(&state.library, work_id),
+        0,
+        "the imported document is all solver runs, so the count below is the correction's"
+    );
+
+    let tag = etag_of(&router, "/api/works/w").await;
+    let (status, body) = correct_with_body(
+        &router,
+        "w",
+        &tag,
+        r#"{"from":"raw","to":"en","a":"2","b":"1","note":"checked"}"#,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+
+    assert_eq!(
+        hand_runs_in_rows(&state.library, work_id),
+        2,
+        "the slot asserted and the slot displaced are in the rows the next request reads from"
+    );
+}
+
+/// The other half of the round trip: what the rows hold now must also be what
+/// a restart leaves behind.
+///
+/// A restart is `taiyaku-cli`'s `serve_work` — `import::reimport` over the
+/// sidecar file — so this drives exactly that, from the bytes the handler
+/// wrote, and asserts the hand runs are still there afterwards. Both sides
+/// carry the correction by then, which is the point: the recovery path and the
+/// live write agree rather than one overwriting the other.
+#[tokio::test]
+async fn a_correction_survives_the_reimport_a_restart_performs() {
+    let (router, state, work_id, _fixture) =
+        crate::test_support::router_over_a_library_with_two_editions();
+    let tag = etag_of(&router, "/api/works/w").await;
+    let (status, body) = correct_with_body(
+        &router,
+        "w",
+        &tag,
+        r#"{"from":"raw","to":"en","a":"2","b":"1","note":"checked"}"#,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+
+    let path = state.works[0].path.clone();
+    let text = std::fs::read_to_string(&path).expect("the handler wrote the file");
+    let doc = taiyaku_core::Sidecar::from_json(&text).expect("the written file parses");
+    {
+        let conn = state.library.conn();
+        taiyaku_library::import::reimport(&conn, &doc, &path).expect("reimport");
+    }
+
+    assert_eq!(
+        hand_runs_in_rows(&state.library, work_id),
+        2,
+        "a restart re-importing the file keeps the correction rather than replacing it"
+    );
+}
+
 /// `Corrected::AlreadyTrue` — asserting a pairing the document already
 /// holds — must not touch the file at all: `patch_alignments` only calls
 /// `atomic::write` when `what != AlreadyTrue`. A write neither read nor
@@ -1644,6 +1835,40 @@ async fn a_work_with_no_notes_answers_an_empty_document_with_a_validator() {
     assert!(parsed.notes.is_empty());
 }
 
+/// `serve/truth.rs:3` states the rule: one serialisation shared by the file,
+/// the response body and the `ETag` over that body, so a validator can never
+/// be computed over bytes a client was not sent. Task 13 makes it one
+/// serialisation shared by the PROJECTION, the body and the validator — the
+/// same rule with one fewer writer. Driven over `router_over_a_library`
+/// rather than `test_support::state`, because this is the path Task 13
+/// actually rewired: a work with a real row in `state.library`, reached
+/// through `works::find_row` rather than through `works::row_id_for_write`
+/// minting one.
+#[tokio::test]
+async fn a_notes_etag_is_computed_over_the_bytes_that_were_sent() {
+    let (router, _state) = crate::test_support::router_over_a_library().await;
+    let response = crate::test_support::get(&router, "/api/works/w/notes").await;
+    let etag = response.headers().get("etag").expect("an etag").clone();
+    let body = crate::test_support::body_string(response).await;
+
+    let recomputed = crate::notes::etag_for(&body);
+    assert_eq!(etag, recomputed);
+}
+
+/// The identical invariant on truth's side of `notes_etag`'s shared
+/// implementation — `truth.rs`'s own doc comment claims `notes.rs`'s rule
+/// rather than a second one, so this is the same test, over `/truth`.
+#[tokio::test]
+async fn a_truth_etag_is_computed_over_the_bytes_that_were_sent() {
+    let (router, _state) = crate::test_support::router_over_a_library().await;
+    let response = crate::test_support::get(&router, "/api/works/w/truth").await;
+    let etag = response.headers().get("etag").expect("an etag").clone();
+    let body = crate::test_support::body_string(response).await;
+
+    let recomputed = crate::notes::etag_for(&body);
+    assert_eq!(etag, recomputed);
+}
+
 /// The same validator answers `304` on the next load, which is what keeps
 /// a per-page-load read of a document that rarely changes off the wire.
 #[tokio::test]
@@ -1699,6 +1924,7 @@ async fn notes_for_an_unknown_work_are_a_404_naming_it() {
 async fn stored_notes_are_served_and_change_the_validator() {
     let state = crate::test_support::state("taiyaku-test-notes-stored");
     crate::notes::store(
+        &state.library,
         &state.works[0],
         &crate::notes::Notes {
             work: "t".into(),
@@ -2028,15 +2254,29 @@ async fn writing_truth_without_if_match_is_refused() {
 }
 
 #[tokio::test]
-async fn a_successful_truth_write_returns_an_etag() {
+async fn a_successful_truth_write_stores_the_document_and_returns_an_etag() {
     // O35: a PUT response with no ETag turns every later write into a
     // silent no-op. The notes route was fixed for exactly this; truth has
     // the same shape and must not repeat it.
+    //
+    // **And the document is read back**, which is the half this test used to
+    // be missing. It sent an empty `TruthDoc::new()` and asserted the status
+    // and the header only — a body indistinguishable from what a no-op
+    // produces — so `truth::store`'s entire body could be replaced with
+    // `Ok(())` and all 609 tests in this crate and `taiyaku-cli` stayed green
+    // (whole-branch review 2, I4). This is the only save path the labelling
+    // tool has: a regression here loses 75 pages of hand work behind a 200
+    // OK. Assert the payload, not the status.
     let (state, _fixture) = crate::test_support::state_with_real_pages();
     let router = build_router(state);
     let tag = etag_of(&router, "/api/works/w/truth").await;
-    let body = taiyaku_core::TruthDoc::new().to_json();
+    let body = r#"{"taiyaku_truth":1,"editions":{"a":{
+        "members":[{"sha256":"real"}],
+        "pages":{"0":[{"x":0.1,"y":0.2,"w":0.3,"h":0.4,"axis":"v",
+                       "kind":"dialogue","ignore":false,"text":"ハロー"}],
+                 "1":[]}}}}"#;
     let response = router
+        .clone()
         .oneshot(
             Request::put("/api/works/w/truth")
                 .header("content-type", "application/json")
@@ -2050,6 +2290,38 @@ async fn a_successful_truth_write_returns_an_etag() {
     assert!(
         response.headers().contains_key(header::ETAG),
         "O35: without this every later write is a silent no-op"
+    );
+
+    let got = router
+        .oneshot(
+            Request::get("/api/works/w/truth")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(got.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(got.into_body(), 1 << 16)
+        .await
+        .expect("body");
+    let back: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    let edition = &back["editions"]["a"];
+    assert_eq!(
+        edition["members"][0]["sha256"].as_str(),
+        Some("real"),
+        "the provenance the boxes were drawn against came back: {back}"
+    );
+    let region = &edition["pages"]["0"][0];
+    assert_eq!(region["x"].as_f64(), Some(0.1));
+    assert_eq!(region["h"].as_f64(), Some(0.4));
+    assert_eq!(region["kind"].as_str(), Some("dialogue"));
+    assert_eq!(region["axis"].as_str(), Some("v"));
+    assert_eq!(region["text"].as_str(), Some("ハロー"));
+    assert_eq!(
+        edition["pages"]["1"].as_array().map(Vec::len),
+        Some(0),
+        "page 1 was examined and found empty; a present, empty key is the \
+         labelling progress tracker, not a page nobody opened"
     );
 }
 
@@ -2190,6 +2462,33 @@ async fn the_work_list_names_every_work_rather_than_being_merely_ok() {
         .await
         .unwrap();
     crate::test_support::cleanup("taiyaku-test-routes-list");
-    let ids: Vec<String> = serde_json::from_slice(&body).expect("a JSON array of ids");
-    assert_eq!(ids, vec!["t".to_string()]);
+    // Task 14: a JSON array of objects rather than of bare ids — `slug` is
+    // this object's `id`.
+    let listed: Vec<serde_json::Value> = serde_json::from_slice(&body).expect("a JSON array");
+    let slugs: Vec<&str> = listed
+        .iter()
+        .map(|w| w["slug"].as_str().expect("slug is a string"))
+        .collect();
+    assert_eq!(slugs, vec!["t"]);
+}
+
+/// `works::summary`'s `SELECT` against `state.library` can fail — a locked
+/// or corrupted database — and `list_works` answers `500` rather than
+/// propagating a panic through `spawn_blocking`. Forced by dropping the very
+/// table the query reads, since nothing else in this fixture can make
+/// SQLite refuse it.
+#[tokio::test]
+async fn a_broken_library_connection_answers_500_rather_than_panicking() {
+    let state = crate::test_support::state("taiyaku-test-routes-list-db-broken");
+    state
+        .library
+        .conn()
+        .execute("DROP TABLE work", [])
+        .expect("drop the table `summary` queries");
+    let app = build_router(Arc::new(state));
+
+    let response = crate::test_support::get(&app, "/api/works").await;
+
+    crate::test_support::cleanup("taiyaku-test-routes-list-db-broken");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/taiyaku-core", "crates/taiyaku-read", "crates/taiyaku-serve", "crates/taiyaku-cli", "crates/taiyaku-wasm"]
+members = ["crates/taiyaku-core", "crates/taiyaku-read", "crates/taiyaku-serve", "crates/taiyaku-cli", "crates/taiyaku-wasm", "crates/taiyaku-library"]
 # `spike/` lives outside the workspace so its dependency and its lint standards
 # cannot reach the real crates or CI. It used to say "delete once the findings
 # land"; they landed twice and it was stripped to one file on 2026-08-12. What

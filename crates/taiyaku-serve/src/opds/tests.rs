@@ -460,6 +460,7 @@ async fn a_cover_for_an_unknown_work_or_edition_names_what_was_missing() {
 #[tokio::test]
 async fn a_percent_encoded_edition_key_in_the_feed_routes_back_to_the_same_edition() {
     let state = Arc::new(ServeState {
+        library: crate::test_support::library(),
         works: vec![crate::test_support::work_with_edition_key(
             "taiyaku-test-opds-percent",
             "raw color",
@@ -676,6 +677,7 @@ async fn the_cover_cache_key_follows_locate_past_a_pageless_first_member() {
         .join("taiyaku-test-opds-cover-pageless-first-member")
         .join("covers");
     let state = Arc::new(ServeState {
+        library: crate::test_support::library(),
         works: vec![work_with_a_pageless_first_member(
             "taiyaku-test-opds-cover-pageless-first-member",
         )],

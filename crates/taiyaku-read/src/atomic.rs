@@ -1,38 +1,45 @@
 //! Write a file so a crash cannot publish half of one.
 //!
-//! Five callers, counted rather than remembered: `progress::store` (O2),
-//! `cover.rs`'s generated cover, `notes::store`, the sidecar rewritten by a
-//! correction in `routes.rs`, and `taiyaku-cli`'s `write_sidecar`. The first
-//! two carried their own copy of this and said so in a comment; a third copy
-//! is where a comment asking whoever changes one to keep the others in step
-//! stops being good enough.
+//! **Eight call sites**, from `rg -n 'atomic::write' crates/` on 2026-08-14
+//! rather than from anyone's memory: in `taiyaku-serve`, `progress::store`,
+//! `notes::store`, `truth::store`, the sidecar rewritten by a correction in
+//! `routes.rs`, and **two** in `cover.rs`; in `taiyaku-cli`, `write_sidecar`
+//! — behind both `align --write` and `credits --write` — and `regions.rs`.
 //!
-//! **This tally said "three" while it was already four, and the count was
-//! raised to "four" while it was already five.** Both times the number was
-//! written from memory of what this module was for rather than from the call
-//! sites. `notes::store` was the one missed twice. If you add a caller, grep
-//! for `atomic::write` and count what comes back.
+//! **This tally has now been wrong three times, and the third is the reason
+//! the instruction below is phrased as a command.** It said "three" while it
+//! was four, then "four" while it was five, and then sat at five through
+//! `truth.rs` landing on 2026-08-11 — so it was five while it was six, for
+//! three days, in a comment whose entire subject is that it keeps being
+//! wrong. The move to this crate on 2026-08-14 was drafted with a corrected
+//! count that was *also* wrong, because it too was written from this
+//! paragraph rather than from the code.
 //!
-//! **O26 added a sixth command-line writer and the count did not move**, which
-//! is the point of counting call sites rather than commands: `taiyaku credits
-//! --write` and `taiyaku align --write` both go through one `write_sidecar`,
-//! so there is one call site for the two of them. A tally of commands would
-//! now be wrong.
+//! **So: if you touch this module, run the grep and count what comes back.**
+//! Do not update this number by reading the sentence above and adding one.
 //!
-//! The last is in another crate, which is why this module is `pub`. It is not
-//! a server concern that happens to be reachable — a sidecar is a sidecar
-//! whoever rewrites it, and the alternative to exporting this was another copy
-//! of write-and-rename in `taiyaku-cli`.
+//! It lives in `taiyaku-read` rather than in the server because it is not a
+//! server concern — a sidecar is a sidecar whoever rewrites it — and because
+//! `taiyaku-library` needs it for export and must not depend on
+//! `taiyaku-serve`. It was in `taiyaku-serve` until 2026-08-14 and moved down
+//! rather than being copied.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A temp path nothing else will ever pick.
 ///
+/// `pub` rather than `pub(crate)` since 2026-08-14, when this module moved
+/// down a crate. `taiyaku-serve`'s cover cache asserts a joint property of
+/// this function and its own `cache_path` — that a temp name never ends where
+/// the read path would find it, so an unrenamed leftover can never be served
+/// as a real cover — and that test cannot move here, because this crate knows
+/// nothing about covers.
+///
 /// A process id plus a monotonic per-process counter. Two devices writing one
 /// work through one server is two requests in one process, so the counter
 /// carries that case; two servers over one directory is what the pid carries.
-pub(crate) fn temp_path(path: &Path, extension: &str) -> PathBuf {
+pub fn temp_path(path: &Path, extension: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();

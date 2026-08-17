@@ -16,7 +16,12 @@
  * fresh clone. `Resolver` as a *type* costs nothing; `wasmResolver` as a value
  * would cost the whole test file.
  */
-import type { FetchedNotes, FetchedSidecar, StoredProgress } from './api'
+import type {
+  FetchedNotes,
+  FetchedSidecar,
+  StoredProgress,
+  WorkSummary,
+} from './api'
 import type { Direction } from './modules/direction'
 import type { NotesDoc } from './notes'
 import { restore, type ReadingState } from './reading'
@@ -57,6 +62,16 @@ export interface Session {
 }
 
 /**
+ * Enough of a work listing entry to open the first one. `api.ts`'s
+ * `WorkSummary` is the full row a browse screen (spec C1) will read; a load
+ * only ever addresses `.slug`. `title` and `editions` stay on this `Pick`
+ * rather than being dropped to just `slug` — a real caller (`listWorks`
+ * itself) already has the whole `WorkSummary` and hands it through unchanged,
+ * so narrowing further here would buy this file nothing.
+ */
+export type WorkListing = Pick<WorkSummary, 'slug' | 'title' | 'editions'>
+
+/**
  * The five reads a load makes, injected.
  *
  * `api.ts`'s four functions and `resolver.ts`'s `wasmResolver`. Ports rather
@@ -65,7 +80,7 @@ export interface Session {
  * module is for and a test that cannot see the order cannot assert on it.
  */
 export interface StartupPorts {
-  works(): Promise<string[]>
+  works(): Promise<WorkListing[]>
   sidecar(work: string): Promise<FetchedSidecar>
   /** `wasmResolver`, injected — see this file's own doc. Never imported here. */
   resolve(json: string): Promise<Resolver>
@@ -113,22 +128,22 @@ export interface Opened {
 export async function openFirstWork(ports: StartupPorts): Promise<Opened> {
   const [work] = await ports.works()
   if (!work) throw new Error('no works available')
-  const fetched = await ports.sidecar(work)
+  const fetched = await ports.sidecar(work.slug)
   const sidecar: SidecarShape = JSON.parse(fetched.json)
   const editions = orderedEditions(sidecar.hub, Object.keys(sidecar.editions))
   const [hub] = editions
-  if (!hub) throw new Error(`${work} defines no editions`)
+  if (!hub) throw new Error(`${work.slug} defines no editions`)
   const resolver = await ports.resolve(fetched.json)
-  const progress = await ports.progress(work)
+  const progress = await ports.progress(work.slug)
   let notesError: unknown
-  const notes = await ports.notes(work).catch((err: unknown) => {
+  const notes = await ports.notes(work.slug).catch((err: unknown) => {
     notesError = err
     return undefined
   })
   const state = restore(progress, hub, resolver)
   return {
     session: {
-      work,
+      work: work.slug,
       resolver,
       reading: sidecar.work.reading,
       editions,
@@ -141,7 +156,7 @@ export async function openFirstWork(ports: StartupPorts): Promise<Opened> {
       previous: initialPrevious(editions, state.authority),
     },
     etag: fetched.etag,
-    notes: notes?.doc ?? { work, notes: [] },
+    notes: notes?.doc ?? { work: work.slug, notes: [] },
     notesEtag: notes?.etag,
     notesError,
   }

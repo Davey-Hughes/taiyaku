@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use rusqlite::OptionalExtension;
 use taiyaku_core::Sidecar;
 
 /// One work the server can serve, and where its sidecar came from.
@@ -82,25 +83,6 @@ impl Work {
             Ok(held) => held.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         }
-    }
-
-    /// A file beside this work's sidecar, sharing its stem.
-    ///
-    /// Three files now live to this rule — `taiyaku.progress.json`,
-    /// `taiyaku.stump.json` and `taiyaku.notes.json` — and the stem arithmetic
-    /// was written twice before the third arrived, which is where a comment
-    /// asking whoever changes one to keep the others in step stops being good
-    /// enough. A sidecar with no stem at all falls back to `taiyaku`, the
-    /// convention this project documents for the file itself.
-    pub fn sibling(&self, suffix: &str) -> PathBuf {
-        let stem = self.path.file_stem().map_or_else(
-            || "taiyaku".to_string(),
-            |s| s.to_string_lossy().to_string(),
-        );
-        self.path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(format!("{stem}.{suffix}"))
     }
 
     /// Read, change and replace under one exclusive lock.
@@ -208,6 +190,209 @@ pub fn load_works(paths: &[PathBuf]) -> Result<Vec<Work>, String> {
         works.push(Work::new(id, path.clone(), sidecar));
     }
     Ok(works)
+}
+
+/// One work as `GET /api/works` (`routes::list_works`) answers it: enough to
+/// identify a work, group it under a series and show its cover, without
+/// shipping the sidecar itself.
+///
+/// **`series` and `volume` come from `state.library`'s rows, not from the
+/// sidecar** — `taiyaku_core::Sidecar` has no field for either, because a
+/// series grouping and a volume number are spec B's scanner's job, not the
+/// aligner's. Both are `None` today, honestly rather than by omission:
+/// nothing writes `work.series_id` or `work.volume` yet (`import::sidecar`'s
+/// `INSERT`/`UPDATE` never touch them), so a work with a library row answers
+/// exactly what one without a row — the `load_works` path, which
+/// `taiyaku serve <sidecar>...` no longer takes in production since Task 15,
+/// but which this crate's own fixtures and `corpus.rs` still call directly —
+/// answers. `title` and `editions` are not looked up a second time here: they
+/// come from `work.sidecar()`, which for a `Work` built by `taiyaku-cli`'s
+/// `serve_work` is itself projected from rows (`taiyaku_library::project::sidecar`)
+/// rather than parsed from a file, so this is still "from rows" for the path
+/// Task 15 made the production one.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct WorkSummary {
+    pub(crate) slug: String,
+    pub(crate) title: String,
+    pub(crate) series: Option<String>,
+    pub(crate) volume: Option<f64>,
+    pub(crate) editions: Vec<String>,
+    pub(crate) cover: String,
+}
+
+/// Build one work's listing entry.
+///
+/// A bare `SELECT` against `state.library`, never a write — unlike
+/// `row_id_for_write`, this is a read and `find_row`'s rule applies: a work
+/// this library has never been told to remember stays unremembered rather
+/// than being minted a row just because someone listed it.
+///
+/// `cover` is a thumbnail URL, not bytes: page 0 of the hub edition, through
+/// the existing `/api/works/{work}/{edition}/pages/{index}/thumb` route
+/// (`routes::get_thumb`) — the same page `opds::cover` already treats as "the"
+/// cover of an edition, so this adds no new route and generates no image at
+/// list time.
+///
+/// # Errors
+///
+/// Returns an error if the `SELECT` against `conn` fails.
+pub(crate) fn summary(conn: &rusqlite::Connection, work: &Work) -> Result<WorkSummary, String> {
+    let sidecar = work.sidecar();
+    let (volume, series): (Option<f64>, Option<String>) = conn
+        .query_row(
+            "SELECT w.volume, s.sort_title FROM work w \
+             LEFT JOIN series s ON s.id = w.series_id \
+             WHERE w.slug = ?1",
+            [&work.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("reading library metadata for `{}`: {e}", work.id))?
+        .unwrap_or((None, None));
+
+    let cover = format!(
+        "/api/works/{}/{}/pages/0/thumb",
+        crate::opds::percent_encode(&work.id),
+        crate::opds::percent_encode(&sidecar.hub),
+    );
+
+    Ok(WorkSummary {
+        slug: work.id.clone(),
+        title: sidecar.work.title.clone(),
+        series,
+        volume,
+        editions: sidecar.editions.keys().cloned().collect(),
+        cover,
+    })
+}
+
+/// The single seeded user (`taiyaku-library`'s migration 1: `INSERT INTO
+/// user (id, name, role) VALUES (1, 'local', 'admin')`) that every note and
+/// reading position belongs to until spec A2 gives this server real
+/// accounts. `taiyaku-library`'s own `export.rs` carries the identical
+/// constant with the identical reasoning; that crate cannot depend on this
+/// one, so the constant cannot be shared, only agreed on in two places.
+/// Revisit this constant, not its call sites, once a library can hold more
+/// than one real account.
+pub(crate) const LOCAL_USER: i64 = 1;
+
+/// The library's own numeric id for a work this server already knows by its
+/// slug (`work.id`), or `None` where nothing has ever been written against
+/// it.
+///
+/// **A read never creates a row.** `progress::load`, `notes::load` and
+/// `truth::load` all treat "no row" as "nothing recorded" and answer
+/// accordingly, so a lookup that inserted one as a side effect of a `GET`
+/// would turn every first read into a write nobody asked for.
+///
+/// # Errors
+///
+/// Returns an error if SQLite fails.
+pub(crate) fn find_row(conn: &rusqlite::Connection, work: &Work) -> Result<Option<i64>, String> {
+    find_row_by_slug(conn, &work.id)
+}
+
+/// [`find_row`] by slug alone, for the caller that cannot borrow the `Work`'s
+/// document — see [`row_id_for_document`].
+fn find_row_by_slug(conn: &rusqlite::Connection, slug: &str) -> Result<Option<i64>, String> {
+    conn.query_row("SELECT id FROM work WHERE slug = ?1", [slug], |row| {
+        row.get(0)
+    })
+    .optional()
+    .map_err(|e| format!("looking up work `{slug}` in the library: {e}"))
+}
+
+/// The library's own numeric id for a work, minted on first write if this is
+/// the first state anything has recorded against it.
+///
+/// **Bridges two identities this task did not get to unify.**
+/// `ServeState.works` holds `Work`s keyed by slug (`work.id`, a `String`);
+/// `taiyaku-library` keys `progress`, `notes` and `truth` on the numeric
+/// `work.id` row `taiyaku_library::import::sidecar` assigns. A `Work` built
+/// by `taiyaku-cli`'s `serve_work` — every `taiyaku serve <sidecar>...`
+/// invocation since Task 15 — already has a matching row, its slug having
+/// come from one, so this is a lookup and never a mint. A `Work` built by
+/// `load_works`, which is now this crate's own fixtures and `corpus.rs`
+/// only, has never been imported, so nothing in `library`'s `work` table
+/// names it yet. Looked up by slug on every call rather than
+/// cached on `Work`, because `Work` has to keep its shape (Task 12's whole
+/// claim) — there is nowhere on it to cache a numeric id even for the one
+/// call site the answer would save a query on.
+///
+/// A row minted here carries only what the three state tables' foreign keys
+/// need to resolve, plus the columns `work` declares `NOT NULL` —
+/// `title`/`reading`/`hub`/`sidecar_path`, copied from the sidecar this
+/// server already holds in memory rather than reread. **`content_key` is a
+/// placeholder**, `bridge:{slug}` rather than a real content hash: nothing
+/// here re-derives one (that is `taiyaku_library::identity::content_key`,
+/// which wants the hub edition's member hashes in a shape this function has
+/// no reason to recompute), and nothing yet reads this row's `content_key`
+/// for any purpose `import::sidecar` itself does not already own. It only
+/// has to be unique, which the slug it is derived from already is among the
+/// works this server was started with.
+///
+/// `INSERT OR IGNORE` rather than a bare `INSERT`: `put_progress` writes with
+/// no `notes_guard` held, so two racing first writes to one work can both
+/// reach here before either has committed. Both compute the identical
+/// `content_key` and `slug`, so the loser's insert is a deliberate no-op
+/// rather than a `UNIQUE` violation, and the `SELECT` that follows finds
+/// whichever of the two committed first.
+///
+/// # Errors
+///
+/// Returns an error if SQLite fails.
+pub(crate) fn row_id_for_write(conn: &rusqlite::Connection, work: &Work) -> Result<i64, String> {
+    row_id_for_document(conn, &work.id, &work.sidecar(), &work.path)
+}
+
+/// [`row_id_for_write`] for a caller that already holds the document.
+///
+/// `patch_alignments` runs its whole read-modify-write inside `Work::update`,
+/// which holds `Work`'s sidecar `RwLock` for writing — and `std::sync::RwLock`
+/// is not reentrant, so `work.sidecar()` there would take the read lock on a
+/// lock this thread already holds and hang the request forever. The closure is
+/// handed the document instead, which is the same `Arc` `sidecar()` would have
+/// returned, so this takes the three fields the insert needs directly.
+///
+/// # Errors
+///
+/// Returns an error if SQLite fails.
+pub(crate) fn row_id_for_document(
+    conn: &rusqlite::Connection,
+    slug: &str,
+    sidecar: &Sidecar,
+    path: &Path,
+) -> Result<i64, String> {
+    if let Some(id) = find_row_by_slug(conn, slug)? {
+        return Ok(id);
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO work (content_key, slug, title, reading, hub, sidecar_path)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            format!("bridge:{slug}"),
+            slug,
+            sidecar.work.title,
+            direction_text(sidecar.work.reading),
+            sidecar.hub,
+            path.to_string_lossy(),
+        ],
+    )
+    .map_err(|e| format!("registering work `{slug}` in the library: {e}"))?;
+    find_row_by_slug(conn, slug)?.ok_or_else(|| {
+        format!("work `{slug}` was just registered in the library but cannot be found")
+    })
+}
+
+/// `taiyaku-library/src/import.rs`'s private `direction_text`, duplicated
+/// rather than exposed across the crate boundary: it is one match arm, and
+/// the alternative is making a function `pub` whose only reason to exist is
+/// this bridge.
+fn direction_text(direction: taiyaku_core::Direction) -> &'static str {
+    match direction {
+        taiyaku_core::Direction::RightToLeft => "rtl",
+        taiyaku_core::Direction::LeftToRight => "ltr",
+    }
 }
 
 #[cfg(test)]

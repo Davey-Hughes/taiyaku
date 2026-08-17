@@ -11,10 +11,17 @@ authors.workspace = true
 [dependencies]
 axum = "0.8"
 image = "0.25.9"
+# Already in the dependency tree via taiyaku-library — named directly here
+# only so `works.rs`'s bridge from a slug-keyed `Work` to the library's
+# numeric `work.id` (Task 13) can name `rusqlite::Connection` and use
+# `OptionalExtension`/`params!`. Same version taiyaku-library pins, so the
+# resolver unifies one copy rather than two.
+rusqlite = "0.38"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 taiyaku-core = { path = "../taiyaku-core" }
+taiyaku-library = { path = "../taiyaku-library" }
 taiyaku-read = { path = "../taiyaku-read" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ureq = "3.3.0"

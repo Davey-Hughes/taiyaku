@@ -87,6 +87,14 @@ impl Binding {
     /// names what failed to read (`"not a readable taiyaku.json"`) and the
     /// line and column `serde_json` located the fault at, so a caller
     /// handed a malformed `taiyaku.json` learns why rather than only that.
+    ///
+    /// Also if the document declares a format version newer than this build
+    /// reads (`Sidecar::readable_version`). The reader is served its document
+    /// by `taiyaku serve`, which projects it out of rows stamped with this
+    /// build's `VERSION`, so that refusal is not reachable through the app as
+    /// shipped — it is reachable for anything handing this binding a file, and
+    /// resolving pages through a document half of whose geometry was silently
+    /// discarded is the failure it prevents.
     pub fn from_json(json: &str) -> Result<Self, String> {
         Ok(Self {
             sidecar: Sidecar::from_json(json)?,

@@ -68,7 +68,13 @@ const STATUS_MD = process.argv[3] ?? 'docs/status.md'
 // Each live claim, with the prose that identifies it. Anchored on distinctive
 // wording rather than on a line number, which every edit above them shifts.
 const CLAIMS = [
-  { name: 'the crate summary', pattern: /Five crates, ([\d,]+) tests/ },
+  // The leading count word is matched as `\w+` rather than spelled out, for
+  // the same reason the comment on the next claim gives: it is exactly the
+  // thing that drifts. This one used to spell it out (`Five crates, …`), and
+  // the day a sixth crate landed the checker reported the claim as *missing*
+  // rather than as wrong — the confusing failure the next claim's comment
+  // already warned about, applied to only one of the two claims.
+  { name: 'the crate summary', pattern: /\w+ crates, ([\d,]+) tests/ },
   // The leading count word is matched as `\w+` rather than spelled out.
   // That word is exactly the thing that drifts — `status.md`'s own open-items
   // section records the same word going wrong three times — so anchoring on it

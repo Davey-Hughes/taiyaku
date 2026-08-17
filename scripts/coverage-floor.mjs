@@ -23,9 +23,27 @@
 // `cargo llvm-cov --fail-under-lines 93` is workspace-aggregate and has exactly
 // the same blind spot. Measured 2026-08-14, after the test modules moved into
 // their own files and the two `test_support` modules joined the exclusion list:
-// 7169 lines, 6735 covered, 93.95%. A module can go entirely dark and the
-// aggregate still passes as long as it accounts for **67 covered lines or
-// fewer**, which is 17 of the 43 files in the report.
+// 7169 lines, 6735 covered, 93.95%. A module could go entirely dark and the
+// aggregate still passed as long as it accounted for **67 covered lines or
+// fewer**, which was 17 of the 43 files in the report.
+//
+// **That slack is now derived rather than written down, and this run prints
+// it.** `covered - ceil(93% of total)`, and every file at or under it, come out
+// of the same report this script already walks — see `reportAggregate` at the
+// bottom of this file, and `docs/ci.md` for what the figure means and one dated
+// measurement of it. The figures used to be restated here, in `check-all.sh`,
+// in `docs/ci.md` and in `docs/status.md`, with the at-or-under file list
+// spelled out twice; nothing derived any of the four, and they were three
+// commits stale by the time anyone looked (delta review M9). A note that
+// re-derives itself on every run cannot be.
+//
+// The shape of the number is the part worth carrying in prose, because it is
+// what makes the per-file floor below necessary: the slack **widens as coverage
+// rises**, so a branch that improves coverage enlarges the set of modules the
+// aggregate would let go entirely dark. It was 8 lines at one commit on
+// 2026-08-17 — briefly no blind spot at all — and 64 lines and 20 files a few
+// commits later. **This file's own threshold is the part that does not move
+// with the margin**, which is exactly why the aggregate alone was never enough.
 //
 // **That blind spot used to be an order of magnitude wider, and the reason is
 // worth knowing.** Until this branch every `#[cfg(test)] mod tests` lived inline
@@ -196,7 +214,12 @@ const FORMATS = [
           // would quietly pass such a file rather than flag it.
           if (typeof pct === 'number') pcts[metric] = pct
         }
-        yield { file: file.replace(/^.*\/web\//, 'web/'), pcts }
+        const { total, covered } = metrics.lines ?? {}
+        yield {
+          file: file.replace(/^.*\/web\//, 'web/'),
+          pcts,
+          lines: { count: total ?? 0, covered: covered ?? 0 },
+        }
       }
     },
   },
@@ -204,13 +227,15 @@ const FORMATS = [
     name: 'cargo llvm-cov json export',
     tree: 'the Rust workspace',
     detect: (report) => Array.isArray(report?.data?.[0]?.files),
-    // **43 files measured on a clean tree, across five crates; eleven of
+    // **53 files measured on a clean tree, across six crates; thirteen of
     // margin.** The count can only fall three ways: the
     // `--ignore-filename-regex` widens, a crate leaves the workspace, or files
-    // are merged. Eleven files are excluded by name today — counted from the
-    // reports, against nine alternations in the regex, because `/corpus` matches
-    // two and `test_support` matches two — so the margin leaves room for that
-    // list to grow a little without a coverage edit becoming a gate edit.
+    // are merged. Twelve files are excluded by name today — counted from the
+    // reports, against the same nine alternations in the regex, because
+    // `/corpus` now matches three (`taiyaku-cli`, `taiyaku-serve` and the new
+    // `taiyaku-library`) and `test_support` still matches two — so the margin
+    // leaves room for that list to grow a little without a coverage edit
+    // becoming a gate edit.
     //
     // It read 44 immediately before 2026-08-14 — the 38 this comment used to
     // claim was itself four crates and six files stale. Moving the test modules
@@ -223,14 +248,43 @@ const FORMATS = [
     // 44 to 43. The 50 new `tests.rs` files do not appear at all — see the note
     // at the top of this file.
     //
-    // It trips when a crate of twelve files or more leaves the report, which
-    // today is `taiyaku-serve` at 17 or `taiyaku-cli` at 14 but not
-    // `taiyaku-core` at 8 — and this is also the check ci.yml's exclusion
-    // comment used to ask a *reader* to perform by hand ("check the file count
-    // when adding a crate").
-    minFiles: 32,
+    // **Re-measured 2026-08-16, after the library store landed as a sixth
+    // crate.** 43 → 52: `taiyaku-library` contributes 8 measured files
+    // (`corpus.rs` excluded, joining the `/corpus` alternation above) and
+    // `taiyaku-cli` gained `library.rs`, the CLI half of `library import|export`
+    // (14 → 15); the remaining difference is the two smallest crates, unrelated
+    // to this change.
+    //
+    // **Re-measured again 2026-08-17**, after the same review's C3 fix added
+    // `taiyaku-library/src/migrate.rs`: 52 → 53, the whole difference being
+    // that one file. Counted directly from the report rather than reasoned
+    // about, the same way the paragraph above insists on: `taiyaku-cli` 15,
+    // `taiyaku-core` 8, `taiyaku-library` 9, `taiyaku-read` 3, `taiyaku-serve`
+    // 16, `taiyaku-wasm` 2.
+    //
+    // It trips when a crate of fourteen files or more leaves the report, which
+    // today is `taiyaku-serve` at 16 or `taiyaku-cli` at 15, but not
+    // `taiyaku-library` at 9 or `taiyaku-core` at 8 — and this is also the
+    // check ci.yml's exclusion comment used to ask a *reader* to perform by
+    // hand ("check the file count when adding a crate").
+    minFiles: 40,
+    // The **aggregate** line threshold, which this script does not enforce —
+    // `cargo llvm-cov --fail-under-lines` does, one command earlier. It is here
+    // only to derive the slack printed at the end of a run: `covered - ceil(93%
+    // of total)`, the number of covered lines a module could lose with the
+    // aggregate still green, and therefore the size of module the aggregate is
+    // structurally blind to.
+    //
+    // **A mirrored number, and checked rather than trusted** — see
+    // `aggregateFloorFrom` below and `assertAggregateFloorMatches`. Four
+    // documents used to state that slack, and the eleven-file list under it,
+    // as a present-tense fact, with nothing deriving any of them; a run now
+    // prints the current figures and the prose is one dated measurement in
+    // `docs/ci.md` (delta review M9).
+    aggregateFloor: 93,
+    aggregateFloorFrom: 'scripts/check-all.sh',
     // **Lines only, and the other three are measured refusals, not oversights.**
-    // `branches` is `count: 0` on all 43 files — llvm-cov emits no branch data
+    // `branches` is `count: 0` on all 53 files — llvm-cov emits no branch data
     // without a nightly flag — so any floor on it would fail every file.
     // `regions` and `instantiations` read far below lines on `match`-heavy and
     // generic code (lowest measured 2026-08-14: 72.22% for regions on
@@ -244,15 +298,45 @@ const FORMATS = [
       // then taiyaku-serve/src/lib.rs 77.85%, taiyaku-cli/src/credits.rs
       // 82.51%, taiyaku-core/src/regions.rs 85.71%, stump/resolve.rs 87.61%.
       //
-      // Every one of those figures fell on 2026-08-14 without a line of
+      // *Re-measured 2026-08-16, after the library store moved progress, notes
+      // and truth onto rows: the worst five changed with them, not the floor.*
+      // `taiyaku-serve/src/truth.rs` went from the worst file to 100% — it is
+      // now a thin projection over `taiyaku-library`'s rows — and the new
+      // worst file is the crate that replaced it: taiyaku-library/src/lib.rs
+      // 73.81%, then taiyaku-serve/src/lib.rs 78.12%, taiyaku-cli/src/credits.rs
+      // 82.51% (unmoved), taiyaku-serve/src/works.rs 84.66%, taiyaku-core/src/regions.rs
+      // 85.71% (also unmoved). 73.81% is almost exactly where 73.68% was, so the
+      // floor's 16-point margin does not move: 73.81 − 16 = 57.81, still 57 —
+      // this is the re-derivation the note at the top of this file asks for,
+      // done and landing on the same number rather than skipped because it
+      // looked unnecessary.
+      //
+      // *Re-measured 2026-08-17, after the same review's Minor fixes.* The
+      // worst five are now taiyaku-serve/src/lib.rs 78.13%,
+      // taiyaku-cli/src/credits.rs 82.51% (unmoved for a third measurement),
+      // taiyaku-library/src/lib.rs 84.00%, taiyaku-serve/src/works.rs 84.56%
+      // and taiyaku-core/src/regions.rs 85.71% (also unmoved).
+      // `taiyaku-library/src/lib.rs` left the bottom, 73.81% (31/42) →
+      // 84.00% (42/50): it grew and its new lines are covered. The two
+      // commits that touched it between the measurements are `8d2c196`
+      // (I1's FTS5 probe) and `caa534f` (the busy-timeout lock); which of
+      // them moved it was not separated, and the figure is quoted rather
+      // than attributed.
+      //
+      // The margin under the worst file is now 21 points rather than 16,
+      // which loosens the floor rather than threatening it. 57 stays: raising
+      // it toward the worst file is how a collapse detector turns into a
+      // regression detector nobody asked for.
+      //
+      // Every one of the 2026-08-14 figures fell without a line of
       // implementation changing, because that is when the `#[cfg(test)] mod
       // tests` blocks left these files and stopped counting as their coverage.
       // The three largest drops were taiyaku-serve/src/lib.rs (90.91% →
       // 77.85%), taiyaku-cli/src/credits.rs (93.13% → 82.51%) and
       // taiyaku-core/src/regions.rs (95.65% → 85.71%). The floor was left at 57
-      // rather than re-derived: it is a collapse detector, not a regression
-      // detector, and 16 points of slack under the worst file is what it needs
-      // to be. See the note at the top of this file.
+      // rather than re-derived that time: it is a collapse detector, not a
+      // regression detector, and 16 points of slack under the worst file is
+      // what it needs to be. See the note at the top of this file.
       //
       // So it does **not** catch a module sliding from 95% to 80%; the spread
       // between the best-covered file and the worst is too wide for one number
@@ -272,7 +356,12 @@ const FORMATS = [
           // is a false alarm.
           if (count > 0 && typeof percent === 'number') pcts[metric] = percent
         }
-        yield { file: entry.filename.replace(/^.*\/(crates\/)/, '$1'), pcts }
+        const { count, covered } = entry.summary.lines ?? {}
+        yield {
+          file: entry.filename.replace(/^.*\/(crates\/)/, '$1'),
+          pcts,
+          lines: { count: count ?? 0, covered: covered ?? 0 },
+        }
       }
     },
   },
@@ -334,3 +423,100 @@ if (failures.length > 0) {
 console.log(
   `coverage-floor: ${files.length} files (floor requires ${format.minFiles}), all above the per-file floor — ${format.name}`,
 )
+reportAggregate(format, files)
+
+/**
+ * The aggregate figures, derived from the same report this gate just walked.
+ *
+ * **The point is that nothing here is written down anywhere.** `docs/ci.md`,
+ * `docs/status.md`, `scripts/check-all.sh` and this file each used to carry
+ * "9628 lines, 9000 covered, 93.48%, 53 files, a slack of 45, eleven at or
+ * under it", plus the eleven-file list twice — four hand-maintained copies of
+ * one measurement, in a repository that has already been bitten by exactly that
+ * (`docs/status.md`'s test count, twice in one day, which is what
+ * `scripts/status-test-count.mjs` exists for). They are all derivable from the
+ * JSON already on disk, so they are derived, and the prose is one dated
+ * measurement rather than four live claims (delta review M9).
+ *
+ * The **slack** is the interesting figure and the reason this whole script
+ * exists: `covered - ceil(floor% of total)` is how many covered lines the
+ * workspace could lose with the aggregate threshold still green, so every file
+ * at or under it is a file that could go entirely dark unnoticed by
+ * `--fail-under-lines`. It is printed, not gated: the number moves every commit
+ * and by a few lines of measurement noise besides (see the `cover.rs`
+ * `Semaphore` note above), so a threshold on it would be red for reasons that
+ * are not defects. What is gated is the per-file floor above, which does not
+ * move with the margin.
+ *
+ * Silent for a format with no `aggregateFloor` — the web side's aggregate is
+ * four per-metric vitest thresholds rather than one line figure, and a "slack"
+ * over four of them would not mean anything.
+ */
+function reportAggregate(format, files) {
+  const total = files.reduce((n, f) => n + f.lines.count, 0)
+  const covered = files.reduce((n, f) => n + f.lines.covered, 0)
+  if (total === 0) return
+  const pct = ((covered / total) * 100).toFixed(2)
+  if (typeof format.aggregateFloor !== 'number') {
+    console.log(`coverage-floor: ${total} lines, ${covered} covered, ${pct}%`)
+    return
+  }
+  assertAggregateFloorMatches(format)
+  const slack = covered - Math.ceil((format.aggregateFloor / 100) * total)
+  const under = files
+    .filter((f) => f.lines.covered > 0 && f.lines.covered <= slack)
+    .sort((a, b) => a.lines.covered - b.lines.covered)
+  console.log(
+    `coverage-floor: ${total} lines, ${covered} covered, ${pct}% — a slack of ${slack} covered ` +
+      `lines under the ${format.aggregateFloor}% aggregate, and ${under.length} of ${files.length} ` +
+      `file(s) at or under it`,
+  )
+  if (under.length > 0) {
+    console.log(
+      `  ${under.map((f) => `${f.file} (${f.lines.covered})`).join(', ')}`,
+    )
+  }
+}
+
+/**
+ * The mirrored aggregate floor, checked against the file that actually applies
+ * it.
+ *
+ * A mirror nobody checks is the fifth copy of the problem this function's
+ * caller exists to remove. `check-all.sh` and `.forgejo/workflows/ci.yml` carry
+ * the real `--fail-under-lines N` byte for byte; if the number there moves and
+ * this one does not, every slack figure printed afterwards is quietly wrong.
+ *
+ * Exit 2 rather than 1, the same distinction `status-test-count.mjs` draws: the
+ * coverage that was measured is not in question, this script's own constant is,
+ * and those need different fixes. A missing or unreadable `check-all.sh` is
+ * also exit 2 — a check that cannot read its own input must not report green.
+ */
+function assertAggregateFloorMatches(format) {
+  let text
+  try {
+    text = readFileSync(format.aggregateFloorFrom, 'utf8')
+  } catch (err) {
+    console.error(
+      `coverage-floor: cannot read ${format.aggregateFloorFrom} to check the aggregate floor`,
+    )
+    console.error(String(err))
+    process.exit(2)
+  }
+  const stated = text.match(/--fail-under-lines\s+(\d+)/)
+  if (stated === null) {
+    console.error(
+      `coverage-floor: ${format.aggregateFloorFrom} no longer states a --fail-under-lines figure.`,
+    )
+    console.error('Either the gate moved or it was reworded; the slack below cannot be derived.')
+    process.exit(2)
+  }
+  if (Number(stated[1]) !== format.aggregateFloor) {
+    console.error(
+      `coverage-floor: the aggregate floor mirrored here (${format.aggregateFloor}) is not the ` +
+        `one applied by ${format.aggregateFloorFrom} (${stated[1]}).`,
+    )
+    console.error('Fix: change `aggregateFloor` in this file to match, so the printed slack is real.')
+    process.exit(2)
+  }
+}

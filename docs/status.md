@@ -78,14 +78,19 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Five crates, 764 tests, plus 1,349 in `web/`'s TypeScript — 986 in the `node`
+Six crates, 986 tests, plus 1,350 in `web/`'s TypeScript — 987 in the `node`
 project and 363 in the `jsdom` one — and sixteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
-`tower` and `ureq` in the server, `wasm-bindgen` in the binding, `react`
-and `vite` in `web/`, and `tract-onnx` as a dev-dependency of `taiyaku-cli`
-alone, for phase 3's gated measurement — it reaches no binary and no other
-crate. The sixteen run under Vitest's browser mode over Playwright's
+`tower` and `ureq` in the server, `rusqlite` (features `["backup"]`, against
+the system libsqlite3 rather than bundled — measured at 1 m 43 s to build
+bundled against 3.06 s on a 32-core machine, against a CI with no cargo cache
+and a ten-minute job budget) in the new `taiyaku-library` crate, which
+`taiyaku-serve` also names directly for the slug-to-row bridge, `wasm-bindgen`
+in the binding, `react` and `vite` in `web/`, and `tract-onnx` as a
+dev-dependency of `taiyaku-cli` alone, for phase 3's gated measurement — it
+reaches no binary and no other crate. The sixteen run under Vitest's browser
+mode over Playwright's
 Chromium, and cover only what no Node environment can answer: `jsdom` has no
 layout engine and no real `HTMLImageElement.decode()`, and every defect the page
 area has shipped was one or the other. They are **not** a CI job — a cacheless
@@ -96,10 +101,11 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Seventeen of the 764 are standing checks gated on
+`rayon` exactly as `align` already did. Sixteen of the 986 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs`, three in
-`crates/taiyaku-serve/src/corpus.rs` and four in
-`crates/taiyaku-cli/src/score_corpus.rs` — one of which also needs
+`crates/taiyaku-serve/src/corpus.rs`, two in
+`crates/taiyaku-cli/src/score_corpus.rs` and one in
+`crates/taiyaku-library/src/corpus.rs` — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
 needs is absent, so CI stays green without the corpus or a reachable Stump.
 One measures composition
@@ -210,16 +216,17 @@ browser did something else. The unit tests beside `mapRect` are what guards
 | ------ | ----- |
 | `solve` | similarity, per-pair floor calibration, Needleman-Wunsch, run compression, confidence, verdict |
 | `slot` | spread detection, slot expansion, reading direction |
-| `sidecar` | the `taiyaku.json` format — parse, emit, judge, merge an edition in |
+| `sidecar` | the `taiyaku.json` format — parse, emit, judge, merge an edition in. `from_json` **refuses a document declaring a format version newer than this build reads**, so no command silently strips the fields it has no name for and writes the result back stamped version 1. The library's own import checked that at its two entry points and `align --write`, `credits --write` and `regions` did not; one check where every command parses is what makes the answer the same in all of them |
 | `route` | which path a lookup walks between two editions, and the page it lands on |
 
-Three of the other four touch the disk or the network. `taiyaku-wasm` touches
+Four of the other five touch the disk or the network. `taiyaku-wasm` touches
 neither — it is portable like the core, and separate from it so the core's API
 is not shaped by what can cross the JavaScript boundary.
 
 | Crate | Holds |
 | ----- | ----- |
 | `taiyaku-read` | how a member becomes pages — archives, directories, natural order, page counts, content hashes, one page by index |
+| `taiyaku-library` | the sixth crate, added between `taiyaku-read` and `taiyaku-serve` — a SQLite store: `work`, `edition`, `member`, `alignment` and `run` project a sidecar into rows, and `progress`, `note`, `truth_page`, `truth_box` and `truth_member` hold the per-user state that used to be sibling JSON files — `truth_member` being the digests a page's boxes were drawn *against*, stored rather than re-derived, so `TruthEdition::is_stale_for` can still refuse to score labels whose archives have changed (review 2's C2). `import` reconciles a sidecar against those rows by content identity first and by (canonicalised) `sidecar_path` second, calling `Sidecar::merge_spoke` rather than reimplementing its refusals; `export` projects rows back out to `taiyaku.json` and its siblings, `<stem>.library.json` among them (see `docs/sidecar.md`). A hand correction made through `serve` writes the `alignment` and `run` rows in the same request as the file, through `state::put_alignments` — the fourth `put_*`, beside progress, notes and truth (O43). Only `taiyaku-serve` and `taiyaku-cli` depend on it; `taiyaku-core` and `taiyaku-wasm`, which compile to WebAssembly, must not and do not, since SQLite does not run there. The schema also carries `root` (spec B's scanner, not built), `series`/`collection`/`tag` and per-title FTS (spec C1's browse and search UI, not built), and `series_id`/`volume` on `work`: columns nothing populates yet. `librarydoc.rs`'s series/credit/chapter editing (spec C3, the metadata-editing screen) has no CLI command or HTTP route that lets someone *set* it, which is O44 — `taiyaku.library.json` is the one document designed for hand-editing and there is no route that applies a second one. `migrate.rs` (the whole-branch review's C3 fix — a distinct, coincidentally-numbered thing from the roadmap spec above) is the one caller that reaches `apply`: on a work's first import, if `.progress.json`, `.notes.json`, `.truth.json` or `.library.json` sit beside its sidecar and the database holds no state of that document's own kind yet, each is read back once — rows are current, files are history, so a document the database already holds state for is left alone even when its file still exists. **Once, is a stored fact**: a `migrated_document` row per work per document, written the first time each is considered, so a reader who deletes their last note does not get it back at the next `serve` start, which is what testing emptiness instead did (review 2's C3). That row carries a second fact, `absorbed` — whether this library has ever had the file's *content*, read in here or written out by an export — because "this document is settled" and "the database has authority over the file at that path" are different claims, and `export --in-place` was reading the first as the second (review 3's C1, and schema version 2). A malformed file is reported and skipped rather than failing the import, and is the one outcome that records nothing, so fixing it and importing again still works — and now survives an export in between, which it did not. The import summary gained a word for the same reason: a settled document the database holds nothing for reports `unread` rather than `kept`, whose documented meaning is that the database already held it. Every progress, notes and truth call funnels through one connection behind one mutex, so WAL buys nothing and two different works no longer read in parallel (O42, unmeasured — the file store it replaced had independent I/O per work). **Between processes it buys plenty**, and that is the deployment this exists for: `serve` and `library import` default to the same file, so every connection carries a five-second busy timeout and opens its writes `BEGIN IMMEDIATE` — SQLite runs no busy handler for a deferred transaction promoting to a writer, so before this an import started while the server ran exited 1 on "database is locked" (review 2's I2). Each migration applies inside one transaction that ends by writing the version, so a migration that fails leaves the file exactly as it was rather than half-applied and unopenable (review 2's I1). **The first open of a fresh library is the one that races**, and both ways it could fail are now waited out rather than reported: the version is read a second time inside the migration's own transaction, so two processes that both saw an empty file do not both apply migration 1 (the second used to fail with `table series already exists` — the very message the module names as unrecoverable), and `journal_mode = WAL`, the one statement SQLite runs no busy handler for, is retried for the same five seconds rather than failing on the spot with `database is locked`. Measured before: 14 failures in 48 concurrent first opens, and 12 in 30 runs of the four-way test that now pins it; after: none in 40 runs of the same (review 3's I1) |
 | `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, notes (`<stem>.notes.json`, read and written whole under `If-Match`), an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below). A caching split runs the length of the file: the four routes whose bytes are fixed by a member's `sha256` carry a day's freshness — two of them an `ETag` as well, and the thumbnail and cover neither, since both find the member only inside `spawn_blocking`, too late for a validator to save the work it would be skipping — while every route answering a document this server rewrites carries no freshness at all, on the `304` as well as the `200`, which is the half that is easy to get wrong (O1) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
@@ -231,18 +238,21 @@ format cannot detect. The aligner and the server now derive it in one place, and
 a gated corpus check compares all 617 pages of the primary volume across the two
 paths.
 
-Nine commands:
+Twelve commands:
 
 ```
 taiyaku align  <a-member>... -- <b-member>...   [--ltr] [--cache DIR] [--stats] [--write FILE [--title NAME] [--name-a KEY] [--name-b KEY] [--direct]] | --no-split-spreads [--stats]
 taiyaku verify <a-member>... -- <b-member>...   [--out FILE] [--sidecar FILE [--cache DIR] [--ltr]]
 taiyaku topology <hub>... -- <spoke>... -- <spoke>...
 taiyaku lookup <taiyaku.json> <from> <to> <page>...
-taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT] [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump] [--cache DIR]
+taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT] [--db PATH] [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump] [--cache DIR]
 taiyaku inventory <root>                        [--min-pages N] [--pattern SPEC]
 taiyaku duplicates <copy>... -- <copy>...       [--against <member>...] [--cache DIR] [--ltr]
 taiyaku credits <member>...                     --sidecar FILE [--against EDITION] [--cache DIR] [--write]
 taiyaku regions <member>...                     --sidecar FILE [--write]
+taiyaku score  <member>...                      --sidecar FILE [--coverage F] | --sample <corpus-root>
+taiyaku library import <taiyaku.json>           [--db PATH]
+taiyaku library export <work>|--all             [--dir DIR|--in-place] [--db PATH]
 ```
 
 `align` takes several members on either side, which is how one volume aligns
@@ -255,8 +265,21 @@ what the aligner decided. `lookup` resolves a page through a written sidecar, wh
 is the operation a reader performs — through the hub where no direct edge exists,
 saying on every call which path it walked. `serve` is handed sidecar paths the
 same way `align` is handed members, because deciding which files constitute a
-library is a different job; it serves `/api/works`, the sidecar verbatim, a page
-by index, and a reading position, now accepts a hand correction — `PATCH
+library is a different job *(reversed on purpose, marked here rather than
+rewritten: as of the library store, `serve` imports every path it is handed
+into the on-disk SQLite library — through `library::import_canonical`, the
+same function `taiyaku library import` calls, so a work this command imports
+and one a person imports by hand agree on what row it is — before serving from
+the rows rather than the files. A path that cannot be imported is named on
+stderr and skipped rather than taking the start down with it, and the start
+refuses only when nothing at all could be imported. `taiyaku serve
+<sidecar>...` still works unchanged, which is the migration path for an
+existing install; deciding which files constitute a library is this binary's
+job now too. See
+`docs/superpowers/specs/2026-08-14-library-store-design.md`, §5, "What changes
+in `taiyaku-serve`, and what does not")*; it serves `/api/works`, the sidecar
+verbatim, a page by index, and a reading position, now accepts a hand
+correction — `PATCH
 /api/works/{work}/alignments`, guarded by `If-Match` against an `ETag` on the
 sidecar — and 404s with a message naming what was missing rather than
 returning a blank page. `--stump-url`/`--stump-key` (or their
@@ -269,6 +292,55 @@ is what Stump and Komga cannot express on their own.
 signal, separation, margin, run count, average run length and the verdict — one
 line each, in a fixed field order so a survey can collect them into a table.
 `scripts/margin-survey.sh` is that survey.
+
+`taiyaku library import <taiyaku.json> [--db PATH]` is `import_canonical` by
+another name — the same call `serve` makes on every path it is handed,
+available without starting a server. `taiyaku library export
+<work>|--all [--dir DIR|--in-place] [--db PATH]` writes a work's five
+documents back out — `taiyaku.json` and its four siblings — and **refuses to
+run with neither `--dir` nor `--in-place`**: unflagged, it would write back
+over the sidecar a work was imported from, silently reverting any change made
+to that file since, most plausibly a hand correction through `PATCH
+/api/works/{work}/alignments`. *That correction now reaches the rows in the same
+request as the file (O43, closed), so an unflagged export would no longer revert
+it — but a change made to the file by anything else still would, which is what
+the refusal is for.* `--in-place`, added by C2 (`8b78603`), is the
+caller stating that overwrite is intended; `--dir DIR` writes elsewhere
+instead, created if it does not exist yet, **one subdirectory per work named
+for its `slug`** — `DIR/<slug>/taiyaku.json` and its siblings. That last part
+is not cosmetic: every work in a real library keeps its sidecar at
+`<dir>/taiyaku.json`, and export takes the filename stem from each work's own
+`sidecar_path`, so a flat `DIR` gave every work the same five paths and each
+overwrote the one before it — three works in, three files out, holding only
+the third (whole-branch review 2's C1). Two smaller rules from the same
+review's Minor findings: an export is a **snapshot**, so a
+`<stem>.progress.json`, `<stem>.truth.json` or `<stem>.library.json` whose
+state is now empty is
+*removed* rather than left sitting beside a current sidecar asserting labels
+the reader deleted (Minor 2, and the removal is named on stdout beside the
+writes), and is not created in the first place when there was never anything to
+say — `<stem>.library.json` used to be written unconditionally, so every
+`--in-place` export left a `{"taiyaku_library": 1, "updated": "…"}` in every
+work directory in the reader's library, whose only field changed on every run
+(review 3's Minor 12) — **but only a document this library has had the content of**, read
+into rows on an import or written out of them by an earlier export
+(`migrated_document.absorbed`, review 3's C1). Overwriting a file and taking
+one away are the same claim, that the database is the current copy, and it is
+false for a sibling restored from a backup after the first import, for one
+left unread because the rows already held state, and for a malformed one,
+which is never read by design so that fixing it and importing again still
+works. All three were being destroyed by a routine `--in-place` export; each
+is now left exactly where it is and named on stdout as `kept`, with moving it
+aside the way to get a fresh one written. `--dir` is exempt in both
+directions: those paths are a destination a caller named, not the reader's own
+documents. And under `--all` a work that cannot be exported no longer strands
+the works after it — each failure is named on stderr, the rest are written,
+and the command still exits non-zero naming the slugs that failed (Minor 1).
+`--db PATH` on `serve`, `library import` or `library export` names the SQLite
+file directly; without it the library lives at `$XDG_DATA_HOME/taiyaku/library.db`,
+falling back to `~/.local/share/taiyaku/library.db`, and the resolved path is
+printed to stderr on open so a person always knows which database a command
+just touched.
 
 `inventory` and `duplicates` are the two halves of deciding which of several
 copies of one volume to keep, and **neither of them moves, renames or deletes
@@ -510,10 +582,15 @@ alternative that lost.
   re-measured on 2026-08-14, when the test modules moved out of the files they
   test and stopped counting as their coverage; the same bullet read 95.75%,
   87.59%, 59.44% and 37 while they were inline, over a report of which roughly
-  two thirds was test code measuring itself. **The aggregate's remaining margin
-  is 68 lines**, not the 857 it was, and 93 was kept rather than re-derived to
-  92 — a deliberate tightening, with the arithmetic and the escape hatch in
-  `docs/ci.md`. Both gates were deliberately regressed and both proofs were
+  two thirds was test code measuring itself. **The aggregate's margin was 68
+  lines on that measurement**, not the 857 it was, and 93 was kept rather than
+  re-derived to 92 — a deliberate tightening, with the arithmetic and the escape
+  hatch in `docs/ci.md`. (That margin moves every commit — 8 lines at one commit
+  on 2026-08-17 and 64 a few commits later — so it is no longer restated here:
+  `scripts/coverage-floor.mjs` derives it, and the files at or under it, from the
+  report it already walks and prints both on every run, with `docs/ci.md`
+  carrying the derivation and one dated measurement. It was four hand-maintained
+  copies of one figure until then, and stale in all four.) Both gates were deliberately regressed and both proofs were
   re-run on the split tree: `#[ignore]` on all 100 tests in
   `taiyaku-cli/src/tests.rs` takes `main.rs` to 11.84% and the workspace to
   81.32%, exiting 1 with **zero bytes on stderr** while the per-file floor beside
@@ -1008,7 +1085,7 @@ both are waiting on L2.
 
 ### Open items
 
-Forty-one, each found by a whole-branch review, carried as a deferral,
+Forty-four, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -1021,10 +1098,10 @@ hashing the pages a survey's own column described and finding it disagreed
 with them, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Thirty-two are now closed
+visible act rather than a thing someone remembers. **Thirty-three are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25, O26, O27, O28, O29, O30, O34, O35, O36, O37, O38, O39 and O40 —
-leaving nine.**
+O21, O22, O25, O26, O27, O28, O29, O30, O34, O35, O36, O37, O38, O39, O40 and
+O43 — leaving eleven.**
 
 *O41 had a prose bullet below and no row in the table until O40 closed, so this
 sentence said "Forty-one … leaving ten" against a table holding forty rows and
@@ -1035,6 +1112,14 @@ same way the drift noted under "What remains" was — by counting the table's
 rows against its own preamble, which is one grep — and worth recording because
 every earlier drift here happened while **closing** an item, and this one
 happened while opening one. Opening is the longer edit of the two.*
+
+*O42 landed the same way and this sentence was not updated to match: it still
+said "Forty-one … leaving nine" against a table holding forty-two rows and ten
+open ones, from when the library store's own Task 13 review added it through
+to this review adding O43 beside it. Both are folded into the one fix here
+rather than caught and fixed separately, since a documentation review reading
+this table closely enough to add a row to it is exactly the position this
+drift needs to be caught from.*
 
 Three of those closed the same day they opened, which the "judged not worth
 blocking on" framing above does not fit: O35, O36 and O37 were found by the
@@ -1089,6 +1174,9 @@ each is in the detail below; the table is what a reader scans.
 | O39 | [x] | Nothing bounds a test's runtime, so a regression that stops a loop terminating hangs the forge instead of failing it — there is no `.config/nextest.toml`, no `timeout-minutes` in `ci.yml`, and CI does not run nextest at all but `cargo llvm-cov` over `cargo test` — *closed by commits (`dadd6a2`, `bce5bf3`), PR #47: a 60 s per-test kill via `.config/nextest.toml` under `cargo llvm-cov nextest`, and `timeout-minutes: 10` on every job — the per-test bound was triggered on the forge itself (a deliberate hang failed the `test` job at 153 s, its exact revert passed at 117 s); the job-level bound was not, both runs finishing far under ten minutes* | `.config/nextest.toml`; `.forgejo/workflows/ci.yml`'s four `timeout-minutes` keys | the Tasks 2-6 mutation review |
 | O40 | [x] | An arrow out of a gap or a borrowed page can land on a credit page the reader asked to skip — the new `step` branch reaches `nearestPaired` instead of `groups`/`stepToGroup`, and `nearestPaired` knows nothing about the skipped set — *closed by giving `nearestPaired` the same skipped set `groups` already receives, the route its own entry named: a candidate landing in it is passed over and the scan carries on, so a skipped page between the reader and a real one costs an offer rather than removing it. Both of `App.tsx`'s call sites — the arrow through `applyIntent`, and the `Gap` screen's own offer buttons — are handed it from one `skippedRef`, so the key and the buttons cannot name different destinations* | `session.ts::applyIntent`'s `step` case, `nearest.ts::nearestPaired` | borrow-lender-and-arrows whole-branch review |
 | O41 | [ ] | A page's hash depends on which archive the page sits in, and the duplicate detector compares across archives — *measured: one byte-identical credits card in six chapter files is recorded at four different sizes, and `recurrences` answers 0, 0, 0, 0, 2 and 3 for it* | `fingerprint.rs::describe_pages`, the `common_border` crop | the fourteen-edition credit survey |
+| O42 | [ ] | Every progress, notes and truth call in the library funnels through one connection behind one mutex, so WAL buys nothing and two different works no longer read in parallel — *unmeasured; the file store it replaced had independent I/O per work* | `taiyaku-library/src/lib.rs::Library`, `conn()` | the library store, Task 13 review |
+| O43 | [x] | A hand correction through the alignment editor writes the sidecar file and the in-memory `Work`, but never `state.library` — confirmed by reading the handler end to end, twice, and by grepping it and `Work::update` for any reference to `state.library`: none. Unlike notes, progress and truth, whose `store` functions call `taiyaku_library::state::put_notes`/`put_progress`/`put_truth`, there is no `put_alignment`-shaped function for it to have called. So a correction is invisible to the database — and to `library export`, and to any second `serve` process sharing the same database — from the moment it is made until the next import or `serve` restart re-reads the file it did land in — *closed by giving alignments the function the other three already had: `taiyaku_library::state::put_alignments`, reached through a `taiyaku-serve/src/alignments.rs` bridge that mirrors `progress.rs`/`notes.rs`/`truth.rs`. The handler now writes the file, then the rows, then memory, all inside the `Work::update` that `If-Match` is checked in. The one thing that had to be got right is lock order: `list_works` holds the library mutex across a `work.sidecar()` read, so the connection is taken **before** `update` rather than inside it, and `works::row_id_for_document` exists because `work.sidecar()` under `update`'s own write guard would deadlock on a non-reentrant `RwLock`* | `taiyaku-serve/src/routes.rs::patch_alignments`, `taiyaku-serve/src/alignments.rs::store`, `taiyaku_library::state::put_alignments` | the library store whole-branch review |
+| O44 | [ ] | `taiyaku.library.json` is the one document this project designs for hand-editing, and after a work's first import there is no route that applies a hand edit to it — `migrate` reads a sibling document once per work and records that it did (settled, and deliberate), and `librarydoc::apply` has no CLI command and no HTTP route. So the only way to make a hand edit take is a fresh `--db`. The same gap is why `librarydoc::forget_orphaned_series` is unreachable from any production path today: nothing applies a second document over a work | `taiyaku-library/src/librarydoc.rs::apply`, with no caller outside `migrate::apply_library` | the review of review 3's Minor fixes, M8 |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -1890,9 +1978,11 @@ here now: a flag that cannot change what a run does is refused, not ignored.
   meant to be a flag, so an unrecognised one is a mistake rather than possibly
   somebody's filename. Before that rule the scan would have had to know which
   flags take values and step over them, which is most of an argument parser.
-  Each of the eight commands declares its own set rather than sharing a global
+  Each of the twelve commands declares its own set rather than sharing a global
   one — `--pattern` is real for `inventory` and a typo for `align`, and one
-  list would accept it in both. The message names the whole alphabet rather
+  list would accept it in both. `library import` and `library export` declare
+  separately for the same reason, being two commands that happen to share a
+  first word: `--dir` is real for one and a typo for the other. The message names the whole alphabet rather
   than guessing a nearest match: a typo is usually one character off, but the
   case this exists to catch is a flag the caller believed in, and a single
   guess would be confidently wrong often enough to mislead. `topology` and
@@ -3331,8 +3421,10 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the nine open items tabled above — seven of them found by a
-whole-branch review, now that O1 (found by one, closed by removing the round
+What remains: the eleven open items tabled above — nine of them found by a
+whole-branch review or by the review of one's own fixes (O42 and O44 among
+them), now that O1 (found by one,
+closed by removing the round
 trip its own entry was arguing about), O12 (carried rather than found), O14
 (found by one, closed by M5b), O26 (found by one, closed on its own branch),
 O28 (found by walking the reader through every position it can hold, closed on
@@ -3345,7 +3437,9 @@ per-test `slow-timeout` and a job-level `timeout-minutes`, both sized from a
 measurement), O34 (turned up by asking a diagnosis about the one case it
 could not explain, closed by L2b Task 6 counting ink pixels) and O40 (found by
 one, closed on a branch of its own by giving the gap's own scan the skipped set
-every other path already had) are all out of the
+every other path already had) and O43 (found by one, closed on the same branch
+by giving alignments the `state::put_*` function the other three per-work
+documents already had) are all out of the
 count.
 Two are the exceptions: O23, turned up by measuring what a new surface produced
 against the corpus rather than by reviewing a branch, and O41, turned up by
@@ -3361,7 +3455,7 @@ and stayed at twelve after that same branch closed all three — the third time
 the word has drifted, and this time it was caught by a reviewer counting the
 table's rows against its own preamble rather than by the ritual.*
 
-**Four of the nine wait on evidence rather than on code**, which is worth
+**Four of the eleven wait on evidence rather than on code**, which is worth
 stating plainly now that the one item with a code-shaped exit has taken it:
 O6 needs an art book with a legitimate reason to be in a sidecar,
 O9 a client issuing concurrent requests for one key, O11 archives replaced

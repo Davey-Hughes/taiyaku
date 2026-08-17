@@ -61,10 +61,23 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # omitting `terminate-after` is what makes a slow-timeout advisory, not a
 # separate key.
 #
-# `test(corpus::)` selects the same sixteen tests `cargo test corpus::` does:
-# thirteen standing checks against real archives (ten in taiyaku-cli, three in
-# taiyaku-serve) plus three `corpus::tests::` helpers that only assert how
-# TAIYAKU_CORPUS is validated. Matching cargo test's existing selection exactly
+# `test(corpus::)` selects **twenty-one** tests, counted with
+# `cargo nextest list -E 'test(corpus::)'` on 2026-08-14 rather than reasoned
+# about: fourteen standing checks against real archives (ten in taiyaku-cli,
+# three in taiyaku-serve, one in taiyaku-library), three `corpus::tests::`
+# helpers that only assert how TAIYAKU_CORPUS is validated, and **four
+# `score_corpus::` tests caught by substring** — `score_corpus::` contains
+# `corpus::`, so the first term already selects them and the separate
+# `test(score_corpus)` term below is redundant. It is kept anyway: it costs
+# nothing, and it keeps the intent legible if either module is ever renamed.
+#
+# **This comment has now been wrong twice, in the file that warns about exactly
+# that.** It said "sixteen / thirteen" while the real figures were twenty /
+# thirteen, because nobody had noticed the substring overlap; and a correction
+# drafted for Task 8 said "seventeen / fourteen", which fixed the standing-check
+# count and preserved the same undercount. It was an agent counting the output
+# instead of trusting the arithmetic that caught it. Run the command.
+# Matching cargo test's existing selection exactly
 # is the point — the exempt set must be the set the corpus step already runs,
 # or the two disagree silently.
 #

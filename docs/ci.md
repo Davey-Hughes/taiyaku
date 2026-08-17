@@ -665,10 +665,45 @@ tail of the first group runs down through `progress.rs` at 19, `serve/truth.rs`
 at 14 and `sample.rs` at 12. **Every one of the 17 trips the per-file floor**,
 because a dark file reports 0% lines against a floor of 57.
 
-**The margin under the threshold is 68 lines**, and that is worth stating in
-lines rather than points, because 0.95% sounds like room and 68 lines is not. A
-branch adding a module of 200 lines at 60% coverage turns this step red. That is
-deliberate: the number stayed at 93 while what it measures narrowed.
+**The margin under the threshold was 68 lines on that measurement**, and that is
+worth stating in lines rather than points, because 0.95% sounds like room and 68
+lines is not. A branch adding a module of 200 lines at 60% coverage turns this
+step red. That is deliberate: the number stayed at 93 while what it measures
+narrowed.
+
+*Measured again 2026-08-17, after the library store and its review fixes: 9490
+lines, 8834 covered, 93.09% over 53 files, and the margin was **8 lines**.* At 8
+lines the smallest file in the report (`taiyaku-serve/src/progress.rs`, 11
+covered lines) could not have gone dark without turning the aggregate red, so
+the blind spot this whole section exists to describe was, for that one commit,
+closed — an accident of the margin and not a property of the check, said at the
+time to reopen the moment coverage rose.
+
+*It rose, and it reopened. Measured at the head of the library-store branch:
+9665 lines, 9053 covered, 93.67% over 54 files, and the margin **64 lines**,
+with 20 of the 54 at or under it.* That is the state the rest of this section
+describes: any one of those 20 could go entirely dark with the aggregate green.
+Every figure in the rest of it is quoted from the 2026-08-14 report and is kept
+as the derivation it is — the arithmetic is what the section is teaching, and it
+does not change.
+
+**The current figure is derived, and this is the only place it is written
+down.** `scripts/coverage-floor.mjs` computes the margin — `covered - ceil(93%
+of total)` — and the list of files at or under it from the report it already
+walks, and prints both on every run, so the live answer is one `check-all.sh`
+away and never needs re-deriving by hand. The paragraph above is a **dated
+measurement**, which is a record rather than a claim about now; the three other
+places that carried the same figures as present-tense facts — `docs/status.md`,
+`scripts/check-all.sh` and `coverage-floor.mjs`'s own header — now point here and
+at that printed line instead. Four hand-maintained copies of one measurement is
+the drift this repository has already been bitten by twice, in this figure and
+in `docs/status.md`'s test count, and the second of those is why
+`scripts/status-test-count.mjs` exists (delta review M9).
+
+The 93 that arithmetic depends on is mirrored into `coverage-floor.mjs` and
+**checked against the `--fail-under-lines` in `check-all.sh` on every run**,
+exiting 2 if the two ever disagree — a mirror nobody checks would just be a
+fifth copy of the same problem.
 
 **About five of those lines are noise, and the noise has a name.** Two runs of
 the identical command on the identical tree gave 6735 and 6740 covered lines —

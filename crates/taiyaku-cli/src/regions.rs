@@ -246,7 +246,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
                 pages: found.clone(),
             },
         );
-        taiyaku_serve::atomic::write(&path, document.to_json().as_bytes(), "json")?;
+        taiyaku_read::atomic::write(&path, document.to_json().as_bytes(), "json")?;
         let blocks: usize = found.values().map(Vec::len).sum();
         eprintln!(
             "wrote {blocks} block(s) for `{edition}` to {}",

@@ -129,15 +129,15 @@ fn changing_a_generation_parameter_changes_the_cache_path() {
 /// collide with what `cache_path` itself would produce, so an unrenamed
 /// temp file can never be mistaken for a real cover by the read path.
 ///
-/// Exercises `crate::atomic::temp_path` directly, now that this module's
-/// own `unique_temp_path` copy is gone — the property under test is
+/// Exercises `taiyaku_read::atomic::temp_path` directly, now that this
+/// module's own `unique_temp_path` copy is gone — the property under test is
 /// unchanged, only which function proves it.
 #[test]
 fn temp_paths_for_the_same_key_never_collide_or_look_like_a_cover() {
     let path = cache_path(Path::new("/tmp/covers"), "abc123");
 
-    let one = crate::atomic::temp_path(&path, "jpg");
-    let two = crate::atomic::temp_path(&path, "jpg");
+    let one = taiyaku_read::atomic::temp_path(&path, "jpg");
+    let two = taiyaku_read::atomic::temp_path(&path, "jpg");
 
     assert_ne!(one, two, "two attempts must not share a temp name");
     assert_ne!(one, path, "must not just be the canonical path");

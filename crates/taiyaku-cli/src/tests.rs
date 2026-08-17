@@ -452,6 +452,45 @@ fn a_sidecar_that_cannot_be_read_stops_the_write_rather_than_being_absent() {
     );
 }
 
+/// The same rule for a document this build cannot fully read.
+///
+/// `--write` merges into whatever is already at `--out`, so a document from a
+/// newer taiyaku would be parsed with every unknown field dropped, merged, and
+/// written back stamped version 1 — over the reader's only copy, which is the
+/// exact loss `existing_sidecar` was introduced to prevent for an unreadable
+/// file. `taiyaku_library::import` refused this at the library's entry points
+/// and `align` never did; `Sidecar::from_json` refuses it now, for every
+/// command at once, and this pins that `align --write` is one of them.
+#[test]
+fn a_sidecar_from_a_newer_taiyaku_stops_the_write_rather_than_being_downgraded() {
+    let root = std::env::temp_dir().join(format!(
+        "taiyaku-test-existing-sidecar-newer-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("taiyaku.json");
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"taiyaku": {}, "work": {{"title": "T", "reading": "rtl"}},
+                "editions": {{"a": {{"label": "A", "members": [
+                  {{"path": "a.cbz", "sha256": "00", "pages": 2}}]}}}},
+                "hub": "a", "alignments": []}}"#,
+            taiyaku_core::VERSION + 1
+        ),
+    )
+    .unwrap();
+
+    let error = existing_sidecar(&path.to_string_lossy())
+        .expect_err("a document this build cannot read is not a document to merge into");
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        error.contains(&format!("version {}", taiyaku_core::VERSION + 1)),
+        "the refusal must name the version it was handed: {error}"
+    );
+}
+
 /// How many members came from cache, which is the difference between a
 /// cold run and a warm one and is reported to say which just happened.
 ///
@@ -2503,15 +2542,17 @@ fn verify_reports_confidence_through_an_inverted_edge() {
 
 // -- serve(): argument parsing only. Actually starting the server would
 // block this test forever, so every one of these stops at the first
-// thing that fails before a socket is ever bound: `load_works` on a
-// sidecar that does not exist.
+// thing that fails before a socket is ever bound: `library::canonical_sidecar_path`
+// refusing a sidecar that does not exist, before the library is ever opened
+// (Task 15) — the same failure point `load_works` used to be, moved one
+// step earlier so a mistyped path still fails without touching a database.
 
 #[test]
 fn serve_refuses_an_unknown_flag() {
     let err = serve(&argv(&["--bogus"])).unwrap_err();
     assert_eq!(
         err,
-        "serve has no flag `--bogus`; its flags are --addr, --cache, --log-requests, \
+        "serve has no flag `--bogus`; its flags are --addr, --cache, --db, --log-requests, \
              --refresh-stump, --stump-key, --stump-url"
     );
 }
@@ -2567,6 +2608,319 @@ fn serve_reaches_load_works_with_every_flag_resolved() {
 fn serve_reaches_load_works_with_no_stump_configured() {
     let err = serve(&argv(&["does-not-exist.json"])).unwrap_err();
     assert!(err.contains("does-not-exist.json"), "{err}");
+}
+
+/// A fixture sidecar for `serve_works`'s own tests, under a scratch directory
+/// named after `tag` — this file's own convention (see e.g. `cbz_pages`
+/// above) for a temp path nothing else is using. `content_key` hashes the
+/// member's *declared* `sha256`, not its actual bytes, so no archive needs to
+/// exist on disk.
+fn serve_works_fixture(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("taiyaku-test-serve-works-{tag}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("fixture directory");
+    let path = dir.join("taiyaku.json");
+    std::fs::write(
+        &path,
+        r#"{"taiyaku":1,"work":{"title":"Serve Works Fixture","reading":"rtl"},
+             "editions":{"raw":{"label":"R","members":[
+               {"path":"raw/v01.cbz","sha256":"ef56","pages":10}]}},
+             "hub":"raw","alignments":[]}"#,
+    )
+    .expect("writing the fixture");
+    path
+}
+
+/// `serve_works` is `serve`'s own database-and-import half, split out
+/// (see its doc comment) precisely so this — and the dedup test below —
+/// can drive it directly rather than through `serve` itself, which would
+/// bind a port and block the test forever the moment this much succeeds.
+///
+/// This is also where the placeholder-path hazard's fix actually runs in
+/// production: every path `serve` is handed reaches
+/// `library::canonical_sidecar_path` and `library::import_canonical` through
+/// here, so a `Work` this function builds carries the library's *real* slug
+/// (`unique_slug`, from the title) rather than the filename-derived slug
+/// `taiyaku_serve::work_id` would have given it — which is what makes
+/// `taiyaku-serve::works::row_id_for_write`'s `find_row` (keyed on
+/// `work.id`) hit the row this same import just wrote, on the very first
+/// write a reader makes, rather than minting a second, placeholder one.
+#[test]
+fn serve_works_imports_the_given_path_and_the_work_carries_the_librarys_slug() {
+    let path = serve_works_fixture("single");
+    let db = std::env::temp_dir().join("taiyaku-test-serve-works-single.db");
+    let _ = std::fs::remove_file(&db);
+
+    let (library, works) =
+        serve_works(std::slice::from_ref(&path), Some(db.to_str().unwrap())).expect("builds works");
+
+    assert_eq!(works.len(), 1, "one path, one work");
+    // `slugify("Serve Works Fixture")`: lowercased, non-alphanumerics to
+    // `-`, trimmed — not `works::work_id(&path)`, which would slugify the
+    // *filename* `taiyaku` instead. The two are unrelated on purpose (see
+    // `library.rs`'s doc comment on the hazard); this pins that `serve_works`
+    // uses the library's title-derived one.
+    assert_eq!(works[0].id, "serve-works-fixture");
+    assert_eq!(works[0].sidecar().editions.len(), 1);
+
+    // And the row really is in the database this call opened, not just in
+    // the in-memory `Work` — the property `taiyaku library import` and a
+    // later `serve` of the same file both rely on.
+    let conn = library.conn();
+    let slug: String = conn
+        .query_row("SELECT slug FROM work", [], |row| row.get(0))
+        .expect("one work row exists");
+    assert_eq!(slug, "serve-works-fixture");
+}
+
+/// The same file, named twice on one command line — a repeated argument, or
+/// two spellings of one path — must not become two independent `Work`s
+/// sharing one library row: `Work` is deliberately not `Clone`, precisely
+/// because two of them over one document could correct it twice and see two
+/// different answers. This is the `if imported.contains(&work_id) { continue; }`
+/// branch in `serve_works`.
+#[test]
+fn serve_works_serves_one_work_when_the_same_path_is_given_twice() {
+    let path = serve_works_fixture("repeated");
+    let db = std::env::temp_dir().join("taiyaku-test-serve-works-repeated.db");
+    let _ = std::fs::remove_file(&db);
+
+    let (_library, works) = serve_works(&[path.clone(), path.clone()], Some(db.to_str().unwrap()))
+        .expect("builds works");
+
+    assert_eq!(
+        works.len(),
+        1,
+        "the same path twice must not mint two Works over one row"
+    );
+}
+
+/// The skip above is announced, and the sentence names **both** paths. Two
+/// *different* files can import to one work — that is what matching on
+/// content means, and a copy of a library under a second path reaches it —
+/// so "one of your arguments was dropped" without saying which leaves a
+/// reader unable to tell which file the server is reading. Asserted on the
+/// sentence rather than through captured stderr, the way
+/// `taiyaku-serve`'s `skipping_notice` is.
+#[test]
+fn the_duplicate_work_notice_names_both_paths() {
+    let notice = already_served_notice(
+        Path::new("/corpus/copy/taiyaku.json"),
+        Path::new("/corpus/original/taiyaku.json"),
+    );
+    assert!(
+        notice.contains("/corpus/copy/taiyaku.json"),
+        "the dropped path: {notice}"
+    );
+    assert!(
+        notice.contains("/corpus/original/taiyaku.json"),
+        "and the one it is already being served as: {notice}"
+    );
+}
+
+/// A sidecar at `<tag>/taiyaku.json` that cannot be imported: valid JSON,
+/// parses as a `Sidecar`, and names a `hub` no edition in it answers to — so
+/// it fails in `identity::content_key`, the way a hand edit that renames an
+/// edition and forgets the hub does. Written as a separate fixture rather
+/// than by corrupting `serve_works_fixture`'s, since the point of the tests
+/// below is that a bad document sits *beside* a good one.
+fn unimportable_fixture(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("taiyaku-test-serve-works-{tag}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("fixture directory");
+    let path = dir.join("taiyaku.json");
+    std::fs::write(
+        &path,
+        r#"{"taiyaku":1,"work":{"title":"Unimportable","reading":"rtl"},
+             "editions":{"raw":{"label":"R","members":[
+               {"path":"raw/v01.cbz","sha256":"bad1","pages":10}]}},
+             "hub":"renamed-and-not-updated","alignments":[]}"#,
+    )
+    .expect("writing the fixture");
+    path
+}
+
+/// **One work that cannot be imported must not stop the library from
+/// serving.**
+///
+/// `serve_works` propagated its import failure with `?` from inside the loop,
+/// so a single unreadable or structurally broken `taiyaku.json` aborted
+/// `taiyaku serve` for every other sidecar on the command line — the reader
+/// lost their whole library to one hand edit, with no way to start until the
+/// file was found and fixed. Whole-branch review 2, I3.
+///
+/// The bad path is named on stderr and skipped; every other work is served.
+/// Asserted on the payload — which works came back, by id — rather than on
+/// the call merely returning `Ok`.
+#[test]
+fn serve_works_skips_a_work_it_cannot_import_and_serves_the_rest() {
+    let good = serve_works_fixture("survivor");
+    let bad = unimportable_fixture("survivor-bad");
+    let db = std::env::temp_dir().join("taiyaku-test-serve-works-survivor.db");
+    let _ = std::fs::remove_file(&db);
+
+    let (_library, works) = serve_works(&[bad.clone(), good.clone()], Some(db.to_str().unwrap()))
+        .expect("one unimportable work must not abort the start");
+
+    let ids: Vec<&str> = works.iter().map(|w| w.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["serve-works-fixture"],
+        "the good work is served and the bad one is skipped"
+    );
+}
+
+/// **Two works whose sidecars share a filename are both served.**
+/// `taiyaku.json` beside each work is this project's documented convention, so
+/// `taiyaku_serve::work_id` — which slugifies the *filename* — gives every
+/// work in a real library the same id, and `load_works` refuses the pair
+/// outright rather than shadowing one. Off the database it is not a collision
+/// at all: the id is `work.slug`, minted from the title by `unique_slug`, and
+/// the two coexist.
+///
+/// The production form of `taiyaku-serve`'s
+/// `a_library_serves_many_works_where_load_works_refused_two` — same claim,
+/// through the paths a person actually types, and the reason
+/// `works::from_library` could be deleted without the property going with it.
+#[test]
+fn serve_works_serves_two_sidecars_both_named_taiyaku_json() {
+    let first = serve_works_fixture("shared-name-a");
+    let second = std::env::temp_dir().join("taiyaku-test-serve-works-shared-name-b");
+    let _ = std::fs::remove_dir_all(&second);
+    std::fs::create_dir_all(&second).expect("fixture directory");
+    let second = second.join("taiyaku.json");
+    // A different title *and* a different hub member digest: the title is what
+    // `unique_slug` derives the id from, and the digest is what `content_key`
+    // hashes — share the digest and the second import lands on the first
+    // work's row instead of a second one.
+    std::fs::write(
+        &second,
+        r#"{"taiyaku":1,"work":{"title":"Second Fixture","reading":"rtl"},
+             "editions":{"raw":{"label":"R","members":[
+               {"path":"raw/v01.cbz","sha256":"ab12","pages":10}]}},
+             "hub":"raw","alignments":[]}"#,
+    )
+    .expect("writing the second fixture");
+
+    let db = std::env::temp_dir().join("taiyaku-test-serve-works-shared-name.db");
+    let _ = std::fs::remove_file(&db);
+
+    let (_library, works) =
+        serve_works(&[first.clone(), second.clone()], Some(db.to_str().unwrap()))
+            .expect("two sidecars sharing a filename must both be served");
+
+    let ids: Vec<&str> = works.iter().map(|w| w.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["serve-works-fixture", "second-fixture"],
+        "both works are served, each under the library's title-derived slug \
+         rather than the filename they share"
+    );
+    assert_eq!(
+        taiyaku_serve::work_id(&first),
+        taiyaku_serve::work_id(&second),
+        "and the filename-derived id really would have collided, which is what \
+         load_works refuses"
+    );
+}
+
+/// The other end of the same branch: if *nothing* could be imported there is
+/// no library to serve, so this refuses rather than binding a port and
+/// serving an empty shelf. The message names how many failed, and each
+/// failure has already been named on stderr.
+#[test]
+fn serve_works_refuses_when_no_work_could_be_imported() {
+    let bad = unimportable_fixture("all-bad");
+    let db = std::env::temp_dir().join("taiyaku-test-serve-works-all-bad.db");
+    let _ = std::fs::remove_file(&db);
+
+    let err = serve_works(std::slice::from_ref(&bad), Some(db.to_str().unwrap()))
+        .expect_err("nothing to serve must be an error");
+
+    assert!(
+        err.contains("no work could be served"),
+        "the refusal says what happened: {err}"
+    );
+    assert!(err.contains('1'), "and how many sidecars failed: {err}");
+}
+
+/// **C1b, end to end through the real `serve` startup path.** Adding a
+/// volume to the hub edition and re-solving is the ordinary case for an
+/// ongoing series. Before the fix, `reimport`'s only write was the database's
+/// own stale projection, so `merge_spoke`'s from-side guard refused every
+/// spoke merge — the held hub had one member, the freshly solved one had two
+/// — and that refusal propagated all the way out of `serve_works` as an
+/// `Err`, which is what made the real `taiyaku serve` binary exit 1 telling a
+/// reader to re-solve the work they had just re-solved. This drives
+/// `serve_works` directly (see its own doc comment: the split exists
+/// precisely so a test can reach the database-and-import half without
+/// binding a port), so it is the same code path `serve` itself runs, minus
+/// the `tokio::runtime` and the socket.
+#[test]
+fn serve_works_survives_a_hub_that_gained_a_member() {
+    let dir = std::env::temp_dir().join("taiyaku-test-serve-works-hub-grows");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("fixture directory");
+    let path = dir.join("taiyaku.json");
+    std::fs::write(
+        &path,
+        r#"{"taiyaku":1,"work":{"title":"Hub Grows","reading":"rtl"},
+             "editions":{
+               "raw":{"label":"R","members":[
+                 {"path":"raw/v01.cbz","sha256":"hh1","pages":10}]},
+               "en":{"label":"En","members":[
+                 {"path":"en/v01.cbz","sha256":"ee1","pages":10}]}
+             },
+             "hub":"raw",
+             "alignments":[{"from":"raw","to":"en","by":"solver",
+               "runs":[{"a":"0-9","b":"0-9"}]}]}"#,
+    )
+    .expect("writing the fixture");
+    let db = std::env::temp_dir().join("taiyaku-test-serve-works-hub-grows.db");
+    let _ = std::fs::remove_file(&db);
+
+    let (library, works) =
+        serve_works(std::slice::from_ref(&path), Some(db.to_str().unwrap())).expect("first start");
+    assert_eq!(works.len(), 1);
+    assert_eq!(works[0].sidecar().editions["raw"].members.len(), 1);
+    // Explicitly dropped before the second `serve_works` call reopens the
+    // same database file — `library/tests.rs`'s own idiom for reusing a db
+    // path within one test.
+    drop(library);
+    drop(works);
+
+    // The hub gains a volume and the work is re-solved — same file, same
+    // path, a real content_key change underneath it.
+    std::fs::write(
+        &path,
+        r#"{"taiyaku":1,"work":{"title":"Hub Grows","reading":"rtl"},
+             "editions":{
+               "raw":{"label":"R","members":[
+                 {"path":"raw/v01.cbz","sha256":"hh1","pages":10},
+                 {"path":"raw/v02.cbz","sha256":"hh2","pages":10}]},
+               "en":{"label":"En","members":[
+                 {"path":"en/v01.cbz","sha256":"ee1","pages":10}]}
+             },
+             "hub":"raw",
+             "alignments":[{"from":"raw","to":"en","by":"solver",
+               "runs":[{"a":"0-9","b":"0-9"}]}]}"#,
+    )
+    .expect("re-solving over the same fixture");
+
+    let (library, works) = serve_works(std::slice::from_ref(&path), Some(db.to_str().unwrap()))
+        .expect("a hub that gained a member must not fail serve's startup");
+    assert_eq!(works.len(), 1, "the same work, not a second one");
+    assert_eq!(
+        works[0].sidecar().editions["raw"].members.len(),
+        2,
+        "the re-solved hub — the incoming document's, not the stale projection's — is what serve now holds"
+    );
+
+    let conn = library.conn();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM work", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(count, 1, "no second work was minted");
 }
 
 /// `--write` reading an existing `out` that fails for a reason other than

@@ -256,25 +256,14 @@ pub(crate) fn sidecar_etag(sidecar: &taiyaku_core::Sidecar) -> String {
 /// A notes or truth document's `ETag`: a SHA-256 over exactly the bytes being
 /// sent.
 ///
-/// Takes the serialised text rather than the document, unlike `sidecar_etag`
-/// above, because both callers already hold it — `notes::to_json` and
-/// `truth::to_json` are each the one serialisation of their document, and
-/// hashing a second one built here would be the drift this exists to rule
-/// out. Shared by `get_truth`/`put_truth` rather than given a `truth_etag`
-/// wrapper of its own: the hash has nothing document-specific in it, so a
-/// second name for the same bytes would be indirection with no behaviour
-/// behind it.
-pub(crate) fn notes_etag(json: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(json.as_bytes());
-    let digest = hasher.finalize();
-    let hex = digest.iter().fold(String::new(), |mut hex, b| {
-        let _ = write!(hex, "{b:02x}");
-        hex
-    });
-    format!("\"{hex}\"")
-}
+/// Moved to `crate::notes` (Task 13, as `etag_for`) so it sits beside
+/// `notes::to_json`, the projection it is computed over — the two are the
+/// invariant `notes.rs`'s and `truth.rs`'s own doc comments state, and
+/// keeping them in the same module is what makes that visible rather than
+/// asserted. Re-exported under its old name so every existing call site in
+/// this file, and every test that reaches it through `super::*`, keeps
+/// resolving unchanged.
+pub(crate) use crate::notes::etag_for as notes_etag;
 
 /// Whether a request's `If-Match` names `tag`.
 ///
@@ -341,9 +330,41 @@ impl IntoResponse for NoProgress {
     }
 }
 
+/// Every work this server holds, as `GET /api/works` answers it: slug,
+/// title, series, volume, editions and a cover URL — see
+/// `works::WorkSummary` for where each of those six comes from and why two
+/// of them are `null` today.
+///
+/// **Not a home screen.** Spec C1 is the browse UI this payload exists to
+/// eventually feed; nothing here builds one, and `openFirstWork`
+/// (`web/src/startup.ts`) still only ever opens the first entry.
+///
+/// One connection, opened once, rather than `works::summary` opening its own
+/// through a `Library`-taking wrapper the way `progress::load` does — a list
+/// answers every work in one request, so one lock over the whole pass beats
+/// re-acquiring `state.library`'s mutex per work.
 async fn list_works(State(state): State<Arc<ServeState>>) -> Response {
-    let ids: Vec<&str> = state.works.iter().map(|w| w.id.as_str()).collect();
-    axum::Json(ids).into_response()
+    // A SELECT per work against `state.library` — `get_page`'s reasoning
+    // about the async worker applies unchanged.
+    let built = tokio::task::spawn_blocking(move || {
+        let conn = state.library.conn();
+        state
+            .works
+            .iter()
+            .map(|w| crate::works::summary(&conn, w))
+            .collect::<Result<Vec<_>, String>>()
+    })
+    .await;
+
+    match built {
+        Ok(Ok(list)) => axum::Json(list).into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("listing works panicked: {e}"),
+        )
+            .into_response(),
+    }
 }
 
 async fn get_sidecar(
@@ -616,7 +637,7 @@ async fn get_notes(
     // (O12).
     let loaded = tokio::task::spawn_blocking(move || {
         let found = state.work_or_missing(&id).map_err(NoNotes::NotFound)?;
-        let notes = crate::notes::load(found)
+        let notes = crate::notes::load(&state.library, found)
             .map_err(NoNotes::Failed)?
             .unwrap_or_else(|| crate::notes::empty(&found.id));
         crate::notes::to_json(&notes).map_err(NoNotes::Failed)
@@ -688,7 +709,7 @@ async fn put_notes(
         // so — see `Work::notes_guard`.
         let _guard = found.notes_guard();
 
-        let current = crate::notes::load(found)
+        let current = crate::notes::load(&state.library, found)
             .map_err(NoNotes::Failed)?
             .unwrap_or_else(|| crate::notes::empty(&found.id));
         let tag = notes_etag(&crate::notes::to_json(&current).map_err(NoNotes::Failed)?);
@@ -724,7 +745,7 @@ async fn put_notes(
             crate::notes::Invalid::Refused(message) => NoNotes::Refused(message),
         })?;
 
-        crate::notes::store(found, &incoming).map_err(NoNotes::Failed)?;
+        crate::notes::store(&state.library, found, &incoming).map_err(NoNotes::Failed)?;
         crate::notes::to_json(&incoming).map_err(NoNotes::Failed)
     })
     .await;
@@ -792,7 +813,7 @@ async fn get_truth(
     // (O12).
     let loaded = tokio::task::spawn_blocking(move || -> Result<String, NoTruth> {
         let found = state.work_or_missing(&id).map_err(NoTruth::NotFound)?;
-        let doc = crate::truth::load(found)
+        let doc = crate::truth::load(&state.library, found)
             .map_err(NoTruth::Failed)?
             .unwrap_or_default();
         Ok(crate::truth::to_json(&doc))
@@ -872,7 +893,7 @@ async fn put_truth(
         // saying so.
         let _guard = found.notes_guard();
 
-        let current = crate::truth::load(found)
+        let current = crate::truth::load(&state.library, found)
             .map_err(NoTruth::Failed)?
             .unwrap_or_default();
         let tag = notes_etag(&crate::truth::to_json(&current));
@@ -897,7 +918,7 @@ async fn put_truth(
             Some(true) => {}
         }
 
-        crate::truth::store(found, &incoming).map_err(NoTruth::Failed)?;
+        crate::truth::store(&state.library, found, &incoming).map_err(NoTruth::Failed)?;
         Ok(crate::truth::to_json(&incoming))
     })
     .await;
@@ -932,7 +953,7 @@ async fn get_progress(
     // two handlers simply did not get it when M2 wrote them.
     let loaded = tokio::task::spawn_blocking(move || {
         let found = state.work_or_missing(&id).map_err(NoProgress::NotFound)?;
-        crate::progress::load(found).map_err(NoProgress::Failed)
+        crate::progress::load(&state.library, found).map_err(NoProgress::Failed)
     })
     .await;
 
@@ -989,7 +1010,7 @@ async fn put_progress(
                 progress.edition, progress.slot
             )));
         }
-        crate::progress::store(found, &progress).map_err(NoProgress::Failed)
+        crate::progress::store(&state.library, found, &progress).map_err(NoProgress::Failed)
     })
     .await;
 
@@ -1184,6 +1205,15 @@ async fn patch_alignments(
     // reasoning about the async worker applies to it unchanged.
     let written = tokio::task::spawn_blocking(move || {
         let found = state.work_or_missing(&id).map_err(not_found)?;
+        // **The library's connection before the work's document, never the
+        // other way round.** `list_works` holds this mutex across a
+        // `work.sidecar()` read, so a thread that took the sidecar's write
+        // lock first and reached for the mutex second would deadlock against
+        // it — and the `spawn_blocking` pool is where both of them run. It is
+        // held across the file write below, which is the cost of that order:
+        // one correction — a person dragging a filmstrip tile — briefly
+        // blocks the other library readers.
+        let conn = state.library.conn();
         found.update(|current| {
             let tag = sidecar_etag(current);
             match if_match_hits(&headers, &tag) {
@@ -1230,14 +1260,26 @@ async fn patch_alignments(
                     (status, why.to_string()).into_response()
                 })?;
 
-            // The file first, then memory. A failed write leaves the served
-            // document exactly as it was, so a client that gets a 500 has lost
-            // its correction and nothing else — where swapping memory first
-            // would leave this server serving an alignment that is on no disk
-            // anywhere.
+            // The file, then the rows, then memory. A failed write leaves the
+            // served document exactly as it was, so a client that gets a 500
+            // has lost its correction and nothing else — where swapping memory
+            // first would leave this server serving an alignment that is on no
+            // disk anywhere.
+            //
+            // The rows are what every *other* request is answered from
+            // (`taiyaku serve` projects each `Work` out of them at start), so
+            // writing only the file left the two disagreeing until the next
+            // start re-imported it — O43. Between them, the file is still
+            // first: it is the copy a person can read, diff and back up, and
+            // if the row write fails after it the correction is recoverable,
+            // because the next start imports that file. The reverse ordering
+            // would put the only copy of the correction in a database the
+            // reader was never told to look in.
             let json = next.to_json();
             if what != taiyaku_core::Corrected::AlreadyTrue {
-                crate::atomic::write(&found.path, json.as_bytes(), "json")
+                taiyaku_read::atomic::write(&found.path, json.as_bytes(), "json")
+                    .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
+                crate::alignments::store(&conn, found, &next)
                     .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
             }
             let next = std::sync::Arc::new(next);

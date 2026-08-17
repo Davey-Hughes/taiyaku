@@ -191,12 +191,21 @@ cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic || 
 # **The per-file floor is the second command, and it is not a second test run.** `--fail-under-lines`
 # is workspace-aggregate and cannot see one module go dark, though it sees rather more of it than it
 # used to. Measured 2026-08-14, with the test modules in their own files and no `#[cfg(test)]` code
-# in the report at all: the workspace is 7169 lines at 93.95%, so a module going dark passes only if
-# it accounts for 67 covered lines or fewer — true of 17 of the 43 files, the largest being
-# `taiyaku-core/src/lib.rs` at 63 covered (93.07%, still green), and false from
-# `taiyaku-serve/src/works.rs` at 70 upwards (92.97%, red). `taiyaku-read/src/pages.rs` losing every
-# test now lands the workspace at 89.85% and fails; on the inline-test tree it landed at 93.05% and
-# passed. See scripts/coverage-floor.mjs for why the figure moved without any implementation
+# in the report at all: the workspace was 7169 lines at 93.95%, so a module going dark passed only if
+# it accounted for 67 covered lines or fewer — true of 17 of the 43 files then.
+#
+# **The current figure is not written down here, it is printed by the run.** `coverage-floor.mjs`
+# derives the slack — `covered - ceil(0.93 * total)` — and the files at or under it from the same
+# report it already walks, and prints both on every invocation below. This comment used to restate
+# them, as did `docs/status.md`, `docs/ci.md` and `coverage-floor.mjs` itself, and nothing derived
+# any of the four (delta review M9). `docs/ci.md` keeps the derivation and one dated measurement.
+#
+# What does not change is the shape: the slack **widens as coverage rises**, so improving coverage
+# enlarges the set of modules the aggregate would let go entirely dark. It was 8 lines at one commit
+# on 2026-08-17 and 64 lines a few commits later. The per-file floor is what does not move with the
+# margin, which is the whole reason it exists.
+#
+# See scripts/coverage-floor.mjs for why the 2026-08-14 figure moved once without any implementation
 # changing.
 # `cargo llvm-cov report` re-renders the profile data the run above already produced — no rebuild, no
 # re-run — and measured **0.13 seconds** against 7.8 for the run. `--text` and `--json` are mutually

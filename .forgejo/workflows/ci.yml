@@ -198,7 +198,8 @@ jobs:
         # exclusion that grows on its own is the failure this list is shaped to
         # avoid. This used to ask the reader to check the file count by hand when
         # adding a crate; the "Coverage floor, per file" step below now asserts
-        # it (43 files today, 32 required), so a regex that quietly swallows more
+        # it (53 files today, 40 required — re-measured 2026-08-17 once the
+        # library store and its Minor fixes landed), so a regex that quietly swallows more
         # than these eleven fails the job. They are named with a reason each in
         # docs/ci.md, "The coverage gates".
         #
@@ -241,10 +242,18 @@ jobs:
       - name: Coverage floor, per file
         # **The step above is workspace-aggregate and cannot see one module go
         # dark.** Measured 2026-08-14 over 7169 lines, 6735 covered: a module
-        # going entirely dark still passes as long as it accounts for 67 covered
-        # lines or fewer, which is 17 of the 43 files. The largest that gets away
-        # with it is `taiyaku-core/src/lib.rs` at 63 covered (93.07%); the
-        # smallest that does not is `taiyaku-serve/src/works.rs` at 70 (92.97%).
+        # going entirely dark still passed as long as it accounted for 67 covered
+        # lines or fewer, which was 17 of the 43 files then.
+        #
+        # **Re-measured 2026-08-17, once the library store's Minor fixes
+        # landed: 9490 lines, 8834 covered, 93.09% over 53 files — a slack of 8
+        # covered lines, and NONE of the 53 at or under it** (the smallest,
+        # `taiyaku-serve/src/progress.rs`, carries 11). The blind spot is
+        # currently closed altogether, and that is an accident of the margin
+        # rather than a property of the check: the slack is
+        # `covered - ceil(0.93 * total)`, so it widens as coverage rises and
+        # vanishes as it approaches the floor. The per-file step is the half
+        # that does not move with it.
         # This is the Rust counterpart of the web job's identically named step,
         # and it runs the identical script.
         #

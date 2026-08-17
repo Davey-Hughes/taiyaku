@@ -6,6 +6,7 @@
 //! place. Two callers deriving it separately is the defect this crate exists
 //! to make impossible.
 
+pub mod atomic;
 mod naming;
 mod pages;
 

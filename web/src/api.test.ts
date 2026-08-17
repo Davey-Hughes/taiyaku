@@ -39,15 +39,23 @@ describe('network calls', () => {
     vi.unstubAllGlobals()
   })
 
-  it('listWorks returns the parsed array of work ids', async () => {
+  it('listWorks returns the parsed array of work objects', async () => {
+    const listed = [
+      {
+        slug: 'taiyaku',
+        title: 'Taiyaku',
+        series: null,
+        volume: null,
+        editions: ['raw'],
+        cover: '/api/works/taiyaku/raw/pages/0/thumb',
+      },
+    ]
     const fetchMock = vi
       .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify(['taiyaku']), { status: 200 }),
-      )
+      .mockResolvedValue(new Response(JSON.stringify(listed), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(listWorks()).resolves.toEqual(['taiyaku'])
+    await expect(listWorks()).resolves.toEqual(listed)
     expect(fetchMock).toHaveBeenCalledWith('/api/works')
   })
 

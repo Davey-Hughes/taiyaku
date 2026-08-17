@@ -25,13 +25,18 @@ const sidecar = (over: object = {}) =>
     ...over,
   })
 
+/** The default fixture's sidecar, fixed rather than rebuilt per test — the
+ * one test below that opens straight from a listing of objects, with no
+ * `scripted()` in between, wants a literal it can point `sidecar` at. */
+const SIDECAR_JSON = sidecar()
+
 /** Every read recorded in the order it was made, so ordering is assertable. */
 function scripted(over: Partial<StartupPorts> = {}) {
   const calls: string[] = []
   const ports: StartupPorts = {
     works: async () => {
       calls.push('works')
-      return ['gotoubun']
+      return [{ slug: 'gotoubun', title: 'Gotoubun', editions: ['a', 'b'] }]
     },
     sidecar: async () => {
       calls.push('sidecar')
@@ -66,6 +71,34 @@ describe('openFirstWork', () => {
     expect(opened.session.editions).toEqual(['a', 'b'])
     expect(opened.session.alignments).toHaveLength(1)
     expect(opened.etag).toBe('"v1"')
+  })
+
+  /** Task 14: `works` answers a listing of objects rather than bare ids, and
+   * a load opens the first one's `.slug` — driven with a literal `StartupPorts`
+   * rather than through `scripted()`, so this stands on its own as the shape
+   * `GET /api/works` actually answers. `resolve` answers the module-level
+   * `resolver` rather than a bare `fakeResolver()`: that helper takes the
+   * slots and pairs its first two (required) arguments describe, and the
+   * shared fixture above already builds one matching `SIDECAR_JSON`'s `a`/`b`
+   * editions. */
+  it('opens the first work from a listing of objects', async () => {
+    const opened = await openFirstWork({
+      works: async () => [
+        {
+          slug: 'gotoubun-v01',
+          title: 'Go-Toubun v01',
+          editions: ['raw', 'en'],
+        },
+      ],
+      sidecar: async () => ({ json: SIDECAR_JSON, etag: 'W/"1"' }),
+      resolve: async () => resolver,
+      progress: async () => undefined,
+      notes: async () => ({
+        doc: { work: 'gotoubun-v01', notes: [] },
+        etag: 'W/"2"',
+      }),
+    })
+    expect(opened.session.work).toBe('gotoubun-v01')
   })
 
   it('starts at slot 0 of the hub with nothing recorded', async () => {

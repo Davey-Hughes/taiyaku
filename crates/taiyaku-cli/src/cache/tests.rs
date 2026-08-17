@@ -20,7 +20,12 @@ fn member_of_three_pages(dir: &Path) {
 /// A temporary root nobody else is using, removed first in case a previous
 /// run left one behind.
 fn scratch(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("taiyaku-test-cache-{name}"));
+    // The process id, for the reason `taiyaku-library/src/migrate/tests.rs`'s
+    // own `scratch` sets out: `name` separates tests within one run and
+    // nothing between runs, so two overlapping runs share this directory and
+    // either one's `remove_dir_all` takes the other's fixture with it.
+    let root =
+        std::env::temp_dir().join(format!("taiyaku-test-cache-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     root
 }

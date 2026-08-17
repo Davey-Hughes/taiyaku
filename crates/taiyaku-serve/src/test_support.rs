@@ -51,9 +51,23 @@ pub(crate) fn work(dir: &str) -> Work {
     )
 }
 
+/// A library good for satisfying `ServeState::library` in a fixture. Task 12
+/// gave every `ServeState` that field; Task 13's progress, notes and truth
+/// routes are what actually reach it now — through `works::row_id_for_write`,
+/// which mints a bridge row on first write for a `Work` this library was
+/// never told about (`state`, below, hands `library()` an empty one paired
+/// with an unimported `Work`, exactly that case). An empty, in-memory library
+/// is still enough: a fresh one per call, since `Library` is not `Clone` and
+/// two fixtures sharing a connection would let one test's rows leak into
+/// another's.
+pub(crate) fn library() -> std::sync::Arc<taiyaku_library::Library> {
+    std::sync::Arc::new(taiyaku_library::Library::open_in_memory().expect("in-memory library"))
+}
+
 /// The fixture work, wired to a `LocalLibrary`, ready for `build_router`.
 pub(crate) fn state(dir: &str) -> ServeState {
     ServeState {
+        library: library(),
         works: vec![work(dir)],
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: std::env::temp_dir().join(dir).join("covers"),
@@ -237,6 +251,7 @@ pub(crate) fn work_with_real_pages() -> (Work, Fixture) {
 pub(crate) fn state_with_real_pages() -> (std::sync::Arc<ServeState>, Fixture) {
     let (work, fixture) = work_with_real_pages();
     let state = std::sync::Arc::new(ServeState {
+        library: library(),
         works: vec![work],
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.path().join("covers"),
@@ -298,4 +313,184 @@ pub(crate) fn logged_lines(path: &std::path::Path) -> Vec<serde_json::Value> {
                 .unwrap_or_else(|e| panic!("log line must parse as JSON: {e}: {line}"))
         })
         .collect()
+}
+
+/// Every `Work` in `library`, built the way `taiyaku-cli`'s `serve_work`
+/// builds one: the slug from the row, the document from
+/// `taiyaku_library::project::sidecar`, so `Work.id` is the library's own slug
+/// and `works::find_row` hits a row on the very first read.
+///
+/// Test scaffolding, and named as such. `taiyaku_serve::works::from_library`
+/// used to be this, as `pub` API — but `serve` never called it (review 2,
+/// Minor 4), and a projection that only tests run is worth less than the same
+/// six lines declared to be a fixture. What production does is
+/// `serve_work`, one path at a time, and this is that loop over every row
+/// instead of over `argv`, which is exactly what a fixture wants: build the
+/// state, then test the routes.
+///
+/// # Panics
+///
+/// Panics if SQLite fails, if a row has no `sidecar_path` (nothing here
+/// creates one), or if a work's document cannot be projected — every one of
+/// which means the fixture itself is broken.
+pub(crate) fn works_in(library: &taiyaku_library::Library) -> Vec<crate::Work> {
+    let conn = library.conn();
+    let mut stmt = conn
+        .prepare("SELECT id, slug, sidecar_path FROM work ORDER BY id")
+        .expect("listing the fixture's works");
+    let rows: Vec<(i64, String, Option<String>)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .expect("listing the fixture's works")
+        .collect::<Result<_, _>>()
+        .expect("reading the fixture's works");
+
+    rows.into_iter()
+        .map(|(id, slug, sidecar_path)| {
+            let path = sidecar_path.expect("every fixture work is imported with a path");
+            let sidecar =
+                taiyaku_library::project::sidecar(&conn, id).expect("projecting a fixture work");
+            crate::Work::new(slug, std::path::PathBuf::from(path), sidecar)
+        })
+        .collect()
+}
+
+/// A `ServeState` over a real library: one work imported through
+/// `taiyaku_library::import::sidecar`, with `works` built from those rows by
+/// [`works_in`] — so `Work.id` is the library's own slug and
+/// `works::find_row` finds a row on the very first read rather than
+/// `works::row_id_for_write` minting one. Every other
+/// fixture in this module pairs a bare `Work` with an *empty* `library()`,
+/// which is the other half of the bridge Task 13 has to get right (see
+/// `library()`'s own doc comment); this one is for the tests that are about
+/// the library-backed path specifically. Named `w`: the fixture's title is
+/// `"W"`, which `import::sidecar`'s `unique_slug` lowercases to exactly that,
+/// with no collision to append a suffix against in a fresh library.
+///
+/// No archives are written to disk — unlike `work`/`state` above, which
+/// exist mainly to give the page and thumbnail routes real bytes to read.
+/// Nothing that reaches this fixture (progress, notes, truth, the work list)
+/// touches a member's bytes, so there is nothing here for a real file to buy.
+pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<ServeState>) {
+    let library = library();
+    {
+        let conn = library.conn();
+        let json = r#"{
+              "taiyaku": 1,
+              "work": { "title": "W", "reading": "rtl" },
+              "editions": {
+                "raw": { "label": "Raw", "members": [
+                  { "path": "c1.cbz", "sha256": "x", "pages": 2 }
+                ], "spreads": [] }
+              },
+              "hub": "raw",
+              "alignments": []
+            }"#;
+        let doc = taiyaku_core::Sidecar::from_json(json).expect("fixture sidecar parses");
+        taiyaku_library::import::sidecar(
+            &conn,
+            &doc,
+            std::path::Path::new("/library/w/taiyaku.json"),
+        )
+        .expect("import");
+    }
+    let works = works_in(&library);
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works,
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: std::env::temp_dir()
+            .join("taiyaku-test-router-over-a-library")
+            .join("covers"),
+        log: None,
+    });
+    (crate::build_router(state.clone()), state)
+}
+
+/// The two-edition, one-solved-edge shape a correction needs, over a **real**
+/// library: the document is imported through
+/// `taiyaku_library::import::sidecar`, so `work.id` is the row's own slug and
+/// the alignment rows exist before anything is corrected.
+///
+/// `state_with_two_editions` above is the same document paired with an *empty*
+/// library, which is what every existing correction test drives; this one is
+/// for the tests that are about the rows a correction leaves behind. The
+/// sidecar is written to a real path under a `Fixture` directory because
+/// `patch_alignments` writes the file as well as the rows, and the restart
+/// half of the round trip re-reads exactly those bytes.
+///
+/// Returns the row id alongside the router and state so a test can read the
+/// rows back through `taiyaku_library::project::sidecar` without re-deriving
+/// it, and the `Fixture` so the directory outlives the test body.
+///
+/// # Panics
+///
+/// Panics if the fixture cannot be written or imported — either means the
+/// fixture itself is broken.
+pub(crate) fn router_over_a_library_with_two_editions()
+-> (axum::Router, std::sync::Arc<ServeState>, i64, Fixture) {
+    let fixture = Fixture::new("taiyaku-test-correction-rows");
+    let path = fixture.path().join("taiyaku.json");
+    let json = r#"{
+          "taiyaku": 1,
+          "work": { "title": "W", "reading": "rtl" },
+          "editions": {
+            "raw": { "label": "Raw", "members": [
+              { "path": "c1.cbz", "sha256": "x", "pages": 2 },
+              { "path": "c2.cbz", "sha256": "y", "pages": 2 }
+            ], "spreads": [] },
+            "en": { "label": "En", "members": [
+              { "path": "d1.cbz", "sha256": "p", "pages": 2 },
+              { "path": "d2.cbz", "sha256": "q", "pages": 2 }
+            ], "spreads": [] }
+          },
+          "hub": "raw",
+          "alignments": [
+            { "from": "raw", "to": "en", "by": "solver", "runs": [{ "a": "0-3", "b": "0-3" }] }
+          ]
+        }"#;
+    std::fs::write(&path, json).expect("writing the fixture sidecar");
+
+    let library = library();
+    let work_id = {
+        let conn = library.conn();
+        let doc = taiyaku_core::Sidecar::from_json(json).expect("fixture sidecar parses");
+        taiyaku_library::import::sidecar(&conn, &doc, &path).expect("import")
+    };
+    let works = works_in(&library);
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works,
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: fixture.path().join("covers"),
+        log: None,
+    });
+    (crate::build_router(state.clone()), state, work_id, fixture)
+}
+
+/// A `GET` against `router`, driven with `oneshot` and no socket. Most
+/// existing tests in `routes/tests.rs` build this same request by hand — this
+/// exists for the shorter tests `router_over_a_library` was added alongside,
+/// not as a mandate to rewrite the others.
+pub(crate) async fn get(
+    router: &axum::Router,
+    uri: &str,
+) -> axum::http::Response<axum::body::Body> {
+    use tower::ServiceExt;
+    router
+        .clone()
+        .oneshot(
+            axum::http::Request::get(uri)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// A response's body, decoded as UTF-8 text.
+pub(crate) async fn body_string(response: axum::http::Response<axum::body::Body>) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
 }

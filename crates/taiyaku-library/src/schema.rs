@@ -1,0 +1,184 @@
+//! Migrations, versioned in `meta`.
+//!
+//! Applied in order, each inside its own transaction, with the version row
+//! written as that transaction's last statement — so a migration that fails
+//! leaves the database exactly as it found it: no half-applied schema, the
+//! version where it was, and the same file openable again once the migration
+//! is corrected.
+//!
+//! **The version not advancing is not on its own the safe outcome**, which is
+//! why the transaction matters. A half-applied migration whose version stayed
+//! put is re-run from statement one on the next open, over tables that
+//! already exist, and fails there every time. See `tests.rs`'s
+//! `a_migration_that_fails_part_way_leaves_no_trace_and_can_be_retried`, and
+//! `migrate`'s own refusal message, which names that state as the one it
+//! declines to create.
+//!
+//! **A transaction per migration is not on its own enough either**, because
+//! the decision to run one is taken before the transaction opens. Two
+//! processes reaching a fresh file together — `serve` and `library import`
+//! share one by default — both read version 0 and both decide to apply
+//! migration 1, and the second produced that same "over tables that already
+//! exist" failure from a different cause entirely. The version is therefore
+//! read a second time under the write lock; see [`apply_pending`].
+
+use rusqlite::Connection;
+
+/// The schema version this build expects.
+pub const SCHEMA_VERSION: u32 = 2;
+
+/// Every migration, in order. Index 0 takes an empty database to version 1.
+///
+/// **Append, never edit.** A database already at version 1 is never shown
+/// migration 1 again, so a change made there reaches new databases only and
+/// the two diverge silently. `002` adds one column to `migrated_document`
+/// rather than changing the table `001` creates, for exactly that reason.
+const MIGRATIONS: [&str; 2] = [
+    include_str!("schema/001_initial.sql"),
+    include_str!("schema/002_absorbed.sql"),
+];
+
+/// The version a database reaches is the number of migrations applied to it,
+/// so the two figures are one fact written twice and drift is a compile error
+/// rather than a wrong refusal message.
+const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
+
+/// Bring `conn` up to `SCHEMA_VERSION`.
+///
+/// # Errors
+///
+/// Returns an error if a migration fails to apply, naming the version it was
+/// applying, or if the database reports a version this build does not know —
+/// which means a newer taiyaku wrote it, and running an older binary against
+/// it would corrupt what it does not understand.
+pub fn migrate(conn: &Connection) -> Result<(), String> {
+    migrate_with(conn, &MIGRATIONS)
+}
+
+/// `migrate`'s whole body, over a caller-supplied migration list rather than
+/// the built-in one.
+///
+/// **Split out for the same reason as `require_fts5_with_probe`**: the
+/// property worth pinning is what happens when a migration *fails*, and
+/// `MIGRATIONS` holds exactly one migration that has to keep succeeding. A
+/// test cannot corrupt the real file without breaking every other test in the
+/// crate, so it hands in its own two-statement migration instead — same loop,
+/// same transaction, same error strings, only the SQL differs. `known` is the
+/// list's length rather than [`SCHEMA_VERSION`] so the "written by a newer
+/// taiyaku" refusal stays coherent for whatever list it was given; the two
+/// agree for the real call by the `const` assertion above.
+fn migrate_with(conn: &Connection, migrations: &[&str]) -> Result<(), String> {
+    let known = u32::try_from(migrations.len()).unwrap_or(u32::MAX);
+    ensure_meta(conn)?;
+    let current = version(conn)?;
+    if current > known {
+        return Err(written_by_a_newer_taiyaku(current, known));
+    }
+    apply_pending(conn, migrations, current)
+}
+
+/// The one table this module needs before it can ask anything. `IF NOT
+/// EXISTS` rather than guarded by a version, because the version lives in it.
+fn ensure_meta(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    )
+    .map_err(|e| format!("creating meta: {e}"))
+}
+
+/// The version `meta` records, or 0 for a database nobody has migrated.
+///
+/// Takes a `&Connection` rather than the `Library`'s own so it can be called
+/// with a `Transaction`'s deref inside [`apply_pending`]'s loop — the whole
+/// point of the second read, see there.
+fn version(conn: &Connection) -> Result<u32, String> {
+    match conn.query_row(
+        "SELECT value FROM meta WHERE key = 'schema_version'",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        // No row at all: a database nobody has migrated. Genuinely version 0.
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0),
+        Err(e) => Err(format!("reading the schema version: {e}")),
+        Ok(text) => text.trim().parse().map_err(|_| {
+            format!(
+                "`meta.schema_version` holds {text:?}, which is not a version number. \
+                 Refusing to migrate rather than treating it as a fresh database and \
+                 applying migration 1 over tables that already exist."
+            )
+        }),
+    }
+}
+
+fn written_by_a_newer_taiyaku(current: u32, known: u32) -> String {
+    format!(
+        "this database is at schema version {current} and this build knows {known}; \
+         it was written by a newer taiyaku"
+    )
+}
+
+/// Apply every migration after `current`, each in its own transaction.
+///
+/// **`current` is a hint, not the decision.** It was read before any
+/// transaction was open, and on a fresh database two processes reach it at the
+/// same moment: `serve` and `library import` default to the same file, so
+/// starting them together is ordinary. Both read 0, both decide to apply
+/// migration 1, the second waits on the write lock, gets it once the first has
+/// committed, and runs `CREATE TABLE` over tables that now exist — failing
+/// with the exact message this module's own doc names as the unrecoverable
+/// state it exists to prevent, and telling a reader their new library is
+/// beyond saving when a retry would have opened it. Measured by whole-branch
+/// review 3 (I1) at 14 failures in 48 concurrent first opens.
+///
+/// Making each migration atomic did not close that: the *decision* was taken
+/// before the transaction began. So the version is read a second time, inside
+/// the transaction whose `BEGIN IMMEDIATE` has already taken the write lock —
+/// where whatever the other process committed is visible, and cannot change
+/// again until this transaction ends.
+fn apply_pending(conn: &Connection, migrations: &[&str], current: u32) -> Result<(), String> {
+    let known = u32::try_from(migrations.len()).unwrap_or(u32::MAX);
+    for (index, sql) in migrations.iter().enumerate() {
+        let target = u32::try_from(index).unwrap_or(u32::MAX) + 1;
+        if target <= current {
+            continue;
+        }
+        // One transaction around the whole migration and the version row it
+        // ends with. `execute_batch` opens none of its own — every statement
+        // in the file autocommits as it runs — so without this a failure at
+        // statement *n* left statements 1..n on disk with the version still
+        // where it started, and the next open re-ran the migration from
+        // statement one over tables that already existed. Unrecoverable by
+        // hand, and exactly the state the unparseable-version refusal above
+        // exists to avoid. `unchecked_transaction` rather than `transaction`
+        // because `conn` is shared by reference here, the same call
+        // `import::sidecar` and `state::put_truth` make; the guard rolls back
+        // on drop, so the `?` below is the rollback.
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("starting the transaction for schema version {target}: {e}"))?;
+        // Under the write lock, so this is the authoritative answer rather
+        // than the one from before it was taken. A `continue` here drops the
+        // guard, which rolls back a transaction that has done nothing.
+        let applied = version(&tx)?;
+        if applied > known {
+            return Err(written_by_a_newer_taiyaku(applied, known));
+        }
+        if target <= applied {
+            continue;
+        }
+        tx.execute_batch(sql)
+            .map_err(|e| format!("applying schema version {target}: {e}"))?;
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [target.to_string()],
+        )
+        .map_err(|e| format!("recording schema version {target}: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("committing schema version {target}: {e}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

@@ -206,7 +206,7 @@ pub fn cached_or_generated_page(
         // Discarded for `at_path`'s reason: the page was generated and the
         // reader gets it, so a cache that cannot be written is slow rather
         // than broken.
-        let _ = crate::atomic::write(&path, &bytes, "jpg");
+        let _ = taiyaku_read::atomic::write(&path, &bytes, "jpg");
     }
     Ok(Some(bytes))
 }
@@ -408,12 +408,12 @@ fn at_path(
         // A cache that cannot be written is not an error — the cover was
         // already generated and the client gets it regardless — so the
         // result of the write-and-rename is discarded rather than
-        // propagated. `crate::atomic::write` is unique per attempt, so two
-        // concurrent misses for the same edition — exactly what a cold OPDS
-        // grid produces — each get their own file to write and rename,
+        // propagated. `taiyaku_read::atomic::write` is unique per attempt, so
+        // two concurrent misses for the same edition — exactly what a cold
+        // OPDS grid produces — each get their own file to write and rename,
         // rather than racing on one shared name, and it cleans up its own
         // temp file on a failed rename.
-        let _ = crate::atomic::write(path, &generated, "jpg");
+        let _ = taiyaku_read::atomic::write(path, &generated, "jpg");
     }
     Ok(generated)
 }

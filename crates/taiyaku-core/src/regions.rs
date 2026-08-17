@@ -122,8 +122,9 @@ impl RegionDoc {
     /// Where this document lives for a given sidecar: same directory, same stem.
     ///
     /// `taiyaku.json` becomes `taiyaku.regions.json`. Built from `file_stem`
-    /// and a `format!`, the arithmetic `taiyaku-serve`'s `Work::sibling`
-    /// already carries for `<stem>.notes.json` and `taiyaku.stump.json` —
+    /// and a `format!`, the same arithmetic [`crate::TruthDoc::path_beside`]
+    /// carries for `<stem>.truth.json` and `taiyaku-library`'s
+    /// `export::stem_of` for the four documents a library round-trips —
     /// not `set_extension` twice, which loses a dot in the stem rather than
     /// keeping it: `go.between.json` first strips to `go.between`, whose own
     /// extension is then `between`, and the second call replaces that,

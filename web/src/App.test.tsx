@@ -210,7 +210,21 @@ beforeEach(() => {
   vi.stubGlobal('localStorage', fakeStorage())
   vi.clearAllMocks()
   resolver = disposable()
-  ports.listWorks.mockResolvedValue([WORK])
+  // Task 14: `listWorks` answers objects rather than bare ids; `WORK` stays
+  // the bare slug everywhere else in this file (`getSidecarWithEtag`,
+  // `putProgress` etc. are all still called with it, since `openFirstWork`
+  // reads only `.slug` off the first entry) — only this one call site needs
+  // the richer shape.
+  ports.listWorks.mockResolvedValue([
+    {
+      slug: WORK,
+      title: 'Vol 1',
+      series: null,
+      volume: null,
+      editions: ['raw', 'en'],
+      cover: `/api/works/${WORK}/raw/pages/0/thumb`,
+    },
+  ])
   ports.getSidecarWithEtag.mockResolvedValue({
     json: sidecarJson(),
     etag: 's1',

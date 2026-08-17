@@ -41,7 +41,32 @@ export const pageUrl = (
 export const thumbUrl = (work: string, edition: string, index: number) =>
   `${pageUrl(work, edition, index)}/thumb`
 
-export async function listWorks(): Promise<string[]> {
+/**
+ * One entry of `GET /api/works` — enough to identify a work, group it under
+ * a series and show its cover, without shipping the sidecar itself.
+ *
+ * **`series` and `volume` come from the server's library rows, not from the
+ * sidecar** — there is no field for either on the sidecar document, because a
+ * series grouping and a volume number are spec B's scanner's job, not the
+ * aligner's. Both are `null` today rather than absent: nothing populates
+ * either column yet, and the server answers them honestly as "not yet known"
+ * rather than leaving the key out.
+ *
+ * `slug` is the permalink and can outlive `title`: `taiyaku-library`'s
+ * `import::update_work` updates a re-imported work's title but leaves its
+ * slug alone on purpose, so a bookmark survives a rename. A stale slug
+ * beside a fresh title is therefore expected, not a bug.
+ */
+export interface WorkSummary {
+  slug: string
+  title: string
+  series: string | null
+  volume: number | null
+  editions: string[]
+  cover: string
+}
+
+export async function listWorks(): Promise<WorkSummary[]> {
   const res = await fetch('/api/works')
   if (!res.ok)
     throw new Error(`listing works: ${res.status} ${await res.text()}`)

@@ -448,7 +448,11 @@ fn a_missing_edition_directory_is_reported_by_name_not_skipped_silently() {
 /// A scratch directory nobody else is using, emptied first in case a
 /// previous run left one behind.
 fn scratch(name: &str) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!("taiyaku-test-score-{name}"));
+    // The process id, for the reason `taiyaku-library/src/migrate/tests.rs`'s
+    // own `scratch` sets out: `name` separates tests within one run and
+    // nothing between runs.
+    let root =
+        std::env::temp_dir().join(format!("taiyaku-test-score-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("create a scratch directory");
     root

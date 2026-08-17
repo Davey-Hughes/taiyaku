@@ -1,75 +1,35 @@
-//! What a reader wrote down, kept beside the sidecar rather than inside it.
+//! What a reader wrote down, kept as rows rather than inside the sidecar.
 //!
 //! Notes are content, so they are server-side for the same reason progress is:
 //! they have to survive a different machine, and a browser profile is neither
-//! portable nor exportable. They are a sibling file rather than a field in
-//! `taiyaku.json` because that document describes correspondence and must diff
-//! meaningfully in git — human prose would be noise in it, and re-solving
-//! rewrites it, which is the hazard O13 already records for hand corrections.
+//! portable nor exportable. They live in `taiyaku-library`'s `note` table
+//! rather than a field in `taiyaku.json` because that document describes
+//! correspondence and must diff meaningfully in git — human prose would be
+//! noise in it, and re-solving rewrites it, which is the hazard O13 already
+//! records for hand corrections. Until Task 13 the rows were a sibling
+//! `taiyaku.notes.json` file instead; `taiyaku_library::state::notes`/
+//! `put_notes` now own the storage.
 //!
 //! A note is anchored to a **slot**, not a page: a note on the left half of a
 //! joined spread must not silently become a note on the whole spread. Its
 //! `region`, when it has one, is in fractions of that slot, so a re-scan or the
 //! same edition served at another resolution does not move the marker.
 
-use std::path::PathBuf;
-
-use serde::{Deserialize, Serialize};
-
-use crate::works::Work;
-
-/// A rectangle on one slot, in fractions of that slot's own width and height.
+/// `Note`, `Notes` and this module's own `Region` moved down to
+/// `taiyaku-library` — this crate cannot be the thing a store depends on, and
+/// notes must be reachable from there for Task 9's `state::notes`. Re-exported
+/// here so every existing `crate::notes::{Note, Notes, Region}` path in this
+/// crate keeps resolving unchanged.
 ///
-/// Fractions rather than pixels, and the whole marker arithmetic is scale-free
-/// as a result — a tab or a tint tracks correctly at any fit scale with no
-/// extra work.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Region {
-    pub x: f64,
-    pub y: f64,
-    pub w: f64,
-    pub h: f64,
-}
+/// **Not `taiyaku_core::regions::Region`.** The two share a name; this one is
+/// a note's anchor rectangle in normalised page coordinates, that one is a
+/// detected text region. Do not merge them and do not `use` one where the
+/// other is meant.
+pub use taiyaku_library::{Note, Notes, Region};
 
-/// One note.
-///
-/// `region` is optional and absent means the whole slot — a degenerate case
-/// rather than a second kind of note, so nothing downstream needs two code
-/// paths. `created`/`updated` are RFC 3339 strings minted by the client: this
-/// server has no clock in the format, and a note written offline should carry
-/// the time it was written rather than the time it reached a server.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Note {
-    pub id: String,
-    pub edition: String,
-    pub slot: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<Region>,
-    /// Which colour a reader gave this note, as a name rather than as pixels.
-    ///
-    /// A **token**, never CSS: `taiyaku.json` carries correspondence and this
-    /// file carries what a reader wrote, and neither is a stylesheet. What
-    /// `amber` looks like is the reader's business, and a second reader — a
-    /// native shell, a printout — is entitled to a different answer.
-    ///
-    /// Absent means the default, so every note written before colours existed
-    /// stays valid and reads as it always did.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color: Option<String>,
-    pub body: String,
-    pub created: String,
-    pub updated: String,
-}
+use taiyaku_library::Library;
 
-/// Every note on one work.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Notes {
-    pub work: String,
-    pub notes: Vec<Note>,
-}
+use crate::works::{self, LOCAL_USER, Work};
 
 /// How far outside `[0, 1]` a region may stray before it is refused.
 ///
@@ -237,11 +197,6 @@ pub fn validate(notes: &Notes, work: &Work, stored: &Notes) -> Result<(), Invali
     Ok(())
 }
 
-/// Where a work's notes file sits: beside its sidecar, same stem.
-pub fn notes_path(work: &Work) -> PathBuf {
-    work.sibling("notes.json")
-}
-
 /// A work with nothing written on it yet.
 ///
 /// The route hands this back where no file exists, so a client that has never
@@ -257,10 +212,12 @@ pub fn empty(id: &str) -> Notes {
 
 /// The one serialisation of a notes document.
 ///
-/// Shared by the file on disk, the body of a response, and the `ETag` over
-/// that body, so a validator can never be computed over bytes a client was not
-/// sent — the failure mode that would make a conditional write silently
-/// unconditional.
+/// Shared by the projection `load` returns, the body of a response, and the
+/// `ETag` over that body (`etag_for`, below), so a validator can never be
+/// computed over bytes a client was not sent — the failure mode that would
+/// make a conditional write silently unconditional. Until Task 13 "shared by"
+/// also named the file on disk; SQLite replaced the file, and this — plus
+/// `etag_for` — is what keeps the rule true with one fewer writer.
 ///
 /// # Errors
 ///
@@ -280,41 +237,78 @@ pub fn to_json(notes: &Notes) -> Result<String, String> {
 
 /// What is stored, or `None` where nothing ever was.
 ///
+/// A work with no row in `library`'s `work` table — nothing has ever been
+/// written against it — answers `None` without touching `taiyaku_library`'s
+/// `note` table at all: `works::find_row` never creates a row, so there is
+/// nothing yet for a `work_id` to be. A row that does exist always answers
+/// `Some`, even with zero notes on it — `taiyaku_library::state::notes`
+/// returns a real, empty `Notes` for a work with no note rows, and that is a
+/// different fact from a work nobody has ever touched: a reader who deleted
+/// their last note is not the same as a reader who never wrote one, and the
+/// route above this one relies on being able to tell them apart (`get_notes`'s
+/// doc comment collapses the two deliberately, but that collapsing is its
+/// decision to make, not this function's to make for it).
+///
 /// # Errors
 ///
-/// Returns an error if the notes file exists but its contents are not valid
-/// JSON for `Notes` — including a field this build does not recognise, since
-/// `Notes` and `Note` both deny unknown fields — or if reading it fails for
-/// any reason other than the file simply not existing, such as a permission
-/// refusal or a directory sitting where the file should. A missing file is
-/// not an error: it is `Ok(None)`.
-pub fn load(work: &Work) -> Result<Option<Notes>, String> {
-    let path = notes_path(work);
-    match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str(&text)
-            .map(Some)
-            .map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    }
+/// Returns an error if SQLite fails, or if a stored note has a region with
+/// only some of its four columns set — see
+/// `taiyaku_library::state::notes`'s own `# Errors`.
+pub fn load(library: &Library, work: &Work) -> Result<Option<Notes>, String> {
+    let conn = library.conn();
+    let Some(work_id) = works::find_row(&conn, work)? else {
+        return Ok(None);
+    };
+    taiyaku_library::state::notes(&conn, work_id, LOCAL_USER).map(Some)
 }
 
-/// Write the notes, atomically.
+/// Replace the notes, inside one transaction.
 ///
-/// `progress::store`'s reasoning applies unchanged and with one addition: a
-/// notes file holds prose a person typed, so a crash mid-write truncating it
-/// destroys work that cannot be recomputed from anything, where a truncated
-/// position merely loses a page number.
+/// The library row bridging `work`'s slug to a numeric `work_id` is minted
+/// here on first write if none exists yet — see `works::row_id_for_write`.
+/// `notes.work` is not written anywhere: nothing in the `note` table carries
+/// a work label, and `taiyaku_library::state::notes` reconstructs it on read
+/// from `work_id`'s own slug — which, by construction, is `work.id`, so a
+/// caller-supplied `notes.work` that differs never survives to be read back
+/// differently. `notes::validate` already refuses any document where it
+/// differs before this is ever called, so nothing here re-checks it.
 ///
 /// # Errors
 ///
-/// Returns an error if `to_json` fails to serialise `notes` (see its own
-/// `# Errors`), or if writing the result to `notes_path(work)` fails — see
-/// `atomic::write` for the two ways that can happen.
-pub fn store(work: &Work, notes: &Notes) -> Result<(), String> {
-    let path = notes_path(work);
-    let text = to_json(notes)?;
-    crate::atomic::write(&path, text.as_bytes(), "json")
+/// Returns an error if SQLite fails — including a `UNIQUE` violation on a
+/// note `id` repeated in `notes.notes`, since this module's own `validate`
+/// is what is relied on to have refused that already.
+pub fn store(library: &Library, work: &Work, notes: &Notes) -> Result<(), String> {
+    let conn = library.conn();
+    let work_id = works::row_id_for_write(&conn, work)?;
+    taiyaku_library::state::put_notes(&conn, work_id, LOCAL_USER, notes)
+}
+
+/// A notes or truth document's `ETag`: a SHA-256 over exactly the bytes being
+/// sent.
+///
+/// Takes the serialised text rather than the document, because both callers
+/// already hold it — `to_json` and `truth::to_json` are each the one
+/// serialisation of their document, and hashing a second copy built here
+/// would be the drift this exists to rule out. Shared by `get_truth`/
+/// `put_truth` in `routes.rs` rather than given a `truth_etag` wrapper of its
+/// own: the hash has nothing document-specific in it, so a second name for
+/// the same bytes would be indirection with no behaviour behind it. Lives
+/// here rather than in `routes.rs`, where it was minted (as `notes_etag`)
+/// before this module existed to own the invariant it computes: this is
+/// where `to_json` is, and the two belong together for the same reason
+/// `to_json`'s own doc comment gives.
+pub(crate) fn etag_for(json: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(json.as_bytes());
+    let digest = hasher.finalize();
+    let hex = digest.iter().fold(String::new(), |mut hex, b| {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{b:02x}");
+        hex
+    });
+    format!("\"{hex}\"")
 }
 
 #[cfg(test)]

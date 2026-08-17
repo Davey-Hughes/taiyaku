@@ -273,6 +273,7 @@ fn the_tile_cache_is_a_sibling_of_the_cover_cache() {
 #[test]
 fn a_resolved_root_keeps_covers_and_thumbs_as_siblings() {
     let state = crate::ServeState {
+        library: crate::test_support::library(),
         works: Vec::new(),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: crate::cache_root::cache_root(
@@ -416,7 +417,18 @@ async fn serve_binds_the_address_and_answers_on_it() {
 
     let serving = tokio::spawn({
         let addr = addr.clone();
-        async move { crate::serve(works, &addr, None, None, false, Some(cache)).await }
+        async move {
+            crate::serve(
+                crate::test_support::library(),
+                works,
+                &addr,
+                None,
+                None,
+                false,
+                Some(cache),
+            )
+            .await
+        }
     });
 
     // Poll rather than sleep a fixed time: the bind is the thing under
@@ -500,7 +512,18 @@ async fn serve_caches_covers_and_tiles_under_the_resolved_root() {
     let serving = tokio::spawn({
         let addr = addr.clone();
         let cache = cache.clone();
-        async move { crate::serve(vec![work], &addr, None, None, false, Some(cache)).await }
+        async move {
+            crate::serve(
+                crate::test_support::library(),
+                vec![work],
+                &addr,
+                None,
+                None,
+                false,
+                Some(cache),
+            )
+            .await
+        }
     });
 
     let mut bound = false;

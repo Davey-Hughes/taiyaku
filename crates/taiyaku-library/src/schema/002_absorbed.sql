@@ -1,0 +1,21 @@
+-- Whole-branch review 3, C1.
+--
+-- `migrated_document` recorded one fact — "this work's this document has been
+-- settled" — and three different situations wrote it: the file was read into
+-- rows, the file was left unread because the rows already held state, and
+-- there was no file at all. `export --in-place` then read that one fact as
+-- "the database has authority over the file at this path", which is true of
+-- the first and false of the last: a sibling document that appeared after the
+-- first import was deleted, or overwritten with an empty document, having
+-- never been read by anything.
+--
+-- So the marker keeps its meaning and gains the missing half. `absorbed`
+-- means: this library has had this file's content — read it into rows on an
+-- import, or written it out of them on an export. Only then may an export
+-- overwrite or remove it. Every other settled document is left exactly where
+-- it is, and said so.
+--
+-- Existing rows default to 0, which is the conservative reading of a fact
+-- written before the distinction existed: the worst it costs is a stale file
+-- an export declines to remove and names instead.
+ALTER TABLE migrated_document ADD COLUMN absorbed INTEGER NOT NULL DEFAULT 0;

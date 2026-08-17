@@ -2661,3 +2661,53 @@ fn two_merged_corrections_keep_both_notes() {
     assert_eq!(merged.by, Some(Source::Hand));
     assert_eq!(merged.note.as_deref(), Some("first; second"));
 }
+
+/// **A document from a newer taiyaku does not parse.**
+///
+/// `from_json` used to be a bare `serde_json::from_str`, so `{"taiyaku": 2}`
+/// became a `Sidecar` with every field this build has no name for silently
+/// gone — and the commands that read-modify-write a document (`align --write`,
+/// `credits --write`, `regions`, `library import` + `export --in-place`) wrote
+/// that stripped copy back over the reader's only one, stamped version 1.
+/// `taiyaku_library::import` refused it at the library's two entry points; the
+/// other commands never asked. Refusing here is the one place all of them pass
+/// through.
+#[test]
+fn a_document_from_a_newer_taiyaku_does_not_parse_at_all() {
+    let json = format!(
+        r#"{{"taiyaku": {}, "work": {{"title": "T", "reading": "rtl"}},
+            "editions": {{"a": {{"label": "A", "members": [
+              {{"path": "a.cbz", "sha256": "00", "pages": 2}}]}}}},
+            "hub": "a", "alignments": []}}"#,
+        VERSION + 1
+    );
+    let refusal = Sidecar::from_json(&json).expect_err("a version 2 document is not readable here");
+    assert!(
+        refusal.contains(&format!("version {}", VERSION + 1)),
+        "the refusal names the version it was handed: {refusal}"
+    );
+    assert!(
+        refusal.contains(&format!("this build reads {VERSION}")),
+        "the refusal names the version this build reads: {refusal}"
+    );
+}
+
+/// The other side of the same rule: the version this build writes still
+/// parses, so the guard above cannot be satisfied by refusing everything.
+/// Every fixture in this file declares `"taiyaku": 1` and would fail loudly,
+/// but they would fail as *setup*, which is not the same as saying so.
+#[test]
+fn a_document_declaring_this_builds_version_still_parses() {
+    let json = format!(
+        r#"{{"taiyaku": {VERSION}, "work": {{"title": "T", "reading": "rtl"}},
+            "editions": {{"a": {{"label": "A", "members": [
+              {{"path": "a.cbz", "sha256": "00", "pages": 2}}]}}}},
+            "hub": "a", "alignments": []}}"#
+    );
+    assert_eq!(
+        Sidecar::from_json(&json)
+            .expect("this build's own version parses")
+            .taiyaku,
+        VERSION
+    );
+}

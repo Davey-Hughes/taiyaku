@@ -227,8 +227,8 @@ impl TruthDoc {
     ///
     /// Built from `file_stem` and a `format!`, not `set_extension` twice —
     /// which loses a dot in the stem rather than keeping it. The arithmetic
-    /// `RegionDoc::path_beside` and `Work::sibling` already carry, and the
-    /// reason each states.
+    /// [`crate::RegionDoc::path_beside`] and `taiyaku-library`'s
+    /// `export::stem_of` already carry, and the reason each states.
     #[must_use]
     pub fn path_beside(sidecar: &Path) -> PathBuf {
         let stem = sidecar.file_stem().map_or_else(

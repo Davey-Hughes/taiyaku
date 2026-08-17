@@ -1,5 +1,13 @@
 use super::*;
 
+/// A fresh in-memory library, good for nothing but bridging the fixture
+/// `Work` this module's tests build — `progress/tests.rs`'s own `library()`,
+/// duplicated rather than shared across a private module boundary neither
+/// file crosses for anything else.
+fn library() -> Library {
+    taiyaku_library::Library::open_in_memory().expect("in-memory library")
+}
+
 fn note(id: &str, slot: u32, region: Option<Region>) -> Note {
     Note {
         id: id.into(),
@@ -16,11 +24,13 @@ fn note(id: &str, slot: u32, region: Option<Region>) -> Note {
 /// The sidecar must not gain a notes field. It is an alignment document,
 /// re-solving rewrites it, and prose in it would be noise in every diff.
 #[test]
-fn notes_are_written_beside_the_sidecar_not_into_it() {
+fn notes_are_written_to_the_library_not_into_the_sidecar() {
     let work = crate::test_support::work("taiyaku-test-notes-beside");
+    let library = library();
     let sidecar_before = std::fs::read_to_string(&work.path).unwrap();
 
     store(
+        &library,
         &work,
         &Notes {
             work: "t".into(),
@@ -30,11 +40,14 @@ fn notes_are_written_beside_the_sidecar_not_into_it() {
     .unwrap();
 
     let sidecar_after = std::fs::read_to_string(&work.path).unwrap();
-    let beside = notes_path(&work);
-    let exists = beside.exists();
+    let stored = load(&library, &work).unwrap();
     crate::test_support::cleanup("taiyaku-test-notes-beside");
     assert_eq!(sidecar_before, sidecar_after, "the sidecar must not change");
-    assert!(exists, "notes belong in {}", beside.display());
+    assert_eq!(
+        stored.map(|n| n.notes.len()),
+        Some(1),
+        "notes belong in the library"
+    );
 }
 
 /// A note with a region and one without must both survive the trip, and
@@ -44,6 +57,7 @@ fn notes_are_written_beside_the_sidecar_not_into_it() {
 #[test]
 fn a_note_round_trips_with_and_without_a_region() {
     let work = crate::test_support::work("taiyaku-test-notes-round-trip");
+    let library = library();
     let stored = Notes {
         work: "t".into(),
         notes: vec![
@@ -61,60 +75,34 @@ fn a_note_round_trips_with_and_without_a_region() {
         ],
     };
 
-    store(&work, &stored).unwrap();
-    let text = std::fs::read_to_string(notes_path(&work)).unwrap();
-    let read_back = load(&work).unwrap();
+    store(&library, &work, &stored).unwrap();
+    let read_back = load(&library, &work).unwrap();
+    // The projection, not a second copy re-parsed from disk — there is no
+    // disk any more. `notes::to_json`'s own doc comment is the invariant
+    // this is standing in for: the region-less note must serialise with the
+    // field omitted, not written as `null`, in exactly the bytes a client
+    // would be sent.
+    let serialised = to_json(read_back.as_ref().expect("just stored")).unwrap();
 
     crate::test_support::cleanup("taiyaku-test-notes-round-trip");
     assert_eq!(read_back, Some(stored));
     assert!(
-        !text.contains("null"),
-        "a note with no region must omit the field, not write null: {text}"
+        !serialised.contains("null"),
+        "a note with no region must omit the field, not write null: {serialised}"
     );
 }
 
-/// The bytes on disk are the bytes an `ETag` is computed over and the
-/// bytes a client is sent. Anything else lets a validator describe a
-/// document nobody has, which makes a conditional write unconditional
-/// without saying so.
-#[test]
-fn what_is_stored_is_exactly_what_to_json_produces() {
-    let work = crate::test_support::work("taiyaku-test-notes-canonical");
-    let notes = Notes {
-        work: "t".into(),
-        notes: vec![note("01J8", 1, None)],
-    };
-
-    store(&work, &notes).unwrap();
-    let on_disk = std::fs::read_to_string(notes_path(&work)).unwrap();
-
-    crate::test_support::cleanup("taiyaku-test-notes-canonical");
-    assert_eq!(on_disk, to_json(&notes).unwrap());
-}
-
-/// A field this build does not know is refused rather than dropped. The
-/// same rule M5d's `Correction` applies on the wire, applied at rest: a
-/// file written by a later build, or hand-edited with a typo, must not
-/// come back with the reader's own prose silently missing.
-#[test]
-fn a_notes_file_with_an_unknown_field_is_refused_rather_than_silently_dropped() {
-    let work = crate::test_support::work("taiyaku-test-notes-unknown-field");
-    std::fs::write(
-        notes_path(&work),
-        r#"{"work":"t","notes":[{"id":"01J8","edition":"raw","slot":0,
-               "body":"b","created":"c","updated":"u","colour":"red"}]}"#,
-    )
-    .unwrap();
-
-    let read_back = load(&work);
-
-    crate::test_support::cleanup("taiyaku-test-notes-unknown-field");
-    let message = read_back.expect_err("an unknown field must not parse");
-    assert!(
-        message.contains("colour"),
-        "the refusal has to name the field: {message}"
-    );
-}
+// `a_notes_file_with_an_unknown_field_is_refused_rather_than_silently_dropped`
+// lived here through Task 12: a notes file hand-edited (or written by a
+// later build) with a field this build does not know was refused rather than
+// silently dropped, because `Notes`/`Note` both `deny_unknown_fields`. Task
+// 13 removed the file its scenario hand-edited — there is no longer a JSON
+// document on disk a stray key could be added to. The row-store analogue of
+// "malformed foreign data" is a `note` row whose region has only some of its
+// four columns set, which cannot come from this crate's own `put_notes` and
+// is refused by `taiyaku_library::state::notes` — covered in that crate by
+// `state::tests::a_partially_null_region_is_refused_rather_than_guessed_at`,
+// not duplicated here.
 
 /// A colour is a name a client looks up, not a style it pastes into an
 /// attribute — so it is held to the alphabet an edition key is, and the
@@ -225,15 +213,68 @@ fn a_grandfathered_note_still_has_its_colour_checked() {
     assert!(matches!(refused, Err(Invalid::Refused(_))));
 }
 
-/// Nothing recorded is `None`, not an empty document — the file's
-/// existence is a fact this layer reports honestly. Collapsing the two is
-/// the *route*'s decision, made there and explained there.
+/// Nothing recorded is `None`, not an empty document — whether a row exists
+/// is a fact this layer reports honestly. Collapsing the two is the
+/// *route*'s decision, made there and explained there.
 #[test]
-fn a_work_with_no_notes_file_loads_as_nothing_recorded() {
+fn a_work_with_no_notes_recorded_loads_as_nothing_recorded() {
     let work = crate::test_support::work("taiyaku-test-notes-absent");
-    let loaded = load(&work);
+    let loaded = load(&library(), &work);
     crate::test_support::cleanup("taiyaku-test-notes-absent");
     assert_eq!(loaded.unwrap(), None);
+}
+
+/// The bridge from a slug-keyed `Work` to the library's numeric `work.id` —
+/// the real work of Task 13, and `progress/tests.rs`'s own bridging tests,
+/// mirrored here for notes. A work this library has never heard of gets a
+/// row minted on its first write, and a read never mints one at all.
+#[test]
+fn storing_notes_mints_exactly_one_bridge_row_for_a_work_the_library_never_imported() {
+    let work = crate::test_support::work("taiyaku-test-notes-bridge");
+    let library = library();
+
+    assert_eq!(
+        crate::works::find_row(&library.conn(), &work).unwrap(),
+        None,
+        "nothing has been written yet, so no row exists"
+    );
+
+    store(&library, &work, &on("raw", 0, None)).unwrap();
+    let first_id = crate::works::find_row(&library.conn(), &work)
+        .unwrap()
+        .expect("a row now exists");
+
+    store(&library, &work, &empty("t")).unwrap();
+    let second_id = crate::works::find_row(&library.conn(), &work)
+        .unwrap()
+        .expect("still there");
+
+    crate::test_support::cleanup("taiyaku-test-notes-bridge");
+    assert_eq!(
+        first_id, second_id,
+        "the second write reuses the first's row"
+    );
+    assert_eq!(
+        load(&library, &work).unwrap(),
+        Some(empty("t")),
+        "the second write replaced the first note with none"
+    );
+}
+
+/// A read must never mint a bridge row as a side effect — `works::find_row`'s
+/// own doc comment states the rule; this is what proves `notes::load`
+/// actually honours it.
+#[test]
+fn loading_notes_for_an_unregistered_work_creates_no_row() {
+    let work = crate::test_support::work("taiyaku-test-notes-read-only");
+    let library = library();
+
+    let loaded = load(&library, &work).unwrap();
+
+    let row = crate::works::find_row(&library.conn(), &work).unwrap();
+    crate::test_support::cleanup("taiyaku-test-notes-read-only");
+    assert_eq!(loaded, None);
+    assert_eq!(row, None, "a GET must not write");
 }
 
 fn on(edition: &str, slot: u32, region: Option<Region>) -> Notes {
@@ -446,26 +487,12 @@ fn a_region_that_runs_off_the_bottom_is_refused_like_one_that_runs_off_the_side(
     );
 }
 
-/// `NotFound` means "nothing recorded"; every other error means the notes
-/// could not be read and must not be reported as an empty document.
-///
-/// The guard `Err(e) if e.kind() == NotFound` could be replaced by `true`
-/// unnoticed, because every test either wrote a file or wrote none — and
-/// a missing file and an unreadable one are the same to a test that only
-/// ever checks for `None`. A reader whose notes file had become
-/// unreadable would be shown a blank margin and, on the next write, have
-/// the file replaced with one note.
-#[test]
-fn an_unreadable_notes_file_is_an_error_rather_than_nothing_recorded() {
-    let work = crate::test_support::work("taiyaku-test-notes-unreadable");
-    // A directory where a file belongs: readable as an entry, not as text.
-    std::fs::create_dir_all(notes_path(&work)).unwrap();
-
-    let result = load(&work);
-
-    crate::test_support::cleanup("taiyaku-test-notes-unreadable");
-    assert!(
-        result.is_err(),
-        "must not read as `no notes yet`: {result:?}"
-    );
-}
+// `an_unreadable_notes_file_is_an_error_rather_than_nothing_recorded` staged
+// an unreadable `taiyaku.notes.json` (a directory sitting where the file
+// belonged) and asserted `load` did not read it as "nothing recorded". Task
+// 13 removed the file this staged; the row-store equivalent of "storage is
+// broken" is a SQLite failure, which `notes::load` already reports as `Err`
+// rather than `Ok(None)` by construction — it only ever returns `Ok(None)`
+// from `works::find_row` answering `None`, never from an error swallowed —
+// and there is no equivalent of "make a directory unreadable" to stage
+// against an in-memory database from a test in this crate.
