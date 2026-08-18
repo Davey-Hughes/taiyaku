@@ -251,27 +251,28 @@ fn read_directory(root: &Path) -> Result<Vec<Page>, String> {
 
 /// Name a container taiyaku cannot read, from its leading bytes.
 ///
-/// Only zip-based archives are supported. Recognising the others is not a step
-/// towards reading them — it is so the error can say which format it found
-/// rather than reporting a corrupt zip, since the extension is frequently wrong
-/// about what is actually inside.
+/// Only zip-based archives and directories are supported. Recognising the
+/// others is not a step towards reading them — it is so the error can say
+/// which format it found rather than reporting a corrupt zip, since the
+/// extension is frequently wrong about what is actually inside.
+///
+/// **The recognition itself lives in `format.rs` since 2026-08-17**, because
+/// the scanner needs the same answer as a token rather than as prose and two
+/// tables of magic numbers would drift. This is the prose half; that is the
+/// decision half.
+///
+/// An EPUB is **not** named here, deliberately. Telling one from a plain zip
+/// means opening the archive and reading its `mimetype` entry, and this
+/// function runs inside `open_archive` — once per page served. `read_member`
+/// already reports what a page-less archive held instead, which is the
+/// diagnosis that actually helps.
 fn unsupported_container(bytes: &[u8]) -> Option<&'static str> {
-    const SEVEN_ZIP: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
-    const RAR: &[u8] = b"Rar!\x1a\x07";
-
-    if bytes.starts_with(SEVEN_ZIP) {
-        Some("a 7-Zip archive")
-    } else if bytes.starts_with(RAR) {
-        Some("a RAR archive")
-    // `get` rather than a length test and an index: the manual bound was
-    // `len() > 262`, one past what the slice needs, so a 262-byte buffer
-    // carrying the signature read as unrecognised. Unreachable with a real tar
-    // — the format's first header block alone is 512 bytes — but the guard now
-    // says exactly what it means and has no arithmetic to get wrong.
-    } else if bytes.get(257..262) == Some(&b"ustar"[..]) {
-        Some("a tar archive")
-    } else {
-        None
+    match crate::format::from_header(bytes) {
+        crate::Format::SevenZip => Some("a 7-Zip archive"),
+        crate::Format::Rar => Some("a RAR archive"),
+        crate::Format::Tar => Some("a tar archive"),
+        crate::Format::Pdf => Some("a PDF"),
+        _ => None,
     }
 }
 

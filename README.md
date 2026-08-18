@@ -60,6 +60,12 @@ and reading logic runs in the browser and, later, inside a native shell.
 ## Using it
 
 ```sh
+# find what a library root actually holds and catalog it — series, editions,
+# volumes, chapters — without touching any of it; --add remembers the root so
+# a later run needs no flag. The commands below still take real file paths,
+# not names
+taiyaku library scan --add /srv/manga
+
 # pair a Japanese raw against an English release and write the sidecar
 taiyaku align raw-v01.cbz -- en-v01.cbz \
     --name-a raw --name-b en --write taiyaku.json
@@ -122,6 +128,24 @@ taiyaku library import taiyaku.json
 # every library names every sidecar taiyaku.json: ./export/<slug>/taiyaku.json
 taiyaku library export go-toubun-no-hanayome --dir ./export
 taiyaku library export --all --dir ./export
+
+# what decides, as JSON — derivation's input, not its output: edit it and
+# import it back to change how paths become series, editions, volumes and
+# chapters, then scan again to apply it. Nothing here is hidden in code; the
+# four defaults are ordinary rows, written once per database by migration 3
+# and scoped to every root, not seeded per root by a scan
+taiyaku library rules > rules.json
+taiyaku library rules --import rules.json
+
+# what a scan+derive proposed but did not decide — an inbox, not an action:
+# "this directory may be the colour edition of that series", say
+taiyaku library proposals
+
+# accept one: writes a narrow rule scoped to its own root and re-derive picks
+# it up; --dismiss records "no" so it stops being asked; --unaccept undoes
+# an accept
+taiyaku library proposals --accept 3
+taiyaku library proposals --dismiss 4
 ```
 
 To read in the browser, build the WebAssembly binding first, then run the reader

@@ -199,10 +199,21 @@ pub fn load_works(paths: &[PathBuf]) -> Result<Vec<Work>, String> {
 /// **`series` and `volume` come from `state.library`'s rows, not from the
 /// sidecar** — `taiyaku_core::Sidecar` has no field for either, because a
 /// series grouping and a volume number are spec B's scanner's job, not the
-/// aligner's. Both are `None` today, honestly rather than by omission:
-/// nothing writes `work.series_id` or `work.volume` yet (`import::sidecar`'s
-/// `INSERT`/`UPDATE` never touch them), so a work with a library row answers
-/// exactly what one without a row — the `load_works` path, which
+/// aligner's.
+///
+/// **They stopped being `None` when spec B landed.** This paragraph used to
+/// say both were empty "honestly rather than by omission: nothing writes
+/// `work.series_id` or `work.volume` yet", which was true while
+/// `import::sidecar` was the only writer. `derive.rs` writes both now, so a
+/// scanned library answers this route with a real series name and volume —
+/// measured end to end on 2026-08-18: scanning one corpus edition, exporting
+/// it and serving the result gives
+/// `{"series":"Go-Toubun no Hanayome","volume":1.0}` here. **It is the first
+/// thing the scanner produces that a reader can see.**
+///
+/// A work with no library row, and one imported from a document rather than
+/// derived, both still answer `None` — the aligner has nowhere to record
+/// either, which is why the columns exist. So does the `load_works` path, which
 /// `taiyaku serve <sidecar>...` no longer takes in production since Task 15,
 /// but which this crate's own fixtures and `corpus.rs` still call directly —
 /// answers. `title` and `editions` are not looked up a second time here: they

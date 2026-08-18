@@ -1126,6 +1126,47 @@ fn a_hand_set_chapter_number_survives_a_reimport() {
     );
 }
 
+/// The same column, reached by the route only the scanner opens: a work
+/// [`scanned`] into the library with no document at all, which someone then
+/// aligns for the first time.
+///
+/// `taiyaku_core::Member` is `{ path, sha256, pages }` — the sidecar format
+/// has nowhere to carry `chapter_declared`, and `replace_editions` replaces
+/// members wholesale from the document. Without preservation, the first
+/// `align --write` over a scanned chapter edition erases a fact that costs a
+/// full re-read of every member to recover, which is exactly why the store
+/// spec put the column in migration 1.
+///
+/// Distinct from `a_hand_set_chapter_number_survives_a_reimport` directly
+/// above in the two ways this task made reachable: the work arrives through
+/// `scanned` rather than `sidecar` — so the first import claims no path and
+/// the second one does — and the source is `filename`, `derive.rs`'s own,
+/// rather than a person's `hand`.
+#[test]
+fn a_chapter_number_the_scanner_recorded_survives_a_later_align() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let id = scanned(&conn, &doc("aa"), None).expect("scan");
+    conn.execute(
+        "UPDATE member SET chapter_declared = 1.0, chapter_source = 'filename'",
+        [],
+    )
+    .expect("record the chapter");
+
+    sidecar(&conn, &doc("aa"), Path::new("/library/series/taiyaku.json")).expect("align");
+
+    let (chapter, source): (Option<f64>, Option<String>) = conn
+        .query_row(
+            "SELECT chapter_declared, chapter_source FROM member
+             JOIN edition ON edition.id = member.edition_id WHERE edition.work_id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("select");
+    assert_eq!(chapter, Some(1.0));
+    assert_eq!(source.as_deref(), Some("filename"));
+}
+
 #[test]
 fn an_incoming_edition_with_no_hub_alignment_leaves_a_held_one_alone() {
     let library = Library::open_in_memory().expect("library");
@@ -1481,5 +1522,451 @@ fn a_document_declaring_this_builds_version_still_imports() {
             .taiyaku,
         taiyaku_core::VERSION,
         "and the projection stamps the version this build writes"
+    );
+}
+
+#[test]
+fn a_scanned_work_is_stored_with_no_sidecar_path() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+
+    let id = scanned(&conn, &doc("aa"), None).expect("import");
+
+    let path: Option<String> = conn
+        .query_row("SELECT sidecar_path FROM work WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .expect("select");
+    assert_eq!(path, None, "a scanned work claims no file on disk");
+}
+
+#[test]
+fn two_scanned_works_in_one_directory_do_not_collide() {
+    // The case that made this function necessary: a series directory holds
+    // fourteen volumes as files, so `sidecar_path` could only ever have named
+    // the directory and all fourteen would have matched each other on
+    // `find_by_path`. Identity is `content_key` alone here — which is why
+    // these two, sharing a title and differing only in their member digest,
+    // are two works.
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+
+    let first = scanned(&conn, &doc("aa"), None).expect("first");
+    let second = scanned(&conn, &doc("bb"), None).expect("second");
+
+    assert_ne!(first, second);
+    let works: i64 = conn
+        .query_row("SELECT count(*) FROM work", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(works, 2);
+}
+
+#[test]
+fn aligning_a_scanned_work_later_lands_on_the_same_row() {
+    // The whole point: the scanner records a volume, someone aligns it, and
+    // `align --write` reaches the same work rather than minting a second —
+    // so the scan's series, volume and any reading position come with it.
+    // `two_edition_doc`'s hub member sha is `hh`, matching `doc("hh")`, and
+    // `content_key` hashes the hub edition's members alone.
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let scanned_id = scanned(&conn, &doc("hh"), None).expect("scan");
+
+    let aligned_id = sidecar(
+        &conn,
+        &two_edition_doc(),
+        Path::new("/library/series/taiyaku.json"),
+    )
+    .expect("align");
+
+    assert_eq!(scanned_id, aligned_id, "the same volume, not a second work");
+    let path: Option<String> = conn
+        .query_row(
+            "SELECT sidecar_path FROM work WHERE id = ?1",
+            [aligned_id],
+            |r| r.get(0),
+        )
+        .expect("select");
+    assert_eq!(path.as_deref(), Some("/library/series/taiyaku.json"));
+    let works: i64 = conn
+        .query_row("SELECT count(*) FROM work", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(works, 1);
+}
+
+#[test]
+fn rescanning_an_aligned_work_does_not_erase_its_sidecar_path() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let id = sidecar(&conn, &doc("aa"), Path::new("/library/series/taiyaku.json")).expect("align");
+
+    scanned(&conn, &doc("aa"), None).expect("rescan");
+
+    let path: Option<String> = conn
+        .query_row("SELECT sidecar_path FROM work WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .expect("select");
+    assert_eq!(path.as_deref(), Some("/library/series/taiyaku.json"));
+}
+
+/// A scan-shaped document over the same members: **what `derive.rs` actually
+/// builds**, which is not this document with its extras stripped.
+///
+/// `derive::write_work` names the work after the thing on disk —
+/// `title_of` takes the last component of the hub member's path when no rule
+/// captured a title — sets `Direction::RightToLeft` unconditionally, because
+/// neither `root` nor `rule` carries a reading direction to set, and labels
+/// every edition with its own key, because neither carries a display name
+/// either. A scan's `work` block and its labels are therefore *different
+/// values*, not the document's own carried through.
+///
+/// **This used to clone the document and clear only `alignments`, `spreads`
+/// and `credits`**, while its doc comment claimed to be "exactly what
+/// `derive.rs` builds". It kept the document's `work.title`, `work.reading`
+/// and edition labels — precisely the three fields derivation does not
+/// preserve — so every `Scope::Scan` test was blind to an overwrite by
+/// construction, and a rescan rewriting a reader's own `taiyaku.json` passed
+/// all 254 of them (whole-branch review, C2).
+fn as_scanned(doc: &taiyaku_core::Sidecar) -> taiyaku_core::Sidecar {
+    let mut scan = doc.clone();
+    scan.alignments.clear();
+    scan.work.title = doc.editions[&doc.hub].members[0]
+        .path
+        .rsplit('/')
+        .next()
+        .expect("rsplit yields at least one part")
+        .to_string();
+    scan.work.reading = taiyaku_core::Direction::RightToLeft;
+    for (key, edition) in &mut scan.editions {
+        edition.label.clone_from(key);
+        edition.spreads.clear();
+        edition.credits.clear();
+    }
+    scan
+}
+
+/// A document whose work block and edition label are a **person's**: a title
+/// naming the volume in words, a left-to-right reading direction, and an
+/// edition called `Japanese raw` rather than `raw`.
+///
+/// Shares its hub member's `sha256` with `doc("aa")`, and so its
+/// `content_key`, which is what lets a scan of the same archives land on this
+/// exact row. Each of the four values is one a scan would otherwise have
+/// written over: measured through `library import`, `library scan` and
+/// `library export --in-place`, which rewrote the reader's own `taiyaku.json`
+/// from `"Go-Toubun no Hanayome, volume 1"` / `ltr` / `"Japanese raw"` to
+/// `"Series - v01"` / `rtl` / `"raw"`.
+fn authored_doc() -> taiyaku_core::Sidecar {
+    let json = r#"{"taiyaku":1,
+         "work":{"title":"Go-Toubun no Hanayome, volume 1","reading":"ltr"},
+         "editions":{"raw":{"label":"Japanese raw","members":[
+           {"path":"raw/v01.cbz","sha256":"aa","pages":10}]}},
+         "hub":"raw","alignments":[]}"#;
+    taiyaku_core::Sidecar::from_json(json).expect("parses")
+}
+
+#[test]
+fn a_rescan_leaves_the_work_block_a_document_established() {
+    // A scan derives a title from a filename and a direction from a constant.
+    // A document carries what a person or the aligner established, and
+    // `scanned`'s own doc enumerates what a scan speaks for — the work block
+    // is not on that list. `hub` goes with them: it decides identity, since
+    // `content_key` hashes the hub edition's members.
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let authored = authored_doc();
+    let id = sidecar(&conn, &authored, Path::new("/x/taiyaku.json")).expect("import");
+
+    let again = scanned(&conn, &as_scanned(&authored), None).expect("rescan");
+
+    assert_eq!(again, id, "content resolved it to the same work");
+    let (title, reading, hub): (String, String, String) = conn
+        .query_row(
+            "SELECT title, reading, hub FROM work WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("work");
+    assert_eq!(title, "Go-Toubun no Hanayome, volume 1");
+    assert_eq!(reading, "ltr", "not the scanner's rtl constant");
+    assert_eq!(hub, "raw");
+    // The key still moves — that is the one thing a scan does speak for here,
+    // and asserting the row is untouched wholesale would pass just as well
+    // against an import that never ran.
+    let key: String = conn
+        .query_row("SELECT content_key FROM work WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .expect("work");
+    assert_eq!(
+        key,
+        crate::identity::content_key(&authored).expect("key"),
+        "the same archives, so the same key — but written, not merely left"
+    );
+}
+
+#[test]
+fn a_rescan_leaves_the_label_a_document_gave_an_edition() {
+    // `derive::write_work` writes `label: key.clone()`, because there is no
+    // `set_label` column for a rule to fill — so the label a scan carries is
+    // never a name anybody chose, and taking it renames `Japanese raw` to
+    // `raw` on the next routine rescan.
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let authored = authored_doc();
+    let id = sidecar(&conn, &authored, Path::new("/x/taiyaku.json")).expect("import");
+
+    scanned(&conn, &as_scanned(&authored), None).expect("rescan");
+
+    let label: String = conn
+        .query_row(
+            "SELECT label FROM edition WHERE work_id = ?1 AND key = 'raw'",
+            [id],
+            |r| r.get(0),
+        )
+        .expect("edition");
+    assert_eq!(label, "Japanese raw");
+}
+
+#[test]
+fn a_document_still_names_its_own_editions_labels() {
+    // The other half, and the half a blanket carry would break: an edition's
+    // label in a `taiyaku.json` is a person's to change, and only a scan is
+    // barred from writing one.
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let path = Path::new("/x/taiyaku.json");
+    let id = sidecar(&conn, &authored_doc(), path).expect("import");
+
+    let mut renamed = authored_doc();
+    renamed
+        .editions
+        .get_mut("raw")
+        .expect("the hub edition")
+        .label = "Raws (2019)".to_string();
+    sidecar(&conn, &renamed, path).expect("a second import");
+
+    let label: String = conn
+        .query_row(
+            "SELECT label FROM edition WHERE work_id = ?1 AND key = 'raw'",
+            [id],
+            |r| r.get(0),
+        )
+        .expect("edition");
+    assert_eq!(label, "Raws (2019)");
+}
+
+#[test]
+fn a_rescan_that_no_longer_names_an_edition_leaves_it_standing() {
+    // "The scan never saw this edition" and "a rule edit removed it" are one
+    // statement from inside `scanned`, and the two outcomes are not
+    // comparable: a deleted hand-aligned edition is unrecoverable, an
+    // orphaned one is visible and fixable. So the orphan stands, and
+    // `DeriveReport::kept_editions` is what says it is there.
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let two = two_edition_doc();
+    let id = sidecar(&conn, &two, Path::new("/x/taiyaku.json")).expect("align --write");
+
+    // The next scan finds only the raw archives: the English release moved
+    // out of every root the library watches.
+    let mut gone = as_scanned(&two);
+    gone.editions.remove("en");
+    scanned(&conn, &gone, None).expect("rescan");
+
+    let held = crate::project::sidecar(&conn, id).expect("projects");
+    assert!(
+        held.editions.contains_key("en"),
+        "the edition a scan stopped finding is not a deletion instruction"
+    );
+    assert_eq!(
+        held.editions["en"].members.len(),
+        1,
+        "and its member came with it"
+    );
+    assert_eq!(held.alignments.len(), 1, "so the edge still resolves");
+    assert_eq!(
+        held.runs_of(&held.alignments[0])
+            .expect("resolvable, because both editions are there")
+            .len(),
+        1
+    );
+}
+
+/// A hub edition carrying a spread and two credit pages, so a rescan has
+/// something to lose.
+fn doc_with_flags() -> taiyaku_core::Sidecar {
+    let json = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+         "editions":{"raw":{"label":"R","members":[
+           {"path":"raw/v01.cbz","sha256":"aa","pages":10}],
+           "spreads":[4],"credits":[8,9]}},
+         "hub":"raw","alignments":[]}"#;
+    taiyaku_core::Sidecar::from_json(json).expect("parses")
+}
+
+#[test]
+fn a_rescan_leaves_an_alignment_a_person_made_alone() {
+    // The scanner walks a filesystem. It cannot know how two editions
+    // correspond, so it must not be the thing that deletes the answer: before
+    // this, `scanned` passed `alignments: Vec::new()` into a wholesale
+    // replace, and a rescan after an `align --write` dropped every run —
+    // hand-corrected ones included, which no re-solve recovers.
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let two = two_edition_doc();
+    let id = sidecar(&conn, &two, Path::new("/x/taiyaku.json")).expect("align --write");
+
+    let again = scanned(&conn, &as_scanned(&two), None).expect("rescan");
+
+    assert_eq!(again, id, "content resolved it to the same work");
+    let (edges, runs): (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM alignment WHERE work_id = ?1),
+                    (SELECT count(*) FROM run JOIN alignment ON alignment.id = run.alignment_id
+                      WHERE alignment.work_id = ?1)",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("count");
+    assert_eq!(edges, 1, "the edge survived the rescan");
+    assert_eq!(runs, 1, "and so did its run");
+    let by: String = conn
+        .query_row("SELECT by FROM alignment WHERE work_id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .expect("by");
+    assert_eq!(by, "hand", "and it is still the one a person made");
+}
+
+#[test]
+fn a_rescan_leaves_the_credit_pages_a_run_of_credits_found_alone() {
+    // `taiyaku credits --write` writes `page_flag` rows through the same
+    // `replace_editions` a rescan reaches, and a walk has no opinion about
+    // which pages are a scanlation group's donation cards. Losing them costs
+    // a re-run of a detector over every page of the edition.
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let flagged = doc_with_flags();
+    let id = sidecar(&conn, &flagged, Path::new("/x/taiyaku.json")).expect("credits --write");
+
+    scanned(&conn, &as_scanned(&flagged), None).expect("rescan");
+
+    let held: Vec<(String, i64)> = conn
+        .prepare(
+            "SELECT page_flag.kind, page_flag.page FROM page_flag
+             JOIN edition ON edition.id = page_flag.edition_id
+             WHERE edition.work_id = ?1 ORDER BY page_flag.kind, page_flag.page",
+        )
+        .expect("prepare")
+        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert_eq!(
+        held,
+        vec![
+            ("credit".to_string(), 8),
+            ("credit".to_string(), 9),
+            ("spread".to_string(), 4),
+        ]
+    );
+}
+
+#[test]
+fn a_document_still_replaces_both_because_a_document_speaks_for_them() {
+    // The other half of the rule, and the half a union would break: a
+    // `taiyaku.json` that no longer lists page 8 as a credit means page 8 is
+    // not a credit, and a re-solve that produced no alignment means there is
+    // none. Only `scanned` carries them across; `sidecar` replaces, as it
+    // always did.
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let path = Path::new("/x/taiyaku.json");
+    let id = sidecar(&conn, &doc_with_flags(), path).expect("first");
+    // Asserted before the second import as well as after, or the whole test
+    // passes against an import that never wrote either of them: `0 == 0` is
+    // what "replaced" and "never inserted" both look like from the far side.
+    let before: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM page_flag JOIN edition ON edition.id = page_flag.edition_id
+              WHERE edition.work_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(before, 3, "a spread and two credit pages went in");
+
+    sidecar(&conn, &doc("aa"), path).expect("a document that lists neither");
+
+    let flags: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM page_flag JOIN edition ON edition.id = page_flag.edition_id
+              WHERE edition.work_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(flags, 0, "the document dropped them, so the library did");
+
+    let two = two_edition_doc();
+    let other = sidecar(&conn, &two, Path::new("/y/taiyaku.json")).expect("align --write");
+    let raised: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM alignment WHERE work_id = ?1",
+            [other],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(raised, 1, "and the same for the edge: it existed first");
+
+    sidecar(&conn, &hub_only_doc(), Path::new("/y/taiyaku.json")).expect("a re-solve with none");
+    let edges: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM alignment WHERE work_id = ?1",
+            [other],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(edges, 0);
+}
+
+#[test]
+fn a_work_whose_spoke_edition_disappeared_still_projects_and_serves_its_hub() {
+    // An edge naming an edition the work does not hold, stated rather than
+    // discovered. Nothing corrupts — `runs_of` says which edition is missing,
+    // `quality_of` and `trust` answer `None`, and the hub is untouched — so
+    // the work still opens and re-solving is the recovery.
+    //
+    // **Reached through a document, because a rescan can no longer reach
+    // it.** This used to rescan a work whose `en` edition had gone from every
+    // root, back when `scanned` deleted every edition the incoming document
+    // did not name; that deletion is C2's second finding and the edition now
+    // stands. A `taiyaku.json` declaring an edge to an edition it does not
+    // define is what is left, and it is an ordinary hand edit: drop an
+    // edition from the document, leave the alignment that names it.
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let mut two = two_edition_doc();
+    two.editions.remove("en");
+    let id = sidecar(&conn, &two, Path::new("/x/taiyaku.json")).expect("import");
+
+    let held = crate::project::sidecar(&conn, id).expect("the work still projects");
+    assert!(held.editions.contains_key("raw"));
+    assert!(!held.editions.contains_key("en"), "the edition really went");
+    assert_eq!(held.editions["raw"].members.len(), 1, "the hub is intact");
+    assert_eq!(held.editions["raw"].total_pages(), 10);
+    assert_eq!(held.alignments.len(), 1, "the edge outlived what it names");
+
+    let message = held
+        .runs_of(&held.alignments[0])
+        .expect_err("unresolvable, rather than a panic");
+    assert!(message.contains("no edition named `en`"), "{message}");
+    assert_eq!(held.quality_of("raw", "en"), None);
+    assert_eq!(held.trust("raw", "en"), None);
+    assert_eq!(
+        held.trust("raw", "raw"),
+        Some(taiyaku_core::Verdict::Sound),
+        "and the hub still answers for itself"
     );
 }

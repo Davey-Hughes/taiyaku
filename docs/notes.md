@@ -12077,3 +12077,141 @@ floor of 91 (0.85 of margin, where it was `fixtures.ts` at 93.10), branches
 `api.ts` at 79.41 against 78, functions `decode.ts` at 93.33 against 91, lines
 `api.ts` at 93.02 against 92. `statements` is the one to watch; the fix when it
 fires is a test for `Labeller.tsx` rather than an 89 in the script.
+
+## Three measurements Task 10 owed to this file: chapter markers, `notify`'s build cost, and what a scan itself costs
+
+`docs/status.md`'s own preamble promises every claim there traces to a
+measurement recorded here. Three landed over the scanner branch without a
+corresponding entry — this closes that.
+
+### The kanji counter survey, run against the development corpus on 2026-08-17
+
+`taiyaku-read/src/naming.rs`'s `CHAPTER_MARKERS` and `VOLUME_MARKERS` decide
+which kanji counters `chapter_number`/`volume_number_marked` recognise after
+`第`. Counted across the development corpus (`corpus/`, this checkout), on the
+form the parsers actually fire on — `第`, digits, the counter — in the
+basename of every entry the walk would meet:
+
+| counter | files | directories | total |
+| --- | ---: | ---: | ---: |
+| `第N話` | 577 | 0 | **577** |
+| `第N巻` | 497 | 37 | **534** |
+| `第N章` | 0 | 0 | **0** |
+| `第N回` | 0 | 0 | **0** |
+| `第N卷` | 0 | 0 | **0** |
+
+Re-measured 2026-08-18, with the method written down, because the figure this
+replaces was not. It said `巻` **498**, and 498 reproduces under no reading:
+not 497 (files), not 534 (files and directories), not 729 (files carrying `巻`
+anywhere in the name) and not 766 (all entries carrying it anywhere). `話` 577
+is exact under every one of them, since no directory in this corpus carries
+`話` at all — which is why one of the two figures survived checking and the
+other did not. The commands are
+`find corpus -type f -printf '%f\n' | grep -cE '第[0-9]+巻'` and its
+`-type d` sibling; `corpus/` is gitignored and local, so a figure quoted
+without its method cannot be checked by anyone who has not got this tree.
+
+`話` and `巻` ship on that evidence. `回` and `卷` stay out on the same
+evidence — also measured at zero, and adding either is a two-line change the
+day a corpus shows one. `卷` also mis-reads as a chapter counter rather than
+a volume one if it were ever added here — `第7卷` is volume 7, and the
+chapter table is the wrong table for it regardless of what any corpus shows.
+
+`章` ships anyway, on knowledge of the language rather than on measurement —
+it scores the identical zero `回` and `卷` were excluded for, and `naming.rs`
+says so itself rather than leaving the inconsistency for someone to notice.
+Its own stated reason is that `章` can only ever fire on an explicit
+`第N章`, so it cannot manufacture a false positive the way a wrong marker
+guessed from nothing could — a property `回` shares exactly (`第N回` is
+equally explicit) and this note does not claim otherwise. What actually
+separates the two is narrower than a technical property: `章` is a
+counter someone with knowledge of the language judged worth including
+regardless of this corpus, and `回` has not been given that judgment here.
+"Measured, and safe to keep despite reading zero" is the wrong test for
+either — `章` is a guess and says so; `回` is neither shipped nor
+justified, just absent.
+
+### `notify`'s build cost: 262 against 248 CPU-seconds, this workstation only
+
+Already stated in `docs/status.md`'s dependency list, and recorded properly
+here per this file's own purpose: a clean `cargo build --workspace
+--all-targets --all-features`, 32 cores, cost about 6% more CPU time with
+`notify` in the dependency graph than without — 262 CPU-seconds against 248.
+
+**Stopping here is deliberate.** This was not run through CI, and a 32-core
+workstation parallelises a build differently from a cacheless runner with a
+different core count — the branch already corrected one attempt upstream of
+this to read a workstation figure as a statement about the ten-minute CI
+budget. The 6% is what was measured; nothing about the budget is inferred
+from it.
+
+### What a scan costs here, with the deployment host named as unmeasured
+
+**Re-measured 2026-08-18, against the fixed binary — see the correction
+below the table.** Run against `corpus/` (28 GB, 22,902 files on disk) from
+this workstation, release build, `taiyaku library scan --add corpus --db
+<scratch>`:
+
+| Pass | What changed on disk | Wall clock | CPU |
+| --- | --- | ---: | ---: |
+| 1st — `--no-derive` | fresh add, walk only | 0.81 s | 0.11 s (14%) |
+| 2nd — derive | facts already walked, nothing hashed yet | 21.63 s | 16.31 s (75%) |
+| 3rd — derive again | nothing on disk changed, every hash already recorded | 0.06 s | 0.05 s (96%) |
+
+**The percentages come from the unrounded figures, not from the two columns
+beside them**, which is why the third row reads 96% where 0.05 ÷ 0.06 is 83%.
+Said here because it is otherwise an arithmetic error on the page.
+
+**And the wall clock is the least stable thing in this table.** Re-run on the
+same day, the same release binary and the same corpus, with a different page
+cache: 0.97 s / 31.13 s / 0.04 s against 0.81 / 21.63 / 0.06 — the second pass
+half again as long. What did *not* move by one across the two runs is every
+count the pass reports (23 series, 68 works, 68 editions, 110 members, 5
+unattached chapter directories, 59 unreadable, 174 suppressed, 42 merged).
+So the ratio between the second and third pass is the finding here and the
+absolute seconds are a property of one machine on one afternoon; §13's own
+sentence about the deployment host applies to this table as much as to the
+watcher.
+
+The walk itself — `measure`/`flatten`/`record`, §3's fact layer — found 203
+directories and 375 entries in under a second: stat and `read_dir`, no
+archive opened except to sniff a format for a new-or-moved entry. Deriving
+that same walk into structure — `rules.rs` resolving 375 entries, and
+critically, hashing the 110 that became members for the first time, per §3's
+"lazy until a member is about to become part of a work" — is what the 22
+seconds is. The third row is the same derive a second time with nothing
+changed: every member's `sha256` is already sitting on `scan_entry`, so
+`derive.rs` opens no file at all, and the roughly 380-fold difference between
+the second and third row is the entire argument for computing a hash once and
+storing it rather than reopening every archive on every scan. 23 series, 68
+works, 68 editions, 110 members, 5 unattached chapter directories, 59
+unreadable (sidecar/notes/truth JSON files under `corpus/`, plus every volume
+directory holding archives rather than loose images, per
+`DeriveReport::unreadable`'s own four-situation doc) and 174 suppressed
+(entries an ancestor spoke for, or that deferred to whatever is inside them,
+per `DeriveReport::suppressed`) came out of it — and **4 proposals**, not 0:
+two `edition-of` (Go-Toubun no Hanayome's "Full Color" and "Full Color
+Edition" volumes) and two `attach-chapters` (`gotoubun-v01`, one
+chapter-organised directory; `incoming`, four).
+
+**The correction.** This section used to read "0 proposals — this corpus's
+naming does not happen to trip `edition-of`/`same-series`/`attach-chapters`",
+which was not a fact about this corpus. `library scan` called
+`proposals::raise` a second time, over a database `derive` had already
+raised every open proposal into — every one of `INSERT OR IGNORE`'s rows
+conflicted, so the second call's own count was unconditionally zero
+regardless of what the first call had actually opened (whole-branch review,
+I1). The reading was an artefact of the instrument, never evidence that this
+corpus's naming was clean; correcting the counter and rerunning the same
+command over the same corpus is what the four proposals above are. The row
+counts moved too — 59 works became 68, 226 suppressed became 174 — which is
+Task 11's four Criticals landing between the old run and this one, not a
+second artefact; this section is a fresh run against the fixed binary in
+full, not a patch over the old numbers.
+
+**What this is not a measurement of, per §13 of the scanner design.** This
+workstation's `corpus/` sits on local disk, not the deployment host's
+filesystem, and nobody has timed the walk, the sniff or the first hash there.
+A NAS is not this machine, and "22 seconds for 110 members on a 32-core
+workstation with local NVMe" says nothing defensible about how long the same
+derive takes over whatever the deployment host's storage actually is.

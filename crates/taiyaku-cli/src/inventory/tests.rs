@@ -1,52 +1,5 @@
 use super::*;
 
-#[test]
-fn a_volume_number_is_taken_from_the_marker_that_precedes_it() {
-    assert_eq!(volume_number("v069"), Some(69));
-    assert_eq!(volume_number("v095-colour-c0"), Some(95));
-    assert_eq!(volume_number("第69巻"), Some(69));
-    assert_eq!(volume_number("vol. 7"), Some(7));
-    assert_eq!(volume_number("raw-v01-src-a"), Some(1));
-}
-
-/// With no marker, the first digit run is the best available guess.
-#[test]
-fn a_bare_number_still_groups() {
-    assert_eq!(volume_number("069"), Some(69));
-}
-
-/// A trailing year does not distinguish the marker scan from a bare
-/// first-digit-run rule: `077` is already the first digit run here, so
-/// both agree on `77` regardless of which one runs. Kept as a check that
-/// the marker still matches this shape, not as the case that justifies
-/// searching for it first — see the next test for that.
-#[test]
-fn a_year_in_the_name_does_not_win_over_the_volume() {
-    assert_eq!(volume_number("ONE PIECE v077 (2015)"), Some(77));
-}
-
-/// The case that actually distinguishes the marker scan from a bare
-/// first-digit-run rule, and the reason the marker is searched for before
-/// falling back: a number appearing *before* the volume marker. The
-/// marker scan finds `77`; a bare first-digit-run rule would return `2015`
-/// instead. Sabotage-checked: with `MARKERS` and the preceding-text check
-/// removed so `volume_number` falls straight through to the first digit
-/// run, this assertion fails (`2015` instead of `77`), confirming the
-/// marker scan is what this test exercises.
-#[test]
-fn a_number_before_the_marker_does_not_win_over_the_volume() {
-    assert_eq!(volume_number("[2015] ONE PIECE v077"), Some(77));
-}
-
-/// A candidate that reached the page threshold and then vanished from the
-/// output is the silence this repository exists to avoid. When a single
-/// unparsed candidate is present, it must appear in the output — a name
-/// without a volume number indicates a parse failure that must be visible.
-#[test]
-fn a_name_with_no_digits_has_no_number_rather_than_a_wrong_one() {
-    assert_eq!(volume_number("extras"), None);
-}
-
 /// A single unparsed candidate (name with no digits) is printed in the
 /// inventory table, not silently dropped. This is the case the inventory
 /// command exists to catch: a candidate that reached the page threshold and

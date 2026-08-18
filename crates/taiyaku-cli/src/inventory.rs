@@ -10,55 +10,9 @@
 
 use std::path::{Path, PathBuf};
 
+use taiyaku_read::volume_number;
+
 use crate::signature::Signature;
-
-/// The volume number in a directory's name.
-///
-/// Takes the first digit run immediately preceded — optionally across one space
-/// — by `v`, `vol`, `vol.` or `第`, and falls back to the first digit run when
-/// none of those appear. Leading zeros are stripped, so `v007`, `v7` and `第7巻`
-/// group together.
-///
-/// The marker is searched for before the fallback is used because a number
-/// appearing *before* the volume marker — `[2015] ONE PIECE v077` — would
-/// otherwise be read from its first digit run (2015) rather than the volume
-/// the name actually carries (77). A year in trailing parentheses, `ONE PIECE
-/// v077 (2015)`, does not test this: `077` is already the first digit run
-/// there, so the marker scan and a bare first-digit-run rule agree on it
-/// regardless of which one runs.
-///
-/// Deliberately not a regex. `regex` is three crates in a workspace whose short
-/// dependency list `docs/status.md` states as a fact about the project, to do a
-/// job a scan does; `--pattern` covers what the default misses. If a collection
-/// turns up that neither handles, that is evidence for the dependency and it
-/// can be added then.
-pub fn volume_number(name: &str) -> Option<u32> {
-    const MARKERS: [&str; 4] = ["vol.", "vol", "v", "第"];
-
-    let chars: Vec<char> = name.chars().collect();
-    let mut fallback = None;
-    let mut at = 0;
-    while at < chars.len() {
-        if !chars[at].is_ascii_digit() {
-            at += 1;
-            continue;
-        }
-        let start = at;
-        while at < chars.len() && chars[at].is_ascii_digit() {
-            at += 1;
-        }
-        let number: Option<u32> = chars[start..at].iter().collect::<String>().parse().ok();
-        if fallback.is_none() {
-            fallback = number;
-        }
-        let before = chars[..start].iter().collect::<String>().to_lowercase();
-        let before = before.strip_suffix(' ').unwrap_or(&before);
-        if MARKERS.iter().any(|marker| before.ends_with(marker)) {
-            return number;
-        }
-    }
-    fallback
-}
 
 /// A `--pattern` literal with exactly one `{}` where the volume number goes.
 #[derive(Debug, Clone)]

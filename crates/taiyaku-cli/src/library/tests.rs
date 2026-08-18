@@ -1321,3 +1321,852 @@ fn a_reimport_that_changes_the_archives_does_not_rewrite_what_the_labels_were_dr
          against, not which archives happen to be on disk now: {text}"
     );
 }
+
+// -- scan_summary / derive_summary: pure, so every branch is testable -----
+
+fn scan_report(added: usize, updated: usize, gone: usize) -> taiyaku_library::scan::ScanReport {
+    taiyaku_library::scan::ScanReport {
+        root: PathBuf::from("/library"),
+        dirs: 0,
+        files: 0,
+        added,
+        updated,
+        gone,
+        refused: None,
+        unreadable_dirs: Vec::new(),
+    }
+}
+
+#[test]
+fn scan_summary_reports_added_updated_and_gone() {
+    assert_eq!(
+        scan_summary(&scan_report(3, 1, 2)),
+        "  3 added, 1 updated, 2 gone"
+    );
+}
+
+/// I4: a directory `read_dir` refused is skipped rather than aborting the
+/// whole root, and this is the line that tells a person it happened — the
+/// same "a counter nobody prints is a defect wearing a passing test" rule
+/// `derive_summary`'s own suppressed/rekeyed tests pin.
+#[test]
+fn scan_summary_names_unreadable_directories_when_present() {
+    let mut report = scan_report(3, 1, 2);
+    report.unreadable_dirs = vec!["/library/lost+found".to_string()];
+    let line = scan_summary(&report);
+    assert!(line.contains("1 unreadable directories"), "{line}");
+    assert!(line.contains("/library/lost+found"), "{line}");
+}
+
+#[test]
+fn scan_summary_omits_unreadable_directories_when_none() {
+    let line = scan_summary(&scan_report(3, 1, 2));
+    assert!(!line.contains("unreadable"), "{line}");
+}
+
+fn derive_report() -> taiyaku_library::derive::DeriveReport {
+    taiyaku_library::derive::DeriveReport::default()
+}
+
+/// **Four distinct numbers, deliberately.** This fixture used to set
+/// `editions` and `members` both to 6, so printing `report.editions` where
+/// `report.members` belongs produced the identical line and the mutation
+/// survived — the member count a person reads after a scan would silently
+/// have been the edition count. The same mutation on `works` was already
+/// caught, for no better reason than that 5 happened to differ from 6. Every
+/// count here now differs from every other, so each position is pinned by
+/// the number in it rather than by luck.
+#[test]
+fn derive_summary_names_the_four_headline_counts_and_the_proposal_count() {
+    let mut report = derive_report();
+    report.series = 2;
+    report.works = 5;
+    report.editions = 6;
+    report.members = 9;
+    assert_eq!(
+        derive_summary(&report, 3),
+        "derived 2 series, 5 works, 6 editions, 9 members; 3 proposal(s) raised"
+    );
+}
+
+/// Step 6b: `suppressed` and `rekeyed` are counters nobody would ever see if
+/// they stayed silent when zero — a silent drop is indistinguishable from an
+/// empty library, and a silent re-key is indistinguishable from growth. Both
+/// must print here, or the counters `derive.rs` added never reach a person.
+#[test]
+fn derive_summary_prints_suppressed_and_rekeyed_when_nonzero() {
+    let mut report = derive_report();
+    report.suppressed = 4;
+    report.rekeyed = 2;
+    let line = derive_summary(&report, 0);
+    assert!(line.contains("4 suppressed"), "{line}");
+    assert!(line.contains("2 rekeyed"), "{line}");
+}
+
+#[test]
+fn derive_summary_omits_suppressed_and_rekeyed_when_zero() {
+    let line = derive_summary(&derive_report(), 0);
+    assert!(!line.contains("suppressed"), "{line}");
+    assert!(!line.contains("rekeyed"), "{line}");
+}
+
+/// The same rule, for the two counters the whole-branch review added. An
+/// edition a scan stopped naming is left standing rather than deleted (C2),
+/// and an orphan nobody is told about is what that fix would otherwise trade
+/// the deletion for; two entries joining one edition are one page sequence
+/// (C4), which is right for a volume's chapters and wrong for anything else,
+/// and derivation cannot always tell which it has.
+#[test]
+fn derive_summary_prints_kept_editions_and_merged_when_nonzero_and_omits_them_when_zero() {
+    let mut report = derive_report();
+    report.kept_editions = 3;
+    report.merged = 2;
+    let line = derive_summary(&report, 0);
+    assert!(line.contains("3 editions kept"), "{line}");
+    assert!(line.contains("2 merged"), "{line}");
+    let quiet = derive_summary(&derive_report(), 0);
+    assert!(!quiet.contains("kept"), "{quiet}");
+    assert!(!quiet.contains("merged"), "{quiet}");
+}
+
+#[test]
+fn derive_summary_prints_unattached_and_unreadable_when_nonzero() {
+    let mut report = derive_report();
+    report.unattached_chapter_dirs = 1;
+    report.unreadable = 7;
+    let line = derive_summary(&report, 0);
+    assert!(line.contains("1 unattached chapter directories"), "{line}");
+    assert!(line.contains("7 unreadable"), "{line}");
+}
+
+// -- select_roots: pure, so every branch is testable -------------------------
+
+fn a_root(id: i64, path: &Path) -> taiyaku_library::scan::Root {
+    taiyaku_library::scan::Root {
+        id,
+        path: path.to_path_buf(),
+        edition_key: None,
+        default_kind: None,
+        default_language: None,
+        scan_interval_secs: None,
+    }
+}
+
+#[test]
+fn select_roots_refuses_an_empty_list_and_names_add() {
+    let err = select_roots(Vec::new(), None).unwrap_err();
+    assert!(err.contains("--add"), "{err}");
+}
+
+#[test]
+fn select_roots_with_no_filter_returns_every_root() {
+    let dir = scratch("select-roots-no-filter");
+    let roots = vec![a_root(1, &dir)];
+    let selected = select_roots(roots.clone(), None).expect("selects");
+    assert_eq!(selected, roots);
+}
+
+#[test]
+fn select_roots_filters_to_the_named_path() {
+    let dir = scratch("select-roots-filter");
+    let a = dir.join("a");
+    let b = dir.join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let roots = vec![
+        a_root(1, &a.canonicalize().unwrap()),
+        a_root(2, &b.canonicalize().unwrap()),
+    ];
+
+    let selected = select_roots(roots, Some(a.to_str().unwrap())).expect("selects");
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].id, 1);
+}
+
+#[test]
+fn select_roots_refuses_a_path_matching_no_known_root() {
+    let dir = scratch("select-roots-unmatched");
+    let known = dir.join("known");
+    let elsewhere = dir.join("elsewhere");
+    std::fs::create_dir_all(&known).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let roots = vec![a_root(1, &known.canonicalize().unwrap())];
+
+    let err = select_roots(roots, Some(elsewhere.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("--add"), "{err}");
+}
+
+// -- scan: command dispatch, over a real filesystem and database ------------
+
+#[test]
+fn scan_without_a_root_says_how_to_add_one_rather_than_doing_nothing() {
+    let dir = scratch("scan-no-roots");
+    let db = dir.join("library.db");
+    let message = command(&["scan".into(), "--db".into(), db.display().to_string()])
+        .expect_err("no roots is a refusal, not a silent success");
+    assert!(message.contains("--add"), "{message}");
+}
+
+/// The no-roots refusal's own failure arriving by another door: a scan
+/// whose only root has become an unmounted share must not exit 0 over
+/// having scanned nothing, the way it did before this test existed.
+#[test]
+fn scan_exits_nonzero_when_its_only_root_is_refused() {
+    let dir = scratch("scan-only-root-refused");
+    let tree = dir.join("library");
+    std::fs::create_dir_all(tree.join("Series/Series - v01")).expect("mkdir");
+    std::fs::write(tree.join("Series/Series - v01/000.jpg"), b"page").expect("write");
+    let db = dir.join("library.db");
+
+    command(&[
+        "scan".into(),
+        "--add".into(),
+        tree.display().to_string(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("adds and scans while the root still has files");
+
+    std::fs::remove_dir_all(tree.join("Series")).expect("empty the only root");
+
+    let err = command(&["scan".into(), "--db".into(), db.display().to_string()])
+        .expect_err("the only root refusing must fail the whole command");
+    assert!(err.contains("1 of 1"), "{err}");
+}
+
+#[test]
+fn scan_refuses_an_unknown_flag() {
+    let dir = scratch("scan-bad-flag");
+    let db = dir.join("library.db");
+    let message = command(&[
+        "scan".into(),
+        "--recursive".into(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect_err("an unknown flag is a refusal");
+    assert!(message.contains("--recursive"), "{message}");
+}
+
+#[test]
+fn scan_adds_a_root_and_the_second_run_finds_it_without_add() {
+    let dir = scratch("scan-add");
+    let tree = dir.join("library");
+    std::fs::create_dir_all(tree.join("Series/Series - v01")).expect("mkdir");
+    std::fs::write(tree.join("Series/Series - v01/000.jpg"), b"page").expect("write");
+    let db = dir.join("library.db");
+
+    command(&[
+        "scan".into(),
+        "--add".into(),
+        tree.display().to_string(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("add and scan");
+    command(&["scan".into(), "--db".into(), db.display().to_string()]).expect("rescan");
+
+    let library = taiyaku_library::Library::open(&db).expect("open");
+    let conn = library.conn();
+    let roots: i64 = conn
+        .query_row("SELECT count(*) FROM root", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(roots, 1, "--add is idempotent about the root it names");
+}
+
+#[test]
+fn scan_no_derive_stops_before_deriving_anything() {
+    let dir = scratch("scan-no-derive");
+    let tree = dir.join("library");
+    std::fs::create_dir_all(tree.join("Series/Series - v01")).expect("mkdir");
+    std::fs::write(tree.join("Series/Series - v01/000.jpg"), b"page").expect("write");
+    let db = dir.join("library.db");
+
+    command(&[
+        "scan".into(),
+        "--add".into(),
+        tree.display().to_string(),
+        "--no-derive".into(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("adds and walks, without deriving");
+
+    let library = taiyaku_library::Library::open(&db).expect("open");
+    let conn = library.conn();
+    let entries: i64 = conn
+        .query_row("SELECT count(*) FROM scan_entry", [], |r| r.get(0))
+        .expect("count");
+    assert!(entries > 0, "the walk itself must still have run");
+    let works: i64 = conn
+        .query_row("SELECT count(*) FROM work", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(
+        works, 0,
+        "--no-derive must stop before any structure is derived"
+    );
+}
+
+/// `--root PATH` scopes a run to one already-known root, leaving every other
+/// root's own facts exactly as they were.
+#[test]
+fn scan_root_flag_scans_only_the_named_root() {
+    let dir = scratch("scan-root-flag");
+    let a = dir.join("root-a");
+    let b = dir.join("root-b");
+    std::fs::create_dir_all(a.join("Series/Series - v01")).expect("mkdir a");
+    std::fs::write(a.join("Series/Series - v01/000.jpg"), b"page").expect("write a");
+    std::fs::create_dir_all(&b).expect("mkdir b");
+    let db = dir.join("library.db");
+
+    command(&[
+        "scan".into(),
+        "--add".into(),
+        a.display().to_string(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("adds and scans root a");
+    command(&[
+        "scan".into(),
+        "--add".into(),
+        b.display().to_string(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("adds root b, scanning both roots once");
+
+    // Both roots gain something new that an unfiltered `scan` would record.
+    std::fs::write(a.join("Series/Series - v01/001.jpg"), b"page").expect("write a2");
+    std::fs::write(b.join("new.txt"), b"x").expect("write b2");
+
+    command(&[
+        "scan".into(),
+        "--root".into(),
+        b.display().to_string(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("scans only root b");
+
+    let library = taiyaku_library::Library::open(&db).expect("open");
+    let conn = library.conn();
+    let a_has_new: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM scan_entry WHERE rel_path = 'Series/Series - v01/001.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count");
+    let b_has_new: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM scan_entry WHERE rel_path = 'new.txt'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(
+        a_has_new, 0,
+        "--root b must not have scanned root a's new file"
+    );
+    assert_eq!(b_has_new, 1, "--root b must have scanned root b's new file");
+}
+
+/// §8.1's refusal on one root — and an outright `scan_root` error, the same
+/// shape — must not take the whole run down: the loop continues to the next
+/// root rather than propagating. It must still fail the command's own exit
+/// status, though, once every root has had its turn — the two are different
+/// claims, and this test pins both: the good root's own row proves the loop
+/// went on, the `Err` this returns proves the exit code did not.
+#[test]
+fn a_refused_root_does_not_stop_the_scan_of_the_others() {
+    let dir = scratch("scan-refused-continues");
+    let bad = dir.join("bad-root");
+    let good = dir.join("good-root");
+    std::fs::create_dir_all(bad.join("Series/Series - v01")).expect("mkdir bad");
+    std::fs::write(bad.join("Series/Series - v01/000.jpg"), b"page").expect("write bad");
+    std::fs::create_dir_all(&good).expect("mkdir good");
+    let db = dir.join("library.db");
+
+    command(&[
+        "scan".into(),
+        "--add".into(),
+        bad.display().to_string(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("adds and scans the bad root while it still has files");
+    command(&[
+        "scan".into(),
+        "--add".into(),
+        good.display().to_string(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("adds the good root");
+
+    // The bad root loses everything under it — indistinguishable from an
+    // unmounted share — while the good root gains something new.
+    std::fs::remove_dir_all(bad.join("Series")).expect("empty the bad root");
+    std::fs::write(good.join("new.txt"), b"x").expect("write good");
+
+    // Scoped to the bad root's own id, not a workspace total: the good
+    // root's `new.txt` adds one row on its own, so a whole-table count could
+    // pass even if the refusal had silently dropped exactly one of the bad
+    // root's entries — this must watch the bad root, and only the bad root.
+    let bad_root_id: i64 = {
+        let library = taiyaku_library::Library::open(&db).expect("open");
+        let conn = library.conn();
+        conn.query_row(
+            "SELECT id FROM root WHERE path = ?1",
+            [bad.canonicalize().unwrap().to_string_lossy()],
+            |r| r.get(0),
+        )
+        .expect("finds the bad root's row")
+    };
+    let before: i64 = {
+        let library = taiyaku_library::Library::open(&db).expect("open");
+        let conn = library.conn();
+        conn.query_row(
+            "SELECT count(*) FROM scan_entry WHERE root_id = ?1",
+            [bad_root_id],
+            |r| r.get(0),
+        )
+        .expect("count")
+    };
+
+    // The exit status now follows §8.1's refusal — a run with one refused
+    // root is not a quiet success, the same precedent `export_targets`
+    // already set for "some of these failed".
+    let err = command(&["scan".into(), "--db".into(), db.display().to_string()])
+        .expect_err("a refused root must fail the command, not just print about it");
+    assert!(
+        err.contains("1 of 2"),
+        "names how many of how many failed: {err}"
+    );
+    assert!(
+        err.contains(&bad.canonicalize().unwrap().display().to_string()),
+        "and which root: {err}"
+    );
+
+    let library = taiyaku_library::Library::open(&db).expect("open");
+    let conn = library.conn();
+    let after: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM scan_entry WHERE root_id = ?1",
+            [bad_root_id],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(
+        after, before,
+        "the refused root's own entries must survive rather than being dropped"
+    );
+    let good_has_new: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM scan_entry WHERE rel_path = 'new.txt'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(
+        good_has_new, 1,
+        "the good root must still have been scanned, despite the command's own failing exit"
+    );
+}
+
+// -- rules: --export / --import, tested directly like import/export above --
+
+#[test]
+fn rules_refuses_an_unknown_flag() {
+    let err = rules(&["--bogus".to_string()]).unwrap_err();
+    assert!(err.contains("--bogus"), "{err}");
+}
+
+#[test]
+fn rules_refuses_export_and_import_together() {
+    let err = rules(&[
+        "--export".to_string(),
+        "--import".to_string(),
+        "x.json".to_string(),
+    ])
+    .unwrap_err();
+    assert!(err.contains("--export"), "{err}");
+    assert!(err.contains("--import"), "{err}");
+}
+
+#[test]
+fn rules_import_replaces_the_existing_rule_set() {
+    let root = scratch("rules-import");
+    let db = root.join("library.db");
+    let file = root.join("rules.json");
+    std::fs::write(
+        &file,
+        r#"[{"ordinal": 1, "enabled": true, "root_path": null, "kind": "prefix",
+             "pattern": "", "match_on": "path", "set_edition_key": null,
+             "set_kind": null, "set_language": null,
+             "set_series": "One Series For Everything", "note": null}]"#,
+    )
+    .expect("write fixture");
+
+    // Opening once seeds the four defaults through the migration, so the
+    // import below has something real to replace.
+    drop(Library::open(&db).expect("opens and seeds the defaults"));
+
+    let args = [
+        "--import".to_string(),
+        file.to_str().unwrap().to_string(),
+        "--db".to_string(),
+        db.to_str().unwrap().to_string(),
+    ];
+    rules(&args).expect("imports");
+
+    let library = Library::open(&db).expect("reopens");
+    let conn = library.conn();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM rule", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(
+        count, 1,
+        "the import replaced the four seeded defaults with the one imported rule"
+    );
+    let series: String = conn
+        .query_row("SELECT set_series FROM rule", [], |r| r.get(0))
+        .expect("reads the imported rule");
+    assert_eq!(series, "One Series For Everything");
+}
+
+// -- proposals: I3, the surface a person can actually reach ----------------
+
+/// A database holding exactly one open `edition-of` proposal, reached
+/// through the real `scan` subcommand rather than the library crate's own
+/// internals — this module's tests are about the CLI surface over
+/// `taiyaku_library::proposals`, not about proposals.rs's own scoring, which
+/// is `taiyaku_library::proposals::tests`' job. The tree is the same shape
+/// `library_with_two_suffixed_series` there scans.
+fn db_with_one_open_proposal(tag: &str) -> PathBuf {
+    let root = scratch(tag);
+    let tree = root.join("library");
+    let base = tree
+        .join("Go-Toubun no Hanayome")
+        .join("Go-Toubun no Hanayome - v01");
+    let colour = tree
+        .join("Go-Toubun no Hanayome - Full Color Edition")
+        .join("Go-Toubun no Hanayome - Full Color Edition - v01");
+    std::fs::create_dir_all(&base).expect("mkdir base");
+    std::fs::create_dir_all(&colour).expect("mkdir colour");
+    std::fs::write(base.join("000.jpg"), b"page").expect("write base page");
+    std::fs::write(colour.join("000.jpg"), b"page").expect("write colour page");
+
+    let db = root.join("library.db");
+    command(&[
+        "scan".to_string(),
+        "--add".to_string(),
+        tree.display().to_string(),
+        "--db".to_string(),
+        db.display().to_string(),
+    ])
+    .expect("scans and derives, which raises the one proposal");
+    db
+}
+
+#[test]
+fn proposal_line_formats_id_kind_score_and_reason() {
+    let proposal = taiyaku_library::proposals::Proposal {
+        id: 7,
+        kind: "edition-of".to_string(),
+        subject_id: 2,
+        target_id: Some(1),
+        score: 2.0,
+        reason: "\"X - Full Color\" may be the \"Full Color\" edition of \"X\"".to_string(),
+        state: "open".to_string(),
+        created_rule_id: None,
+    };
+    assert_eq!(
+        proposal_line(&proposal),
+        "7 [edition-of] score=2.0: \"X - Full Color\" may be the \"Full Color\" edition of \"X\""
+    );
+}
+
+#[test]
+fn proposals_refuses_an_unknown_flag() {
+    let err = proposals(&["--bogus".to_string()]).unwrap_err();
+    assert!(err.contains("--bogus"), "{err}");
+}
+
+#[test]
+fn proposals_refuses_more_than_one_action_at_once() {
+    let err = proposals(&[
+        "--accept".to_string(),
+        "1".to_string(),
+        "--dismiss".to_string(),
+        "2".to_string(),
+    ])
+    .unwrap_err();
+    // The exact string, not a substring: this message is built from a
+    // `\`-continued literal, and `cargo fmt` has a real quirk of baking
+    // stripped indentation into a merged continuation as literal spaces
+    // (`proposals.rs`'s own doc comment on the analogous case in `accept`
+    // records the same trap). An exact match is what would catch that; a
+    // `.contains("--accept")` check would not.
+    assert_eq!(
+        err,
+        "library proposals takes at most one of --accept, --dismiss or --unaccept at a time"
+    );
+}
+
+#[test]
+fn proposals_refuses_an_id_that_will_not_parse() {
+    let db = scratch("proposals-bad-id").join("library.db");
+    let err = proposals(&[
+        "--accept".to_string(),
+        "not-a-number".to_string(),
+        "--db".to_string(),
+        db.to_str().unwrap().to_string(),
+    ])
+    .unwrap_err();
+    assert!(err.contains("not-a-number"), "{err}");
+}
+
+#[test]
+fn proposals_lists_the_one_open_proposal_the_scan_raised() {
+    let db = db_with_one_open_proposal("proposals-list");
+    // No action flag: the default is listing, and it must reach the real
+    // proposal `scan` raised — not merely succeed.
+    proposals(&["--db".to_string(), db.to_str().unwrap().to_string()]).expect("lists");
+
+    let library = Library::open(&db).expect("reopens");
+    let conn = library.conn();
+    let open = taiyaku_library::proposals::open(&conn, 0.0).expect("open");
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0].kind, "edition-of");
+}
+
+/// `--min-score` above the one proposal's own score must still succeed —
+/// an empty inbox is not a refusal — and leave the proposal exactly as it
+/// was, still open.
+#[test]
+fn proposals_with_min_score_above_everything_still_succeeds() {
+    let db = db_with_one_open_proposal("proposals-min-score-empty");
+    proposals(&[
+        "--min-score".to_string(),
+        "999".to_string(),
+        "--db".to_string(),
+        db.to_str().unwrap().to_string(),
+    ])
+    .expect("an empty-at-this-threshold inbox is not a refusal");
+
+    let library = Library::open(&db).expect("reopens");
+    let conn = library.conn();
+    let open = taiyaku_library::proposals::open(&conn, 0.0).expect("open");
+    assert_eq!(open.len(), 1, "the proposal itself is untouched by listing");
+}
+
+#[test]
+fn proposals_min_score_refuses_a_value_that_will_not_parse() {
+    let db = scratch("proposals-min-score-bad").join("library.db");
+    let err = proposals(&[
+        "--min-score".to_string(),
+        "not-a-number".to_string(),
+        "--db".to_string(),
+        db.to_str().unwrap().to_string(),
+    ])
+    .unwrap_err();
+    assert!(err.contains("not-a-number"), "{err}");
+}
+
+#[test]
+fn proposals_accept_writes_a_rule_and_the_cli_surface_reaches_it() {
+    let db = db_with_one_open_proposal("proposals-accept");
+    let library = Library::open(&db).expect("reopens");
+    let id = {
+        let conn = library.conn();
+        taiyaku_library::proposals::open(&conn, 0.0)
+            .expect("open")
+            .remove(0)
+            .id
+    };
+    drop(library);
+
+    proposals(&[
+        "--accept".to_string(),
+        id.to_string(),
+        "--db".to_string(),
+        db.to_str().unwrap().to_string(),
+    ])
+    .expect("accepts through the CLI surface, not just the library crate directly");
+
+    let library = Library::open(&db).expect("reopens");
+    let conn = library.conn();
+    let rules: i64 = conn
+        .query_row("SELECT count(*) FROM rule WHERE ordinal > 4", [], |r| {
+            r.get(0)
+        })
+        .expect("count");
+    assert_eq!(rules, 1, "the accept must have actually written a rule");
+    let state: String = conn
+        .query_row("SELECT state FROM proposal WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .expect("state");
+    assert_eq!(state, "accepted");
+}
+
+/// I3's own reason for existing, checked at the surface a person actually
+/// reaches: **two rounds of Critical fixes went into an `accept` a person
+/// could not invoke**, and the refusal `proposals::accept` writes for an
+/// `attach-chapters` proposal — naming `taiyaku align` rather than silently
+/// doing nothing — must reach this command's own error unreworded.
+#[test]
+fn proposals_accept_surfaces_the_attach_chapters_refusal_unreworded() {
+    let root = scratch("proposals-accept-attach-chapters");
+    let db = root.join("library.db");
+    let tree = root.join("library");
+    // `scan::tests::fixture()`'s own chapter-organised directory —
+    // "Kaguya-sama - Fan Translated" — but built by hand here rather than
+    // importing that helper across crates, since this module's tests build
+    // their own trees the same way every other `command(&["scan", …])` test
+    // in this file already does.
+    let chapters = tree.join("Kaguya-sama - Fan Translated");
+    std::fs::create_dir_all(chapters.join("Kaguya-sama - c001")).expect("mkdir c001");
+    std::fs::write(chapters.join("Kaguya-sama - c001").join("000.jpg"), b"page")
+        .expect("write page");
+
+    command(&[
+        "scan".to_string(),
+        "--add".to_string(),
+        tree.display().to_string(),
+        "--db".to_string(),
+        db.display().to_string(),
+    ])
+    .expect("scans and raises the attach-chapters proposal");
+
+    let library = Library::open(&db).expect("reopens");
+    let id = {
+        let conn = library.conn();
+        taiyaku_library::proposals::open(&conn, 0.0)
+            .expect("open")
+            .into_iter()
+            .find(|p| p.kind == "attach-chapters")
+            .expect("the attach-chapters proposal")
+            .id
+    };
+    drop(library);
+
+    let err = proposals(&[
+        "--accept".to_string(),
+        id.to_string(),
+        "--db".to_string(),
+        db.to_str().unwrap().to_string(),
+    ])
+    .unwrap_err();
+    assert!(
+        err.contains("taiyaku align raw-v01.cbz -- en-c001.cbz en-c002.cbz"),
+        "the refusal must reach this command's own error exactly as \
+         `proposals::accept` wrote it: {err}"
+    );
+}
+
+#[test]
+fn proposals_dismiss_and_unaccept_reach_the_library_crate() {
+    let db = db_with_one_open_proposal("proposals-dismiss-unaccept");
+    let library = Library::open(&db).expect("reopens");
+    let id = {
+        let conn = library.conn();
+        taiyaku_library::proposals::open(&conn, 0.0)
+            .expect("open")
+            .remove(0)
+            .id
+    };
+    drop(library);
+
+    proposals(&[
+        "--dismiss".to_string(),
+        id.to_string(),
+        "--db".to_string(),
+        db.to_str().unwrap().to_string(),
+    ])
+    .expect("dismisses");
+    {
+        let library = Library::open(&db).expect("reopens");
+        let conn = library.conn();
+        let state: String = conn
+            .query_row("SELECT state FROM proposal WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .expect("state");
+        assert_eq!(state, "dismissed");
+    }
+
+    // Un-accepting a dismissed (never accepted) proposal is a refusal —
+    // `proposals::unaccept`'s own contract — which is exactly the kind of
+    // thing this surface must not swallow either.
+    let err = proposals(&[
+        "--unaccept".to_string(),
+        id.to_string(),
+        "--db".to_string(),
+        db.to_str().unwrap().to_string(),
+    ])
+    .unwrap_err();
+    assert!(err.contains("no accepted rule"), "{err}");
+}
+
+/// A bare path handed to a command that takes none is refused by name, not
+/// ignored.
+///
+/// `taiyaku library scan /srv/manga` used to scan every root the library
+/// already knew, print a full report about all of them, and say nothing at
+/// all about the path — a plausible-looking success for a directory that was
+/// never touched. The same for `library rules` and `library proposals`, whose
+/// arguments are a flag and an id respectively.
+///
+/// The refusal names what the caller probably meant, because "takes no
+/// arguments" on its own does not tell someone holding a path what to type.
+#[test]
+fn scan_rules_and_proposals_refuse_a_bare_argument_rather_than_ignoring_it() {
+    let dir = scratch("positional-refusals");
+    let db = dir.join("library.db");
+
+    let message = command(&[
+        "scan".into(),
+        "/srv/manga".into(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect_err("a bare path is a refusal");
+    assert!(message.contains("/srv/manga"), "{message}");
+    assert!(
+        message.contains("--add"),
+        "names how a path gets in: {message}"
+    );
+
+    let message = rules(&["rules.json".to_string()]).unwrap_err();
+    assert!(message.contains("rules.json"), "{message}");
+    assert!(message.contains("--import"), "{message}");
+
+    let message = proposals(&["7".to_string()]).unwrap_err();
+    assert!(message.contains('7'), "{message}");
+    assert!(message.contains("--accept"), "{message}");
+}
+
+/// The value of a flag is not a bare argument. Without the `with_values`
+/// list, `--db /tmp/x.db` would refuse itself on its own path and every
+/// command in this module would stop working — so this is the guard rail on
+/// the refusal above rather than a second feature.
+#[test]
+fn a_flags_own_value_is_not_mistaken_for_a_bare_argument() {
+    let dir = scratch("positional-flag-values");
+    let db = dir.join("library.db");
+    let tree = dir.join("library");
+    std::fs::create_dir_all(tree.join("Series/Series - v01")).expect("mkdir");
+    std::fs::write(tree.join("Series/Series - v01/000.jpg"), b"page").expect("page");
+
+    command(&[
+        "scan".into(),
+        "--add".into(),
+        tree.display().to_string(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("a path given as --add's value is that flag's value, not a stray word");
+}

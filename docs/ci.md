@@ -156,10 +156,13 @@ failed it.
 `slow-timeout = { period = "30s", terminate-after = 2 }` marks a test `SLOW`
 at 30 s and kills it at 60 s, both sized off a bisection of the whole
 workspace rather than guessed — nothing in 639 tests exceeds 0.75 s, so 30 s
-is 40x that and 60 s is 80x. An override exempts exactly the **eight** files
-`--ignore-filename-regex` already exempts from both coverage steps above — the
-thirteen standing corpus checks, three `corpus::tests::` helpers that only
-assert how `TAIYAKU_CORPUS` is validated and touch no material, and the two
+is 40x that and 60 s is 80x. An override exempts exactly the **twelve** files
+`--ignore-filename-regex` already exempts from both coverage steps above (nine
+alternatives, twelve matching files — counted 2026-08-18; this said eight,
+which was the count before `borrow_frequency`, `test_support` and
+`taiyaku-library/src/corpus.rs` joined the set) — the
+fifteen standing corpus checks, three `corpus::tests::` helpers that only
+assert how `TAIYAKU_CORPUS` is validated and touch no material, and the
 one-off experiment modules — at a 60 s `SLOW` mark with no `terminate-after`,
 which is what makes a `slow-timeout` advisory rather than a kill:
 `geometry_experiment` in the debug profile against a real corpus runs 40+
@@ -215,6 +218,78 @@ revert. The job-level bound stays untriggered, deliberately — proving it
 fires would cost a ten-minute CI run to verify one documented key.
 `docs/status.md` and `docs/notes.md`, both under O39, carry the full
 measurement record.
+
+### `NOT MEASURED:` is invisible without a nextest override
+
+Found on the library scanner branch, and it recurs anywhere a test guards
+itself and skips — `taiyaku-serve/src/tests.rs`'s
+`one_work_that_cannot_be_forgotten_does_not_stop_the_others` set the pattern
+first, and `taiyaku-library/src/watch/tests.rs`'s
+`a_root_that_cannot_be_written_falls_back_to_the_short_interval` repeats it: a
+test that cannot force the condition it exists to pin — root ignores `chmod
+0555`, here, because **CI's** `test` job runs inside `rust:1-bookworm` with
+no `user:` directive, so every step in it executes as root ("Jobs", above,
+and the comment on "executing as root in the test container" in the `test`
+job's own steps). `check-all.sh` has no container of its own — it is a shell
+script that runs the same commands as whichever user invokes it, so locally
+the `chmod` ordinarily does restrict and the test measures rather than
+skipping; it is CI's containerised job, not `check-all.sh` itself, that
+reliably hits the guard. Either way, the test
+prints `eprintln!("NOT MEASURED: …")` naming itself and returns, rather than
+asserting something the setup did not actually arrange.
+
+**That line is silent in the job this repository actually gates on.** The
+`test` job runs `cargo llvm-cov nextest --workspace`, and nextest — like
+plain `cargo test` — captures a passing test's stdout and stderr and shows
+none of it. `--nocapture` (`cargo test`'s flag; nextest's own is
+`--no-capture`) is what would surface it, and `check-all.sh` passes that only
+to the two `corpus::` invocations near the end of the script (`run cargo test
+--workspace --all-features corpus:: -- --nocapture --test-threads=1` and its
+`--release` sibling), never to the main `cargo llvm-cov nextest` run this
+section is about. So a test that self-skips in the main suite would pass green,
+and the one sentence saying it measured nothing would go nowhere anyone
+running the gate normally will see it — a skip nobody is told about reads
+exactly like a pass, which is the opposite of what the pattern exists for.
+
+**That is closed for this test, by the override this section's title names.**
+`.config/nextest.toml` carries
+
+```toml
+[[profile.default.overrides]]
+filter = "test(a_root_that_cannot_be_written) + …"
+success-output = "final"
+```
+
+`final` prints a passing test's captured output in the summary at the end of
+the run, with no `--nocapture` needed anywhere the binary is invoked —
+including the `cargo llvm-cov nextest` run `check-all.sh` and `ci.yml` both
+use, neither of which passes one. So under root, where the `chmod` buys
+nothing, the `NOT MEASURED:` line does reach the log.
+
+The filter names **all four** self-skipping tests in the workspace: the two
+`CAP_DAC_OVERRIDE` ones in `taiyaku-library`, `taiyaku-serve`'s
+`one_work_that_cannot_be_forgotten_does_not_stop_the_others` — the test that
+set the pattern, and which this section previously left out — and
+`taiyaku-read`'s `a_hand_written_tar_is_one_gnu_tar_can_list`, which skips
+where `tar` is not on `PATH`. Two of those were added *after* the override and
+not added to it, which is this trap arriving a second time in the same branch.
+
+**A new self-skipping test does not join it by itself.** nextest's `filter`
+selects tests by name, not by what they print, so there is no expression that
+catches the pattern — writing `eprintln!("NOT MEASURED: …")` in a new test
+means editing `.config/nextest.toml` in the same commit, or the line goes
+nowhere again.
+
+Nothing here re-plumbs `--no-capture` into the main run — that would
+un-capture *every* passing test's output, trading one invisible line for
+thousands of visible ones on every green run. The trap is worth naming so the
+next branch that reaches for this pattern outside `corpus::` does not assume
+the sentence its test prints reaches anyone: a claim that depends on a
+permission actually holding needs a second home that is not stderr in the
+main job — a comment at the assertion it stands in for, and a line in
+`docs/status.md` naming what could not be measured, the way the scanner
+branch's own `docs/notes.md` entries name what could not be measured rather
+than leaving a silent skip to speak for itself.
 
 ## The coverage gates
 
@@ -301,10 +376,20 @@ signal a re-measurement was owed.*
 | web | branches, aggregate | 93.99% | 92 | `web/vite.config.ts` |
 | web | functions, aggregate | 99.10% | 97 | `web/vite.config.ts` |
 | web | lines, aggregate | 99.17% | 97 | `web/vite.config.ts` |
-| Rust | lines, aggregate | 93.95% | 93 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
-| Rust | lines, **per file** | 73.68%, `taiyaku-serve/src/truth.rs` | 57 | `scripts/coverage-floor.mjs` |
+| Rust | lines, aggregate | 93.64% | 93 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
+| Rust | lines, **per file** | 78.75%, `taiyaku-serve/src/lib.rs` | 57 | `scripts/coverage-floor.mjs` |
 | web | **files in the report** | 66 | 59 | `scripts/coverage-floor.mjs` |
-| Rust | **files in the report** | 43 | 32 | `scripts/coverage-floor.mjs` |
+| Rust | **files in the report** | 60 | 40 | `scripts/coverage-floor.mjs` |
+
+The Rust rows are recomputed from `target/rust-coverage.json` on 2026-08-18,
+under the gate's own `--ignore-filename-regex`. They previously read 93.95%,
+`truth.rs` at 73.68%, and 43 files against 32 — figures from before the test
+modules moved into files of their own and before the scanner's crate grew,
+and none of them survived checking. **The gate was green throughout**: every
+threshold is derived by `scripts/coverage-floor.mjs` from the data rather
+than typed in beside this prose, which is why the prose could go stale
+without anything failing. That is the pattern `docs/status.md` warns about,
+appearing in the document that describes the gate.
 
 The four web per-file floors have their own table under "The other half" below,
 beside the lowest file each was derived from.
@@ -317,28 +402,33 @@ one-character edit to a glob drops 14 files and every percentage stays green.
 **It was 50 against 57 until 2026-08-14, and by then the tree had grown past
 it**: the same near miss reached 52 files and 50 let it through. Seven is the
 rule; the number under it has to be re-derived as web/src grows.
-Rust carries eleven (32 against 43) because the count there can only fall three
+Rust carries twenty (40 against 60) because the count there can only fall three
 ways — the `--ignore-filename-regex` widens, a crate leaves the workspace, or
-files merge — and eleven files are excluded by name today, so the margin leaves
+files merge — and twelve files are excluded by name today, so the margin leaves
 that list room to grow without a coverage edit becoming a gate edit.
-Thirty-two also trips when either of the two largest crates leaves the report:
-`taiyaku-serve` is 17 files and `taiyaku-cli` 14, though `taiyaku-core` at 8 is
-now under the margin and would not.
+Forty also trips when either of the two largest crates leaves the report:
+`taiyaku-serve` is 17 files and `taiyaku-cli` 15, though `taiyaku-library` at 14
+and `taiyaku-core` at 8 are under the margin and would not.
 
 **The Rust per-file floor is loose by construction and that is stated rather than
 apologised for.** The spread between the workspace's best-covered file and its
 worst is too wide for one number to catch a module sliding from 95% to 80%. The
-five lowest on a clean tree, measured 2026-08-14: `taiyaku-serve/src/truth.rs`
-73.68%, `taiyaku-serve/src/lib.rs` 77.85%, `taiyaku-cli/src/credits.rs` 82.51%,
-`taiyaku-core/src/regions.rs` 85.71%, `stump/resolve.rs` 87.61%. Every one of
-those fell that day without a line of implementation changing, when the test
-modules moved out of the files they test — see "Why the Rust per-file floor
-exists" below. What 57
+five lowest on a clean tree, re-measured 2026-08-18:
+`taiyaku-serve/src/lib.rs` 78.75%, `taiyaku-cli/src/credits.rs` 82.51%,
+`taiyaku-core/src/regions.rs` 85.71%, `stump/resolve.rs` 87.61%,
+`taiyaku-library/src/watch.rs` 87.76%. (It read `taiyaku-serve/src/truth.rs`
+73.68% at the head of that list on 2026-08-14; that file's **lines** now measure
+100.00% — its 93.75% is the *regions* column, which is not what this floor
+reads — and `lib.rs` is 78.75% rather than the 77.85% recorded beside it.)
+Every one of
+them fell on 2026-08-14 without a line of implementation changing, when the
+test modules moved out of the files they test — see "Why the Rust per-file
+floor exists" below. What 57
 catches is a module that stops being tested *at all* — see "Why the Rust
 per-file floor exists" below, which is the arithmetic that fixes the number.
 
 **Lines only on the Rust side, and the other three metrics are refusals rather
-than oversights.** `branches` is `count: 0` on all 43 files — llvm-cov emits no
+than oversights.** `branches` is `count: 0` on all 60 files — llvm-cov emits no
 branch data without a nightly flag, verified by counting: zero files report a
 non-zero branch count — so any floor on it would fail every file. `regions` and
 `instantiations` read far below lines on `match`-heavy and generic code (lowest
@@ -361,7 +451,9 @@ regress in silence. The margin is a compromise and the regression proofs below
 record exactly what it does and does not catch.
 
 **Lines, not regions, for Rust.** llvm-cov reports regions below lines on
-`match`-heavy code — 92.27% against 93.95% here — so gating both would mean two
+`match`-heavy code — 90.65% against 93.64% here, re-measured 2026-08-18 (it
+read 92.27% against 93.95%, from the same stale report as the table above) —
+so gating both would mean two
 numbers to maintain and re-derive for no additional signal. One gate, on the
 metric whose meaning a reader guesses correctly.
 
@@ -381,6 +473,7 @@ from the day it landed until this one. Here they are, with a reason each:
 | `taiyaku-cli/src/borrow_frequency.rs` | the same: a gated one-off measurement, walking the corpus to count how often a reader meets a gap and who lends the page — added to the regex in `ca20d05` and to this table on 2026-08-14, having matched in between without being listed |
 | `taiyaku-cli/src/corpus.rs` | cannot execute without `TAIYAKU_CORPUS`, which CI does not have |
 | `taiyaku-serve/src/corpus.rs` | the same |
+| `taiyaku-library/src/corpus.rs` | the same — added by the library scanner branch (the standing scan/derive check over real material) and matched by `/corpus` from the day it landed, listed here on 2026-08-18 having been exempt without being named, exactly as `borrow_frequency.rs` was |
 | `taiyaku-cli/src/score_corpus.rs` | the same |
 | `taiyaku-serve/src/test_support.rs` | `#[cfg(test)]` scaffolding, and a third category rather than a gated module: cargo-llvm-cov's default exclusion drops a file whose basename contains `tests` and so misses this one, for want of an `s` |
 | `taiyaku-serve/src/stump/http/test_support.rs` | the same |
@@ -1035,6 +1128,33 @@ of the test.
 `suspicious/noTsIgnore` is suppressed at file level in `resolver.ts`, where
 biome's suggested fix (`@ts-expect-error`) would break the build in exactly the
 state the section below describes.
+
+### `cargo fmt` manufactures whitespace on the Rust side, and nothing in the gate can catch it
+
+Found on the library scanner branch, on five strings, three of them messages a
+person actually reads. A `format!`/`assert!` argument continued across lines
+with a trailing `\` — the idiom every long message in this codebase uses to
+stay under the line-length `cargo fmt --check` itself enforces — carries the
+next line's leading indentation as literal content unless that indentation is
+stripped by hand before the backslash. Merging two such lines, or reflowing
+one that already fit, is easy to get wrong in exactly the direction `cargo
+fmt` cannot see: it re-wraps the *code* around a string literal's width but
+never looks *inside* one, so a run of stripped-then-restored spaces baked into
+the middle of a message survives every `cargo fmt --all -- --check` this
+repository runs, silently, because there is nothing there for it to disagree
+with.
+
+**No line-count or diff check catches this either.** The bug is bytes inside
+a string that was always going to pass `rustfmt`'s own formatting rules; only
+running the string — printing the message, or asserting on it in a test —
+shows the extra space. This is the reason `watch/tests.rs`'s
+`the_report_names_the_shortfall_when_the_directory_count_exceeds_the_watch_ceiling`
+asserts the exact string produced by `report_line_against` rather than
+`.contains()` fragments of it: a `.contains()` check on either side of an
+extra space would still pass. Any multi-line message added or edited on this
+branch was checked the same way — by calling the function and reading what it
+actually produced, not by reading the source and trusting `cargo fmt` to have
+left it alone.
 
 ## The `web` job
 

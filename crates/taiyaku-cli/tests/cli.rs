@@ -195,6 +195,25 @@ fn the_usage_advertises_serve_cache() {
     );
 }
 
+/// `library scan` and `library rules` reached `command`'s dispatch and
+/// `README.md`/`docs/status.md` without ever reaching `print_usage` — a
+/// person running bare `taiyaku` could not discover either. No test named
+/// `print_usage` at all is what let that stand; this is that test.
+#[test]
+fn the_usage_lists_library_scan_and_rules() {
+    let run = taiyaku().output().expect("the binary runs");
+
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        stdout.lines().any(|l| l.contains("taiyaku library scan")),
+        "the usage lists library scan: {stdout}"
+    );
+    assert!(
+        stdout.lines().any(|l| l.contains("taiyaku library rules")),
+        "the usage lists library rules: {stdout}"
+    );
+}
+
 /// `taiyaku library import` reports what the merge did — spec §4.2's
 /// requirement that an import say so rather than swallow `Sidecar::merge_spoke`'s
 /// `Merged` outcomes, in the fixed-field style `--stats` and
@@ -469,6 +488,144 @@ fn library_import_prints_the_malformed_sibling_warning_to_stderr() {
     );
 }
 
+/// **I1 / I2.** `derive` already calls `proposals::raise` once, at the end of
+/// its own pass; `library scan` used to call it a *second* time purely to get
+/// a number to print, and since the first call had already opened everything
+/// raisable, the second call's own `INSERT OR IGNORE` conflicted on every row
+/// and the printed count was unconditionally `0` — the failure
+/// `derive_summary_prints_suppressed_and_rekeyed_when_nonzero` only ever
+/// justified itself by preventing, since it exercises the pure formatter with
+/// a hand-built `raised` argument and never the real command's own count.
+/// Nothing before this ran `library scan` for real and read its real stdout.
+///
+/// A tree with a genuine colour-edition suffix — the same shape
+/// `proposals::tests::library_with_two_suffixed_series` scans — is what
+/// raises exactly one `edition-of` proposal.
+#[test]
+fn library_scan_reports_the_real_proposal_count_on_real_stdout() {
+    let dir = std::env::temp_dir().join("taiyaku-cli-test-scan-proposals");
+    let _ = std::fs::remove_dir_all(&dir);
+    let base = dir
+        .join("Go-Toubun no Hanayome")
+        .join("Go-Toubun no Hanayome - v01");
+    let colour = dir
+        .join("Go-Toubun no Hanayome - Full Color Edition")
+        .join("Go-Toubun no Hanayome - Full Color Edition - v01");
+    std::fs::create_dir_all(&base).expect("mkdir base");
+    std::fs::create_dir_all(&colour).expect("mkdir colour");
+    std::fs::write(base.join("000.jpg"), b"page").expect("write base page");
+    std::fs::write(colour.join("000.jpg"), b"page").expect("write colour page");
+
+    let out = taiyaku_output(&[
+        "library",
+        "scan",
+        "--add",
+        dir.to_str().unwrap(),
+        "--db",
+        &db_path("scan-proposals"),
+    ]);
+
+    assert!(
+        out.contains("; 1 proposal(s) raised"),
+        "the real command must report the one real proposal this tree raises, not zero: {out}"
+    );
+
+    // §8's per-root watch report and the walk's own added/updated/gone line
+    // are two separate `println!`s in `scan`, and **deleting either left the
+    // whole suite green**: "watching" and "scanning every" appear nowhere in
+    // any CLI test, and `scan_summary`'s unit tests exercise the formatter
+    // with a hand-built report, never the command. A counter nobody prints is
+    // the failure it exists to prevent — the rule `derive_summary`'s own
+    // conditional fields already follow — and that rule was never checked at
+    // the one layer where a person actually reads it.
+    assert!(
+        out.contains(&format!("root {}", dir.display())),
+        "the per-root watch report line must reach stdout: {out}"
+    );
+    assert!(
+        out.contains(" added, ") && out.contains(" gone"),
+        "the walk's own added/updated/gone summary must reach stdout: {out}"
+    );
+
+    // **And the probe must be given time to answer.** `PROBE_TIMEOUT` is two
+    // seconds; at zero every root on earth reports "watch probe failed" and
+    // silently drops to the 15-minute interval, with every database
+    // assertion in this crate still passing. Asserting the *success* form is
+    // the only thing that separates the two, so this test does depend on a
+    // watcher working on this host's temp directory — the same bet
+    // `taiyaku-library`'s own `a_probe_on_an_ordinary_local_directory_sees_its_own_file`
+    // already makes, in the same place, for the same reason.
+    assert!(
+        out.contains("directories — scanning every 24h"),
+        "a watchable root reports the long interval; at PROBE_TIMEOUT of zero this reads \
+         `watch probe failed`: {out}"
+    );
+}
+
+/// **I3, end to end.** `proposals::open`, `accept`, `unaccept` and `dismiss`
+/// had no caller outside their own tests before this — `taiyaku library` had
+/// only `import|export|scan|rules`, and two rounds of Critical fixes went
+/// into an `accept` a person could not invoke. This drives the real binary
+/// through a scan that raises one proposal, lists it, and accepts it —
+/// reading everything off the process's actual stdout, the way
+/// `library_import_reports_what_the_merge_did` already does for `import`.
+#[test]
+fn library_proposals_lists_and_accepts_over_real_stdout() {
+    let dir = std::env::temp_dir().join("taiyaku-cli-test-proposals");
+    let _ = std::fs::remove_dir_all(&dir);
+    let base = dir
+        .join("Go-Toubun no Hanayome")
+        .join("Go-Toubun no Hanayome - v01");
+    let colour = dir
+        .join("Go-Toubun no Hanayome - Full Color Edition")
+        .join("Go-Toubun no Hanayome - Full Color Edition - v01");
+    std::fs::create_dir_all(&base).expect("mkdir base");
+    std::fs::create_dir_all(&colour).expect("mkdir colour");
+    std::fs::write(base.join("000.jpg"), b"page").expect("write base page");
+    std::fs::write(colour.join("000.jpg"), b"page").expect("write colour page");
+    let db = db_path("proposals-e2e");
+
+    let scan_out = taiyaku_output(&[
+        "library",
+        "scan",
+        "--add",
+        dir.to_str().unwrap(),
+        "--db",
+        &db,
+    ]);
+    assert!(
+        scan_out.contains("; 1 proposal(s) raised"),
+        "the scan must actually have raised the one proposal this test accepts: {scan_out}"
+    );
+
+    let list_out = taiyaku_output(&["library", "proposals", "--db", &db]);
+    assert!(
+        list_out.contains("[edition-of]"),
+        "the listing names the kind: {list_out}"
+    );
+    assert!(
+        list_out.contains("Full Color"),
+        "and the reason, which names the series involved: {list_out}"
+    );
+    let id: &str = list_out
+        .split_whitespace()
+        .next()
+        .expect("the listing's first token is the proposal id");
+
+    let accept_out = taiyaku_output(&["library", "proposals", "--accept", id, "--db", &db]);
+    assert!(accept_out.contains("accepted proposal"), "{accept_out}");
+
+    // The observable claim: a real rule row exists, reachable only by
+    // actually invoking `accept` through this command.
+    let conn = rusqlite::Connection::open(&db).expect("open the same database taiyaku wrote");
+    let rules: i64 = conn
+        .query_row("SELECT count(*) FROM rule WHERE ordinal > 4", [], |row| {
+            row.get(0)
+        })
+        .expect("count");
+    assert_eq!(rules, 1, "the accept must have written a real rule");
+}
+
 /// **Whole-branch review 3's I2, `main.rs`'s call site.** The identical loop
 /// is duplicated in `serve_work` — `taiyaku serve <sidecar>...` imports every
 /// path it is given the same way `library import` does, this module's own
@@ -535,4 +692,73 @@ fn serve_prints_the_malformed_sibling_warning_before_refusing_to_bind() {
          failure ends the process: {stderr}"
     );
     drop(occupied);
+}
+
+/// **A rule import stores rules and derives nothing**, and the command used
+/// to print only "imported rules from …". The whole claim the rule layer
+/// makes is that editing a rule re-derives the library without touching the
+/// filesystem — which is true, and requires something to call `derive`. A
+/// person who has just replaced every rule and seen only a success line
+/// reasonably believes the library already reflects them.
+///
+/// Driven through the real binary because that is where the line reaches
+/// anybody: `library.rs`'s own unit tests call `rules` directly and this
+/// crate has no stdout-capturing helper, deliberately.
+#[test]
+fn library_rules_import_says_a_scan_is_needed_before_the_rules_decide_anything() {
+    let db = db_path("rules-import-note");
+    // Stdout alone here, not `taiyaku_output`: this document is fed straight
+    // back to `--import`, and the "library database at …" note the command
+    // writes to stderr would not parse as JSON beside it.
+    let run = taiyaku()
+        .args(["library", "rules", "--db", &db])
+        .output()
+        .expect("the binary runs");
+    let exported = String::from_utf8_lossy(&run.stdout).into_owned();
+    assert!(exported.contains("\"ordinal\""), "{exported}");
+
+    let path = std::env::temp_dir().join(format!(
+        "taiyaku-cli-test-rules-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(&path, &exported).expect("write the rule document");
+
+    let out = taiyaku_output(&[
+        "library",
+        "rules",
+        "--import",
+        path.to_str().unwrap(),
+        "--db",
+        &db,
+    ]);
+    assert!(out.contains("imported rules from"), "{out}");
+    assert!(
+        out.contains("taiyaku library scan"),
+        "the command that actually applies them must be named: {out}"
+    );
+}
+
+/// A bare word given to `library scan` is refused by name rather than
+/// ignored — checked here as well as in `library.rs`'s own unit tests
+/// because the exit status is what a script sees, and a command that
+/// silently ignores its argument exits 0.
+#[test]
+fn library_scan_refuses_a_bare_path_and_exits_nonzero() {
+    let run = taiyaku()
+        .args([
+            "library",
+            "scan",
+            "/srv/manga",
+            "--db",
+            &db_path("scan-positional"),
+        ])
+        .output()
+        .expect("the binary runs");
+    assert!(
+        !run.status.success(),
+        "a silently ignored argument would exit 0"
+    );
+    let message = String::from_utf8_lossy(&run.stderr);
+    assert!(message.contains("/srv/manga"), "{message}");
+    assert!(message.contains("--add"), "{message}");
 }

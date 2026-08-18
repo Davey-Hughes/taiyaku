@@ -33,11 +33,13 @@
 junit = { path = "junit.xml" }
 slow-timeout = { period = "30s", terminate-after = 2 }
 
-# The exempt set matches the seven-alternative regex both coverage steps of
+# The exempt set matches the nine-alternative regex both coverage steps of
 # ci.yml and check-all.sh carry today —
-# `--ignore-filename-regex '(band_sweep|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus)\.rs$'`
-# — which names the eight files `docs/ci.md` tables under "The ignored Rust
-# files, named". This is not one exempt set shared three ways: the two
+# `--ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'`
+# — which matches the twelve files `docs/ci.md` tables under "The ignored Rust
+# files, named". This comment quoted a seven-alternative version and said
+# eight files: both were the shape of the regex before `borrow_frequency` and
+# `test_support` were added to it, copied here and never recounted. This is not one exempt set shared three ways: the two
 # coverage steps share one regex string, but nextest's `filter` selects by
 # test name rather than by file, so this file cannot reuse that string — the
 # same set is expressed a second way, by module, and has to be kept in step
@@ -61,18 +63,23 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # omitting `terminate-after` is what makes a slow-timeout advisory, not a
 # separate key.
 #
-# `test(corpus::)` selects **twenty-one** tests, counted with
-# `cargo nextest list -E 'test(corpus::)'` on 2026-08-14 rather than reasoned
-# about: fourteen standing checks against real archives (ten in taiyaku-cli,
-# three in taiyaku-serve, one in taiyaku-library), three `corpus::tests::`
-# helpers that only assert how TAIYAKU_CORPUS is validated, and **four
-# `score_corpus::` tests caught by substring** — `score_corpus::` contains
+# `test(corpus::)` selects **twenty-two** tests, counted with
+# `cargo nextest list -E 'test(corpus::)'` on 2026-08-18 rather than reasoned
+# about: fifteen standing checks against real archives (ten in taiyaku-cli,
+# three in taiyaku-serve, two in taiyaku-library — the second of those being
+# the scanner's own walk-through-derive check, added by the library scanner
+# branch), three `corpus::tests::` helpers that only assert how
+# TAIYAKU_CORPUS is validated, and **four `score_corpus::` tests caught by
+# substring** — `score_corpus::` contains
 # `corpus::`, so the first term already selects them and the separate
 # `test(score_corpus)` term below is redundant. It is kept anyway: it costs
 # nothing, and it keeps the intent legible if either module is ever renamed.
 #
-# **This comment has now been wrong twice, in the file that warns about exactly
-# that.** It said "sixteen / thirteen" while the real figures were twenty /
+# **This comment has now been wrong three times, in the file that warns about
+# exactly that.** The third: it read twenty-one / fourteen until 2026-08-18,
+# the figures from before `taiyaku-library`'s second corpus check landed —
+# which is not the substring trap again, just a count nobody re-ran.
+# The first two: It said "sixteen / thirteen" while the real figures were twenty /
 # thirteen, because nobody had noticed the substring overlap; and a correction
 # drafted for Task 8 said "seventeen / fourteen", which fixed the standing-check
 # count and preserved the same undercount. It was an agent counting the output
@@ -100,3 +107,36 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 [[profile.default.overrides]]
 filter = "test(band_sweep) + test(corpus::) + test(geometry_experiment) + test(model_experiment) + test(region_experiment) + test(score_corpus) + test(truth_population)"
 slow-timeout = { period = "60s" }
+
+# `a_root_that_cannot_be_written_falls_back_to_the_short_interval`
+# (`taiyaku-library/src/watch/tests.rs`) skips itself with a `NOT MEASURED:`
+# line on stderr when the process it is running in can still write to a 0555
+# directory — which is exactly what happens under `CAP_DAC_OVERRIDE`, and
+# CI's `test` job runs `rust:1-bookworm` with no `user:`, so it runs as root
+# on every push. Default `success-output` prints nothing for a passing test,
+# so without this override the skip is real but silent: the run shows
+# `... ok` and the property this test exists to check goes unmeasured with
+# nobody told. `final` prints captured output for passing tests in the
+# summary at the end of the run, with no `--nocapture` needed anywhere this
+# test's binary is invoked — including the coverage run `check-all.sh` and
+# `ci.yml` both use, neither of which passes it.
+#
+# **Every test that can skip itself belongs in this filter, not just the one
+# that found the trap.** Three more do, and two of them were added after this
+# override without being added to it, which is the trap arriving again:
+#   - `an_unreadable_directory_is_skipped_counted_and_named_rather_than_failing_the_root`
+#     (`taiyaku-library/src/scan/tests.rs`) — same root/`CAP_DAC_OVERRIDE`
+#     cause, a 0000 directory this process can still list.
+#   - `one_work_that_cannot_be_forgotten_does_not_stop_the_others`
+#     (`taiyaku-serve/src/tests.rs`) — the test that set the pattern, and the
+#     one `docs/ci.md` named as still invisible.
+#   - `a_hand_written_tar_is_one_gnu_tar_can_list`
+#     (`taiyaku-read/src/format/tests.rs`) — skips where `tar` is not on
+#     `PATH`, which is a different cause with the same consequence: the tar
+#     fixture would stop being checked against a real tar and nothing would
+#     say so.
+# `filter` names tests, not output, so a new self-skipping test has to be
+# added here by hand. There is no expression that catches them all.
+[[profile.default.overrides]]
+filter = "test(a_root_that_cannot_be_written) + test(an_unreadable_directory_is_skipped) + test(one_work_that_cannot_be_forgotten) + test(a_hand_written_tar_is_one_gnu_tar_can_list)"
+success-output = "final"

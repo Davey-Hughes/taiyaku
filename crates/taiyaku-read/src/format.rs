@@ -1,0 +1,247 @@
+//! What a container is, from its bytes rather than from its name.
+//!
+//! **Extensions lie in both directions**, which `README.md` records as the
+//! reason `taiyaku-read` never trusted one: a zip is frequently named `.cbr`
+//! and a real RAR frequently `.cbz`. The scanner's §3 makes that a rule —
+//! `scan_entry.format` is sniffed, never derived from a suffix.
+//!
+//! **Recognising a format is not a step towards reading it.** `Pdf`, `Rar`,
+//! `SevenZip` and both EPUB variants exist so a scan can record what it met
+//! and a reader can be told why nothing opens it. Only `Zip` and `Dir` are
+//! readable; [`Format::is_readable`] is the statement of that, and `pages.rs`
+//! is what enforces it — `unsupported_container` and `read_member` are where
+//! a caller actually meets the refusal, and they answer from the bytes in
+//! front of them rather than by asking this enum.
+
+use std::io::Read;
+use std::path::Path;
+
+/// What a path holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Dir,
+    Zip,
+    EpubFixed,
+    EpubReflow,
+    Pdf,
+    Rar,
+    SevenZip,
+    Tar,
+    /// A file none of the signatures matched. Recorded rather than skipped,
+    /// per §3: a scanner that silently drops what it cannot open is the
+    /// failure `inventory` was written against.
+    Unknown,
+}
+
+// **`Tar` is one more variant than §3's list**, which names
+// `zip | dir | epub-fixed | epub-reflow | pdf | rar | 7z | NULL`. It is here
+// because `pages.rs` already recognises tar and already names it in an error
+// — dropping it would mean this enum recorded a tar as `Unknown` while the
+// error message beside it called it a tar archive, which is two answers to
+// one question. `003_scanner.sql`'s `format` comment carries the same eight
+// values for the same reason.
+
+impl Format {
+    /// The `scan_entry.format` value, or `None` for a file nothing recognised.
+    ///
+    /// The strings are the schema's own vocabulary and are not free text; a
+    /// change here is a migration, not a rename.
+    #[must_use]
+    pub fn token(self) -> Option<&'static str> {
+        match self {
+            Self::Dir => Some("dir"),
+            Self::Zip => Some("zip"),
+            Self::EpubFixed => Some("epub-fixed"),
+            Self::EpubReflow => Some("epub-reflow"),
+            Self::Pdf => Some("pdf"),
+            Self::Rar => Some("rar"),
+            Self::SevenZip => Some("7z"),
+            Self::Tar => Some("tar"),
+            Self::Unknown => None,
+        }
+    }
+
+    /// Whether `taiyaku-read` can turn this into pages.
+    ///
+    /// **No production caller, deliberately, and it is not dead.** The one
+    /// place the question is asked of a stored value is
+    /// `taiyaku_library::derive::is_readable`, which has a
+    /// `scan_entry.format` *token* rather than a `Format` and cannot get back
+    /// here: there is no parse from token to variant, and adding one so a
+    /// two-arm question could be asked through it would be a wider surface
+    /// than the answer is worth. So that function spells the same answer in
+    /// tokens, and this stays the statement of what the answer is.
+    /// `derive/tests.rs::the_token_side_readability_test_agrees_with_the_enums_own`
+    /// is what stops the two drifting — it walks every variant and asserts
+    /// both sides agree, which is the check that was missing while this
+    /// function had no test of any kind.
+    #[must_use]
+    pub fn is_readable(self) -> bool {
+        matches!(self, Self::Dir | Self::Zip)
+    }
+}
+
+const SEVEN_ZIP: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
+const RAR: &[u8] = b"Rar!\x1a\x07";
+const ZIP: &[u8] = b"PK\x03\x04";
+const PDF: &[u8] = b"%PDF-";
+
+/// What is at `path`.
+///
+/// # Errors
+///
+/// Returns an error naming the path if it cannot be opened or read. A file
+/// that is readable and matches nothing is [`Format::Unknown`], which is a
+/// successful answer rather than an error.
+pub fn sniff(path: &Path) -> Result<Format, String> {
+    if path.is_dir() {
+        return Ok(Format::Dir);
+    }
+    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (header, read) = read_header(&mut file).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(match from_header(&header[..read]) {
+        // The only branch that needs more than the header, and so the only
+        // one that costs a second open. See `zip_flavour`.
+        Format::Zip => zip_flavour(path),
+        other => other,
+    })
+}
+
+/// Fill a 512-byte header from `source`, and say how much of it is real.
+///
+/// **A loop, not one `read`.** `Read::read` is allowed to return fewer bytes
+/// than the buffer holds even when more are available, and over a network
+/// filesystem it does — this project's own library is mounted over nfs4.
+/// Every signature but one lives in the first six bytes and survives a short
+/// read; the tar magic sits at offset 257, so a single `read` returning 256
+/// bytes silently turned every tar into [`Format::Unknown`] while leaving
+/// the other five answers correct, which is the shape of failure nobody
+/// notices. `read_exact` is the wrong call for the same job: a file shorter
+/// than 512 bytes is an ordinary case here — a stub, a truncated download —
+/// not an error. `n == 0` is end of file, and the returned length is what
+/// separates "the file ends here" from "the buffer is still zeroes".
+///
+/// **Taken as a `Read` rather than reached through a path**, for the reason
+/// `lib.rs` splits `require_fts5_with_probe` from `require_fts5` and
+/// `watch.rs` splits `report_line_against` from `report_line`: no fixture
+/// this test suite can write to a local filesystem will make `File::read`
+/// come back short, so the property is unreachable from a path-shaped test
+/// and reachable from this one.
+///
+/// # Errors
+///
+/// Returns the underlying read error, unwrapped — [`sniff`] is what names
+/// the path.
+fn read_header(source: &mut impl Read) -> std::io::Result<([u8; 512], usize)> {
+    let mut header = [0u8; 512];
+    let mut read = 0;
+    while read < header.len() {
+        let n = source.read(&mut header[read..])?;
+        if n == 0 {
+            break;
+        }
+        read += n;
+    }
+    Ok((header, read))
+}
+
+/// The decision every branch but one can make from the leading bytes alone.
+///
+/// **The EPUB refinement is deliberately not here**, and that is a
+/// performance constraint rather than a tidiness preference. `pages.rs`'s
+/// `unsupported_container` calls this on a header it already holds, from
+/// inside `open_archive` — and `open_archive` runs on `member_page`, which is
+/// **once per page served**, as well as on `member_page_names` (so on
+/// `member_pages`), `member_page_sizes`, `member_entry` and `read_member`. A
+/// version of this function that opened the archive to look for a `mimetype`
+/// entry would double the open count on that path to answer a question the
+/// error message does not need: an EPUB handed to `taiyaku align` is a zip
+/// holding no pages, and `read_member` already names what it found instead.
+/// So this stays header-only and total, and [`sniff`] — which runs once per
+/// file per scan, not once per page — does the refinement.
+///
+/// **The per-page claim is `member_page`'s alone.** An earlier version of
+/// this paragraph named `member_digest` among the callers; it is not one —
+/// for a file it hashes the bytes with `std::fs::read` and never opens an
+/// archive at all. Corrected rather than dropped, because `member_page`
+/// really is the hot path this reasoning is about and the argument stands on
+/// it: it is the call the reader makes for every page it displays.
+///
+/// **The tar test comes before the zip test, and the order is load-bearing.**
+/// A tar's first 100 bytes are its first member's *filename*, and a tar
+/// filename may hold any byte — including the four a zip header starts with.
+/// Such a file is a tar that also answers `starts_with(ZIP)`, and checking
+/// zip first hands it to the zip reader, which cannot open it.
+/// `a_tar_whose_first_entry_name_begins_with_a_zip_signature_is_still_a_tar`
+/// is that file, built and checked rather than argued about. The reverse
+/// collision cannot happen: `ustar` at offset 257 of a real zip would have to
+/// land inside the first local file header's name or data, and the tar test
+/// is the more specific of the two.
+pub(crate) fn from_header(bytes: &[u8]) -> Format {
+    if bytes.starts_with(SEVEN_ZIP) {
+        Format::SevenZip
+    } else if bytes.starts_with(RAR) {
+        Format::Rar
+    } else if bytes.starts_with(PDF) {
+        Format::Pdf
+    } else if bytes.get(257..262) == Some(&b"ustar"[..]) {
+        Format::Tar
+    } else if bytes.starts_with(ZIP) {
+        Format::Zip
+    } else {
+        Format::Unknown
+    }
+}
+
+/// A zip is a zip unless it declares itself an EPUB, in which case the
+/// question is which kind.
+///
+/// **What this establishes and what it does not.** An EPUB declares its
+/// layout in the OPF package document, as
+/// `<meta property="rendition:layout">pre-paginated</meta>`. This looks for
+/// that string in every `.opf` entry rather than parsing XML — the workspace
+/// has no XML dependency and adding one to answer a question nothing yet
+/// reads would be the wrong trade. So it is a substring test: an OPF that
+/// mentioned `pre-paginated` in a comment or a title would be misread as
+/// fixed-layout. Nothing opens either variant (§10), so the cost of being
+/// wrong here today is one wrong token in a column no reader consumes; when
+/// spec H makes fixed-layout EPUB a real member format, this is the function
+/// that needs a parser, and this paragraph is the note saying so.
+///
+/// A zip whose central directory will not open — a truncated download — is
+/// [`Format::Zip`] on the strength of its signature. The scan records what
+/// the bytes say; whether the archive is *sound* is a page-count question
+/// and `member_pages` answers it separately.
+fn zip_flavour(path: &Path) -> Format {
+    let Ok(file) = std::fs::File::open(path) else {
+        return Format::Zip;
+    };
+    let Ok(mut zip) = zip::ZipArchive::new(file) else {
+        return Format::Zip;
+    };
+    let mut mimetype = String::new();
+    if let Ok(mut entry) = zip.by_name("mimetype") {
+        let _ = entry.read_to_string(&mut mimetype);
+    }
+    if mimetype.trim() != "application/epub+zip" {
+        return Format::Zip;
+    }
+    let opf_names: Vec<String> = zip
+        .file_names()
+        .filter(|name| name.ends_with(".opf"))
+        .map(ToString::to_string)
+        .collect();
+    for name in opf_names {
+        let mut body = String::new();
+        if let Ok(mut entry) = zip.by_name(&name) {
+            let _ = entry.read_to_string(&mut body);
+        }
+        if body.contains("pre-paginated") {
+            return Format::EpubFixed;
+        }
+    }
+    Format::EpubReflow
+}
+
+#[cfg(test)]
+mod tests;

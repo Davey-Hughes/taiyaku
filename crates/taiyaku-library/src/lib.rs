@@ -8,14 +8,19 @@
 //! it over rows. See `docs/superpowers/specs/2026-08-14-library-store-design.md`,
 //! §4.2.
 
+pub mod derive;
 pub mod export;
 pub mod identity;
 pub mod import;
 pub mod librarydoc;
 pub mod migrate;
 pub mod project;
+pub mod proposals;
+pub mod rules;
+pub mod scan;
 pub mod schema;
 pub mod state;
+pub mod watch;
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -269,10 +274,24 @@ impl Library {
         // the reproduced failure in place.
         //
         // `Immediate` for every transaction on this connection rather than at
-        // each of the five call sites, and for the same reason
-        // `recursive_triggers` is a pragma rather than a rule for callers: all
-        // five are writes, and a store that is only correct while every future
-        // writer remembers to pass a behaviour is not correct, it is lucky.
+        // each of the seven call sites (`state.rs` three times, one each in
+        // `import.rs`, `librarydoc.rs`, `scan.rs` and `rules.rs`) a future
+        // contributor might add a write to, and for the same reason
+        // `recursive_triggers` is a pragma rather than a rule for callers:
+        // all seven are writes, and a store that is only correct while every
+        // future writer remembers to pass a behaviour is not correct, it is
+        // lucky. `schema.rs`'s migration transaction, two lines below, is an
+        // eighth `unchecked_transaction` and gets this same `Immediate`
+        // behaviour too — it opens after this line, on this same connection
+        // — but it sits outside the count above because it is not a call
+        // site future code could add or forget: it runs once, here, inside
+        // `from_connection`, before any caller has a `Connection` to write
+        // through at all. The concurrent writers `schema.rs:159-161`'s own
+        // comment depends on `Immediate` for are real and measured, not
+        // hypothetical — `status.md`'s record of review 3's I1: 14 failures
+        // in 48 concurrent first opens, each its own process racing this
+        // exact migration, none in 40 runs after this connection-wide
+        // setting closed it.
         // The cost is that a read-only `unchecked_transaction` would also take
         // the write lock; there is none, and one would be the wrong shape here
         // anyway — `Library` hands out one connection behind a `Mutex`.

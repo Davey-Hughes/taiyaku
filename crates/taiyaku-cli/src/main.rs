@@ -188,6 +188,12 @@ fn print_usage() {
     );
     println!("       taiyaku library import <taiyaku.json> [--db PATH]");
     println!("       taiyaku library export <work>|--all [--dir DIR|--in-place] [--db PATH]");
+    println!("       taiyaku library scan  [--add PATH] [--root PATH] [--no-derive] [--db PATH]");
+    println!("       taiyaku library rules [--export | --import FILE] [--db PATH]");
+    println!(
+        "       taiyaku library proposals [--min-score N] [--accept ID] [--dismiss ID] \
+         [--unaccept ID] [--db PATH]"
+    );
     println!("       taiyaku duplicates <copy>... -- <copy>... [--against <member>...] [--ltr]");
     println!("       taiyaku inventory <root> [--min-pages N] [--pattern SPEC]");
     println!(
@@ -383,6 +389,46 @@ fn reject_unknown_flags(command: &str, args: &[String], known: &[&str]) -> Resul
             known.join(", ")
         ))
     }
+}
+
+/// Refuse a bare word given to a command that has nothing to do with one.
+///
+/// **A silently ignored argument is the worst of the three answers.**
+/// `taiyaku library scan /srv/manga` reads as "scan this path"; it used to
+/// scan every root the library already knows, print a report about all of
+/// them, and say nothing at all about the path — so a person adding a new
+/// share saw a plausible-looking scan of somebody else's directories and no
+/// hint that theirs had not been touched. `--add` and `--root` are how a path
+/// reaches this command, and naming them is what makes the refusal useful
+/// rather than merely correct.
+///
+/// `with_values` names the flags that take a value, so the value is not
+/// mistaken for a stray word — [`option_value`] reads `--db PATH` as two
+/// arguments, not one.
+///
+/// # Errors
+///
+/// Returns an error naming the first bare word and `instead`, which should
+/// say what the caller probably meant to type.
+pub(crate) fn reject_positional_arguments(
+    command: &str,
+    args: &[String],
+    with_values: &[&str],
+    instead: &str,
+) -> Result<(), String> {
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if arg.starts_with("--") {
+            if with_values.contains(&arg.as_str()) {
+                rest.next();
+            }
+            continue;
+        }
+        return Err(format!(
+            "{command} takes no arguments, and `{arg}` was given as one — {instead}"
+        ));
+    }
+    Ok(())
 }
 
 /// Reject an edition key that is not URL-safe, before it reaches a sidecar.

@@ -7,10 +7,12 @@
 //! to make impossible.
 
 pub mod atomic;
+mod format;
 mod naming;
 mod pages;
 
-pub use naming::natural_cmp;
+pub use format::{Format, sniff};
+pub use naming::{chapter_number, natural_cmp, volume_number, volume_number_marked};
 pub use pages::{
     Page, is_page_name, member_digest, member_entry, member_page, member_page_names,
     member_page_sizes, member_pages, read_edition, read_members_in_order,

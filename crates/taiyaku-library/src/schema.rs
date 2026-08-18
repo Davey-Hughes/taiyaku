@@ -25,7 +25,7 @@
 use rusqlite::Connection;
 
 /// The schema version this build expects.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Every migration, in order. Index 0 takes an empty database to version 1.
 ///
@@ -33,9 +33,10 @@ pub const SCHEMA_VERSION: u32 = 2;
 /// migration 1 again, so a change made there reaches new databases only and
 /// the two diverge silently. `002` adds one column to `migrated_document`
 /// rather than changing the table `001` creates, for exactly that reason.
-const MIGRATIONS: [&str; 2] = [
+const MIGRATIONS: [&str; 3] = [
     include_str!("schema/001_initial.sql"),
     include_str!("schema/002_absorbed.sql"),
+    include_str!("schema/003_scanner.sql"),
 ];
 
 /// The version a database reaches is the number of migrations applied to it,
@@ -139,6 +140,16 @@ fn apply_pending(conn: &Connection, migrations: &[&str], current: u32) -> Result
     let known = u32::try_from(migrations.len()).unwrap_or(u32::MAX);
     for (index, sql) in migrations.iter().enumerate() {
         let target = u32::try_from(index).unwrap_or(u32::MAX) + 1;
+        // **A fast path, not the decision.** The recheck below, under the
+        // write lock, is what makes the skip correct; `version(&tx)` can only
+        // be at or ahead of the `current` read before any transaction opened,
+        // so anything this line skips that one would skip too. What it buys
+        // is that an ordinary open of an up-to-date database takes no write
+        // lock at all, rather than opening and rolling back one transaction
+        // per already-applied migration on every `Library::open` — which
+        // matters because `serve` and `library import` share a file by
+        // default. Deleting it changes no answer and no test, deliberately:
+        // it is a cost guard, and the correctness is three lines down.
         if target <= current {
             continue;
         }

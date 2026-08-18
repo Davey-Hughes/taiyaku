@@ -55,7 +55,7 @@ use rusqlite::OptionalExtension;
 use taiyaku_core::{Merged, Sidecar};
 use taiyaku_library::Library;
 
-use crate::{flag_present, option_value, reject_unknown_flags};
+use crate::{flag_present, option_value, reject_positional_arguments, reject_unknown_flags};
 
 /// Dispatch `library import|export`.
 ///
@@ -67,10 +67,16 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("import") => import(&args[1..]),
         Some("export") => export(&args[1..]),
+        Some("scan") => scan(&args[1..]),
+        Some("rules") => rules(&args[1..]),
+        Some("proposals") => proposals(&args[1..]),
         Some(other) => Err(format!(
-            "library has no subcommand `{other}`; it has import and export"
+            "library has no subcommand `{other}`; it has import, export, scan, rules and \
+             proposals"
         )),
-        None => Err("library needs a subcommand: import or export".to_string()),
+        None => {
+            Err("library needs a subcommand: import, export, scan, rules or proposals".to_string())
+        }
     }
 }
 
@@ -155,6 +161,411 @@ fn export(args: &[String]) -> Result<(), String> {
     };
 
     export_targets(&conn, &targets, dir.as_deref()).map(|_| ())
+}
+
+/// How long `scan` waits for its own watch probe's event to arrive before
+/// deciding a root cannot be watched. Two seconds: long enough for a real
+/// filesystem's `inotify` (or its absence) to show up, short enough that
+/// scanning several roots that cannot be watched does not cost minutes
+/// finding that out one at a time — `watch::report_line`'s own doc comment
+/// uses this exact figure in its worked example.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// `taiyaku library scan`: walk every known root — or, under `--root PATH`,
+/// just one — record what §8's report says about each, derive series, works,
+/// editions and members from the facts, and raise whatever proposals the new
+/// structure supports. `--no-derive` stops after the walk, which is what
+/// makes "what would the facts be" answerable without changing structure.
+///
+/// **A root that cannot be scanned does not take the others down with it,
+/// but it does take the exit status down with it.** Neither an outright
+/// error from [`taiyaku_library::scan::scan_root`] (a permission refusal,
+/// say) nor §8.1's empty-root refusal aborts the loop — each is named on
+/// stderr and the run moves on to the next root, the same "write what can be
+/// written" trade [`export_targets`] makes. But a scan whose only root
+/// refused must not exit 0 over having done nothing — that is the no-roots
+/// refusal's own failure arriving by another door, and a script watching the
+/// exit code cannot see stderr. So every failure, refused or errored, is
+/// counted, and if any root failed this returns `Err` naming how many of how
+/// many, once every root has had its turn — [`export_targets`]'s own
+/// precedent, applied here.
+fn scan(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags(
+        "library scan",
+        args,
+        &["--add", "--root", "--no-derive", "--db"],
+    )?;
+    reject_positional_arguments(
+        "library scan",
+        args,
+        &["--add", "--root", "--db"],
+        "a path reaches this command as `--add PATH` (a root it does not \
+         know yet) or `--root PATH` (one it does)",
+    )?;
+    let add = option_value(args, "--add", "a path")?;
+    let root_filter = option_value(args, "--root", "a path")?;
+    let no_derive = flag_present(args, "--no-derive");
+    let db = resolve_db_path(option_value(args, "--db", "a path")?)?;
+    let library = Library::open(&db).map_err(|e| format!("opening the library: {e}"))?;
+
+    if let Some(path) = add {
+        let conn = library.conn();
+        taiyaku_library::scan::add_root(&conn, Path::new(path))
+            .map_err(|e| format!("adding root {path}: {e}"))?;
+    }
+
+    let roots = {
+        let conn = library.conn();
+        taiyaku_library::scan::roots(&conn)?
+    };
+    let selected = select_roots(roots, root_filter)?;
+    let total = selected.len();
+    let mut failed: Vec<String> = Vec::new();
+
+    for root in &selected {
+        let report = {
+            let conn = library.conn();
+            taiyaku_library::scan::scan_root(&conn, root)
+        };
+        let report = match report {
+            Ok(report) => report,
+            Err(e) => {
+                eprintln!("taiyaku: {}: {e}", root.path.display());
+                failed.push(root.path.display().to_string());
+                continue;
+            }
+        };
+        if let Some(refusal) = &report.refused {
+            eprintln!("taiyaku: {refusal}");
+            failed.push(root.path.display().to_string());
+            continue;
+        }
+        let probe = taiyaku_library::watch::probe(&root.path, PROBE_TIMEOUT);
+        let interval = taiyaku_library::watch::interval_for(&probe);
+        println!(
+            "{}",
+            taiyaku_library::watch::report_line(&root.path, &probe, report.dirs, interval)
+        );
+        println!("{}", scan_summary(&report));
+    }
+
+    if !no_derive {
+        let conn = library.conn();
+        // One raiser, like one writer: `derive` already calls
+        // `proposals::raise` once, at the end of its own pass, and returns
+        // the count it opened. A second call here used to exist purely to
+        // get a number to print — and since the first call's `INSERT OR
+        // IGNORE` had already opened everything raisable, the second call's
+        // own count was unconditionally zero (I1).
+        let derived =
+            taiyaku_library::derive::derive(&conn).map_err(|e| format!("deriving: {e}"))?;
+        println!("{}", derive_summary(&derived, derived.raised));
+    }
+
+    scan_result(&failed, total)
+}
+
+/// The exit status half of §8.1's refusal, matching [`export_targets`]'s own
+/// precedent for "some of these failed": every root that could be scanned,
+/// was, but a caller relying on the exit code — a cron job, a script — must
+/// not read a root that refused or errored as a quiet success. Named on
+/// stderr already, as each failure happened; this is the one line that says
+/// so where an exit code can see it.
+fn scan_result(failed: &[String], total: usize) -> Result<(), String> {
+    if failed.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} of {total} root(s) could not be scanned: {}. The reason for each is on stderr \
+         above; what could be scanned, was",
+        failed.len(),
+        failed.join(", ")
+    ))
+}
+
+/// Which roots `scan` processes this run: every known root, or — under
+/// `--root PATH` — the single one whose canonical path matches.
+///
+/// # Errors
+///
+/// Returns an error naming `--add` if `roots` is empty and no `--root` filter
+/// was given — a scan with nothing to scan is a refusal, not a silent
+/// success over an empty library — or naming `path` if `--root PATH` cannot
+/// be canonicalised (it must exist) or matches no root this library knows.
+fn select_roots(
+    roots: Vec<taiyaku_library::scan::Root>,
+    filter: Option<&str>,
+) -> Result<Vec<taiyaku_library::scan::Root>, String> {
+    if let Some(path) = filter {
+        let canonical = Path::new(path)
+            .canonicalize()
+            .map_err(|e| format!("--root {path}: {e}"))?;
+        let matched: Vec<_> = roots.into_iter().filter(|r| r.path == canonical).collect();
+        if matched.is_empty() {
+            return Err(format!(
+                "no known root at {}; pass --add {} to add it first",
+                canonical.display(),
+                canonical.display()
+            ));
+        }
+        return Ok(matched);
+    }
+    if roots.is_empty() {
+        return Err("this library has no roots to scan; pass --add PATH to add one".to_string());
+    }
+    Ok(roots)
+}
+
+/// The counts one [`taiyaku_library::scan::scan_root`] call produced, beside
+/// [`taiyaku_library::watch::report_line`]'s own line — the two together are
+/// §8's report for one root.
+///
+/// `unreadable_dirs` prints only when non-zero, the same rule
+/// [`derive_summary`] applies to its own silent-outcome counters: a `Vec`
+/// nobody prints is a directory a person never learns was skipped (I4).
+fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
+    use std::fmt::Write as _;
+
+    let mut line = format!(
+        "  {} added, {} updated, {} gone",
+        report.added, report.updated, report.gone
+    );
+    if !report.unreadable_dirs.is_empty() {
+        let _ = write!(
+            line,
+            "; {} unreadable directories: {}",
+            report.unreadable_dirs.len(),
+            report.unreadable_dirs.join(", ")
+        );
+    }
+    line
+}
+
+/// What one `derive` + `raise` pass over the whole library produced.
+///
+/// `series`/`works`/`editions`/`members` print unconditionally — a library
+/// that genuinely derived nothing is exactly as informative a zero as any
+/// other. `unattached_chapter_dirs` and `unreadable` print only when
+/// non-zero, and so do `suppressed`, `rekeyed`, `kept_editions` and `merged`:
+/// [`taiyaku_library::derive::DeriveReport`]'s own doc comment is explicit
+/// that each exists because a silent drop, a silent re-key, a silently
+/// orphaned edition or a silent merge is indistinguishable from an empty
+/// library, from growth, from a clean derive, or from a work that genuinely
+/// holds one volume — a counter that never reaches this line is the failure
+/// they were added to prevent.
+fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize) -> String {
+    use std::fmt::Write as _;
+
+    let mut line = format!(
+        "derived {} series, {} works, {} editions, {} members",
+        report.series, report.works, report.editions, report.members
+    );
+    if report.unattached_chapter_dirs > 0 {
+        let _ = write!(
+            line,
+            ", {} unattached chapter directories",
+            report.unattached_chapter_dirs
+        );
+    }
+    if report.unreadable > 0 {
+        let _ = write!(line, ", {} unreadable", report.unreadable);
+    }
+    if report.suppressed > 0 {
+        let _ = write!(line, ", {} suppressed", report.suppressed);
+    }
+    if report.rekeyed > 0 {
+        let _ = write!(line, ", {} rekeyed", report.rekeyed);
+    }
+    if report.kept_editions > 0 {
+        let _ = write!(line, ", {} editions kept", report.kept_editions);
+    }
+    if report.merged > 0 {
+        let _ = write!(line, ", {} merged", report.merged);
+    }
+    let _ = write!(line, "; {raised} proposal(s) raised");
+    line
+}
+
+/// `taiyaku library rules`: print this library's rule set as JSON
+/// (`--export`, or nothing — the default is "show me what is there"), or
+/// replace it wholesale from a file (`--import FILE`). §4: rules travel as
+/// JSON rather than as a config file, because a config file would be a second
+/// source of truth a UI writing rules would have to keep in step.
+fn rules(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags("library rules", args, &["--export", "--import", "--db"])?;
+    reject_positional_arguments(
+        "library rules",
+        args,
+        &["--import", "--db"],
+        "the rule set goes out on stdout with no argument at all, and comes \
+         back in as `--import FILE`",
+    )?;
+    let import_path = option_value(args, "--import", "a file")?;
+    let export_flag = flag_present(args, "--export");
+    if export_flag && import_path.is_some() {
+        return Err("library rules takes --export or --import, not both".to_string());
+    }
+
+    let db = resolve_db_path(option_value(args, "--db", "a path")?)?;
+    let library = Library::open(&db).map_err(|e| format!("opening the library: {e}"))?;
+    let conn = library.conn();
+
+    if let Some(path) = import_path {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+        taiyaku_library::rules::import_json(&conn, &text)
+            .map_err(|e| format!("importing rules from {path}: {e}"))?;
+        // **An import replaces the rule set and derives nothing.** The whole
+        // claim rules make is that editing one re-derives the library without
+        // touching the filesystem — so a person who has just replaced every
+        // rule and seen only "imported" reasonably believes the library now
+        // reflects them, and it does not until something calls `derive`. The
+        // command that does is named here rather than left to be found, and
+        // `--no-derive` is deliberately not offered as the answer: it is the
+        // flag that stops the very thing this line is asking for.
+        println!(
+            "imported rules from {path}\n  \
+             the rules are stored; nothing has been re-derived from them yet — \
+             run `taiyaku library scan` to apply them"
+        );
+        return Ok(());
+    }
+
+    let json =
+        taiyaku_library::rules::export_json(&conn).map_err(|e| format!("exporting rules: {e}"))?;
+    println!("{json}");
+    Ok(())
+}
+
+/// `taiyaku library proposals [--min-score N] [--accept ID] [--dismiss ID]
+/// [--unaccept ID] [--db PATH]`: the surface over `taiyaku_library::proposals`
+/// — [`taiyaku_library::proposals::open`], [`taiyaku_library::proposals::accept`],
+/// [`taiyaku_library::proposals::dismiss`] and
+/// [`taiyaku_library::proposals::unaccept`] — none of which had a caller
+/// outside their own tests before this (I3). Two rounds of Critical fixes
+/// went into an `accept` a person could not invoke.
+///
+/// **Listing is the default**, with nothing after it: `library scan` already
+/// raises proposals as a side effect of deriving, so the ordinary use of this
+/// command is "what is in the inbox right now", not an action. `--min-score`
+/// narrows it the same way [`taiyaku_library::proposals::open`]'s own
+/// argument does — §6.1's threshold, not a suppression list.
+///
+/// **At most one of `--accept`, `--dismiss` and `--unaccept`.** Each names a
+/// proposal and performs the one action a person asked for; taking more than
+/// one at once would leave which happened first, and to which id, ambiguous
+/// the moment two flags named different proposals.
+///
+/// **Refusals are never reworded here.** `taiyaku_library::proposals::accept`
+/// already says why it refuses in full — naming `taiyaku align` for an
+/// `attach-chapters` proposal, or naming exactly what a swallowed directory
+/// would have taken — and this command propagates that message rather than
+/// summarising it, the same discipline every other subcommand in this module
+/// already keeps for the library crate's own errors.
+///
+/// # Errors
+///
+/// Returns an error for an unknown flag, for more than one of
+/// `--accept`/`--dismiss`/`--unaccept`, for an id or a `--min-score` that will
+/// not parse as a number, if the database cannot be opened, or whatever the
+/// underlying `taiyaku_library::proposals` call itself returns.
+fn proposals(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags(
+        "library proposals",
+        args,
+        &["--min-score", "--accept", "--dismiss", "--unaccept", "--db"],
+    )?;
+    reject_positional_arguments(
+        "library proposals",
+        args,
+        &["--min-score", "--accept", "--dismiss", "--unaccept", "--db"],
+        "a proposal is named by id, as `--accept ID`, `--dismiss ID` or \
+         `--unaccept ID`",
+    )?;
+
+    let accept_id = option_value(args, "--accept", "a proposal id")?;
+    let dismiss_id = option_value(args, "--dismiss", "a proposal id")?;
+    let unaccept_id = option_value(args, "--unaccept", "a proposal id")?;
+    let min_score = option_value(args, "--min-score", "a number")?;
+
+    let actions = [accept_id, dismiss_id, unaccept_id]
+        .iter()
+        .filter(|a| a.is_some())
+        .count();
+    if actions > 1 {
+        return Err(
+            "library proposals takes at most one of --accept, --dismiss or --unaccept at a \
+             time"
+                .to_string(),
+        );
+    }
+
+    let db = resolve_db_path(option_value(args, "--db", "a path")?)?;
+    let library = Library::open(&db).map_err(|e| format!("opening the library: {e}"))?;
+    let conn = library.conn();
+
+    if let Some(id) = accept_id {
+        let id = parse_proposal_id(id)?;
+        let rule_id = taiyaku_library::proposals::accept(&conn, id)?;
+        println!("accepted proposal {id}: wrote rule {rule_id}");
+        return Ok(());
+    }
+    if let Some(id) = dismiss_id {
+        let id = parse_proposal_id(id)?;
+        taiyaku_library::proposals::dismiss(&conn, id)?;
+        println!("dismissed proposal {id}");
+        return Ok(());
+    }
+    if let Some(id) = unaccept_id {
+        let id = parse_proposal_id(id)?;
+        taiyaku_library::proposals::unaccept(&conn, id)?;
+        println!("un-accepted proposal {id}, and removed the rule it had written");
+        return Ok(());
+    }
+
+    let min_score = match min_score {
+        Some(s) => s
+            .parse::<f64>()
+            .map_err(|_| format!("--min-score needs a number, and `{s}` is not one"))?,
+        None => 0.0,
+    };
+    let open = taiyaku_library::proposals::open(&conn, min_score)
+        .map_err(|e| format!("listing proposals: {e}"))?;
+    if open.is_empty() {
+        println!("no open proposals at or above score {min_score}");
+        return Ok(());
+    }
+    for proposal in &open {
+        println!("{}", proposal_line(proposal));
+    }
+    Ok(())
+}
+
+/// One line of `taiyaku library proposals`' default listing: the id and kind
+/// a `--accept`/`--dismiss`/`--unaccept` call takes, the score
+/// `--min-score` filters on, and `reason` — the human-readable sentence
+/// [`taiyaku_library::proposals::raise`] itself wrote, which already names
+/// the series involved, so this does not have to look them up a second time.
+///
+/// Pulled out as its own pure function for the reason `scan_summary` and
+/// `derive_summary` are: a `println!` inline in `proposals` cannot be
+/// asserted on directly, and the format is exactly the kind of thing that
+/// silently drifts once nothing pins it.
+fn proposal_line(proposal: &taiyaku_library::proposals::Proposal) -> String {
+    format!(
+        "{} [{}] score={:.1}: {}",
+        proposal.id, proposal.kind, proposal.score, proposal.reason
+    )
+}
+
+/// A `--accept`/`--dismiss`/`--unaccept` argument, parsed as the `proposal.id`
+/// it names.
+///
+/// # Errors
+///
+/// Returns an error naming `raw` if it will not parse as an integer.
+fn parse_proposal_id(raw: &str) -> Result<i64, String> {
+    raw.parse::<i64>()
+        .map_err(|_| format!("`{raw}` is not a proposal id (a whole number)"))
 }
 
 /// Export every named work, and report what happened to each.

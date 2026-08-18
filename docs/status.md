@@ -78,7 +78,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Six crates, 986 tests, plus 1,350 in `web/`'s TypeScript — 987 in the `node`
+Six crates, 1190 tests, plus 1,350 in `web/`'s TypeScript — 987 in the `node`
 project and 363 in the `jsdom` one — and sixteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -86,8 +86,30 @@ project and 363 in the `jsdom` one — and sixteen more in a
 the system libsqlite3 rather than bundled — measured at 1 m 43 s to build
 bundled against 3.06 s on a 32-core machine, against a CI with no cargo cache
 and a ten-minute job budget) in the new `taiyaku-library` crate, which
-`taiyaku-serve` also names directly for the slug-to-row bridge, `wasm-bindgen`
-in the binding, `react` and `vite` in `web/`, and `tract-onnx` as a
+`taiyaku-serve` also names directly for the slug-to-row bridge, and `regex` in
+the same crate for the scanner's rule layer's `regex`-kind rules (§4) — no
+backtracking, so a pattern typed into C4's text box cannot produce
+catastrophic behaviour, and already in `Cargo.lock` at 1.13.1 pulled in
+transitively, so naming it here adds a dependency edge rather than a new
+crate to build — and `notify` in the same crate again, for §8 of the scanner
+spec's watch probe: 8.2.0, verified with `cargo add notify --dry-run` on
+2026-08-17, and unlike `regex` this one is genuinely new rather than already
+in `Cargo.lock`, bringing a small subtree with it. **Four crates on Linux**,
+re-measured 2026-08-18 against the merge base: `notify`, `notify-types`,
+`inotify` and `inotify-sys`. The rest of its subtree — `bitflags`, `libc`,
+`log`, `mio`, `walkdir`, `same-file` — was in the lockfile already. Seven new
+package *names* appear in `Cargo.lock` in total, the other three being
+`fsevent-sys`, `kqueue` and `kqueue-sys`, which no Linux build compiles; the
+Windows entries in that diff are second versions of crates already present,
+not new names. This said "sixteen crates on Linux" and no reading of the
+lockfile or of `cargo tree` gives sixteen. Measured rather than assumed: a clean
+`cargo build --workspace --all-targets --all-features` on this same 32-core
+machine cost about 6% more CPU time with it than without (262 against 248
+CPU-seconds) — not run through CI itself, and a 32-core box parallelises a
+build differently than the runner CI actually uses, so that is what was
+measured and nothing is inferred from it about the ten-minute budget —
+`wasm-bindgen` in the binding, `react` and `vite` in `web/`,
+and `tract-onnx` as a
 dev-dependency of `taiyaku-cli` alone, for phase 3's gated measurement — it
 reaches no binary and no other crate. The sixteen run under Vitest's browser
 mode over Playwright's
@@ -101,11 +123,13 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Sixteen of the 986 are standing checks gated on
+`rayon` exactly as `align` already did. Seventeen of the 1190 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs`, three in
 `crates/taiyaku-serve/src/corpus.rs`, two in
-`crates/taiyaku-cli/src/score_corpus.rs` and one in
-`crates/taiyaku-library/src/corpus.rs` — one of which also needs
+`crates/taiyaku-cli/src/score_corpus.rs` and two in
+`crates/taiyaku-library/src/corpus.rs` — the newest of those checking the
+scanner itself, walk through derive, over the corpus's settled material
+(whole-branch review's I9) — one of which also needs
 `TAIYAKU_STUMP_URL` and `TAIYAKU_STUMP_KEY`; each skips cleanly when what it
 needs is absent, so CI stays green without the corpus or a reachable Stump.
 One measures composition
@@ -225,8 +249,8 @@ is not shaped by what can cross the JavaScript boundary.
 
 | Crate | Holds |
 | ----- | ----- |
-| `taiyaku-read` | how a member becomes pages — archives, directories, natural order, page counts, content hashes, one page by index |
-| `taiyaku-library` | the sixth crate, added between `taiyaku-read` and `taiyaku-serve` — a SQLite store: `work`, `edition`, `member`, `alignment` and `run` project a sidecar into rows, and `progress`, `note`, `truth_page`, `truth_box` and `truth_member` hold the per-user state that used to be sibling JSON files — `truth_member` being the digests a page's boxes were drawn *against*, stored rather than re-derived, so `TruthEdition::is_stale_for` can still refuse to score labels whose archives have changed (review 2's C2). `import` reconciles a sidecar against those rows by content identity first and by (canonicalised) `sidecar_path` second, calling `Sidecar::merge_spoke` rather than reimplementing its refusals; `export` projects rows back out to `taiyaku.json` and its siblings, `<stem>.library.json` among them (see `docs/sidecar.md`). A hand correction made through `serve` writes the `alignment` and `run` rows in the same request as the file, through `state::put_alignments` — the fourth `put_*`, beside progress, notes and truth (O43). Only `taiyaku-serve` and `taiyaku-cli` depend on it; `taiyaku-core` and `taiyaku-wasm`, which compile to WebAssembly, must not and do not, since SQLite does not run there. The schema also carries `root` (spec B's scanner, not built), `series`/`collection`/`tag` and per-title FTS (spec C1's browse and search UI, not built), and `series_id`/`volume` on `work`: columns nothing populates yet. `librarydoc.rs`'s series/credit/chapter editing (spec C3, the metadata-editing screen) has no CLI command or HTTP route that lets someone *set* it, which is O44 — `taiyaku.library.json` is the one document designed for hand-editing and there is no route that applies a second one. `migrate.rs` (the whole-branch review's C3 fix — a distinct, coincidentally-numbered thing from the roadmap spec above) is the one caller that reaches `apply`: on a work's first import, if `.progress.json`, `.notes.json`, `.truth.json` or `.library.json` sit beside its sidecar and the database holds no state of that document's own kind yet, each is read back once — rows are current, files are history, so a document the database already holds state for is left alone even when its file still exists. **Once, is a stored fact**: a `migrated_document` row per work per document, written the first time each is considered, so a reader who deletes their last note does not get it back at the next `serve` start, which is what testing emptiness instead did (review 2's C3). That row carries a second fact, `absorbed` — whether this library has ever had the file's *content*, read in here or written out by an export — because "this document is settled" and "the database has authority over the file at that path" are different claims, and `export --in-place` was reading the first as the second (review 3's C1, and schema version 2). A malformed file is reported and skipped rather than failing the import, and is the one outcome that records nothing, so fixing it and importing again still works — and now survives an export in between, which it did not. The import summary gained a word for the same reason: a settled document the database holds nothing for reports `unread` rather than `kept`, whose documented meaning is that the database already held it. Every progress, notes and truth call funnels through one connection behind one mutex, so WAL buys nothing and two different works no longer read in parallel (O42, unmeasured — the file store it replaced had independent I/O per work). **Between processes it buys plenty**, and that is the deployment this exists for: `serve` and `library import` default to the same file, so every connection carries a five-second busy timeout and opens its writes `BEGIN IMMEDIATE` — SQLite runs no busy handler for a deferred transaction promoting to a writer, so before this an import started while the server ran exited 1 on "database is locked" (review 2's I2). Each migration applies inside one transaction that ends by writing the version, so a migration that fails leaves the file exactly as it was rather than half-applied and unopenable (review 2's I1). **The first open of a fresh library is the one that races**, and both ways it could fail are now waited out rather than reported: the version is read a second time inside the migration's own transaction, so two processes that both saw an empty file do not both apply migration 1 (the second used to fail with `table series already exists` — the very message the module names as unrecoverable), and `journal_mode = WAL`, the one statement SQLite runs no busy handler for, is retried for the same five seconds rather than failing on the spot with `database is locked`. Measured before: 14 failures in 48 concurrent first opens, and 12 in 30 runs of the four-way test that now pins it; after: none in 40 runs of the same (review 3's I1) |
+| `taiyaku-read` | how a member becomes pages — archives, directories, natural order, page counts, content hashes, one page by index. It also holds what a *name* and what a container's *bytes* mean, both moved here on the scanner branch so `taiyaku-library` can call them without a second implementation: `volume_number` (marker or first digit run — `inventory`'s, since it is handed a directory that is a volume by construction), `volume_number_marked` and `chapter_number` (marker required, since a rule applies to every filename in a library), and `Format`/`sniff`, which answers what a container is from its first 512 bytes rather than its extension — `scan_entry.format` is sniffed, never derived from a suffix, because a zip named `.cbr` and a RAR named `.cbz` are both routine |
+| `taiyaku-library` | the sixth crate, added between `taiyaku-read` and `taiyaku-serve` — a SQLite store: `work`, `edition`, `member`, `alignment` and `run` project a sidecar into rows, and `progress`, `note`, `truth_page`, `truth_box` and `truth_member` hold the per-user state that used to be sibling JSON files — `truth_member` being the digests a page's boxes were drawn *against*, stored rather than re-derived, so `TruthEdition::is_stale_for` can still refuse to score labels whose archives have changed (review 2's C2). `import` reconciles a sidecar against those rows by content identity first and by (canonicalised) `sidecar_path` second, calling `Sidecar::merge_spoke` rather than reimplementing its refusals; `export` projects rows back out to `taiyaku.json` and its siblings, `<stem>.library.json` among them (see `docs/sidecar.md`). A hand correction made through `serve` writes the `alignment` and `run` rows in the same request as the file, through `state::put_alignments` — the fourth `put_*`, beside progress, notes and truth (O43). Only `taiyaku-serve` and `taiyaku-cli` depend on it; `taiyaku-core` and `taiyaku-wasm`, which compile to WebAssembly, must not and do not, since SQLite does not run there. The schema also carries `collection`/`tag` (spec C1's browse UI, not built). The rest of what used to be listed beside them as unpopulated is spec B's scanner, and `derive.rs` is what populates it: the walk writes `scan_entry`/`dir_state` under a `root` and decides nothing about them, the rule engine maps a `rel_path` onto a series, an edition key, a volume and a chapter, and derivation turns those two into `series`, `series_title` (which is what the per-title FTS indexes, and what `librarydoc::find_series_by_title` looks a series up by, so a series row without one would be invisible to both), and — through `import::scanned`, so `work`/`edition`/`member` keep exactly one writer — the works themselves. `series_id` and `volume` on `work` are the two columns that import cannot write, because `taiyaku.json` has no field for either, so derivation sets them directly; they are also the pair the hub lookup reads back, since `content_key` cannot be computed until the hub is known and the hub must be fixed when the work is created. **A derive opens no file** except to hash a member nothing has hashed yet, and writes that digest back onto `scan_entry` — which is the whole of §2's claim: editing a rule re-derives the library with the tree deleted, and `derive/tests.rs` deletes it to prove there is no other route. Two rules keep that from doing damage. **A scan replaces editions and members and touches nothing else**: `import::scanned` leaves `alignment`, `run` and `page_flag` alone, because a walk cannot know how two editions correspond or which pages are a group's donation cards, and until 2026-08-17 it deleted all three from an empty document on every rescan — so a rescan after an `align --write` dropped hand-corrected runs, and a `library export` in the window wrote a sidecar with no alignments over the reader's own copy. The cost is stated rather than discovered: a rule edit that removes an edition an alignment names leaves that edge dangling, which `runs_of` reports and `quality_of` answers `None` to, so the work still projects and its hub still serves. **A directory is a member only if no ancestor of it is one**: the fact layer records a container and its children alike, so without that test a volume produced a member for itself *and* one per chapter. **The evidence for that used to be a citation of `docs/sidecar.md`'s "7 of 57 archives nesting pages in folders", and that document is measuring something else** — entry names *inside* a zip, which never become `scan_entry` rows at all and so cannot produce a member either way. The on-disk measurement that does support it, taken 2026-08-18 over `corpus/`: 121 directories hold page images directly, and 107 of them sit beneath another that also does — every one under `incoming/`, this corpus's untidied dump, which is exactly the shape a real library arrives in — its pages counted twice, its pieces made editions of nothing, and, where the chapters carry no volume marker, the volume they are plainly inside reported as needing an `attach-chapters` decision. **And only if nothing *inside* it is one either, unless a rule marked it a volume**: a container the rules gave no volume is a name in a path rather than something anybody released, so it stands aside for whatever holds the material — without that half, `Series/Extras/Art Book` counted five pages as ten and three levels gave three members, and taking the container instead (the first fix for it) turned 107 corpus members into 40, collapsing `incoming/bocchi`'s five editions into one 439-page sequence. A container the rules *did* mark as a volume still wins, which is the sentence above: `Series - v01/c001` is a piece of `v01`, not a work beside it. A **page-less** container wins nothing at all — a volume directory holding `.cbz` files takes `pages = Some(0)` from the walk, and it used to suppress the archive that held the pages and then hash to the digest of nothing, so every such directory collided on `content_key` and one row swallowed the rest. **Entries the rules gave neither a volume nor a chapter are keyed individually**, by `rel_path`: keyed on `(series, NULL)` they merged, so `ONE PIECE/001..004` — bare numbers, which `volume_number_marked` deliberately refuses — became one work of 18 concatenated pages, and a volume-less group is therefore addressed by its own member paths rather than by `(series_id, NULL)`, which no longer names one row. A scanned work with a volume also has a **stable address**, `(series_id, volume)`, probed after `content_key` exactly as a document-backed work's `sidecar_path` is: `content_key` hashes the hub edition's member digests, so adding a page, repacking an archive or fixing a scan moved it, the key lookup missed, and a second `work` row was inserted while the reader's progress, notes and history stayed on the first — measured on 2026-08-17, and triggered by the most ordinary events in this corpus. Content still decides first, so a volume whose bytes are unchanged follows them wherever it is renamed or renumbered to, and a duplicated download cannot turn one repeated file into a failed derive of a whole library. **What makes the address probe safe is that order and a counter, not any uniqueness of the address itself**: an address can be vacated and reoccupied — remove volume 1, renumber volume 2 into its place and repack it — and the probe then hands volume 1's row, and a reader's volume-1 position with it, to what was physically volume 2. Without the probe that same scan mints a third row and strands the position outright, so it is a trade made deliberately and `rekeyed` counts every time it fires. What that address probe reconciles is **counted** as `rekeyed`, and what the suppression drops is **counted** rather than dropped in silence: a rule set that accidentally made a series directory speak for its volumes would swallow every one of them, and a report with no number for that reads exactly like a library that happens to hold nothing — the same reason `check-all.sh` refuses to print a bare "all green" when something was skipped. **Any derivation outcome that changes what a person sees and cannot be inferred from the other counts gets a field**, which is the rule `suppressed` and `rekeyed` were built on and which two more now follow: `kept_editions`, editions standing on a work that this derive did not derive — a scan no longer deletes an edition it did not name, since "the scan never saw this" and "a rule edit removed it" are one statement from in there and a deleted hand-aligned edition is unrecoverable while an orphan is visible and fixable — and `merged`, entries that joined an edition another entry had already opened, which is right for the chapters of a volume and wrong for anything else and which derivation cannot always tell apart. A scan is also barred from writing `work.title`, `work.reading`, `work.hub` and `edition.label` over a row that already has them: it derives a title from a filename and a direction from a constant, while a document carries what a person or the aligner established, and `import` + `scan` + `export --in-place` was measured rewriting a reader's own `taiyaku.json` from "Go-Toubun no Hanayome, volume 1" / ltr / "Japanese raw" to "Series - v01" / rtl / "raw". The cost, since nothing records whether a title came from a person or from an earlier derive: a work this scanner minted keeps the title it first derived, so a later rule edit that would rename it does not reach the row. `librarydoc.rs`'s series/credit/chapter editing (spec C3, the metadata-editing screen) has no CLI command or HTTP route that lets someone *set* it, which is O44 — `taiyaku.library.json` is the one document designed for hand-editing and there is no route that applies a second one. `migrate.rs` (the whole-branch review's C3 fix — a distinct, coincidentally-numbered thing from the roadmap spec above) is the one caller that reaches `apply`: on a work's first import, if `.progress.json`, `.notes.json`, `.truth.json` or `.library.json` sit beside its sidecar and the database holds no state of that document's own kind yet, each is read back once — rows are current, files are history, so a document the database already holds state for is left alone even when its file still exists. **Once, is a stored fact**: a `migrated_document` row per work per document, written the first time each is considered, so a reader who deletes their last note does not get it back at the next `serve` start, which is what testing emptiness instead did (review 2's C3). That row carries a second fact, `absorbed` — whether this library has ever had the file's *content*, read in here or written out by an export — because "this document is settled" and "the database has authority over the file at that path" are different claims, and `export --in-place` was reading the first as the second (review 3's C1, and schema version 2). A malformed file is reported and skipped rather than failing the import, and is the one outcome that records nothing, so fixing it and importing again still works — and now survives an export in between, which it did not. The import summary gained a word for the same reason: a settled document the database holds nothing for reports `unread` rather than `kept`, whose documented meaning is that the database already held it. Every progress, notes and truth call funnels through one connection behind one mutex, so WAL buys nothing and two different works no longer read in parallel (O42, unmeasured — the file store it replaced had independent I/O per work). **Between processes it buys plenty**, and that is the deployment this exists for: `serve` and `library import` default to the same file, so every connection carries a five-second busy timeout and opens its writes `BEGIN IMMEDIATE` — SQLite runs no busy handler for a deferred transaction promoting to a writer, so before this an import started while the server ran exited 1 on "database is locked" (review 2's I2). Each migration applies inside one transaction that ends by writing the version, so a migration that fails leaves the file exactly as it was rather than half-applied and unopenable (review 2's I1). **The first open of a fresh library is the one that races**, and both ways it could fail are now waited out rather than reported: the version is read a second time inside the migration's own transaction, so two processes that both saw an empty file do not both apply migration 1 (the second used to fail with `table series already exists` — the very message the module names as unrecoverable), and `journal_mode = WAL`, the one statement SQLite runs no busy handler for, is retried for the same five seconds rather than failing on the spot with `database is locked`. Measured before: 14 failures in 48 concurrent first opens, and 12 in 30 runs of the four-way test that now pins it; after: none in 40 runs of the same (review 3's I1) |
 | `taiyaku-serve` | the HTTP API: works, sidecar, page by index, progress, notes (`<stem>.notes.json`, read and written whole under `If-Match`), an OPDS 1.2 + PSE feed and generated covers, all behind a `PageSource` trait with **two** implementations — local disk, and a composite that resolves each member to disk or, inline within the same type, to Stump (see below). A caching split runs the length of the file: the four routes whose bytes are fixed by a member's `sha256` carry a day's freshness — two of them an `ETag` as well, and the thumbnail and cover neither, since both find the member only inside `spawn_blocking`, too late for a validator to save the work it would be skipping — while every route answering a document this server rewrites carries no freshness at all, on the `304` as well as the `200`, which is the half that is easy to get wrong (O1) |
 | `taiyaku-wasm` | the binding a browser reader loads: parse a sidecar, resolve a slot between editions, and say which path the answer walked |
 | `taiyaku-cli` | the `taiyaku` binary: image decoding, fingerprinting, the content-addressed cache, the HTML report, argument parsing, and duplicate resolution — a copy's signature, the all-pairs judgement over one set, and the inventory walk that finds the sets |
@@ -238,7 +262,7 @@ format cannot detect. The aligner and the server now derive it in one place, and
 a gated corpus check compares all 617 pages of the primary volume across the two
 paths.
 
-Twelve commands:
+Fourteen commands:
 
 ```
 taiyaku align  <a-member>... -- <b-member>...   [--ltr] [--cache DIR] [--stats] [--write FILE [--title NAME] [--name-a KEY] [--name-b KEY] [--direct]] | --no-split-spreads [--stats]
@@ -253,6 +277,9 @@ taiyaku regions <member>...                     --sidecar FILE [--write]
 taiyaku score  <member>...                      --sidecar FILE [--coverage F] | --sample <corpus-root>
 taiyaku library import <taiyaku.json>           [--db PATH]
 taiyaku library export <work>|--all             [--dir DIR|--in-place] [--db PATH]
+taiyaku library scan  [--add PATH] [--root PATH] [--no-derive] [--db PATH]
+taiyaku library rules [--export | --import FILE] [--db PATH]
+taiyaku library proposals [--min-score N] [--accept ID] [--dismiss ID] [--unaccept ID] [--db PATH]
 ```
 
 `align` takes several members on either side, which is how one volume aligns
@@ -341,6 +368,107 @@ file directly; without it the library lives at `$XDG_DATA_HOME/taiyaku/library.d
 falling back to `~/.local/share/taiyaku/library.db`, and the resolved path is
 printed to stderr on open so a person always knows which database a command
 just touched.
+
+`taiyaku library scan [--add PATH] [--root PATH] [--no-derive] [--db PATH]` is
+spec B's scanner reaching a person: it walks every known root — or, under
+`--root`, the one whose canonical path matches — records what it found and, by
+default, goes on to derive series, works, editions and members from those
+facts through `rules.rs`'s engine and raise whatever `proposals.rs` supports
+against the new structure. `--no-derive` stops after the walk, which is what
+makes "what would the facts be" answerable without changing any *structure* —
+the walk itself still writes, `scan_entry` and `dir_state` both, since the
+facts are what it exists to record. What it does not touch is `series`,
+`work`, `edition`, `member` or `proposal`. `scan`
+with neither `--add` nor an existing root refuses, naming `--add`, rather than
+succeeding silently over nothing; `--root PATH` naming no known root refuses
+the same way. Each root's line is §8's report — `watching N directories —
+scanning every 24h`, or a probe failure and the short interval, from
+`watch.rs`'s two-second experiment (write a file, watch for the event) rather
+than a guess from filesystem type — and §8.1's empty-root refusal is per
+root: one that scanned empty while the library still holds entries for it is
+named on stderr and skipped, and the run goes on to the rest exactly as it
+does for an outright scan error (a permission refusal, say) — one root that
+cannot be scanned does not take the others down with it. **It does take the
+exit status down with it**, though, once every root has had its turn: a
+scan whose only root refused used to exit 0 over having done nothing, the
+no-roots refusal's own failure arriving by another door, and this file
+already answered the identical question the other way for `library export`
+— `export_targets` writes what it can, names every failure on stderr, and
+still exits non-zero with a final line saying how many of how many failed,
+"so a script sees it". `scan` now follows that precedent exactly: continue
+and name each failure as it happens, and refuse at the end, naming how many
+of how many, if any root did. What derivation produced prints as one line:
+series, works, editions and members unconditionally, then the proposal count
+— also unconditionally, so `0 proposal(s) raised` is a statement rather than
+a silence — and `unattached chapter directories`, `unreadable`,
+`suppressed`, `rekeyed`, `editions kept` and `merged` only when non-zero.
+Those six are `DeriveReport`'s own counters: a candidate an ancestor
+suppressed, a work whose stable address reconciled it onto a different row
+than its content did, an edition this derive did not name and left standing,
+and two entries that joined one edition. A counter that only ever prints
+when there is nothing to report is exactly the silent failure they exist to
+rule out — and the proposal count was itself an instance of it until the
+whole-branch review's I1, printing an unconditional zero from a second
+`raise` call whose `INSERT OR IGNORE` had nothing left to insert. Two things about it are not measured, per §13 of the
+scanner design: what a scan costs on the deployment host rather than this
+workstation's local disk — `docs/notes.md` has the walk, the sniff and the
+first hash timed here, which is not that — and whether `watch.rs`'s probe
+actually works on Unraid's `shfs`: the design's own §13 has the right
+sentence for what is and is not known here, "it is designed to give a
+correct answer there, not proven to."
+
+`taiyaku library proposals [--min-score N] [--accept ID] [--dismiss ID]
+[--unaccept ID] [--db PATH]` is the surface over §6's inbox
+(`proposals::open`/`accept`/`dismiss`/`unaccept`), added because none of the
+four had a caller outside their own tests before it — two rounds of Critical
+fixes went into an `accept` a person could not invoke (whole-branch review's
+I3). With no action flag it lists every open proposal at or above
+`--min-score` (default the same `0.0` `proposals::open` itself defaults to),
+one line each: id, kind, score and the human-readable `reason` a `raise` call
+wrote. `--accept`/`--dismiss`/`--unaccept` each name a proposal and take the
+one action; at most one of the three may be given at a time. Every refusal
+`proposals::accept` returns reaches stdout unreworded — naming `taiyaku
+align` for an `attach-chapters` proposal it cannot write a rule for, or
+naming exactly what a swallowed directory would have taken — rather than
+being summarised into something vaguer.
+
+**The flat sibling layout raises a proposal that can never be accepted**, and
+that is worth stating rather than leaving to be met. `accept` writes a
+`prefix` rule on `path` derived from the one directory the subject's entries
+share; where a series' own volume directories sit *directly* in the root — the
+shape `Go-Toubun no Hanayome - v01/` beside
+`Go-Toubun no Hanayome - Full Color Edition - v01/` — that shared directory is
+the root itself, and no prefix narrows to only one of them. Measured
+2026-08-18 against the shipped binary on exactly that tree: the scan raises a
+maximum-score `edition-of` proposal (2.0, both signals) and accepting it
+refuses with "this series' files sit directly in the root, so a `path` prefix
+rule cannot narrow to only them". The refusal is correct — the alternative is
+an accepted proposal whose rule decides nothing, or one that re-series the
+whole root — but it means the layout that motivated the edition-key half of
+the fix is one the inbox can propose and never apply. A `regex` rule written
+by hand is the answer today, and a rule kind narrower than a path prefix is
+what would change it.
+
+`taiyaku library rules [--export | --import FILE] [--db PATH]` reads or
+replaces §4's rule set — an ordered, user-editable list mapping a `rel_path`
+onto a series, an edition key, a volume and a chapter, seeded with four
+defaults on migration 3 and reachable no other way yet, since spec C4's
+editor is not built. `--export`, or no flag at all, prints every rule as
+JSON with the database's own row id left out — it names nothing once the
+document moves to another host — and a rule scoped to one root is exported
+by that root's own canonical path rather than its `root_id`, for the same
+reason: a bare id would either miss on another host's `root` table or, worse,
+silently land on whatever tree happens to hold that id there. `--import FILE`
+**replaces** the whole set with what the file describes rather than layering
+it over what is there, so importing the same four defaults twice cannot
+double them, which matters the day someone has actually edited one — and a
+rule whose path names no root this library has is refused outright, naming
+the ordinal and the path, rather than silently scoping to every root or
+handing back SQLite's own foreign-key error. Two more things §13 could
+not measure: `proposals.rs`'s edition-of score rests on a roughly-20-to-17
+hand classification of one library, made from knowing those series rather
+than reproducible from data, and whether the four defaults this ships with
+suit anyone else's library was never asked of a second one.
 
 `inventory` and `duplicates` are the two halves of deciding which of several
 copies of one volume to keep, and **neither of them moves, renames or deletes
@@ -574,12 +702,18 @@ alternative that lost.
   97.49% statements, 93.99% branches, 99.10% functions, 99.17% lines —
   re-measured 2026-08-14, having been set against 98.03/94.38/99.29/99.53, so
   the statements margin is 1.49 rather than the two points the rule asks. Rust:
-  `--fail-under-lines 93` under a measured 93.95% with eleven files ignored —
-  71.46% without them, a difference that is exclusions rather than work — plus a
-  **per-file floor of 57% lines** under a lowest measured 73.68%
-  (`taiyaku-serve/src/truth.rs`) and a **minimum of 32 files** against 43 in
-  the report. Those four Rust figures are implementation-only and were
-  re-measured on 2026-08-14, when the test modules moved out of the files they
+  `--fail-under-lines 93` under a measured **93.64%** with twelve files ignored,
+  plus a **per-file floor of 57% lines** under a lowest measured **78.75%**
+  (`taiyaku-serve/src/lib.rs`) and a **minimum of 40 files** against **60** in
+  the report — all four recomputed from `target/rust-coverage.json` on
+  2026-08-18 under the gate's own ignore regex, having read 93.95%, 73.68% on
+  `truth.rs`, 32 and 43 for long enough that none of them was true any more.
+  The gate was green throughout, because every one of those thresholds is
+  derived by `scripts/coverage-floor.mjs` from the data rather than typed in
+  beside this prose — which is precisely how the prose went stale without
+  anything failing, and precisely what this file warns about elsewhere. Those
+  four Rust figures are implementation-only and were first re-measured on
+  2026-08-14, when the test modules moved out of the files they
   test and stopped counting as their coverage; the same bullet read 95.75%,
   87.59%, 59.44% and 37 while they were inline, over a report of which roughly
   two thirds was test code measuring itself. **The aggregate's margin was 68
@@ -1085,7 +1219,7 @@ both are waiting on L2.
 
 ### Open items
 
-Forty-four, each found by a whole-branch review, carried as a deferral,
+Fifty-three, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -1101,7 +1235,7 @@ are tracked here rather than left in a scratch file so that closing one is a
 visible act rather than a thing someone remembers. **Thirty-three are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
 O21, O22, O25, O26, O27, O28, O29, O30, O34, O35, O36, O37, O38, O39, O40 and
-O43 — leaving eleven.**
+O43 — leaving twenty.**
 
 *O41 had a prose bullet below and no row in the table until O40 closed, so this
 sentence said "Forty-one … leaving ten" against a table holding forty rows and
@@ -1177,6 +1311,15 @@ each is in the detail below; the table is what a reader scans.
 | O42 | [ ] | Every progress, notes and truth call in the library funnels through one connection behind one mutex, so WAL buys nothing and two different works no longer read in parallel — *unmeasured; the file store it replaced had independent I/O per work* | `taiyaku-library/src/lib.rs::Library`, `conn()` | the library store, Task 13 review |
 | O43 | [x] | A hand correction through the alignment editor writes the sidecar file and the in-memory `Work`, but never `state.library` — confirmed by reading the handler end to end, twice, and by grepping it and `Work::update` for any reference to `state.library`: none. Unlike notes, progress and truth, whose `store` functions call `taiyaku_library::state::put_notes`/`put_progress`/`put_truth`, there is no `put_alignment`-shaped function for it to have called. So a correction is invisible to the database — and to `library export`, and to any second `serve` process sharing the same database — from the moment it is made until the next import or `serve` restart re-reads the file it did land in — *closed by giving alignments the function the other three already had: `taiyaku_library::state::put_alignments`, reached through a `taiyaku-serve/src/alignments.rs` bridge that mirrors `progress.rs`/`notes.rs`/`truth.rs`. The handler now writes the file, then the rows, then memory, all inside the `Work::update` that `If-Match` is checked in. The one thing that had to be got right is lock order: `list_works` holds the library mutex across a `work.sidecar()` read, so the connection is taken **before** `update` rather than inside it, and `works::row_id_for_document` exists because `work.sidecar()` under `update`'s own write guard would deadlock on a non-reentrant `RwLock`* | `taiyaku-serve/src/routes.rs::patch_alignments`, `taiyaku-serve/src/alignments.rs::store`, `taiyaku_library::state::put_alignments` | the library store whole-branch review |
 | O44 | [ ] | `taiyaku.library.json` is the one document this project designs for hand-editing, and after a work's first import there is no route that applies a hand edit to it — `migrate` reads a sibling document once per work and records that it did (settled, and deliberate), and `librarydoc::apply` has no CLI command and no HTTP route. So the only way to make a hand edit take is a fresh `--db`. The same gap is why `librarydoc::forget_orphaned_series` is unreachable from any production path today: nothing applies a second document over a work | `taiyaku-library/src/librarydoc.rs::apply`, with no caller outside `migrate::apply_library` | the review of review 3's Minor fixes, M8 |
+| O45 | [ ] | `dir_state` is written on every scan for every directory and read by nothing — the migration's own comment says it is what an interval scan compares, and `scan.rs`'s doc says the saving is `(size, mtime)` on `scan_entry`. So the table is the design's §8 cheap walk, present and unused; the comment cannot be corrected because it sits inside a `CREATE TABLE` and therefore lands in `sqlite_master`, and migrations here are append-only | `taiyaku-library/src/scan.rs::record`, `schema/003_scanner.sql`'s `dir_state` | the scanner whole-branch review, Minor 2 |
+| O46 | [ ] | `derive`'s `unreadable` counts every sidecar JSON under a root — *measured: 22 `taiyaku*.json` files in `corpus/` outside dot-directories, each sniffing to no known signature and so failing `is_readable`* — so a library following this project's own sidecar convention reports one "unreadable" per work directory as though something were wrong. The counter's doc is literally true ("for want of readable bytes") and the operator-facing reading is not. Whether the right answer is a fifth situation in the doc, an exclusion, or a separate counter is a decision, and changing it moves the corpus figures in `docs/notes.md` | `taiyaku-library/src/derive.rs::admit`, `DeriveReport::unreadable` | the scanner whole-branch review, Minor 3 |
+| O47 | [ ] | `add_root` accepts a root nested inside, or containing, an existing one, and the second scan then admits the same directory **twice as two members of one work** — *measured 2026-08-18 on a scratch tree: `--add lib`, then `--add lib/Series`, gives member ordinals 0 and 1 with the identical path and the identical sha256, and the work's page total goes from 3 to 6. Member order is page order, so the reader sees every page twice.* The report says `1 merged`, which is true and does not say that the two entries are one directory. Easy to reach by hand and nothing refuses it | `taiyaku-library/src/scan.rs::add_root` | the scanner whole-branch review, Minor 4 |
+| O48 | [ ] | §8.1's empty-root refusal fires only at `seen.len() <= 1`, so a share that mounts one directory deep — or ninety-nine per cent unmounted — is applied silently and `forget_unseen` drops the rest. The reasoning that justifies the refusal at 100% applies just as well at 99%; what it needs is a threshold nobody has chosen and no measurement behind one | `taiyaku-library/src/scan.rs::scan_root`, the `held > 1` refusal | the scanner whole-branch review, Minor 6 |
+| O49 | [ ] | `marked_number` strips exactly one separator between a marker and its digits, so `Ch.  7` (two spaces) is not a chapter. The loose fix (`trim_end_matches`) was settled against in Task 1 for a reason that no longer holds — the word-boundary guard added afterwards is what stops `Scan by ABC 2019` reading as chapter 2019 — but loosening it now would move the kanji-counter survey figures this branch measured, so it is a decision with a re-measurement attached | `taiyaku-read/src/naming.rs::marked_number` | the scanner whole-branch review, Minor 9 |
+| O50 | [ ] | `library export --all --in-place` exits non-zero on any library holding scanned works: `export::work` refuses a work with no `sidecar_path` on record, `export_targets` counts it as a failure, and a work derivation minted has no such path by construction. So the mixed library — some works imported from a `taiyaku.json`, some found by a scan — is exactly the case the command cannot complete. Whether a scanned work should be skipped, or should get a sidecar written beside its hub member, is a decision | `taiyaku-cli/src/library.rs::export_targets`, `taiyaku-library/src/export.rs::work` | the scanner whole-branch review, Minor 11 |
+| O51 | [ ] | Nothing acts on the watch probe's answer. `watch.rs` decides whether a root can be watched and reports the interval that answer implies, but `scan_root` never writes `root.last_scan_at` or `last_scan_status` — both columns exist in migration 1 — and no caller schedules a rescan, so the tiers §8 designs are computed, printed, and honoured by nothing. The scheduler belongs with project 2's job runner; what is missing here is the two columns the scanner could fill today | `scan.rs::scan_root`, `root.last_scan_at` | spec B's whole-branch review |
+| O52 | [ ] | Taking filesystem I/O out of the write transaction fixed **cross-process** contention only. `Library::conn()` hands out a `MutexGuard`, so whichever caller holds it holds it across the whole walk and the whole resolve pass — *and that cannot be fixed by a function taking `&Connection`*, which is what `scan_root` is. Reachable the moment `serve` and a scan share one process | `lib.rs::conn`, `scan.rs::scan_root` | spec B's whole-branch review |
+| O53 | [ ] | `librarydoc::apply`'s `Step::Apply` is unreachable for any work a scan has touched — `librarydoc::of` reads non-empty the moment a work has a derived volume or series, so the branch that applies a hand-edited `taiyaku.library.json` is never taken. O44 records that nothing *calls* `apply`; this is narrower and worse, because the one caller that exists cannot reach the step that does the work. The I7 fix works through the marker `export::work` sets, a real but different path | `librarydoc.rs::of`, `migrate::work`'s `Step::Apply` | spec B's Task 12, while fixing I7 |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -3421,9 +3564,10 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the eleven open items tabled above — nine of them found by a
+What remains: the twenty open items tabled above — eighteen of them found by a
 whole-branch review or by the review of one's own fixes (O42 and O44 among
-them), now that O1 (found by one,
+them, and O45 through O53 all from the scanner branch's own whole-branch
+review or from a fix round inside it), now that O1 (found by one,
 closed by removing the round
 trip its own entry was arguing about), O12 (carried rather than found), O14
 (found by one, closed by M5b), O26 (found by one, closed on its own branch),

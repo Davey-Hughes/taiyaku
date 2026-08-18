@@ -383,3 +383,131 @@ fn deleting_a_work_takes_its_editions_and_members_with_it() {
         .expect("counting members");
     assert_eq!(members, 0, "the member should have gone with its work");
 }
+
+#[test]
+fn migration_three_creates_the_scanner_tables_and_seeds_the_default_rules() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    migrate(&conn).expect("migration");
+
+    let names = table_names(&conn);
+    for expected in ["dir_state", "proposal", "rule", "scan_entry"] {
+        assert!(
+            names.contains(&expected.to_string()),
+            "missing table `{expected}`: {names:?}"
+        );
+    }
+
+    let rules: i64 = conn
+        .query_row("SELECT count(*) FROM rule", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(rules, 4, "§4's four defaults, seeded as ordinary rows");
+
+    let kinds: Vec<String> = conn
+        .prepare("SELECT kind FROM rule ORDER BY ordinal")
+        .expect("prepare")
+        .query_map([], |r| r.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert_eq!(
+        kinds,
+        ["regex", "builtin-volume", "builtin-chapter", "regex"]
+    );
+}
+
+/// `scan_entry`'s `UNIQUE (root_id, rel_path)` — one row per path per root,
+/// whatever changes about the file at it.
+///
+/// **Nothing tested any scanner constraint**; the test above checks table
+/// names and a rule count. Widening this key — to include `size`, say —
+/// leaves every test in the workspace green, because `scan.rs` never relies
+/// on it: `record` chooses `INSERT` or `UPDATE` from `held_for`'s own
+/// `(root_id, rel_path)` lookup, so a file that merely changed size takes
+/// the `UPDATE` branch either way and no duplicate is ever offered to
+/// SQLite. That makes this an invariant nothing in the crate currently
+/// enforces from the other side — which is a reason to pin it here, not a
+/// reason it does not matter: it is what a second writer, or a future upsert
+/// written as `ON CONFLICT`, would be relying on, and it is the constraint
+/// that makes `forget_unseen`'s `held` map a complete picture of a root.
+///
+/// Migration 3 is applied and this file is append-only, so the constraint
+/// can only be checked, never corrected.
+#[test]
+fn one_scan_entry_row_per_path_per_root_whatever_changes_about_the_file() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys");
+    migrate(&conn).expect("migration");
+
+    conn.execute("INSERT INTO root (id, path) VALUES (1, '/library')", [])
+        .expect("root");
+    conn.execute(
+        "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
+         VALUES (1, 'Series/v01.cbz', 'file', 'zip', 100, 1)",
+        [],
+    )
+    .expect("the first row");
+
+    let again = conn.execute(
+        "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
+         VALUES (1, 'Series/v01.cbz', 'file', 'zip', 200, 2)",
+        [],
+    );
+    let err = again.expect_err("a second row for the same path must be refused");
+    assert!(
+        err.to_string().to_lowercase().contains("unique"),
+        "refused by the UNIQUE constraint rather than by something else: {err}"
+    );
+
+    // The same path under a *different* root is a different fact and must
+    // still be admitted — a key of `rel_path` alone would refuse it.
+    conn.execute("INSERT INTO root (id, path) VALUES (2, '/second')", [])
+        .expect("second root");
+    conn.execute(
+        "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
+         VALUES (2, 'Series/v01.cbz', 'file', 'zip', 100, 1)",
+        [],
+    )
+    .expect("the same path under another root is its own row");
+
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM scan_entry", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(rows, 2);
+}
+
+#[test]
+fn a_dismissed_proposal_is_not_raised_again_when_its_target_is_null() {
+    // SQLite treats NULLs as distinct in a UNIQUE constraint, so a plain
+    // `UNIQUE (kind, subject_id, target_id)` would let every rescan insert a
+    // second `attach-chapters` row for the same directory — and §6's whole
+    // argument is that dismissal has to persist or the inbox becomes noise.
+    // The expression index is what closes that.
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    // `migrate` does not set this and the insert below crosses a foreign key.
+    // Same line, for the same reason, as `two_members_cannot_share_an_ordinal
+    // _within_an_edition` above.
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys");
+    migrate(&conn).expect("migration");
+    conn.execute(
+        "INSERT INTO series (id, sort_title) VALUES (1, 'Series')",
+        [],
+    )
+    .expect("series");
+    let insert =
+        "INSERT OR IGNORE INTO proposal (kind, subject_id, target_id, score, reason, state)
+                  VALUES ('attach-chapters', 1, NULL, 0.5, 'because', ?1)";
+    conn.execute(insert, ["dismissed"]).expect("first");
+    conn.execute(insert, ["open"]).expect("second");
+
+    let (count, state): (i64, String) = conn
+        .query_row(
+            "SELECT count(*), max(state) FROM proposal WHERE kind = 'attach-chapters'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("select");
+    assert_eq!(count, 1);
+    assert_eq!(state, "dismissed", "the dismissal survived the rescan");
+}

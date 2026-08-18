@@ -655,7 +655,7 @@ fn the_inventory_finds_every_duplicate_set() {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            crate::inventory::volume_number(&name)
+            taiyaku_read::volume_number(&name)
                 .unwrap_or_else(|| panic!("no volume number parsed from `{name}`"))
         })
         .collect();

@@ -39,6 +39,20 @@ fn reading_a_seven_zip_archive_says_so() {
     assert!(error.contains("7-Zip"), "unhelpful error: {error}");
 }
 
+/// A PDF is named rather than reported as a corrupt zip, the same way a
+/// 7-Zip archive is. New with the scanner's sniffer: `unsupported_container`
+/// recognised three formats before it and recognises four now.
+#[test]
+fn reading_a_pdf_says_so() {
+    let path = std::env::temp_dir().join("taiyaku-test-container.pdf");
+    std::fs::write(&path, b"%PDF-1.7\n").unwrap();
+
+    let error = read_member(&path).unwrap_err();
+
+    let _ = std::fs::remove_file(&path);
+    assert!(error.contains("this is a PDF"), "{error}");
+}
+
 /// Extensions lie in both directions: a zip is often named `.cbr`, and a
 /// real 7-Zip archive is often named `.cbz`. Reporting "invalid Zip
 /// archive: could not find EOCD" to someone holding a perfectly good
@@ -51,12 +65,14 @@ fn an_unreadable_container_is_named_by_its_leading_bytes() {
     let rar4 = b"Rar!\x1a\x07\x00";
     let mut tar = vec![0u8; 512];
     tar[257..262].copy_from_slice(b"ustar");
+    let pdf = b"%PDF-1.7\n";
     let zip = [0x50, 0x4B, 0x03, 0x04, 0x14, 0x00];
 
     assert_eq!(unsupported_container(&seven_zip), Some("a 7-Zip archive"));
     assert_eq!(unsupported_container(rar5), Some("a RAR archive"));
     assert_eq!(unsupported_container(rar4), Some("a RAR archive"));
     assert_eq!(unsupported_container(&tar), Some("a tar archive"));
+    assert_eq!(unsupported_container(pdf), Some("a PDF"));
     // Zip is supported, so it is not something to complain about.
     assert_eq!(unsupported_container(&zip), None);
 }
