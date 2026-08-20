@@ -115,7 +115,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Six crates, 1338 tests, plus 1,391 in `web/`'s TypeScript — 1,002 in the `node`
+Six crates, 1339 tests, plus 1,391 in `web/`'s TypeScript — 1,002 in the `node`
 project and 387 in the `jsdom` one — and sixteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -164,7 +164,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Seventeen of the 1338 are standing checks gated on
+`rayon` exactly as `align` already did. Seventeen of the 1339 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs`, three in
 `crates/taiyaku-serve/src/corpus.rs`, two in
 `crates/taiyaku-cli/src/score_corpus.rs` and two in
@@ -1139,10 +1139,14 @@ clears the bar is the one finding no text".
 
 **Mutation testing has a harness since 2026-08-19, and it is not a gate.**
 `scripts/mutants.sh` is the entry point — `--since main` for a branch,
-`--crate`, `--file`, or the whole workspace — `mutants.toml` holds the config,
-and `.forgejo/workflows/mutants.yml` runs the sweep weekly while **gating
-nothing**. Two reasons it cannot be a gate: **3 h 12 m** against
-`check-all.sh`'s eleven seconds, and 45 known survivors deferred behind L2, which would make it
+`--crate`, `--shard`, `--file`, or the whole workspace — `.cargo/mutants.toml` holds
+the config, and `.forgejo/workflows/mutants.yml` sweeps **one crate at a time,
+sharded, dispatched by hand**, while **gating nothing** — `docs/mutants-baseline.md`
+carries the dated log of when each sweep happened, which is what tells you one is
+overdue. A full sweep is ~9.5
+hours of runner time: 3,191 mutants at 3 h 12 m locally, and the runner is 3x
+slower. Two reasons it cannot be a gate: **3 h 12 m** against
+`check-all.sh`'s eleven seconds, and 92 untriaged survivors, which would make it
 red on a clean tree for a correct reason — and a job that is red by default
 teaches you to skip it. The shape is copied from `plaintextesports`'s
 `live-smoke.yml`, the only other scheduled workflow across `~/projects`.
@@ -1150,8 +1154,8 @@ teaches you to skip it. The shape is copied from `plaintextesports`'s
 **`docs/mutants-baseline.md` is what makes the output readable, and it is the
 part the roadmap entry did not ask for.** It records the survivors that have
 been looked at and accepted, each with its reason, and `scripts/mutants.sh`
-reports only what is *not* in it. Without that, the weekly job prints the same
-45 known survivors every week and the one new entry is invisible among them. It
+reports only what is *not* in it. Without that, every run prints the same
+92 untriaged survivors and the one new entry is invisible among them. It
 is also the only memory this project keeps of what has already been checked —
 which is the thing four whole-branch reviews of spec A2 could not do. Coverage
 records which lines ran; the baseline records which lines have an assertion
@@ -1308,7 +1312,7 @@ both are waiting on L2.
 
 ### Open items
 
-Fifty-eight, each found by a whole-branch review, carried as a deferral,
+Fifty-nine, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -1324,7 +1328,7 @@ are tracked here rather than left in a scratch file so that closing one is a
 visible act rather than a thing someone remembers. **Thirty-three are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
 O21, O22, O25, O26, O27, O28, O29, O30, O34, O35, O36, O37, O38, O39, O40 and
-O43 — leaving twenty-five.**
+O43 — leaving twenty-six.**
 
 **What spec A2's fourth review reported and nobody has verified.** Four rounds
 returned fifteen findings each. Round four's fifteen were: two fixed as security
@@ -1439,6 +1443,7 @@ each is in the detail below; the table is what a reader scans.
 | O56 | [ ] | A member directory whose *contents* change without an entry being added or removed keeps its old digest, because `unchanged` compares `(size, mtime)` and a directory's mtime does not move when the bytes inside an existing child change — nor does its size, which is a block count whether it holds three pages or five. So replacing a page in place, or rebuilding a volume inside one second, is invisible to a rescan. **Found by CI rather than by a review**: two of spec B's own tests (`a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive`, `a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress`) depend on the rescan seeing exactly this and passed fifteen times running locally while failing on the runner. Both now stamp the directory forward rather than racing the clock, which fixes the tests and leaves the behaviour they were unintentionally relying on. Whether the walk should hash a directory's children rather than trust its stamp is spec B's §8 trade — the cheap walk exists to avoid opening containers — so this is a decision with a measurement attached rather than a defect to patch | `taiyaku-library/src/scan.rs::unchanged`, `derive.rs::member_digest` | CI on the `library-auth` branch, 2026-08-19 |
 | O57 | [ ] | **The rate limiter bounds the sustained flood and not the burst.** Both credential paths check their counters and *then* do the argon2 work, so requests arriving together all read the same under-ceiling count and all proceed: `spawn_blocking`'s pool is 512 by default and argon2id at m=19456 KiB allocates 19 MiB per verify, so one concurrent burst is ~9.5 GiB of transient buffer on a host chosen for being small. Bounded per window by `ADDRESS_LOCKOUT_AFTER` once the first failures land, which is what makes the ten-thousand-request flood stop; a single burst is what remains. Increment-then-check does not fix it — an OPDS client presents Basic on every page request, so metering successes would lock a reader out of their own library — which leaves a semaphore capping concurrent verifies as the fix, and the cap is a number nobody has measured on the host that will run this. **Left open rather than guessed at**, because §14's argon2-cost measurement on the NAS is the evidence it needs and that measurement is still outstanding | `auth.rs::from_basic`, `session.rs::login`, `credential::M_COST_KIB` | the fourth whole-branch review, while fixing the address key |
 | O58 | [ ] | **The two routes that write shared documents take no principal, so an API key can rewrite them.** `patch_alignments` and `put_truth` are declared `(State, AxPath, HeaderMap, Bytes)` — no `Principal`, no `Extensions` — so neither can tell a browser session from a device credential. The guard requires *a* credential and `refuse_a_device_credential` narrows only the six account routes, which is where the third review put it. §2 argues a key is the thing an OPDS client presents for every page of a volume and hashes it fast on that basis; a key typed into a third-party reader can therefore silently rewrite the alignment and truth documents **every** reader sees, and those are shared rather than per-account. Verified by reading both signatures, 2026-08-19. **Left open as a decision rather than fixed as a defect**: whether editing content counts as administering is a design call the spec does not make, an offline native reader is a legitimate future caller, and the fix wants C4's permission model rather than a sixth `refuse_a_device_credential` beside the others | `routes.rs::patch_alignments`, `routes.rs::put_truth`, `session.rs::refuse_a_device_credential` | spec A2's fourth whole-branch review |
+| O59 | [ ] | **Two `derive` tests fail under mutation for environmental reasons, which credits mutants nothing deliberately catches.** `a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress` and `a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive` fail when cargo-mutants runs them in its copied tree and pass under the same mutation applied in place — verified by hand both ways on 2026-08-20. So `mtime_secs`'s three constant mutants were recorded **caught** by the local sweep and **missed** by the forge, and nothing anywhere was testing the property: `scan::tests::a_files_modification_time_reaches_its_scan_entry` now does, deterministically, and kills all three in both environments. This is the same pair O56 is written about and the same pair that raced a one-second clock in CI two days earlier, so the sensitivity was known; **what is new is that it inflates a measurement rather than just failing.** The residual is that any other mutant these two tests happen to fail under is credited the same way, and the local sweep's caught counts cannot distinguish those. Whether the fix is making the two tests independent of their tree or narrowing what they assert is a spec B decision | `taiyaku-library/src/derive/tests.rs`, `scan.rs::mtime_secs` | the first sharded run of `mutants.yml`, on the forge |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -3694,10 +3699,10 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the twenty-five open items tabled above — twenty of them found by
+What remains: the twenty-six open items tabled above — twenty-one of them found by
 a whole-branch review or by the review of one's own fixes (O42 and O44 among
 them, O45 through O53 all from the scanner branch's own whole-branch
-review or from a fix round inside it, and O57 and O58 from spec A2's fourth), and
+review or from a fix round inside it, O57 and O58 from spec A2's fourth, and O59 from the mutation workflow's first sharded run), and
 O54 and O55 opened
 by spec A2 on shipping rather than found by a review at all: one is a
 deliberately-taken O45 shape and the other is a screen promising something no
@@ -4359,26 +4364,28 @@ mismatched pair said nothing at all.
   `docs/mutants-baseline.md` says so in its entry, and that entry becomes wrong
   on the same day.
 
-- **Watch `mutants.yml`'s first real run, which has never happened.** The
-  workflow was written, its three tarball checksums computed from the artefacts
-  it names, and its container-plus-JS-action trap avoided — but **it has not
-  executed once.** Forgejo does not offer `workflow_dispatch` for a workflow
-  that is not yet on the default branch, so its first run is either the Sunday
-  after it merges or a manual dispatch immediately after. Dispatch it rather
-  than waiting: a scheduled job that fails unattended, weekly, in a workflow
-  whose whole argument is that nobody reads a job they have learned to skip, is
-  the one outcome worth spending five minutes to rule out.
+- **`taiyaku-cli` has not been swept since its exclusions landed, and deciding
+  when to sweep anything is now a judgement rather than a cron.**
+  `mutants.yml` ran six times on 2026-08-20 and every one of the first five
+  failed — glibc, the runner's own ceiling, zero-based shards, a config file at
+  the wrong path, an unbounded process count — each hidden behind the one before
+  it, none findable by reading the file. The sixth was green. That is the record
+  of what dispatching it by hand bought, and it is the argument for doing so
+  before trusting any workflow that has never executed.
 
-  What to check: that the three installs land (cargo-mutants 27.1.0,
-  cargo-nextest 0.9.140, node 26.7.0 — all checksummed, all likely to be the
-  first thing to rot), that `scripts/mutants.sh` finds `node`, and that the
-  final line reads `no survivor outside the baseline` rather than a list. The
-  210-minute per-crate timeout is three times the slowest crate measured
-  locally (`cli`, 68 m) and has never been measured on the runner; if the real
-  figure lands anywhere near it, that is a number to correct rather than a bound
-  that worked. It was 260 minutes for a single whole-workspace job until the
-  first full sweep showed that to be 1.35x the real cost rather than the 6x its
-  comment claimed.
+  What is left is two things. **`taiyaku-cli` was stopped partway through the
+  re-sweep**, so its 84 survivors are the 2026-08-19 figures taken before
+  `detect.rs` and `regions.rs` were excluded; `docs/mutants-baseline.md`'s run
+  log says so rather than letting them read as current. Sweeping it is one
+  dispatch of `taiyaku-cli`, five shards, and the log wants a row afterwards.
+
+  **And there is no schedule**, deliberately — the forge's host is an 8-core
+  machine at a load average around 16 carrying 68 containers, and a sweep is
+  hours of build-and-test. So nothing will tell you a sweep is due except that
+  run log. Read it when a crate has had real work done to it, or when something
+  makes the suite suspect. A long gap there is the signal the cron would have
+  been standing in for, and the failure mode this entry exists to name is that
+  nobody ever looks.
 
 - **The page cache used to follow the working directory. Shipped 2026-08-11**
   on `serve-cache-root`; `docs/superpowers/specs/2026-08-11-serve-cache-root-design.md`

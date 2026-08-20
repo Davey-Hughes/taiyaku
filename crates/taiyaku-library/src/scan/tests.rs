@@ -600,3 +600,71 @@ fn an_unchanged_container_is_not_reopened() {
          only a scan that did not reopen the file still says zip"
     );
 }
+
+/// **A file's modification time reaches the scan entry, and is the file's
+/// own.**
+///
+/// `mtime_secs` could be replaced with the constant `0`, `1` or `-1` and every
+/// test in the workspace still passed — found by the first sharded run of
+/// `.forgejo/workflows/mutants.yml` on 2026-08-20, on the forge rather than
+/// here.
+///
+/// **It was recorded as caught by the local sweep, and that was the more
+/// interesting half.** Two `derive` tests
+/// (`a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress`
+/// and `a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive`) fail
+/// under the mutant when cargo-mutants runs them in its copied tree, and pass
+/// under the same mutant applied in place — verified by hand both ways. They
+/// are the same pair that raced a one-second clock in CI earlier that week and
+/// the pair O56 is written about, so their environment-sensitivity was already
+/// known; what is new is that it was **inflating the mutation score**, marking
+/// a mutant caught that nothing deliberately catches.
+///
+/// So this asserts the property directly instead: a known mtime, set on the
+/// file rather than waited for, read back through `measure`. No clock, no
+/// second-resolution race, no dependence on which directory the tree was
+/// copied into.
+#[test]
+fn a_files_modification_time_reaches_its_scan_entry() {
+    let dir = crate::tests::tempdir("scan-mtime");
+    // A member is a *directory* of pages, which is why its mtime is the field
+    // `unchanged` compares — and why O56 exists: a directory's stamp does not
+    // move when the bytes inside an existing child change.
+    let volume = dir.path.join("Series").join("Series - v01");
+    write_pages(&volume, 2);
+
+    // A fixed instant well clear of both zero and now, so none of the three
+    // constants the mutants use can coincide with it: 2001-09-09T01:46:40Z.
+    // **Set rather than waited for** — the point of this test is that it does
+    // not race a one-second clock the way the two `derive` tests did.
+    const STAMPED: i64 = 1_000_000_000;
+    let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(STAMPED as u64);
+    std::fs::File::open(&volume)
+        .expect("opens the member directory")
+        .set_times(std::fs::FileTimes::new().set_modified(when))
+        .expect("stamps it");
+
+    let (measured, complaints) = measure(&dir.path, 0).expect("measures the tree");
+    assert!(
+        complaints.is_empty(),
+        "unexpected complaints: {complaints:?}"
+    );
+
+    let entries = flatten(&measured);
+    let member = entries
+        .iter()
+        .find(|seen| seen.rel_path.ends_with("Series - v01"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the member is not in the walk; saw {:?}",
+                entries.iter().map(|e| &e.rel_path).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        member.mtime, STAMPED,
+        "the scan entry carries a modification time that is not the member's; a \
+         constant here makes every rescan see an unchanged tree, because \
+         `unchanged` compares (size, mtime)"
+    );
+}

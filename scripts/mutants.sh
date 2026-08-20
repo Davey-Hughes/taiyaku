@@ -4,15 +4,18 @@
 #   scripts/mutants.sh                       # the whole workspace — 3 h 12 m, measured 2026-08-19
 #   scripts/mutants.sh --since main          # only code this branch touched — the usable one
 #   scripts/mutants.sh --crate taiyaku-serve # one crate
+#   scripts/mutants.sh --crate taiyaku-cli --shard 0/5   # one slice (k is zero-based)
 #   scripts/mutants.sh --file 'crates/**/auth.rs'   # one file, repeatable
 #   scripts/mutants.sh --baseline            # rewrite docs/mutants-baseline.md from this run
 #
 # **This is not a gate and must not become one.** `check-all.sh` mirrors CI and
-# is meant to be runnable before every push; the workspace sweep is **3,191
-# mutants at 3 h 12 m** (2026-08-19), three orders of magnitude past that
-# budget. It runs weekly in `.forgejo/workflows/mutants.yml`, gating nothing —
-# one job per crate, because a three-hour job is a bound nobody can set
-# honestly and a failure in it names nothing.
+# is meant to be runnable before every push; the workspace sweep was **3,191
+# mutants at 3 h 12 m** (2026-08-19) and is 2,984 since `detect.rs` and
+# `regions.rs` were excluded, three orders of magnitude past that budget. It is
+# dispatched by hand from `.forgejo/workflows/mutants.yml`, gating nothing, one
+# job per shard — a three-hour job is a bound nobody can set honestly and a
+# failure in it names nothing. `docs/mutants-baseline.md` logs when each sweep
+# happened, which is what tells you one is overdue.
 #
 # The figure was 1,660 mutants at 43 minutes until 2026-08-19, and that was
 # August's, taken before spec B's scanner and spec A2's auth nearly doubled the
@@ -22,9 +25,11 @@
 # --- What the baseline is for -------------------------------------------------
 #
 # A survivor list is only actionable if you can tell a new one from an old one.
-# 45 mutants in `detect.rs` and `regions.rs` are known survivors deferred until
-# L2 redesigns the detector, and a run that reports them every time trains you to
-# skim the output — which is the same failure as a CI job that is red by default.
+# 92 of the 105 entries in it are untriaged, and a run that reports them every
+# time trains you to skim the output — which is the same failure as a CI job that
+# is red by default. (`detect.rs` and `regions.rs` are not in that count: since
+# 2026-08-20 `.cargo/mutants.toml` excludes them outright, being 207 mutants of
+# code L2 replaces.)
 #
 # So `docs/mutants-baseline.md` records the survivors that are known and
 # accepted, each with the reason, and this script diffs against it. **A survivor
@@ -115,6 +120,7 @@ OUT_DIR="$OUT_PARENT/mutants.out"
 mode=workspace
 since_ref=""
 crate=""
+shard=""
 files=()
 write_baseline=0
 
@@ -135,6 +141,28 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -gt 0 ] || { echo "error: --file needs a glob" >&2; exit 2; }
       mode=files; files+=("$1")
       ;;
+    --shard)
+      shift
+      [ "$#" -gt 0 ] || { echo "error: --shard needs i/N (e.g. --shard 1/5)" >&2; exit 2; }
+      # **k is zero-based and must be strictly less than n**, which is
+      # cargo-mutants' rule and not an obvious one: `--shard 1/1` is invalid,
+      # `--shard 0/1` is the whole thing. Checked here rather than left to
+      # cargo-mutants because the workflow generates these, and a generator
+      # off by one fails on the *last* shard of every crate — after the other
+      # shards have already run and passed. Found exactly that way.
+      case "$1" in
+        [0-9]*/[0-9]*)
+          k="${1%%/*}"; n="${1##*/}"
+          if [ "$n" -lt 1 ] || [ "$k" -ge "$n" ]; then
+            echo "error: --shard $1 is not a shard: k is zero-based and must be" >&2
+            echo "       less than n, so 1/1 is invalid and 0/1 is the whole run." >&2
+            exit 2
+          fi
+          shard="$1"
+          ;;
+        *) echo "error: --shard wants k/N, not \`$1\`" >&2; exit 2 ;;
+      esac
+      ;;
     --baseline) write_baseline=1 ;;
     *) echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -148,7 +176,42 @@ scratch="${TAIYAKU_MUTANTS_TMP:-$PWD/target/mutants-scratch}"
 mkdir -p "$scratch"
 export TMPDIR="$scratch"
 
-args=(--gitignore=true --output "$OUT_PARENT")
+# **Run at the lowest priority the scheduler offers.** A sweep is hours of
+# build-and-test on a machine that is doing other things — a workstation
+# somebody is typing on, or the forge's host, which carries 68 other containers
+# at a load average around 16 on 8 cores. `nice` costs nothing when the machine
+# is idle and is the difference between "takes the spare capacity" and "takes
+# the capacity" when it is not. `ionice` likewise: every mutant is a rebuild,
+# so this is as much an I/O load as a CPU one.
+#
+# Lowering one's own priority needs no privilege; raising it would. Failure is
+# ignored rather than reported, because a host without these tools should still
+# run the sweep.
+renice -n 19 -p $$ >/dev/null 2>&1 || true
+command -v ionice >/dev/null && ionice -c 3 -p $$ >/dev/null 2>&1 || true
+
+# Four is a workstation figure — 32 cores and nothing else running. The
+# workflow overrides it to 2 for the forge's 8 shared cores.
+jobs="${TAIYAKU_MUTANTS_JOBS:-4}"
+args=(--jobs "$jobs" --gitignore=true --output "$OUT_PARENT")
+
+# **Sharding is what keeps a job under the runner's own ceiling**, which is a
+# different thing from `timeout-minutes` and sits below it: `taiyaku-cli` ran
+# 3 h 01 m on the forge and was killed by the runner with "exceeds the maximum
+# run time", while this workflow's `timeout-minutes: 210` had never come near
+# firing. A bound above the ceiling cannot bind.
+#
+# Each shard re-runs the unmutated baseline, so N shards cost slightly more than
+# one run divided by N. That is the price of fitting.
+#
+# `mutants-baseline.mjs` compares only the mutants a run actually tested, so a
+# shard reports its own new survivors and says nothing about the rest — the same
+# property `--since` needs, and the reason that comparison is keyed on the
+# mutant rather than on the file.
+if [ -n "$shard" ]; then
+  args+=(--shard "$shard")
+  echo "==> shard ${shard}"
+fi
 
 case "$mode" in
   since)
@@ -175,7 +238,7 @@ case "$mode" in
     echo "==> mutants in ${files[*]}"
     ;;
   workspace)
-    echo "==> mutants across the workspace — 3,191 mutants, 3 h 12 m on 2026-08-19"
+    echo "==> mutants across the workspace — 2,984 mutants; 3,191 took 3 h 12 m on 2026-08-19"
     ;;
 esac
 
@@ -190,6 +253,23 @@ if ! ulimit -v "$vm_kb" 2>/dev/null; then
   echo "         A mutant that removes an allocation guard can then take the machine"
   echo "         out through the OOM killer rather than failing its own test."
 fi
+
+# **And a cap on how many of those processes exist at once, which is the other
+# half and was missing.**
+#
+# `ulimit -v` bounds one process. Nothing bounded the count, so the ceiling was
+# never `vm_kb` — it was `vm_kb` times however many things ran together.
+# cargo-mutants defaults its job count from the core count, which is 32 on the
+# machine this was written on. Setting `test_tool = "nextest"` for the first
+# time on 2026-08-20 added a second multiplier on top, since nextest runs one
+# process per test rather than one for the suite, and 60 GB went inside a
+# minute.
+#
+# Four rather than one: the sweep is long enough that serialising it entirely
+# would hurt, and four concurrent builds at up to 16 GB of address space is a
+# figure a 60 GB machine survives with room for the desktop. On a runner that
+# takes three jobs at a time this is already below what the host will schedule,
+# so it costs nothing there.
 
 # `|| true` because cargo-mutants exits non-zero when mutants survive, and a
 # survivor is the thing this script exists to report rather than an error in

@@ -26,7 +26,7 @@ point the offending dependency is load-bearing.
 
 ### The one workflow that is not a job
 
-`mutants.yml` runs weekly and **gates nothing**. It is not in the table above,
+`mutants.yml` is dispatched by hand and **gates nothing**. It is not in the table above,
 it is not in `check-all.sh`, and no pull request waits on it. See "Mutation
 testing, and why it cannot be a gate" below.
 
@@ -1718,21 +1718,35 @@ against is a **survivor**: a line the tests execute without asserting anything
 about what it does. Coverage cannot see this. A survivor is 100%-covered code
 whose behaviour nothing checks.
 
-`.forgejo/workflows/mutants.yml` runs it weekly, on a schedule and on
-`workflow_dispatch`, and **gates nothing**. Two reasons, and the second matters
-more than the first:
+`.forgejo/workflows/mutants.yml` runs **one crate at a time, dispatched by
+hand**, and **gates nothing**. It had a weekly cron until 2026-08-20; the forge's
+host is an 8-core machine carrying 68 other containers at a load average around
+16, with no CPU or memory limit on the runner container, and a sweep is hours of
+build-and-test. A weekly timer degraded that box for hours, unattended, to
+re-measure something that moves at the speed of test-writing.
 
-1. **It is three hours.** The sweep is 3,191 mutants in 3 h 12 m, measured
-   across the six crates on 2026-08-19. `check-all.sh`'s whole point is being
-   runnable before every push; the four CI jobs are bounded at ten minutes each.
-   It was 1,660 mutants in 43 minutes in August, before spec B's scanner and
-   spec A2's auth — quoting that figure forward is what set the workflow's
-   timeout to 1.35x the real cost under a comment claiming 6x.
-2. **A job that is red by default teaches you to skip it.** 45 mutants survive
-   in `detect.rs` and `regions.rs` today, deferred until L2 redesigns the
-   detector — writing fixtures against a detector about to be replaced is work
-   thrown away. A gate would be red on every commit for a correct reason, which
-   is the state in which nobody reads it. `plaintextesports`'s `live-smoke.yml`
+`docs/mutants-baseline.md` carries a dated log of every sweep, because a manual
+job with no record is one nobody can tell has lapsed — read it to decide whether
+one is due. Two reasons it cannot be a gate, and the second matters more than the
+first:
+
+1. **A full sweep is ~8.5 hours of runner time.** 3,191 mutants took 3 h 12 m
+   locally on 2026-08-19, and the forge's runner is **3x slower** — measured
+   from `taiyaku-cli`'s own log at ~10 s per mutant against ~3.5 s. Spending
+   that unprompted on a job that gates nothing is not a trade worth making, so a
+   dispatch takes one crate at a time. `scripts/mutants.sh --since main` is what
+   catches a regression as it is written; this is the backstop for code nobody
+   touched but whose *tests* somebody weakened, and a backstop that reaches each
+   crate monthly is still a backstop.
+
+   The figure was 1,660 mutants in 43 minutes in August, before spec B's scanner
+   and spec A2's auth. Quoting it forward is what set the timeout to 1.35x the
+   real cost under a comment claiming 6x.
+2. **A job that is red by default teaches you to skip it.** 92 survivors are
+   recorded and untriaged, and `detect.rs` and `regions.rs` are excluded outright
+   rather than swept — writing fixtures against a detector about to be replaced
+   is work thrown away. A gate would be red on every commit for a correct reason,
+   which is the state in which nobody reads it. `plaintextesports`'s `live-smoke.yml`
    made the same call for the same reason, and this workflow's comment says so.
 
 **A failure means "go look", not "the build is broken."**
@@ -1770,8 +1784,8 @@ sweeps and a desktop session.
 `docs/mutants-baseline.md` records the survivors that have been looked at and
 accepted, each with its reason, and `scripts/mutants-baseline.mjs` diffs a run
 against it. **A survivor not in the baseline is the whole of what is worth
-reading.** Without that, the weekly job prints the same 45 known survivors every
-week and the one new entry is invisible in the middle of them.
+reading.** Without that, every run prints the same 92 untriaged survivors and
+the one new entry is invisible in the middle of them.
 
 **An entry can also be `UNTRIAGED:`, which is a third state and not a weaker
 second one.** The first workspace-wide sweep produced 150 survivors; writing 150
@@ -1780,7 +1794,7 @@ So an untriaged entry is silenced in the new-survivor diff — it is not new —
 counted out loud on every run, because nothing about it has been established.
 "Accepted" asserts somebody checked; "untriaged" asserts nothing. Collapsing the
 two is how a baseline becomes the place defects go to be forgotten. As of
-2026-08-19: **58 accepted, 92 untriaged.**
+2026-08-20: **13 accepted, 92 untriaged**, the 45 L2 deferrals having left the file when their two source files were excluded from the sweep.
 
 It is also the only memory this project keeps of what has already been checked.
 Four whole-branch reviews of spec A2 each returned fifteen findings, and the rate
@@ -1795,6 +1809,32 @@ a function therefore invalidates its entries and its survivors reappear as new.
 That is deliberate: matching on the description alone would be stabler and would
 carry an accepted survivor across a rewrite that turned it into a real defect,
 with the entry still explaining why the old code was fine.
+
+### Sharding, and the ceiling above which no timeout can bind
+
+`taiyaku-cli` is ~3.4 hours on the runner and **cannot fit in one job at any
+timeout setting**. Its first attempt was killed at 3 h 01 m with *"The runner
+cancelled the job because it exceeds the maximum run time"* — while
+`timeout-minutes: 210` sat above that hard limit and had never come near firing.
+
+**A bound above the ceiling cannot bind**, which is the same shape as the two
+figures before it: 260 minutes justified as "six times" a measurement that had
+doubled, and 210 justified as "three times" a figure from a machine three times
+faster. Each was arithmetic on the wrong number.
+
+So the crates are sharded — `cargo mutants --shard i/N`, one job per shard,
+sized so no piece exceeds about an hour: cli 5, serve 3, library 3, and one each
+for core, read and wasm. `timeout-minutes` is **150**, deliberately *under* the
+runner's ceiling rather than over it. If a shard ever reaches it, the answer is
+more shards; there is no bigger number available.
+
+Each shard re-runs the unmutated baseline, so N shards cost a little more than
+one run divided by N. That is the price of fitting.
+
+`scripts/mutants-baseline.mjs` compares only the mutants a run actually tested,
+so a shard reports its own new survivors and says nothing about the rest. That
+property came from fixing `--since` and is what makes sharding work without any
+further change.
 
 ### Running it on a branch
 

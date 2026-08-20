@@ -5,10 +5,10 @@
 // --- why a baseline rather than a raw survivor list ---------------------------
 //
 // A survivor list is only actionable if a new one is distinguishable from an old
-// one. 45 mutants in `detect.rs` and `regions.rs` survive today and are deferred
-// until L2 redesigns the detector; reporting them on every run trains the reader
-// to skim, which is the failure mode a scheduled job is most prone to and the
-// exact reason `.forgejo/workflows/mutants.yml` gates nothing.
+// one. 92 of the 105 entries below are untriaged, and a run that reprints them
+// all trains the reader to skim — which is the failure mode a scheduled job is
+// most prone to and the exact reason `.forgejo/workflows/mutants.yml` gates
+// nothing.
 //
 // So the accepted survivors live in `docs/mutants-baseline.md`, each with the
 // reason it is accepted, and this compares against them. **A survivor not in the

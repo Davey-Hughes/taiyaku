@@ -6,10 +6,16 @@ still passes against**, and that somebody has looked at and accepted anyway.
 output worth reading.
 
 The point of writing them down is that a survivor list is only actionable when a
-new one is distinguishable from an old one. 45 mutants in `detect.rs` and
-`regions.rs` survive today and are deferred until L2 redesigns the detector — a
-run that reports them every time trains the reader to skim it, which is the one
-failure mode a weekly job that gates nothing is most prone to.
+new one is distinguishable from an old one.
+
+**`detect.rs` and `regions.rs` are no longer swept at all**, which is different
+from being clean and the distinction must not be lost. Their 45 survivors were
+accepted here as deferred until L2 redesigns the detector; since 2026-08-20
+`.cargo/mutants.toml` excludes both files, because they are 207 of
+`taiyaku-cli`'s mutants — 18% of the longest crate — buying
+notice of a regression in code slated for replacement. Their entries are gone
+from the list below so the counts mean what they say. Delete the exclusion when
+L2 lands and re-run with `--baseline` to rebuild them.
 
 It is also the only memory this project has of what has already been checked.
 Four whole-branch reviews of spec A2 returned fifteen findings each and the rate
@@ -60,378 +66,36 @@ new entries with a placeholder. The placeholders are yours to replace — the
 script exits non-zero while any remain, because an entry with no reason is
 indistinguishable from a defect somebody stopped thinking about.
 
-<!-- entries -->
+## When it was last run
 
-### `crates/taiyaku-cli/src/detect.rs`
+**There is no schedule.** `.forgejo/workflows/mutants.yml` is dispatched by
+hand, because the forge's host is an 8-core machine carrying 68 other
+containers at a load average around 16, and a sweep is hours of build-and-test.
+A weekly timer would degrade that box for hours every week, unattended, to
+re-measure something that moves at the speed of test-writing.
 
-- `crates/taiyaku-cli/src/detect.rs:1013:54: replace * with / in detect_page_with`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
+**So this table is the thing that tells you a sweep is overdue.** A manual job
+with no record is a job nobody can tell has lapsed. Read this before deciding
+whether one is due; a long gap here is the signal a cron would have been
+standing in for. Add a row every time.
 
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:1013:54: replace * with + in detect_page_with`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
+`scripts/mutants.sh --since main` is the half that runs often and needs no row —
+it mutates only changed code and takes minutes.
 
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:1015:49: replace * with / in detect_page_with`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
+| Date | Scope | Result |
+| --- | --- | --- |
+| 2026-08-19 | spec A2's four modules (255 mutants) | 30 survivors; 17 killed by new tests, 13 recorded |
+| 2026-08-19 | whole workspace (3,191 mutants, 3 h 12 m) | 150 survivors — the baseline below |
+| 2026-08-20 | `taiyaku-library` on the forge, 3 shards | 3 survivors outside the baseline: `mtime_secs`, a catch the workstation had invented. Fixed, O59 opened |
+| 2026-08-20 | wasm, read, core, library, serve (2,049 mutants, 42 m) | re-measured after excluding `detect.rs`/`regions.rs` and capping `--jobs`; **every crate unchanged against the baseline.** `taiyaku-cli` was stopped partway and has not been re-measured since the exclusion — the numbers below for it are from the 2026-08-19 sweep |
 
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:1015:49: replace * with + in detect_page_with`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:1039:22: replace > with >= in detect_page_with`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:128:44: replace * with + in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:132:53: delete - in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:142:24: replace += with *= in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:142:40: replace * with + in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:155:48: replace / with * in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:155:48: replace / with % in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:163:36: replace - with + in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:163:61: replace / with * in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:163:61: replace / with % in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:171:37: replace * with / in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:171:37: replace * with + in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:171:52: replace * with / in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:171:52: replace * with + in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:171:66: replace - with / in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:171:66: replace - with + in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:172:21: replace > with >= in otsu`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:234:48: replace + with - in components`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:235:48: replace + with - in components`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:236:31: replace < with <= in components`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:236:41: replace < with <= in components`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:473:19: replace < with > in merge_along`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:475:24: replace < with <= in merge_along`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:475:24: replace < with == in merge_along`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:475:24: replace < with > in merge_along`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:612:50: replace * with + in uncontained`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:620:87: replace < with <= in uncontained`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:925:19: replace || with && in detect_page_with`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:942:22: replace * with + in detect_page_with`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:965:34: replace && with || in detect_page_with`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:965:54: replace && with || in detect_page_with`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/detect.rs:965:74: replace && with || in detect_page_with`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-
-### `crates/taiyaku-cli/src/duplicates.rs`
+<!-- entries -->### `crates/taiyaku-cli/src/duplicates.rs`
 
 - `crates/taiyaku-cli/src/duplicates.rs:453:53: replace > with >= in contradictions`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -440,7 +104,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -452,7 +116,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -464,7 +128,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -473,7 +137,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -485,7 +149,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -494,7 +158,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -503,7 +167,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -512,7 +176,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -521,7 +185,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -530,7 +194,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -539,7 +203,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -548,104 +212,11 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-
-### `crates/taiyaku-cli/src/regions.rs`
-
-- `crates/taiyaku-cli/src/regions.rs:115:5: replace load_beside -> Result<RegionDoc, String> with Ok(Default::default())`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/regions.rs:117:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in load_beside`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/regions.rs:131:5: replace page_index -> u32 with 0`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/regions.rs:131:5: replace page_index -> u32 with 1`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/regions.rs:145:39: replace == with != in command`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/regions.rs:45:23: replace / with % in median_area`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/regions.rs:92:5: replace table -> String with "xyzzy".into()`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/regions.rs:92:5: replace table -> String with String::new()`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
-- `crates/taiyaku-cli/src/regions.rs:95:57: replace == with != in table`
-  Deferred until L2 redesigns the detector. `detect.rs` and `regions.rs` are the
-  credit-page detector and its region geometry, both of which L2 replaces
-  outright — writing fixtures against a detector that is about to be deleted is
-  work thrown away, and `docs/status.md` has carried that position since the
-  August sweep. 45 survivors here, against the 44 recorded then.
-
-  **This is the block the baseline exists for.** Reprinting these every week is
-  what would train a reader to skim the weekly job's output, which is the one
-  failure a job that gates nothing cannot survive.
 
 ### `crates/taiyaku-cli/src/sample.rs`
 
@@ -653,7 +224,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -665,7 +236,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -674,7 +245,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -683,7 +254,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -692,7 +263,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -701,7 +272,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -710,7 +281,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -719,7 +290,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -728,7 +299,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -737,7 +308,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -746,7 +317,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -755,7 +326,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -764,7 +335,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -773,7 +344,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -782,7 +353,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -791,7 +362,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -800,7 +371,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -809,7 +380,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -818,7 +389,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -865,7 +436,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -874,7 +445,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -886,7 +457,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -898,7 +469,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -907,7 +478,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -919,7 +490,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -928,7 +499,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -937,7 +508,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -946,7 +517,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -955,7 +526,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -964,7 +535,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -973,7 +544,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -982,7 +553,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -991,7 +562,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1019,7 +590,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1031,7 +602,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1040,7 +611,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1049,7 +620,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1061,7 +632,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1070,7 +641,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1082,7 +653,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1094,7 +665,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1103,7 +674,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1112,7 +683,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1121,7 +692,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1130,7 +701,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1142,7 +713,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1151,7 +722,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1160,7 +731,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1169,7 +740,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1178,7 +749,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1187,7 +758,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1199,7 +770,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1208,7 +779,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1217,7 +788,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1226,7 +797,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1235,7 +806,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1244,7 +815,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1253,7 +824,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1265,7 +836,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1277,7 +848,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1286,7 +857,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1298,7 +869,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1307,7 +878,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1316,7 +887,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1325,7 +896,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1337,7 +908,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1349,7 +920,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1358,7 +929,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1370,7 +941,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1379,7 +950,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1388,7 +959,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1397,7 +968,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1406,7 +977,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1415,7 +986,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1481,7 +1052,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1490,7 +1061,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1499,7 +1070,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1508,7 +1079,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
@@ -1520,7 +1091,7 @@ indistinguishable from a defect somebody stopped thinking about.
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
-  It is here so the weekly job's diff stays readable, **not** because anybody has
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output

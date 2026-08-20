@@ -12624,3 +12624,59 @@ neither. The discriminating input is an *ordinary IPv4* range, which contains no
 before and after: survives, then dies.
 
 **The re-run is the test of the test.** Reading would not have found either.
+
+### The first sharded run found a mutant the local sweep had recorded as caught, 2026-08-20
+
+`mutants.yml`, sweeping `taiyaku-library` in three shards, reported three
+survivors outside the baseline:
+
+```
+crates/taiyaku-library/src/scan.rs:793:5: replace mtime_secs -> i64 with 0
+crates/taiyaku-library/src/scan.rs:793:5: replace mtime_secs -> i64 with 1
+crates/taiyaku-library/src/scan.rs:793:5: replace mtime_secs -> i64 with -1
+```
+
+**All three were in the local sweep's `caught` list.** That is the interesting
+direction: not a survivor the runner introduced, but a *catch* the workstation
+had invented.
+
+Applying the mutation by hand — body replaced with a constant, exactly as
+cargo-mutants writes it, with the edit asserted to have landed — every one of
+the 347 library tests passes. Nothing catches it. Re-running cargo-mutants
+locally reports 3 caught, twice.
+
+The per-mutant log names the difference. Two tests fail under the mutant when
+cargo-mutants runs them, and only then:
+
+- `derive::tests::a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress`
+- `derive::tests::a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive`
+
+cargo-mutants builds in a **copy** of the tree under `TMPDIR`; the hand run is
+in place. Same mutation, same tests, different answer. One of the two failures
+is not even a detection — it is a *precondition* assertion ("the copy must
+actually collide with Alpha's content") giving way.
+
+**This is the third time this pair has caused trouble and the first time it did
+so silently.** They are the two O56 is written about, and the two that raced a
+one-second clock in CI two days before and were stamped forward with
+`File::set_times` to fix it. That fix stopped them failing; it did not make them
+independent of the tree they run in. Until now the consequence was a red CI job,
+which is loud. This consequence is a mutation score that reads better than the
+tests deserve, which is silent — and it is the failure a baseline is least able
+to catch, because a mutant recorded as caught never appears in any list to
+review.
+
+**A green suite is not evidence a survivor is dead, and a caught mutant is not
+evidence a test caught it deliberately.**
+
+The property nothing was testing is small and now has its own test.
+`scan::tests::a_files_modification_time_reaches_its_scan_entry` writes a member
+directory, **sets** its mtime to a fixed instant rather than waiting for a clock
+to move, and asserts the value reaches the scan entry. 2001-09-09T01:46:40Z, far
+from 0, 1 and -1 so no constant can coincide with it. Verified to kill all three
+mutants under cargo-mutants **and** under hand-application in place, which is
+the pair of environments the old catch could not manage.
+
+What is left is O59: any other mutant those two tests happen to fail under is
+credited the same way, and a caught count cannot distinguish that from a real
+catch.
