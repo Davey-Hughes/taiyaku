@@ -5,6 +5,7 @@
 //! redesign. See `docs/superpowers/specs/2026-07-30-reader-design.md`.
 
 mod alignments;
+mod auth;
 mod cache_root;
 mod composite;
 #[cfg(test)]
@@ -21,6 +22,7 @@ mod opds;
 mod progress;
 mod reqlog;
 mod routes;
+pub mod session;
 mod source;
 mod stump;
 mod truth;
@@ -69,6 +71,12 @@ pub struct ServeState {
     pub cache_dir: std::path::PathBuf,
     /// Set when `--log-requests` was given; otherwise nothing is recorded.
     pub log: Option<Arc<crate::reqlog::Log>>,
+    /// What this server knows about the deployment it sits in: whether the
+    /// session cookie carries `Secure`, and whether the claim route exists.
+    ///
+    /// Spec A2 §6 and §5. Small because §11 puts TLS in a reverse proxy, so
+    /// none of that is here.
+    pub auth: crate::session::AuthConfig,
 }
 
 impl ServeState {
@@ -212,6 +220,15 @@ impl StumpConfig {
 /// accept-loop failure are both worded `{addr}: {e}`, since a process that
 /// may serve several addresses over its life prints nothing else to say
 /// which one failed.
+/// **Eight parameters, which is one past clippy's limit and is the signal to
+/// stop.** Spec A2's own configuration arrived as a struct rather than as three
+/// more booleans for that reason; the next thing this function needs should join
+/// `AuthConfig` or start a second struct beside it, rather than becoming a ninth
+/// positional argument nobody can read at the call site.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the eighth is AuthConfig, which is itself the fix; a ninth must not be positional"
+)]
 pub async fn serve(
     library: Arc<taiyaku_library::Library>,
     works: Vec<Work>,
@@ -220,6 +237,7 @@ pub async fn serve(
     log_requests: Option<std::path::PathBuf>,
     refresh_stump: bool,
     cache: Option<std::path::PathBuf>,
+    auth: crate::session::AuthConfig,
 ) -> Result<(), String> {
     // Opened before anything else so a bad `--log-requests` path is a
     // startup failure that can be acted on, rather than an hour of reading
@@ -305,7 +323,78 @@ pub async fn serve(
         source,
         cache_dir: resolved.covers(),
         log,
+        auth,
     });
+
+    // §4's other half: expired sessions are deleted lazily on lookup, and swept
+    // once here. Neither is enough alone — a server that runs for a month never
+    // reaches this line again, and a row nobody presents is never looked up.
+    // Reported rather than fatal: a library that cannot be swept can still be
+    // read, and refusing to start over housekeeping would be the worse trade.
+    // §5: "It logs loudly at startup and on every request it serves, because a
+    // flag whose danger is invisible while it is doing nothing is a flag that
+    // stays on." Both halves matter — a person who left it on a month ago will
+    // not reread the startup line, and a person who set it today will not see
+    // the per-request one until somebody uses it.
+    // **Said whether or not the flag is on.** A fresh or upgraded library has no
+    // account anybody can authenticate as — migration 4 rewrites the seeded
+    // row's NULL password to the locked placeholder — and `serve` bound, printed
+    // "listening on…", and answered 401 to every route with nothing anywhere
+    // saying why. The only check sat inside the `--allow-web-setup` branch, so
+    // the ordinary install saw nothing at all. Found by the second whole-branch
+    // review.
+    // **`is_claimed`, not `admin_exists`** — the message says "no account with
+    // a password" and that is literally what `is_claimed` counts. Read through
+    // `admin_exists` it also fired on a library where an ordinary reader could
+    // log in perfectly well, telling its owner every route would answer 401
+    // while they were using it. Same confusion as the claim route's, found by
+    // the fourth whole-branch review.
+    if !state.auth.allow_web_setup
+        && taiyaku_library::account::is_claimed(&state.library.conn()).is_ok_and(|yes| !yes)
+    {
+        eprintln!(
+            "WARNING: this library has no account with a password, so every route will \
+             answer 401. Run `taiyaku library user promote <name>` against the same \
+             --db to set one — it promotes the account this library already has, so \
+             every note and reading position already recorded belongs to it."
+        );
+    }
+    if state.auth.allow_web_setup {
+        // The gate this notice describes is the claim route's own, so it reads
+        // `is_claimed` too. Reading `admin_exists` here printed "ANYONE can
+        // claim it" on a library that was in fact shut, and would now print it
+        // on one the route refuses — a warning that cries wolf is a warning
+        // that gets ignored on the day it is right.
+        let claimed = taiyaku_library::account::is_claimed(&state.library.conn());
+        match claimed {
+            Ok(true) => eprintln!(
+                "note: --allow-web-setup is on but this library has already been \
+                 set up, so the claim route is shut. The flag can be removed."
+            ),
+            _ => eprintln!(
+                "WARNING: --allow-web-setup is on and no account in this library \
+                 has a password. ANYONE who can reach this server can claim it. It \
+                 shuts by itself the moment any account has one — or run \
+                 `taiyaku library user promote` instead and start without the flag."
+            ),
+        }
+    }
+
+    match taiyaku_library::account::sweep_expired_sessions(&state.library.conn()) {
+        Ok(0) => {}
+        Ok(swept) => eprintln!("swept {swept} expired session(s)"),
+        Err(complaint) => eprintln!("could not sweep expired sessions: {complaint}"),
+    }
+    // The rate limiter's own windows, which nothing else removes: a successful
+    // login clears one exact key and every other row stayed forever, so a loop
+    // of logins for random names was an unauthenticated way to grow the shared
+    // database. Beside the sessions because it is the same kind of housekeeping
+    // and has the same "reported, never fatal" answer.
+    match taiyaku_library::account::sweep_lapsed_attempts(&state.library.conn()) {
+        Ok(0) => {}
+        Ok(swept) => eprintln!("swept {swept} lapsed login-attempt window(s)"),
+        Err(complaint) => eprintln!("could not sweep lapsed login attempts: {complaint}"),
+    }
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("{addr}: {e}"))?;
@@ -335,9 +424,18 @@ pub async fn serve(
     // that may be serving several addresses over its life and prints nothing
     // else about them; "Address already in use" without one is a message that
     // has to be guessed at.
-    axum::serve(listener, build_router(state))
-        .await
-        .map_err(|e| format!("{addr}: {e}"))
+    // **`into_make_service_with_connect_info` rather than the router alone**,
+    // which is what puts the peer's address in each request's extensions. §6's
+    // whole `--trusted-proxy` decision and §7's rate limiter are about *which*
+    // address a request is held against, and without this every request arrives
+    // with none — so a limiter keyed on the client would key every client
+    // together.
+    axum::serve(
+        listener,
+        build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .map_err(|e| format!("{addr}: {e}"))
 }
 
 /// Throw away every work's remembered Stump resolutions — `--refresh-stump`.

@@ -15,7 +15,7 @@
 
 use taiyaku_library::{Library, Progress};
 
-use crate::works::{self, LOCAL_USER, Work};
+use crate::works::{self, Work};
 
 /// What was recorded, or `None` when nothing ever was.
 ///
@@ -30,12 +30,12 @@ use crate::works::{self, LOCAL_USER, Work};
 /// # Errors
 ///
 /// Returns an error if SQLite fails.
-pub fn load(library: &Library, work: &Work) -> Result<Option<Progress>, String> {
+pub fn load(library: &Library, work: &Work, user_id: i64) -> Result<Option<Progress>, String> {
     let conn = library.conn();
     let Some(work_id) = works::find_row(&conn, work)? else {
         return Ok(None);
     };
-    taiyaku_library::state::progress(&conn, work_id, LOCAL_USER)
+    taiyaku_library::state::progress(&conn, work_id, user_id)
 }
 
 /// Record where the reader got to.
@@ -46,10 +46,15 @@ pub fn load(library: &Library, work: &Work) -> Result<Option<Progress>, String> 
 /// # Errors
 ///
 /// Returns an error if SQLite fails.
-pub fn store(library: &Library, work: &Work, progress: &Progress) -> Result<(), String> {
+pub fn store(
+    library: &Library,
+    work: &Work,
+    user_id: i64,
+    progress: &Progress,
+) -> Result<(), String> {
     let conn = library.conn();
     let work_id = works::row_id_for_write(&conn, work)?;
-    taiyaku_library::state::put_progress(&conn, work_id, LOCAL_USER, progress)
+    taiyaku_library::state::put_progress(&conn, work_id, user_id, progress)
 }
 
 #[cfg(test)]

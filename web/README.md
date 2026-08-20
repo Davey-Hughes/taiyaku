@@ -20,6 +20,28 @@ From the repository root, the same commands take `-C web` — which is the form
 `pnpm run dev` proxies `/api` and `/opds` to `taiyaku serve` (default
 `http://127.0.0.1:8080`, override with `TAIYAKU_SERVE`) — see `vite.config.ts`.
 
+## Signing in against a development server
+
+Every route needs a credential since spec A2, so `serve` needs an account before
+the reader can load anything:
+
+```sh
+taiyaku library user promote davey --db /tmp/dev.db   # prompts twice
+taiyaku serve some/taiyaku.json --addr 127.0.0.1:8080 --db /tmp/dev.db
+pnpm run dev                                          # then sign in at :5173
+```
+
+**The proxy sets `changeOrigin: false`, and that is load-bearing rather than a
+default nobody touched.** With it `true` the proxy rewrites `Host` to the target
+while the browser's `Origin` stays `localhost:5173`, so the server's CSRF origin
+check compares two different authorities and **every login answers 403**.
+Measured on 2026-08-18; the fix is in the proxy rather than in the cookie policy,
+because a production cookie must not be weakened for a development convenience.
+See `docs/notes.md`, "Spec A2's measurements".
+
+The session cookie carries no `Secure` here, correctly: nothing configures
+`--trusted-proxy`, so it has to survive a plain-HTTP hop to `localhost`.
+
 ## The WASM dependency
 
 `taiyaku-wasm` is a `link:` dependency on `../crates/taiyaku-wasm/pkg`, which

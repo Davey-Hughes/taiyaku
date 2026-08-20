@@ -11,6 +11,207 @@ import type { TruthDoc } from './truth'
 const seg = (s: string) => encodeURIComponent(s)
 
 /**
+ * A 401 from any of this module's calls.
+ *
+ * **A state change rather than an error to show.** Being signed out is not
+ * something a reader can act on by reading a message; it is something `App`
+ * routes on. Raised as its own type from one place — `request` below — because
+ * eight separate branches is eight chances for a ninth call site to forget, and
+ * the ninth is exactly the one that would ship signed-out readers a stack trace
+ * where a login screen belongs.
+ */
+export class Unauthenticated extends Error {
+  constructor() {
+    super('not signed in')
+    this.name = 'Unauthenticated'
+  }
+}
+
+/**
+ * Called once, from anywhere, the first time a 401 arrives.
+ *
+ * **Routing a 401 cannot be left to each call site.** It was, and the writes all
+ * ended in `.catch(console.error)` — so a session revoked from another browser
+ * left the reader turning pages while every position and note write was
+ * discarded into a console nobody has open, with no login screen and nothing on
+ * screen wrong. Only the two load-time effects routed it, which are exactly the
+ * calls that happen when a session is *least* likely to have just died.
+ *
+ * A module-level hook rather than a parameter threaded through sixteen
+ * signatures: the answer is the same for every call, and a signature a caller
+ * can decline to pass is how this happened the first time. Found by the
+ * whole-branch review, 2026-08-18.
+ */
+let onUnauthenticated: (() => void) | undefined
+
+export function whenSignedOut(handler: () => void): void {
+  onUnauthenticated = handler
+}
+
+/**
+ * `fetch`, with the one status this module answers structurally.
+ *
+ * Every call below goes through this rather than calling `fetch` directly.
+ * `pageUrl` and `thumbUrl` are the deliberate exceptions and do not: they
+ * return URLs for an `<img src>`, so the browser fetches them and a 401 there
+ * shows as a broken image rather than reaching any code here — which is why
+ * `App` asks `me()` on load instead of waiting to be told by a page that failed
+ * to draw.
+ */
+const request = async (input: string, init?: RequestInit) => {
+  // Forwarded without an explicit `undefined` when there is no init, so the
+  // call `fetch` sees is byte-for-byte the one it saw before this wrapper
+  // existed. That keeps every pre-existing test in `api.test.ts` passing
+  // untouched, which is the evidence that this change did nothing to these
+  // calls except notice a 401.
+  const res = init === undefined ? await fetch(input) : await fetch(input, init)
+  if (res.status === 401) {
+    // Fired before the throw, so a caller that swallows the rejection — every
+    // write does, deliberately, since a failed position write is not something
+    // to show a reader — still hands the app the one fact it must act on.
+    onUnauthenticated?.()
+    throw new Unauthenticated()
+  }
+  return res
+}
+
+/** Who the server resolved this browser to, or `Unauthenticated`. */
+export interface Me {
+  user_id: number
+  admin: boolean
+  can_download: boolean
+  can_stream: boolean
+}
+
+export async function me(): Promise<Me> {
+  const res = await request('/api/me')
+  if (!res.ok) throw new Error(`reading the account: ${res.status}`)
+  return (await res.json()) as Me
+}
+
+/**
+ * Exchange a name and password for a session cookie.
+ *
+ * The cookie is `HttpOnly`, so nothing here ever sees it — the browser holds it
+ * and sends it, and this function's whole output is whether it worked. That is
+ * the point of `HttpOnly`: a script that cannot read the session cannot leak it.
+ *
+ * **Not routed through `request`**, because a 401 here is the ordinary answer to
+ * a wrong password rather than a signed-out state to route on.
+ */
+export async function login(name: string, password: string): Promise<void> {
+  const res = await fetch('/api/session', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, password }),
+  })
+  if (res.status === 401)
+    throw new Error('That name and password did not match.')
+  if (res.status === 429)
+    throw new Error('Too many attempts from here. Try again shortly.')
+  if (res.status === 403)
+    throw new Error(
+      'The server refused this request\u2019s origin. If it sits behind a proxy, that proxy has to pass the Origin header through.',
+    )
+  // A 500 here means the password was accepted and the session could not be
+  // recorded — see the server's `Attempt::Failed`. Distinct from the 401 above
+  // so a reader is not told their correct password is wrong.
+  if (res.status === 500)
+    throw new Error(
+      'The password was right, but the server could not record the session. Try again in a moment.',
+    )
+  if (!res.ok) throw new Error(`signing in: ${res.status} ${await res.text()}`)
+}
+
+/** One API key as the account screen lists it — never its secret. */
+export interface ApiKey {
+  id: number
+  name: string
+  created: string
+  last_used: string | null
+}
+
+export async function listKeys(): Promise<ApiKey[]> {
+  const res = await request('/api/keys')
+  if (!res.ok) throw new Error(`listing keys: ${res.status}`)
+  return (await res.json()) as ApiKey[]
+}
+
+/**
+ * Create an API key and return its secret.
+ *
+ * **The only time the secret exists outside the browser's memory.** The server
+ * stores its sha256 and nothing else, so a caller that drops this string cannot
+ * ask for it again — which the account screen has to say plainly rather than
+ * leave a reader to discover.
+ */
+export async function createKey(name: string): Promise<string> {
+  const res = await request('/api/keys', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!res.ok) throw new Error(`creating a key: ${res.status}`)
+  return ((await res.json()) as { secret: string }).secret
+}
+
+export async function revokeKey(id: number): Promise<void> {
+  const res = await request(`/api/keys/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`revoking key ${id}: ${res.status}`)
+}
+
+/**
+ * Change this account's password.
+ *
+ * Every *other* session of this account ends server-side; this one does not, so
+ * a reader who changes their password is not signed out of the browser they
+ * changed it from.
+ */
+export async function changePassword(
+  current: string,
+  next: string,
+): Promise<void> {
+  const res = await request('/api/password', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ current, next }),
+  })
+  if (res.status === 403)
+    throw new Error('That current password did not match.')
+  if (!res.ok) throw new Error(`changing the password: ${res.status}`)
+}
+
+/** One open session as the account screen lists it. */
+export interface SessionRow {
+  id: string
+  created: string
+  last_seen: string
+  user_agent: string | null
+  ip: string | null
+  /** Whether this is the browser doing the asking. */
+  current: boolean
+}
+
+export async function listSessions(): Promise<SessionRow[]> {
+  const res = await request('/api/sessions')
+  if (!res.ok) throw new Error(`listing sessions: ${res.status}`)
+  return (await res.json()) as SessionRow[]
+}
+
+export async function revokeSession(id: string): Promise<void> {
+  const res = await request(`/api/sessions/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error(`revoking a session: ${res.status}`)
+}
+
+/** End this session. Answers 204 whether or not there was one. */
+export async function logout(): Promise<void> {
+  const res = await fetch('/api/session', { method: 'DELETE' })
+  if (!res.ok) throw new Error(`signing out: ${res.status}`)
+}
+
+/**
  * `index` is a *page* index into the server's flattened page sequence — not
  * a *slot* index from the reading model (`Resolver.slotAt`, `ReadingState`).
  * A joined spread is one page but two slots, so the two only coincide up to
@@ -67,7 +268,7 @@ export interface WorkSummary {
 }
 
 export async function listWorks(): Promise<WorkSummary[]> {
-  const res = await fetch('/api/works')
+  const res = await request('/api/works')
   if (!res.ok)
     throw new Error(`listing works: ${res.status} ${await res.text()}`)
   return res.json()
@@ -91,7 +292,7 @@ export interface FetchedSidecar {
 export async function getSidecarWithEtag(
   work: string,
 ): Promise<FetchedSidecar> {
-  const res = await fetch(`/api/works/${seg(work)}`)
+  const res = await request(`/api/works/${seg(work)}`)
   if (!res.ok)
     throw new Error(`loading ${work}: ${res.status} ${await res.text()}`)
   return { json: await res.text(), etag: res.headers.get('etag') ?? undefined }
@@ -111,7 +312,7 @@ export interface StoredProgress {
 export async function getProgress(
   work: string,
 ): Promise<StoredProgress | undefined> {
-  const res = await fetch(`/api/works/${seg(work)}/progress`)
+  const res = await request(`/api/works/${seg(work)}/progress`)
   if (res.status === 204) return undefined
   if (!res.ok)
     throw new Error(`reading progress: ${res.status} ${await res.text()}`)
@@ -136,7 +337,7 @@ export async function putProgress(
   work: string,
   progress: StoredProgress,
 ): Promise<void> {
-  const res = await fetch(`/api/works/${seg(work)}/progress`, {
+  const res = await request(`/api/works/${seg(work)}/progress`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(progress),
@@ -163,7 +364,7 @@ export interface FetchedNotes {
  * there is always a document and always a tag.
  */
 export async function getNotes(work: string): Promise<FetchedNotes> {
-  const res = await fetch(`/api/works/${seg(work)}/notes`)
+  const res = await request(`/api/works/${seg(work)}/notes`)
   if (!res.ok)
     throw new Error(`reading notes: ${res.status} ${await res.text()}`)
   return {
@@ -199,7 +400,7 @@ export async function putNotes(
   etag: string,
   doc: NotesDoc,
 ): Promise<FetchedNotes> {
-  const res = await fetch(`/api/works/${seg(work)}/notes`, {
+  const res = await request(`/api/works/${seg(work)}/notes`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json', 'if-match': etag },
     body: JSON.stringify(doc),
@@ -247,7 +448,7 @@ export async function patchAlignment(
   etag: string,
   correction: CorrectionRequest,
 ): Promise<FetchedSidecar> {
-  const res = await fetch(`/api/works/${seg(work)}/alignments`, {
+  const res = await request(`/api/works/${seg(work)}/alignments`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', 'if-match': etag },
     body: JSON.stringify(correction),
@@ -265,7 +466,7 @@ export interface FetchedTruth {
 
 /** Every labelled box on a work. */
 export async function getTruth(work: string): Promise<FetchedTruth> {
-  const res = await fetch(`/api/works/${seg(work)}/truth`)
+  const res = await request(`/api/works/${seg(work)}/truth`)
   if (!res.ok)
     throw new Error(`reading truth: ${res.status} ${await res.text()}`)
   return {
@@ -287,7 +488,7 @@ export async function putTruth(
   etag: string,
   doc: TruthDoc,
 ): Promise<FetchedTruth> {
-  const res = await fetch(`/api/works/${seg(work)}/truth`, {
+  const res = await request(`/api/works/${seg(work)}/truth`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json', 'if-match': etag },
     body: JSON.stringify(doc),

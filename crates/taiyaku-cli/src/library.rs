@@ -70,13 +70,16 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
         Some("scan") => scan(&args[1..]),
         Some("rules") => rules(&args[1..]),
         Some("proposals") => proposals(&args[1..]),
+        Some("user") => crate::user::command(&args[1..]),
+        Some("key") => crate::user::key_command(&args[1..]),
         Some(other) => Err(format!(
-            "library has no subcommand `{other}`; it has import, export, scan, rules and \
-             proposals"
+            "library has no subcommand `{other}`; it has import, export, scan, rules, \
+             proposals, user and key"
         )),
-        None => {
-            Err("library needs a subcommand: import, export, scan, rules or proposals".to_string())
-        }
+        None => Err(
+            "library needs a subcommand: import, export, scan, rules, proposals, user or key"
+                .to_string(),
+        ),
     }
 }
 
@@ -106,13 +109,15 @@ fn export(args: &[String]) -> Result<(), String> {
     reject_unknown_flags(
         "library export",
         args,
-        &["--all", "--db", "--dir", "--in-place"],
+        &["--all", "--db", "--dir", "--in-place", "--user"],
     )?;
     let dir = option_value(args, "--dir", "a directory")?.map(PathBuf::from);
     let in_place = flag_present(args, "--in-place");
     let all = flag_present(args, "--all");
     let positional: Vec<&String> = args.iter().take_while(|a| !a.starts_with("--")).collect();
-    let usage = "usage: taiyaku library export <work>|--all [--dir DIR|--in-place] [--db PATH]";
+    let user = option_value(args, "--user", "an account name")?;
+    let usage = "usage: taiyaku library export <work>|--all [--dir DIR|--in-place] \
+                 [--user NAME] [--db PATH]";
     if all && !positional.is_empty() {
         return Err(format!("{usage}: --all takes no work name"));
     }
@@ -135,6 +140,23 @@ fn export(args: &[String]) -> Result<(), String> {
              would write back over the sidecar each work was imported from, silently reverting \
              any change made to that file since. Pass --in-place to accept that, or --dir DIR \
              to write elsewhere instead"
+        ));
+    }
+    // **`--in-place` and `--user` together is refused**, before any database is
+    // opened. `--in-place` writes over the files a reader was handed, and there
+    // is exactly one reader those files belong to; exporting somebody else's
+    // state onto them overwrote their notes and *deleted* their reading
+    // position, because `absorbed` is keyed `(work_id, document)` while the
+    // state read is keyed on the user — so the guard that stops an export
+    // touching a document this library has never had was already satisfied by
+    // the first reader's import. `--dir` writes anybody's state anywhere, which
+    // is what a person reaching for `--user` actually wants. Found by the
+    // whole-branch review, 2026-08-18.
+    if in_place && user.is_some() {
+        return Err(format!(
+            "{usage}: --in-place with --user would write one reader's notes and position \
+             over another's own files, and delete the documents they have no state for. \
+             Use --dir DIR to export a named reader's state somewhere of its own"
         ));
     }
     // `taiyaku_read::atomic::write` stages its temporary beside the target,
@@ -160,7 +182,44 @@ fn export(args: &[String]) -> Result<(), String> {
         vec![work_by_slug(&conn, positional[0])?]
     };
 
-    export_targets(&conn, &targets, dir.as_deref()).map(|_| ())
+    let user_id = resolve_export_user(&conn, user)?;
+    export_targets(&conn, &targets, user_id, dir.as_deref()).map(|_| ())
+}
+
+/// Which reader's `notes` and `progress` an export writes into the sidecar.
+///
+/// **A sidecar carries one reader's state** — that is what the format is, and
+/// spec A2 §5.1 declined to version it to hold several. So an export has to name
+/// a reader, and the ones it did not write are reported by
+/// `Exported::other_users` rather than silently dropped.
+///
+/// With no `--user`, the lowest account id: on every library that has ever
+/// existed that is the row migration 1 seeded and `user promote` renamed, which
+/// is the person running the command on the host. **Not a constant**, which is
+/// the distinction that matters — the `LOCAL_USER = 1` this replaced was a rule
+/// about which reader a sidecar speaks for, and this is a default for a flag.
+fn resolve_export_user(conn: &rusqlite::Connection, named: Option<&str>) -> Result<i64, String> {
+    use rusqlite::OptionalExtension as _;
+
+    match named {
+        Some(name) => conn
+            .query_row("SELECT id FROM user WHERE name = ?1", [name], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(|e| format!("looking up the account `{name}`: {e}"))?
+            .ok_or_else(|| format!("no account named `{name}` in this library")),
+        None => conn
+            // `MIN` over an empty table answers one row holding NULL rather than
+            // no rows, so `optional()` never sees `None` and the written error
+            // was unreachable. Typed as `Option<i64>` so the NULL is what
+            // carries it. Found by the second whole-branch review.
+            .query_row("SELECT MIN(id) FROM user", [], |row| {
+                row.get::<_, Option<i64>>(0)
+            })
+            .map_err(|e| format!("looking up this library's accounts: {e}"))?
+            .ok_or_else(|| "this library holds no accounts at all".to_string()),
+    }
 }
 
 /// How long `scan` waits for its own watch probe's event to arrive before
@@ -607,12 +666,13 @@ fn parse_proposal_id(raw: &str) -> Result<i64, String> {
 fn export_targets(
     conn: &rusqlite::Connection,
     targets: &[(i64, String)],
+    user_id: i64,
     dir: Option<&Path>,
 ) -> Result<usize, String> {
     let mut total = 0usize;
     let mut failed: Vec<&str> = Vec::new();
     for (id, slug) in targets {
-        match taiyaku_library::export::work(conn, *id, dir) {
+        match taiyaku_library::export::work(conn, *id, user_id, dir) {
             Ok(exported) => {
                 for path in &exported.written {
                     println!("wrote {}", path.display());
@@ -648,6 +708,23 @@ fn export_targets(
                          what this library holds — which is no file at all where it \
                          holds nothing)",
                         path.display()
+                    );
+                }
+                // The fourth outcome, and the one nothing else here can say:
+                // a sidecar carries one reader's notes and position, so an
+                // export on a shared library leaves the other readers' behind.
+                // Not an error and not a refusal — one set per file is the
+                // format, not a fault — but it is a difference between
+                // "exported" and "exported everything", and a person reading
+                // the terminal is entitled to know which they got (§5.1).
+                if !exported.other_users.is_empty() {
+                    println!(
+                        "note: {} other reader(s) hold notes or a position for `{slug}` \
+                         and are not in these files: {}. A sidecar carries one reader's \
+                         state; `--dir DIR --user NAME` exports theirs somewhere of its \
+                         own (not --in-place, which would write over these)",
+                        exported.other_users.len(),
+                        exported.other_users.join(", ")
                     );
                 }
                 total += exported.written.len();
@@ -913,7 +990,11 @@ pub(crate) fn import_canonical(
     let doc = Sidecar::from_json(&text)?;
     let conn = library.conn();
     let (work_id, outcomes) = taiyaku_library::import::reimport(&conn, &doc, canonical)?;
-    let migration = taiyaku_library::migrate::work(&conn, work_id, canonical)?;
+    // The importing account, by the same rule `resolve_export_user`
+    // documents: the sidecar's own notes and progress belong to whoever is
+    // running the import on the host.
+    let user_id = resolve_export_user(&conn, None)?;
+    let migration = taiyaku_library::migrate::work(&conn, work_id, user_id, canonical)?;
     Ok((work_id, outcomes, migration))
 }
 

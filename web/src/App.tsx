@@ -1,13 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  Unauthenticated,
   getNotes,
   getProgress,
   getSidecarWithEtag,
   listWorks,
+  me,
   pageUrl,
   patchAlignment,
   putNotes,
   putProgress,
+  whenSignedOut,
 } from './api'
 import {
   alignedBreaksCached,
@@ -56,7 +59,9 @@ import {
   useScrollToCurrent,
   useWindowWidth,
 } from './hooks'
+import { Account } from './Account'
 import { CreditsPanel } from './CreditsPanel'
+import { Login } from './Login'
 import { Help } from './Help'
 import { intentOf, isInteractivePress, isInteractiveTarget } from './keys'
 import { keyPlan } from './keyplan'
@@ -644,6 +649,11 @@ function App() {
   const stepForwardRef = useRef<() => void>(() => undefined)
   const closeEditorRef = useRef<() => void>(() => undefined)
   const saveNotesRef = useRef<Debounced<[Note[]]> | null>(null)
+  // The progress writer, reachable from `forgetTheReader` above the point it is
+  // built — the same shape and the same reason as `saveNotesRef`.
+  const writeProgressRef = useRef<Debounced<
+    [string, { edition: string; slot: number }]
+  > | null>(null)
 
   const dragRef = useRef<DragStart | null>(null)
   // Where the pointer was on the previous pan frame, in client pixels. A ref
@@ -661,7 +671,96 @@ function App() {
   // `openFirstWork`, which is where the two `throw`s, the notes read's own
   // `catch` and the empty-document fallback all live and can be tested. What
   // is left here is the effect, the `cancelled` flag and five setters.
+  // **Sign-in is decided before the library is loaded, not discovered by it.**
+  // `pageUrl`/`thumbUrl` are `<img src>` URLs rather than fetches, so a signed
+  // out reader would otherwise see broken images with nothing saying why — the
+  // one failure `api.ts`'s `Unauthenticated` cannot reach. `me()` asks the
+  // question directly, once, and everything below waits on the answer.
+  const [signedIn, setSignedIn] = useState<boolean | undefined>(undefined)
+  const [accountOpen, setAccountOpen] = useState(false)
+  // Read by the window-level keydown listener, which subscribes once and must
+  // not be torn down and re-added every time the panel opens — the same reason
+  // `helpVisibleRef` and `panelModeRef` exist beside it.
+  const accountOpenRef = useRef(false)
+  accountOpenRef.current = accountOpen
+
+  /**
+   * **Whatever this reader loaded, forgotten.**
+   *
+   * Signing out cleared only `signedIn`, so the previous reader's work, notes
+   * and reading position stayed in state and were drawn to whoever signed in
+   * next on the same page load — for as long as the refetch took, or
+   * indefinitely if it failed, since that catch only logs. Found by the
+   * whole-branch review, 2026-08-18.
+   */
+  const forgetTheReader = useCallback(() => {
+    setSignedIn(false)
+    setAccountOpen(false)
+    setSession(undefined)
+    setEtag(undefined)
+    setNotesDoc(undefined)
+    setNotesEtag(undefined)
+    setNotesHistory(emptyHistory([]))
+    // **`editing` holds unsaved note bodies**, and clearing everything except it
+    // was the worse half of the bug rather than a smaller one: `visibleNotes`
+    // overlays `edits` immediately, so the next account saw the previous
+    // reader's private text on their pages — and `editsToWrite` keeps every
+    // non-blank leftover, so the next note interaction `PUT` it to the server
+    // under *their* session. The doc comment above claimed the opposite. Found
+    // by the second whole-branch review.
+    setEditing(nothingOpen())
+    setDragging(undefined)
+    setNotesNotice(undefined)
+    // **Cancelled rather than left armed**, through the refs that already exist
+    // for exactly this reason: a pending `putNotes` or `putProgress` firing
+    // after the sign-out would write the previous reader's work under whoever
+    // is signed in when the timer expires. The writers themselves are built
+    // four hundred lines below this, so naming them in a dependency array here
+    // would throw before the component ever rendered.
+    saveNotesRef.current?.cancel()
+    writeProgressRef.current?.cancel()
+    // **The correction too.** `pending` is an unconfirmed pairing the reader
+    // picked; left standing, the next account signing in on the same page load
+    // was shown a correction banner they never started, computed against a
+    // resolver that is no longer the one it was made on — and pressing Confirm
+    // wrote the previous reader's pairing into the shared sidecar under their
+    // session. `cancelCorrection` already clears all three; this reset cleared
+    // none of them. Found by the third whole-branch review.
+    setPending(undefined)
+    setCorrectionNotice(undefined)
+    setSubmitting(false)
+  }, [])
+
+  /**
+   * A 401 from *any* call, including the writes whose own `.catch` swallows the
+   * rejection — see `api.ts`'s `whenSignedOut`. Registered once; the load-time
+   * effect below handles the startup case, and this handles a session that dies
+   * while the reader is mid-volume.
+   */
   useEffect(() => {
+    whenSignedOut(forgetTheReader)
+  }, [forgetTheReader])
+  useEffect(() => {
+    let cancelled = false
+    me()
+      .then(() => {
+        if (!cancelled) setSignedIn(true)
+      })
+      .catch((why: unknown) => {
+        if (cancelled) return
+        // Anything that is not "signed out" is still a reason not to load, but
+        // it is worth seeing: a server that is down and a server that wants a
+        // password look the same from a login screen otherwise.
+        if (!(why instanceof Unauthenticated)) console.error(why)
+        forgetTheReader()
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [forgetTheReader])
+
+  useEffect(() => {
+    if (signedIn !== true) return
     let cancelled = false
     openFirstWork(STARTUP_PORTS)
       .then((opened) => {
@@ -677,12 +776,18 @@ function App() {
         setNotesHistory(emptyHistory(opened.notes.notes))
       })
       .catch((err: unknown) => {
-        if (!cancelled) console.error(err)
+        if (cancelled) return
+        // A 401 arriving here rather than at `me()` means the session ended
+        // between the two — a sweep, a revocation from another browser, a
+        // password change elsewhere. Routing rather than logging, because the
+        // reader can act on one and not the other.
+        if (err instanceof Unauthenticated) forgetTheReader()
+        else console.error(err)
       })
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [signedIn, forgetTheReader])
 
   // Depends on `resolver`/`editions` rather than `session` itself, so this
   // subscribes once after load rather than on every keypress — the handler
@@ -710,6 +815,7 @@ function App() {
           submitting: submittingRef.current,
           notesBusy: notesBusyRef.current,
           onControl: isInteractiveTarget(event.target),
+          accountOpen: accountOpenRef.current,
           zoomable: zoomable(
             zoomPrefsRef.current,
             drawnRef.current !== undefined,
@@ -729,6 +835,10 @@ function App() {
           return cancelCorrection()
         case 'toggle-chrome':
           return setChromeVisible((visible) => !visible)
+        case 'open-account':
+          return setAccountOpen(true)
+        case 'close-account':
+          return setAccountOpen(false)
         case 'begin-correction':
           return beginCorrection()
         case 'module':
@@ -1010,6 +1120,7 @@ function App() {
     }, NOTES_DEBOUNCE_MS),
   )
   saveNotesRef.current = saveNotes
+  writeProgressRef.current = writeProgress
   // `debounce` holds the callback it was built with for the life of the
   // component, and `writeNotes` closes over state that changes every render —
   // so the debounce calls through this ref to reach the current one rather
@@ -2283,6 +2394,21 @@ function App() {
   // tile in this strip than a gap was.
   const stripAnchor = gapMoves && (gapMoves.before?.at ?? gapMoves.after?.at)
 
+  // **Nothing is drawn until sign-in is known.** Rendering the reader first and
+  // replacing it once `me()` answers would flash a broken library at every
+  // signed-out visitor, and `undefined` here is "not asked yet" rather than a
+  // third state anyone has to handle further down.
+  if (signedIn === undefined) return null
+  if (!signedIn) {
+    return (
+      <Login
+        onSignedIn={() => {
+          setSignedIn(true)
+        }}
+      />
+    )
+  }
+
   return (
     // `position: relative` is what `Chrome` positions itself against —
     // `position: absolute` removes it from this flex column's layout flow
@@ -2603,6 +2729,13 @@ function App() {
           // finishing with the ones already touched.
           setEditing((open) => ({ ...open, panel: undefined }))
         }}
+      />
+      <Account
+        visible={accountOpen}
+        onClose={() => {
+          setAccountOpen(false)
+        }}
+        onSignedOut={forgetTheReader}
       />
       {/*
         `borrowNote` takes `editions.length` alone, not `state` or

@@ -57,7 +57,7 @@
 //!
 //! | Document | "Already holds state" means | Checked with |
 //! | --- | --- | --- |
-//! | `.progress.json` | a `progress` row exists for this work and [`crate::export::LOCAL_USER`] | [`crate::state::progress`] is `Some` |
+//! | `.progress.json` | a `progress` row exists for this work and [`crate::user_id`] | [`crate::state::progress`] is `Some` |
 //! | `.notes.json` | at least one `note` row exists for this work and that user | [`crate::state::notes`]`.notes` is non-empty |
 //! | `.truth.json` | at least one `truth_page` or `truth_member` row exists for this work | [`crate::state::truth`] is `Some` |
 //! | `.library.json` | any hand-fixed metadata is recorded for this work | ![`LibraryDoc::is_empty`] |
@@ -244,11 +244,12 @@ impl SiblingMigration {
 pub fn work(
     conn: &Connection,
     work_id: i64,
+    user_id: i64,
     sidecar_path: &Path,
 ) -> Result<SiblingMigration, String> {
     Ok(SiblingMigration {
-        progress: migrate_progress(conn, work_id, sidecar_path)?,
-        notes: migrate_notes(conn, work_id, sidecar_path)?,
+        progress: migrate_progress(conn, work_id, user_id, sidecar_path)?,
+        notes: migrate_notes(conn, work_id, user_id, sidecar_path)?,
         truth: migrate_truth(conn, work_id, sidecar_path)?,
         library: migrate_library(conn, work_id, sidecar_path)?,
     })
@@ -307,6 +308,78 @@ fn marker(conn: &Connection, work_id: i64, document: &str) -> Result<Option<bool
 /// — from being destroyed by an export in between.
 pub(crate) fn absorbed(conn: &Connection, work_id: i64, document: &str) -> Result<bool, String> {
     Ok(marker(conn, work_id, document)?.unwrap_or(false))
+}
+
+/// Whether this library has ever had the content of a **per-user** document
+/// belonging to *this* user.
+///
+/// **`absorbed` alone was the cause of a data loss the `--in-place --user`
+/// refusal only papered over.** That marker is keyed `(work_id, document)` with
+/// no user, while the state an export reads became keyed on the user — so
+/// `export --all --in-place` defaulting to the lowest account id found no notes
+/// and no position for them, marked both documents stale, and had the guard
+/// against removing a never-absorbed file satisfied by a *different* reader's
+/// original import. The reader's own `taiyaku.notes.json` was overwritten with
+/// an empty document and their `taiyaku.progress.json` deleted, with the "other
+/// readers hold state" line printing after the files were gone.
+///
+/// So a per-user document is only ever treated as absorbed when the exporting
+/// user is the one who has state for it. `truth` and `library` are not per-user
+/// and keep using [`absorbed`] unchanged. Found by the second whole-branch
+/// review.
+///
+/// # Errors
+///
+/// Returns an error if the query fails.
+pub(crate) fn absorbed_for(
+    conn: &Connection,
+    work_id: i64,
+    document: &str,
+    user_id: i64,
+) -> Result<bool, String> {
+    if !absorbed(conn, work_id, document)? {
+        return Ok(false);
+    }
+    let (mine, theirs) = match document {
+        NOTES => held(conn, "note", work_id, user_id)?,
+        PROGRESS => held(conn, "progress", work_id, user_id)?,
+        // Not per-user: one answer for the whole library, so the marker alone
+        // is the whole question.
+        _ => return Ok(true),
+    };
+    // **The danger is narrower than "this user has no state".** A document
+    // nobody has state for is nobody's to lose — declining to write it there
+    // would make an export refuse to rewrite the empty file it had just written,
+    // which is a second defect rather than a fix. What must be refused is
+    // touching a file whose content belongs to *somebody else*.
+    Ok(mine || !theirs)
+}
+
+/// Whether this user, and whether anyone else, holds rows for this work in a
+/// per-user table.
+///
+/// `table` is one of two fixed literals from the match above, never caller
+/// input — a `?1` cannot name a table, and this is the whole of why the two
+/// arms exist rather than one parameterised query.
+fn held(
+    conn: &Connection,
+    table: &str,
+    work_id: i64,
+    user_id: i64,
+) -> Result<(bool, bool), String> {
+    let count = |sql: String, args: [i64; 2]| -> Result<i64, String> {
+        conn.query_row(&sql, rusqlite::params![args[0], args[1]], |row| row.get(0))
+            .map_err(|e| format!("checking {table} for work {work_id}: {e}"))
+    };
+    let mine = count(
+        format!("SELECT COUNT(*) FROM {table} WHERE work_id = ?1 AND user_id = ?2"),
+        [work_id, user_id],
+    )?;
+    let theirs = count(
+        format!("SELECT COUNT(*) FROM {table} WHERE work_id = ?1 AND user_id <> ?2"),
+        [work_id, user_id],
+    )?;
+    Ok((mine > 0, theirs > 0))
 }
 
 /// Record that this document is settled for this work, and whether the file's
@@ -447,16 +520,17 @@ fn step(
 fn migrate_progress(
     conn: &Connection,
     work_id: i64,
+    user_id: i64,
     sidecar_path: &Path,
 ) -> Result<Option<ProgressOutcome>, String> {
     let path = sibling_path(sidecar_path, "progress.json");
     match step(conn, work_id, PROGRESS, &path, || {
-        Ok(state::progress(conn, work_id, export::LOCAL_USER)?.is_some())
+        Ok(state::progress(conn, work_id, user_id)?.is_some())
     })? {
         Step::Absent => Ok(None),
         Step::Kept => Ok(Some(ProgressOutcome::AlreadyPresent)),
         Step::Unread => Ok(Some(ProgressOutcome::Unread)),
-        Step::Apply => Ok(Some(match apply_progress(conn, work_id, &path) {
+        Step::Apply => Ok(Some(match apply_progress(conn, work_id, user_id, &path) {
             Ok(()) => {
                 record_settled(conn, work_id, PROGRESS, true)?;
                 ProgressOutcome::Applied
@@ -466,28 +540,32 @@ fn migrate_progress(
     }
 }
 
-fn apply_progress(conn: &Connection, work_id: i64, path: &Path) -> Result<(), String> {
+fn apply_progress(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+    path: &Path,
+) -> Result<(), String> {
     let text = read_sibling(path)?;
     let progress: Progress = serde_json::from_str(&text)
         .map_err(|e| format!("{}: not a readable progress document: {e}", path.display()))?;
-    state::put_progress(conn, work_id, export::LOCAL_USER, &progress)
+    state::put_progress(conn, work_id, user_id, &progress)
 }
 
 fn migrate_notes(
     conn: &Connection,
     work_id: i64,
+    user_id: i64,
     sidecar_path: &Path,
 ) -> Result<Option<NotesOutcome>, String> {
     let path = sibling_path(sidecar_path, "notes.json");
     match step(conn, work_id, NOTES, &path, || {
-        Ok(!state::notes(conn, work_id, export::LOCAL_USER)?
-            .notes
-            .is_empty())
+        Ok(!state::notes(conn, work_id, user_id)?.notes.is_empty())
     })? {
         Step::Absent => Ok(None),
         Step::Kept => Ok(Some(NotesOutcome::AlreadyPresent)),
         Step::Unread => Ok(Some(NotesOutcome::Unread)),
-        Step::Apply => Ok(Some(match apply_notes(conn, work_id, &path) {
+        Step::Apply => Ok(Some(match apply_notes(conn, work_id, user_id, &path) {
             Ok(count) => {
                 record_settled(conn, work_id, NOTES, true)?;
                 NotesOutcome::Applied { count }
@@ -497,12 +575,17 @@ fn migrate_notes(
     }
 }
 
-fn apply_notes(conn: &Connection, work_id: i64, path: &Path) -> Result<usize, String> {
+fn apply_notes(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+    path: &Path,
+) -> Result<usize, String> {
     let text = read_sibling(path)?;
     let notes: Notes = serde_json::from_str(&text)
         .map_err(|e| format!("{}: not a readable notes document: {e}", path.display()))?;
     let count = notes.notes.len();
-    state::put_notes(conn, work_id, export::LOCAL_USER, &notes)?;
+    state::put_notes(conn, work_id, user_id, &notes)?;
     Ok(count)
 }
 

@@ -798,9 +798,9 @@ machine-obtained data with nothing to backfill.
 
 | Spec | Delivers | Depends on |
 | --- | --- | --- |
-| **A** *(this one)* | the store, import/export, `serve` off the database | — |
-| **A2** | argon2id, sessions, **API keys / HTTP Basic for OPDS**, guards, roles, per-root visibility, `FILE_DOWNLOAD`-equivalent — designed in `2026-08-14-library-auth-design.md` | A |
-| **B** | the scanner: facts on disk, a user-editable rule layer over them, proposals, change detection — **standing alone, per §13.6**; designed in `2026-08-14-library-scanner-design.md` | A |
+| **A** *(this one; shipped 2026-08-18, #76)* | the store, import/export, `serve` off the database | — |
+| **A2** *(shipped 2026-08-18)* | argon2id, sessions, **API keys / HTTP Basic for OPDS**, guards, roles, per-root visibility, `FILE_DOWNLOAD`-equivalent — designed in `2026-08-14-library-auth-design.md`. Per-root visibility ships as a resolved `Principal.roots` that no route filters on yet, and the capability flags likewise: B landed first and gave `work` no `root_id`, so C1's browse API is the first caller that can act on either (O54) | A |
+| **B** *(shipped 2026-08-18, #77)* | the scanner: facts on disk, a user-editable rule layer over them, proposals, change detection — **standing alone, per §13.6**; designed in `2026-08-14-library-scanner-design.md` | A |
 | **C1** | browse API and UI: shell, series page, search, and the reader gaining an entry point — designed in `2026-08-14-library-browse-design.md` | A2, B |
 | **C2** | download: member bytes, and an edition as one streamed CBZ (§13.1) | A2 |
 | **C3** | curation: the proposals inbox and metadata editing — designed in `2026-08-14-library-curation-design.md` | C1 |
@@ -826,7 +826,10 @@ Stump until it does not. §5 lists it "unchanged", which is true of spec A and
 ducks this; nothing removes it, and nothing should build on it either.
 
 **A2 lands before C** so the browse UI is built behind the guard rather than
-retrofitted into it. **OPDS clients need HTTP Basic or an API key rather than a
+retrofitted into it. *(It did — but B landed before A2 rather than after, which
+that spec's §8 had predicted the other way round. The consequence is recorded
+there and in O54: nothing changed about the ordering rule, only about which spec
+was available to populate the filter.)* **OPDS clients need HTTP Basic or an API key rather than a
 session cookie** — Panels and Chunky cannot hold one — and that is the path that
 matters most here, since the OPDS feed is what made this project's grouping
 visible to a real reader in the first place.

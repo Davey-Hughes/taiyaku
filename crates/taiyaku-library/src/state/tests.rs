@@ -174,8 +174,12 @@ fn notes_are_isolated_per_user() {
     let conn = library.conn();
     let work_id = a_work(&conn);
     // Migration 1 inserts only user 1; a second row for this test alone.
+    // `password_hash` is NOT NULL since migration 4, and `'!'` is the locked
+    // placeholder that migration gives the seeded row — a value no password
+    // verifies against, which is all this test needs from an account it never
+    // logs in as.
     conn.execute(
-        "INSERT INTO user (id, name, role) VALUES (2, 'second', 'admin')",
+        "INSERT INTO user (id, name, password_hash, role) VALUES (2, 'second', '!', 'admin')",
         [],
     )
     .expect("second user");
@@ -949,5 +953,120 @@ fn put_alignments_writes_a_hand_corrected_document_back_out_intact() {
         vec!["checked", "checked"],
         "both the asserted run and the one it displaced are stored hand-decided, \
          each carrying the note the correction was made with"
+    );
+}
+
+/// **Two readers may hold the same note id**, which a global `TEXT PRIMARY KEY`
+/// on `note.id` made impossible.
+///
+/// Notes became per-user in spec A2 — `put_notes` deletes
+/// `WHERE work_id = ?1 AND user_id = ?2` — but the id namespace stayed global,
+/// so a second reader submitting a document containing an id the first already
+/// held violated the primary key. The write is whole-document, so B's *entire*
+/// notes document was rejected rather than one note, and the 200-versus-500 told
+/// B whether an id existed anywhere in the library.
+///
+/// Reachable without anyone acting oddly: B imports a `taiyaku.notes.json` A
+/// exported, or both accounts receive the same sidecar. Found by the
+/// whole-branch review, 2026-08-18; fixed by migration 5.
+#[test]
+fn two_readers_can_hold_the_same_note_id() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work(&conn);
+    conn.execute(
+        "INSERT INTO user (id, name, password_hash, role) VALUES (2, 'second', '!', 'user')",
+        [],
+    )
+    .expect("second user");
+
+    let shared = "01HSHAREDID";
+    put_notes(
+        &conn,
+        work_id,
+        1,
+        &notes_doc(&[(shared, "alice's", "2026-08-18T10:00:00Z")]),
+    )
+    .expect("alice writes");
+    put_notes(
+        &conn,
+        work_id,
+        2,
+        &notes_doc(&[(shared, "bob's", "2026-08-18T10:00:00Z")]),
+    )
+    .expect("bob writes a note with the id alice already holds");
+
+    let alice = notes(&conn, work_id, 1).expect("reads");
+    let bob = notes(&conn, work_id, 2).expect("reads");
+    assert_eq!(alice.notes.len(), 1);
+    assert_eq!(bob.notes.len(), 1);
+    assert_eq!(alice.notes[0].body, "alice's");
+    assert_eq!(bob.notes[0].body, "bob's");
+}
+
+/// One reader still cannot hold one id twice — the constraint moved rather than
+/// went away, so `put_notes`'s own `# Errors` about a repeated id stays true
+/// within a document.
+#[test]
+fn one_reader_still_cannot_hold_one_id_twice() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work(&conn);
+
+    let doubled = notes_doc(&[
+        ("01HSAME", "first", "2026-08-18T10:00:00Z"),
+        ("01HSAME", "second", "2026-08-18T10:00:00Z"),
+    ]);
+    assert!(
+        put_notes(&conn, work_id, 1, &doubled).is_err(),
+        "a document repeating an id must still be refused"
+    );
+}
+
+/// **One reader may hold one note id on two different works.**
+///
+/// `(user_id, id)` was too wide by one column: `put_notes` replaces one
+/// reader's notes on one work, so that is the scope an id is unique in.
+/// Reachable by copying a `taiyaku.notes.json` between volumes, and the failure
+/// was the same whole-document 500 migration 5 was written to remove.
+///
+/// Found by the second whole-branch review.
+#[test]
+fn one_reader_can_hold_one_note_id_on_two_works() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let first = a_work(&conn);
+    let second = {
+        let json = r#"{"taiyaku":1,"work":{"title":"Second","reading":"rtl"},
+            "editions":{"raw-mono":{"label":"R","members":[
+              {"path":"raw/v02.cbz","sha256":"cafebabe","pages":200}]}},
+            "hub":"raw-mono","alignments":[]}"#;
+        let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+        crate::import::sidecar(&conn, &doc, Path::new("/y/taiyaku.json")).expect("import")
+    };
+
+    let shared = "01HSAMEIDTWOWORKS";
+    put_notes(
+        &conn,
+        first,
+        1,
+        &notes_doc(&[(shared, "on volume one", "2026-08-19T10:00:00Z")]),
+    )
+    .expect("writes on the first work");
+    put_notes(
+        &conn,
+        second,
+        1,
+        &notes_doc(&[(shared, "on volume two", "2026-08-19T10:00:00Z")]),
+    )
+    .expect("the same reader, the same id, a different work");
+
+    assert_eq!(
+        notes(&conn, first, 1).expect("reads").notes[0].body,
+        "on volume one"
+    );
+    assert_eq!(
+        notes(&conn, second, 1).expect("reads").notes[0].body,
+        "on volume two"
     );
 }

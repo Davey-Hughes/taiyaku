@@ -283,6 +283,7 @@ fn a_resolved_root_keeps_covers_and_thumbs_as_siblings() {
         )
         .covers(),
         log: None,
+        auth: crate::session::AuthConfig::default(),
     };
     let covers = state.cache_dir.clone();
     let thumbs = state.thumb_cache_dir();
@@ -426,6 +427,7 @@ async fn serve_binds_the_address_and_answers_on_it() {
                 None,
                 false,
                 Some(cache),
+                crate::session::AuthConfig::default(),
             )
             .await
         }
@@ -439,7 +441,13 @@ async fn serve_binds_the_address_and_answers_on_it() {
         if serving.is_finished() {
             break;
         }
-        if let Ok(mut r) = ureq::get(&url).call() {
+        if let Ok(mut r) = ureq::get(&url)
+            .header(
+                "authorization",
+                crate::test_support::fixture_authorization(),
+            )
+            .call()
+        {
             answered = Some(r.body_mut().read_to_string().unwrap_or_default());
             break;
         }
@@ -521,6 +529,7 @@ async fn serve_caches_covers_and_tiles_under_the_resolved_root() {
                 None,
                 false,
                 Some(cache),
+                crate::session::AuthConfig::default(),
             )
             .await
         }
@@ -532,6 +541,10 @@ async fn serve_caches_covers_and_tiles_under_the_resolved_root() {
             break;
         }
         if ureq::get(&format!("http://{addr}/api/works"))
+            .header(
+                "authorization",
+                crate::test_support::fixture_authorization(),
+            )
             .call()
             .is_ok()
         {
@@ -552,10 +565,18 @@ async fn serve_caches_covers_and_tiles_under_the_resolved_root() {
     // status is carried as the message a failure prints rather than
     // unwrapped here.
     let cover = ureq::get(&format!("http://{addr}/opds/v1.2/works/w/a/cover"))
+        .header(
+            "authorization",
+            crate::test_support::fixture_authorization(),
+        )
         .call()
         .map(|r| r.status().as_u16())
         .map_err(|e| e.to_string());
     let tile = ureq::get(&format!("http://{addr}/api/works/w/a/pages/0/thumb"))
+        .header(
+            "authorization",
+            crate::test_support::fixture_authorization(),
+        )
         .call()
         .map(|r| r.status().as_u16())
         .map_err(|e| e.to_string());

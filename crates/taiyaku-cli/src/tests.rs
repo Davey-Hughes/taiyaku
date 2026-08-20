@@ -2552,8 +2552,9 @@ fn serve_refuses_an_unknown_flag() {
     let err = serve(&argv(&["--bogus"])).unwrap_err();
     assert_eq!(
         err,
-        "serve has no flag `--bogus`; its flags are --addr, --cache, --db, --log-requests, \
-             --refresh-stump, --stump-key, --stump-url"
+        "serve has no flag `--bogus`; its flags are --addr, --allow-web-setup, --cache, \
+             --db, --insecure-cookies, --log-requests, --refresh-stump, \
+             --secure-cookies, --stump-key, --stump-url, --trusted-proxy"
     );
 }
 
@@ -2967,3 +2968,99 @@ fn align_write_reports_a_read_error_other_than_not_found() {
 // `run`, and translate `Err` into a message on stderr and exit code 1;
 // every one of those four lines is exercised in `run`'s own tests above,
 // and `run` is the whole of what `main` delegates to.
+
+/// §6: **configuring any trusted proxy implies `Secure` on the session
+/// cookie.** A proxy in front means TLS terminated there, and a cookie without
+/// `Secure` travels in clear over any non-TLS hop behind it.
+#[test]
+fn a_trusted_proxy_implies_a_secure_cookie() {
+    let auth = super::serve_auth(&argv(&["--trusted-proxy", "10.0.0.0/8"])).expect("parses");
+    assert_eq!(auth.trusted_proxies.len(), 1);
+    assert!(auth.secure_cookies);
+    assert!(!auth.allow_web_setup);
+}
+
+/// And `--insecure-cookies` is the deliberate opt-out for a plain-HTTP
+/// deployment on a private network — a separate flag rather than a silent
+/// default, because the failure it prevents is invisible: the cookie simply
+/// works, and is simply readable.
+#[test]
+fn insecure_cookies_overrides_that_implication() {
+    let auth = super::serve_auth(&argv(&[
+        "--trusted-proxy",
+        "10.0.0.0/8",
+        "--insecure-cookies",
+    ]))
+    .expect("parses");
+    assert!(!auth.secure_cookies);
+    assert_eq!(auth.trusted_proxies.len(), 1);
+}
+
+/// With nothing configured nothing is trusted, and the cookie carries no
+/// `Secure` — which is right for `serve` on a laptop over plain HTTP, and is
+/// what makes `--trusted-proxy` the thing that changes the deployment's mind.
+#[test]
+fn no_flags_trusts_nobody() {
+    let auth = super::serve_auth(&argv(&[])).expect("parses");
+    assert!(auth.trusted_proxies.is_empty());
+    assert!(!auth.secure_cookies);
+    assert!(!auth.allow_web_setup);
+}
+
+/// Repeatable, because one household can sit behind two proxies and a flag that
+/// silently kept only the last would be the kind of quiet wrong answer this
+/// command's flag handling exists to refuse.
+#[test]
+fn trusted_proxy_is_repeatable() {
+    let auth = super::serve_auth(&argv(&[
+        "--trusted-proxy",
+        "10.0.0.0/8",
+        "--trusted-proxy",
+        "192.168.1.1",
+    ]))
+    .expect("parses");
+    assert_eq!(auth.trusted_proxies.len(), 2);
+}
+
+/// A range that is not one is refused at startup, naming which — rather than
+/// silently trusting nothing and leaving the rate limiter keyed on a proxy's
+/// own address for the life of the deployment.
+#[test]
+fn a_malformed_trusted_proxy_is_refused_by_name() {
+    let err = super::serve_auth(&argv(&["--trusted-proxy", "not-a-range"])).unwrap_err();
+    assert!(err.contains("--trusted-proxy"), "{err}");
+    assert!(err.contains("not-a-range"), "{err}");
+
+    let err = super::serve_auth(&argv(&["--trusted-proxy", "10.0.0.0/33"])).unwrap_err();
+    assert!(err.contains("33"), "{err}");
+
+    let err = super::serve_auth(&argv(&["--trusted-proxy"])).unwrap_err();
+    assert!(err.contains("needs a CIDR range"), "{err}");
+}
+
+/// **`Secure` must be reachable without `--trusted-proxy`**, which is the flag
+/// about believing `X-Forwarded-For` rather than about TLS.
+///
+/// The ordinary deployment — `caddy reverse_proxy 127.0.0.1:8484` in front of a
+/// loopback server — forwards no address and needs no CIDR, so before this it
+/// would have configured neither flag and sent a thirty-day token with no
+/// `Secure`, without anybody passing the documented opt-out. Found by the
+/// whole-branch review, 2026-08-18.
+#[test]
+fn secure_cookies_can_be_asked_for_without_trusting_a_proxy() {
+    let auth = super::serve_auth(&argv(&["--secure-cookies"])).expect("parses");
+    assert!(auth.secure_cookies);
+    assert!(
+        auth.trusted_proxies.is_empty(),
+        "asking for Secure must not imply trusting a forwarded address"
+    );
+}
+
+/// `--insecure-cookies` still overrides both ways of asking, so there is
+/// exactly one way to end up without `Secure` deliberately.
+#[test]
+fn insecure_cookies_overrides_an_explicit_request_too() {
+    let auth =
+        super::serve_auth(&argv(&["--secure-cookies", "--insecure-cookies"])).expect("parses");
+    assert!(!auth.secure_cookies);
+}

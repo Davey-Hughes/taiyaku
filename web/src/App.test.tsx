@@ -68,6 +68,17 @@ const ports = vi.hoisted(() => ({
   putNotes: vi.fn(),
   putProgress: vi.fn(),
   patchAlignment: vi.fn(),
+  // Spec A2: `App` asks who it is before it loads anything, so every test in
+  // this file needs an answer. Defaulted to "signed in" here rather than set
+  // per test, because being signed out is one behaviour and the other
+  // seventy-odd tests are about the reader rather than about the guard.
+  me: vi.fn(),
+  // The account panel's own calls. `App` renders `<Account>` unconditionally,
+  // so any test that opens it reaches these — and an unmocked `logout` leaves
+  // `onSignedOut` unfired, which looks exactly like the sign-out not working.
+  logout: vi.fn(),
+  listKeys: vi.fn(),
+  listSessions: vi.fn(),
   wasmResolver: vi.fn(),
 }))
 
@@ -97,6 +108,10 @@ vi.mock('./api', async (importOriginal) => ({
   putNotes: ports.putNotes,
   putProgress: ports.putProgress,
   patchAlignment: ports.patchAlignment,
+  me: ports.me,
+  logout: ports.logout,
+  listKeys: ports.listKeys,
+  listSessions: ports.listSessions,
 }))
 
 const { default: App } = await import('./App')
@@ -209,6 +224,16 @@ beforeEach(() => {
   })
   vi.stubGlobal('localStorage', fakeStorage())
   vi.clearAllMocks()
+  // Signed in, for the reason the port's own comment gives.
+  ports.logout.mockResolvedValue(undefined)
+  ports.listKeys.mockResolvedValue([])
+  ports.listSessions.mockResolvedValue([])
+  ports.me.mockResolvedValue({
+    user_id: 1,
+    admin: true,
+    can_download: true,
+    can_stream: true,
+  })
   resolver = disposable()
   // Task 14: `listWorks` answers objects rather than bare ids; `WORK` stays
   // the bare slug everywhere else in this file (`getSidecarWithEtag`,
@@ -421,6 +446,45 @@ const drawnRect = (host: HTMLElement) =>
 // ---- opening ----------------------------------------------------------------
 
 describe('opening a work', () => {
+  /**
+   * `A` opens the account panel, `Escape` closes it, and signing out forgets
+   * what this reader loaded.
+   *
+   * **`Escape` had to join `Guards` for the middle step**: without it, dismissing
+   * the panel fell through to `cancel-correction` and silently abandoned a
+   * pending correction. And signing out cleared five pieces of state but not
+   * `editing`, whose `edits` map holds unsaved note bodies — which the next
+   * account saw on their pages and would have written under their own session.
+   * Both found by the second whole-branch review.
+   */
+  it('opens the account panel on A, closes it on Escape, and forgets on sign-out', async () => {
+    const host = await open()
+    const signOutButton = () =>
+      [...host.querySelectorAll('button')].find((b) =>
+        (b.textContent ?? '').includes('Sign out'),
+      )
+
+    press('A')
+    await settle()
+    expect(signOutButton(), 'A opens the panel').toBeDefined()
+
+    press('Escape')
+    await settle()
+    expect(signOutButton(), 'Escape closes it').toBeUndefined()
+
+    press('A')
+    await settle()
+    await act(async () => {
+      signOutButton()?.click()
+      await Promise.resolve()
+    })
+    await settle()
+
+    // The reader is gone: no pages, and the panel with it.
+    expect(pages(host)).toEqual([])
+    expect(signOutButton()).toBeUndefined()
+  })
+
   it('draws nothing until the load answers, then the restored page', async () => {
     const host = mount(<App />)
     // `if (!session) return null` — the reader has no loading state, by design.

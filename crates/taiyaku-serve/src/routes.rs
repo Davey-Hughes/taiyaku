@@ -627,17 +627,57 @@ impl IntoResponse for NoNotes {
 /// reports the file honestly: a reader with no notes and a reader who deleted
 /// their last note are in the same state, and nothing downstream benefits from
 /// telling them apart.
+/// The reader this request is, taken from the [`crate::auth::Principal`] the
+/// guard resolved.
+///
+/// **A `Result` rather than an `Option`, and never a default.** Falling back to
+/// a user id when the extension is absent is how the two `LOCAL_USER = 1`
+/// constants this replaced came to answer for everybody: a default that is right
+/// for one reader is silently wrong for the second. The extension is present on
+/// every guarded route by construction, so its absence is a routing mistake, and
+/// a 500 naming it is the honest answer.
+fn reader(request_extensions: &axum::http::Extensions) -> Result<i64, NoPrincipal> {
+    request_extensions
+        .get::<crate::auth::Principal>()
+        .map(|principal| principal.user_id)
+        .ok_or(NoPrincipal)
+}
+
+/// A guarded route reached without a principal, which is a routing mistake
+/// rather than anything a client did.
+///
+/// A named zero-sized type rather than a bare `Response`, for the same reason
+/// [`NotAPageIndex`] is one: a `Response` is 128 bytes and `Result<i64, Response>`
+/// trips `clippy::result_large_err`.
+#[derive(Debug)]
+struct NoPrincipal;
+
+impl IntoResponse for NoPrincipal {
+    fn into_response(self) -> Response {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "no principal on a guarded route",
+        )
+            .into_response()
+    }
+}
+
 async fn get_notes(
     State(state): State<Arc<ServeState>>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<String>,
     headers: HeaderMap,
 ) -> Response {
     // A file read, on the same disk a page comes from and behind the same NFS
     // mount — `get_page`'s reasoning about the async worker applies unchanged
     // (O12).
+    let user_id = match reader(&extensions) {
+        Ok(id) => id,
+        Err(missing) => return missing.into_response(),
+    };
     let loaded = tokio::task::spawn_blocking(move || {
         let found = state.work_or_missing(&id).map_err(NoNotes::NotFound)?;
-        let notes = crate::notes::load(&state.library, found)
+        let notes = crate::notes::load(&state.library, found, user_id)
             .map_err(NoNotes::Failed)?
             .unwrap_or_else(|| crate::notes::empty(&found.id));
         crate::notes::to_json(&notes).map_err(NoNotes::Failed)
@@ -685,6 +725,7 @@ async fn get_notes(
 #[allow(clippy::result_large_err)]
 async fn put_notes(
     State(state): State<Arc<ServeState>>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<String>,
     headers: HeaderMap,
     body: axum::body::Bytes,
@@ -695,6 +736,11 @@ async fn put_notes(
     let incoming: crate::notes::Notes = match serde_json::from_slice(&body) {
         Ok(notes) => notes,
         Err(why) => return bad_request(format!("these are not notes: {why}")),
+    };
+
+    let user_id = match reader(&extensions) {
+        Ok(id) => id,
+        Err(missing) => return missing.into_response(),
     };
 
     // Serialising, hashing and writing all block, and the read-compare-write
@@ -709,7 +755,7 @@ async fn put_notes(
         // so — see `Work::notes_guard`.
         let _guard = found.notes_guard();
 
-        let current = crate::notes::load(&state.library, found)
+        let current = crate::notes::load(&state.library, found, user_id)
             .map_err(NoNotes::Failed)?
             .unwrap_or_else(|| crate::notes::empty(&found.id));
         let tag = notes_etag(&crate::notes::to_json(&current).map_err(NoNotes::Failed)?);
@@ -745,7 +791,7 @@ async fn put_notes(
             crate::notes::Invalid::Refused(message) => NoNotes::Refused(message),
         })?;
 
-        crate::notes::store(&state.library, found, &incoming).map_err(NoNotes::Failed)?;
+        crate::notes::store(&state.library, found, user_id, &incoming).map_err(NoNotes::Failed)?;
         crate::notes::to_json(&incoming).map_err(NoNotes::Failed)
     })
     .await;
@@ -946,14 +992,20 @@ async fn put_truth(
 
 async fn get_progress(
     State(state): State<Arc<ServeState>>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<String>,
 ) -> Response {
+    let user_id = match reader(&extensions) {
+        Ok(id) => id,
+        Err(missing) => return missing.into_response(),
+    };
+
     // O12: a file read, on the same disk a page comes from and behind the same
     // NFS mount. `get_page`'s reasoning above applies to it unchanged — these
     // two handlers simply did not get it when M2 wrote them.
     let loaded = tokio::task::spawn_blocking(move || {
         let found = state.work_or_missing(&id).map_err(NoProgress::NotFound)?;
-        crate::progress::load(&state.library, found).map_err(NoProgress::Failed)
+        crate::progress::load(&state.library, found, user_id).map_err(NoProgress::Failed)
     })
     .await;
 
@@ -973,9 +1025,15 @@ async fn get_progress(
 
 async fn put_progress(
     State(state): State<Arc<ServeState>>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<String>,
     axum::Json(progress): axum::Json<crate::Progress>,
 ) -> Response {
+    let user_id = match reader(&extensions) {
+        Ok(id) => id,
+        Err(missing) => return missing.into_response(),
+    };
+
     // Validation moves in here with the write rather than staying outside it.
     // It reads the in-memory sidecar and blocks on nothing, but splitting the
     // handler across the boundary would mean looking the work up twice — once
@@ -1010,7 +1068,8 @@ async fn put_progress(
                 progress.edition, progress.slot
             )));
         }
-        crate::progress::store(&state.library, found, &progress).map_err(NoProgress::Failed)
+        crate::progress::store(&state.library, found, user_id, &progress)
+            .map_err(NoProgress::Failed)
     })
     .await;
 
@@ -1309,27 +1368,160 @@ async fn patch_alignments(
 
 /// Build the router. Separate from `serve` so tests can drive it with
 /// `oneshot` and never open a socket.
-pub fn build_router(state: Arc<ServeState>) -> Router {
-    let log = state.log.clone();
-    Router::new()
-        .route("/api/works", get(list_works))
-        .route("/api/works/{work}", get(get_sidecar))
-        .route("/api/works/{work}/{edition}/pages/{index}", get(get_page))
-        .route(
+/// **Every path this server answers, and the handler for each.**
+///
+/// The router's own source of truth, and the reason
+/// `auth::tests::every_route_refuses_an_anonymous_request` is a test rather
+/// than a checklist. [`build_router`] folds this list, so a path that is not
+/// here does not exist, and the enumeration test walks the same list. A route
+/// added here therefore arrives guarded *and* covered on the commit that adds
+/// it — which is exactly the failure a reviewer's checklist has: it goes stale
+/// the first time someone adds a route and does not think about auth.
+///
+/// A `Vec` rather than a `const` array because `MethodRouter` is not
+/// const-constructible. The cost is one allocation per `build_router` call, of
+/// which there is one per process and one per test.
+pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter<Arc<ServeState>>)>
+{
+    let mut routes = vec![
+        ("/api/works", get(list_works)),
+        ("/api/works/{work}", get(get_sidecar)),
+        ("/api/works/{work}/{edition}/pages/{index}", get(get_page)),
+        (
             "/api/works/{work}/{edition}/pages/{index}/thumb",
             get(get_thumb),
-        )
-        .route(
+        ),
+        (
             "/api/works/{work}/progress",
             get(get_progress).put(put_progress),
-        )
-        .route("/api/works/{work}/notes", get(get_notes).put(put_notes))
-        .route("/api/works/{work}/truth", get(get_truth).put(put_truth))
-        .route(
+        ),
+        ("/api/works/{work}/notes", get(get_notes).put(put_notes)),
+        ("/api/works/{work}/truth", get(get_truth).put(put_truth)),
+        (
             "/api/works/{work}/alignments",
             axum::routing::patch(patch_alignments),
-        )
-        .merge(crate::opds::routes())
+        ),
+    ];
+    routes.push(("/api/me", get(crate::session::whoami)));
+    routes.push((
+        "/api/keys",
+        get(crate::session::list_keys).post(crate::session::create_key),
+    ));
+    routes.push((
+        "/api/keys/{id}",
+        axum::routing::delete(crate::session::revoke_key),
+    ));
+    routes.push(("/api/sessions", get(crate::session::list_sessions)));
+    routes.push((
+        "/api/sessions/{id}",
+        axum::routing::delete(crate::session::revoke_session),
+    ));
+    routes.push((
+        "/api/password",
+        axum::routing::put(crate::session::change_password),
+    ));
+    routes.extend(crate::opds::routes());
+    routes
+}
+
+/// The routes that are **not** behind the guard, and why each one cannot be.
+///
+/// Beside [`guarded_routes`] rather than scattered, so the split is one screen
+/// rather than a search — and so `auth::tests::every_route_refuses_an_anonymous_request`
+/// has an explicit statement of what it is not asserting over.
+///
+/// `POST /api/session` is a login: a request that is about to authenticate
+/// cannot already have. `DELETE /api/session` is a logout, which must work from
+/// a session that has already expired — a browser holding a stale cookie needs
+/// it cleared, and answering 401 would leave it stuck holding the thing it was
+/// trying to get rid of.
+pub(crate) fn open_routes() -> Vec<(&'static str, axum::routing::MethodRouter<Arc<ServeState>>)> {
+    vec![
+        (
+            "/api/session",
+            axum::routing::post(crate::session::login).delete(crate::session::logout),
+        ),
+        // Registered unconditionally and shut from inside, rather than
+        // registered only when the flag is on: the two are indistinguishable to
+        // a caller — both answer 404 — and one of them cannot get the condition
+        // wrong at startup and leave the route standing.
+        ("/api/claim", axum::routing::post(crate::session::claim)),
+    ]
+}
+
+/// `Cache-Control: private, no-store` on every guarded response that did not
+/// set one itself. See the call site in [`build_router`].
+async fn per_reader_by_default(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    if !response.headers().contains_key(header::CACHE_CONTROL) {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("private, no-store"),
+        );
+    }
+    response
+}
+
+pub fn build_router(state: Arc<ServeState>) -> Router {
+    let log = state.log.clone();
+    let guarded = guarded_routes()
+        .into_iter()
+        .fold(Router::new(), |router, (path, handler)| {
+            router.route(path, handler)
+        })
+        // **`route_layer` rather than `layer`**, which is axum's own
+        // distinction and matters here: `layer` would wrap the fallback too, so
+        // an anonymous request to a path that does not exist would answer 401
+        // instead of 404 — telling a caller that every URL they invent is a
+        // real one they are merely not allowed to see. `route_layer` runs only
+        // where a route matched, which is what the enumeration test asserts
+        // over and what a 404 should still be able to say.
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::guard,
+        ))
+        // **A default, not eight call sites.** Every guarded response is
+        // per-reader unless it says otherwise, and the first attempt at this
+        // added the header at each place a per-reader document was built — which
+        // reached two of eight. `get_notes`, the route the constant's own doc
+        // named first, was not one of them, and neither were the OPDS feeds,
+        // which additionally get no `Set-Cookie` and so lack even the accident
+        // that makes most proxies decline to cache an authenticated response.
+        //
+        // A response that has already set `Cache-Control` keeps it: the page and
+        // thumbnail routes state their own `private, no-cache` with a lifetime
+        // and mean it. Everything else gets `private, no-store`, so a proxy —
+        // which spec A2 §11 puts in front — cannot store one reader's notes,
+        // position or catalogue and replay them to another. RFC 9111's bar on
+        // caching authenticated responses keys on `Authorization`, which the
+        // browser cookie path never sends. Found by the third whole-branch
+        // review.
+        .layer(axum::middleware::from_fn(per_reader_by_default));
+
+    // Merged *after* the guard is applied, which is the whole reason these two
+    // are a separate list: `route_layer` wraps the routes registered before it,
+    // so anything merged afterwards is outside it. That is a sharp edge — a
+    // route added to the wrong list is silently open.
+    //
+    // **Two tests stop that being invisible, and for one commit only one of
+    // them existed.** `every_route_refuses_an_anonymous_request` walks
+    // `guarded_routes` and derives its own count from both lists, so a route
+    // that leaves the guarded one fails it; `open_routes_are_the_ones_that_cannot_be_guarded`
+    // pins the exemption list itself and proves each entry is reachable
+    // anonymously. Before the second, nothing read this list at all — a route
+    // moved here shipped unauthenticated with a green suite, which the
+    // whole-branch review caught on 2026-08-18.
+    let open = open_routes()
+        .into_iter()
+        .fold(Router::new(), |router, (path, handler)| {
+            router.route(path, handler)
+        });
+
+    guarded
+        .merge(open)
         .layer(axum::middleware::from_fn(
             move |request: axum::extract::Request, next: axum::middleware::Next| {
                 let log = log.clone();

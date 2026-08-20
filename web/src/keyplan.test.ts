@@ -38,6 +38,7 @@ const CALM: Guards = {
   submitting: false,
   notesBusy: false,
   onControl: false,
+  accountOpen: false,
   zoomable: true,
   creditsPanel: true,
   helpEnabled: true,
@@ -454,6 +455,64 @@ describe('keyPlan, against intentOf', () => {
     expect(press('0')?.action).toEqual({
       kind: 'module',
       intent: ZOOM_WHOLE_INTENT,
+    })
+  })
+
+  /**
+   * **`A` is a character, and `Tab` is not — which is why `chrome` sits above
+   * the `onControl` guard and `account` must not.**
+   *
+   * `intentOf` bails only on ctrl/meta/alt, not Shift, so `READER_KEYS`'s `A`
+   * fires for a shifted `a` typed anywhere. With the account branch above the
+   * guard and `preventDefault: true`, a reader whose password contains a
+   * capital A could not type it into the login field, the account panel's
+   * current or new password fields, or the key-name box: the character never
+   * reached the input and the panel opened instead. Found by the whole-branch
+   * review, 2026-08-18.
+   */
+  it('leaves A alone when focus is in a control, unlike Tab', () => {
+    expect(act('A', { kind: 'account' }, { onControl: true })).toBeUndefined()
+    // And still opens the panel when nothing is focused, which is the half that
+    // would make this a regression rather than a fix if it broke.
+    expect(act('A', { kind: 'account' })).toEqual({ kind: 'open-account' })
+  })
+
+  /**
+   * **`Escape` belongs to whatever is on top.** Without the account panel in
+   * `Guards` it fell through to `cancel-correction`, so a reader dismissing the
+   * panel silently abandoned a pending correction — the panel stayed open and
+   * the correction was gone, with nothing saying either. The note editor
+   * already had exactly this guard.
+   *
+   * Found by the second whole-branch review.
+   */
+  it('closes the account panel on Escape rather than cancelling a correction', () => {
+    expect(
+      act('Escape', undefined, { accountOpen: true, correcting: true }),
+    ).toEqual({ kind: 'close-account' })
+    // And with no panel open, a correction is still what Escape abandons.
+    expect(act('Escape', undefined, { correcting: true })).toEqual({
+      kind: 'cancel-correction',
+    })
+  })
+
+  /**
+   * The account panel stands the reader keys down, exactly as the note editor
+   * does. Consulting it only for `Escape` left arrows turning the hidden reader
+   * behind the modal — and the debounced write recording that position.
+   *
+   * Found by the third whole-branch review.
+   */
+  it('stands the reader keys down while the account panel is open', () => {
+    for (const key of ['ArrowRight', 'ArrowLeft', ' ', 'c', '1']) {
+      expect(
+        act(key, { kind: 'step', by: 1 }, { accountOpen: true }),
+        `${key} reached the page behind the panel`,
+      ).toBeUndefined()
+    }
+    // Escape still closes it, which is the one key it does answer.
+    expect(act('Escape', undefined, { accountOpen: true })).toEqual({
+      kind: 'close-account',
     })
   })
 })

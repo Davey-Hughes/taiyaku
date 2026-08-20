@@ -61,7 +61,28 @@ pub(crate) fn work(dir: &str) -> Work {
 /// two fixtures sharing a connection would let one test's rows leak into
 /// another's.
 pub(crate) fn library() -> std::sync::Arc<taiyaku_library::Library> {
-    std::sync::Arc::new(taiyaku_library::Library::open_in_memory().expect("in-memory library"))
+    let library = taiyaku_library::Library::open_in_memory().expect("in-memory library");
+    // **Migration 4 leaves the seeded account locked**, which is correct for a
+    // real fresh library and useless for a fixture: every route is behind the
+    // guard since spec A2 and there is no bypass (§9), so a fixture library
+    // that nobody can authenticate against is a fixture no route test can use.
+    // Given a password here rather than at each call site, because "the fixture
+    // library" and "a library with a usable account" are the same thing for
+    // every test in this crate.
+    {
+        let conn = library.conn();
+        conn.execute(
+            "UPDATE user SET password_hash = ?1 WHERE id = 1",
+            [FIXTURE_PHC],
+        )
+        .expect("gives the fixture account a password");
+        conn.execute(
+            "INSERT INTO api_key (user_id, name, secret_sha256) VALUES (1, 'the suite', ?1)",
+            [taiyaku_library::credential::token_sha256(FIXTURE_KEY)],
+        )
+        .expect("gives the fixture account a key");
+    }
+    std::sync::Arc::new(library)
 }
 
 /// The fixture work, wired to a `LocalLibrary`, ready for `build_router`.
@@ -72,6 +93,7 @@ pub(crate) fn state(dir: &str) -> ServeState {
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: std::env::temp_dir().join(dir).join("covers"),
         log: None,
+        auth: crate::session::AuthConfig::default(),
     }
 }
 
@@ -256,6 +278,7 @@ pub(crate) fn state_with_real_pages() -> (std::sync::Arc<ServeState>, Fixture) {
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.path().join("covers"),
         log: None,
+        auth: crate::session::AuthConfig::default(),
     });
     (state, fixture)
 }
@@ -402,8 +425,10 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
             .join("taiyaku-test-router-over-a-library")
             .join("covers"),
         log: None,
+        auth: crate::session::AuthConfig::default(),
     });
-    (crate::build_router(state.clone()), state)
+    let router = authenticating(crate::build_router(state.clone()));
+    (router, state)
 }
 
 /// The two-edition, one-solved-edge shape a correction needs, over a **real**
@@ -463,8 +488,10 @@ pub(crate) fn router_over_a_library_with_two_editions()
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.path().join("covers"),
         log: None,
+        auth: crate::session::AuthConfig::default(),
     });
-    (crate::build_router(state.clone()), state, work_id, fixture)
+    let router = authenticating(crate::build_router(state.clone()));
+    (router, state, work_id, fixture)
 }
 
 /// A `GET` against `router`, driven with `oneshot` and no socket. Most
@@ -493,4 +520,100 @@ pub(crate) async fn body_string(response: axum::http::Response<axum::body::Body>
         .await
         .unwrap();
     String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+/// The password the fixture account holds, and the name it holds it under —
+/// migration 1 seeds `local`.
+///
+/// A constant rather than a random string per fixture so that a failing request
+/// in a test log can be reproduced by hand with `curl -u local:fixture`.
+pub(crate) const FIXTURE_NAME: &str = "local";
+pub(crate) const FIXTURE_PASSWORD: &str = "fixture";
+
+/// [`FIXTURE_PASSWORD`], already hashed.
+///
+/// **Pinned rather than hashed per fixture**, because argon2 runs unoptimized
+/// under `cargo test` — this workspace sets no `[profile.dev]` opt-level — and
+/// every `state()` call was paying a full hash for a password most tests never
+/// present. Measured: `every_route_refuses_an_anonymous_request` alone took
+/// 7.1 s to make 21 *anonymous* requests, and `.config/nextest.toml` states as
+/// fact that "nothing in 639 tests exceeds 0.75 s" and justifies its 30 s slow
+/// mark as "40x the slowest test". Found by the second whole-branch review.
+///
+/// `credential::tests::the_fixture_hash_still_verifies` is what stops this
+/// drifting from the password beside it.
+/// The key the suite authenticates with, and the reason the suite is fast.
+///
+/// **§2's design, used on its own terms.** A key is verified by sha256 and
+/// routed past argon2 by its `tyk_` prefix, so a test request costs microseconds
+/// where a password costs the measured 11.9 ms — and every authenticated request
+/// in this crate was paying the latter. Measured: `taiyaku-serve`'s suite went
+/// from 0.66 s on `main` to 11.85 s, with one concurrency test alone at 10.8 s,
+/// against a `.config/nextest.toml` that states "nothing in 639 tests exceeds
+/// 0.75 s" as fact. Found by the second whole-branch review.
+///
+/// Tests *about* passwords still use `FIXTURE_PASSWORD`, which is the point:
+/// they are the ones that should pay for argon2.
+pub(crate) const FIXTURE_KEY: &str = "tyk_the-suites-own-key-not-a-real-secret";
+
+pub(crate) const FIXTURE_PHC: &str = "$argon2id$v=19$m=19456,t=2,p=1$KtgzR4TOZsatunnAHzKmig$fRrVxJJcb/LwTcYO+9XZ4C5uNgdPM131N8iXWxLeXxk";
+
+/// Wrap a router so every request through it presents the fixture credential.
+///
+/// **Spec A2 §9 refuses a `--no-auth` flag and a dev bypass**, so the suite does
+/// not get one either: this is a test *client* that authenticates, through the
+/// real guard, with a real password that `give_the_fixture_account_a_password`
+/// actually stored. Nothing here is reachable from a production binary.
+///
+/// One function rather than one per helper, so "how a test authenticates" has a
+/// single answer — and a request that sets its own `Authorization` is left
+/// alone, so a test asserting a *wrong* credential still can.
+pub(crate) fn authenticating(router: axum::Router) -> axum::Router {
+    let credential = fixture_authorization();
+    router.layer(axum::middleware::from_fn(
+        move |mut request: axum::extract::Request, next: axum::middleware::Next| {
+            let credential = credential.clone();
+            async move {
+                if !request.headers().contains_key("authorization") {
+                    request.headers_mut().insert(
+                        "authorization",
+                        axum::http::HeaderValue::from_str(&credential).expect("ascii"),
+                    );
+                }
+                next.run(request).await
+            }
+        },
+    ))
+}
+
+/// The `Authorization` header value the suite presents.
+///
+/// The **key**, not the password — see [`FIXTURE_KEY`]. A handful of tests want
+/// the password specifically and build their own header.
+pub(crate) fn fixture_authorization() -> String {
+    use base64::Engine as _;
+
+    let encoded = base64::engine::general_purpose::STANDARD
+        .encode(format!("{FIXTURE_NAME}:{FIXTURE_KEY}").as_bytes());
+    format!("Basic {encoded}")
+}
+
+#[cfg(test)]
+mod pinned {
+    /// The pinned hash and the password beside it must stay one pair.
+    ///
+    /// A constant that stopped matching would make every fixture account
+    /// unauthenticatable, and the failure would surface as dozens of unrelated
+    /// route tests answering 401 rather than as anything naming the cause.
+    #[test]
+    fn the_fixture_hash_still_verifies() {
+        assert!(taiyaku_library::credential::verify_password(
+            super::FIXTURE_PASSWORD,
+            super::FIXTURE_PHC
+        ));
+        assert!(!taiyaku_library::credential::verify_password(
+            "not the fixture password",
+            super::FIXTURE_PHC
+        ));
+    }
 }

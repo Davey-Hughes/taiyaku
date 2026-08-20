@@ -1,3 +1,12 @@
+/// The account these tests export and import as.
+///
+/// A named constant rather than a bare `1` at forty call sites, and
+/// deliberately *not* a constant in `export.rs`: the one that used to live
+/// there answered for every reader in the library, which is what spec A2
+/// §5.1 removed. Here it means "whoever this test is", which is a fixture
+/// detail rather than a rule.
+const THE_READER: i64 = 1;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -56,7 +65,7 @@ fn no_sibling_files_at_all_is_a_report_with_nothing_in_it() {
     let conn = library.conn();
     let (work_id, path) = a_work(&conn, &root);
 
-    let report = work(&conn, work_id, &path).expect("migrates");
+    let report = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert!(report.is_empty(), "{report:?}");
 }
 
@@ -70,10 +79,10 @@ fn a_progress_json_beside_the_sidecar_migrates_the_reading_position() {
     let (work_id, path) = a_work(&conn, &root);
     write_sibling(&root, "progress.json", r#"{"edition":"raw-mono","slot":7}"#);
 
-    let report = work(&conn, work_id, &path).expect("migrates");
+    let report = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert_eq!(report.progress, Some(ProgressOutcome::Applied));
 
-    let recovered = state::progress(&conn, work_id, export::LOCAL_USER)
+    let recovered = state::progress(&conn, work_id, THE_READER)
         .expect("reads")
         .expect("a position was recorded");
     assert_eq!(
@@ -95,7 +104,7 @@ fn a_position_already_recorded_is_not_overwritten_by_the_file() {
     state::put_progress(
         &conn,
         work_id,
-        export::LOCAL_USER,
+        THE_READER,
         &Progress {
             edition: "raw-mono".to_string(),
             slot: 42,
@@ -104,10 +113,10 @@ fn a_position_already_recorded_is_not_overwritten_by_the_file() {
     .expect("recording the live position");
     write_sibling(&root, "progress.json", r#"{"edition":"raw-mono","slot":7}"#);
 
-    let report = work(&conn, work_id, &path).expect("migrates");
+    let report = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert_eq!(report.progress, Some(ProgressOutcome::AlreadyPresent));
 
-    let recovered = state::progress(&conn, work_id, export::LOCAL_USER)
+    let recovered = state::progress(&conn, work_id, THE_READER)
         .expect("reads")
         .expect("still recorded");
     assert_eq!(recovered.slot, 42, "the file must not have won");
@@ -121,13 +130,13 @@ fn a_progress_json_that_does_not_parse_is_reported_and_skipped() {
     let (work_id, path) = a_work(&conn, &root);
     write_sibling(&root, "progress.json", "not json at all");
 
-    let report = work(&conn, work_id, &path).expect("does not fail the import");
+    let report = work(&conn, work_id, THE_READER, &path).expect("does not fail the import");
     match report.progress {
         Some(ProgressOutcome::Malformed(msg)) => assert!(!msg.is_empty()),
         other => panic!("expected Malformed, got {other:?}"),
     }
     assert_eq!(
-        state::progress(&conn, work_id, export::LOCAL_USER).expect("reads"),
+        state::progress(&conn, work_id, THE_READER).expect("reads"),
         None,
         "nothing was written from an unreadable file"
     );
@@ -152,10 +161,10 @@ fn a_notes_json_beside_the_sidecar_migrates_every_note_id_body_and_region() {
         ]}"#,
     );
 
-    let report = work(&conn, work_id, &path).expect("migrates");
+    let report = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert_eq!(report.notes, Some(NotesOutcome::Applied { count: 2 }));
 
-    let recovered = state::notes(&conn, work_id, export::LOCAL_USER).expect("reads");
+    let recovered = state::notes(&conn, work_id, THE_READER).expect("reads");
     assert_eq!(
         recovered.notes,
         vec![
@@ -198,7 +207,7 @@ fn notes_already_held_are_not_overwritten_by_the_file() {
     state::put_notes(
         &conn,
         work_id,
-        export::LOCAL_USER,
+        THE_READER,
         &Notes {
             work: "t".to_string(),
             notes: vec![Note {
@@ -220,10 +229,10 @@ fn notes_already_held_are_not_overwritten_by_the_file() {
         r#"{"work":"t","notes":[{"id":"stale","edition":"raw-mono","slot":0,"body":"old","created":"2026-08-01T00:00:00Z","updated":"2026-08-01T00:00:00Z"}]}"#,
     );
 
-    let report = work(&conn, work_id, &path).expect("migrates");
+    let report = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert_eq!(report.notes, Some(NotesOutcome::AlreadyPresent));
 
-    let recovered = state::notes(&conn, work_id, export::LOCAL_USER).expect("reads");
+    let recovered = state::notes(&conn, work_id, THE_READER).expect("reads");
     assert_eq!(recovered.notes.len(), 1);
     assert_eq!(recovered.notes[0].id, "live", "the file must not have won");
 }
@@ -248,7 +257,7 @@ fn deleting_the_last_note_is_not_undone_by_the_next_import() {
         r#"{"work":"t","notes":[{"id":"01H1","edition":"raw-mono","slot":0,"body":"a reader's note","created":"2026-08-14T10:00:00Z","updated":"2026-08-14T10:00:00Z"}]}"#,
     );
 
-    let first = work(&conn, work_id, &path).expect("migrates");
+    let first = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert_eq!(first.notes, Some(NotesOutcome::Applied { count: 1 }));
 
     // The reader deletes their last note: `PUT /notes` with an empty
@@ -256,7 +265,7 @@ fn deleting_the_last_note_is_not_undone_by_the_next_import() {
     state::put_notes(
         &conn,
         work_id,
-        export::LOCAL_USER,
+        THE_READER,
         &Notes {
             work: "t".to_string(),
             notes: Vec::new(),
@@ -264,7 +273,7 @@ fn deleting_the_last_note_is_not_undone_by_the_next_import() {
     )
     .expect("the reader deletes their last note");
 
-    let second = work(&conn, work_id, &path).expect("migrates again");
+    let second = work(&conn, work_id, THE_READER, &path).expect("migrates again");
     assert_eq!(
         second.notes,
         Some(NotesOutcome::Unread),
@@ -274,7 +283,7 @@ fn deleting_the_last_note_is_not_undone_by_the_next_import() {
          hide (review 3, C1)"
     );
     assert!(
-        state::notes(&conn, work_id, export::LOCAL_USER)
+        state::notes(&conn, work_id, THE_READER)
             .expect("reads")
             .notes
             .is_empty(),
@@ -302,7 +311,7 @@ fn clearing_every_labelled_page_is_not_undone_by_the_next_import() {
         }}}}"#,
     );
 
-    let first = work(&conn, work_id, &path).expect("migrates");
+    let first = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert_eq!(
         first.truth,
         Some(TruthOutcome::Applied { pages: 2, boxes: 1 })
@@ -311,7 +320,7 @@ fn clearing_every_labelled_page_is_not_undone_by_the_next_import() {
     state::put_truth(&conn, work_id, &taiyaku_core::TruthDoc::new())
         .expect("the reader clears every labelled page");
 
-    let second = work(&conn, work_id, &path).expect("migrates again");
+    let second = work(&conn, work_id, THE_READER, &path).expect("migrates again");
     assert_eq!(
         second.truth,
         Some(TruthOutcome::Unread),
@@ -341,7 +350,7 @@ fn a_sibling_written_after_the_first_import_is_not_migrated_later() {
     let conn = library.conn();
     let (work_id, path) = a_work(&conn, &root);
 
-    let first = work(&conn, work_id, &path).expect("migrates");
+    let first = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert!(
         first.is_empty(),
         "nothing beside the sidecar yet: {first:?}"
@@ -353,7 +362,7 @@ fn a_sibling_written_after_the_first_import_is_not_migrated_later() {
         r#"{"work":"t","notes":[{"id":"01H1","edition":"raw-mono","slot":0,"body":"exported, then deleted","created":"2026-08-14T10:00:00Z","updated":"2026-08-14T10:00:00Z"}]}"#,
     );
 
-    let second = work(&conn, work_id, &path).expect("migrates again");
+    let second = work(&conn, work_id, THE_READER, &path).expect("migrates again");
     assert_eq!(
         second.notes,
         Some(NotesOutcome::Unread),
@@ -361,7 +370,7 @@ fn a_sibling_written_after_the_first_import_is_not_migrated_later() {
          rows are empty"
     );
     assert!(
-        state::notes(&conn, work_id, export::LOCAL_USER)
+        state::notes(&conn, work_id, THE_READER)
             .expect("reads")
             .notes
             .is_empty(),
@@ -386,7 +395,7 @@ fn a_sibling_that_was_malformed_is_migrated_once_it_is_fixed() {
     let (work_id, path) = a_work(&conn, &root);
     write_sibling(&root, "notes.json", "{ this is not valid json");
 
-    let first = work(&conn, work_id, &path).expect("does not fail the import");
+    let first = work(&conn, work_id, THE_READER, &path).expect("does not fail the import");
     assert!(matches!(first.notes, Some(NotesOutcome::Malformed(_))));
 
     write_sibling(
@@ -395,10 +404,10 @@ fn a_sibling_that_was_malformed_is_migrated_once_it_is_fixed() {
         r#"{"work":"t","notes":[{"id":"01H1","edition":"raw-mono","slot":0,"body":"fixed by hand","created":"2026-08-14T10:00:00Z","updated":"2026-08-14T10:00:00Z"}]}"#,
     );
 
-    let second = work(&conn, work_id, &path).expect("migrates");
+    let second = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert_eq!(second.notes, Some(NotesOutcome::Applied { count: 1 }));
     assert_eq!(
-        state::notes(&conn, work_id, export::LOCAL_USER)
+        state::notes(&conn, work_id, THE_READER)
             .expect("reads")
             .notes
             .len(),
@@ -414,13 +423,13 @@ fn a_notes_json_that_does_not_parse_is_reported_and_skipped() {
     let (work_id, path) = a_work(&conn, &root);
     write_sibling(&root, "notes.json", "{ this is not valid json");
 
-    let report = work(&conn, work_id, &path).expect("does not fail the import");
+    let report = work(&conn, work_id, THE_READER, &path).expect("does not fail the import");
     match report.notes {
         Some(NotesOutcome::Malformed(msg)) => assert!(!msg.is_empty()),
         other => panic!("expected Malformed, got {other:?}"),
     }
     assert!(
-        state::notes(&conn, work_id, export::LOCAL_USER)
+        state::notes(&conn, work_id, THE_READER)
             .expect("reads")
             .notes
             .is_empty(),
@@ -452,7 +461,7 @@ fn a_truth_json_beside_the_sidecar_migrates_a_page_examined_and_found_empty() {
         }}}}"#,
     );
 
-    let report = work(&conn, work_id, &path).expect("migrates");
+    let report = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert_eq!(
         report.truth,
         Some(TruthOutcome::Applied { pages: 2, boxes: 1 })
@@ -504,7 +513,7 @@ fn truth_already_held_is_not_overwritten_by_the_file() {
         r#"{"taiyaku_truth":1,"editions":{"raw-mono":{"members":[],"pages":{"0":[]}}}}"#,
     );
 
-    let report = work(&conn, work_id, &path).expect("migrates");
+    let report = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert_eq!(report.truth, Some(TruthOutcome::AlreadyPresent));
 
     let recovered = state::truth(&conn, work_id)
@@ -525,7 +534,7 @@ fn a_truth_json_that_does_not_parse_is_reported_and_skipped() {
     let (work_id, path) = a_work(&conn, &root);
     write_sibling(&root, "truth.json", "{ not json");
 
-    let report = work(&conn, work_id, &path).expect("does not fail the import");
+    let report = work(&conn, work_id, THE_READER, &path).expect("does not fail the import");
     match report.truth {
         Some(TruthOutcome::Malformed(msg)) => assert!(!msg.is_empty()),
         other => panic!("expected Malformed, got {other:?}"),
@@ -550,7 +559,7 @@ fn a_library_json_beside_the_sidecar_migrates_hand_fixed_metadata() {
         r#"{"taiyaku_library":1,"updated":"2026-08-14T11:00:00Z","volume":3.0,"tags":["seinen"]}"#,
     );
 
-    let report = work(&conn, work_id, &path).expect("migrates");
+    let report = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert_eq!(report.library, Some(LibraryOutcome::Applied));
 
     let recovered = librarydoc::of(&conn, work_id).expect("reads");
@@ -581,7 +590,7 @@ fn library_metadata_already_held_is_not_overwritten_by_the_file() {
         r#"{"taiyaku_library":1,"updated":"2026-08-14T11:00:00Z","volume":1.0}"#,
     );
 
-    let report = work(&conn, work_id, &path).expect("migrates");
+    let report = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert_eq!(report.library, Some(LibraryOutcome::AlreadyPresent));
 
     let recovered = librarydoc::of(&conn, work_id).expect("reads");
@@ -596,7 +605,7 @@ fn a_library_json_that_does_not_parse_is_reported_and_skipped() {
     let (work_id, path) = a_work(&conn, &root);
     write_sibling(&root, "library.json", "{ nope");
 
-    let report = work(&conn, work_id, &path).expect("does not fail the import");
+    let report = work(&conn, work_id, THE_READER, &path).expect("does not fail the import");
     match report.library {
         Some(LibraryOutcome::Malformed(msg)) => assert!(!msg.is_empty()),
         other => panic!("expected Malformed, got {other:?}"),

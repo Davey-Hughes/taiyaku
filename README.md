@@ -108,6 +108,33 @@ taiyaku lookup taiyaku.json en en-fan 45
 # notes and hand corrections persist there across restarts
 taiyaku serve taiyaku.json --addr 127.0.0.1:8484
 
+# **every route needs a credential.** Give the first account a password from
+# the host's own shell before starting a server — there is no window in which
+# an unclaimed server sits on the network waiting to be claimed:
+taiyaku library user promote davey        # prompts for a password, twice
+#
+# it PROMOTES the account the library already has rather than adding one, so
+# every note and reading position recorded before now belongs to it. Then:
+curl -u davey:… http://127.0.0.1:8484/api/works
+
+# behind a reverse proxy, name the proxy so X-Forwarded-For is believed from
+# it and only from it — and so the session cookie carries Secure:
+taiyaku serve taiyaku.json --addr 127.0.0.1:8484 --trusted-proxy 10.0.0.0/8
+#
+# **the proxy must set both forwarded headers itself.** naming it with
+# --trusted-proxy tells taiyaku to believe them, and a proxy that does not
+# write them forwards whatever the *client* sent under the same names:
+#
+#   proxy_set_header Host              $host;
+#   proxy_set_header X-Forwarded-Host  $host;
+#   proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+#
+# without the first two, nginx's default rewrites Host to the upstream and
+# taiyaku's CSRF check compares two different authorities — every login 403s.
+# with --trusted-proxy but no X-Forwarded-Host of the proxy's own, a client can
+# supply one. if TLS terminates at the proxy and nothing is forwarded, use
+# --secure-cookies alone.
+
 # beside Stump: English editions come from the instance, raws from disk,
 # resolved once at startup and cached beside the sidecar
 TAIYAKU_STUMP_URL=https://stump.example TAIYAKU_STUMP_KEY=… \
@@ -115,6 +142,9 @@ TAIYAKU_STUMP_URL=https://stump.example TAIYAKU_STUMP_KEY=… \
 
 # point an OPDS reader at
 #   http://<host>:8484/opds/v1.2/catalog
+# with your account name as the username and an API key as the password —
+# a key is shown once, because only its hash is stored:
+taiyaku library key create davey --name ipad
 
 # the same import, without starting a server — for a library `serve` has
 # already populated, or a one-off migration

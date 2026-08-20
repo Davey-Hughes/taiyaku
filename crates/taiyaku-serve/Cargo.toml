@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 axum = "0.8"
+base64 = "0.23.1"
 image = "0.25.9"
 # Already in the dependency tree via taiyaku-library — named directly here
 # only so `works.rs`'s bridge from a slug-keyed `Work` to the library's

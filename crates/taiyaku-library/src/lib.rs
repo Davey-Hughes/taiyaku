@@ -8,6 +8,8 @@
 //! it over rows. See `docs/superpowers/specs/2026-08-14-library-store-design.md`,
 //! §4.2.
 
+pub mod account;
+pub mod credential;
 pub mod derive;
 pub mod export;
 pub mod identity;

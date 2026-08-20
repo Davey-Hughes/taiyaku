@@ -511,3 +511,222 @@ fn a_dismissed_proposal_is_not_raised_again_when_its_target_is_null() {
     assert_eq!(count, 1);
     assert_eq!(state, "dismissed", "the dismissal survived the rescan");
 }
+
+/// **Migration 4 rebuilds `user`, and the rebuild must not take the library's
+/// notes with it.**
+///
+/// `password_hash` goes NULL -> NOT NULL, which SQLite cannot do in place, so
+/// migration 4 is the documented twelve-step rebuild: create, copy, drop,
+/// rename. `progress` and `note` both `REFERENCES user(id) ON DELETE CASCADE`,
+/// and `DROP TABLE` on a parent performs an implicit `DELETE` that fires those
+/// cascades — so the rebuild written the obvious way copies the `user` rows
+/// correctly and deletes every note and every reading position in the library.
+///
+/// The pragma that would prevent it cannot live in the migration. `PRAGMA
+/// foreign_keys` is a **no-op inside a transaction** — it does not error and
+/// does not warn, it simply does not apply — and [`apply_pending`] runs every
+/// migration inside one. Measured on 2026-08-18 against a two-table
+/// reproduction of this pair: notes surviving, 0. See `docs/notes.md`.
+///
+/// This test is why `migrate_with` disables foreign keys around the whole run
+/// rather than inside it.
+#[test]
+fn migration_4_rebuilds_user_without_taking_the_notes_with_it() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+
+    // Stop at version 3, then plant the state a real library would hold: a
+    // work, a note and a reading position, all hanging off the seeded user.
+    migrate_with(&conn, &MIGRATIONS[..3]).expect("migrates to 3");
+    conn.execute(
+        "INSERT INTO work (content_key, slug, title, reading, hub)
+         VALUES ('k', 's', 'T', 'rtl', 'raw')",
+        [],
+    )
+    .expect("work");
+    let work_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO note (id, user_id, work_id, edition, slot, body, created, updated)
+         VALUES ('n1', 1, ?1, 'raw', 0, 'written before there was a login', 'now', 'now')",
+        [work_id],
+    )
+    .expect("note");
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 42)",
+        [work_id],
+    )
+    .expect("progress");
+
+    migrate(&conn).expect("migrates to 4");
+
+    let notes: i64 = conn
+        .query_row("SELECT COUNT(*) FROM note", [], |row| row.get(0))
+        .expect("counts notes");
+    let positions: i64 = conn
+        .query_row("SELECT COUNT(*) FROM progress", [], |row| row.get(0))
+        .expect("counts positions");
+    assert_eq!(notes, 1, "migration 4 cascaded the notes away");
+    assert_eq!(
+        positions, 1,
+        "migration 4 cascaded the reading positions away"
+    );
+
+    // The id is what spec A2 §5 turns on: promotion must reach this row rather
+    // than insert beside it, and it cannot if the rebuild moved it.
+    let (id, hash): (i64, String) = conn
+        .query_row("SELECT id, password_hash FROM user", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("reads the user");
+    assert_eq!(id, 1, "the seeded user's id did not survive the rebuild");
+    assert_eq!(
+        hash, "!",
+        "a NULL password_hash must become the locked placeholder, which is not \
+         a well-formed PHC string and so verifies against nothing"
+    );
+
+    // And the children still join to it, which a rebuild that left them
+    // pointing at the dropped table would fail.
+    let joined: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM note JOIN user ON user.id = note.user_id",
+            [],
+            |row| row.get(0),
+        )
+        .expect("joins");
+    assert_eq!(joined, 1, "note no longer joins to user");
+}
+
+/// The four tables migration 4 adds, and the two columns it adds to `user`.
+#[test]
+fn migration_4_creates_every_table_spec_a2_names() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    migrate(&conn).expect("migrates");
+    let names = table_names(&conn);
+    for expected in ["session", "api_key", "user_root", "login_attempt"] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "migration 4 did not create `{expected}`; it created {names:?}"
+        );
+    }
+    let capabilities: (i64, i64) = conn
+        .query_row(
+            "SELECT can_download, can_stream FROM user WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("reads the capability columns");
+    assert_eq!(
+        capabilities,
+        (1, 1),
+        "both capabilities default on, per spec A2 §3"
+    );
+}
+
+/// **Migration 5 rebuilds `note`, and the rows and the index both have to
+/// survive it.**
+///
+/// Migration 4's lesson applied to a second rebuild: what a `DROP TABLE` takes
+/// away is not only what the migration mentions. Nothing REFERENCES `note`, so
+/// there is no cascade here — but `DROP TABLE` still takes the table's own
+/// indexes, silently, and a notes read that scans is correct and slower with
+/// nothing able to tell the difference.
+#[test]
+fn migration_5_rebuilds_note_keeping_the_rows_and_the_index() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on");
+
+    migrate_with(&conn, &MIGRATIONS[..4]).expect("migrates to 4");
+    conn.execute(
+        "INSERT INTO work (content_key, slug, title, reading, hub)
+         VALUES ('k', 's', 'T', 'rtl', 'raw')",
+        [],
+    )
+    .expect("work");
+    let work_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO note (id, user_id, work_id, edition, slot, body, created, updated)
+         VALUES ('01HKEEP', 1, ?1, 'raw', 3, 'a note from before', 'then', 'then')",
+        [work_id],
+    )
+    .expect("note");
+
+    migrate(&conn).expect("migrates to 5");
+
+    let (id, slot, body): (String, i64, String) = conn
+        .query_row("SELECT id, slot, body FROM note", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .expect("the note survived");
+    assert_eq!(id, "01HKEEP");
+    assert_eq!(slot, 3, "a column was dropped or reordered by the copy");
+    assert_eq!(body, "a note from before");
+
+    let indexes: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+              WHERE type = 'index' AND tbl_name = 'note' AND name = 'note_by_work'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("counts");
+    assert_eq!(
+        indexes, 1,
+        "DROP TABLE took `note_by_work` with it and nothing put it back"
+    );
+
+    // And the new key is the pair, which is the whole point of the rebuild.
+    conn.execute(
+        "INSERT INTO user (id, name, password_hash, role) VALUES (2, 'bob', '!', 'user')",
+        [],
+    )
+    .expect("second user");
+    conn.execute(
+        "INSERT INTO note (id, user_id, work_id, edition, slot, body, created, updated)
+         VALUES ('01HKEEP', 2, ?1, 'raw', 0, \"bob's, same id\", 'then', 'then')",
+        [work_id],
+    )
+    .expect("two readers may hold one id");
+}
+
+/// **The role column fails closed and refuses a third word.**
+///
+/// Migration 1 wrote `DEFAULT 'admin'` when there was one account and no login,
+/// and migration 4's rebuild carried it forward — so an insert omitting the
+/// column minted an administrator, and a typo stored a role that is neither,
+/// which `Principal::from_account`'s `== "admin"` reads as a reader without
+/// saying so.
+#[test]
+fn a_role_defaults_to_reader_and_refuses_anything_else() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    migrate(&conn).expect("migrates");
+
+    conn.execute(
+        "INSERT INTO user (name, password_hash) VALUES ('omitted', '!')",
+        [],
+    )
+    .expect("inserts");
+    let role: String = conn
+        .query_row("SELECT role FROM user WHERE name = 'omitted'", [], |row| {
+            row.get(0)
+        })
+        .expect("reads");
+    assert_eq!(role, "user", "an omitted role minted an administrator");
+
+    assert!(
+        conn.execute(
+            "INSERT INTO user (name, password_hash, role) VALUES ('typo', '!', 'administrator')",
+            [],
+        )
+        .is_err(),
+        "a role that is neither word was stored"
+    );
+
+    // And the row migration 1 seeded is still an admin, because it names one.
+    let seeded: String = conn
+        .query_row("SELECT role FROM user WHERE id = 1", [], |row| row.get(0))
+        .expect("reads");
+    assert_eq!(seeded, "admin");
+}

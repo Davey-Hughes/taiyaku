@@ -1,12 +1,23 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  Unauthenticated,
   getNotes,
   getProgress,
   getSidecar,
   getTruth,
+  changePassword,
+  createKey,
+  listKeys,
+  listSessions,
   listWorks,
+  login,
+  logout,
+  me,
   pageUrl,
   patchAlignment,
+  revokeKey,
+  revokeSession,
+  whenSignedOut,
   putNotes,
   putProgress,
   putTruth,
@@ -360,5 +371,267 @@ describe('network calls', () => {
       const fresh = await getTruth('w')
       expect(fresh.etag).toBeUndefined()
     })
+  })
+})
+
+describe('being signed out', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  /**
+   * Eight call sites each throw on a non-ok response, and a 401 is not an
+   * error the reader can show — it is a state change. Handled in one place so
+   * a ninth call site cannot forget, and asserted over every one of them so
+   * "handled in one place" is a fact rather than an intention.
+   */
+  it('raises Unauthenticated from every guarded call', async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('', { status: 401 })) as typeof fetch
+
+    const calls: Array<[string, () => Promise<unknown>]> = [
+      ['listWorks', () => listWorks()],
+      ['getSidecar', () => getSidecar('t')],
+      ['getProgress', () => getProgress('t')],
+      ['putProgress', () => putProgress('t', { edition: 'raw', slot: 0 })],
+      ['getNotes', () => getNotes('t')],
+      ['getTruth', () => getTruth('t')],
+      ['me', () => me()],
+    ]
+    for (const [name, call] of calls) {
+      await expect(call(), name).rejects.toBeInstanceOf(Unauthenticated)
+    }
+  })
+
+  it('leaves every other failure as an ordinary error', async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('nope', { status: 500 })) as typeof fetch
+    const failure = await listWorks().catch((e: unknown) => e)
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure).not.toBeInstanceOf(Unauthenticated)
+  })
+})
+
+describe('signing in', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('posts the credentials as JSON', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    globalThis.fetch = fetchMock as typeof fetch
+
+    await login('davey', 'a password')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'davey', password: 'a password' }),
+    })
+  })
+
+  /**
+   * A 401 here is the ordinary answer to a wrong password rather than a
+   * signed-out state to route on, so it stays an error with words a reader can
+   * act on — routing to the login screen from the login screen would be a
+   * loop that looks like nothing happening.
+   */
+  it('says what went wrong rather than routing away', async () => {
+    for (const [status, expected] of [
+      [401, /did not match/],
+      [429, /Too many attempts/],
+      [403, /origin/i],
+    ] as const) {
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValue(new Response('', { status })) as typeof fetch
+      const failure = await login('davey', 'x').catch((e: unknown) => e)
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure).not.toBeInstanceOf(Unauthenticated)
+      expect((failure as Error).message).toMatch(expected)
+    }
+  })
+
+  it('signs out with a DELETE', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    globalThis.fetch = fetchMock as typeof fetch
+    await logout()
+    expect(fetchMock).toHaveBeenCalledWith('/api/session', { method: 'DELETE' })
+  })
+})
+
+describe('the account calls', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('lists and creates keys, and returns the secret once', async () => {
+    const listed = [{ id: 1, name: 'phone', created: 'then', last_used: null }]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_input: string, init?: RequestInit) => {
+        if ((init?.method ?? 'GET') === 'POST')
+          return Promise.resolve(
+            new Response(JSON.stringify({ secret: 'tyk_once' }), {
+              status: 200,
+            }),
+          )
+        return Promise.resolve(
+          new Response(JSON.stringify(listed), { status: 200 }),
+        )
+      }),
+    )
+    await expect(listKeys()).resolves.toEqual(listed)
+    await expect(createKey('phone')).resolves.toBe('tyk_once')
+  })
+
+  it('revokes a key and a session', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await revokeKey(3)
+    await revokeSession('abc')
+    expect(fetchMock).toHaveBeenCalledWith('/api/keys/3', { method: 'DELETE' })
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/abc', {
+      method: 'DELETE',
+    })
+  })
+
+  it('lists sessions', async () => {
+    const rows = [
+      {
+        id: 'aa',
+        created: 'then',
+        last_seen: 'now',
+        user_agent: null,
+        ip: null,
+        current: true,
+      },
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(new Response(JSON.stringify(rows), { status: 200 })),
+    )
+    await expect(listSessions()).resolves.toEqual(rows)
+  })
+
+  /**
+   * A refused password change says which half was wrong. A 403 here means the
+   * *current* password did not match — not that the session is invalid, which
+   * is what a 401 would mean and what the guard answers instead.
+   */
+  it('distinguishes a wrong current password from any other failure', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(null, { status: 403 })),
+    )
+    await expect(changePassword('wrong', 'next')).rejects.toThrow(
+      /current password did not match/,
+    )
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(null, { status: 500 })),
+    )
+    await expect(changePassword('a', 'b')).rejects.toThrow(
+      /changing the password/,
+    )
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await changePassword('a', 'b')
+    expect(fetchMock).toHaveBeenCalledWith('/api/password', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ current: 'a', next: 'b' }),
+    })
+  })
+
+  it('surfaces a failure from each listing rather than answering empty', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(null, { status: 500 })),
+    )
+    await expect(listKeys()).rejects.toThrow(/listing keys/)
+    await expect(listSessions()).rejects.toThrow(/listing sessions/)
+    await expect(createKey('x')).rejects.toThrow(/creating a key/)
+    await expect(revokeKey(1)).rejects.toThrow(/revoking key/)
+    await expect(revokeSession('x')).rejects.toThrow(/revoking a session/)
+    await expect(me()).rejects.toThrow(/reading the account/)
+    await expect(logout()).rejects.toThrow(/signing out/)
+  })
+})
+
+describe('being signed out is routed once, from one place', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    whenSignedOut(() => undefined)
+  })
+
+  /**
+   * The failure this exists to prevent: a session revoked from another browser
+   * while the reader keeps turning pages. Every write's `.catch` swallows the
+   * rejection deliberately — a failed position write is not something to show —
+   * so the hook has to fire regardless of who catches what.
+   */
+  it('fires even when the caller swallows the rejection', async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 401 })) as typeof fetch
+    const signedOut = vi.fn()
+    whenSignedOut(signedOut)
+
+    await putProgress('t', { edition: 'raw', slot: 3 }).catch(() => undefined)
+    expect(signedOut).toHaveBeenCalled()
+  })
+
+  it('fires for every call routed through the wrapper, not just the reads', async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 401 })) as typeof fetch
+
+    const calls: Array<[string, () => Promise<unknown>]> = [
+      ['listWorks', () => listWorks()],
+      ['getSidecar', () => getSidecar('t')],
+      ['getProgress', () => getProgress('t')],
+      ['putProgress', () => putProgress('t', { edition: 'raw', slot: 0 })],
+      ['getNotes', () => getNotes('t')],
+      ['putNotes', () => putNotes('t', 'tag', { work: 't', notes: [] })],
+      ['getTruth', () => getTruth('t')],
+      [
+        'putTruth',
+        () => putTruth('t', 'tag', { taiyaku_truth: 1, editions: {} }),
+      ],
+      [
+        'patchAlignment',
+        () =>
+          patchAlignment('t', 'tag', { from: 'a', to: 'b', a: '0', b: '0' }),
+      ],
+      ['me', () => me()],
+      ['listKeys', () => listKeys()],
+      ['createKey', () => createKey('x')],
+      ['revokeKey', () => revokeKey(1)],
+      ['listSessions', () => listSessions()],
+      ['revokeSession', () => revokeSession('x')],
+      ['changePassword', () => changePassword('a', 'b')],
+    ]
+
+    for (const [name, call] of calls) {
+      const signedOut = vi.fn()
+      whenSignedOut(signedOut)
+      await call().catch(() => undefined)
+      expect(signedOut, `${name} did not route its 401`).toHaveBeenCalled()
+    }
   })
 })

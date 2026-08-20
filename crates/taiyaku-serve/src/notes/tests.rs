@@ -32,6 +32,7 @@ fn notes_are_written_to_the_library_not_into_the_sidecar() {
     store(
         &library,
         &work,
+        1,
         &Notes {
             work: "t".into(),
             notes: vec![note("01J8", 12, None)],
@@ -40,7 +41,7 @@ fn notes_are_written_to_the_library_not_into_the_sidecar() {
     .unwrap();
 
     let sidecar_after = std::fs::read_to_string(&work.path).unwrap();
-    let stored = load(&library, &work).unwrap();
+    let stored = load(&library, &work, 1).unwrap();
     crate::test_support::cleanup("taiyaku-test-notes-beside");
     assert_eq!(sidecar_before, sidecar_after, "the sidecar must not change");
     assert_eq!(
@@ -75,8 +76,8 @@ fn a_note_round_trips_with_and_without_a_region() {
         ],
     };
 
-    store(&library, &work, &stored).unwrap();
-    let read_back = load(&library, &work).unwrap();
+    store(&library, &work, 1, &stored).unwrap();
+    let read_back = load(&library, &work, 1).unwrap();
     // The projection, not a second copy re-parsed from disk — there is no
     // disk any more. `notes::to_json`'s own doc comment is the invariant
     // this is standing in for: the region-less note must serialise with the
@@ -219,7 +220,7 @@ fn a_grandfathered_note_still_has_its_colour_checked() {
 #[test]
 fn a_work_with_no_notes_recorded_loads_as_nothing_recorded() {
     let work = crate::test_support::work("taiyaku-test-notes-absent");
-    let loaded = load(&library(), &work);
+    let loaded = load(&library(), &work, 1);
     crate::test_support::cleanup("taiyaku-test-notes-absent");
     assert_eq!(loaded.unwrap(), None);
 }
@@ -239,12 +240,12 @@ fn storing_notes_mints_exactly_one_bridge_row_for_a_work_the_library_never_impor
         "nothing has been written yet, so no row exists"
     );
 
-    store(&library, &work, &on("raw", 0, None)).unwrap();
+    store(&library, &work, 1, &on("raw", 0, None)).unwrap();
     let first_id = crate::works::find_row(&library.conn(), &work)
         .unwrap()
         .expect("a row now exists");
 
-    store(&library, &work, &empty("t")).unwrap();
+    store(&library, &work, 1, &empty("t")).unwrap();
     let second_id = crate::works::find_row(&library.conn(), &work)
         .unwrap()
         .expect("still there");
@@ -255,7 +256,7 @@ fn storing_notes_mints_exactly_one_bridge_row_for_a_work_the_library_never_impor
         "the second write reuses the first's row"
     );
     assert_eq!(
-        load(&library, &work).unwrap(),
+        load(&library, &work, 1).unwrap(),
         Some(empty("t")),
         "the second write replaced the first note with none"
     );
@@ -269,7 +270,7 @@ fn loading_notes_for_an_unregistered_work_creates_no_row() {
     let work = crate::test_support::work("taiyaku-test-notes-read-only");
     let library = library();
 
-    let loaded = load(&library, &work).unwrap();
+    let loaded = load(&library, &work, 1).unwrap();
 
     let row = crate::works::find_row(&library.conn(), &work).unwrap();
     crate::test_support::cleanup("taiyaku-test-notes-read-only");

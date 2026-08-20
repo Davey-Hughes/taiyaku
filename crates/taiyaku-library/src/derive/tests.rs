@@ -1494,6 +1494,21 @@ fn a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress() {
         b"one more page",
     )
     .expect("write");
+    // The member is the *directory*, and a directory's `mtime` moves when an
+    // entry is added or removed — not when the bytes inside an existing one
+    // change. So without this stamp `unchanged` skips the re-hash and the
+    // digest stays what it was, which is the same second-resolution flake as
+    // `a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive`. CI
+    // caught both on 2026-08-19; both pass here.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
+    std::fs::File::open(
+        tree.path
+            .join("Go-Toubun no Hanayome")
+            .join("Go-Toubun no Hanayome - v01 (2019)"),
+    )
+    .expect("open the member directory")
+    .set_times(std::fs::FileTimes::new().set_modified(later))
+    .expect("stamp it as changed");
     scan::scan_root(&conn, &root).expect("rescan");
     let report = derive::derive(&conn).expect("second");
 
@@ -1559,6 +1574,23 @@ fn a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive() {
         )
         .expect("copy");
     }
+    // **The rescan has to be able to see the change.** `unchanged` compares
+    // `(size, mtime)`, a directory's size is its block size whether it holds
+    // three entries or five, and `mtime` has second resolution — so a rebuild
+    // that lands in the same second as the first scan is skipped and Beta keeps
+    // the digest of its *old* five pages. The assertion below then compares
+    // Alpha's hash against a stale one and fails, which is what CI did on
+    // 2026-08-19 while this passed fifteen times running here.
+    //
+    // Stamped rather than slept: a `sleep(1)` would make this the slowest test
+    // in the crate to fix a determinism problem, and would still be a race on a
+    // filesystem with coarser stamps. This models what a real replacement is —
+    // one that happens later — without waiting for it.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
+    std::fs::File::open(&beta)
+        .expect("open the rebuilt directory")
+        .set_times(std::fs::FileTimes::new().set_modified(later))
+        .expect("stamp it as changed");
     scan::scan_root(&conn, &root).expect("rescan");
 
     derive::derive(&conn).expect("a repeated file is not a failed derive");

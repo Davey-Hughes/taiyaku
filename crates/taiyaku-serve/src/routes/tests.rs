@@ -3,6 +3,23 @@ use axum::body::Body;
 use axum::http::Request;
 use tower::ServiceExt;
 
+/// **`build_router`, shadowed, so every test in this module authenticates.**
+///
+/// Spec A2 §9 refuses a `--no-auth` flag and a dev bypass: "A bypass flag would
+/// be the first real footgun on an internet-facing server, and the convenience
+/// it buys is a login screen once a month." A test harness is not a bypass, so
+/// this is not one either — it gives the fixture's seeded account a real
+/// password and then presents it, through the real guard, on every request.
+///
+/// Shadowing the glob-imported `super::build_router` rather than editing the
+/// sixty-odd `Request::get(...)` calls below: the header is the same on all of
+/// them, and threading it through by hand would put the interesting part of
+/// each test one line further from its assertion. The guard itself is asserted
+/// over in `auth::tests`, which calls the real `build_router` directly.
+fn build_router(state: Arc<crate::ServeState>) -> axum::Router {
+    crate::test_support::authenticating(super::build_router(state))
+}
+
 /// The three shapes a reader depends on: the work list to find a work, the
 /// sidecar verbatim so the client can resolve without asking again, and a
 /// page by index. A 404 for an edition that does not exist matters as much
@@ -982,12 +999,32 @@ async fn no_document_a_client_can_change_is_given_a_freshness_lifetime() {
             .oneshot(Request::get(uri).body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(
-            response.headers().get(header::CACHE_CONTROL),
-            None,
+        // **No freshness lifetime, which is not the same as no header.** This
+        // asserted the header's absence, and absence was the wrong shape once
+        // these documents became per-reader: a proxy in front — which spec A2
+        // §11 puts there — would store one reader's notes and replay them to
+        // another, and RFC 9111's bar on caching authenticated responses keys on
+        // `Authorization`, which the browser path never sends. `no-store` grants
+        // no lifetime *and* forbids the store, so it satisfies this test's own
+        // stated reason more strongly than absence did. Found by the second
+        // whole-branch review.
+        let directive = response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok());
+        assert!(
+            // `is_some_and`, not `is_none_or`: the first attempt at this was
+            // loosened to tolerate absence, which made it pass for the very
+            // routes that had been missed — `/api/works/w/notes` among them.
+            // Found by the third whole-branch review.
+            directive.is_some_and(|d| d.contains("no-store") || d.contains("no-cache")),
             "{uri} answers a document this server rewrites; a freshness \
                  lifetime on it hands a reader back an edit they have already \
-                 made"
+                 made — got {directive:?}"
+        );
+        assert!(
+            directive.is_none_or(|d| !d.contains("max-age")),
+            "{uri} was given a max-age: {directive:?}"
         );
     }
 
@@ -1013,12 +1050,22 @@ async fn no_document_a_client_can_change_is_given_a_freshness_lifetime() {
             .await
             .unwrap();
         assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED, "{uri}");
-        assert_eq!(
-            revalidated.headers().get(header::CACHE_CONTROL),
-            None,
+        // The 304 too, and for the reason this assertion always gave: a client
+        // stores what a `304` tells it (RFC 9111 §4.3.4), so a lifetime here is
+        // worth exactly what one on the 200 would be — and a *shared* cache
+        // storing a per-reader 304 is the same replay the 200 would be. The
+        // layer covers both because it wraps the response rather than the
+        // handler.
+        let revalidated_directive = revalidated
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok());
+        assert!(
+            revalidated_directive.is_some_and(|d| d.contains("no-store") || d.contains("no-cache")),
             "{uri} shares `not_modified` with the page routes, and a \
                  client stores what a 304 tells it — a freshness lifetime \
-                 here is worth exactly what one on the 200 would be"
+                 here is worth exactly what one on the 200 would be; got \
+                 {revalidated_directive:?}"
         );
     }
 }
@@ -1926,6 +1973,7 @@ async fn stored_notes_are_served_and_change_the_validator() {
     crate::notes::store(
         &state.library,
         &state.works[0],
+        1,
         &crate::notes::Notes {
             work: "t".into(),
             notes: vec![crate::notes::Note {
@@ -2491,4 +2539,180 @@ async fn a_broken_library_connection_answers_500_rather_than_panicking() {
 
     crate::test_support::cleanup("taiyaku-test-routes-list-db-broken");
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+/// **Two readers hold two positions in one work**, which the constant that
+/// answered user 1 for both could not express.
+///
+/// Spec A2 §5.1 records the shape of the problem: `progress` and `note` have
+/// been keyed `(user_id, work_id)` since migration 1, so the database could
+/// always hold two readers — it was the server that could only ask about one.
+#[tokio::test]
+async fn two_readers_hold_separate_positions_in_one_work() {
+    use base64::Engine as _;
+
+    let state = crate::test_support::state("taiyaku-test-two-readers");
+    {
+        let conn = state.library.conn();
+        let phc = taiyaku_library::credential::hash_password("bobs-password").expect("hashes");
+        conn.execute(
+            "INSERT INTO user (name, password_hash, role) VALUES ('bob', ?1, 'user')",
+            [&phc],
+        )
+        .expect("adds bob");
+    }
+    let state = Arc::new(state);
+
+    let basic = |name: &str, password: &str| {
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(format!("{name}:{password}").as_bytes());
+        format!("Basic {encoded}")
+    };
+    let alice = basic(
+        crate::test_support::FIXTURE_NAME,
+        crate::test_support::FIXTURE_PASSWORD,
+    );
+    let bob = basic("bob", "bobs-password");
+
+    // The fixture edition is four pages, so 1 and 3 are both real slots
+    // and distinguishable.
+    for (credential, slot) in [(&alice, 1), (&bob, 3)] {
+        let put = build_router(state.clone())
+            .oneshot(
+                Request::put("/api/works/t/progress")
+                    .header("authorization", credential)
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"edition":"raw","slot":{slot}}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(put.status(), StatusCode::NO_CONTENT);
+    }
+
+    for (credential, expected) in [(&alice, 1), (&bob, 3)] {
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::get("/api/works/t/progress")
+                    .header("authorization", credential)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = String::from_utf8(
+            axum::body::to_bytes(response.into_body(), 1 << 16)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(
+            body.contains(&format!("\"slot\":{expected}")),
+            "expected slot {expected}, read {body}"
+        );
+    }
+
+    crate::test_support::cleanup("taiyaku-test-two-readers");
+}
+
+/// The same, for notes: two readers annotate one work and neither sees the
+/// other's.
+#[tokio::test]
+async fn two_readers_hold_separate_notes_on_one_work() {
+    use base64::Engine as _;
+
+    let state = crate::test_support::state("taiyaku-test-two-readers-notes");
+    {
+        let conn = state.library.conn();
+        let phc = taiyaku_library::credential::hash_password("bobs-password").expect("hashes");
+        conn.execute(
+            "INSERT INTO user (name, password_hash, role) VALUES ('bob', ?1, 'user')",
+            [&phc],
+        )
+        .expect("adds bob");
+    }
+    let state = Arc::new(state);
+
+    let basic = |name: &str, password: &str| {
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(format!("{name}:{password}").as_bytes());
+        format!("Basic {encoded}")
+    };
+    let alice = basic(
+        crate::test_support::FIXTURE_NAME,
+        crate::test_support::FIXTURE_PASSWORD,
+    );
+    let bob = basic("bob", "bobs-password");
+
+    let note = |id: &str, body: &str| {
+        format!(
+            r#"{{"work":"t","notes":[{{"id":"{id}","edition":"raw","slot":0,
+               "body":"{body}","created":"2026-08-18T00:00:00Z",
+               "updated":"2026-08-18T00:00:00Z"}}]}}"#
+        )
+    };
+
+    // A notes write carries `If-Match` over the reader's *own* notes, so each
+    // one reads its validator first. That is itself part of what this test
+    // pins: two readers of one work hold two documents and therefore two
+    // ETags, and bob's write must not be refused as stale because alice wrote
+    // hers first.
+    for (credential, id, text) in [(&alice, "01HALICE", "alice's"), (&bob, "01HBOBBB", "bob's")] {
+        let current = build_router(state.clone())
+            .oneshot(
+                Request::get("/api/works/t/notes")
+                    .header("authorization", credential)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let tag = current
+            .headers()
+            .get("etag")
+            .and_then(|value| value.to_str().ok())
+            .expect("an ETag on the reader's own notes")
+            .to_string();
+
+        let put = build_router(state.clone())
+            .oneshot(
+                Request::put("/api/works/t/notes")
+                    .header("authorization", credential)
+                    .header("content-type", "application/json")
+                    .header("if-match", &tag)
+                    .body(Body::from(note(id, text)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(put.status(), StatusCode::OK, "writing {text}");
+    }
+
+    for (credential, mine, theirs) in [(&alice, "alice's", "bob's"), (&bob, "bob's", "alice's")] {
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::get("/api/works/t/notes")
+                    .header("authorization", credential)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = String::from_utf8(
+            axum::body::to_bytes(response.into_body(), 1 << 16)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(body.contains(mine), "{mine} is missing from {body}");
+        assert!(
+            !body.contains(theirs),
+            "{theirs} leaked into another reader's notes: {body}"
+        );
+    }
+
+    crate::test_support::cleanup("taiyaku-test-two-readers-notes");
 }

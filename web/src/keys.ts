@@ -6,6 +6,8 @@ export type Intent =
   | { kind: 'view'; edition: string }
   | { kind: 'step'; by: 1 | -1 }
   | { kind: 'chrome' }
+  /** Open the account screen: password, API keys, what is signed in. */
+  | { kind: 'account' }
   /** Open correction mode: the filmstrip switches to the counterpart edition. */
   | { kind: 'correct' }
   /** A module's own declared key fired. `intent` is the string it registered — see `ReaderModule.keys`. */
@@ -93,6 +95,17 @@ export const READER_KEYS: ReaderBinding[] = [
     keys: ['c'],
     label: 'correct this pairing',
     resolve: () => ({ kind: 'correct' }),
+  },
+  {
+    // **`A` rather than `a`, which `annotations` already claims** for the
+    // review list. Uppercase for a panel is this reader's existing shape: `c`
+    // corrects a pairing and `C` opens the credits panel, so the same letter in
+    // two cases meaning "do the thing" and "show me the list" is a convention
+    // rather than a collision dodged. The existing note-editor tests are what
+    // caught the first attempt at `a`.
+    keys: ['A'],
+    label: 'account: password, API keys, and what is signed in',
+    resolve: () => ({ kind: 'account' }),
   },
   {
     keys: ['1', '2', '3', '4', '5', '6', '7', '8', '9'],

@@ -23,8 +23,11 @@ authors.workspace = true
 # `backup` is for `VACUUM INTO`, which is how a backup is taken while the
 # server runs (spec A §13.4).
 [dependencies]
+argon2 = "0.5.3"
+base64 = "0.23.1"
 # §8 of the scanner spec: the watcher, where the probe says one works.
 notify = "8"
+rand = "0.10.2"
 # §4 of the scanner spec: the escape hatch for a layout the four rule kinds
 # cannot express. Named here rather than slipped in — `docs/status.md` states
 # this workspace's short dependency list as a fact about the project.

@@ -1,4 +1,21 @@
 use super::*;
+
+/// `routes()` folded into a `Router`, which is what these tests drove before
+/// the guard made that function return a list.
+///
+/// **Deliberately without `auth::guard`**: these tests exercise the feed's own
+/// shape — its XML, its links, its page streaming — and the guard is asserted
+/// over in `auth::tests::every_route_refuses_an_anonymous_request`, which walks
+/// this very list. Building the guarded router here would test the guard
+/// twenty-one more times and the feed no better.
+fn feed_router() -> axum::Router<std::sync::Arc<ServeState>> {
+    super::routes()
+        .into_iter()
+        .fold(axum::Router::new(), |router, (path, handler)| {
+            router.route(path, handler)
+        })
+}
+
 use axum::body::Body;
 use axum::http::Request;
 use tower::ServiceExt;
@@ -74,7 +91,7 @@ fn markup_in_a_title_is_escaped_rather_than_emitted() {
 #[tokio::test]
 async fn the_catalog_is_an_atom_navigation_feed() {
     let state = Arc::new(crate::test_support::state("taiyaku-test-opds-root"));
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let response = app
         .oneshot(
@@ -108,7 +125,7 @@ async fn the_catalog_is_an_atom_navigation_feed() {
 #[tokio::test]
 async fn a_work_lists_its_editions_with_page_counts_and_a_sidecar_link() {
     let state = Arc::new(crate::test_support::state("taiyaku-test-opds-work"));
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let response = app
         .oneshot(
@@ -155,7 +172,7 @@ async fn a_work_lists_its_editions_with_page_counts_and_a_sidecar_link() {
 #[tokio::test]
 async fn pse_page_numbers_are_taiyaku_indices_unchanged() {
     let state = Arc::new(crate::test_support::state("taiyaku-test-opds-page"));
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let page = async |n: u32| {
         let response = app
@@ -208,7 +225,7 @@ async fn pse_page_numbers_are_taiyaku_indices_unchanged() {
 #[tokio::test]
 async fn a_pse_page_number_that_is_not_a_number_is_refused_the_same_way() {
     let state = Arc::new(crate::test_support::state("taiyaku-test-opds-page-nan"));
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let response = app
         .oneshot(
@@ -242,7 +259,7 @@ async fn a_pse_page_number_that_is_not_a_number_is_refused_the_same_way() {
 #[tokio::test]
 async fn the_pse_stream_also_carries_an_etag_and_answers_a_matching_request_304() {
     let state = Arc::new(crate::test_support::state("taiyaku-test-opds-page-etag"));
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let first = app
         .clone()
@@ -283,7 +300,7 @@ async fn the_pse_stream_also_carries_an_etag_and_answers_a_matching_request_304(
 #[tokio::test]
 async fn an_unknown_work_is_refused_rather_than_served_empty() {
     let state = Arc::new(crate::test_support::state("taiyaku-test-opds-missing"));
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let response = app
         .oneshot(
@@ -307,7 +324,7 @@ async fn an_unknown_work_is_refused_rather_than_served_empty() {
 #[tokio::test]
 async fn the_works_feed_lists_every_work_with_its_edition_count() {
     let state = Arc::new(crate::test_support::state("taiyaku-test-opds-works-list"));
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let response = app
         .oneshot(
@@ -347,7 +364,7 @@ async fn streaming_an_unknown_edition_names_it() {
     let state = Arc::new(crate::test_support::state(
         "taiyaku-test-opds-unknown-edition",
     ));
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let response = app
         .oneshot(
@@ -373,7 +390,7 @@ async fn streaming_a_page_past_the_end_names_the_edition_and_its_length() {
     let state = Arc::new(crate::test_support::state(
         "taiyaku-test-opds-page-past-end",
     ));
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     // The fixture edition has 4 pages; PSE page 5 is index 4, one past it.
     let response = app
@@ -405,7 +422,7 @@ async fn a_cover_for_an_unknown_work_or_edition_names_what_was_missing() {
     let state = Arc::new(crate::test_support::state(
         "taiyaku-test-opds-cover-missing",
     ));
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let no_work = app
         .clone()
@@ -470,8 +487,9 @@ async fn a_percent_encoded_edition_key_in_the_feed_routes_back_to_the_same_editi
             .join("taiyaku-test-opds-percent")
             .join("covers"),
         log: None,
+        auth: crate::session::AuthConfig::default(),
     });
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let feed = app
         .clone()
@@ -536,7 +554,7 @@ async fn a_percent_encoded_edition_key_in_the_feed_routes_back_to_the_same_editi
 #[tokio::test]
 async fn the_works_feed_and_the_work_feed_declare_an_atom_author() {
     let state = Arc::new(crate::test_support::state("taiyaku-test-opds-author"));
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let all_works_feed_body = body_of(
         app.clone()
@@ -577,7 +595,7 @@ async fn the_works_feed_and_the_work_feed_declare_an_atom_author() {
 #[tokio::test]
 async fn navigation_entries_carry_a_subsection_rel() {
     let state = Arc::new(crate::test_support::state("taiyaku-test-opds-subsection"));
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let catalog_body = body_of(
         app.clone()
@@ -621,7 +639,7 @@ async fn navigation_entries_carry_a_subsection_rel() {
 #[tokio::test]
 async fn the_acquisition_link_on_an_edition_entry_is_a_real_fetchable_page() {
     let state = Arc::new(crate::test_support::state("taiyaku-test-opds-acquisition"));
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let feed = app
         .clone()
@@ -684,8 +702,9 @@ async fn the_cover_cache_key_follows_locate_past_a_pageless_first_member() {
         source: Arc::new(crate::LocalLibrary),
         cache_dir: dir.clone(),
         log: None,
+        auth: crate::session::AuthConfig::default(),
     });
-    let app = routes().with_state(state);
+    let app = feed_router().with_state(state);
 
     let response = app
         .oneshot(

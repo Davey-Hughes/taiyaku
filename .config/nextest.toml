@@ -4,7 +4,37 @@
 # would hang the forge until the runner's own limit rather than fail it. See
 # docs/status.md, O39.
 #
-# 30 s is 40x the slowest test in the workspace and 60 s is 80x. Measured, not
+# **These figures were true until spec A2 and are corrected below; the ratio is
+# now roughly 6x rather than 40x.** Argon2 is deliberately expensive and runs
+# unoptimized under `cargo test` — this workspace sets no `[profile.dev]`
+# opt-level — so every test that verifies a password pays about 11.9 ms. The
+# suite's own fixtures no longer do: `test_support` pins a precomputed hash and
+# authenticates with an API key, which §2 routes past argon2 by its `tyk_`
+# prefix, and that took `taiyaku-serve` from 11.85 s back to 4.96 s. What
+# remains slow is the three tests whose *subject* is password guessing —
+# `succeeding_forgets_the_failures_before_it` at 4.86 s runs nineteen logins on
+# purpose — and making those cheap would mean not testing the thing.
+#
+# So: **the slowest test is `succeeding_forgets_the_failures_before_it` at
+# roughly 5 s — 4.99 s on the run this sentence was written from, and it moves
+# by a few hundred milliseconds between runs because argon2 is what it is
+# timing. 30 s is about 6x it and 60 s about 12x**, measured 2026-08-19 on the
+# machine below. That is thinner than what this file was written with, and it is
+# stated rather than left to be discovered by a shared runner killing a job at
+# `terminate-after`.
+#
+# A figure quoted to two decimal places here was wrong within a day, so this one
+# is quoted as a range with the reason it moves. `report_the_argon2_cost` is
+# `#[ignore]`d for the same reason it kept appearing at the top of this list: it
+# is a measurement tool that asserts nothing, and it has no business spending the
+# budget a timeout is reasoning about.
+#
+# Found by the second whole-branch review, which measured the regression before
+# the fixtures were fixed, and corrected by the third, which caught the figure
+# already being stale.
+#
+# The original measurement, which the paragraph above supersedes:
+# 30 s was 40x the slowest test in the workspace and 60 s was 80x. Measured, not
 # guessed: running the whole suite under a temporary short `slow-timeout` and
 # raising the period, four SLOW lines print at 250 ms and two at 500 ms — but
 # that is two tests, not four: nextest re-prints a SLOW line at every multiple

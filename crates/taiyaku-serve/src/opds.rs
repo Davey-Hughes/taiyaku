@@ -15,7 +15,6 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use axum::{
-    Router,
     extract::{Path as AxPath, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
@@ -366,16 +365,27 @@ async fn cover(
 }
 
 /// Every OPDS route, ready to be merged into the main router.
-pub fn routes() -> Router<Arc<ServeState>> {
-    Router::new()
-        .route("/opds/v1.2/catalog", get(catalog))
-        .route("/opds/v1.2/works", get(works))
-        .route("/opds/v1.2/works/{work}", get(work_feed))
-        .route(
+/// This module's paths and their handlers, as a list rather than as a built
+/// `Router`.
+///
+/// **A list because `routes::build_router` has to be able to walk it.** The
+/// guard's enumeration test asserts that every path this server answers refuses
+/// an anonymous request, and it drives that off the same list `build_router`
+/// folds — so a route added here arrives guarded and covered on the commit that
+/// adds it, which a reviewer's checklist cannot promise. Returning a `Router`
+/// hid these five paths from that walk, and OPDS is the half of the surface
+/// reachable from outside the house.
+pub fn routes() -> Vec<(&'static str, axum::routing::MethodRouter<Arc<ServeState>>)> {
+    vec![
+        ("/opds/v1.2/catalog", get(catalog)),
+        ("/opds/v1.2/works", get(works)),
+        ("/opds/v1.2/works/{work}", get(work_feed)),
+        (
             "/opds/v1.2/works/{work}/{edition}/pages/{number}",
             get(stream_page),
-        )
-        .route("/opds/v1.2/works/{work}/{edition}/cover", get(cover))
+        ),
+        ("/opds/v1.2/works/{work}/{edition}/cover", get(cover)),
+    ]
 }
 
 #[cfg(test)]

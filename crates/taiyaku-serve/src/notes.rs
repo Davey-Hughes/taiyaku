@@ -29,7 +29,7 @@ pub use taiyaku_library::{Note, Notes, Region};
 
 use taiyaku_library::Library;
 
-use crate::works::{self, LOCAL_USER, Work};
+use crate::works::{self, Work};
 
 /// How far outside `[0, 1]` a region may stray before it is refused.
 ///
@@ -254,12 +254,12 @@ pub fn to_json(notes: &Notes) -> Result<String, String> {
 /// Returns an error if SQLite fails, or if a stored note has a region with
 /// only some of its four columns set — see
 /// `taiyaku_library::state::notes`'s own `# Errors`.
-pub fn load(library: &Library, work: &Work) -> Result<Option<Notes>, String> {
+pub fn load(library: &Library, work: &Work, user_id: i64) -> Result<Option<Notes>, String> {
     let conn = library.conn();
     let Some(work_id) = works::find_row(&conn, work)? else {
         return Ok(None);
     };
-    taiyaku_library::state::notes(&conn, work_id, LOCAL_USER).map(Some)
+    taiyaku_library::state::notes(&conn, work_id, user_id).map(Some)
 }
 
 /// Replace the notes, inside one transaction.
@@ -278,10 +278,10 @@ pub fn load(library: &Library, work: &Work) -> Result<Option<Notes>, String> {
 /// Returns an error if SQLite fails — including a `UNIQUE` violation on a
 /// note `id` repeated in `notes.notes`, since this module's own `validate`
 /// is what is relied on to have refused that already.
-pub fn store(library: &Library, work: &Work, notes: &Notes) -> Result<(), String> {
+pub fn store(library: &Library, work: &Work, user_id: i64, notes: &Notes) -> Result<(), String> {
     let conn = library.conn();
     let work_id = works::row_id_for_write(&conn, work)?;
-    taiyaku_library::state::put_notes(&conn, work_id, LOCAL_USER, notes)
+    taiyaku_library::state::put_notes(&conn, work_id, user_id, notes)
 }
 
 /// A notes or truth document's `ETag`: a SHA-256 over exactly the bytes being

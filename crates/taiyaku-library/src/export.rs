@@ -25,24 +25,6 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
-/// Migration 1's one seeded row (`schema/001_initial.sql`): `INSERT INTO
-/// user (id, name, role) VALUES (1, 'local', 'admin')`. `state::notes` and
-/// `state::progress` are per-user, but `taiyaku.notes.json` and
-/// `taiyaku.progress.json` are not — those formats predate any notion of a
-/// second reader, and spec A2 (the design this schema's own comment points
-/// to: "the server behaves exactly as it does today: no login, no hashing,
-/// no guards") has not landed yet. Until it does, "the" user a sidecar
-/// speaks for is unambiguous: it is this row, the only one that exists.
-/// Revisit this constant, not its call sites, once a library can hold more
-/// than one real account.
-///
-/// `pub(crate)` rather than private: `migrate.rs`'s job is this module's
-/// exact inverse (rows back into these same five documents, once, on first
-/// import) and needs the identical user id for the identical reason — a
-/// third copy of this constant, in the same crate, would be the thing this
-/// doc comment already warns a second one elsewhere is.
-pub(crate) const LOCAL_USER: i64 = 1;
-
 /// What one work's export did to the filesystem: the documents written, the
 /// stale ones taken away, and the ones it deliberately did not touch.
 ///
@@ -65,6 +47,26 @@ pub struct Exported {
     /// Empty for a `--dir` export, which is writing somewhere the caller
     /// named rather than over a reader's own files.
     pub kept: Vec<PathBuf>,
+    /// The other readers holding notes or a reading position for this work,
+    /// whose state is **not** in the documents just written.
+    ///
+    /// **§5.1, decided 2026-08-18.** `note` and `progress` have been keyed
+    /// `(user_id, work_id)` since migration 1, so the database holds every
+    /// reader; a sidecar carries one set, which is what the format is, and
+    /// versioning it to hold several was declined — those files are consumed by
+    /// `taiyaku-serve`'s routes and by the reader, and the blast radius is the
+    /// whole round trip.
+    ///
+    /// So the ambiguity is **reported rather than resolved**: this list is the
+    /// difference between "exported" and "exported everything", which no other
+    /// field here can express. That is the same rule `suppressed`, `rekeyed`,
+    /// `merged` and `kept_editions` were built on — any outcome that changes
+    /// what a person sees and cannot be inferred from the other counts gets a
+    /// field.
+    ///
+    /// Empty for the ordinary single-reader library, so nobody is told about a
+    /// situation they are not in.
+    pub other_users: Vec<String>,
 }
 
 /// Write as many of one work's five documents as it has state for, atomically,
@@ -237,15 +239,21 @@ pub struct Exported {
 /// document fails to serialise, if any write fails — see
 /// `taiyaku_read::atomic::write` — if a stale document exists and cannot be
 /// removed, or if reading or writing a `migrated_document` marker fails.
-pub fn work(conn: &Connection, work_id: i64, dir: Option<&Path>) -> Result<Exported, String> {
+pub fn work(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+    dir: Option<&Path>,
+) -> Result<Exported, String> {
     let (slug, sidecar_path) = work_row(conn, work_id)?;
     let target = target_dir(dir, sidecar_path.as_deref(), &slug, work_id)?;
     let stem = stem_of(sidecar_path.as_deref());
 
     let sidecar = crate::project::sidecar(conn, work_id)?;
     let library_doc = crate::librarydoc::of(conn, work_id)?;
-    let notes = crate::state::notes(conn, work_id, LOCAL_USER)?;
-    let progress = crate::state::progress(conn, work_id, LOCAL_USER)?;
+    let notes = crate::state::notes(conn, work_id, user_id)?;
+    let progress = crate::state::progress(conn, work_id, user_id)?;
+    let other_users = readers_left_behind(conn, work_id, user_id)?;
     let truth = crate::state::truth(conn, work_id)?;
 
     let notes_json = serde_json::to_string_pretty(&notes)
@@ -316,7 +324,7 @@ pub fn work(conn: &Connection, work_id: i64, dir: Option<&Path>) -> Result<Expor
         let claim = if in_place { *document } else { None };
         if let Some(document) = claim
             && path.is_file()
-            && !crate::migrate::absorbed(conn, work_id, document)?
+            && !crate::migrate::absorbed_for(conn, work_id, document, user_id)?
         {
             kept.push(path);
             continue;
@@ -335,7 +343,10 @@ pub fn work(conn: &Connection, work_id: i64, dir: Option<&Path>) -> Result<Expor
     let mut removed = Vec::with_capacity(stale.len());
     for (suffix, document) in stale {
         let path = target.join(format!("{stem}.{suffix}"));
-        if in_place && path.is_file() && !crate::migrate::absorbed(conn, work_id, document)? {
+        if in_place
+            && path.is_file()
+            && !crate::migrate::absorbed_for(conn, work_id, document, user_id)?
+        {
             kept.push(path);
             continue;
         }
@@ -368,7 +379,38 @@ pub fn work(conn: &Connection, work_id: i64, dir: Option<&Path>) -> Result<Expor
         written,
         removed,
         kept,
+        other_users,
     })
+}
+
+/// The other readers this work has state for, by name, ascending.
+///
+/// **Both tables, because either one alone would miss a reader.** `note` and
+/// `progress` are separately per-user, and someone who has read half a volume
+/// without annotating it is as invisible in an export as someone who annotated
+/// it without reading — a position left behind is state left behind.
+fn readers_left_behind(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+) -> Result<Vec<String>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT u.name
+               FROM user u
+              WHERE u.id <> ?2
+                AND (EXISTS (SELECT 1 FROM note     n
+                              WHERE n.work_id = ?1 AND n.user_id = u.id)
+                  OR EXISTS (SELECT 1 FROM progress p
+                              WHERE p.work_id = ?1 AND p.user_id = u.id))
+              ORDER BY u.name",
+        )
+        .map_err(|e| format!("preparing the other-readers lookup: {e}"))?;
+    let rows = statement
+        .query_map(rusqlite::params![work_id, user_id], |row| row.get(0))
+        .map_err(|e| format!("reading the other readers of work {work_id}: {e}"))?;
+    rows.collect::<rusqlite::Result<Vec<String>>>()
+        .map_err(|e| format!("reading the other readers of work {work_id}: {e}"))
 }
 
 fn work_row(conn: &Connection, work_id: i64) -> Result<(String, Option<String>), String> {

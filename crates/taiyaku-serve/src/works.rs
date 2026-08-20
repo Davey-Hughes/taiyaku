@@ -277,16 +277,6 @@ pub(crate) fn summary(conn: &rusqlite::Connection, work: &Work) -> Result<WorkSu
     })
 }
 
-/// The single seeded user (`taiyaku-library`'s migration 1: `INSERT INTO
-/// user (id, name, role) VALUES (1, 'local', 'admin')`) that every note and
-/// reading position belongs to until spec A2 gives this server real
-/// accounts. `taiyaku-library`'s own `export.rs` carries the identical
-/// constant with the identical reasoning; that crate cannot depend on this
-/// one, so the constant cannot be shared, only agreed on in two places.
-/// Revisit this constant, not its call sites, once a library can hold more
-/// than one real account.
-pub(crate) const LOCAL_USER: i64 = 1;
-
 /// The library's own numeric id for a work this server already knows by its
 /// slug (`work.id`), or `None` where nothing has ever been written against
 /// it.

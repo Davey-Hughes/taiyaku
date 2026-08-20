@@ -1,6 +1,14 @@
 # The library's authentication — design
 
-**Status: settled in brainstorming on 2026-08-14. Not built.**
+**Status: settled in brainstorming on 2026-08-14. Built on 2026-08-18**, on the
+`library-auth` branch; `docs/superpowers/plans/2026-08-18-library-auth.md` is the
+plan and `docs/status.md` is what shipped.
+
+**Six statements below were true when written and were made stale by specs A and
+B landing first.** They are corrected in place and marked, rather than rewritten
+away, because two of them were wrong in ways worth reading: §8 predicted an
+ordering that reversed, and §3's migration number moved twice. Each correction is
+dated and signed *(corrected 2026-08-18)*.
 
 Written in the style of the rest of `docs/`: every decision records the
 alternative it beat and what it cost, a figure asserted here was measured on
@@ -29,7 +37,9 @@ Two things are already correct and should not be re-litigated:
 - **The request log will not leak credentials.** `LOGGED_HEADERS` is a
   five-entry allowlist and its doc comment names the reason: everything *"would
   put a `Cookie` or an `Authorization` into a file that gets read by scripts and
-  pasted into issues"* (`serve/reqlog.rs:24`). Adding auth does not open a hole
+  pasted into issues"* (`serve/reqlog.rs`; the line was 24 and is now 44 —
+  *corrected 2026-08-18*, and cited by symbol from here on for the reason the
+  open-items table gives about line numbers). Adding auth does not open a hole
   there, and the allowlist must stay an allowlist.
 - **Outbound auth already exists as a precedent**, not as a component to reuse:
   the Stump client sends `Authorization: Bearer` (`serve/stump/http.rs:82`).
@@ -74,7 +84,26 @@ They are unverified anywhere today (§14) and §12's step 2 is where they stop
 being. A parameter set that is fast on a workstation and slow on the server is
 the failure this project's measurement discipline exists to catch.
 
-## 3. Migration 2
+## 3. Migration 2 — **migration 4** *(corrected 2026-08-18)*
+
+`002_absorbed.sql` and `003_scanner.sql` both landed before this branch, so what
+this section describes is `004_auth.sql` and `SCHEMA_VERSION` is 4.
+
+**One thing this section does not say, and the implementation had to decide.**
+Migration 1 seeds `(1, 'local', 'admin')` with a NULL `password_hash`, so "NULL
+-> NOT NULL" needs an answer for that row rather than a constraint it violates.
+It gets `'!'` — `credential::LOCKED` — which is not a well-formed PHC string, so
+it verifies against nothing, the way `/etc/shadow` refuses a locked account.
+`account::admin_exists` reads that placeholder rather than the role, which is
+what makes §5's claim route reachable on a fresh library: the seeded row *has*
+role `admin`, and counting it would shut the route before anybody could use it.
+
+**And the rebuild itself was more dangerous than this section says.** "Getting it
+wrong silently drops the rows it copies" understates it: `PRAGMA foreign_keys` is
+a no-op inside a transaction, `apply_pending` runs every migration inside one,
+and `DROP TABLE` on a parent fires `ON DELETE CASCADE` — so the obvious version
+copies the `user` rows perfectly and deletes every note and reading position.
+Measured at zero notes surviving. See `docs/notes.md`.
 
 ```sql
 ALTER TABLE user ADD COLUMN can_download INTEGER NOT NULL DEFAULT 1;
@@ -204,6 +233,20 @@ not equivalent:
 Nothing here is decided. What matters is that it is decided *before* the second
 user exists, because after that every export is quietly dropping something.
 
+***(decided 2026-08-18: the first, with the second's honesty.)*** The database
+was already multi-user — `note` and `progress` have been keyed
+`(user_id, work_id)` since migration 1 — so only the *file* is single-user, and
+that is what a sidecar is rather than a limitation to version away. `export::work`
+takes a `user_id` and `Exported` gained `other_users`, naming every reader whose
+state is not in the files it wrote.
+
+Reporting rather than refusing follows the rule `suppressed`, `rekeyed`, `merged`
+and `kept_editions` were all built on: any outcome that changes what a person
+sees and cannot be inferred from the other counts gets a field. Versioning the
+sibling formats was declined — both are consumed by `taiyaku-serve`'s routes and
+by the reader, so the blast radius is the whole round trip. `taiyaku library
+export` gained `--user NAME`, defaulting to the lowest account id.
+
 ## 6. The trusted proxy is a decision, not a config line
 
 `serve` needs to know it sits behind a proxy for two independent reasons, and
@@ -253,6 +296,20 @@ rather than a hole: in that window every work in the database was imported by
 hand by the admin. Recorded here so it is a known window rather than a
 discovered bug, and §10's route test covers the guard whether or not the filter
 does anything yet.
+
+***(corrected 2026-08-18)* The ordering reversed, and the conclusion survived
+for a different reason.** Spec B landed *before* this one — and added no
+`work.root_id`, nor any other work-to-root link: `scan_entry.root_id` and
+`rule.root_id` exist, `member` has no `scan_entry_id`. So the filter is still
+inert, but not because B has yet to populate it: because nothing populates it,
+and because `serve` is handed sidecar paths and no route lists by root, so there
+is nothing for a filter to filter.
+
+What shipped is `user_root`, and a guard that resolves `Principal.roots` from it.
+Spec C1's browse API is the first caller that can act on the answer. Adding
+`work.root_id` here was declined: it would have reproduced O45's exact shape — a
+column written on every scan and read by nothing — in the branch that opened
+O45's neighbours.
 
 ## 9. What the reader gains, and what it does not
 
@@ -325,6 +382,18 @@ One branch, one squashed PR. Ordered so the risky claims are tested first:
 7. `--allow-web-setup` and the claim route.
 8. Web: login, logout, account screen, `api.ts` 401 handling.
 
+***(corrected 2026-08-18)* Four steps this list does not name, all of which the
+work needed.** The two `LOCAL_USER = 1` constants — `taiyaku-library`'s
+`export.rs` and `taiyaku-serve`'s `works.rs`, which this design knew about as one
+— had to be deleted and threaded through as an argument, which is two steps of
+its own; §5.1's decision above had to be implemented rather than only made; §14's
+checkable unknowns had to be checked; and the documents §13 lists are four edits
+where this project's open-items ritual is more than four.
+
+Step 1 also grew a piece nothing here anticipated: the foreign-key pragma had to
+move out of the transaction that made it a no-op, which is a change to
+`schema.rs` rather than a `.sql` file.
+
 ## 13. The measurements this invalidates
 
 - `scripts/coverage-floor.mjs` and `scripts/status-test-count.mjs`
@@ -337,9 +406,23 @@ One branch, one squashed PR. Ordered so the risky claims are tested first:
 
 ## 14. What could not be measured
 
+***(measured 2026-08-18, two of the three.)*** The first is still owed and the
+second is half-answered; the third was measured, misbehaved exactly as this
+section allowed for, and was fixed the way this section said to fix it. All three
+are written up in `docs/notes.md`, "Spec A2's measurements".
+
 - **argon2id parameters on the host that will run this.** OWASP's numbers are a
   starting point, not a measurement; §2's are unverified anywhere and §12 step 2
   is where they stop being.
+  *Measured on the workstation: 11.92 ms to hash, 10.93 ms to verify, at OWASP's
+  parameters. **The deployment host is still unmeasured**, which is the whole of
+  what this item asked for — a parameter set fast here and slow there is the
+  failure the discipline exists to catch. The cost assertion deliberately does
+  not use a clock floor: one set near 23 ms fails on faster hardware and reports
+  a hardware upgrade as a security defect, so the parameters are asserted as
+  three `const` assertions instead, with a 2 ms floor for "something stopped
+  calling argon2 at all".*
+
 - **Whether Panels accepts an API key in the Basic password field.** The whole
   design of §2's prefix rests on OPDS clients treating that field as opaque,
   which is what the specification implies and what no test here has confirmed
@@ -353,3 +436,13 @@ One branch, one squashed PR. Ordered so the risky claims are tested first:
   cookie policy — a production cookie must not be weakened for a development
   convenience, which is the same rule `vite.config.ts` already states about
   choosing a proxy over CORS.
+
+  ***Measured 2026-08-18: it misbehaved, and the fix went where this paragraph
+  said.*** `POST /api/session` through `pnpm dev` answered **403** — the proxy
+  rewrites `Host` to the target while `Origin` stays `localhost:5173`, so §4's
+  check compared two different authorities. Every login through the dev server
+  failed. `changeOrigin` is now `false`, so the proxy forwards the `Host` the
+  browser sent; nothing needed the rewrite, since the target is this project's
+  own `serve`, which routes on the path and reads `Host` only to compare it
+  against `Origin`. The cookie policy is unchanged. `Secure` is correctly absent
+  over plain HTTP with no `--trusted-proxy` configured.

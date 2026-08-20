@@ -112,6 +112,7 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
         source: Arc::new(LocalLibrary),
         cache_dir: std::env::temp_dir().join("taiyaku-corpus-covers"),
         log: None,
+        auth: crate::session::AuthConfig::default(),
     };
     let work = &state.works[0];
     let sidecar = work.sidecar();

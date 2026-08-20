@@ -55,6 +55,15 @@ export interface Guards {
   notesBusy: boolean
   /** `isInteractiveTarget(event.target)` — focus is in a control. */
   onControl: boolean
+  /** Whether the account panel is open over the reader.
+  ///
+  /// **`Escape` belongs to whatever is on top.** Without this it fell through to
+  /// `cancel-correction`, so pressing it to dismiss the account panel silently
+  /// abandoned a pending correction the reader had not finished — the panel
+  /// stayed open and the correction was gone, with nothing saying either. The
+  /// note editor already had exactly this guard (`panel === 'edit'`). Found by
+   * the second whole-branch review. */
+  accountOpen: boolean
   /**
    * `modules/zoom.ts`'s `zoomable(zoomPrefs, drawn !== undefined)` — one flag
    * for the three zoom keys, and the same predicate `notes.ts`'s
@@ -74,6 +83,8 @@ export type KeyAction =
   | { kind: 'close-editor' }
   | { kind: 'cancel-correction' }
   | { kind: 'toggle-chrome' }
+  | { kind: 'open-account' }
+  | { kind: 'close-account' }
   | { kind: 'begin-correction' }
   | { kind: 'module'; intent: string }
   /**
@@ -174,6 +185,14 @@ export function keyPlan(
     if (guards.helpOpen) {
       return { action: { kind: 'close-help' }, preventDefault: true }
     }
+    // **Beside `helpOpen`, and above the correction.** `Escape` belongs to
+    // whatever is on top, and the account panel is a screen over the reader.
+    // Without this it fell through to `cancel-correction`, so a reader
+    // dismissing the panel silently abandoned a pending correction — the panel
+    // stayed open and the correction was gone, with nothing saying either.
+    if (guards.accountOpen) {
+      return { action: { kind: 'close-account' }, preventDefault: true }
+    }
     // The note panel closes on `Escape` too, but only where there is no
     // correction to abandon: a reader mid-correction pressing `Escape` means
     // the correction, which is the irreversible one.
@@ -205,6 +224,16 @@ export function keyPlan(
   // above and still closes the editor; everything else belongs to the note
   // until it does.
   if (guards.panel === 'edit') return undefined
+  // **The account panel stands every other key down too**, exactly as the note
+  // editor above does. Consulting `accountOpen` only inside the `Escape` branch
+  // left the reader keys live behind a `position: fixed; inset: 0` overlay with
+  // no focus trap: clicking Create or Revoke drops focus to `<body>` — both
+  // `disabled={busy}` and the refresh re-render do it — so `onControl` stands
+  // nothing down, and `→ → →` turned the hidden reader three pages forward with
+  // the debounced `putProgress` writing that position 400 ms later, while `c`
+  // armed a correction nobody could see. Verbatim the failure the editor
+  // guard's own comment records. Found by the third whole-branch review.
+  if (guards.accountOpen) return undefined
   // Ahead of the `onControl` check, unlike everything below it: `Tab` moving
   // focus onto a control is not the same event as activating it, so there is
   // nothing for it to collide with.
@@ -217,6 +246,17 @@ export function keyPlan(
   // listeners raced, but because a window-level listener has no way to know a
   // focused button is about to handle the very same keypress itself.
   if (guards.onControl) return undefined
+  // **Below the guard, unlike `chrome` above it, and the difference is that
+  // `Tab` is not a character and `A` is.** `intentOf` bails only on
+  // ctrl/meta/alt, not Shift, so this fires for a shifted `a` typed anywhere —
+  // and above the guard, with `preventDefault`, a reader whose password
+  // contains a capital A could not type it into the login field, the account
+  // panel's own password fields, or the key-name box. The character never
+  // reached the input and the panel opened instead. Found by the whole-branch
+  // review, 2026-08-18.
+  if (intent.kind === 'account') {
+    return { action: { kind: 'open-account' }, preventDefault: true }
+  }
   if (intent.kind === 'correct') {
     // Not while a correction is already on the wire. Without this,
     // `disabled={submitting}` blurs the just-clicked Confirm the instant the

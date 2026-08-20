@@ -12215,3 +12215,289 @@ filesystem, and nobody has timed the walk, the sniff or the first hash there.
 A NAS is not this machine, and "22 seconds for 110 members on a 32-core
 workstation with local NVMe" says nothing defensible about how long the same
 derive takes over whatever the deployment host's storage actually is.
+
+## Spec A2's measurements: a cascade the migration could have hidden, argon2's real cost, and the dev proxy that refused every login
+
+Taken on the `library-auth` branch, 2026-08-18, on this workstation unless a
+line says otherwise. Spec A2 §14 named three things it could not measure; two of
+them are below, the third is still owed and says so.
+
+### The rebuild that would have deleted every note, and why no migration could say so
+
+`user.password_hash` goes NULL → NOT NULL in migration 4, which SQLite cannot do
+in place, so it is the documented twelve-step rebuild: create, copy, drop,
+rename. `progress` and `note` both `REFERENCES user(id) ON DELETE CASCADE`, and
+`DROP TABLE` on a parent performs an implicit `DELETE` that fires those cascades.
+
+The pragma that would prevent it **cannot live in the migration**. `PRAGMA
+foreign_keys` is a no-op inside a transaction — it does not error and does not
+warn, it simply does not apply — and `schema.rs::apply_pending` runs every
+migration inside one. Reproduced with `sqlite3` against a two-table copy of the
+real `user`/`note` pair:
+
+| | notes surviving | user rows |
+| --- | --- | --- |
+| pragma inside the transaction, as a migration would write it | **0** | copied correctly |
+| pragma before `BEGIN`, `pragma_foreign_key_check` before `COMMIT` | 1 | copied correctly, id preserved |
+
+The failure is worse than the one §3 anticipated ("getting it wrong silently
+drops the rows it copies"): it copies the rows it was asked to copy, perfectly,
+and deletes the children nobody mentioned. So `migrate_with` disables foreign
+keys around the whole run and restores whatever was set before, and
+`apply_pending` runs `pragma_foreign_key_check` inside each transaction before
+writing the version row — the enforcement that would have happened continuously,
+happening once.
+
+`schema::tests::migration_4_rebuilds_user_without_taking_the_notes_with_it`
+fails with `migration 4 cascaded the notes away, left: 0, right: 1` the moment
+that wrapper is removed. Verified by removing it, not by reasoning about it.
+
+### argon2id's real cost, and why the test does not assert it
+
+Release profile, mean of ten, at OWASP's `m=19456 KiB, t=2, p=1`:
+
+- **hash 11.92 ms, verify 10.93 ms**
+
+§10 asks for the cost to be "asserted to be within a band, not merely correct —
+a parameter set that verifies correctly and takes 2 ms is the defect". A timing
+floor is the obvious reading of that sentence and is the wrong test: a floor set
+anywhere near 23 ms fails on a *faster* machine, reporting a hardware upgrade as
+a security defect. The parameters are what would be lowered by mistake and they
+are constants, so they are three `const` assertions beside their own definitions
+— a compile error rather than a test failure. A 2 ms clock floor stays for the
+failure those cannot see: a `hash_password` that stopped calling argon2 at all.
+
+**Still owed, and §14's first item: the cost on the NAS that will run this.**
+This machine is the workstation. A parameter set that is fast here and slow
+there is exactly the failure that discipline exists to catch, and nothing below
+this line has measured it.
+
+### The one new crate, and what it costs to build
+
+`cargo clean`, then:
+
+| | wall | CPU-seconds |
+| --- | --- | --- |
+| whole workspace | 12.48 s | **138.85** (125.79 user + 13.06 sys) |
+| `argon2` and its five new transitive deps alone | 0.97 s | **1.70** |
+
+`base64ct`, `blake2`, `password-hash` and `rand_core` 0.6.4 are the five.
+`base64` moved 0.23.0 → 0.23.1 as a side effect; `rand` 0.10.2 and `getrandom`
+were already in the lockfile transitively. So the branch's one genuinely new
+crate is about 1.2% of a clean workspace build. **No inference is drawn about
+CI's budget**, which is `notify`'s precedent two sections above.
+
+### The dev proxy refused every login, which §14 predicted and said how to fix
+
+§14 recorded the session cookie's scoping through `vite.config.ts`'s
+`changeOrigin: true` as unverified. Measured through a real `pnpm dev` on
+`localhost:5173` in front of `serve` on `127.0.0.1:8080`:
+
+```
+POST /api/session  ->  403 Forbidden
+```
+
+`changeOrigin: true` rewrites `Host` to the target while the browser's `Origin`
+stays `localhost:5173`, so spec A2 §4's origin check compares `localhost:5173`
+against `127.0.0.1:8080` and refuses. Every login through `pnpm dev` failed, and
+a reader would have seen the reader's own "the server refused this request's
+origin" message with no way to act on it.
+
+§14 said which way to fix that before it happened, and it is worth quoting
+because the tempting fix is the other one:
+
+> If it misbehaves, the fix is in the dev proxy and not in the cookie policy — a
+> production cookie must not be weakened for a development convenience.
+
+So `changeOrigin` is now `false` and the proxy forwards the `Host` the browser
+sent. Nothing needs the rewrite: the target is this project's own `serve`, which
+routes on the path and reads `Host` only to compare it against `Origin`.
+
+Re-measured through the proxy afterwards, all five:
+
+| | |
+| --- | --- |
+| `POST /api/session` | 204, `HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000` |
+| `GET /api/works` with the cookie | 200 |
+| `GET /api/me` | `{"admin":true,…,"user_id":1}` |
+| `PUT /api/works/t/progress`, matching `Origin` | 204 |
+| the same write, `Origin: http://evil.test` | 401 |
+
+`Secure` is absent, correctly: no `--trusted-proxy` is configured, so the cookie
+must survive a plain-HTTP hop.
+
+### What an OPDS client sees, and the half of it that is still unmeasured
+
+Against `serve` directly, with a key from `taiyaku library key create`:
+
+| | |
+| --- | --- |
+| `GET /opds/v1.2/catalog`, anonymous | 401 with `WWW-Authenticate: Basic realm="taiyaku"` |
+| the same, `-u davey:tyk_…` | 200, the catalog feed |
+| `GET /opds/v1.2/works/t/raw/pages/0` | 200, `image/jpeg` |
+
+**The server half works and the client half is still unverified.** §14's second
+item is whether *Panels* accepts a `tyk_`-prefixed key in the Basic password
+field, and that cannot be answered with `curl`: what is checked above is that a
+client sending the key as the password is served, which is what the
+specification implies every client does. Whether Panels does it is one attempt
+against the real reader on a real iPad, and §14 says it should happen before the
+account screen promises it. The account screen currently promises it.
+
+If it turns out not to work, the fallback is stated rather than invented then:
+the account screen offers a password-shaped credential per device instead, and
+§2's table is amended rather than the prefix removed.
+
+### What the whole-branch review found, 2026-08-19
+
+Fifteen findings against a branch whose gate was green, whose 1280 tests passed,
+and which had been exercised against a running server. Ten are fixed here; the
+list below is the three worth reading as a class, because each is a different way
+for a check to be present and not working.
+
+**A requirement that never shipped.** §7 says the limiter is "on the login route
+*and on failed `Authorization: Basic` verification only*" and only the first half
+was written — so a password was guessable at any rate through any guarded route
+while ten tries at the login route locked the pair out. Reproduced: eleven wrong
+passwords over Basic, all 401. Fixed and re-measured: `401×10` then 429, with the
+right password still 429 while locked out. It was also an unauthenticated denial
+of service, since each guess holds a `spawn_blocking` thread for 11.9 ms and
+allocates argon2's 19 MiB buffer.
+
+**A safety net that read the wrong list.** `every_route_refuses_an_anonymous_request`
+carried `patterns.len() >= 13` and never moved when six account routes were added
+twenty lines below it, so 19 routes shipped against a floor that 13 would satisfy
+— and nothing read `open_routes`, the by-name exemption from the guard. Moving
+`/api/password` there was verified to pass green before the fix and to fail
+after. The floor is derived from both lists now, and the exemption has a test of
+its own that proves each entry is outside the guard by a success no guarded route
+could give: "not 401" would not do it, because a login refusing wrong credentials
+answers 401 with the guard's own body.
+
+**A promise kept by the row and broken by the cookie.** `Max-Age` is absolute
+from receipt, so a session cookie written once at login was discarded thirty days
+later however often it was used, while `session.expires` slid forward on every
+request. Three doc comments — `004_auth.sql`, `SESSION_DAYS`, and §9's cost
+argument for refusing a `--no-auth` bypass — were all true of the row and false
+of the cookie.
+
+The pattern across all three: each had a check, a comment, or a spec line
+asserting the property, and none of them was wrong about what it *wanted*. What
+was missing was anything that would fail if the property stopped holding.
+
+### Migration 5, and the second rebuild
+
+`note.id` was a global `TEXT PRIMARY KEY` while notes became per-user, so two
+readers could not hold the same id — and since `put_notes` writes whole
+documents, the second reader's *entire* notes document was rejected rather than
+one note. Reachable by importing a `taiyaku.notes.json` somebody else exported.
+The key is `(user_id, work_id, id)` now — `(user_id, id)` was the first answer
+and was still one column too wide, since `put_notes` replaces one reader's notes
+on one *work*, so the same reader holding that id on another volume hit the same
+whole-document 500. Corrected after the second review.
+
+**Nothing REFERENCES `note`**, so unlike migration 4 there was no cascade to
+fire — checked with `grep -rn 'REFERENCES note' schema/` rather than assumed.
+What a `DROP TABLE` does take regardless is the table's own indexes, silently:
+`note_by_work` had to be recreated, and a rebuild that forgot it would leave
+every notes read scanning, correct and slower, with nothing able to tell. The
+test asserts the index back; removing that one line from the migration fails it.
+
+### The fourth review's two security findings, 2026-08-19
+
+Both reproduced before being fixed, and both are the same shape: a predicate
+that was correct about its own question being asked a different one.
+
+**A library its owner had already set up was still claimable by a stranger.**
+`account::admin_exists` counts `role = 'admin' AND password_hash <> '!'` and is
+right to — a fresh library has an admin row and no admin, which is why the claim
+route cannot read the role alone. But `account::unclaimed` asks a different
+question, "is the seeded row still locked", and the two answers come apart the
+moment the first account is made with `taiyaku library user add alice`, which
+inserts with role `user` and leaves row 1 locked. `admin_exists` then answers
+false on a library being read from daily, while `unclaimed` still finds row 1 —
+so `POST /api/claim` promoted it for whoever asked. §5 requires promotion to
+*update* row 1 rather than insert beside it, precisely so pre-A2 notes and
+positions follow the account, which means the stranger inherited them along with
+administrator.
+
+Reproduced at **204** in
+`session::tests::a_library_someone_has_already_set_up_cannot_be_claimed_by_a_stranger`
+— fresh library, one `add`, one anonymous claim.
+
+The fix is a third predicate rather than a change to either existing one:
+`account::is_claimed`, "can anybody log in at all, of any role". The claim route
+and the "nobody can log in" startup warning read it; `admin_exists` keeps the
+`--allow-web-setup` notice, which really is asking about administrators. Both
+remain because both questions are asked, and reading one for the other is what
+made the hole.
+
+The test that covered this asserted the defect as the requirement. Its doc
+comment read "so the claim route does not close because an ordinary reader was
+added first", which is a description of the behaviour written as though somebody
+had wanted it. Corrected in place, with a note saying so.
+
+Closing the hole opened a second, so it was closed in the same change:
+`user promote alice --role user` sets the only promotable row to a role that
+cannot administer, and then `unclaimed` finds nothing to promote a second time
+and `is_claimed` shuts the claim route — a library readable and permanently
+unadministrable, with nothing having said so. `promote` now refuses a non-admin
+role when no admin exists, naming `user add --role admin` as the order that
+works. Adding an admin first and promoting to `user` afterwards is still allowed,
+because the rule is the invariant rather than the order.
+
+**Inventing a new name every request bought unlimited argon2.** The lockout key
+is `(client address, username)` per §7, deliberately: keyed on the account alone,
+one misconfigured OPDS client retrying hard would lock its owner out of every
+device. The name half comes from the caller, so a fresh invented name is a fresh
+counter — which
+`session::tests::guessing_at_names_is_rate_limited_as_well` already *stated*, in
+a comment calling it "the trade §7 makes deliberately and worth stating rather
+than pretending otherwise".
+
+It was a defensible trade when it was written, because an unknown name returned
+in under a millisecond. **Round two then added `credential::DECOY_HASH`** so an
+unknown name costs what a real one costs, closing a timing oracle that
+enumerated the account roster. That is the right fix for the oracle and it
+converted the trade into a denial of service: every request carrying a name
+nobody has ever used now takes a `spawn_blocking` thread and 19 MiB of argon2
+buffer for ~12 ms, against a counter it need never approach, and leaves a
+`login_attempt` row behind — swept only at startup.
+
+One round's fix produced another round's finding, which is the clearest single
+instance of why the rate did not fall. It was not visible from either change
+alone.
+
+The fix is a second, wider key: `account::address_key`, the address by itself,
+at `ADDRESS_LOCKOUT_AFTER = 50` in the same fifteen-minute window — five
+accounts' full allowance, and a `const _: () = assert!` keeps it above
+`LOCKOUT_AFTER` so the ceiling cannot be lowered into the floor. It is checked
+before the decoy verify runs, on both credential paths, and both record failures
+against both keys. A success clears the **pair** only: clearing the address too
+would let one correct login from a shared NAT reset a guesser's budget, and the
+wide counter is a cost ceiling rather than a lockout, so it lapses with its
+window instead.
+
+Reproduced through the login route in
+`session::tests::inventing_a_new_name_every_time_does_not_buy_unlimited_hashing`,
+which drives three real requests and winds the counter forward between them
+rather than paying fifty argon2 verifies — the cost being bounded is the reason
+not to spend it in a test. Verified against a mutant: with
+`is_address_locked_out` stubbed to `Ok(false)` the test fails at 401 against 429.
+
+**What this does not fix is O57.** Both paths check their counter and then do the
+work, so requests arriving together all read the same under-ceiling count and all
+proceed. `spawn_blocking`'s pool is 512 by default at 19 MiB a verify — roughly
+9.5 GiB of transient buffer in one burst, on a host chosen for being small. The
+sustained flood stops once the first failures land; the burst does not.
+Increment-then-check is not the fix, because an OPDS client presents Basic on
+every page request and metering successes would lock a reader out of their own
+library. A semaphore capping concurrent verifies is, and the cap is a number
+nobody has measured on the host that will run this — which is §14's outstanding
+argon2 measurement. Recorded rather than guessed.
+
+**And one adjacent finding fixed while in the same lines:** `change_password`
+keyed its limiter on the constant `"  change-password"`, so every reader behind
+one address shared one counter — somebody mistyping their old password ten times
+locked everyone at that address out of changing theirs, and a guesser working on
+one account spent a budget the others needed. It carries the `user_id` now.

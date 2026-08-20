@@ -25,7 +25,7 @@
 use rusqlite::Connection;
 
 /// The schema version this build expects.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Every migration, in order. Index 0 takes an empty database to version 1.
 ///
@@ -33,10 +33,12 @@ pub const SCHEMA_VERSION: u32 = 3;
 /// migration 1 again, so a change made there reaches new databases only and
 /// the two diverge silently. `002` adds one column to `migrated_document`
 /// rather than changing the table `001` creates, for exactly that reason.
-const MIGRATIONS: [&str; 3] = [
+const MIGRATIONS: [&str; 5] = [
     include_str!("schema/001_initial.sql"),
     include_str!("schema/002_absorbed.sql"),
     include_str!("schema/003_scanner.sql"),
+    include_str!("schema/004_auth.sql"),
+    include_str!("schema/005_note_id_per_user.sql"),
 ];
 
 /// The version a database reaches is the number of migrations applied to it,
@@ -75,7 +77,51 @@ fn migrate_with(conn: &Connection, migrations: &[&str]) -> Result<(), String> {
     if current > known {
         return Err(written_by_a_newer_taiyaku(current, known));
     }
-    apply_pending(conn, migrations, current)
+    without_foreign_keys(conn, || apply_pending(conn, migrations, current))
+}
+
+/// Foreign keys, off for the duration of the migration run and restored after.
+///
+/// **This cannot live inside a migration, which is the whole reason it is
+/// here.** `PRAGMA foreign_keys` is a no-op within a transaction — SQLite
+/// neither errors nor warns, it simply does not apply it — and [`apply_pending`]
+/// runs every migration inside one. So a migration that rebuilds a table runs
+/// with foreign keys ON however loudly its own SQL asks otherwise, and `DROP
+/// TABLE` on a parent performs an implicit DELETE that fires `ON DELETE
+/// CASCADE` into its children.
+///
+/// Migration 4 rebuilds `user`; `progress` and `note` reference it, and they
+/// hold every note and every reading position in the library. Measured on
+/// 2026-08-18 against a two-table reproduction of that pair: the obvious
+/// version of that migration leaves zero notes behind, having copied the `user`
+/// rows perfectly. `schema::tests::migration_4_rebuilds_user_without_taking_the_notes_with_it`
+/// fails the moment this wrapper is removed.
+///
+/// **What disabling them costs is paid back in [`apply_pending`]**, which runs
+/// `PRAGMA foreign_key_check` inside each migration's own transaction: nothing
+/// enforces the constraints during the run, so the enforcement that would have
+/// happened continuously happens once, before the version row is written.
+///
+/// The restored value is read rather than assumed `ON`, because `Library::open`
+/// sets it and a caller holding a bare `Connection` — which is what this
+/// module's own tests use — may not have.
+fn without_foreign_keys<T>(
+    conn: &Connection,
+    body: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let was: bool = conn
+        .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+        .map_err(|e| format!("reading the foreign_keys pragma: {e}"))?;
+    conn.pragma_update(None, "foreign_keys", "OFF")
+        .map_err(|e| format!("disabling foreign keys for the migration: {e}"))?;
+    let outcome = body();
+    // Restored on both paths. A failed migration that left foreign keys off
+    // would hand the caller a `Connection` that silently accepts orphans for
+    // the rest of its life — a worse outcome than the migration failure that
+    // produced it, and a quieter one.
+    conn.pragma_update(None, "foreign_keys", if was { "ON" } else { "OFF" })
+        .map_err(|e| format!("restoring the foreign_keys pragma: {e}"))?;
+    outcome
 }
 
 /// The one table this module needs before it can ask anything. `IF NOT
@@ -179,6 +225,26 @@ fn apply_pending(conn: &Connection, migrations: &[&str], current: u32) -> Result
         }
         tx.execute_batch(sql)
             .map_err(|e| format!("applying schema version {target}: {e}"))?;
+        // **`without_foreign_keys` turned them off around this whole run**, so
+        // nothing enforced them while the migration ran. The enforcement that
+        // would otherwise have happened continuously happens once, here, inside
+        // the same transaction — a migration that left an orphan rolls back
+        // rather than committing a database that the next `Library::open`, which
+        // sets `foreign_keys = ON`, would enforce constraints over and fail on.
+        //
+        // Inside the transaction and before the version row, so the rollback is
+        // the same one every other failure in this loop takes.
+        let orphans: i64 = tx
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| format!("checking foreign keys after schema version {target}: {e}"))?;
+        if orphans > 0 {
+            return Err(format!(
+                "schema version {target} left {orphans} row(s) violating a foreign key; \
+                 rolling back rather than committing a database that cannot be reopened"
+            ));
+        }
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",

@@ -174,9 +174,25 @@ export default defineConfig({
     fs: {
       allow: ['.', wasmPkgDir],
     },
+    // **`changeOrigin: false`, and that is a decision measured rather than a
+    // default left alone.** With it `true`, the proxy rewrites `Host` to the
+    // target while the browser's `Origin` stays `localhost:5173` — so spec
+    // A2's origin check compares `localhost:5173` against `127.0.0.1:8080`,
+    // and every login through `pnpm dev` answered **403**. Measured
+    // 2026-08-18; that spec's §14 recorded this as unverified and said which
+    // way to fix it if it misbehaved:
+    //
+    // > If it misbehaves, the fix is in the dev proxy and not in the cookie
+    // > policy — a production cookie must not be weakened for a development
+    // > convenience.
+    //
+    // So the proxy forwards the `Host` the browser sent, which is the one its
+    // `Origin` names. Nothing here needs the rewrite: the target is this
+    // project's own `serve`, which routes on the path and reads `Host` only to
+    // compare it against `Origin`.
     proxy: {
-      '/api': { target: process.env.TAIYAKU_SERVE ?? 'http://127.0.0.1:8080', changeOrigin: true },
-      '/opds': { target: process.env.TAIYAKU_SERVE ?? 'http://127.0.0.1:8080', changeOrigin: true },
+      '/api': { target: process.env.TAIYAKU_SERVE ?? 'http://127.0.0.1:8080', changeOrigin: false },
+      '/opds': { target: process.env.TAIYAKU_SERVE ?? 'http://127.0.0.1:8080', changeOrigin: false },
     },
   },
 })

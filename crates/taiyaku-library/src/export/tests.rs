@@ -1,3 +1,12 @@
+/// The account these tests export and import as.
+///
+/// A named constant rather than a bare `1` at forty call sites, and
+/// deliberately *not* a constant in `export.rs`: the one that used to live
+/// there answered for every reader in the library, which is what spec A2
+/// §5.1 removed. Here it means "whoever this test is", which is a fixture
+/// detail rather than a rule.
+const THE_READER: i64 = 1;
+
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -137,7 +146,7 @@ fn migrate_siblings(
     dir: &TempDir,
     id: i64,
 ) -> crate::migrate::SiblingMigration {
-    crate::migrate::work(conn, id, &dir.path().join("taiyaku.json")).expect("migrates")
+    crate::migrate::work(conn, id, THE_READER, &dir.path().join("taiyaku.json")).expect("migrates")
 }
 
 /// One labelled box, valid.
@@ -174,7 +183,7 @@ fn a_malformed_sibling_survives_an_export_and_can_still_be_fixed_and_imported() 
         "the fixture must really be unreadable, or this test proves nothing: {report:?}"
     );
 
-    let exported = work(&conn, id, None).expect("export");
+    let exported = work(&conn, id, THE_READER, None).expect("export");
     assert!(
         exported.removed.is_empty(),
         "a file this library could not read is not a stale copy of anything it holds: {:?}",
@@ -244,7 +253,7 @@ fn a_sibling_that_appeared_after_the_first_import_is_neither_removed_nor_emptied
         "settled before, so not read — and the database holds nothing for any of them"
     );
 
-    let exported = work(&conn, id, None).expect("export");
+    let exported = work(&conn, id, THE_READER, None).expect("export");
     // The contents first, because they are the loss: `truth.json` was
     // deleted outright, and `notes.json` and `library.json` — always written
     // — came back holding `{"work": ..., "notes": []}` and a bare
@@ -297,11 +306,11 @@ fn a_document_this_export_wrote_is_this_librarys_from_then_on() {
     let first_pass = migrate_siblings(&conn, &dir, id);
     assert!(first_pass.is_empty(), "no siblings yet: {first_pass:?}");
 
-    let first = work(&conn, id, None).expect("first export");
+    let first = work(&conn, id, THE_READER, None).expect("first export");
     assert!(first.kept.is_empty(), "nothing was there to keep");
     assert!(first.written.contains(&notes_path));
 
-    let second = work(&conn, id, None).expect("second export");
+    let second = work(&conn, id, THE_READER, None).expect("second export");
     assert!(
         second.kept.is_empty(),
         "an export is not one-shot: what it wrote from these rows, it may write again: {:?}",
@@ -313,7 +322,7 @@ fn a_document_this_export_wrote_is_this_librarys_from_then_on() {
     crate::state::put_notes(
         &conn,
         id,
-        LOCAL_USER,
+        THE_READER,
         &crate::Notes {
             work: "t".to_string(),
             notes: Vec::new(),
@@ -328,7 +337,7 @@ fn a_document_this_export_wrote_is_this_librarys_from_then_on() {
         "the file an export wrote is not read back in"
     );
     assert!(
-        crate::state::notes(&conn, id, LOCAL_USER)
+        crate::state::notes(&conn, id, THE_READER)
             .expect("reads")
             .notes
             .is_empty(),
@@ -358,7 +367,7 @@ fn clearing_the_labelling_after_a_real_migration_still_removes_the_stale_documen
     );
 
     crate::state::put_truth(&conn, id, &TruthDoc::new()).expect("the reader clears every box");
-    let exported = work(&conn, id, None).expect("export");
+    let exported = work(&conn, id, THE_READER, None).expect("export");
     assert_eq!(
         exported.removed,
         vec![truth_path.clone()],
@@ -384,14 +393,14 @@ fn a_sibling_that_returns_after_a_removal_is_not_removed_a_second_time() {
     migrate_siblings(&conn, &dir, id);
     crate::state::put_truth(&conn, id, &TruthDoc::new()).expect("the reader clears every box");
     assert_eq!(
-        work(&conn, id, None).expect("export").removed,
+        work(&conn, id, THE_READER, None).expect("export").removed,
         vec![truth_path.clone()],
         "the setup must really remove it"
     );
 
     // Restored from a backup made before the labelling was cleared.
     std::fs::write(&truth_path, A_TRUTH_DOCUMENT).expect("the reader puts one back");
-    let exported = work(&conn, id, None).expect("second export");
+    let exported = work(&conn, id, THE_READER, None).expect("second export");
     assert!(
         exported.removed.is_empty(),
         "this library holds nothing of that document to call the file stale against: {:?}",
@@ -417,9 +426,9 @@ fn a_dir_export_writes_over_its_own_output_rather_than_keeping_it() {
     let id = a_work_with_notes_and_progress(&conn, &dir);
     migrate_siblings(&conn, &dir, id);
 
-    let first = work(&conn, id, Some(out.path())).expect("first export");
+    let first = work(&conn, id, THE_READER, Some(out.path())).expect("first export");
     assert!(first.kept.is_empty());
-    let second = work(&conn, id, Some(out.path())).expect("second export");
+    let second = work(&conn, id, THE_READER, Some(out.path())).expect("second export");
     assert!(
         second.kept.is_empty(),
         "a --dir export has nothing to preserve: {:?}",
@@ -439,7 +448,7 @@ fn exporting_writes_five_documents_beside_the_sidecar() {
     let conn = library.conn();
     let id = a_work_with_notes_and_progress(&conn, &dir);
 
-    let written = work(&conn, id, None).expect("export").written;
+    let written = work(&conn, id, THE_READER, None).expect("export").written;
     let names: Vec<String> = written
         .iter()
         .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
@@ -470,7 +479,7 @@ fn an_exported_sidecar_is_the_projection_byte_for_byte() {
     let expected = crate::project::sidecar(&conn, id)
         .expect("projection")
         .to_json();
-    work(&conn, id, Some(dir.path())).expect("export");
+    work(&conn, id, THE_READER, Some(dir.path())).expect("export");
 
     // `dir/<slug>/`, not `dir/` — see `work`'s doc comment.
     let written =
@@ -488,7 +497,7 @@ fn a_work_with_no_notes_exports_an_empty_notes_document() {
     let conn = library.conn();
     let id = a_bare_work(&conn, &dir);
 
-    work(&conn, id, Some(dir.path())).expect("export");
+    work(&conn, id, THE_READER, Some(dir.path())).expect("export");
     let text =
         std::fs::read_to_string(dir.path().join("bare").join("taiyaku.notes.json")).expect("reads");
     let doc: serde_json::Value = serde_json::from_str(&text).expect("json");
@@ -516,7 +525,9 @@ fn a_bare_work_exports_only_the_two_documents_that_always_exist() {
     let conn = library.conn();
     let id = a_bare_work(&conn, &dir);
 
-    let written = work(&conn, id, Some(dir.path())).expect("export").written;
+    let written = work(&conn, id, THE_READER, Some(dir.path()))
+        .expect("export")
+        .written;
     let names: Vec<String> = written
         .iter()
         .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
@@ -551,7 +562,7 @@ fn an_in_place_export_creates_no_library_document_for_a_work_nobody_has_edited()
     let id = a_bare_work(&conn, &dir);
     let metadata_path = dir.path().join("taiyaku.library.json");
 
-    let first = work(&conn, id, None).expect("first export");
+    let first = work(&conn, id, THE_READER, None).expect("first export");
     assert!(
         !metadata_path.exists(),
         "nothing about this work has been hand-fixed, so there is nothing to file"
@@ -563,7 +574,7 @@ fn an_in_place_export_creates_no_library_document_for_a_work_nobody_has_edited()
         first.removed
     );
 
-    let second = work(&conn, id, None).expect("second export");
+    let second = work(&conn, id, THE_READER, None).expect("second export");
     assert!(
         !metadata_path.exists(),
         "and a second export does not create one to churn its `updated` field"
@@ -585,7 +596,7 @@ fn hand_fixed_metadata_is_written_and_clearing_it_removes_the_document() {
 
     conn.execute("UPDATE work SET volume = 3.0 WHERE id = ?1", [id])
         .expect("the reader files this directory as volume 3");
-    let written = work(&conn, id, None).expect("export").written;
+    let written = work(&conn, id, THE_READER, None).expect("export").written;
     assert!(
         written.contains(&metadata_path),
         "a decision worth keeping is worth writing down: {written:?}"
@@ -595,7 +606,7 @@ fn hand_fixed_metadata_is_written_and_clearing_it_removes_the_document() {
 
     conn.execute("UPDATE work SET volume = NULL WHERE id = ?1", [id])
         .expect("and then changes their mind");
-    let second = work(&conn, id, None).expect("second export");
+    let second = work(&conn, id, THE_READER, None).expect("second export");
     assert_eq!(
         second.removed,
         vec![metadata_path.clone()],
@@ -625,7 +636,8 @@ fn a_stale_document_that_cannot_be_removed_fails_the_export_rather_than_passing(
     let truth_path = dir.path().join("taiyaku.truth.json");
     std::fs::create_dir(&truth_path).expect("something that is not a file at that path");
 
-    let err = work(&conn, id, None).expect_err("a removal that failed is not a snapshot taken");
+    let err = work(&conn, id, THE_READER, None)
+        .expect_err("a removal that failed is not a snapshot taken");
     assert!(
         err.contains("removing the stale"),
         "the message names the step it failed at: {err}"
@@ -659,7 +671,7 @@ fn exporting_a_work_with_no_sidecar_path_and_no_dir_is_a_named_error() {
     conn.execute("UPDATE work SET sidecar_path = NULL WHERE id = ?1", [id])
         .expect("clear the path");
 
-    let err = work(&conn, id, None).expect_err("nowhere to default to");
+    let err = work(&conn, id, THE_READER, None).expect_err("nowhere to default to");
     assert!(
         err.contains("orphan"),
         "the error must name the work by slug rather than failing obscurely: {err}"
@@ -679,7 +691,9 @@ fn exporting_a_work_with_no_sidecar_path_but_a_dir_falls_back_to_the_taiyaku_ste
     conn.execute("UPDATE work SET sidecar_path = NULL WHERE id = ?1", [id])
         .expect("clear the path");
 
-    let written = work(&conn, id, Some(dir.path())).expect("export").written;
+    let written = work(&conn, id, THE_READER, Some(dir.path()))
+        .expect("export")
+        .written;
     assert!(written.iter().any(|p| p.ends_with("taiyaku.json")));
     assert!(dir.path().join("orphan").join("taiyaku.json").exists());
 }
@@ -714,8 +728,12 @@ fn two_works_whose_sidecars_share_a_filename_do_not_collide_under_one_dir() {
     )
     .expect("import b");
 
-    let written_a = work(&conn, a, Some(out.path())).expect("export a").written;
-    let written_b = work(&conn, b, Some(out.path())).expect("export b").written;
+    let written_a = work(&conn, a, THE_READER, Some(out.path()))
+        .expect("export a")
+        .written;
+    let written_b = work(&conn, b, THE_READER, Some(out.path()))
+        .expect("export b")
+        .written;
     assert!(
         written_a.iter().all(|p| !written_b.contains(p)),
         "no path may be written twice: {written_a:?} against {written_b:?}"
@@ -752,7 +770,7 @@ fn clearing_the_labelling_and_exporting_removes_the_stale_truth_document() {
     let conn = library.conn();
     let id = a_work_with_notes_and_progress(&conn, &dir);
 
-    let first = work(&conn, id, None).expect("first export");
+    let first = work(&conn, id, THE_READER, None).expect("first export");
     let truth_path = dir.path().join("taiyaku.truth.json");
     assert!(
         first.written.contains(&truth_path),
@@ -774,7 +792,7 @@ fn clearing_the_labelling_and_exporting_removes_the_stale_truth_document() {
         "clearing must really leave no truth rows"
     );
 
-    let second = work(&conn, id, None).expect("second export");
+    let second = work(&conn, id, THE_READER, None).expect("second export");
     assert_eq!(
         second.removed,
         vec![truth_path.clone()],
@@ -805,10 +823,236 @@ fn a_bare_work_reports_no_removals_for_documents_that_were_never_there() {
     let conn = library.conn();
     let id = a_bare_work(&conn, &dir);
 
-    let exported = work(&conn, id, Some(dir.path())).expect("export");
+    let exported = work(&conn, id, THE_READER, Some(dir.path())).expect("export");
     assert!(
         exported.removed.is_empty(),
         "nothing was there to remove: {:?}",
         exported.removed
+    );
+}
+
+/// A note for `user_id`, on the fixture work's own edition.
+fn note_for(conn: &rusqlite::Connection, work_id: i64, user_id: i64, id: &str, body: &str) {
+    crate::state::put_notes(
+        conn,
+        work_id,
+        user_id,
+        &crate::Notes {
+            work: "t".to_string(),
+            notes: vec![crate::Note {
+                id: id.to_string(),
+                edition: "raw".to_string(),
+                slot: 0,
+                region: None,
+                color: None,
+                body: body.to_string(),
+                created: "2026-08-18T00:00:00Z".to_string(),
+                updated: "2026-08-18T00:00:00Z".to_string(),
+            }],
+        },
+    )
+    .expect("put_notes");
+}
+
+fn add_bob(conn: &rusqlite::Connection) {
+    conn.execute(
+        "INSERT INTO user (id, name, password_hash, role) VALUES (2, 'bob', '!', 'user')",
+        [],
+    )
+    .expect("adds bob");
+}
+
+/// **§5.1, decided 2026-08-18.** One work, two readers with notes, one export.
+///
+/// The file carries one set — that is what a sidecar is, and versioning the
+/// format to hold several was declined — so the report names the reader whose
+/// notes are *not* in it. Nothing is dropped in silence, which is the rule
+/// `suppressed`, `rekeyed`, `merged` and `kept_editions` were all built on: any
+/// outcome that changes what a person sees and cannot be inferred from the other
+/// counts gets a field.
+#[test]
+fn an_export_names_the_readers_it_did_not_write() {
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let dir = tempdir();
+    let work_id = crate::import::sidecar(&conn, &doc("T", "aa"), &dir.path().join("taiyaku.json"))
+        .expect("import");
+    add_bob(&conn);
+    note_for(&conn, work_id, 1, "01HALICE", "alices-note");
+    note_for(&conn, work_id, 2, "01HBOBBB", "bobs-note");
+
+    let out = tempdir();
+    let exported = work(&conn, work_id, 1, Some(out.path())).expect("exports");
+
+    assert_eq!(
+        exported.other_users,
+        vec!["bob".to_string()],
+        "the export did not name the reader whose notes it left behind"
+    );
+
+    let written = exported
+        .written
+        .iter()
+        .find(|path| path.ends_with("taiyaku.notes.json"))
+        .expect("notes were written");
+    let text = std::fs::read_to_string(written).expect("reads back");
+    assert!(
+        text.contains("alices-note"),
+        "the requesting reader's notes are missing: {text}"
+    );
+    assert!(
+        !text.contains("bobs-note"),
+        "a sidecar carries one reader's notes: {text}"
+    );
+}
+
+/// Exporting *as* the second reader writes theirs and names the first, so the
+/// rule is about who asked rather than about who happens to be user 1.
+#[test]
+fn the_export_follows_whoever_asked_for_it() {
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let dir = tempdir();
+    let work_id = crate::import::sidecar(&conn, &doc("T", "aa"), &dir.path().join("taiyaku.json"))
+        .expect("import");
+    add_bob(&conn);
+    note_for(&conn, work_id, 1, "01HALICE", "alices-note");
+    note_for(&conn, work_id, 2, "01HBOBBB", "bobs-note");
+
+    let out = tempdir();
+    let exported = work(&conn, work_id, 2, Some(out.path())).expect("exports");
+
+    assert_eq!(exported.other_users, vec!["local".to_string()]);
+    let written = exported
+        .written
+        .iter()
+        .find(|path| path.ends_with("taiyaku.notes.json"))
+        .expect("notes were written");
+    let text = std::fs::read_to_string(written).expect("reads back");
+    assert!(text.contains("bobs-note"), "{text}");
+    assert!(!text.contains("alices-note"), "{text}");
+}
+
+/// The ordinary single-reader library reports nobody, so an export does not
+/// grow a line telling a person about a situation they are not in.
+#[test]
+fn a_single_reader_export_names_nobody() {
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let dir = tempdir();
+    let work_id = crate::import::sidecar(&conn, &doc("T", "aa"), &dir.path().join("taiyaku.json"))
+        .expect("import");
+    note_for(&conn, work_id, 1, "01HONLY", "only-mine");
+
+    let out = tempdir();
+    let exported = work(&conn, work_id, 1, Some(out.path())).expect("exports");
+    assert!(exported.other_users.is_empty());
+}
+
+/// A second reader holding only a *position* counts too: `progress` is per-user
+/// exactly as `note` is, and a reading position left behind is as invisible as a
+/// note left behind.
+#[test]
+fn a_reader_with_only_a_position_is_named_as_well() {
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let dir = tempdir();
+    let work_id = crate::import::sidecar(&conn, &doc("T", "aa"), &dir.path().join("taiyaku.json"))
+        .expect("import");
+    add_bob(&conn);
+    crate::state::put_progress(
+        &conn,
+        work_id,
+        2,
+        &crate::Progress {
+            edition: "raw".to_string(),
+            slot: 7,
+        },
+    )
+    .expect("put_progress");
+
+    let out = tempdir();
+    let exported = work(&conn, work_id, 1, Some(out.path())).expect("exports");
+    assert_eq!(exported.other_users, vec!["bob".to_string()]);
+}
+
+/// **The cause the `--in-place --user` refusal only papered over.**
+///
+/// `absorbed` is keyed `(work_id, document)` with no user, so an in-place export
+/// as reader 1 — the *default*, needing no flag at all — found no notes and no
+/// position for them, marked both documents stale, and had the "never absorbed"
+/// guard satisfied by reader 2's own import. Reader 2's `taiyaku.notes.json` was
+/// overwritten with an empty document and their `taiyaku.progress.json` deleted.
+///
+/// Found by the second whole-branch review, which reproduced it end to end.
+#[test]
+fn an_in_place_export_does_not_delete_another_readers_documents() {
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let dir = tempdir();
+    let sidecar = dir.path().join("taiyaku.json");
+    let work_id = crate::import::sidecar(&conn, &doc("T", "aa"), &sidecar).expect("import");
+    add_bob(&conn);
+
+    // Only bob reads this work — the ordinary case for a shared library where
+    // one person follows one series.
+    note_for(&conn, work_id, 2, "01HBOBBB", "bobs-note");
+    crate::state::put_progress(
+        &conn,
+        work_id,
+        2,
+        &crate::Progress {
+            edition: "raw".to_string(),
+            slot: 4,
+        },
+    )
+    .expect("bob's position");
+
+    // Bob's own documents, beside the sidecar, as an export would have left them.
+    let exported = work(&conn, work_id, 2, None).expect("bob exports in place");
+    let notes_path = dir.path().join("taiyaku.notes.json");
+    let progress_path = dir.path().join("taiyaku.progress.json");
+    assert!(exported.written.contains(&notes_path));
+    assert!(progress_path.is_file());
+
+    // Now the default in-place export, as reader 1, with no flag at all.
+    let as_alice = work(&conn, work_id, 1, None).expect("exports");
+
+    assert!(
+        progress_path.is_file(),
+        "reader 1's export deleted reader 2's reading position from their own library"
+    );
+    let left = std::fs::read_to_string(&notes_path).expect("reads");
+    assert!(
+        left.contains("bobs-note"),
+        "reader 1's export overwrote reader 2's notes with an empty document: {left}"
+    );
+    assert_eq!(
+        as_alice.other_users,
+        vec!["bob".to_string()],
+        "and it still says whose state it did not write"
+    );
+}
+
+/// The documents that are not per-user are decided by the marker alone — there
+/// is no "whose truth" to ask about, and treating them per-user would make an
+/// export decline to write a work's own metadata.
+#[test]
+fn a_document_that_is_not_per_user_is_settled_by_the_marker_alone() {
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let dir = tempdir();
+    let work_id = crate::import::sidecar(&conn, &doc("T", "aa"), &dir.path().join("taiyaku.json"))
+        .expect("import");
+    add_bob(&conn);
+    note_for(&conn, work_id, 2, "01HBOBBB", "bobs-note");
+
+    // Alice holds no notes, so `notes` is bob's and must not be touched — but
+    // `truth` and `library` are the library's, not bob's.
+    assert!(!crate::migrate::absorbed_for(&conn, work_id, "notes", 1).expect("reads"));
+    crate::migrate::record_absorbed(&conn, work_id, "truth", true).expect("marks");
+    assert!(
+        crate::migrate::absorbed_for(&conn, work_id, "truth", 1).expect("reads"),
+        "ground truth is library-wide, so no user owns it"
     );
 }

@@ -78,6 +78,7 @@ mod sample;
 mod score;
 #[cfg(test)]
 mod score_corpus;
+mod user;
 // A one-off measurement rather than a shipped command, gated on
 // `TAIYAKU_CORPUS` exactly as `corpus` and `geometry_experiment` are — so it
 // is declared the same way, and no part of it is compiled into the binary.
@@ -184,10 +185,24 @@ fn print_usage() {
     println!(
         "       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT] [--db PATH] \
          [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump] \
-         [--cache DIR]"
+         [--cache DIR] [--trusted-proxy CIDR]... [--secure-cookies] \
+         [--insecure-cookies] [--allow-web-setup]"
     );
     println!("       taiyaku library import <taiyaku.json> [--db PATH]");
-    println!("       taiyaku library export <work>|--all [--dir DIR|--in-place] [--db PATH]");
+    println!(
+        "       taiyaku library user promote <name> [--role admin|user] [--db PATH]  \
+         (the first account; prompts for a password)"
+    );
+    println!(
+        "       taiyaku library user add <name> | user password <name> | user list  [--db PATH]"
+    );
+    println!(
+        "       taiyaku library key create <user> --name DEVICE | key list <user> | \
+         key revoke <user> <id>  [--db PATH]"
+    );
+    println!(
+        "       taiyaku library export <work>|--all [--dir DIR|--in-place] [--user NAME] [--db PATH]"
+    );
     println!("       taiyaku library scan  [--add PATH] [--root PATH] [--no-derive] [--db PATH]");
     println!("       taiyaku library rules [--export | --import FILE] [--db PATH]");
     println!(
@@ -1217,12 +1232,16 @@ fn serve(args: &[String]) -> Result<(), String> {
         args,
         &[
             "--addr",
+            "--allow-web-setup",
             "--cache",
             "--db",
+            "--insecure-cookies",
             "--log-requests",
             "--refresh-stump",
+            "--secure-cookies",
             "--stump-key",
             "--stump-url",
+            "--trusted-proxy",
         ],
     )?;
     let paths: Vec<PathBuf> = args
@@ -1253,6 +1272,7 @@ fn serve(args: &[String]) -> Result<(), String> {
         }
         (None, None) => None,
     };
+    let auth = serve_auth(args)?;
     let log = option_value(args, "--log-requests", "a path")?.map(PathBuf::from);
     // Read before `load_works` so `serve x.json --cache` with nothing after
     // it is refused for the reason that is actually wrong, rather than for a
@@ -1298,7 +1318,65 @@ fn serve(args: &[String]) -> Result<(), String> {
             log,
             refresh_stump,
             cache,
+            auth,
         ))
+}
+
+/// `--trusted-proxy`, `--insecure-cookies` and `--allow-web-setup`, read into
+/// what `serve` needs (spec A2 §5 and §6).
+///
+/// **Configuring any trusted proxy implies `Secure` on the session cookie.** A
+/// proxy in front means TLS terminated there, and a cookie without `Secure`
+/// travels in clear over any non-TLS hop behind it. `--insecure-cookies` is the
+/// deliberate opt-out for a plain-HTTP deployment on a private network — a
+/// separate flag rather than a silent default, because the failure it prevents
+/// is invisible: the cookie simply works, and is simply readable.
+///
+/// # Errors
+///
+/// Returns an error if a `--trusted-proxy` value is not an address or a CIDR
+/// range, naming which one.
+fn serve_auth(args: &[String]) -> Result<taiyaku_serve::session::AuthConfig, String> {
+    let mut trusted_proxies = Vec::new();
+    // Repeatable, so it is read by scanning rather than through
+    // `option_value` — one household can sit behind two proxies, and a flag
+    // that silently kept only the last would be the kind of quiet wrong answer
+    // this project's flag handling exists to refuse.
+    for (index, arg) in args.iter().enumerate() {
+        if arg != "--trusted-proxy" {
+            continue;
+        }
+        let value = args
+            .get(index + 1)
+            .filter(|next| !next.starts_with("--"))
+            .ok_or("--trusted-proxy needs a CIDR range or an address")?;
+        trusted_proxies.push(
+            value
+                .parse()
+                .map_err(|why| format!("--trusted-proxy {why}"))?,
+        );
+    }
+
+    // **`Secure` cannot be derived from `--trusted-proxy` alone**, which is what
+    // shipped and what the whole-branch review caught on 2026-08-18. That flag
+    // is about believing `X-Forwarded-For`, and the ordinary TLS deployment —
+    // `caddy reverse_proxy 127.0.0.1:8484` in front of a loopback server —
+    // needs no forwarded address at all. It would therefore have configured
+    // neither flag and sent a thirty-day session token with no `Secure`, so one
+    // plain-HTTP request to the same host puts it in cleartext, without anybody
+    // passing the documented opt-out.
+    //
+    // So a trusted proxy still *implies* `Secure`, and `--secure-cookies` says
+    // it outright for the deployment that has TLS in front and nothing to
+    // forward. `--insecure-cookies` overrides both, and is still the only way
+    // to end up without it deliberately.
+    let insecure = flag_present(args, "--insecure-cookies");
+    let secure = flag_present(args, "--secure-cookies");
+    Ok(taiyaku_serve::session::AuthConfig {
+        secure_cookies: (secure || !trusted_proxies.is_empty()) && !insecure,
+        allow_web_setup: flag_present(args, "--allow-web-setup"),
+        trusted_proxies,
+    })
 }
 
 /// Canonicalise every sidecar path, open the resolved library, import each

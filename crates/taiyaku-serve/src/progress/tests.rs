@@ -16,17 +16,18 @@ fn absent_progress_is_not_the_same_as_slot_zero() {
     let work = crate::test_support::work("taiyaku-test-progress");
     let library = library();
 
-    let before = load(&library, &work).unwrap();
+    let before = load(&library, &work, 1).unwrap();
     store(
         &library,
         &work,
+        1,
         &Progress {
             edition: "raw".into(),
             slot: 0,
         },
     )
     .unwrap();
-    let after = load(&library, &work).unwrap();
+    let after = load(&library, &work, 1).unwrap();
 
     crate::test_support::cleanup("taiyaku-test-progress");
     assert_eq!(before, None, "nothing recorded yet");
@@ -50,6 +51,7 @@ fn progress_is_written_to_the_library_not_into_the_sidecar() {
     store(
         &library,
         &work,
+        1,
         &Progress {
             edition: "raw".into(),
             slot: 12,
@@ -80,6 +82,7 @@ fn storing_progress_mints_exactly_one_bridge_row_for_a_work_the_library_never_im
     store(
         &library,
         &work,
+        1,
         &Progress {
             edition: "raw".into(),
             slot: 1,
@@ -93,6 +96,7 @@ fn storing_progress_mints_exactly_one_bridge_row_for_a_work_the_library_never_im
     store(
         &library,
         &work,
+        1,
         &Progress {
             edition: "raw".into(),
             slot: 2,
@@ -109,7 +113,7 @@ fn storing_progress_mints_exactly_one_bridge_row_for_a_work_the_library_never_im
         "the second write reuses the first's row"
     );
     assert_eq!(
-        load(&library, &work).unwrap(),
+        load(&library, &work, 1).unwrap(),
         Some(Progress {
             edition: "raw".into(),
             slot: 2
@@ -125,7 +129,7 @@ fn loading_progress_for_an_unregistered_work_creates_no_row() {
     let work = crate::test_support::work("taiyaku-test-progress-read-only");
     let library = library();
 
-    let loaded = load(&library, &work).unwrap();
+    let loaded = load(&library, &work, 1).unwrap();
 
     let row = crate::works::find_row(&library.conn(), &work).unwrap();
     crate::test_support::cleanup("taiyaku-test-progress-read-only");

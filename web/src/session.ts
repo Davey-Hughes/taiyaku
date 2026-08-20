@@ -20,19 +20,30 @@ export interface Alignment {
 }
 
 /**
- * Every intent but `chrome`, `module` and `correct`. Showing or hiding the
- * strip is UI state with no bearing on `ReadingState`, a module's own key
- * (direction's `d`, currently) acts on that module's own preference slice,
- * not on `ReadingState` either, and a correction is a write to the sidecar's
- * alignment — it names a `Pending` assertion, not a change to where the
- * reader is looking, so it has nothing to hand `applyIntent` either.
- * `App.tsx`'s keydown handler branches on all three before `applyIntent` is
+ * Every intent but `chrome`, `module`, `correct` and `account`. Showing or
+ * hiding the strip is UI state with no bearing on `ReadingState`, a module's
+ * own key (direction's `d`, currently) acts on that module's own preference
+ * slice, not on `ReadingState` either, a correction is a write to the
+ * sidecar's alignment — it names a `Pending` assertion, not a change to where
+ * the reader is looking — and the account panel is a screen over the reader
+ * rather than anything about which page it is showing. None of the four has
+ * anything to hand `applyIntent`.
+ *
+ * `App.tsx`'s keydown handler branches on all four before `applyIntent` is
  * ever called, and this excludes them at the type level rather than leaving a
  * dead `case` here for a variant this function has no reason to touch.
+ *
+ * **Which makes this list the decision point for a new intent**, not a
+ * formality: spec A2's `account` was added to `keys.ts` and `tsc` failed here
+ * until it said where the new key is handled. A reader-state intent belongs in
+ * `applyIntent`'s switch; anything else belongs in this `Exclude`.
  */
 export type ReadingIntent = Exclude<
   Intent,
-  { kind: 'chrome' } | { kind: 'module'; intent: string } | { kind: 'correct' }
+  | { kind: 'chrome' }
+  | { kind: 'module'; intent: string }
+  | { kind: 'correct' }
+  | { kind: 'account' }
 >
 
 /**

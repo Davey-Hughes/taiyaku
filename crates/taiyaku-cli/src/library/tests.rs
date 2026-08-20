@@ -1,3 +1,11 @@
+/// The account these tests export and import as.
+///
+/// A fixture detail rather than a rule — which is the distinction spec A2
+/// §5.1 turned on. The `LOCAL_USER = 1` this replaced lived in `export.rs`
+/// and answered for every reader in the library; this says only "whoever
+/// this test is".
+const THE_READER: i64 = 1;
+
 use super::*;
 use taiyaku_library::Library;
 
@@ -663,7 +671,7 @@ fn export_all_into_one_dir_keeps_every_work_rather_than_overwriting() {
     let library = Library::open(&db).expect("reopens");
     let conn = library.conn();
     let targets = all_work_ids(&conn).expect("lists both works");
-    let total = export_targets(&conn, &targets, Some(&out)).expect("exports both");
+    let total = export_targets(&conn, &targets, 1, Some(&out)).expect("exports both");
     drop(conn);
     drop(library);
     // The same command through its real entry point, over the same directory,
@@ -1213,7 +1221,7 @@ fn round_trip_export_wipe_the_database_and_reimport_recovers_the_same_state() {
     // Export: the five documents land beside the sidecar.
     {
         let conn = library_a.conn();
-        taiyaku_library::export::work(&conn, work_id_a, None).expect("exports");
+        taiyaku_library::export::work(&conn, work_id_a, THE_READER, None).expect("exports");
     }
     drop(library_a);
     std::fs::remove_file(&first_db).expect("wiping the database");
@@ -2169,4 +2177,43 @@ fn a_flags_own_value_is_not_mistaken_for_a_bare_argument() {
         db.display().to_string(),
     ])
     .expect("a path given as --add's value is that flag's value, not a stray word");
+}
+
+/// **`--in-place` writes over a reader's own files, and there is exactly one
+/// reader those files belong to.**
+///
+/// Combined with `--user`, it overwrote another reader's `taiyaku.notes.json`
+/// and *deleted* their `taiyaku.progress.json`: the `absorbed` marker is keyed
+/// `(work_id, document)` while the state read became keyed on the user, so the
+/// "this library has never had that content" guard was already satisfied by the
+/// first reader's import and skipped for the second. The CLI's own new note
+/// recommended exactly that command.
+///
+/// Refused rather than made user-aware, which would need a migration and would
+/// still leave "whose files are these" unanswered. `--dir` exports anybody's
+/// state anywhere, which is what the refusal points at. Found by the
+/// whole-branch review, 2026-08-18.
+#[test]
+fn exporting_another_reader_in_place_is_refused_and_names_the_way_out() {
+    let root = scratch("export-user-in-place");
+    let db = root.join("unused.db");
+    let err = export(&[
+        "some-work".to_string(),
+        "--in-place".to_string(),
+        "--user".to_string(),
+        "bob".to_string(),
+        "--db".to_string(),
+        db.to_str().unwrap().to_string(),
+    ])
+    .unwrap_err();
+    assert!(err.contains("--in-place"), "{err}");
+    assert!(err.contains("--user"), "{err}");
+    assert!(
+        err.contains("--dir"),
+        "the refusal must name the flag that does what was wanted: {err}"
+    );
+    assert!(
+        !db.exists(),
+        "the refusal must come before a database is ever opened"
+    );
 }
