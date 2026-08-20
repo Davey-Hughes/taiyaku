@@ -153,6 +153,24 @@ pub(crate) fn client_address(
         .and_then(|last| last.trim().parse().ok())
         .unwrap_or(peer)
 }
+/// Whether a request's `X-Forwarded-For` is being ignored for want of a
+/// `--trusted-proxy`.
+///
+/// **Extracted from the `if` it used to be**, because it was a decision inside a
+/// `eprintln!` and nothing could assert on it: mutation testing replaced the
+/// `&&` with `||` on 2026-08-19 with every test still passing, which would have
+/// warned on every request from a client that sent no such header. The warning
+/// it guards is the one that tells an operator their rate limit is being applied
+/// to the proxy rather than to a reader — precisely the message that must not
+/// cry wolf.
+///
+/// The `static SAID` at the call site is what makes it print once, and that
+/// remains untestable in-process: a second test in the same binary sees an
+/// atomic another test already swapped. Splitting the decision out is what makes
+/// the half that *can* be tested testable.
+fn forwarded_but_untrusted(forwarded: bool, config: &crate::session::AuthConfig) -> bool {
+    forwarded && config.trusted_proxies.is_empty()
+}
 
 /// [`client_address`], reading the peer and the header off what a handler has.
 ///
@@ -201,7 +219,7 @@ pub(crate) fn client_of(
     // client spoof its address. Said once rather than per request, because a
     // line per page turn is a line nobody reads. Found by the second
     // whole-branch review.
-    if forwarded.is_some() && config.trusted_proxies.is_empty() {
+    if forwarded_but_untrusted(forwarded.is_some(), config) {
         static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
             eprintln!(
@@ -622,9 +640,11 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
         // lint is right that a returned bool is usually a decision.
         let _ = credential::verify_password(&secret, credential::DECOY_HASH);
         let conn = state.library.conn();
-        if account::note_failure(&conn, &key).is_err()
-            || account::note_failure(&conn, &wide).is_err()
-        {
+        // Both, unconditionally — `||` short-circuits, and the wide key is
+        // the counter that bounds the cost of this exact path.
+        let pair = account::note_failure(&conn, &key);
+        let address = account::note_failure(&conn, &wide);
+        if pair.is_err() || address.is_err() {
             return Resolved::TooMany;
         }
         return Resolved::No;
@@ -636,9 +656,11 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
         // A failure that cannot be recorded is answered as a lockout rather
         // than as an ordinary refusal: an unrecordable failure is an unbounded
         // one, and the safe reading of "the limiter is not working" is to stop.
-        if account::note_failure(&conn, &key).is_err()
-            || account::note_failure(&conn, &wide).is_err()
-        {
+        // Both, unconditionally — `||` short-circuits, and the wide key is
+        // the counter that bounds the cost of this exact path.
+        let pair = account::note_failure(&conn, &key);
+        let address = account::note_failure(&conn, &wide);
+        if pair.is_err() || address.is_err() {
             return Resolved::TooMany;
         }
         return Resolved::No;

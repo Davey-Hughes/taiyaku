@@ -948,6 +948,137 @@ async fn a_cross_site_page_cannot_claim_the_server() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
+/// **The three fail-closed claims on the login path, none of which had a test.**
+///
+/// Each is a documented decision that the code comments argue for at length, and
+/// mutation testing found all three unasserted on 2026-08-19: `||` could become
+/// `&&` where a failure to record is turned into a lockout, and the whole
+/// `Ok(Attempt::Failed)` match arm could be **deleted** — falling through to the
+/// 401 beside it — with every test in the workspace still passing.
+///
+/// The 401 is the one answer that cannot be true in that case: the password was
+/// right and the session write lost to a busy writer, so telling the client
+/// "that name and password did not match" leaves a reader retyping a correct
+/// password forever. That was a third-review fix, and nothing checked it.
+///
+/// Reachable by taking the tables away, which is the same error class the
+/// comments reason about — `serve` and `library import` share one file, so a
+/// write can lose to a busy writer — reproduced deterministically rather than by
+/// racing anything.
+#[tokio::test]
+async fn a_login_that_cannot_be_recorded_is_not_answered_as_a_wrong_password() {
+    let state = Arc::new(crate::test_support::state(
+        "taiyaku-test-login-unrecordable",
+    ));
+    {
+        let conn = state.library.conn();
+        // The password is right; only the session write will fail.
+        conn.execute("DROP TABLE session", []).expect("drops");
+    }
+
+    let response = build_router(state)
+        .oneshot(
+            Request::post("/api/session")
+                .header("content-type", "application/json")
+                .header("host", "test")
+                .header("origin", "http://test")
+                .body(Body::from(format!(
+                    r#"{{"name":"{}","password":"{}"}}"#,
+                    crate::test_support::FIXTURE_NAME,
+                    crate::test_support::FIXTURE_PASSWORD
+                )))
+                .unwrap(),
+        )
+        .await
+        .expect("answers");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a correct password whose session could not be written must not come \
+         back as `that name and password did not match` — the reader would \
+         retype a password that was right the first time, forever"
+    );
+}
+
+/// The other half: a **failure to record the failure** answers 429 rather than
+/// 401, because an unrecordable failure is an unbounded one and the safe
+/// reading of "the limiter is not working" is to stop.
+///
+/// Argued for in three separate comments across `login` and `from_basic`, and
+/// asserted nowhere until mutation testing asked.
+#[tokio::test]
+async fn a_failure_the_limiter_cannot_record_is_answered_as_a_lockout() {
+    let state = Arc::new(crate::test_support::state(
+        "taiyaku-test-login-unrecordable-failure",
+    ));
+    {
+        let conn = state.library.conn();
+        conn.execute("DROP TABLE login_attempt", []).expect("drops");
+    }
+
+    let response = build_router(state)
+        .oneshot(
+            Request::post("/api/session")
+                .header("content-type", "application/json")
+                .header("host", "test")
+                .header("origin", "http://test")
+                // The real account with the wrong password, so this exercises
+                // the failed-verify branch rather than the unknown-name one
+                // beside it — both call `note_failure`, and naming an account
+                // that does not exist would have tested the wrong arm while
+                // passing for the right reason.
+                .body(Body::from(format!(
+                    r#"{{"name":"{}","password":"not the password"}}"#,
+                    crate::test_support::FIXTURE_NAME
+                )))
+                .unwrap(),
+        )
+        .await
+        .expect("answers");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "a wrong password the limiter could not count must stop rather than \
+         continue: unrecorded failures are unlimited ones"
+    );
+}
+
+/// And the same on the `Authorization: Basic` path, which reaches the identical
+/// reasoning through `from_basic` rather than through `login`.
+#[tokio::test]
+async fn a_basic_failure_the_limiter_cannot_record_is_answered_as_a_lockout() {
+    let state = Arc::new(crate::test_support::state(
+        "taiyaku-test-basic-unrecordable",
+    ));
+    {
+        let conn = state.library.conn();
+        conn.execute("DROP TABLE login_attempt", []).expect("drops");
+    }
+
+    use base64::Engine as _;
+    let wrong = base64::engine::general_purpose::STANDARD
+        .encode(format!("{}:not the password", crate::test_support::FIXTURE_NAME).as_bytes());
+    let response = build_router(state)
+        .oneshot(
+            Request::get("/api/works")
+                .header("host", "test")
+                .header("authorization", format!("Basic {wrong}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("answers");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the guard's own comment calls this the control that bounds both the \
+         dictionary attack and the denial of service; nothing checked it"
+    );
+}
+
 /// **`admin_exists` and `unclaimed` disagree about what "claimed" means, and
 /// the claim route asked the wrong one.**
 ///

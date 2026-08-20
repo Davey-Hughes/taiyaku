@@ -778,3 +778,196 @@ fn only_a_password_or_a_session_may_administer_an_account() {
          role as the thing an OPDS client presents for every page"
     );
 }
+
+/// **The match guard that lets a header credential speak past a cross-site
+/// cookie.** `resolve`'s own comment states it — "a header credential beside it
+/// is still allowed to speak for the request" — and mutation testing found the
+/// guard could be replaced with `true` on 2026-08-19 with every test passing.
+///
+/// With the guard always true, an OPDS client that happens to carry a stale
+/// cookie from a browser session on the same host is refused 403 for an origin
+/// it never sent, while its perfectly valid `Authorization` header is never
+/// looked at. Nothing in the suite paired the two credentials, so nothing saw
+/// it.
+#[tokio::test]
+async fn a_basic_header_still_speaks_past_a_cookie_refused_for_its_origin() {
+    let state = Arc::new(crate::test_support::state(
+        "taiyaku-test-crosssite-plus-basic",
+    ));
+    with_password(&state, "a password");
+    let token = credential::mint_token();
+    {
+        let conn = state.library.conn();
+        taiyaku_library::account::open_session(&conn, 1, &token, None, None).expect("opens");
+    }
+
+    // The cookie alone, cross-site: refused, and refused as a *session* problem
+    // rather than as a signed-out reader.
+    let cookie_only = build_router(state.clone())
+        .oneshot(
+            Request::post("/api/works/1/progress")
+                .header("host", "test")
+                .header("origin", "http://evil.test")
+                .header("cookie", format!("taiyaku_session={token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"edition":"raw","slot":0}"#))
+                .unwrap(),
+        )
+        .await
+        .expect("answers");
+    assert_eq!(cookie_only.status(), StatusCode::FORBIDDEN);
+
+    // The same request with a valid header beside the same cookie: the header
+    // answers it. A header credential is not CSRF-able, which is the entire
+    // reason the origin check is documented as the cookie path's alone.
+    let with_header = build_router(state)
+        .oneshot(
+            Request::post("/api/works/1/progress")
+                .header("host", "test")
+                .header("origin", "http://evil.test")
+                .header("cookie", format!("taiyaku_session={token}"))
+                .header("authorization", basic("local", "a password"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"edition":"raw","slot":0}"#))
+                .unwrap(),
+        )
+        .await
+        .expect("answers");
+    assert_ne!(
+        with_header.status(),
+        StatusCode::FORBIDDEN,
+        "the cookie's origin refusal swallowed a valid Authorization header, so \
+         a client carrying both is locked out by the weaker of its two \
+         credentials"
+    );
+    assert_ne!(with_header.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// The mapped-address sentence in `Cidr`'s refusal, which is a decision inside
+/// a `format!` and survived `&&` becoming `||` on 2026-08-19.
+///
+/// It exists because `::ffff:10.0.0.0/104` is an IPv4 range written in IPv6 and
+/// /104 there means /8 here — a person who typed one number is being told about
+/// another. With `||`, every over-long prefix gets the mapped explanation,
+/// including plain IPv6 ones where it is simply false.
+#[test]
+fn an_over_long_prefix_explains_itself_differently_for_a_mapped_address() {
+    // Asserted on the whole sentence rather than on `contains` of one word, and
+    // on the translated number in particular: /104 in the mapped form means /8,
+    // and that arithmetic is the only reason the sentence exists.
+    let mapped = "::ffff:10.0.0.0/104".parse::<Cidr>().expect_err("refused");
+    assert!(
+        mapped.contains("written in IPv6") && mapped.contains("/8 is what /104 means here"),
+        "a mapped address needs the sentence saying what the number means in \
+         the form it canonicalises to: {mapped}"
+    );
+    assert!(
+        mapped.contains("32 bits of an IPv4 address"),
+        "and the width it is measured against is IPv4's: {mapped}"
+    );
+
+    let plain = "2001:db8::/200".parse::<Cidr>().expect_err("refused");
+    assert!(
+        !plain.contains("written in IPv6"),
+        "a plain IPv6 range was given the mapped-address explanation, which is \
+         not true of it: {plain}"
+    );
+    assert!(
+        plain.contains("128 bits of an IPv6 address"),
+        "it should still name the width: {plain}"
+    );
+
+    // **The case that separates `&&` from `||`, and the reason the first
+    // version of this test did not kill the mutant.** Both halves agree on the
+    // two cases above — a mapped address satisfies both, a plain IPv6 one
+    // neither — so an assertion on those alone passes either way. An *ordinary*
+    // IPv4 range is the one input where they differ: it contains no `::ffff:`
+    // and its base is v4, so `&&` says no and `||` says yes. Under `||` this
+    // over-long v4 prefix is told it is "an IPv4 address written in IPv6",
+    // which it is not, and given a translated number that means nothing.
+    let plain_v4 = "10.0.0.0/40".parse::<Cidr>().expect_err("refused");
+    assert!(
+        !plain_v4.contains("written in IPv6"),
+        "an ordinary IPv4 range was told it was written in IPv6: {plain_v4}"
+    );
+    assert!(
+        plain_v4.contains("32 bits of an IPv4 address"),
+        "it should still name the width: {plain_v4}"
+    );
+}
+
+/// The decision behind the `X-Forwarded-For` warning, extracted from the
+/// `eprintln!` it used to live inside so that it can be asserted at all.
+///
+/// The warning tells an operator that their login rate limit is being applied to
+/// the proxy rather than to a reader. `&&` surviving as `||` meant it fired for
+/// every request from a direct client that sent no such header — and a warning
+/// that cries wolf is the one nobody reads on the day it is right.
+#[test]
+fn the_forwarded_warning_fires_only_when_a_header_is_being_ignored() {
+    let mut config = crate::session::AuthConfig::default();
+
+    assert!(
+        !crate::auth::forwarded_but_untrusted(false, &config),
+        "no header means nothing is being ignored, whatever the proxy list says"
+    );
+    assert!(
+        crate::auth::forwarded_but_untrusted(true, &config),
+        "a header with no --trusted-proxy is exactly the case worth warning about"
+    );
+
+    config.trusted_proxies = vec!["10.0.0.0/8".parse().expect("parses")];
+    assert!(
+        !crate::auth::forwarded_but_untrusted(true, &config),
+        "a header from a configured proxy is being honoured, not ignored"
+    );
+    assert!(!crate::auth::forwarded_but_untrusted(false, &config));
+}
+
+/// `failed` builds the 500 every account route answers when the database
+/// refuses a write, and it survived being replaced with `Response::default()`
+/// on 2026-08-19 — **a 200 with an empty body**. Nothing asserted on it, so a
+/// password change that changed nothing would have answered success.
+///
+/// Reached by taking away the table `set_password` writes through, which is the
+/// same error class the route reasons about — `serve` and `library import`
+/// share one file — reproduced deterministically rather than by racing a writer.
+#[tokio::test]
+async fn a_password_change_the_database_refuses_is_not_answered_as_success() {
+    let state = Arc::new(crate::test_support::state("taiyaku-test-password-refused"));
+    {
+        let conn = state.library.conn();
+        // `set_password` ends the account's other sessions as part of the same
+        // change, so this is the write that fails. Basic auth carries the
+        // request, which needs no session of its own.
+        conn.execute("DROP TABLE session", []).expect("drops");
+    }
+
+    let response = build_router(state)
+        .oneshot(
+            Request::put("/api/password")
+                .header("host", "test")
+                .header(
+                    "authorization",
+                    basic(
+                        crate::test_support::FIXTURE_NAME,
+                        crate::test_support::FIXTURE_PASSWORD,
+                    ),
+                )
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"current":"{}","next":"a new password"}}"#,
+                    crate::test_support::FIXTURE_PASSWORD
+                )))
+                .unwrap(),
+        )
+        .await
+        .expect("answers");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a password change that did not happen came back as success, so the \
+         reader now believes a password they cannot log in with"
+    );
+}

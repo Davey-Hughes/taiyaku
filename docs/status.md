@@ -115,7 +115,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Six crates, 1325 tests, plus 1,391 in `web/`'s TypeScript — 1,002 in the `node`
+Six crates, 1338 tests, plus 1,391 in `web/`'s TypeScript — 1,002 in the `node`
 project and 387 in the `jsdom` one — and sixteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -164,7 +164,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Seventeen of the 1325 are standing checks gated on
+`rayon` exactly as `align` already did. Seventeen of the 1338 are standing checks gated on
 `TAIYAKU_CORPUS` — ten in `crates/taiyaku-cli/src/corpus.rs`, three in
 `crates/taiyaku-serve/src/corpus.rs`, two in
 `crates/taiyaku-cli/src/score_corpus.rs` and two in
@@ -1137,6 +1137,51 @@ boxes, so 61 of the 76 surviving blocks score *above* 1.0 against a floor of
 essentially all the filtering. That is O34. See `notes.md`, "The edition that
 clears the bar is the one finding no text".
 
+**Mutation testing has a harness since 2026-08-19, and it is not a gate.**
+`scripts/mutants.sh` is the entry point — `--since main` for a branch,
+`--crate`, `--file`, or the whole workspace — `mutants.toml` holds the config,
+and `.forgejo/workflows/mutants.yml` runs the sweep weekly while **gating
+nothing**. Two reasons it cannot be a gate: **3 h 12 m** against
+`check-all.sh`'s eleven seconds, and 45 known survivors deferred behind L2, which would make it
+red on a clean tree for a correct reason — and a job that is red by default
+teaches you to skip it. The shape is copied from `plaintextesports`'s
+`live-smoke.yml`, the only other scheduled workflow across `~/projects`.
+
+**`docs/mutants-baseline.md` is what makes the output readable, and it is the
+part the roadmap entry did not ask for.** It records the survivors that have
+been looked at and accepted, each with its reason, and `scripts/mutants.sh`
+reports only what is *not* in it. Without that, the weekly job prints the same
+45 known survivors every week and the one new entry is invisible among them. It
+is also the only memory this project keeps of what has already been checked —
+which is the thing four whole-branch reviews of spec A2 could not do. Coverage
+records which lines ran; the baseline records which lines have an assertion
+behind them, and it is committed, so the answer outlives the session that found
+it.
+
+**Spec A2's four modules had never been swept, and the first run found 30
+survivors of 255 mutants in 23 minutes.** Ten were the session lifecycle:
+`close_session`, `sweep_expired_sessions`, `sessions_of` and `revoke_session`
+could each be replaced with `Ok(())`, `Ok(0)`, `Ok(vec![])`, `Ok(true)` *or*
+`Ok(false)` with the whole suite green, because `account/tests.rs` named none of
+them and `serve`'s route tests asserted through `session_owner` — which answers
+`None` for a session never opened as readily as for one properly closed. **A
+revoke that revoked nothing would have shipped**, on the route whose only job is
+ending a session somebody believes is compromised. Three more were the
+fail-closed answers argued for at length in comments and asserted nowhere,
+including a whole `Ok(Attempt::Failed)` match arm that could be *deleted*,
+falling through to the 401 beside it — the one answer that cannot be true when a
+correct password's session write loses to a busy writer. `notes.md` has the
+rest.
+
+**Three of the thirty were code written that same morning**, and reading one of
+them found a real defect rather than a missing test: `note_failure(pair).is_err()
+|| note_failure(wide).is_err()` short-circuits, so a failure to record against
+the pair key skipped the wide key entirely — the counter bounding the denial of
+service, dropped on the path that most needs it. Both calls run unconditionally
+now. That is the argument for the harness stated as an event: a defect
+introduced at 09:00 was caught at 11:00 by a tool, rather than by a fifth review
+round that was not going to be commissioned.
+
 **Mutation testing found 346 survivors across the workspace. All five crates
 are now closed, and every survivor that remains is either an equivalent mutant
 carrying its argument or deliberately deferred.** Of the 346 — `taiyaku-core`
@@ -1263,7 +1308,7 @@ both are waiting on L2.
 
 ### Open items
 
-Fifty-seven, each found by a whole-branch review, carried as a deferral,
+Fifty-eight, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -1279,7 +1324,32 @@ are tracked here rather than left in a scratch file so that closing one is a
 visible act rather than a thing someone remembers. **Thirty-three are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
 O21, O22, O25, O26, O27, O28, O29, O30, O34, O35, O36, O37, O38, O39, O40 and
-O43 — leaving twenty-four.**
+O43 — leaving twenty-five.**
+
+**What spec A2's fourth review reported and nobody has verified.** Four rounds
+returned fifteen findings each. Round four's fifteen were: two fixed as security
+defects (the claim route reading `admin_exists`, and the lockout key's
+attacker-supplied name), two more fixed while in the same lines (`promote --role
+user` bricking the library, `change_password`'s constant limiter key), one opened
+as O57 and one as O58. **The remaining nine, plus roughly eighteen the review
+ranked below its own cut, were reported and never checked** — and they are listed
+here rather than as rows because an unverified claim in the table would be read
+as a finding. What was named: `client_address`'s last-entry rule being wrong for
+two proxy hops; `effective_host` never reading `request.uri()`;
+`per_reader_by_default`'s `no-store` killing the ETag revalidation on the four
+routes that implement it; import attribution using `MIN(id)`; `record_absorbed`'s
+`NotFound` arm; `sessions_of` listing sessions that have expired; `label.html`
+having no Login; and the account overlay having no focus trap.
+
+Two of those are worth a sentence on why they are not simply defects. The
+`no-store` one is a regression the third round's own fix introduced, so it is the
+most likely of the nine to be real. The `sessions_of` one interacts with
+`sweep_expired_sessions`, which now has a direct test, so it may already be
+answered. **Neither has been reproduced**, which is the whole content of this
+paragraph: they are a list of things to look at, not a list of things that are
+true. The rate did not fall across four rounds and a fifth was not commissioned;
+this is what that decision left on the floor, written down so it is a choice
+rather than an accident.
 
 *O41 had a prose bullet below and no row in the table until O40 closed, so this
 sentence said "Forty-one … leaving ten" against a table holding forty rows and
@@ -1368,6 +1438,7 @@ each is in the detail below; the table is what a reader scans.
 | O55 | [ ] | The account screen tells a reader to give an API key to an OPDS client as the password, and **no OPDS client has been shown to accept one there.** §2's whole `tyk_` design rests on those clients treating the Basic password field as opaque, which the specification implies and no test has confirmed against Panels or Chunky. The server half is verified — `/opds/v1.2/catalog` answers 401 with `WWW-Authenticate`, then 200 with a `tyk_` key, and a page stream answers 200 `image/jpeg` — so what is unverified is the client, and one attempt against a real iPad settles it. Opened rather than left as a §14 unknown because a screen promising an unverified thing is a defect: if it fails, the fallback is a password-shaped per-device credential and §2's table is amended | `web/src/Account.tsx`'s API keys section, `credential::API_KEY_PREFIX` | spec A2 §14, unresolved on shipping |
 | O56 | [ ] | A member directory whose *contents* change without an entry being added or removed keeps its old digest, because `unchanged` compares `(size, mtime)` and a directory's mtime does not move when the bytes inside an existing child change — nor does its size, which is a block count whether it holds three pages or five. So replacing a page in place, or rebuilding a volume inside one second, is invisible to a rescan. **Found by CI rather than by a review**: two of spec B's own tests (`a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive`, `a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress`) depend on the rescan seeing exactly this and passed fifteen times running locally while failing on the runner. Both now stamp the directory forward rather than racing the clock, which fixes the tests and leaves the behaviour they were unintentionally relying on. Whether the walk should hash a directory's children rather than trust its stamp is spec B's §8 trade — the cheap walk exists to avoid opening containers — so this is a decision with a measurement attached rather than a defect to patch | `taiyaku-library/src/scan.rs::unchanged`, `derive.rs::member_digest` | CI on the `library-auth` branch, 2026-08-19 |
 | O57 | [ ] | **The rate limiter bounds the sustained flood and not the burst.** Both credential paths check their counters and *then* do the argon2 work, so requests arriving together all read the same under-ceiling count and all proceed: `spawn_blocking`'s pool is 512 by default and argon2id at m=19456 KiB allocates 19 MiB per verify, so one concurrent burst is ~9.5 GiB of transient buffer on a host chosen for being small. Bounded per window by `ADDRESS_LOCKOUT_AFTER` once the first failures land, which is what makes the ten-thousand-request flood stop; a single burst is what remains. Increment-then-check does not fix it — an OPDS client presents Basic on every page request, so metering successes would lock a reader out of their own library — which leaves a semaphore capping concurrent verifies as the fix, and the cap is a number nobody has measured on the host that will run this. **Left open rather than guessed at**, because §14's argon2-cost measurement on the NAS is the evidence it needs and that measurement is still outstanding | `auth.rs::from_basic`, `session.rs::login`, `credential::M_COST_KIB` | the fourth whole-branch review, while fixing the address key |
+| O58 | [ ] | **The two routes that write shared documents take no principal, so an API key can rewrite them.** `patch_alignments` and `put_truth` are declared `(State, AxPath, HeaderMap, Bytes)` — no `Principal`, no `Extensions` — so neither can tell a browser session from a device credential. The guard requires *a* credential and `refuse_a_device_credential` narrows only the six account routes, which is where the third review put it. §2 argues a key is the thing an OPDS client presents for every page of a volume and hashes it fast on that basis; a key typed into a third-party reader can therefore silently rewrite the alignment and truth documents **every** reader sees, and those are shared rather than per-account. Verified by reading both signatures, 2026-08-19. **Left open as a decision rather than fixed as a defect**: whether editing content counts as administering is a design call the spec does not make, an offline native reader is a legitimate future caller, and the fix wants C4's permission model rather than a sixth `refuse_a_device_credential` beside the others | `routes.rs::patch_alignments`, `routes.rs::put_truth`, `session.rs::refuse_a_device_credential` | spec A2's fourth whole-branch review |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -3623,10 +3694,10 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the twenty-four open items tabled above — nineteen of them found by
+What remains: the twenty-five open items tabled above — twenty of them found by
 a whole-branch review or by the review of one's own fixes (O42 and O44 among
 them, O45 through O53 all from the scanner branch's own whole-branch
-review or from a fix round inside it, and O57 from spec A2's fourth), and
+review or from a fix round inside it, and O57 and O58 from spec A2's fourth), and
 O54 and O55 opened
 by spec A2 on shipping rather than found by a review at all: one is a
 deliberately-taken O45 shape and the other is a screen promising something no
@@ -4267,6 +4338,48 @@ mismatched pair said nothing at all.
 
 ### Later
 
+- **Measure argon2's cost on the NAS, and set the semaphore cap O57 wants.**
+  §14 recorded that OWASP's parameters — `M_COST_KIB` 19456, `T_COST` 2,
+  `P_COST` 1 — are a starting point that has never been measured on the host
+  that will run this, and that unknown has now blocked something. **O57's fix is
+  a semaphore capping concurrent argon2 verifies, and its cap is a number this
+  measurement produces.** Left as a dependency inside O57 until now, which is
+  how an item stays open forever: the thing it waits on was named in prose and
+  tracked nowhere.
+
+  The measurement itself is one command —
+  `cargo test --release -p taiyaku-library credential::tests::report -- --ignored --nocapture`,
+  which exists for this and prints the mean of ten hashes and ten verifies. The
+  workstation figure is 11.9 ms hashing, 10.9 ms verifying (2026-08-18). Two
+  answers follow from the NAS figure rather than one: whether the parameters
+  hold, and how many verifies may run at once before 19 MiB each becomes a
+  problem on a machine chosen for being small. If the parameters go **up**, note
+  that `credential::tests::the_stored_hash_carries_this_modules_parameters` is
+  what then stops `hasher() -> Argon2::default()` being an equivalent mutant —
+  `docs/mutants-baseline.md` says so in its entry, and that entry becomes wrong
+  on the same day.
+
+- **Watch `mutants.yml`'s first real run, which has never happened.** The
+  workflow was written, its three tarball checksums computed from the artefacts
+  it names, and its container-plus-JS-action trap avoided — but **it has not
+  executed once.** Forgejo does not offer `workflow_dispatch` for a workflow
+  that is not yet on the default branch, so its first run is either the Sunday
+  after it merges or a manual dispatch immediately after. Dispatch it rather
+  than waiting: a scheduled job that fails unattended, weekly, in a workflow
+  whose whole argument is that nobody reads a job they have learned to skip, is
+  the one outcome worth spending five minutes to rule out.
+
+  What to check: that the three installs land (cargo-mutants 27.1.0,
+  cargo-nextest 0.9.140, node 26.7.0 — all checksummed, all likely to be the
+  first thing to rot), that `scripts/mutants.sh` finds `node`, and that the
+  final line reads `no survivor outside the baseline` rather than a list. The
+  210-minute per-crate timeout is three times the slowest crate measured
+  locally (`cli`, 68 m) and has never been measured on the runner; if the real
+  figure lands anywhere near it, that is a number to correct rather than a bound
+  that worked. It was 260 minutes for a single whole-workspace job until the
+  first full sweep showed that to be 1.35x the real cost rather than the 6x its
+  comment claimed.
+
 - **The page cache used to follow the working directory. Shipped 2026-08-11**
   on `serve-cache-root`; `docs/superpowers/specs/2026-08-11-serve-cache-root-design.md`
   is the record, and this entry is kept as the defect that opened it.
@@ -4488,36 +4601,6 @@ mismatched pair said nothing at all.
   a gap, and who actually lends".* `notes.md`,
   "A borrowed page is not a reading position, and might one day want to be",
   carries the three questions making it one would have to answer first.
-
-- **Mutation testing has no home, and the sweep that closed five crates was a
-  one-off.** All five closed at `df8cbd9` and the record is above, but nothing
-  re-runs it: there is no `mutants.toml`, no script, no CI job, and
-  `check-all.sh` does not know the word. The permanent artefact was the fixtures
-  written to kill survivors, not a harness — which is why the four modules spec
-  A2 added were never swept, and a scoped run on 2026-08-19 found **11 missed of
-  84 mutants** in `credential.rs` and `account.rs` alone, in 8 minutes.
-  The shape of them is worth quoting, because it is one shape: `close_session`,
-  `sweep_expired_sessions`, `revoke_session` and `sessions_of` can all be
-  replaced with `Ok(())`, `Ok(0)`, `Ok(true)` or `Ok(vec![])` and every test
-  still passes — the session-lifecycle tests assert through `session_owner`
-  rather than against the functions that do the deleting, so a revoke that
-  revoked nothing would ship. `revoke_session`'s `> 0` survives being `==`, `<`
-  and `>=`.
-
-  **The pattern to copy is `plaintextesports`'s `live-smoke.yml`**, the one
-  scheduled workflow across `~/projects`: a weekly `cron` plus
-  `workflow_dispatch`, gating nothing, carrying a comment that says why it is
-  not a gate and what a failure means — *"go look", not "the build is broken".*
-  That is the right shape here for the same reason it was there: the whole
-  workspace took 43 minutes for 1,660 mutants, which is far too slow for a gate
-  whose point is being runnable before every push, and a job that is red by
-  default teaches you to skip it. `cargo mutants -D/--in-diff` is the other
-  half worth measuring — scoped to a branch rather than the workspace — but the
-  cost of that has not been measured and this entry does not claim it is cheap.
-
-  Deliberately **not** done on the `library-auth` branch, where it was found:
-  a harness and a CI job are not an authentication change, and squashing them
-  together would put both in one commit nobody can revert selectively.
 
 - **Pre-warm a work's page sizes on load.** Since `?w=` shipped, the first read
   of a page at a given size costs the server a decode and a resize —

@@ -666,3 +666,191 @@ fn a_key_on_a_locked_account_authenticates_as_nobody() {
         .expect("claims");
     assert!(by_api_key(&conn, &secret).expect("reads").is_some());
 }
+
+/// **The session lifecycle, asserted against the functions that do the work
+/// rather than through `session_owner`.**
+///
+/// Mutation testing found ten survivors across these four functions on
+/// 2026-08-19: `close_session` could return `Ok(())` without deleting,
+/// `sweep_expired_sessions` `Ok(0)` or `Ok(1)` without sweeping, `sessions_of`
+/// `Ok(vec![])` without listing, and `revoke_session` `Ok(true)` *or*
+/// `Ok(false)` without revoking — with its `rows > 0` surviving `==`, `<` and
+/// `>=` as well. Every test in the workspace still passed against all ten.
+///
+/// The reason is one reason: `account/tests.rs` had no test naming any of them,
+/// and `serve`'s route tests asserted through `session_owner` — which answers
+/// `None` for a session that was never opened just as readily as for one that
+/// was properly closed. **A revoke that revoked nothing would have shipped
+/// green**, on the route whose entire job is ending a session somebody believes
+/// is compromised.
+///
+/// Coverage said 100%. Coverage measures which lines ran.
+#[test]
+fn closing_a_session_deletes_the_row_rather_than_returning_ok() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let mine = credential::mint_token();
+    let other = credential::mint_token();
+    open_session(&conn, 1, &mine, None, None).expect("opens");
+    open_session(&conn, 1, &other, None, None).expect("opens");
+
+    close_session(&conn, &mine).expect("closes");
+
+    assert_eq!(
+        rows(&conn),
+        1,
+        "the row is still there, so `close_session` returned Ok without deleting"
+    );
+    assert!(session_owner(&conn, &mine).expect("reads").is_none());
+    assert!(
+        session_owner(&conn, &other).expect("reads").is_some(),
+        "closing one session ended another"
+    );
+
+    // Closing a token nobody holds is not an error — logout must be idempotent,
+    // since a browser can send it twice — but it must also not delete anything.
+    close_session(&conn, "not a token").expect("no error");
+    assert_eq!(rows(&conn), 1);
+}
+
+/// How many sessions exist, for the tests above and below. Read directly rather
+/// than through `sessions_of`, so a defect in that function cannot make a test
+/// of a different one pass.
+fn rows(conn: &rusqlite::Connection) -> i64 {
+    conn.query_row("SELECT COUNT(*) FROM session", [], |row| row.get(0))
+        .expect("counts")
+}
+
+/// The sweep deletes what has lapsed and **counts what it deleted** — `Ok(0)`
+/// and `Ok(1)` both survived, so the number was never asserted against a known
+/// population.
+#[test]
+fn the_sweep_takes_the_expired_sessions_and_counts_them() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let live = credential::mint_token();
+    open_session(&conn, 1, &live, None, None).expect("opens");
+
+    // Two lapsed and one live, so neither `Ok(0)` nor `Ok(1)` can pass: the
+    // count, the survivors and the casualties are three different numbers.
+    for token in [credential::mint_token(), credential::mint_token()] {
+        conn.execute(
+            "INSERT INTO session (token_sha256, user_id, expires)
+             VALUES (?1, 1, datetime('now', '-1 day'))",
+            rusqlite::params![credential::token_sha256(&token)],
+        )
+        .expect("a lapsed session");
+    }
+    assert_eq!(rows(&conn), 3);
+
+    let swept = sweep_expired_sessions(&conn).expect("sweeps");
+    assert_eq!(swept, 2, "the count is not what was deleted");
+    assert_eq!(rows(&conn), 1, "the sweep did not delete what it counted");
+    assert!(
+        session_owner(&conn, &live).expect("reads").is_some(),
+        "the sweep took a session that had not expired"
+    );
+
+    assert_eq!(
+        sweep_expired_sessions(&conn).expect("sweeps"),
+        0,
+        "a second sweep found something to delete"
+    );
+}
+
+/// `sessions_of` listed nothing and passed, and its `current` flag survived
+/// being inverted. Both need a fixture where the right answer and the wrong one
+/// are different shapes.
+#[test]
+fn listing_sessions_names_them_and_marks_the_one_asking() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let mine = credential::mint_token();
+    let theirs = credential::mint_token();
+    open_session(&conn, 1, &mine, Some("this browser"), Some("203.0.113.9")).expect("opens");
+    open_session(&conn, 1, &theirs, Some("the tablet"), None).expect("opens");
+
+    // A second account's session, to prove the query is scoped: `Ok(vec![])`
+    // is not the only wrong answer, and neither is "everything".
+    add(&conn, "someone-else", "theirs", "user").expect("adds");
+    let stranger = credential::mint_token();
+    let other_id = id_of(&conn, "someone-else")
+        .expect("reads")
+        .expect("exists");
+    open_session(&conn, other_id, &stranger, None, None).expect("opens");
+
+    let listed = sessions_of(&conn, 1, Some(&mine)).expect("lists");
+    assert_eq!(listed.len(), 2, "listed the wrong number of sessions");
+    assert!(
+        listed
+            .iter()
+            .all(|s| s.id != credential::token_sha256(&stranger)),
+        "another account's session appeared in this account's list"
+    );
+
+    let current: Vec<&SessionSummary> = listed.iter().filter(|s| s.current).collect();
+    assert_eq!(
+        current.len(),
+        1,
+        "exactly one row is the browser doing the asking, and inverting the \
+         comparison marks the other one instead"
+    );
+    assert_eq!(current[0].id, credential::token_sha256(&mine));
+    assert_eq!(current[0].user_agent.as_deref(), Some("this browser"));
+    assert_eq!(current[0].ip.as_deref(), Some("203.0.113.9"));
+
+    // No token offered means no row is current — not that the first one is.
+    let anonymous = sessions_of(&conn, 1, None).expect("lists");
+    assert!(
+        anonymous.iter().all(|s| !s.current),
+        "a listing with no token in hand marked a row as the current browser"
+    );
+}
+
+/// `revoke_session` survived `Ok(true)`, `Ok(false)`, and all three ways of
+/// getting `rows > 0` wrong. Its answer is what the route turns into 404 or 204,
+/// so a constant is a route that lies in one direction or the other.
+#[test]
+fn revoking_a_session_ends_that_one_and_says_whether_it_did() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let mine = credential::mint_token();
+    let theirs = credential::mint_token();
+    open_session(&conn, 1, &mine, None, None).expect("opens");
+    open_session(&conn, 1, &theirs, None, None).expect("opens");
+
+    let id = credential::token_sha256(&theirs);
+    assert!(
+        revoke_session(&conn, 1, &id).expect("revokes"),
+        "answered false for a session it was asked to end"
+    );
+    assert!(session_owner(&conn, &theirs).expect("reads").is_none());
+    assert!(
+        session_owner(&conn, &mine).expect("reads").is_some(),
+        "revoking one session ended another"
+    );
+
+    // Twice is false the second time — `rows > 0` against `>=`, which would
+    // answer true for the zero rows a second revoke deletes.
+    assert!(
+        !revoke_session(&conn, 1, &id).expect("revokes"),
+        "answered true for a session that was already gone"
+    );
+
+    // **Scoped to the account.** An id from one account's listing must not end
+    // another account's session, and the answer must be false rather than an
+    // error — the route turns it into a 404, which is what makes another
+    // account's session id indistinguishable from one that never existed.
+    add(&conn, "someone-else", "theirs", "user").expect("adds");
+    let other_id = id_of(&conn, "someone-else")
+        .expect("reads")
+        .expect("exists");
+    assert!(
+        !revoke_session(&conn, other_id, &credential::token_sha256(&mine)).expect("revokes"),
+        "one account revoked another account's session"
+    );
+    assert!(
+        session_owner(&conn, &mine).expect("reads").is_some(),
+        "and it actually deleted it"
+    );
+}

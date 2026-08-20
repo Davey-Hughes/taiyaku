@@ -366,3 +366,28 @@ fn a_refused_password_changes_nothing() {
         "a refused password still created the account"
     );
 }
+
+/// The three mutants `> 0` carried while it lived inside a `println!`: `==`,
+/// `<` and `>=` all survived, because nothing could see what the command
+/// printed. Extracted into [`sessions_ended_note`], each is now a different
+/// answer.
+#[test]
+fn the_sessions_ended_note_appears_only_when_sessions_ended() {
+    assert_eq!(
+        sessions_ended_note(0),
+        None,
+        "`>=` prints `ended 0 open session(s)` after changing the password on \
+         an account nobody was signed in as"
+    );
+    assert_eq!(
+        sessions_ended_note(1).as_deref(),
+        Some("ended 1 open session(s); API keys are untouched"),
+        "`==` and `<` both drop the note for the one case it is most wanted"
+    );
+    assert!(
+        sessions_ended_note(4)
+            .expect("says something")
+            .contains("ended 4"),
+        "the count is the message's whole content and must be the real one"
+    );
+}

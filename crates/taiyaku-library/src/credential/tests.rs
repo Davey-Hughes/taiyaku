@@ -181,3 +181,27 @@ fn the_decoy_hash_costs_what_a_real_one_costs() {
     assert!(!verify_password("a guess", "not a phc string"));
     assert!(started.elapsed() * 10 < genuine);
 }
+/// The stored hash carries the parameters it was made with, so this asserts
+/// that `hasher()` uses **this module's** constants rather than any others.
+///
+/// **It does not kill `hasher -> Argon2::default()`, and that is the finding.**
+/// `argon2::Params::DEFAULT_M_COST/T_COST/P_COST` are 19456, 2 and 1 — the same
+/// three values `M_COST_KIB`, `T_COST` and `P_COST` hold, because both are
+/// OWASP's current recommendation. So the mutant is genuinely equivalent today
+/// and `docs/mutants-baseline.md` records it as one.
+///
+/// It stops being equivalent the moment the NAS measurement (§14) raises these
+/// above OWASP's floor, which is the whole reason that measurement is pending —
+/// and on that day this test is what fails, rather than nothing.
+#[test]
+fn the_stored_hash_carries_this_modules_parameters() {
+    let phc = hash_password("measure me").expect("hashes");
+    assert!(
+        phc.contains(&format!("m={M_COST_KIB},t={T_COST},p={P_COST}")),
+        "the hash records parameters this module did not choose: {phc}"
+    );
+    assert!(
+        phc.starts_with("$argon2id$v=19$"),
+        "algorithm or version changed: {phc}"
+    );
+}

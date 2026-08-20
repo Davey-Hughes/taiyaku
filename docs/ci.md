@@ -24,6 +24,12 @@ dependency that assumes threads or links a native library will do it. Without a
 gate, the breakage stays invisible until the reader is being built, by which
 point the offending dependency is load-bearing.
 
+### The one workflow that is not a job
+
+`mutants.yml` runs weekly and **gates nothing**. It is not in the table above,
+it is not in `check-all.sh`, and no pull request waits on it. See "Mutation
+testing, and why it cannot be a gate" below.
+
 ## The local mirror, and the one thing it cannot mirror
 
 `scripts/check-all.sh` reproduces all four jobs above, in the same order with
@@ -1703,3 +1709,118 @@ suppressing a warning clippy itself does not attribute to that function, which
 is the wrong shape for the mechanism this file already documents above. A
 reader watching either gate should expect to see these and read past them —
 what is worth reading is anything *beyond* the 15.
+
+## Mutation testing, and why it cannot be a gate
+
+`cargo mutants` changes the source — a `>` becomes a `>=`, a function body
+becomes `Ok(())` — and reruns the suite. A mutation the suite still passes
+against is a **survivor**: a line the tests execute without asserting anything
+about what it does. Coverage cannot see this. A survivor is 100%-covered code
+whose behaviour nothing checks.
+
+`.forgejo/workflows/mutants.yml` runs it weekly, on a schedule and on
+`workflow_dispatch`, and **gates nothing**. Two reasons, and the second matters
+more than the first:
+
+1. **It is three hours.** The sweep is 3,191 mutants in 3 h 12 m, measured
+   across the six crates on 2026-08-19. `check-all.sh`'s whole point is being
+   runnable before every push; the four CI jobs are bounded at ten minutes each.
+   It was 1,660 mutants in 43 minutes in August, before spec B's scanner and
+   spec A2's auth — quoting that figure forward is what set the workflow's
+   timeout to 1.35x the real cost under a comment claiming 6x.
+2. **A job that is red by default teaches you to skip it.** 45 mutants survive
+   in `detect.rs` and `regions.rs` today, deferred until L2 redesigns the
+   detector — writing fixtures against a detector about to be replaced is work
+   thrown away. A gate would be red on every commit for a correct reason, which
+   is the state in which nobody reads it. `plaintextesports`'s `live-smoke.yml`
+   made the same call for the same reason, and this workflow's comment says so.
+
+**A failure means "go look", not "the build is broken."**
+
+### Two more bounds the timeout does not cover
+
+**A time bound is not a memory bound.** A mutant that removes an allocation
+guard does not spin — it allocates. Measured 2026-08-19: two sweeps were killed
+by the kernel's OOM killer, one test binary at **36.6 GB** anon-rss and another
+at **43.8 GB**, on a 60 GB machine. Neither came near the 60-second per-test
+timeout, because forty gigabytes takes seconds. Worse, the kernel picks a victim
+by score rather than by culprit — the first kill was *invoked by* `kwin_wayland`,
+which was simply the next process to ask for memory.
+
+`scripts/mutants.sh` sets `ulimit -v` (16 GB, overridable with
+`TAIYAKU_MUTANTS_VM_KB`) before running. It is per-process and inherited, so a
+runaway gets an allocation failure, its test aborts, and cargo-mutants records
+the mutant as **caught** — which is the right answer, since a mutation that
+allocates forty gigabytes has changed observable behaviour and the suite did
+notice. Verified both ways: `cargo build --workspace --all-targets` completes
+under the cap, and a 4 GB allocation under a 2 GB cap fails cleanly.
+
+A cgroup (`systemd-run --scope -p MemoryMax=`) was tried first and rejected: a
+ceiling on the whole run lets one runaway consume the budget and take innocent
+concurrent mutants with it, reporting them as caught when nothing tested them.
+**False *caught* is the same failure as false green.**
+
+So there are three bounds, for three different runaways: `timeout-minutes` on
+the job, `.config/nextest.toml`'s 60 s on a test, and `ulimit -v` on a test's
+memory. None subsumes another, and the third was missing until it cost two
+sweeps and a desktop session.
+
+### The baseline is what makes the output readable
+
+`docs/mutants-baseline.md` records the survivors that have been looked at and
+accepted, each with its reason, and `scripts/mutants-baseline.mjs` diffs a run
+against it. **A survivor not in the baseline is the whole of what is worth
+reading.** Without that, the weekly job prints the same 45 known survivors every
+week and the one new entry is invisible in the middle of them.
+
+**An entry can also be `UNTRIAGED:`, which is a third state and not a weaker
+second one.** The first workspace-wide sweep produced 150 survivors; writing 150
+verified reasons in one sitting produces 150 sentences that sound like reasons.
+So an untriaged entry is silenced in the new-survivor diff — it is not new — and
+counted out loud on every run, because nothing about it has been established.
+"Accepted" asserts somebody checked; "untriaged" asserts nothing. Collapsing the
+two is how a baseline becomes the place defects go to be forgotten. As of
+2026-08-19: **58 accepted, 92 untriaged.**
+
+It is also the only memory this project keeps of what has already been checked.
+Four whole-branch reviews of spec A2 each returned fifteen findings, and the rate
+never fell — because nothing remembered what the previous round had looked at, so
+each reviewer re-sampled the whole branch. Coverage records which lines *ran*.
+The baseline records which lines have an assertion behind them and which are
+known not to, and it is committed, so the answer survives the session that found
+it.
+
+An entry is keyed on the mutant's `file:line:col: description`, verbatim. Moving
+a function therefore invalidates its entries and its survivors reappear as new.
+That is deliberate: matching on the description alone would be stabler and would
+carry an accepted survivor across a rewrite that turned it into a real defect,
+with the entry still explaining why the old code was fine.
+
+### Running it on a branch
+
+```
+scripts/mutants.sh --since main    # only code this branch touched
+scripts/mutants.sh --crate taiyaku-serve
+scripts/mutants.sh --file 'crates/**/auth.rs'
+scripts/mutants.sh                 # everything — the three hours
+```
+
+`--since` is the one to reach for before opening a pull request. It passes the
+merge-base diff to `cargo mutants --in-diff`, so it mutates what the branch
+changed rather than what `main` gained meanwhile.
+
+### What it cannot tell you
+
+**cargo-mutants does not mutate every expression.** It generated no mutant at
+all for `run.b.map(|_| run.a)` in a `match` arm, so O38's defect was invisible to
+it both before and after the fix. A file with no survivors is not a verified
+file; it is a file with no *known* survivors.
+
+**A non-terminating mutant is reported TIMEOUT, not MISSED.** `left += 1`
+becoming `left *= 1` never finishes. `.config/nextest.toml` bounds a single test
+at 60 s, which is what keeps that a timeout rather than a hung job — the two
+bounds are the same pair CI already reasons about above.
+
+**`const { assert!(...) }` makes a mutant unviable rather than caught**, so
+clippy's suggested fix for `assertions_on_constants` silently improves the score
+without improving anything.

@@ -12501,3 +12501,126 @@ keyed its limiter on the constant `"  change-password"`, so every reader behind
 one address shared one counter — somebody mistyping their old password ten times
 locked everyone at that address out of changing theirs, and a guesser working on
 one account spent a budget the others needed. It carries the `user_id` now.
+
+### The mutation harness, and the thirty survivors it found on its first run, 2026-08-19
+
+The sweep that closed all five crates in August was a one-off. Nothing re-ran
+it: no `mutants.toml`, no script, no CI job, and `check-all.sh` did not know the
+word. **The permanent artefact was the fixtures written to kill survivors, not a
+harness** — so the four modules spec A2 added were never swept at all, and
+nothing would have swept them.
+
+What landed: `mutants.toml`, `scripts/mutants.sh`, `scripts/mutants-baseline.mjs`,
+`docs/mutants-baseline.md` and `.forgejo/workflows/mutants.yml`, weekly and
+gating nothing.
+
+**The baseline is the part the roadmap entry did not ask for, and it is the part
+that makes the rest usable.** A survivor list is only actionable if a new one is
+distinguishable from an old one, and 45 survivors are deferred behind L2's
+detector redesign. A weekly job reporting those 44 every week is a job nobody
+reads by the third week. The baseline records the accepted survivors with their
+reasons; the script reports the difference.
+
+It is also an answer to the question the four review rounds raised. Fifteen
+findings a round, four rounds, no decay — because nothing remembered what had
+already been checked, so every reviewer re-sampled the whole branch from
+scratch. Coverage records which lines *ran*. The baseline records which lines
+have an assertion behind them and which are known not to, and it is committed,
+so it outlives the session.
+
+#### Thirty of 255, in 23 minutes
+
+**Ten were the session lifecycle, and they are one shape.** `close_session` →
+`Ok(())`, `sweep_expired_sessions` → `Ok(0)` or `Ok(1)`, `sessions_of` →
+`Ok(vec![])`, `revoke_session` → `Ok(true)` *or* `Ok(false)`, plus its `rows > 0`
+surviving `==`, `<` and `>=`. Every test in the workspace passed against all ten.
+
+One reason: `account/tests.rs` contained no test naming any of the four
+functions, and `serve`'s route tests asserted through `session_owner` — which
+answers `None` for a session that was never opened just as readily as for one
+properly closed. **A revoke that revoked nothing would have shipped green**, on
+the route whose entire purpose is ending a session somebody believes is
+compromised. Four direct tests now assert against the functions, with fixtures
+built so that the count, the survivors and the casualties are three different
+numbers — `Ok(0)` and `Ok(1)` were both survivors, so a fixture where the right
+answer is 1 would have killed only one of them.
+
+**Three were fail-closed claims that comments argue for at length and nothing
+checked.** The `Ok(Attempt::Failed)` arm could be *deleted*, falling through to
+the 401 beside it — and the 401 is the one answer that cannot be true when a
+correct password's session write loses to a busy writer, because it makes every
+client say "that name and password did not match" and leaves a reader retyping a
+password that was right the first time. That was a third-review fix. The other
+two are the 429s for a failure the limiter could not record, on both credential
+paths. All three are now reachable deterministically by dropping the table the
+write needs, which is the same error class the comments reason about rather than
+a simulation of it.
+
+**One was `failed()` replaced by `Response::default()` — a 200 with an empty
+body** for a password change that did not happen, leaving a reader believing a
+password they cannot log in with.
+
+**One was the match guard letting a header credential speak past a cross-site
+cookie.** `resolve`'s comment states it; nothing in the suite paired the two
+credentials, so replacing the guard with `true` passed. Under that mutant an
+OPDS client carrying a stale browser cookie is refused for an origin it never
+sent, with its valid `Authorization` header never looked at.
+
+**Four were decisions inside print statements**, which is the shape this
+codebase's sweeps keep finding. `ended > 0` inside `println!` carried three
+mutants — `>=` prints "ended 0 open session(s)" — and the `X-Forwarded-For`
+warning's `&&` carried one. Both extracted into functions returning values, which
+is what the August sweep found kills this shape: 11 mutants in `inventory`, 24 in
+`topology`.
+
+#### Three of them were written that morning
+
+`note_failure(&conn, &key).is_err() || note_failure(&conn, &wide).is_err()`, in
+three places, from the address-key fix earlier the same day. Reading them for
+the mutant found a **defect rather than a missing test**: `||` short-circuits, so
+a failure recording against the pair key skipped the wide key entirely — the one
+counter that bounds the denial of service, dropped on the path that most needs
+it. Both calls run unconditionally now and the decision is taken after.
+
+That is the argument for a harness stated as an event rather than as a
+principle. The defect was introduced in the morning and found by a tool two
+hours later, on a branch where the alternative was a fifth review round that had
+already been argued against.
+
+#### What the harness itself got wrong, twice
+
+**`--output DIR` means "put a `mutants.out` inside DIR".** Written as
+`--output target/mutants.out`, the results landed in
+`target/mutants.out/mutants.out/` and the diff read an absent `missed.txt` as an
+empty one — reporting a clean sweep because it could not find the answer. The
+script created that file when it was missing; it now exits 1 and says where the
+log is. **A harness that says green because it looked in the wrong place is
+worse than no harness**, and this one did exactly that before anybody used it.
+
+**`/tmp` is a 31 GB tmpfs on this machine, and cargo-mutants builds there.**
+Every mutant's build directory carries its own `target/`; the second five-file
+run filled it and died at mutant 140 of 255 with `No space left on device` — the
+same error the 28 GB corpus produces, from a different cause, which is why the
+script now names both. `TMPDIR` is set to `target/mutants-scratch`, on the disk
+with 2.7 TB free, overridable with `TAIYAKU_MUTANTS_TMP`.
+
+#### Two fixtures that could not fail, caught while writing the tests
+
+Both the recurring shape, and both mine that afternoon.
+
+A login test used `fixture`/`fixture-password` where the constants are
+`local`/`fixture`, so it got its 401 for the ordinary reason rather than the one
+it named. It failed loudly, which is luck: the two tests beside it named an
+account that does not exist and passed — through the unknown-name branch rather
+than the failed-verify branch they claimed to test. All three now use
+`test_support`'s constants.
+
+An assertion written as `contains(a) || contains(b)` passes on either half. It
+was checking the `Cidr` refusal's mapped-address sentence, and **the first
+version did not kill the mutant it was written for**: `&&` and `||` agree on both
+inputs it used — a mapped address satisfies both operands, a plain IPv6 range
+neither. The discriminating input is an *ordinary IPv4* range, which contains no
+`::ffff:` and has a v4 base, so the two disagree. Verified by hand-mutation
+before and after: survives, then dies.
+
+**The re-run is the test of the test.** Reading would not have found either.

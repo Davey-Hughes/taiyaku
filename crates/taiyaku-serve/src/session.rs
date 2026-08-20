@@ -346,9 +346,13 @@ pub(crate) async fn login(
         let Some((found, phc)) = found else {
             let _ = credential::verify_password(&body.password, credential::DECOY_HASH);
             let conn = state.library.conn();
-            if account::note_failure(&conn, &key).is_err()
-                || account::note_failure(&conn, &wide).is_err()
-            {
+            // **Both, unconditionally.** `||` short-circuits, so a pair-key
+            // failure that errored skipped the wide key entirely — the one
+            // counter that bounds the cost, dropped on the path that most
+            // needs it. The decision is taken after both have been recorded.
+            let pair = account::note_failure(&conn, &key);
+            let address = account::note_failure(&conn, &wide);
+            if pair.is_err() || address.is_err() {
                 return Attempt::TooMany;
             }
             return Attempt::No;
@@ -358,9 +362,13 @@ pub(crate) async fn login(
             let conn = state.library.conn();
             // An unrecordable failure is an unbounded one; the safe reading of
             // "the limiter is not working" is to stop rather than to continue.
-            if account::note_failure(&conn, &key).is_err()
-                || account::note_failure(&conn, &wide).is_err()
-            {
+            // **Both, unconditionally.** `||` short-circuits, so a pair-key
+            // failure that errored skipped the wide key entirely — the one
+            // counter that bounds the cost, dropped on the path that most
+            // needs it. The decision is taken after both have been recorded.
+            let pair = account::note_failure(&conn, &key);
+            let address = account::note_failure(&conn, &wide);
+            if pair.is_err() || address.is_err() {
                 return Attempt::TooMany;
             }
             return Attempt::No;

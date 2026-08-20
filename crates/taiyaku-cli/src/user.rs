@@ -256,10 +256,23 @@ fn password_with(args: &[String], ask: AskForPassword<'_>) -> Result<(), String>
     // the host's own shell should mean.
     let ended = account::set_password(&conn, user_id, &password, None)?;
     println!("changed the password for `{name}`");
-    if ended > 0 {
-        println!("ended {ended} open session(s); API keys are untouched");
+    if let Some(note) = sessions_ended_note(ended) {
+        println!("{note}");
     }
     Ok(())
+}
+
+/// What `library user password` says about the sessions the change ended, or
+/// nothing when it ended none.
+///
+/// **Extracted from the `if` inside the `println!`**, which is the shape this
+/// codebase's mutation sweep keeps finding: a decision that only changes what a
+/// person reads, reachable only by running the command. `> 0` survived `==`,
+/// `<` and `>=` on 2026-08-19 — three mutants, one of which (`>=`) prints
+/// "ended 0 open session(s)" after a password change on an account nobody was
+/// signed in as.
+fn sessions_ended_note(ended: usize) -> Option<String> {
+    (ended > 0).then(|| format!("ended {ended} open session(s); API keys are untouched"))
 }
 
 fn list(args: &[String]) -> Result<(), String> {

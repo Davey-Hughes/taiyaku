@@ -1,0 +1,164 @@
+name: mutants
+
+# Mutation testing across the workspace, weekly, **gating nothing.**
+#
+# `ci.yml` is the gate: four jobs, ten-minute bounds, run on every push and
+# every pull request. This is not one of them and must never become one. The
+# sweep is **3,191 mutants in 3 h 12 m**, measured across the six crates on
+# 2026-08-19 — two orders of magnitude past what a gate can cost — and a job
+# that is slow enough to be skipped, or red often enough to be ignored, is worse
+# than no job at all, because it teaches you not to read it. That reasoning is
+# copied wholesale from `plaintextesports`'s `live-smoke.yml`, the other
+# scheduled workflow across these projects, and it holds here for the same
+# reason.
+#
+# **The first version of this file said 43 minutes and set one job's timeout to
+# 260, calling it "six times the measurement".** 43 minutes was August's figure
+# for 1,660 mutants, before spec B's scanner and spec A2's auth; the workspace
+# has since nearly doubled. 260 minutes was therefore 1.35× the real cost on a
+# workstation faster than the runner, and this job would have reported a
+# timeout as a hang. Hence the matrix below: a figure copied forward without
+# re-measuring is how a bound quietly stops bounding.
+#
+# Per crate, 2026-08-19: cli 1,142 mutants / 68 m, serve 495 / 58 m, library
+# 819 / 53 m, read 180 / 7 m, core 504 / 6 m, wasm 51 / 15 s. The two big ones
+# are not the two biggest crates — `serve` runs 495 mutants in nearly the time
+# `cli` takes for 1,142, because its tests build a router per case.
+#
+# **A failure here means "go look", not "the build is broken."** Nothing depends
+# on it. Nothing is blocked by it. What it produces is a list of mutations of the
+# source that every test still passed against — places where the suite runs a
+# line without asserting anything about what the line does.
+#
+# The reason it is scheduled at all is that the alternative was nothing. All five
+# crates were swept once, by hand, in August 2026, and the permanent artefact was
+# the fixtures written to kill the survivors — not a harness. So the four modules
+# spec A2 added were never swept until somebody thought to, and a scoped run
+# found eleven survivors in two files: `close_session`, `sweep_expired_sessions`,
+# `revoke_session` and `sessions_of` could each be replaced with `Ok(())`,
+# `Ok(0)`, `Ok(true)` or `Ok(vec![])` with the whole suite still green. A revoke
+# that revoked nothing would have shipped.
+#
+# `scripts/mutants.sh --since main` is the half meant for a branch, and it is the
+# one to reach for before opening a pull request. This job is the backstop for
+# what that misses: code nobody touched, whose *tests* somebody weakened.
+
+on:
+  schedule:
+    # Sundays 04:00 UTC. Weekly rather than nightly because the sweep is 43
+    # minutes and the thing it measures moves at the speed of test-writing, not
+    # of commits.
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: docker
+    # **One job per crate rather than one for the workspace.** Three hours in a
+    # single job is a bound nobody can set honestly — it has to cover the
+    # slowest crate on the slowest day — and a failure in it names nothing. Per
+    # crate, the timeout is three times that crate's measured worst and a red
+    # job says which crate.
+    #
+    # `scripts/mutants-baseline.mjs` compares only the files a run examined, so
+    # each job reports its own crate's new survivors and nothing else. That
+    # falls out of the script rather than needing anything here.
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - taiyaku-core
+          - taiyaku-read
+          - taiyaku-wasm
+          - taiyaku-library
+          - taiyaku-serve
+          - taiyaku-cli
+    # 3x the slowest crate measured (cli, 68 m) rather than per-crate values, so
+    # a crate that grows does not silently outgrow a number tuned to what it
+    # used to be. The runner is slower than the workstation these came from and
+    # by how much has never been measured — the first run is what settles that.
+    #
+    # This bounds a *job*. `.config/nextest.toml` bounds a single test at 60 s,
+    # and `ulimit -v` in `scripts/mutants.sh` bounds a single test's memory —
+    # three different runaways, three different bounds, and the memory one was
+    # missing until a mutant took 43.8 GB and the kernel killed the desktop.
+    timeout-minutes: 210
+    container:
+      image: rust:1-bookworm
+    steps:
+      # Cloned with git rather than actions/checkout for the reason ci.yml
+      # states at length: a JS action needs a node inside the job's container,
+      # and rust:1-bookworm carries none.
+      - name: Checkout
+        env:
+          TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          host="${FORGEJO_SERVER_URL#http://}"; host="${host#https://}"
+          scheme="${FORGEJO_SERVER_URL%%://*}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$FORGEJO_REF"
+          git checkout -q FETCH_HEAD
+      # Three checksummed tarballs, which is the pattern ci.yml uses for every
+      # tool it needs and the reason is the same here: a GitHub release asset
+      # can be replaced in place by whoever owns the repository, and neither
+      # nextest nor cargo-mutants publishes a checksum file. **Every digest
+      # below was computed here, from the artefact this workflow was written
+      # against.** Bump them together with the version by re-downloading and
+      # re-computing — never by copying a value out of an issue or a README.
+      #
+      # `cargo binstall` and `curl … | bash` were both written here first and
+      # both are the thing this repository does not do: they fetch and execute
+      # whatever the URL serves on the day the job runs.
+      - name: Install cargo-mutants
+        run: |
+          curl -fsSL -o /tmp/mutants.tar.gz \
+            https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz
+          echo "dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e  /tmp/mutants.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/mutants.tar.gz -C /usr/local/bin
+          cargo mutants --version
+      - name: Install cargo-nextest
+        # The same version, URL and digest as ci.yml's `test` job. `mutants.toml`
+        # sets `test_tool = "nextest"`, so this is not optional here.
+        run: |
+          curl -fsSL -o /tmp/nextest.tar.gz \
+            https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.140/cargo-nextest-0.9.140-x86_64-unknown-linux-musl.tar.gz
+          echo "bc2a998567816eef7b087b920036f49fb89aa2a8a603f6a3d84098be160b62c5  /tmp/nextest.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/nextest.tar.gz -C /usr/local/bin
+          cargo nextest --version
+      - name: Install node
+        # For `scripts/mutants-baseline.mjs`, which turns a raw survivor list
+        # into the line worth reading. rust:1-bookworm carries no node at all.
+        # Same version, same digest, same symlink as ci.yml's two jobs that
+        # need it.
+        run: |
+          curl -fsSL -o /tmp/node.tar.xz \
+            https://nodejs.org/dist/v26.7.0/node-v26.7.0-linux-x64.tar.xz
+          echo "982aa24dd8be4c889c6a8ab337ddff3b0896645b20f4239356e80552c16277ee  /tmp/node.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/node.tar.xz -C /opt
+          ln -s /opt/node-v26.7.0-linux-x64/bin/node /usr/local/bin/node
+          node --version
+      # One crate. `--gitignore=true` is inside the script and is not optional:
+      # without it every mutant build copies the gitignored corpus. There is no
+      # corpus on the runner, but the flag also decides whether `target/` is
+      # copied, and the failure it prevents is silent either way.
+      - name: Sweep
+        run: scripts/mutants.sh --crate ${{ matrix.crate }}
+      # The survivor list again, whatever the step above exited with — it is the
+      # entire product of this job and it is most worth having on the run that
+      # failed, which is the run where the step above stopped early.
+      #
+      # **Printed rather than uploaded as an artifact**, and that is a
+      # constraint rather than a preference. `upload-artifact` is a JavaScript
+      # action, a JS action needs a node inside the job's container to start,
+      # and `ci.yml` documents the measurement: on this instance a container
+      # with no action passes, an action with no container passes, and both
+      # together is the only combination that fails. The node installed above
+      # arrives in a later step than the one that would need it. Nothing else in
+      # this repository uses an action, for the same reason.
+      - name: The survivors, again
+        if: always()
+        run: |
+          echo "--- missed ---";   cat target/mutants.out/missed.txt   2>/dev/null || echo "(none)"
+          echo "--- timeout ---";  cat target/mutants.out/timeout.txt  2>/dev/null || echo "(none)"
+          echo "--- unviable ---"; cat target/mutants.out/unviable.txt 2>/dev/null || echo "(none)"

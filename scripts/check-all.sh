@@ -53,6 +53,20 @@
 #
 # Anything not measured is named twice — once where it would have run, and again in the closing
 # summary, which refuses to print a bare "all green" when something was skipped.
+#
+# --- what this deliberately does NOT run -------------------------------------
+#
+# `scripts/mutants.sh`. Mutation testing measures something no gate here can — whether the
+# assertions see a defect, rather than whether the lines ran — and it costs 3 h 12 m for the
+# workspace against this file's whole budget of about eleven seconds warm. It also has 45 known
+# survivors deferred behind L2, so it is red for a correct reason on a clean tree. It runs weekly
+# in `.forgejo/workflows/mutants.yml`, gating nothing, and `scripts/mutants.sh --since main` is
+# the version worth running by hand before opening a pull request. See docs/ci.md, "Mutation
+# testing, and why it cannot be a gate".
+#
+# This is the one place the "local gate and CI gate cannot drift" claim above has an exception,
+# and it is stated here so that the exception is a decision rather than a gap: `mutants.yml` is
+# not one of the four jobs, and nothing waits on it.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
