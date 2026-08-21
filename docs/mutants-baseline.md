@@ -87,6 +87,7 @@ it mutates only changed code and takes minutes.
 | 2026-08-19 | spec A2's four modules (255 mutants) | 30 survivors; 17 killed by new tests, 13 recorded |
 | 2026-08-19 | whole workspace (3,191 mutants, 3 h 12 m) | 150 survivors — the baseline below |
 | 2026-08-20 | `taiyaku-library` on the forge, 3 shards | 3 survivors outside the baseline: `mtime_secs`, a catch the workstation had invented. Fixed, O59 opened |
+| 2026-08-20 | spec C1's browse API, `--since main` (132 mutants, 4 m) | 14 survivors, all killed rather than recorded. The one that mattered: `refuse_if_hidden` replaceable with `None` — the page-route grant check this branch added, deletable with every test passing. Two lessons kept: the first test written for it passed *with the guard deleted*, because the fixture's files do not exist and `/pages` answers 404 either way, so the assertion is on the refusal's body; and three of the fourteen were a comparison inside a `println!`, which is the third time this file has produced that shape after `sessions_ended_note` |
 | 2026-08-20 | wasm, read, core, library, serve (2,049 mutants, 42 m) | re-measured after excluding `detect.rs`/`regions.rs` and capping `--jobs`; **every crate unchanged against the baseline.** `taiyaku-cli` was stopped partway and has not been re-measured since the exclusion — the numbers below for it are from the 2026-08-19 sweep |
 
 <!-- entries -->### `crates/taiyaku-cli/src/duplicates.rs`

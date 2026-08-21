@@ -33,10 +33,17 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
         Some("add") => add(&args[1..]),
         Some("password") => password(&args[1..]),
         Some("list") => list(&args[1..]),
+        Some("grant-root") => grant_root(&args[1..]),
+        Some("revoke-root") => revoke_root(&args[1..]),
         Some(other) => Err(format!(
-            "library user has no subcommand `{other}`; it has promote, add, password and list"
+            "library user has no subcommand `{other}`; it has promote, add, password, list, \
+             grant-root and revoke-root"
         )),
-        None => Err("library user needs a subcommand: promote, add, password or list".to_string()),
+        None => Err(
+            "library user needs a subcommand: promote, add, password, list, grant-root \
+                     or revoke-root"
+                .to_string(),
+        ),
     }
 }
 
@@ -357,6 +364,152 @@ fn key_revoke(args: &[String]) -> Result<(), String> {
         println!("revoked API key {key_id} of `{user}`");
     } else {
         println!("`{user}` has no API key {key_id}; nothing to revoke");
+    }
+    Ok(())
+}
+
+const ROOT_USAGE: &str = "usage: taiyaku library user grant-root <user> <root-path> [--db PATH]\n \
+                          taiyaku library user revoke-root <user> <root-path> [--db PATH]";
+
+/// The root row whose canonicalised path is `given`, or an error naming what
+/// was asked for.
+///
+/// **Canonicalised on the way in**, because [`taiyaku_library::scan::add_root`]
+/// canonicalises on the way in too — a root added as `./shelf` is stored
+/// absolute, and a grant typed the same way would otherwise miss. A path that
+/// does not exist cannot be a root of this library, so the canonicalisation
+/// failing is the same answer as no row matching, phrased with the reason.
+fn root_by_path(conn: &rusqlite::Connection, given: &str) -> Result<i64, String> {
+    let roots = taiyaku_library::scan::roots(conn)?;
+    // Canonicalised first, because `scan::add_root` canonicalises on the way
+    // in: a root added as `./shelf` is stored absolute, and a grant typed the
+    // same way would otherwise miss.
+    if let Ok(wanted) = std::path::Path::new(given).canonicalize()
+        && let Some(root) = roots.iter().find(|root| root.path == wanted)
+    {
+        return Ok(root.id);
+    }
+    // **Falling back to the stored text is what makes `revoke-root` work on a
+    // shelf that is gone**, which is when withdrawing access matters most: an
+    // unmounted drive or a deleted directory cannot be canonicalised, and
+    // refusing there would leave a grant standing with no way to remove it.
+    // Found by the whole-branch review.
+    roots
+        .iter()
+        .find(|root| root.path == std::path::Path::new(given))
+        .map(|root| root.id)
+        .ok_or_else(|| {
+            format!(
+                "`{given}` is not a root of this library; \
+                 `taiyaku library scan --add {given}` would make it one"
+            )
+        })
+}
+
+/// `user` and `root-path`, resolved to the two ids both subcommands need.
+fn grant_target(args: &[String]) -> Result<(Library, i64, i64, String), String> {
+    let given = positional(args);
+    let [user, path] = given.as_slice() else {
+        return Err(ROOT_USAGE.to_string());
+    };
+    let library = open(args)?;
+    let (user_id, root_id) = {
+        let conn = library.conn();
+        let user_id =
+            account::id_of(&conn, user)?.ok_or_else(|| format!("no account named `{user}`"))?;
+        let root_id = root_by_path(&conn, path)?;
+        (user_id, root_id)
+    };
+    Ok((library, user_id, root_id, (*path).clone()))
+}
+
+fn grant_root(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags("library user grant-root", args, &["--db"])?;
+    let (library, user_id, root_id, path) = grant_target(args)?;
+    let conn = library.conn();
+    let was_new = account::grant_root(&conn, user_id, root_id)?;
+    let held = account::granted_roots(&conn, user_id)?;
+    if was_new {
+        println!("granted sight of {path}");
+    } else {
+        println!("that account could already see {path}; nothing to do");
+    }
+    if let Some(note) = narrowed_note(held.len()) {
+        println!("  {note}");
+    }
+    // **A grant over a library nothing has re-derived shows an empty shelf**,
+    // and saying so here is the difference between a puzzling result and a
+    // known one. Migration 6 added `member.root_id` and left it NULL;
+    // migration 7 backfills what it can from each root's path, but a member
+    // whose root cannot be recovered that way stays NULL and `IN (…)` excludes
+    // it. Whole-branch review: an operator who granted a root on such a
+    // library got a reader who saw nothing, while this command said the
+    // opposite.
+    let unrooted: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM member WHERE root_id IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("counting members with no root: {e}"))?;
+    if let Some(note) = unrooted_note(unrooted) {
+        println!("  {note}");
+    }
+    Ok(())
+}
+
+/// What a grant says the first time it narrows an account.
+///
+/// **Said only on the first grant, because that is the one that changes what
+/// the account can see.** An account with no grants sees every root, so the
+/// first one *narrows* it — an operator who grants a root expecting to widen
+/// access has done the opposite, and this is the only moment anything says so.
+/// The second and later grants widen a restriction that already exists and
+/// need no warning.
+///
+/// Extracted for the same reason as [`unrooted_note`] and
+/// [`sessions_ended_note`]: `== 1` inside a `println!` survives as `!= 1`,
+/// because nothing can see what a command printed.
+fn narrowed_note(held: usize) -> Option<String> {
+    (held == 1).then(|| {
+        "That account is now restricted to that one root. \
+         An account with no grants at all sees every root."
+            .to_string()
+    })
+}
+
+/// The warning a grant carries when the library holds members with no root.
+///
+/// **Extracted for the same reason [`sessions_ended_note`] was**, and after
+/// the same three mutants: `> 0` inside a `println!` survived as `==`, `<` and
+/// `>=`, because nothing can see what a command printed. Each is now a
+/// different answer.
+///
+/// The warning matters because the rule it qualifies is already
+/// counter-intuitive: a grant restricts, and a restricted account cannot see a
+/// member carrying no root at all — so an operator who grants a root on a
+/// library the migration could not fully backfill gets a reader with less than
+/// they expect, and this is the only place that says so.
+fn unrooted_note(unrooted: i64) -> Option<String> {
+    (unrooted > 0).then(|| {
+        format!(
+            "Note: {unrooted} member(s) carry no root yet and are invisible to any \
+             restricted account. `taiyaku library scan` re-derives them."
+        )
+    })
+}
+
+fn revoke_root(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags("library user revoke-root", args, &["--db"])?;
+    let (library, user_id, root_id, path) = grant_target(args)?;
+    let conn = library.conn();
+    if account::revoke_root(&conn, user_id, root_id)? {
+        println!("revoked sight of {path}");
+    } else {
+        println!("that account had no grant for {path}; nothing to revoke");
+    }
+    if account::granted_roots(&conn, user_id)?.is_empty() {
+        println!("  That account now holds no grants, and so sees every root again.");
     }
     Ok(())
 }

@@ -367,11 +367,67 @@ async fn list_works(State(state): State<Arc<ServeState>>) -> Response {
     }
 }
 
+/// Refuse a work or edition the caller's grant hides, as a 404.
+///
+/// **The page routes applied no grant at all until the whole-branch review
+/// said so**, which made spec C1's per-root sharing a browse filter rather
+/// than a boundary: a restricted reader who knew a slug could read every page
+/// of every root, because `/api/works/{slug}/{edition}/pages/N` never asked.
+/// Browse hid the work and the bytes were served anyway.
+///
+/// **404, not 403**, matching every other refusal here: telling an
+/// unauthorised caller which slugs are real is the enumeration this project
+/// refuses elsewhere.
+///
+/// An empty grant is unrestricted and short-circuits inside
+/// `browse::edition_visible` without touching the database, so the ordinary
+/// single-reader deployment pays nothing for this.
+///
+/// **Progress, notes and truth are deliberately not guarded here.** They are
+/// per-user state keyed on a work rather than the library's material, a
+/// reader can only write their own, and widening the check to them is a
+/// question about what a grant *means* rather than about what it leaks —
+/// recorded as an open item rather than answered in a fix round.
+fn refuse_if_hidden(
+    state: &Arc<ServeState>,
+    extensions: &axum::http::Extensions,
+    slug: &str,
+    edition: &str,
+) -> Option<Response> {
+    let principal = extensions.get::<crate::auth::Principal>()?;
+    if principal.roots.is_empty() {
+        return None;
+    }
+    let conn = state.library.conn();
+    match taiyaku_library::browse::edition_visible(&conn, &principal.roots, slug, edition) {
+        Ok(true) => None,
+        Ok(false) => Some(not_found(format!("no work `{slug}`"))),
+        Err(why) => Some((StatusCode::INTERNAL_SERVER_ERROR, why).into_response()),
+    }
+}
+
 async fn get_sidecar(
     State(state): State<Arc<ServeState>>,
     AxPath(id): AxPath<String>,
     headers: HeaderMap,
+    request_extensions: axum::http::Extensions,
 ) -> Response {
+    // The document lists every edition, so a grant that hides the whole work
+    // must refuse it. `browse::work` answers `None` for a work outside the
+    // grant exactly as it does for one that does not exist.
+    if let Some(principal) = request_extensions.get::<crate::auth::Principal>()
+        && !principal.roots.is_empty()
+    {
+        let hidden = {
+            let conn = state.library.conn();
+            taiyaku_library::browse::work(&conn, &principal.roots, &id)
+        };
+        match hidden {
+            Ok(None) => return not_found(format!("no work `{id}`")),
+            Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+            Ok(Some(_)) => {}
+        }
+    }
     let found = match work(&state, &id) {
         Ok(found) => found,
         Err(missing) => return missing.into_response(),
@@ -425,7 +481,11 @@ async fn get_page(
     AxPath((id, edition, raw)): AxPath<(String, String, String)>,
     Query(query): Query<PageQuery>,
     headers: HeaderMap,
+    request_extensions: axum::http::Extensions,
 ) -> Response {
+    if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &edition) {
+        return refusal;
+    }
     let index = match page_index(&raw, &edition) {
         Ok(index) => index,
         Err(refusal) => return refusal.into_response(),
@@ -537,7 +597,11 @@ async fn get_page(
 async fn get_thumb(
     State(state): State<Arc<ServeState>>,
     AxPath((id, edition, raw)): AxPath<(String, String, String)>,
+    request_extensions: axum::http::Extensions,
 ) -> Response {
+    if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &edition) {
+        return refusal;
+    }
     let index = match page_index(&raw, &edition) {
         Ok(index) => index,
         Err(refusal) => return refusal.into_response(),
@@ -1336,8 +1400,35 @@ async fn patch_alignments(
             // reader was never told to look in.
             let json = next.to_json();
             if what != taiyaku_core::Corrected::AlreadyTrue {
-                taiyaku_read::atomic::write(&found.path, json.as_bytes(), "json")
-                    .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
+                // **The file, then the rows — unless there is no file.**
+                //
+                // The ordering is argued above and is unchanged for a work
+                // that has a document. A scanned work has none:
+                // `import::scanned` leaves `sidecar_path` NULL by design,
+                // since one `taiyaku.json` per directory cannot describe
+                // fourteen volumes sitting beside each other. So there is no
+                // file to be first, the rows are written alone, and spec C1
+                // §5.3 states the cost plainly — for such a work the
+                // correction's only copy is in the database until somebody
+                // runs `library export`. That is the outcome the comment
+                // above declines to accept for a document-backed work, and it
+                // remains the right refusal there, because there the file
+                // exists.
+                //
+                // Minting a `taiyaku.json` here instead was rejected: it would
+                // make the server a writer into a tree spec B never opens for
+                // writing, and hand `import`'s `sidecar_path` reconciliation a
+                // second writer to race.
+                //
+                // Without this branch the write fails with "staging a
+                // temporary beside it: No such file or directory" and the
+                // reader loses the correction to a 500 —
+                // `correcting_a_work_with_no_document_writes_rows_and_no_file`
+                // reproduces exactly that.
+                if found.has_document() {
+                    taiyaku_read::atomic::write(&found.path, json.as_bytes(), "json")
+                        .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
+                }
                 crate::alignments::store(&conn, found, &next)
                     .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
             }
@@ -1420,6 +1511,28 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         "/api/password",
         axum::routing::put(crate::session::change_password),
     ));
+    // **Spec C1 §5, and in `guarded_routes` rather than `open_routes`.**
+    // `route_layer` wraps only what is registered before it, so a browse route
+    // in the other list would ship unauthenticated with a green suite —
+    // `every_route_refuses_an_anonymous_request` derives its count from both
+    // lists and is what catches that.
+    routes.extend([
+        ("/api/library/home", get(crate::library_api::home)),
+        // Returns `{ series, unfiled }` — spec C1 §5.4. A hand-imported work
+        // has no series, and a grid that listed only series would never show
+        // one.
+        ("/api/library/series", get(crate::library_api::series)),
+        (
+            "/api/library/series/{id}",
+            get(crate::library_api::one_series),
+        ),
+        (
+            "/api/library/series/{id}/cover",
+            get(crate::library_api::cover),
+        ),
+        ("/api/library/works/{slug}", get(crate::library_api::work)),
+        ("/api/library/search", get(crate::library_api::search)),
+    ]);
     routes.extend(crate::opds::routes());
     routes
 }

@@ -48,6 +48,23 @@ impl Work {
         }
     }
 
+    /// Whether this work has a `taiyaku.json` on disk.
+    ///
+    /// **The one question spec C1 §5.3's decision turns on.** A scanned work
+    /// has no document — `import::scanned` leaves `sidecar_path` NULL by
+    /// design, since one `taiyaku.json` per directory cannot describe fourteen
+    /// volumes sitting beside each other — so the alignment route writes its
+    /// rows and skips the file rather than writing to an empty path.
+    ///
+    /// An empty `PathBuf` is the in-memory spelling of that NULL. It is not a
+    /// sentinel anybody could reach by accident: every real path a work is
+    /// built from went through `canonical_sidecar_path`, which requires the
+    /// file to exist.
+    #[must_use]
+    pub fn has_document(&self) -> bool {
+        !self.path.as_os_str().is_empty()
+    }
+
     /// Held across a notes read-compare-write, so `If-Match` means something.
     ///
     /// The sidecar gets this from `update` below, which can hold its own
@@ -394,6 +411,46 @@ fn direction_text(direction: taiyaku_core::Direction) -> &'static str {
         taiyaku_core::Direction::RightToLeft => "rtl",
         taiyaku_core::Direction::LeftToRight => "ltr",
     }
+}
+
+/// Every `work` row in `library`, as a servable [`Work`].
+///
+/// **Restored deliberately**, and `lib.rs`'s comment about its deletion is
+/// rewritten rather than left standing. It was removed in whole-branch review
+/// 2 as a projection nothing ran: `taiyaku serve <sidecar>...` builds its works
+/// one path at a time in `taiyaku-cli`'s `serve_work`, because it serves the
+/// works it was *handed*. Spec C1 is the caller that comment predicted —
+/// `serve --db` with no paths at all — and a browse UI over a scanned library
+/// needs it, since a scanned work has no path to be handed.
+///
+/// **A NULL `sidecar_path` becomes an empty `PathBuf`**, which
+/// [`Work::has_document`] reads as "no document". See spec C1 §5.3 for what
+/// that costs at the one route that writes a file.
+///
+/// # Errors
+///
+/// Returns an error if the rows cannot be read, or if a work's document
+/// cannot be projected back out of them — which means the rows for that work
+/// are inconsistent, and is worth refusing rather than serving.
+pub fn from_library(library: &taiyaku_library::Library) -> Result<Vec<Work>, String> {
+    let conn = library.conn();
+    let mut stmt = conn
+        .prepare("SELECT id, slug, sidecar_path FROM work ORDER BY id")
+        .map_err(|e| format!("listing the library's works: {e}"))?;
+    let rows: Vec<(i64, String, Option<String>)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|e| format!("listing the library's works: {e}"))?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(|e| format!("reading the library's works: {e}"))?;
+
+    rows.into_iter()
+        .map(|(id, slug, sidecar_path)| {
+            let sidecar = taiyaku_library::project::sidecar(&conn, id)
+                .map_err(|e| format!("projecting work {id} (`{slug}`): {e}"))?;
+            let path = sidecar_path.map_or_else(PathBuf::new, PathBuf::from);
+            Ok(Work::new(slug, path, sidecar))
+        })
+        .collect()
 }
 
 #[cfg(test)]

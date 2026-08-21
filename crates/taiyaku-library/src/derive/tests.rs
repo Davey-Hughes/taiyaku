@@ -1683,3 +1683,83 @@ fn the_token_side_readability_test_agrees_with_the_enums_own() {
     // `Format::Unknown` does without needing one of its own.
     assert!(!super::is_readable(None));
 }
+
+/// Two roots holding the same volume produce **one work with two editions**,
+/// and each edition's members carry the root they actually came from.
+///
+/// This is the shape `work.root_id` could not have represented, and the
+/// reason spec C1 §5.1 put the column on `member` instead. If this test ever
+/// reads one root id for both editions, the grouping has changed and the
+/// filter is filtering something else.
+#[test]
+fn a_work_spanning_two_roots_gives_each_member_its_own_root() {
+    let english = crate::tests::tempdir("derive-root-en");
+    write_pages(&english.path.join("Series").join("Series - v01"), 2);
+    let raw = crate::tests::tempdir("derive-root-raw");
+    write_pages(&raw.path.join("Series").join("Series - v01"), 2);
+
+    let library = Library::open_in_memory().expect("in-memory library");
+    let conn = library.conn();
+    let en_root = scan::add_root(&conn, &english.path).expect("adds the English root");
+    let raw_root = scan::add_root(&conn, &raw.path).expect("adds the raw root");
+    scan::scan_root(&conn, &en_root).expect("scans English");
+    scan::scan_root(&conn, &raw_root).expect("scans raw");
+    derive::derive(&conn).expect("derives");
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT m.root_id FROM member m
+               JOIN edition e ON e.id = m.edition_id
+              ORDER BY m.root_id",
+        )
+        .expect("preparing the root read");
+    let roots: Vec<Option<i64>> = stmt
+        .query_map([], |row| row.get(0))
+        .expect("reading roots")
+        .collect::<rusqlite::Result<_>>()
+        .expect("reading roots");
+
+    assert_eq!(
+        roots,
+        vec![Some(en_root.id), Some(raw_root.id)],
+        "each member carries the root its entry was walked from"
+    );
+}
+
+/// A re-derive that no longer resolves a member must not leave the previous
+/// derive's root id standing, for the same reason `write_chapters` clears
+/// before it writes.
+#[test]
+fn a_rederive_rewrites_the_root_rather_than_leaving_the_old_one() {
+    let dir = crate::tests::tempdir("derive-root-rewrite");
+    write_pages(&dir.path.join("Series").join("Series - v01"), 2);
+
+    // A second, real root to scribble with: `member.root_id` REFERENCES
+    // `root(id)`, so a made-up id is refused by the constraint rather than
+    // stored — which the first version of this test discovered by being
+    // refused. Scribbling a root that genuinely exists is also the stronger
+    // assertion, since it proves the re-derive writes the *right* root and
+    // not merely a different one.
+    let other = crate::tests::tempdir("derive-root-rewrite-other");
+    write_pages(&other.path.join("Other").join("Other - v01"), 1);
+
+    let library = Library::open_in_memory().expect("in-memory library");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &dir.path).expect("adds the root");
+    let wrong_root = scan::add_root(&conn, &other.path).expect("adds the other root");
+    scan::scan_root(&conn, &root).expect("scans");
+    derive::derive(&conn).expect("derives");
+
+    conn.execute("UPDATE member SET root_id = ?1", [wrong_root.id])
+        .expect("scribbles the wrong root over every member");
+    derive::derive(&conn).expect("re-derives");
+
+    let wrong: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM member WHERE root_id <> ?1",
+            [root.id],
+            |row| row.get(0),
+        )
+        .expect("counting");
+    assert_eq!(wrong, 0, "a re-derive rewrites every member's root");
+}

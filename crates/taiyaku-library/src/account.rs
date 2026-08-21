@@ -139,6 +139,78 @@ pub fn roots_for(conn: &Connection, user_id: i64) -> Result<Vec<i64>, String> {
         .map_err(|e| format!("reading granted roots: {e}"))
 }
 
+/// Grant `user_id` sight of `root_id`.
+///
+/// **Granting is restricting**, which is the counter-intuitive half of spec
+/// C1 §5.1 and is worth stating where the writer lives: an account with *no*
+/// grants sees every root, because that is the state every account in every
+/// existing library is in, and any other reading would empty every library
+/// the day migration 6 applied. The first grant an account receives is
+/// therefore the moment it stops seeing everything.
+///
+/// `INSERT OR IGNORE` rather than a probe and an insert: the table is
+/// `WITHOUT ROWID` with `(user_id, root_id)` as its key, so the conflict is
+/// exactly the case that means "already granted". The return says which
+/// happened, so a CLI can print the truth rather than a cheerful lie.
+///
+/// # Errors
+///
+/// Returns an error if the insert fails — which includes a `root_id` no root
+/// row has, since the column REFERENCES `root(id)`.
+pub fn grant_root(conn: &Connection, user_id: i64, root_id: i64) -> Result<bool, String> {
+    let changed = conn
+        .execute(
+            "INSERT OR IGNORE INTO user_root (user_id, root_id) VALUES (?1, ?2)",
+            params![user_id, root_id],
+        )
+        .map_err(|e| format!("granting root {root_id} to user {user_id}: {e}"))?;
+    Ok(changed == 1)
+}
+
+/// Take back a grant, reporting whether there was one.
+///
+/// **Revoking the last grant makes the account unrestricted again**, not
+/// blind — see [`grant_root`]. That is a sharp edge and it is the same one in
+/// both directions: an operator narrowing an account to one root and then
+/// removing that root has widened it to everything.
+///
+/// # Errors
+///
+/// Returns an error if the delete fails.
+pub fn revoke_root(conn: &Connection, user_id: i64, root_id: i64) -> Result<bool, String> {
+    let changed = conn
+        .execute(
+            "DELETE FROM user_root WHERE user_id = ?1 AND root_id = ?2",
+            params![user_id, root_id],
+        )
+        .map_err(|e| format!("revoking root {root_id} from user {user_id}: {e}"))?;
+    Ok(changed == 1)
+}
+
+/// The roots granted to `user_id`, as `(id, path)`, ordered by path.
+///
+/// [`roots_for`] answers the same question in the shape the guard wants — ids
+/// alone, resolved on every request. This one is for a person reading a
+/// terminal, and joins `root` for the path.
+///
+/// # Errors
+///
+/// Returns an error if the query fails.
+pub fn granted_roots(conn: &Connection, user_id: i64) -> Result<Vec<(i64, String)>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT r.id, r.path FROM user_root ur
+               JOIN root r ON r.id = ur.root_id
+              WHERE ur.user_id = ?1 ORDER BY r.path",
+        )
+        .map_err(|e| format!("preparing the granted-roots listing: {e}"))?;
+    let rows = statement
+        .query_map(params![user_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| format!("listing granted roots: {e}"))?;
+    rows.collect::<rusqlite::Result<Vec<(i64, String)>>>()
+        .map_err(|e| format!("listing granted roots: {e}"))
+}
+
 /// Whether any admin can actually log in.
 ///
 /// **Role is not enough, and reading it alone is the bug this doc comment

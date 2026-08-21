@@ -854,3 +854,73 @@ fn revoking_a_session_ends_that_one_and_says_whether_it_did() {
         "and it actually deleted it"
     );
 }
+
+fn a_root(conn: &rusqlite::Connection, id: i64, path: &str) {
+    conn.execute(
+        "INSERT INTO root (id, path) VALUES (?1, ?2)",
+        rusqlite::params![id, path],
+    )
+    .expect("adding a root");
+}
+
+#[test]
+fn granting_a_root_is_idempotent_and_says_which_it_was() {
+    let library = library();
+    let conn = library.conn();
+    a_root(&conn, 7, "/library");
+
+    assert!(
+        grant_root(&conn, 1, 7).expect("grants"),
+        "the first grant is new"
+    );
+    assert!(
+        !grant_root(&conn, 1, 7).expect("grants again"),
+        "granting twice is not an error and is not a second grant"
+    );
+    assert_eq!(roots_for(&conn, 1).expect("reads"), vec![7]);
+}
+
+#[test]
+fn revoking_a_root_says_whether_there_was_one() {
+    let library = library();
+    let conn = library.conn();
+    a_root(&conn, 7, "/library");
+    grant_root(&conn, 1, 7).expect("grants");
+
+    assert!(
+        revoke_root(&conn, 1, 7).expect("revokes"),
+        "the grant was there"
+    );
+    assert!(
+        !revoke_root(&conn, 1, 7).expect("revokes again"),
+        "revoking what is not granted is not an error"
+    );
+    assert!(roots_for(&conn, 1).expect("reads").is_empty());
+}
+
+/// **The grant is the restriction**, so an account with none is unrestricted
+/// and this is the state every existing library is in — nothing could write
+/// `user_root` before spec C1. Pinned here rather than only at the route,
+/// because it is the property the migration depends on.
+#[test]
+fn an_account_with_no_grant_has_an_empty_list_rather_than_an_error() {
+    let library = library();
+    let conn = library.conn();
+    assert!(roots_for(&conn, 1).expect("reads").is_empty());
+}
+
+#[test]
+fn granted_roots_names_the_paths_for_display() {
+    let library = library();
+    let conn = library.conn();
+    a_root(&conn, 7, "/b-library");
+    a_root(&conn, 8, "/a-library");
+    grant_root(&conn, 1, 7).expect("grants");
+    grant_root(&conn, 1, 8).expect("grants");
+
+    assert_eq!(
+        granted_roots(&conn, 1).expect("reads"),
+        vec![(8, "/a-library".to_string()), (7, "/b-library".to_string())],
+        "ordered by path, which is what a person reads"
+    );
+}

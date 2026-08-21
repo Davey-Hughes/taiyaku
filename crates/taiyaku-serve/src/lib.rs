@@ -11,6 +11,7 @@ mod composite;
 #[cfg(test)]
 mod corpus;
 mod cover;
+pub mod library_api;
 /// A work's notes, beside its sidecar.
 ///
 /// Public where `progress` is private, and deliberately: `progress::load` and
@@ -37,18 +38,24 @@ pub use source::{LocalLibrary, PageSource, ServedPage};
 // `Progress` moved to `taiyaku-library` (Task 9's `state::progress` needs it
 // there); re-exported from its new home so `crate::Progress` still resolves.
 pub use taiyaku_library::Progress;
-// No `from_library` here. It existed as the named entry point for "a
-// `ServeState` off the database" and never acquired a production caller:
-// `taiyaku serve <sidecar>...` builds its `Work`s one path at a time in
-// `taiyaku-cli`'s `serve_work`, because it serves the works it was *handed*
-// rather than every work the library holds, and it already has each work's
-// path from the command line. Two projections of one thing is how they come
-// to disagree, and this was the one nothing ran (whole-branch review 2,
-// Minor 4). A `serve --db` with no paths would want it back; it is six lines
-// of `SELECT id, slug, sidecar_path` and `project::sidecar`, and it should be
-// written then, against whatever that command decides about a work whose
-// `sidecar_path` is NULL.
-pub use works::{Work, load_works, work_id};
+// `from_library` is spec C1 §5.3's answer to the question the comment here
+// used to leave open. It was deleted in whole-branch review 2 as a projection
+// nothing ran — `taiyaku serve <sidecar>...` builds its `Work`s one path at a
+// time in `taiyaku-cli`'s `serve_work`, because it serves the works it was
+// *handed* — and the note left behind named the caller that would want it
+// back: "a `serve --db` with no paths". That is this.
+//
+// What it decides about a work whose `sidecar_path` is NULL: the path becomes
+// empty, `Work::has_document` reads that as "no document", and the alignment
+// route writes rows without a file. Nothing else in `serve` reads `Work.path`
+// except two error messages and the bridge row, and a work read from its own
+// row never needs the latter.
+//
+// **Still one projection, not two.** The reason it was deleted — two
+// projections of one thing disagree — is answered by `serve_works` choosing
+// between them rather than by both running: paths on the command line take
+// `serve_work`, no paths takes this.
+pub use works::{Work, from_library, load_works, work_id};
 
 /// Everything a request needs: which works exist, and where pages come from.
 #[derive(Debug)]

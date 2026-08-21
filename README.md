@@ -108,6 +108,15 @@ taiyaku lookup taiyaku.json en en-fan 45
 # notes and hand corrections persist there across restarts
 taiyaku serve taiyaku.json --addr 127.0.0.1:8484
 
+# with **no paths at all**, it serves every work the library holds — which is
+# the invocation a scanned library uses, since `library scan` produces works
+# that have no `taiyaku.json` to name on a command line:
+taiyaku serve --addr 127.0.0.1:8484
+#
+# a work with no sidecar file is served from the database and corrected into
+# it: a hand correction writes the `alignment` and `run` rows and no file,
+# so its only copy lives there until `taiyaku library export` writes one out.
+
 # **every route needs a credential.** Give the first account a password from
 # the host's own shell before starting a server — there is no window in which
 # an unclaimed server sits on the network waiting to be claimed:
@@ -145,6 +154,20 @@ TAIYAKU_STUMP_URL=https://stump.example TAIYAKU_STUMP_KEY=… \
 # with your account name as the username and an API key as the password —
 # a key is shown once, because only its hash is stored:
 taiyaku library key create davey --name ipad
+
+# share part of a library rather than all of it. **a grant is a restriction**,
+# and an account holding none sees every root — so the FIRST grant is the one
+# that narrows an account, not the one that widens it:
+taiyaku library user grant-root alice /shelf/manga
+taiyaku library user revoke-root alice /shelf/manga
+#
+# a restricted account sees only the editions whose files sit under a root it
+# was granted, and cannot read their pages either. a work imported from a
+# `taiyaku.json` sits under no root at all, so it is visible only to an
+# unrestricted account. members scanned before this feature existed carry no
+# root until the schema migration recovers it from their paths; anything it
+# cannot recover stays unrooted and invisible to a restricted account, and
+# `grant-root` says so when it finds any.
 
 # the same import, without starting a server — for a library `serve` has
 # already populated, or a one-off migration

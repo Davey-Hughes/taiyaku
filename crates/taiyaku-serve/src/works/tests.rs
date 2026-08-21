@@ -317,3 +317,53 @@ fn a_bridged_row_carries_the_works_own_reading_direction_back_out() {
         );
     }
 }
+
+/// A scanned work has no `sidecar_path` — `import::scanned` leaves it NULL by
+/// design — and must still become a servable `Work`.
+///
+/// Its member paths are absolute, which is what makes this work at all:
+/// `derive` writes them from the root down, and `root.join(&member.path)`
+/// returns an absolute path unchanged. Spec C1 §5.3.
+#[test]
+fn a_work_with_no_sidecar_path_still_becomes_a_servable_work() {
+    let library = taiyaku_library::Library::open_in_memory().expect("in-memory");
+    {
+        let conn = library.conn();
+        let json = r#"{"taiyaku":1,"work":{"title":"Scanned","reading":"rtl"},
+            "editions":{"raw":{"label":"raw","members":[
+              {"path":"/abs/shelf/Series - v01","sha256":"deadbeef","pages":2}]}},
+            "hub":"raw","alignments":[]}"#;
+        let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+        taiyaku_library::import::scanned(&conn, &doc, None).expect("imports as a scan");
+    }
+
+    let works = from_library(&library).expect("builds works");
+    assert_eq!(works.len(), 1);
+    assert_eq!(works[0].sidecar().work.title, "Scanned");
+    assert_eq!(
+        works[0].path,
+        PathBuf::new(),
+        "no sidecar path becomes an empty path, which `has_document` reads as none"
+    );
+    assert!(!works[0].has_document(), "a scanned work has no document");
+}
+
+#[test]
+fn a_work_with_a_sidecar_path_keeps_it_and_has_a_document() {
+    let library = taiyaku_library::Library::open_in_memory().expect("in-memory");
+    {
+        let conn = library.conn();
+        let json = r#"{"taiyaku":1,"work":{"title":"Imported","reading":"rtl"},
+            "editions":{"raw":{"label":"raw","members":[
+              {"path":"raw/v01.cbz","sha256":"deadbeef","pages":2}]}},
+            "hub":"raw","alignments":[]}"#;
+        let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+        taiyaku_library::import::sidecar(&conn, &doc, Path::new("/x/taiyaku.json"))
+            .expect("imports");
+    }
+
+    let works = from_library(&library).expect("builds works");
+    assert_eq!(works.len(), 1);
+    assert_eq!(works[0].path, PathBuf::from("/x/taiyaku.json"));
+    assert!(works[0].has_document());
+}

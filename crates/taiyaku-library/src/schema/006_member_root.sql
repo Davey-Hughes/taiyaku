@@ -1,0 +1,33 @@
+-- Spec C1 §5.1. The column a browse API needs in order to act on
+-- `Principal.roots`, which spec A2 resolved and left nothing reading.
+--
+-- **On `member`, not on `work`, and that is forced rather than preferred.**
+-- `derive.rs`'s `Group` is "every entry across every root that resolved to the
+-- same (series, volume), split by edition key" — one volume held in `Manga`
+-- and in `Manga (RAW)` is deliberately ONE work with TWO editions, which is
+-- the entire point of this project. A scalar `work.root_id` has no value to
+-- hold for such a work, and picking one — the first root, or the hub's —
+-- would be a lie a permission filter then acts on. A member, by contrast,
+-- resolves from exactly one `scan_entry` under exactly one root, so the value
+-- is never ambiguous.
+--
+-- It is also the only granularity that expresses what per-root sharing is
+-- for: grant `Manga` and not `Manga (RAW)` and the reader sees the work with
+-- one edition, rather than with two or with none.
+--
+-- **NULL means "under no root"**, which is exactly true of an imported work —
+-- it has a `sidecar_path` and no root — and of every member written before
+-- this migration. `member.root_id IN (?, ?)` excludes NULL by SQL's own
+-- rules, so the filter needs no special case and an empty grant (which every
+-- account holds, since nothing could write `user_root` until spec C1) applies
+-- no filter at all. `NOT NULL DEFAULT 0` was the alternative and would have
+-- made every existing member claim a root id no row references.
+--
+-- **`ON DELETE SET NULL`, not CASCADE.** Removing a root must not delete the
+-- members of works derived from it — `import::scanned` owns those rows, and a
+-- root removed from configuration is a visibility change, not a deletion.
+-- CASCADE here would take the work's pages with it and strand the reader's
+-- progress on a work with no members.
+ALTER TABLE member ADD COLUMN root_id INTEGER REFERENCES root(id) ON DELETE SET NULL;
+
+CREATE INDEX member_by_root ON member (root_id);

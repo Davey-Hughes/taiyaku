@@ -1503,11 +1503,32 @@ fn run_dispatches_to_lookup() {
     );
 }
 
+/// **Dispatch only, and it must never reach a real library.**
+///
+/// `serve` with no paths is an invocation rather than a mistake since spec C1
+/// §5.3 — it serves everything the library holds. That makes a bare
+/// `run(&["serve"])` resolve `--db` from `XDG_DATA_HOME`/`HOME` and open the
+/// operator's actual database, migrate it, and then bind a port and never
+/// return. This test did exactly that once, on the machine it was written on,
+/// which is how the hazard was found.
+///
+/// So it is driven with an explicit `--db` into a scratch directory, where the
+/// library is empty and the refusal below is the one `serve_works` states for
+/// that case. That proves the dispatch *and* the new empty-library message,
+/// and it cannot touch anything a person owns.
 #[test]
 fn run_dispatches_to_serve() {
-    assert_eq!(
-        run(&argv(&["serve"])).unwrap_err(),
-        "needs at least one taiyaku.json to serve"
+    let db = std::env::temp_dir()
+        .join(format!(
+            "taiyaku-test-dispatch-serve-{}",
+            std::process::id()
+        ))
+        .join("library.db");
+    let _ = std::fs::remove_dir_all(db.parent().unwrap());
+    let err = run(&argv(&["serve", "--db", db.to_str().unwrap()])).unwrap_err();
+    assert!(
+        err.contains("holds no works"),
+        "an empty library should say so: {err}"
     );
 }
 
@@ -3063,4 +3084,18 @@ fn insecure_cookies_overrides_an_explicit_request_too() {
     let auth =
         super::serve_auth(&argv(&["--secure-cookies", "--insecure-cookies"])).expect("parses");
     assert!(!auth.secure_cookies);
+}
+
+/// A sidecar named *after* a flag is refused rather than silently ignored.
+///
+/// `paths` is `take_while(|a| !a.starts_with("--"))`, so
+/// `serve --db lib.db work/taiyaku.json` reads no paths at all — and once an
+/// empty list meant "serve the whole library" (spec C1 §5.3), that command
+/// line served everything instead of the one work it named. Whole-branch
+/// review, 2026-08-20.
+#[test]
+fn serve_refuses_a_sidecar_that_follows_a_flag() {
+    let err = serve(&argv(&["--db", "/tmp/x.db", "work/taiyaku.json"])).unwrap_err();
+    assert!(err.contains("work/taiyaku.json"), "{err}");
+    assert!(err.contains("before the flags"), "{err}");
 }

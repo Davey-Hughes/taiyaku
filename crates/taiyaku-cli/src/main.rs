@@ -1249,9 +1249,33 @@ fn serve(args: &[String]) -> Result<(), String> {
         .take_while(|a| !a.starts_with("--"))
         .map(PathBuf::from)
         .collect();
-    if paths.is_empty() {
-        return Err("needs at least one taiyaku.json to serve".into());
+    // **A sidecar named after a flag is a mistake, not an empty invocation.**
+    // `paths` is `take_while(|a| !a.starts_with("--"))`, so
+    // `serve --db lib.db work/taiyaku.json` yields NO paths — and once an
+    // empty list meant "serve the whole library", that command line silently
+    // served everything instead of the one work it named. Before spec C1 §5.3
+    // it failed with "needs at least one taiyaku.json". Found by the
+    // whole-branch review.
+    // The rule is deliberately simple rather than clever: a sidecar is a
+    // `.json` file by definition, so an argument ending in `.json` when no
+    // path was read is a sidecar that landed in the wrong place. Trying to
+    // tell a flag's *value* from a stray positional would need a table of
+    // which flags take one, and would be wrong the next time a flag is added.
+    if paths.is_empty()
+        && let Some(stray) = args.iter().find(|a| a.ends_with(".json"))
+    {
+        return Err(format!(
+            "`{stray}` looks like a sidecar but follows a flag, so it was not read as one. \
+             Put paths before the flags: `taiyaku serve {stray} --db PATH`, or give no paths \
+             at all to serve the whole library"
+        ));
     }
+
+    // **No paths is now an invocation rather than a mistake** — spec C1 §5.3.
+    // The scanner produces works with no `sidecar_path` at all, so there is
+    // nothing to put on a command line; `serve --db` is how a browse UI's
+    // `/read/{work}` link reaches one. `serve_works` answers for both cases,
+    // including the refusal when the library turns out to hold nothing.
     let addr = option_value(args, "--addr", "a host:port")?.unwrap_or("127.0.0.1:8484");
 
     // A key on the command line is visible in `ps`, so the environment is the
@@ -1411,6 +1435,23 @@ fn serve_works(
     paths: &[PathBuf],
     db_flag: Option<&str>,
 ) -> Result<(taiyaku_library::Library, Vec<taiyaku_serve::Work>), String> {
+    // **No paths means the whole library** — spec C1 §5.3. Taken before the
+    // canonicalisation below, which has nothing to canonicalise.
+    if paths.is_empty() {
+        let db = library::resolve_db_path(db_flag)?;
+        let db_library =
+            taiyaku_library::Library::open(&db).map_err(|e| format!("opening the library: {e}"))?;
+        let works = taiyaku_serve::from_library(&db_library)?;
+        if works.is_empty() {
+            return Err(format!(
+                "{} holds no works. `taiyaku library scan --add PATH` reads a shelf into it, \
+                 or name a taiyaku.json on the command line",
+                db.display()
+            ));
+        }
+        return Ok((db_library, works));
+    }
+
     let canonical_paths: Vec<PathBuf> = paths
         .iter()
         .map(|p| library::canonical_sidecar_path(p))

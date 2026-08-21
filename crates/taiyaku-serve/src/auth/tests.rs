@@ -72,6 +72,17 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/sessions",
         "/api/sessions/{id}",
         "/api/password",
+        // Spec C1 §5's browse API. Guarded, which is the whole point of this
+        // list: `route_layer` wraps only what is registered before it, so a
+        // browse route that drifted into `open_routes` would ship
+        // unauthenticated and this assertion is what refuses to let that
+        // happen quietly.
+        "/api/library/home",
+        "/api/library/series",
+        "/api/library/series/{id}",
+        "/api/library/series/{id}/cover",
+        "/api/library/works/{slug}",
+        "/api/library/search",
         "/opds/v1.2/catalog",
         "/opds/v1.2/works",
         "/opds/v1.2/works/{work}",

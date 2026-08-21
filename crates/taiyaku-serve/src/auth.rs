@@ -265,16 +265,23 @@ pub struct Principal {
     pub role: Role,
     pub can_download: bool,
     pub can_stream: bool,
-    /// The roots this account was granted.
+    /// The roots this account was granted, and **the restriction**.
     ///
-    /// **The one field nothing reads**, per spec A2 §8 as amended on 2026-08-18:
-    /// spec B landed before this one and gave `work` no `root_id`, and no route
-    /// lists by root. Resolved anyway so spec C1's browse API adds a filter
-    /// rather than a lookup. `#[expect]` on this field alone rather than on the
-    /// struct, so the day C1 reads it the attribute fails instead of lingering —
-    /// and so it cannot go on excusing a second field the way the struct-level
-    /// one did while `whoami` was already reading two of them. O54.
-    #[expect(dead_code, reason = "resolved for spec C1's browse filter")]
+    /// An empty grant sees *every* root, which is counter-intuitive and
+    /// deliberate: `user_root` had no writer before spec C1, so every account
+    /// in every existing library holds an empty grant, and any other reading
+    /// would have emptied every library the day migration 6 applied. The first
+    /// grant an account receives is the moment it stops seeing everything.
+    ///
+    /// Read by `library_api`, which passes it to every
+    /// `taiyaku_library::browse` query so the filter is applied in SQL rather
+    /// than after it. Spec C1 §5.1.
+    ///
+    /// **The `#[expect(dead_code)]` spec A2 put here came off in the same
+    /// commit that first read this field**, which is what that attribute was
+    /// for: `#[expect]` fails the build when the lint does not fire, so it
+    /// could not linger. O54 closes for this field and stays open for
+    /// `can_download` and `can_stream`, which are still C2's.
     pub roots: Vec<i64>,
 }
 

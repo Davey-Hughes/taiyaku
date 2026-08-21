@@ -1,6 +1,8 @@
 # The library's browse UI — design
 
-**Status: settled in brainstorming on 2026-08-14. Not built.**
+**Status: settled in brainstorming on 2026-08-14; amended 2026-08-20 against
+the shipped A2 and B, which reopened two questions this spec had not asked.
+Not built.**
 
 Written in the style of the rest of `docs/`: every decision records the
 alternative it beat and what it cost, a figure asserted here was measured on
@@ -38,9 +40,9 @@ repository states measured figures and "it is small" is not one.
 ```
 
 **`App.tsx` does not need to become re-entrant, and an earlier draft of this
-design said it did.** It is 2,661 lines with a single load effect written to run
-once, and making it reload for a changing work looked like the price of a single
-SPA. It is not:
+design said it did.** It is 2,794 lines (measured 2026-08-20; 2,661 when this
+was written) with a single load effect written to run once, and making it
+reload for a changing work looked like the price of a single SPA. It is not:
 
 ```tsx
 <Route path="/read/:work" element={<App key={work} work={work} />} />
@@ -179,6 +181,214 @@ Every route sits behind A2's guard, and a 401 routes to the login screen rather
 than throwing — `/api` deliberately answers no `WWW-Authenticate`, per that
 spec's §4.
 
+### 5.1 The root filter, and why it is not `work.root_id`
+
+*(Added 2026-08-20. This spec shipped without asking the question; O54 and the
+`#[expect]` on `Principal.roots` both name C1 as the answer, so it is asked
+here.)*
+
+A2 declined `work.root_id` for the right reason — a column written on every
+scan and read by nothing is O45's exact shape, and it would have opened O45's
+neighbour in the branch that opened O45. C1 makes it a *reader*, so the column
+stops being dead and the question reopens. **It reopens with a different answer
+than either spec expected, and the code is what forces it.**
+
+**A work does not have a root.** `derive.rs`'s `Group` is *"every entry across
+every root that resolved to the same `(series, volume)`, split by edition key"*
+(`derive.rs:362`), and that is the entire project rather than an accident: one
+volume held in `Manga` and in `Manga (RAW)` is **one work with two editions**.
+`Candidate` carries `rel_path` beside an absolute `path` for the same reason —
+*"the absolute path would sort two roots' copies of one volume by which root
+they came from before by what they are called"*. A scalar `work.root_id` has no
+value to hold for such a work, and picking one — the first root, or the hub's —
+would be a lie that a permission filter then acts on.
+
+So the column is **`member.root_id`**, in migration 6. Every member resolves
+from exactly one `scan_entry` under exactly one root, so the value is never
+ambiguous. It is also the only granularity that expresses what per-root sharing
+is *for*: grant someone `Manga` and not `Manga (RAW)`, and they see the work
+with one edition rather than with two or with none.
+
+**Written by `derive`, not by `import` — the established shape here rather than
+a new one.** `derive.rs`'s module doc states the rule: `work`, `edition` and
+`member` rows are `import::scanned`'s alone, and what derivation writes
+directly is *"exactly what the sidecar format has no field for and so cannot
+carry: `work.series_id`, `work.volume` and
+`member.chapter_declared`/`chapter_source`"*. A root id is one more of those.
+`taiyaku.json` has no field for it and must not gain one — a scanned work has
+no document at all, which is why `import::scanned` leaves `sidecar_path` NULL.
+`write_chapters` (`derive.rs:1171`) is the precedent to copy, and copying it
+keeps `import::scanned`'s signature answering one question rather than two.
+
+The rule the routes apply:
+
+- **`Principal.roots` empty — no filter at all.** Not "sees nothing".
+- **Non-empty — `member.root_id IN (roots)`**, applied to *editions*: an
+  edition survives if its members do, and a work is listed if it keeps at
+  least one edition. NULL excludes itself, so an imported work, which sits
+  under no root, needs no special case in the SQL.
+
+**And the hub can be the edition that disappears**, which is the one case this
+rule does not answer for free. `work.hub` names the edition `content_key` was
+computed over and the one the reader opens; grant `Manga (RAW)` alone on a work
+whose hub is the English edition and the hub is gone while the work is still
+listed. Hiding the whole work instead was rejected — it withholds material the
+account was granted, which is the opposite of what a grant is for. So the
+reader falls back to the first surviving edition, and **`work.hub` becomes the
+second field `serve` may not take at face value**, beside the dangling
+alignment edge spec B already documents. The cost is stated rather than
+discovered: a restricted reader's position is recorded against a work whose hub
+they cannot see, and if the grant is later widened they resume in the edition
+they were reading rather than the hub — which is what `progress` records
+anyway, so nothing is lost, but the two readers of one work now differ in which
+edition "the work" opens to.
+
+**Empty meaning unrestricted is a migration requirement, not a preference.**
+`user_root` has no writer today, so every account in every existing library
+holds an empty grant. Any other reading of empty empties every library on
+upgrade to migration 6 — silently, and for every user at once.
+
+**`taiyaku library user grant-root` and `revoke-root` ship here, and that is
+this spec crossing into C4 deliberately.** A2 §9 placed granting roots with
+user administration in C4, and that boundary is real. It is crossed for one
+reason: without a writer, this filter is a permission check that cannot be
+exercised against the corpus at all, only against fixtures — and this
+repository's whole argument is that unexercised code is where the defects are.
+The crossing is kept as small as the argument needs: two subcommands on
+`taiyaku library user`, which A2 already shipped with `add`, `promote`,
+`password` and a default `list`, and which parse arguments by hand in
+`taiyaku-cli/src/user.rs` in the shape `key_revoke` already has. No screen, no
+C4 surface, and C4's user administration still has to be built.
+
+**What this closes and what it does not.** O54 tracks three fields nothing acts
+on; this closes `roots` and lifts the `#[expect(dead_code)]` A2 put on it
+precisely so the build would fail the day C1 read it. `can_download` and
+`can_stream` stay open, and stay C2's.
+
+### 5.2 The series cover, which has no writer
+
+`series.cover_work_id` exists in migration 1 and **nothing in the repository
+writes it** — verified 2026-08-20, and this spec's §5 pointed a route at it
+without noticing. So it is NULL for every series a scan has produced, which is
+all of them.
+
+The route resolves it as a fallback rather than a lookup: `cover_work_id` when
+set, otherwise the lowest-`volume` work in the series, and that work's hub
+edition's first member through the `cover.rs` that already generates and
+content-addresses covers. **C1 writes the column at no point.**
+
+Its writer is C3's metadata editing, which is where choosing a cover belongs.
+The alternative — `derive` picking the lowest volume and storing it on every
+scan — was declined because it is a scan writing a *presentation* choice, and
+it would need the same don't-overwrite-what-a-person-set guard that
+`work.title`, `work.reading`, `work.hub` and `edition.label` already carry,
+for a value the fallback computes for free. The cost of the fallback is one
+more join on the series list; §7's numbers say that is affordable, and §13
+records that it has not been timed.
+
+### 5.3 `serve --db`, without which none of this is reachable
+
+*(Added 2026-08-20, and it is the largest thing this amendment found.)*
+
+**The reader cannot open a scanned work, and §5's "not one existing route
+changes" quietly depends on nobody noticing.** That sentence is true — and it
+is about the wrong risk. The reader's routes are intact; they are also
+unreachable for everything spec B produces. `taiyaku serve` is handed sidecar
+paths on argv and builds its `Work`s from them one at a time in
+`taiyaku-cli`'s `serve_work`; a scanned work has `sidecar_path` NULL by design,
+because one `taiyaku.json` per directory cannot describe fourteen volumes
+sitting beside each other. So a browse UI over a scanned library is a grid of
+covers that open nothing.
+
+This was not discovered here so much as read: `taiyaku-serve/src/lib.rs`
+already says it, at the site where `from_library` was deleted as the
+projection nothing called — *"a `serve --db` with no paths would want it back;
+it is six lines of `SELECT id, slug, sidecar_path` and `project::sidecar`, and
+it should be written then, against whatever that command decides about a work
+whose `sidecar_path` is NULL."* C1 is that command, and this is that decision.
+
+`serve --db` takes no paths and builds `ServeState.works` from every `work`
+row. The six lines are genuinely six lines — `test_support::works_in` is that
+loop already, written as a fixture precisely because production had no caller
+for it. What is not six lines is the NULL.
+
+**A work with no sidecar path is served from rows and corrected into rows.**
+Its members already resolve: `derive` writes member paths **absolute**, and
+`root.join(&member.path)` returns an absolute path unchanged, so pages need
+nothing. The one route that needs a decision is `patch_alignments`, which
+writes the file *before* the rows and argues that ordering deliberately — the
+file is the copy a person can read, diff and back up, and row-first *"would put
+the only copy of the correction in a database the reader was never told to look
+in"*. With no file, the file write is skipped and the rows are written alone.
+
+**That is the stated cost rather than a solved problem**: for a scanned work
+the correction's only copy *is* in the database until somebody runs `library
+export`, which is exactly what that comment declines to do for a
+document-backed work — and it remains the right refusal there, because there
+the file exists. The two branches are one function asking one question:
+whether this work has a path. Refusing the correction outright was rejected: it
+would withhold hand alignment from the whole scanned library, which after spec
+B is most of it, and hand alignment is what this project is. Minting a
+`taiyaku.json` on first correction was rejected more firmly — it makes the
+server a writer into a tree spec B took care never to open for writing, and
+gives `import`'s `sidecar_path` reconciliation a second writer to race.
+
+**`Work.path` is what a NULL becomes**, and it has four readers: two error
+messages, the bridge row's `sidecar_path` in `row_id_for_write`, and that
+alignment write. The first two degrade to naming a slug; the third must not
+mint a bridge row for a work that already has a real one, which it will not,
+because a `serve --db` work is read from the row it would otherwise mint.
+
+### 5.4 Unfiled works, which the grid could not show
+
+*(Added 2026-08-20, found by running §5's queries against the real schema
+rather than by reading them.)*
+
+**`import` never writes `series_id`** — it cannot, because `taiyaku.json` has
+no field for it, which is why derivation sets it directly and why spec A lists
+it among the two columns an import leaves alone. So every hand-imported work
+has no series, and every query in §5 that reaches works *through* `series`
+cannot see one. Measured on 2026-08-20 against a fixture of two scanned works
+and one imported:
+
+| Screen | An imported work |
+| --- | --- |
+| `/api/library/home` | visible |
+| `/api/library/works/{slug}` | visible |
+| `/api/library/series` — the grid | **invisible** |
+| `/api/library/search` | **invisible** |
+
+Narrower than it first looks, and worse where it lands: the grid is what a
+reader opens on. A library that is entirely `taiyaku serve x.json` imports —
+which is every library this project had before spec B — shows an empty page,
+while `serve --db` serves those same works perfectly well.
+
+**So the grid carries an `unfiled` list beside its series**, and
+`/api/library/series` and `/api/library/search` return the same
+`{ series, unfiled }` shape. `unfiled` is `work.series_id IS NULL`, filtered by
+the same roots as everything else — and a restricted account sees none of them,
+because an imported member's `root_id` is NULL and NULL excludes itself, which
+is §5.1's rule applying unchanged rather than a second one.
+
+**This is also what makes search match its own description.** §5 says search is
+"FTS5 over `series_title` and `work.title`", and `work_fts` has been populated
+by triggers since migration 1 with nothing reading it. Searching series alone
+would have left that index unread for a second release and left an imported
+work unfindable by its own title.
+
+**The alternative — having `import` mint a one-work series — was declined.** It
+is the cleaner data model, and it would let collections, tags and the grid all
+work through one path. What it costs is a reconciliation nobody has designed: a
+later scan that files the work properly leaves the minted series orphaned, and
+`derive` has no rule for a series it did not create and no longer wants. That
+is a spec C3 question about provenance, not a thing to decide inside a browse
+screen.
+
+**What it does not fix**: an unfiled work still has no series page, so §3's
+whole edition-and-alignment presentation is unreachable for it. That is
+correct rather than a gap — an imported work is one document with its editions
+already in it, and `/api/library/works/{slug}` is where those are shown.
+
 ## 6. Getting back out of the reader
 
 `Chrome.tsx` gains a control, and the key that does it goes **through
@@ -238,11 +448,28 @@ this spec adds is coverage CI enforces.
   argument rests on it.
 - 401 routes to login rather than rendering an empty grid.
 - Every empty state in §8 rendered, since each is a first-run experience.
+- **The root filter, at the three cases that differ**: an empty grant sees
+  everything (the migration case — every account holds one on upgrade), a grant
+  hides the editions it does not name while keeping the work, and a grant that
+  hides the hub still opens the work at a surviving edition. These are store
+  and route tests rather than `jsdom` ones.
+- **The cover fallback with `cover_work_id` NULL**, which is every series in
+  every library today, and again with it set, which is the state C3 will
+  produce and which nothing can produce yet.
+- **`serve --db` over a derived library**: a scanned work's pages served from
+  absolute member paths, and a hand correction on it writing rows with no file
+  and no bridge row minted. The second is §5.3's whole decision, and the test
+  that a `taiyaku.json` does *not* appear beside the work is the one that
+  pins it.
 
 ## 10. What is deliberately not done
 
 - **No proposals inbox and no metadata editing.** Spec C3.
-- **No roots, scan control, rule editor or user administration.** Spec C4.
+- **No roots UI, scan control, rule editor or user administration.** Spec C4,
+  with the single exception §5.1 argues for and costs: `library user
+  grant-root` / `revoke-root`, two subcommands on a command A2 already
+  shipped, so the root filter has a writer and can be exercised against the
+  corpus rather than only against fixtures.
 - **No download UI.** Spec C2.
 - **No alignment started from the UI.** Project 2.
 - **No virtualisation**, per §7.
@@ -254,14 +481,24 @@ this spec adds is coverage CI enforces.
 
 ## 11. Branch shape
 
-1. `react-router`, the four routes, and the bundle measurement.
-2. `openWork(slug)` replacing `openFirstWork`, and `<App key={work}>`.
-3. The `/api/library/*` routes, with the store queries behind them.
-4. The shell: sidebar, filter chips, the continue strip.
-5. The series page: grid, then table, then the two attachments.
-6. The `browse` module, its registry, and the generated settings section.
-7. Search.
-8. Empty states, and the reader's way back out.
+1. Migration 6: `member.root_id`, `derive` writing it beside
+   `chapter_declared`, and `library user grant-root` / `revoke-root` so it has
+   a writer. **First, because it is the step that can damage an existing
+   library** — §5.1's empty-means-unrestricted rule is what stops the upgrade
+   emptying every account's shelf, and it should be pinned by a test before
+   anything is built on top of it.
+2. `react-router`, the four routes, and the bundle measurement.
+3. `openWork(slug)` replacing `openFirstWork`, and `<App key={work}>`.
+4. `serve --db`, per §5.3 — the reader reaching a scanned work at all, which
+   everything after this step assumes and which nothing before it provides.
+5. The `/api/library/*` routes, with the store queries behind them — the root
+   filter and §5.2's cover fallback among them. This is where
+   `Principal.roots`'s `#[expect(dead_code)]` comes off.
+6. The shell: sidebar, filter chips, the continue strip.
+7. The series page: grid, then table, then the two attachments.
+8. The `browse` module, its registry, and the generated settings section.
+9. Search.
+10. Empty states, and the reader's way back out.
 
 ## 12. The measurements this invalidates
 
@@ -272,6 +509,20 @@ this spec adds is coverage CI enforces.
 - `docs/status.md` — the `web/` row of the crate table, the dependency list
   which gains `react-router`, and the test counts
 - `README.md` — "To read in the browser" now describes a library, not a work
+- `crates/taiyaku-library/src/schema.rs` — `SCHEMA_VERSION` 5 → 6, and the
+  `const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize)` that
+  fails the build if only one of the two is changed
+- `crates/taiyaku-serve/src/auth.rs` — the `#[expect(dead_code)]` on
+  `Principal.roots` comes off, and the doc comment calling it "the one field
+  genuinely nothing reads" stops being true
+- `docs/status.md` — the `taiyaku-library` row's schema description, the CLI
+  command list, and O54, which closes for `roots` and stays open for
+  `can_download` and `can_stream`
+- `crates/taiyaku-serve/src/lib.rs` — the comment explaining why
+  `from_library` was deleted, which §5.3 turns from a standing decision into a
+  description of what was built instead
+- `README.md` and `web/README.md` again — `taiyaku serve` gains an invocation
+  that takes no paths at all, which is the one every scanned library uses
 
 ## 13. What could not be measured
 
@@ -283,6 +534,15 @@ this spec adds is coverage CI enforces.
   over a real network, with covers generated on demand the first time. The cover
   cache is content-addressed and warm after one visit; the cold case is the one
   nobody has timed.
+- **What the root filter costs a list query, and what the cover fallback costs
+  the series grid.** Both add a join to the query behind the busiest screen,
+  and §7's argument against virtualisation is a claim about the same numbers.
+  Neither has been timed; step 4 of §11 is where they stop being unknown.
+- **Whether anyone has ever held a root grant.** `user_root` has no rows in any
+  library that exists, here or elsewhere, because nothing could write one until
+  this spec. So the filter's non-empty branch is reachable only through the new
+  CLI, and every claim about how a restricted account sees this library is a
+  prediction until somebody grants a root and looks.
 - **FTS5 tokenisation on Japanese.** SQLite's default tokeniser does not segment
   CJK, so 「五等分の花嫁」 may match as one token or not at all depending on how
   the query is written. `trigram` is available and untested here. §8's "name

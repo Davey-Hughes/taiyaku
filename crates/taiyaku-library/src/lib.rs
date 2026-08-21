@@ -9,6 +9,7 @@
 //! §4.2.
 
 pub mod account;
+pub mod browse;
 pub mod credential;
 pub mod derive;
 pub mod export;

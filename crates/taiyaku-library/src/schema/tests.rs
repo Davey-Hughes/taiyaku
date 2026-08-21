@@ -730,3 +730,92 @@ fn a_role_defaults_to_reader_and_refuses_anything_else() {
         .expect("reads");
     assert_eq!(seeded, "admin");
 }
+
+/// Migration 6 adds `member.root_id` and leaves every existing member NULL.
+///
+/// **NULL is load-bearing rather than incidental.** An imported work sits
+/// under no root at all, and spec C1 §5.1's filter reads a NULL member as
+/// belonging to no root — which is what lets `member.root_id IN (…)` exclude
+/// it with no special case in the SQL. A `NOT NULL DEFAULT 0` would have made
+/// every pre-existing member claim root 0, which no row references.
+#[test]
+fn migration_6_adds_member_root_id_leaving_existing_members_null() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    migrate(&conn).expect("migrates");
+
+    let json = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{"raw":{"label":"R","members":[
+          {"path":"raw/v01.cbz","sha256":"deadbeef","pages":300}]}},
+        "hub":"raw","alignments":[]}"#;
+    let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+    crate::import::sidecar(&conn, &doc, std::path::Path::new("/x/taiyaku.json")).expect("imports");
+
+    let root_id: Option<i64> = conn
+        .query_row("SELECT root_id FROM member LIMIT 1", [], |row| row.get(0))
+        .expect("reading the new column");
+    assert_eq!(root_id, None, "an imported member belongs to no root");
+}
+
+/// The version and the migration count are one fact, and this is the refusal
+/// that depends on it staying true.
+#[test]
+fn the_schema_version_is_seven() {
+    assert_eq!(SCHEMA_VERSION, 7);
+}
+
+/// Migration 7 backfills the root of every member a scan produced, which
+/// migration 6 left NULL.
+///
+/// **The bug this closes blanks a library rather than leaking one**: with
+/// every member NULL, the first `grant-root` gives that reader nothing, and
+/// the CLI says the opposite. Whole-branch review, 2026-08-20.
+#[test]
+fn migration_7_backfills_the_root_of_a_member_under_one() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    // Stop one migration short, so the rows exist in the state 006 left them.
+    let upto: Vec<&str> = MIGRATIONS[..6].to_vec();
+    migrate_with(&conn, &upto).expect("migrates to 6");
+
+    conn.execute(
+        "INSERT INTO root (id, path) VALUES (1, '/shelf'), (2, '/shelf/inner')",
+        [],
+    )
+    .expect("adds two roots, one nested in the other");
+    conn.execute(
+        "INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (1, 'k', 's', 'T', 'rtl', 'raw')",
+        [],
+    )
+    .expect("a work");
+    conn.execute(
+        "INSERT INTO edition (id, work_id, key, label) VALUES (1, 1, 'raw', 'R')",
+        [],
+    )
+    .expect("an edition");
+    conn.execute(
+        "INSERT INTO member (id, edition_id, ordinal, path, sha256, pages) VALUES
+           (1, 1, 0, '/shelf/Series - v01', 'a', 2),
+           (2, 1, 1, '/shelf/inner/Series - v02', 'b', 2),
+           (3, 1, 2, 'raw/v01.cbz', 'c', 2)",
+        [],
+    )
+    .expect("three members: one under each root, one relative");
+
+    migrate(&conn).expect("applies migration 7");
+
+    let roots: Vec<Option<i64>> = {
+        let mut stmt = conn
+            .prepare("SELECT root_id FROM member ORDER BY id")
+            .expect("prepares");
+        stmt.query_map([], |row| row.get(0))
+            .expect("reads")
+            .collect::<rusqlite::Result<_>>()
+            .expect("reads")
+    };
+    assert_eq!(
+        roots,
+        vec![Some(1), Some(2), None],
+        "the nested root wins for its own member, and a relative path \
+         (an imported work) stays NULL"
+    );
+}

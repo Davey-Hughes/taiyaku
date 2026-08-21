@@ -12,7 +12,10 @@ fn a_missing_subcommand_names_the_ones_that_exist() {
 
     let err = command(&argv(&["bogus"])).unwrap_err();
     assert!(err.contains("`bogus`"), "{err}");
-    assert!(err.contains("promote, add, password and list"), "{err}");
+    assert!(
+        err.contains("promote, add, password, list, grant-root and revoke-root"),
+        "{err}"
+    );
 
     let err = key_command(&argv(&[])).unwrap_err();
     assert!(err.contains("create, list or revoke"), "{err}");
@@ -389,5 +392,258 @@ fn the_sessions_ended_note_appears_only_when_sessions_ended() {
             .expect("says something")
             .contains("ended 4"),
         "the count is the message's whole content and must be the real one"
+    );
+}
+
+/// The root is named by **path**, not by id: a person adding a root typed a
+/// path (`library scan --add PATH`) and has no reason to know its rowid.
+#[test]
+fn granting_a_root_by_path_resolves_it_to_the_row() {
+    let (db, flags) = a_library("grant-root");
+    let root_dir = scratch("grant-root-shelf");
+    let root_id = {
+        let library = Library::open(&db).expect("opens");
+        let conn = library.conn();
+        taiyaku_library::scan::add_root(&conn, &root_dir)
+            .expect("adds the root")
+            .id
+    };
+
+    command(&with(
+        &flags,
+        &["grant-root", "davey", root_dir.to_str().unwrap()],
+    ))
+    .expect("grants");
+
+    let library = Library::open(&db).expect("reopens");
+    let conn = library.conn();
+    let davey = account::id_of(&conn, "davey")
+        .expect("looks up")
+        .expect("davey exists");
+    assert_eq!(
+        account::roots_for(&conn, davey).expect("reads"),
+        vec![root_id]
+    );
+}
+
+#[test]
+fn revoking_a_root_takes_the_grant_back() {
+    let (db, flags) = a_library("revoke-root");
+    let root_dir = scratch("revoke-root-shelf");
+    {
+        let library = Library::open(&db).expect("opens");
+        let conn = library.conn();
+        taiyaku_library::scan::add_root(&conn, &root_dir).expect("adds the root");
+    }
+    let path = root_dir.to_str().unwrap();
+
+    command(&with(&flags, &["grant-root", "davey", path])).expect("grants");
+    command(&with(&flags, &["revoke-root", "davey", path])).expect("revokes");
+
+    let library = Library::open(&db).expect("reopens");
+    let conn = library.conn();
+    let davey = account::id_of(&conn, "davey")
+        .expect("looks up")
+        .expect("davey exists");
+    assert!(
+        account::roots_for(&conn, davey).expect("reads").is_empty(),
+        "the grant is gone, so the account sees every root again"
+    );
+}
+
+#[test]
+fn granting_a_root_this_library_does_not_hold_names_the_path() {
+    let (_db, flags) = a_library("grant-unknown-root");
+    let why = command(&with(&flags, &["grant-root", "davey", "/not/a/root"])).unwrap_err();
+    assert!(
+        why.contains("/not/a/root"),
+        "the message names the path: {why}"
+    );
+}
+
+#[test]
+fn granting_a_root_to_an_account_that_does_not_exist_names_the_account() {
+    let (db, flags) = a_library("grant-unknown-user");
+    let root_dir = scratch("grant-unknown-user-shelf");
+    {
+        let library = Library::open(&db).expect("opens");
+        let conn = library.conn();
+        taiyaku_library::scan::add_root(&conn, &root_dir).expect("adds the root");
+    }
+    let why = command(&with(
+        &flags,
+        &["grant-root", "nobody", root_dir.to_str().unwrap()],
+    ))
+    .unwrap_err();
+    assert!(
+        why.contains("nobody"),
+        "the message names the account: {why}"
+    );
+}
+
+/// Granting a root twice is not an error and says so, rather than reporting a
+/// second grant that did not happen.
+#[test]
+fn granting_a_root_twice_says_nothing_changed() {
+    let (db, flags) = a_library("grant-root-twice");
+    let root_dir = scratch("grant-root-twice-shelf");
+    {
+        let library = Library::open(&db).expect("opens");
+        let conn = library.conn();
+        taiyaku_library::scan::add_root(&conn, &root_dir).expect("adds the root");
+    }
+    let path = root_dir.to_str().unwrap();
+
+    command(&with(&flags, &["grant-root", "davey", path])).expect("grants");
+    command(&with(&flags, &["grant-root", "davey", path])).expect("grants again");
+
+    let library = Library::open(&db).expect("reopens");
+    let conn = library.conn();
+    let davey = account::id_of(&conn, "davey")
+        .expect("looks up")
+        .expect("davey exists");
+    assert_eq!(
+        account::granted_roots(&conn, davey).expect("reads").len(),
+        1,
+        "granting twice is still one grant"
+    );
+}
+
+/// Revoking a grant that was never made is not an error.
+#[test]
+fn revoking_a_root_that_was_never_granted_is_not_an_error() {
+    let (db, flags) = a_library("revoke-root-absent");
+    let root_dir = scratch("revoke-root-absent-shelf");
+    {
+        let library = Library::open(&db).expect("opens");
+        let conn = library.conn();
+        taiyaku_library::scan::add_root(&conn, &root_dir).expect("adds the root");
+    }
+    command(&with(
+        &flags,
+        &["revoke-root", "davey", root_dir.to_str().unwrap()],
+    ))
+    .expect("revoking what is not granted succeeds");
+}
+
+/// **`revoke-root` works when the shelf is gone**, which is when withdrawing
+/// access matters most: an unmounted drive or a deleted directory cannot be
+/// canonicalised, so `root_by_path` falls back to the stored text. Found by
+/// the whole-branch review.
+#[test]
+fn revoking_a_root_whose_directory_is_gone_still_works() {
+    let (db, flags) = a_library("revoke-root-gone");
+    let root_dir = scratch("revoke-root-gone-shelf");
+    let stored = {
+        let library = Library::open(&db).expect("opens");
+        let conn = library.conn();
+        let root = taiyaku_library::scan::add_root(&conn, &root_dir).expect("adds the root");
+        root.path.clone()
+    };
+    let path = stored.to_str().unwrap().to_string();
+    command(&with(&flags, &["grant-root", "davey", &path])).expect("grants");
+
+    // The drive goes away.
+    std::fs::remove_dir_all(&root_dir).expect("removes the shelf");
+    assert!(!root_dir.exists());
+
+    command(&with(&flags, &["revoke-root", "davey", &path]))
+        .expect("revokes a root whose directory is gone");
+
+    let library = Library::open(&db).expect("reopens");
+    let conn = library.conn();
+    let davey = account::id_of(&conn, "davey")
+        .expect("looks up")
+        .expect("davey exists");
+    assert!(
+        account::roots_for(&conn, davey).expect("reads").is_empty(),
+        "the grant is gone even though the shelf is"
+    );
+}
+
+/// Both subcommands refuse a wrong number of positionals with the usage text.
+#[test]
+fn the_root_subcommands_state_their_usage() {
+    let (_db, flags) = a_library("root-usage");
+    for verb in ["grant-root", "revoke-root"] {
+        let err = command(&with(&flags, &[verb, "only-one-argument"])).unwrap_err();
+        assert!(err.contains("grant-root"), "{verb}: {err}");
+        assert!(err.contains("<root-path>"), "{verb}: {err}");
+    }
+}
+
+/// `root_by_path` resolves the root it was *named*, not merely some root.
+///
+/// A mutation sweep found `==` replaceable with `!=` in that comparison while
+/// every test passed — with one root in the library, matching the wrong one
+/// and matching none are indistinguishable. Two roots tell them apart.
+#[test]
+fn granting_names_the_root_it_was_given_and_not_another() {
+    let (db, flags) = a_library("grant-root-picks-one");
+    let wanted = scratch("grant-root-picks-wanted");
+    let other = scratch("grant-root-picks-other");
+    let (wanted_id, other_id) = {
+        let library = Library::open(&db).expect("opens");
+        let conn = library.conn();
+        let a = taiyaku_library::scan::add_root(&conn, &wanted).expect("adds wanted");
+        let b = taiyaku_library::scan::add_root(&conn, &other).expect("adds other");
+        (a.id, b.id)
+    };
+
+    command(&with(
+        &flags,
+        &["grant-root", "davey", wanted.to_str().unwrap()],
+    ))
+    .expect("grants");
+
+    let library = Library::open(&db).expect("reopens");
+    let conn = library.conn();
+    let davey = account::id_of(&conn, "davey")
+        .expect("looks up")
+        .expect("davey exists");
+    let held = account::roots_for(&conn, davey).expect("reads");
+    assert_eq!(held, vec![wanted_id], "the named root, not {other_id}");
+}
+
+/// The three mutants `> 0` carried while it lived inside a `println!` — the
+/// same three [`sessions_ended_note`] was extracted for, reintroduced by
+/// spec C1's `grant-root` and found by the sweep on 2026-08-20.
+#[test]
+fn the_unrooted_note_appears_only_when_members_carry_no_root() {
+    assert_eq!(
+        unrooted_note(0),
+        None,
+        "`>=` and `==` warn about unrooted members on a library that has none"
+    );
+    assert_eq!(
+        unrooted_note(-1),
+        None,
+        "a count cannot be negative, and `<` would warn on every healthy library"
+    );
+    let note = unrooted_note(3).expect("three unrooted members are worth saying");
+    assert!(note.contains('3'), "the note names the number: {note}");
+    assert!(note.contains("library scan"), "and what fixes it: {note}");
+}
+
+/// `!= 1` survived inside the `println!`, which would have warned about being
+/// "restricted to that one root" on the *second* grant and stayed silent on
+/// the first — the one that actually narrows the account.
+#[test]
+fn the_narrowing_note_appears_only_on_the_first_grant() {
+    assert_eq!(
+        narrowed_note(0),
+        None,
+        "`!=` warns about a restriction on an account that holds no grant at all"
+    );
+    let first = narrowed_note(1).expect("the first grant narrows the account");
+    assert!(first.contains("restricted"), "{first}");
+    assert!(
+        first.contains("no grants at all sees every root"),
+        "it states the rule that makes this counter-intuitive: {first}"
+    );
+    assert_eq!(
+        narrowed_note(2),
+        None,
+        "`!=` warns on every later grant, which widen rather than narrow"
     );
 }

@@ -353,6 +353,13 @@ struct Candidate {
     /// roots' copies of one volume by which root they came from before by
     /// what they are called.
     rel_path: String,
+    /// The root this entry was walked from.
+    ///
+    /// **A member has one; a work does not.** The `Group` below collects
+    /// entries across every root, so this is the only level at which the
+    /// question has a single answer — see `member.root_id`'s own comment in
+    /// migration 6, and spec C1 §5.1.
+    root_id: i64,
     sha256: String,
     pages: u32,
     chapter: Option<f64>,
@@ -714,6 +721,7 @@ fn classify(
             .to_string_lossy()
             .into_owned(),
         rel_path: entry.rel_path.clone(),
+        root_id: root.id,
         sha256,
         pages,
         chapter: resolved.chapter,
@@ -986,6 +994,7 @@ fn write_work(
         .map_err(|e| format!("attaching work {work_id} to series {series_id}: {e}"))?;
     }
     write_chapters(conn, work_id, group)?;
+    write_roots(conn, work_id, group)?;
     report.works += 1;
     Ok(())
 }
@@ -1204,6 +1213,45 @@ fn write_chapters(conn: &Connection, work_id: i64, group: &Group) -> Result<(), 
                     format!("recording chapter {chapter} on `{key}` of work {work_id}: {e}")
                 })?;
             }
+        }
+    }
+    Ok(())
+}
+
+/// Write each member's root onto the rows `import::scanned` just wrote.
+///
+/// **The same shape as [`write_chapters`], and for the same reason**: the
+/// sidecar format has no field for a root and must not gain one, because a
+/// scanned work has no document at all. `derive` writes what the document
+/// cannot carry, as a targeted update after the import — see this module's
+/// own header for the rule.
+///
+/// **Unconditional, where [`write_chapters`] is scoped by `chapter_source`.**
+/// A chapter number can have been entered by hand and must survive a
+/// re-derive; a root is a fact about where a file was walked from, and
+/// nothing but a scan can know it. So every member of every edition this
+/// derive wrote is rewritten, which is what makes a member that moved between
+/// roots stop claiming the old one.
+///
+/// Matched on `(edition key, ordinal)`, which is where the members this call
+/// just described actually landed: `replace_editions` inserts them in
+/// document order counting from 0, and `project.rs` reads them back
+/// `ORDER BY ordinal`.
+fn write_roots(conn: &Connection, work_id: i64, group: &Group) -> Result<(), String> {
+    for (key, candidates) in &group.editions {
+        let mut ordered: Vec<&Candidate> = candidates.iter().collect();
+        ordered.sort_by(|a, b| taiyaku_read::natural_cmp(&a.rel_path, &b.rel_path));
+        for (ordinal, candidate) in (0_i64..).zip(ordered) {
+            conn.execute(
+                "UPDATE member SET root_id = ?1
+                  WHERE ordinal = ?2
+                    AND edition_id = (SELECT id FROM edition
+                                       WHERE work_id = ?3 AND key = ?4)",
+                rusqlite::params![candidate.root_id, ordinal, work_id, key],
+            )
+            .map_err(|e| {
+                format!("recording the root of `{key}` member {ordinal} on work {work_id}: {e}")
+            })?;
         }
     }
     Ok(())

@@ -494,6 +494,132 @@ pub(crate) fn router_over_a_library_with_two_editions()
     (router, state, work_id, fixture)
 }
 
+/// The correction fixture of [`router_over_a_library_with_two_editions`], for
+/// a work that has **no document** — spec C1 §5.3.
+///
+/// Imported through `taiyaku_library::import::scanned`, so `sidecar_path` is
+/// NULL exactly as it is for everything the scanner produces, and **no
+/// `taiyaku.json` is written anywhere**. That absence is the point: the test
+/// this exists for asserts that correcting such a work does not mint one.
+///
+/// Member paths are absolute, which is what `derive` writes and what makes a
+/// document-less work servable at all — `root.join(&member.path)` returns an
+/// absolute path unchanged.
+///
+/// The `Fixture` directory is returned and is deliberately left **empty**, so
+/// a test can list it before and after a correction and compare.
+///
+/// # Panics
+///
+/// Panics if the fixture cannot be imported, which means the fixture is
+/// broken.
+pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let fixture = Fixture::new("taiyaku-test-scanned-correction");
+    let shelf = fixture.path().to_string_lossy().into_owned();
+    let json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Scanned", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/raw/c1.cbz", "sha256": "x", "pages": 2 }},
+              {{ "path": "{shelf}/raw/c2.cbz", "sha256": "y", "pages": 2 }}
+            ], "spreads": [] }},
+            "en": {{ "label": "En", "members": [
+              {{ "path": "{shelf}/en/d1.cbz", "sha256": "p", "pages": 2 }},
+              {{ "path": "{shelf}/en/d2.cbz", "sha256": "q", "pages": 2 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": [
+            {{ "from": "raw", "to": "en", "by": "solver", "runs": [{{ "a": "0-3", "b": "0-3" }}] }}
+          ]
+        }}"#
+    );
+
+    let library = library();
+    {
+        let conn = library.conn();
+        let doc = taiyaku_core::Sidecar::from_json(&json).expect("fixture sidecar parses");
+        // `None`: no known address, so this is a work the scan is minting.
+        let work_id =
+            taiyaku_library::import::scanned(&conn, &doc, None).expect("import as a scan");
+
+        // **The edge is written separately, because a scan cannot know it.**
+        // `import::scanned` leaves `alignment` and `run` alone by design — a
+        // walk has nothing to say about how two editions correspond — so the
+        // document above declares an edge and the import correctly ignores it.
+        // These are the rows `taiyaku align --write` would leave behind, and
+        // without them `patch_alignments` answers 404 `NoPath` and the
+        // correction this fixture exists for cannot happen at all.
+        conn.execute(
+            "INSERT INTO alignment (work_id, from_key, to_key, by) VALUES (?1, 'raw', 'en', 'solver')",
+            [work_id],
+        )
+        .expect("writes the solved edge");
+        let alignment_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO run (alignment_id, ordinal, a_start_page, a_end_page, b_start_page, b_end_page)
+             VALUES (?1, 0, 0, 3, 0, 3)",
+            [alignment_id],
+        )
+        .expect("writes the run");
+    }
+    let works = crate::works::from_library(&library).expect("projects the scanned work");
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works,
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: std::env::temp_dir()
+            .join("taiyaku-test-scanned-correction")
+            .join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    // `authenticating`, because `library()` seeds a claimed account and every
+    // route is behind the guard since spec A2 — the same wrapper
+    // `router_over_a_library` uses, for the same reason.
+    let router = authenticating(crate::build_router(state.clone()));
+    (router, state, fixture)
+}
+
+/// [`router_over_a_scanned_work`], with its work attached to a series row.
+///
+/// `import::scanned` cannot write `series_id` — that is `derive`'s column, and
+/// this fixture is not running a derive — so the series is written here the
+/// way derivation would. Needed by the cover route, which resolves a series to
+/// the work that stands for it.
+///
+/// The `Fixture` is returned so its `Drop` still runs. An earlier version
+/// called `std::mem::forget` on it to escape the borrow, which skipped the
+/// cleanup and leaked one temp directory per test run — found by the
+/// whole-branch review.
+///
+/// # Panics
+///
+/// Panics if the rows cannot be written, which means the fixture is broken.
+pub(crate) fn router_over_a_scanned_work_in_a_series()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let (router, state, fixture) = router_over_a_scanned_work();
+    {
+        let conn = state.library.conn();
+        conn.execute(
+            "INSERT INTO series (id, sort_title) VALUES (1, 'Scanned')",
+            [],
+        )
+        .expect("writes the series");
+        conn.execute(
+            "INSERT INTO series_title (series_id, title, kind, is_primary)
+             VALUES (1, 'Scanned', 'english', 1)",
+            [],
+        )
+        .expect("names the series");
+        conn.execute("UPDATE work SET series_id = 1, volume = 1.0", [])
+            .expect("files the work under it");
+    }
+    (router, state, fixture)
+}
+
 /// A `GET` against `router`, driven with `oneshot` and no socket. Most
 /// existing tests in `routes/tests.rs` build this same request by hand — this
 /// exists for the shorter tests `router_over_a_library` was added alongside,

@@ -2716,3 +2716,45 @@ async fn two_readers_hold_separate_notes_on_one_work() {
 
     crate::test_support::cleanup("taiyaku-test-two-readers-notes");
 }
+
+/// A correction on a work with **no document** writes rows and no file.
+///
+/// Spec C1 §5.3. The assertion that matters is the second one: the server must
+/// not mint a `taiyaku.json` into a tree spec B took care never to open for
+/// writing.
+#[tokio::test]
+async fn correcting_a_work_with_no_document_writes_rows_and_no_file() {
+    let (router, state, fixture) = crate::test_support::router_over_a_scanned_work();
+    let slug = state.works[0].id.clone();
+    assert!(
+        !state.works[0].has_document(),
+        "the fixture is only meaningful for a work with no document"
+    );
+
+    let before = std::fs::read_dir(fixture.path())
+        .expect("reads the fixture directory")
+        .count();
+
+    let tag = etag_of(&router, &format!("/api/works/{slug}")).await;
+    let (status, body) = correct_with_body(
+        &router,
+        &slug,
+        &tag,
+        r#"{"from":"raw","to":"en","a":"2","b":"1","note":"checked"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let after = std::fs::read_dir(fixture.path())
+        .expect("reads the fixture directory")
+        .count();
+    assert_eq!(before, after, "no taiyaku.json appeared beside the work");
+
+    let conn = state.library.conn();
+    let hand: i64 = conn
+        .query_row("SELECT COUNT(*) FROM run WHERE by = 'hand'", [], |row| {
+            row.get(0)
+        })
+        .expect("counting hand-corrected runs");
+    assert!(hand > 0, "the correction reached the rows");
+}
