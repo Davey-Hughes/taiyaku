@@ -1,7 +1,8 @@
 # web
 
-The browser reader: a Vite + React + TypeScript app that swaps between two
-editions of the same manga volume, page by page.
+A Vite + React + TypeScript app: a library grid over spec C1's browse API, and
+a reader that swaps between two editions of the same manga volume, page by
+page.
 
 ## Building and testing
 
@@ -19,6 +20,38 @@ From the repository root, the same commands take `-C web` — which is the form
 
 `pnpm run dev` proxies `/api` and `/opds` to `taiyaku serve` (default
 `http://127.0.0.1:8080`, override with `TAIYAKU_SERVE`) — see `vite.config.ts`.
+
+## Routes
+
+`Routes.tsx`'s `AppRoutes`, over `react-router` — the first runtime dependency
+beyond React since the project began, spec C1 §1:
+
+| Route | Renders |
+| ----- | ------- |
+| `/` | the library grid — `Library.tsx`: a persistent sidebar, a continue strip, three filter chips and an `added` sort, all client-side over `library.ts`'s `/api/library/*` client. `?root=N` narrows the grid to one root |
+| `/series/:id` | the series page. Not built by this branch — Plan B |
+| `/search` | search. Not built by this branch — Plan B |
+| `/read/:work` | the reader (`App.tsx`), keyed by the slug in the URL so a swap between works remounts rather than trying to stay one component |
+
+Any other path redirects to `/`.
+
+**All four sit under one sign-in gate**, `Gate.tsx`, which `main.tsx` wraps
+around `AppRoutes`. It asks `/api/me` once per page load, draws nothing until
+the answer arrives, and renders `Login.tsx` instead of the routes when the
+answer is a 401 — spec C1 §5. It is also the single registration of `api.ts`'s
+`whenSignedOut`, which is a module-level slot, so a 401 arriving from *any*
+later call — including the writes whose own `.catch` swallows the rejection —
+lands on the same screen. Signing out unmounts everything below it rather than
+resetting state by hand.
+
+That gate is above the router rather than inside a screen, and the reason is a
+regression it was written to close: sign-in lived inside `App` until 2026-08-21,
+so once `/` became the library, a signed-out visitor reached a grid whose loads
+401'd into an alert banner reading "not signed in", with no login screen
+anywhere they could get to.
+
+`gate.ts` holds the context and `useGate()`, split out from the component
+because `useComponentExportOnlyModules` refuses a file that exports both.
 
 ## Signing in against a development server
 

@@ -20,16 +20,17 @@ export interface Alignment {
 }
 
 /**
- * Every intent but `chrome`, `module`, `correct` and `account`. Showing or
- * hiding the strip is UI state with no bearing on `ReadingState`, a module's
- * own key (direction's `d`, currently) acts on that module's own preference
- * slice, not on `ReadingState` either, a correction is a write to the
- * sidecar's alignment — it names a `Pending` assertion, not a change to where
- * the reader is looking — and the account panel is a screen over the reader
- * rather than anything about which page it is showing. None of the four has
- * anything to hand `applyIntent`.
+ * Every intent but `chrome`, `module`, `correct`, `account` and `library`.
+ * Showing or hiding the strip is UI state with no bearing on `ReadingState`, a
+ * module's own key (direction's `d`, currently) acts on that module's own
+ * preference slice, not on `ReadingState` either, a correction is a write to
+ * the sidecar's alignment — it names a `Pending` assertion, not a change to
+ * where the reader is looking — the account panel is a screen over the reader
+ * rather than anything about which page it is showing, and leaving the reader
+ * entirely is `App.tsx`'s `onLeave`, not a change to where it is looking
+ * either. None of the five has anything to hand `applyIntent`.
  *
- * `App.tsx`'s keydown handler branches on all four before `applyIntent` is
+ * `App.tsx`'s keydown handler branches on all five before `applyIntent` is
  * ever called, and this excludes them at the type level rather than leaving a
  * dead `case` here for a variant this function has no reason to touch.
  *
@@ -44,6 +45,7 @@ export type ReadingIntent = Exclude<
   | { kind: 'module'; intent: string }
   | { kind: 'correct' }
   | { kind: 'account' }
+  | { kind: 'library' }
 >
 
 /**

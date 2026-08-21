@@ -1425,12 +1425,25 @@ fn serve_auth(args: &[String]) -> Result<taiyaku_serve::session::AuthConfig, Str
 /// Each failure is named on stderr as it happens; the start only refuses when
 /// *nothing* could be imported, since there is then no library to serve.
 ///
+/// **An empty library, reached with no paths at all, is not refused.** It
+/// used to be — but spec C1 §5.3's "no paths means the whole library" made
+/// that refusal exactly the thing standing in front of the two first-run
+/// states the browse UI's `EmptyState.tsx` exists to show: no roots
+/// configured, and roots configured but nothing scanned yet. The server
+/// exited before either screen could render, so `GET /api/library/status`,
+/// added to tell those two states apart, could never be exercised in the
+/// state it was built for. Found by trying to serve an empty database in a
+/// browser. A start against an empty library now prints a note to stderr and
+/// goes on to bind — the guidance that used to be the fatal error now lives
+/// on the screen where a person can act on it.
+///
 /// # Errors
 ///
 /// Returns an error if any path cannot be canonicalised, if `db_flag`
 /// resolves to nowhere (see `library::resolve_db_path`), if the library
-/// cannot be opened, or if **every** path failed to import (see
-/// `library::import_canonical`).
+/// cannot be opened, or — when paths were named on the command line — if
+/// **every** one of them failed to import (see `library::import_canonical`).
+/// An empty library reached with no paths at all is not an error; see above.
 fn serve_works(
     paths: &[PathBuf],
     db_flag: Option<&str>,
@@ -1443,11 +1456,16 @@ fn serve_works(
             taiyaku_library::Library::open(&db).map_err(|e| format!("opening the library: {e}"))?;
         let works = taiyaku_serve::from_library(&db_library)?;
         if works.is_empty() {
-            return Err(format!(
-                "{} holds no works. `taiyaku library scan --add PATH` reads a shelf into it, \
-                 or name a taiyaku.json on the command line",
+            // Not fatal — see `serve_works`'s own doc comment. The browse
+            // UI's `EmptyState.tsx` is what actually tells "no roots" and
+            // "roots but unscanned" apart and says what to run for each; this
+            // is only for the person watching the terminal it started from.
+            eprintln!(
+                "taiyaku: {} holds no works yet. The browse screen will say what to do next — \
+                 `taiyaku library scan --add PATH` if nothing has been added, or `taiyaku \
+                 library scan` if a root is already configured but has not been read",
                 db.display()
-            ));
+            );
         }
         return Ok((db_library, works));
     }

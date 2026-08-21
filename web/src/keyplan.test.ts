@@ -351,6 +351,16 @@ describe('keyPlan, module keys', () => {
   })
 })
 
+describe('keyPlan, the library key', () => {
+  it('L leaves the reader', () => {
+    expect(act('L', { kind: 'library' })).toEqual({ kind: 'leave-reader' })
+  })
+
+  it('L does nothing while the account screen is open', () => {
+    expect(act('L', { kind: 'library' }, { accountOpen: true })).toBeUndefined()
+  })
+})
+
 describe('keyPlan, reader keys', () => {
   it('routes a step, a toggle and a digit as reading intents', () => {
     const view: Intent = { kind: 'view', edition: 'en' }

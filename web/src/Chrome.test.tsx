@@ -50,6 +50,7 @@ const baseProps: ChromeProps = {
   groups,
   currentIndex: 0,
   onNavigate: vi.fn(),
+  onLeave: vi.fn(),
 }
 
 describe('Chrome', () => {
@@ -60,8 +61,61 @@ describe('Chrome', () => {
 
   it('renders the strip and a status row while visible', () => {
     const host = mount(<Chrome {...baseProps} />)
-    expect(host.querySelectorAll('button').length).toBe(groups.length)
+    // One button per group's tile, plus the control back to the library.
+    expect(host.querySelectorAll('button').length).toBe(groups.length + 1)
     expect(host.querySelector('[role="status"]')).not.toBeNull()
+  })
+
+  it('gives the reader a way back to the library', () => {
+    const onLeave = vi.fn()
+    const host = mount(<Chrome {...baseProps} onLeave={onLeave} />)
+    const leave = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Library',
+    )
+    expect(leave).toBeDefined()
+    leave?.click()
+    expect(onLeave).toHaveBeenCalledOnce()
+  })
+
+  it('docks the way back at a corner none of the reader’s own panels use, and stacks at or above them', () => {
+    const host = mount(<Chrome {...baseProps} />)
+    const leave = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Library',
+    ) as HTMLElement
+
+    // jsdom has no layout engine (`App.test.tsx`'s own note on this), so
+    // nothing here can ask whether this button's box actually overlaps
+    // `CreditsPanel`'s, `Help`'s or `NotePanel`'s — all three dock their
+    // shared shell at `top: 16, right: 16, zIndex: 3` (see e.g.
+    // `NotePanel.tsx`'s `panelStyle`). What jsdom answers honestly is the
+    // style actually declared: this button used to carry that exact same
+    // `top: 16, right: 16` with no `zIndex` at all, which is what let an
+    // open panel's explicit `zIndex: 3` cover it outright. The pin is that
+    // `right` is gone — not merely that `left` is present — since `left`
+    // alongside a leftover `right` would still be the same box.
+    expect(leave.style.left).toBe('16px')
+    expect(leave.style.right).toBe('')
+
+    // Belt and suspenders: an explicit `zIndex` at least as high as the
+    // panels' own `zIndex: 3`, so a future change that ever does share their
+    // corner again loses no stacking fight the way the implicit `auto` did.
+    expect(Number(leave.style.zIndex)).toBeGreaterThanOrEqual(3)
+  })
+
+  it('hides the way back to the library while correcting — CorrectionBanner spans the same top edge, and no zIndex clears that', () => {
+    const host = mount(<Chrome {...baseProps} correcting={{ to: 'ed2' }} />)
+    const leave = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Library',
+    )
+    expect(leave).toBeUndefined()
+  })
+
+  it('shows the way back to the library when not correcting', () => {
+    const host = mount(<Chrome {...baseProps} />)
+    const leave = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Library',
+    )
+    expect(leave).toBeDefined()
   })
 
   it('joins the readout row in position/health/time/chapter/notes order', () => {

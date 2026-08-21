@@ -1503,33 +1503,39 @@ fn run_dispatches_to_lookup() {
     );
 }
 
-/// **Dispatch only, and it must never reach a real library.**
+/// **Dispatch only, and it must never reach a real library or a real bind.**
 ///
 /// `serve` with no paths is an invocation rather than a mistake since spec C1
-/// §5.3 — it serves everything the library holds. That makes a bare
-/// `run(&["serve"])` resolve `--db` from `XDG_DATA_HOME`/`HOME` and open the
-/// operator's actual database, migrate it, and then bind a port and never
-/// return. This test did exactly that once, on the machine it was written on,
-/// which is how the hazard was found.
+/// §5.3 — it serves everything the library holds, and an empty library is no
+/// longer refused (see `serve_works`'s own doc comment: the browse UI's
+/// `EmptyState.tsx` is what tells a person what to do about that now). That
+/// makes a bare `run(&["serve"])` resolve `--db` from `XDG_DATA_HOME`/`HOME`,
+/// open the operator's actual database, migrate it, and then bind a port and
+/// never return. This test did exactly that once, on the machine it was
+/// written on, which is how the hazard was found — and the empty-library
+/// refusal it used to lean on to stop short of the bind is gone, so leaning
+/// on it again here would hang the suite.
 ///
-/// So it is driven with an explicit `--db` into a scratch directory, where the
-/// library is empty and the refusal below is the one `serve_works` states for
-/// that case. That proves the dispatch *and* the new empty-library message,
-/// and it cannot touch anything a person owns.
+/// `--addr` turns out not to be the fast failure it looks like: `option_value`
+/// only extracts its string, and nothing parses it into a `SocketAddr` until
+/// `taiyaku_serve::serve`'s own `TcpListener::bind`, which is deep inside the
+/// `tokio` runtime this function builds — reaching it needs a real `--db`, a
+/// real (if empty) library open, and the whole of `serve`'s pre-bind startup
+/// sequence first, all to prove what a much earlier failure already proves.
+///
+/// `--trusted-proxy` is that earlier failure. `serve_auth` parses every
+/// `--trusted-proxy` value into a `Cidr` by pure string parsing (no I/O, no
+/// environment lookup — see `auth::Cidr::from_str`), and it runs before
+/// `serve_works` is ever called, so a malformed value is refused before `--db`
+/// is even resolved, let alone a library opened or a socket touched.
+/// `serve_auth`'s own tests (`a_malformed_trusted_proxy_is_refused_by_name`)
+/// already pin `"not-a-range"`'s exact wording; this only needs enough of it
+/// to know dispatch reached `serve` rather than matching some other refusal.
 #[test]
 fn run_dispatches_to_serve() {
-    let db = std::env::temp_dir()
-        .join(format!(
-            "taiyaku-test-dispatch-serve-{}",
-            std::process::id()
-        ))
-        .join("library.db");
-    let _ = std::fs::remove_dir_all(db.parent().unwrap());
-    let err = run(&argv(&["serve", "--db", db.to_str().unwrap()])).unwrap_err();
-    assert!(
-        err.contains("holds no works"),
-        "an empty library should say so: {err}"
-    );
+    let err = run(&argv(&["serve", "--trusted-proxy", "not-a-range"])).unwrap_err();
+    assert!(err.contains("--trusted-proxy"), "{err}");
+    assert!(err.contains("not-a-range"), "{err}");
 }
 
 #[test]

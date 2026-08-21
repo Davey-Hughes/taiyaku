@@ -1,10 +1,21 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { BrowserRouter } from 'react-router'
 import './index.css'
-import App from './App.tsx'
+import { Gate } from './Gate.tsx'
+import { AppRoutes } from './Routes.tsx'
 
+// `Gate` inside `BrowserRouter` and outside `AppRoutes`: the router stays
+// mounted across a sign-in, so the URL a signed-out visitor arrived on is the
+// one they land on once they have signed in — and every route is under one
+// registration of `api.ts`'s `whenSignedOut`, which is a module-level slot that
+// the last registration silently wins.
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <BrowserRouter>
+      <Gate>
+        <AppRoutes />
+      </Gate>
+    </BrowserRouter>
   </StrictMode>,
 )

@@ -83,6 +83,7 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/library/series/{id}/cover",
         "/api/library/works/{slug}",
         "/api/library/search",
+        "/api/library/status",
         "/opds/v1.2/catalog",
         "/opds/v1.2/works",
         "/opds/v1.2/works/{work}",

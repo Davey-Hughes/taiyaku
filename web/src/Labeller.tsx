@@ -277,7 +277,7 @@ export function Labeller({
 
   // A work opened: its sidecar (for the edition/page pickers) and its truth
   // document, together — `truthWrite.ts`'s `openWork`, the same two-reads-in-
-  // one-call split `startup.ts`'s `openFirstWork` uses for its own five.
+  // one-call split `startup.ts`'s `openWork` uses for its own four.
   useEffect(() => {
     if (!ports || !work) return
     let cancelled = false

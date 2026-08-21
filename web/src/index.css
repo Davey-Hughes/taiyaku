@@ -292,3 +292,176 @@ body {
 .label-page img {
   pointer-events: none;
 }
+
+/* The library screen: sidebar plus main, spec C1 §2 and §11 step 6.
+ *
+ * `index.css` has no general-purpose design variables to reuse here — the
+ * only custom properties above are the `--box-*` palette, and that palette is
+ * documented as deliberately fixed against the artwork rather than following
+ * `color-scheme`. This screen is UI chrome, not artwork, so it uses CSS
+ * system colours instead (`Canvas`, `CanvasText`, `ButtonFace`,
+ * `ButtonBorder`, `LinkText`, `Highlight`), which follow `color-scheme: light
+ * dark` from `:root` the way a hardcoded palette would not.
+ *
+ * `.library` does not touch `html`, `body` or `#root`'s `height: 100%` chain —
+ * that chain exists so `PageView` can constrain a page to the viewport, and
+ * this screen wants the opposite: it scrolls. So `.library` gets its own
+ * `height: 100%` (inherited from that chain) and its own `overflow-y: auto`
+ * on `main`, rather than changing the chain or setting `height: auto` on the
+ * three selectors it feeds. */
+.library {
+  display: grid;
+  grid-template-columns: 14rem 1fr;
+  height: 100%;
+  color: CanvasText;
+  background: Canvas;
+}
+
+.sidebar {
+  border-right: 1px solid ButtonBorder;
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.sidebar-primary {
+  list-style: none;
+  margin: 0 0 1.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sidebar-heading {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
+  margin: 0 0 0.5rem;
+}
+
+.sidebar-roots {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.sidebar a {
+  color: LinkText;
+  text-decoration: none;
+}
+
+.sidebar a:hover {
+  text-decoration: underline;
+}
+
+.library > main {
+  overflow-y: auto;
+  padding: 1rem 1.5rem;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+.chips button {
+  border: 1px solid ButtonBorder;
+  background: ButtonFace;
+  color: CanvasText;
+  border-radius: 999px;
+  padding: 0.35rem 0.9rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.chips button[aria-pressed="true"] {
+  background: Highlight;
+  color: HighlightText;
+  border-color: Highlight;
+}
+
+.continue ul {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0;
+  display: flex;
+  gap: 0.75rem;
+  overflow-x: auto;
+}
+
+.continue li {
+  flex: 0 0 auto;
+}
+
+.continue a {
+  display: block;
+  border: 1px solid ButtonBorder;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  color: LinkText;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 1rem;
+}
+
+.grid li a {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+/* The cover, and the tile drawn in its place when it will not load — §8's
+ * third empty state. Both share the box so a placeholder occupies exactly the
+ * space the artwork would have, and the grid does not reflow as covers arrive
+ * or fail. System colours, not `--box-*`: this is chrome, not artwork. */
+.grid img,
+.grid .cover-missing {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  border: 1px solid ButtonBorder;
+  border-radius: 4px;
+  background: ButtonFace;
+}
+
+.grid img {
+  object-fit: cover;
+}
+
+.grid .cover-missing {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+  overflow: hidden;
+  color: CanvasText;
+  font-size: 0.85rem;
+  line-height: 1.3;
+  text-align: center;
+}
+
+.grid .title {
+  font-size: 0.9rem;
+  line-height: 1.3;
+}
+
+.grid .aligned {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}

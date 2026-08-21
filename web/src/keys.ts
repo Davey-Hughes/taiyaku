@@ -12,6 +12,8 @@ export type Intent =
   | { kind: 'correct' }
   /** A module's own declared key fired. `intent` is the string it registered — see `ReaderModule.keys`. */
   | { kind: 'module'; intent: string }
+  /** Leave the reader for the library grid — spec C1 §6. */
+  | { kind: 'library' }
 
 /**
  * One of the reader's own keys: what it is called, what it asks for, and how
@@ -106,6 +108,11 @@ export const READER_KEYS: ReaderBinding[] = [
     keys: ['A'],
     label: 'account: password, API keys, and what is signed in',
     resolve: () => ({ kind: 'account' }),
+  },
+  {
+    keys: ['L'],
+    label: 'back to the library',
+    resolve: () => ({ kind: 'library' }),
   },
   {
     keys: ['1', '2', '3', '4', '5', '6', '7', '8', '9'],

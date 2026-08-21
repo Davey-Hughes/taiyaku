@@ -1532,6 +1532,7 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         ),
         ("/api/library/works/{slug}", get(crate::library_api::work)),
         ("/api/library/search", get(crate::library_api::search)),
+        ("/api/library/status", get(crate::library_api::status)),
     ]);
     routes.extend(crate::opds::routes());
     routes

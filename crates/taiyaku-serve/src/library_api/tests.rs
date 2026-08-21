@@ -74,6 +74,7 @@ async fn the_browse_routes_refuse_anonymously_without_a_challenge_header() {
         "/api/library/series/1/cover",
         "/api/library/works/w",
         "/api/library/search?q=x",
+        "/api/library/status",
     ] {
         let response = get_anonymous(&router, path).await;
         assert_eq!(
@@ -430,4 +431,142 @@ async fn the_same_reader_granted_the_right_root_is_not_refused() {
         axum::http::StatusCode::NOT_FOUND,
         "a granted reader must reach their own material"
     );
+}
+
+#[tokio::test]
+async fn the_grid_carries_the_two_fields_the_chips_sort_and_filter_on() {
+    // **Not `router_over_a_library`.** That fixture only imports a work via
+    // `import::sidecar`, which per `browse.rs`'s own module docs never writes
+    // `series_id` — so the grid it produces has an `unfiled` work and no
+    // `series` at all, and `first()` on an empty array panicked here. This
+    // fixture inserts a `series` row and files the work under it, the same
+    // way `the_grid_lists_a_series_with_its_counts` above does.
+    let (router, _state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
+    let body = get_json(&router, "/api/library/series").await;
+    let first = body["series"]
+        .as_array()
+        .and_then(|s| s.first())
+        .expect("at least one series");
+    assert!(first["added"].is_i64(), "added is a number: {first}");
+    assert!(first["unread"].is_i64(), "unread is a number: {first}");
+}
+
+/// **Over a fixture that actually has a series**, which is the whole of what
+/// this test was missing: `router_over_a_library`'s grid holds zero series
+/// whatever the filter, so the assertion below was satisfied by the fixture
+/// rather than by the filter — replacing the handler's `query.root` with
+/// `None` left all 291 `taiyaku-serve` tests passing. Whole-branch review,
+/// mutation-checked 2026-08-21.
+#[tokio::test]
+async fn a_root_that_does_not_exist_answers_an_empty_grid_rather_than_an_error() {
+    let (router, _state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
+    let body = get_json(&router, "/api/library/series?root=999999").await;
+    assert_eq!(
+        body["series"].as_array().map(Vec::len),
+        Some(0),
+        "no series, and a 200: {body}"
+    );
+}
+
+/// The other half: a root that *does* exist answers the material under it, and
+/// a second root answers none of it.
+///
+/// A root that does not exist and a root holding nothing are deliberately the
+/// same answer — `only_clause`'s doc says why — so a test that only ever asked
+/// for a missing one could not tell the filter from a handler that dropped the
+/// parameter on the floor.
+#[tokio::test]
+async fn the_grid_narrows_to_the_root_the_query_names() {
+    let (router, state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
+    {
+        let conn = state.library.conn();
+        conn.execute(
+            "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/elsewhere')",
+            [],
+        )
+        .expect("two roots");
+        conn.execute("UPDATE member SET root_id = 1", [])
+            .expect("files every member under the first");
+    }
+
+    let all = get_json(&router, "/api/library/series").await;
+    assert_eq!(
+        all["series"].as_array().map(Vec::len),
+        Some(1),
+        "unnarrowed, the series is listed: {all}"
+    );
+
+    let held = get_json(&router, "/api/library/series?root=1").await;
+    assert_eq!(
+        held["series"].as_array().map(Vec::len),
+        Some(1),
+        "the root the material sits under: {held}"
+    );
+
+    let elsewhere = get_json(&router, "/api/library/series?root=2").await;
+    assert_eq!(
+        elsewhere["series"].as_array().map(Vec::len),
+        Some(0),
+        "a root holding none of it: {elsewhere}"
+    );
+}
+
+/// **`?root=` empties the unfiled bucket**, which it did not until 2026-08-21:
+/// `series` was fetched with the filter and `unfiled` without it, so
+/// `/api/library/series?root=5` answered a root-scoped grid beside every
+/// imported work in the library. An imported member sits under no root, and
+/// asking for a root asks for what is under it — spec C1 §5.1's existing
+/// NULL-excludes-itself rule, applied in SQL rather than special-cased here.
+#[tokio::test]
+async fn a_root_scoped_grid_carries_no_unfiled_work() {
+    let (router, _state) = test_support::router_over_a_library().await;
+
+    let all = get_json(&router, "/api/library/series").await;
+    assert_eq!(
+        all["unfiled"].as_array().map(Vec::len),
+        Some(1),
+        "the imported work is in the whole-library grid: {all}"
+    );
+
+    let scoped = get_json(&router, "/api/library/series?root=1").await;
+    assert_eq!(
+        scoped["unfiled"].as_array().map(Vec::len),
+        Some(0),
+        "and under no root at all: {scoped}"
+    );
+}
+
+#[tokio::test]
+async fn the_work_route_carries_an_alignments_array_and_the_list_routes_do_not() {
+    // Not `router_over_a_library`: that fixture's work is imported via
+    // `import::sidecar`, which per `browse.rs`'s own module docs never writes
+    // `series_id` — so `/api/library/series` answers no series at all, `first()`
+    // is `None`, and the negative half below never ran. This fixture inserts a
+    // `series` row and files the work under it, so `listed` genuinely binds.
+    let (router, _state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
+    let grid = get_json(&router, "/api/library/series").await;
+    let listed = grid["series"].as_array().and_then(|s| s.first());
+    let listed = listed.expect("the fixture's series is listed");
+    assert!(
+        listed.get("alignments").is_none(),
+        "a list route must not carry alignment detail: {listed}"
+    );
+    let home = get_json(&router, "/api/library/home").await;
+    let slug = home["added"][0]["slug"]
+        .as_str()
+        .expect("a work")
+        .to_string();
+    let detail = get_json(&router, &format!("/api/library/works/{slug}")).await;
+    assert!(
+        detail["alignments"].is_array(),
+        "the single-work route carries them: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn status_answers_the_two_facts_a_first_run_screen_needs() {
+    let (router, _state) = test_support::router_over_a_library().await;
+    let body = get_json(&router, "/api/library/status").await;
+    assert!(body["roots"].is_array(), "roots is a list: {body}");
+    assert!(body["scanned"].is_boolean(), "scanned is a bool: {body}");
 }

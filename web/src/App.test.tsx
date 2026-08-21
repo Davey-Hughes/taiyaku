@@ -10,8 +10,8 @@
  * src>` — or because it pins a rule that lives in `App.tsx` itself and
  * nowhere else (the six mirror refs, the refs assigned during render,
  * `resolver.dispose()` after a correction lands and never before). The order
- * the load's five reads happen in is deliberately *not* pinned here: it is
- * `startup.ts`'s property (see that file's own `openFirstWork` tests), and
+ * the load's four reads happen in is deliberately *not* pinned here: it is
+ * `startup.ts`'s property (see that file's own `openWork` tests), and
  * `STARTUP_PORTS` binds each read by name with an incompatible type per
  * field, so no change to `App.tsx` can put them out of order without failing
  * to compile.
@@ -54,24 +54,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeResolver, whole } from './fixtures'
 import type { NotesDoc } from './notes'
 import type { Resolver } from './resolver'
-import { mount } from './testing/mount'
+import { mount, rerender } from './testing/mount'
 
 // Every network call `App.tsx` makes, and the one resolver build. `vi.hoisted`
 // runs during the same hoisting pass `vi.mock`'s factories do, which is what
 // makes these safe to close over from inside them — the pattern
 // `resolver.test.ts` documents.
 const ports = vi.hoisted(() => ({
-  listWorks: vi.fn(),
   getSidecarWithEtag: vi.fn(),
   getProgress: vi.fn(),
   getNotes: vi.fn(),
   putNotes: vi.fn(),
   putProgress: vi.fn(),
   patchAlignment: vi.fn(),
-  // Spec A2: `App` asks who it is before it loads anything, so every test in
-  // this file needs an answer. Defaulted to "signed in" here rather than set
-  // per test, because being signed out is one behaviour and the other
-  // seventy-odd tests are about the reader rather than about the guard.
+  // Spec A2's `me()`. **`App` no longer calls it** — `Gate.tsx` does, once per
+  // page load, above the router — so only the sign-out test below reaches this,
+  // and it reaches it through a real `<Gate>`. Kept defaulted to "signed in"
+  // rather than set per test, so that gate mounts without every test in this
+  // file having to care.
   me: vi.fn(),
   // The account panel's own calls. `App` renders `<Account>` unconditionally,
   // so any test that opens it reaches these — and an unmocked `logout` leaves
@@ -101,7 +101,6 @@ vi.mock('./resolver', () => ({ wasmResolver: ports.wasmResolver }))
 // replaced.
 vi.mock('./api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./api')>()),
-  listWorks: ports.listWorks,
   getSidecarWithEtag: ports.getSidecarWithEtag,
   getProgress: ports.getProgress,
   getNotes: ports.getNotes,
@@ -115,6 +114,11 @@ vi.mock('./api', async (importOriginal) => ({
 }))
 
 const { default: App } = await import('./App')
+
+// Imported normally rather than through the dynamic `await import` above: the
+// gate does not touch `resolver.ts`, deliberately (see its own doc), so it has
+// no reason to wait for the two `vi.mock` calls the way `App` does.
+import { Gate } from './Gate'
 
 // `PageAnnotations` builds a `ResizeObserver` and `Filmstrip`/`useScrollToCurrent`
 // call `scrollIntoView`; jsdom carries neither. Stubbed exactly as
@@ -235,21 +239,6 @@ beforeEach(() => {
     can_stream: true,
   })
   resolver = disposable()
-  // Task 14: `listWorks` answers objects rather than bare ids; `WORK` stays
-  // the bare slug everywhere else in this file (`getSidecarWithEtag`,
-  // `putProgress` etc. are all still called with it, since `openFirstWork`
-  // reads only `.slug` off the first entry) — only this one call site needs
-  // the richer shape.
-  ports.listWorks.mockResolvedValue([
-    {
-      slug: WORK,
-      title: 'Vol 1',
-      series: null,
-      volume: null,
-      editions: ['raw', 'en'],
-      cover: `/api/works/${WORK}/raw/pages/0/thumb`,
-    },
-  ])
   ports.getSidecarWithEtag.mockResolvedValue({
     json: sidecarJson(),
     etag: 's1',
@@ -298,8 +287,31 @@ async function advance(ms: number) {
   await settle()
 }
 
+/** `onLeave` for a test that has no interest in it. */
+const noop = () => {}
+
 async function open(): Promise<HTMLElement> {
-  const host = mount(<App />)
+  const host = mount(<App work={WORK} onLeave={noop} />)
+  await settle()
+  return host
+}
+
+/**
+ * The same reader, under the real sign-in gate.
+ *
+ * **Only the sign-out test needs this, and that is the point of the change it
+ * came from.** `App` used to hold `signedIn`, the `me()` call, the
+ * `whenSignedOut` registration and a `<Login>` branch; every other test in this
+ * file mounts it bare because none of that is here any more. What signing out
+ * does now is unmount this component, which cannot be observed from inside it
+ * — so the one test about it mounts the thing that does the unmounting.
+ */
+async function openGated(): Promise<HTMLElement> {
+  const host = mount(
+    <Gate>
+      <App work={WORK} onLeave={noop} />
+    </Gate>,
+  )
   await settle()
   return host
 }
@@ -351,6 +363,12 @@ function type(el: HTMLTextAreaElement, value: string) {
 
 const dialog = (host: HTMLElement, label: string) =>
   host.querySelector(`[role="dialog"][aria-label="${label}"]`)
+
+/** The account panel's own button, and so a proxy for the panel being open. */
+const signOutButton = (host: HTMLElement) =>
+  [...host.querySelectorAll('button')].find((b) =>
+    (b.textContent ?? '').includes('Sign out'),
+  )
 
 /**
  * The pages the page area is drawing, by `src`. Thumbnails are excluded by
@@ -447,61 +465,134 @@ const drawnRect = (host: HTMLElement) =>
 
 describe('opening a work', () => {
   /**
-   * `A` opens the account panel, `Escape` closes it, and signing out forgets
-   * what this reader loaded.
+   * `A` opens the account panel and `Escape` closes it.
    *
-   * **`Escape` had to join `Guards` for the middle step**: without it, dismissing
-   * the panel fell through to `cancel-correction` and silently abandoned a
-   * pending correction. And signing out cleared five pieces of state but not
-   * `editing`, whose `edits` map holds unsaved note bodies — which the next
-   * account saw on their pages and would have written under their own session.
-   * Both found by the second whole-branch review.
+   * **`Escape` had to join `Guards` for the middle step**: without it,
+   * dismissing the panel fell through to `cancel-correction` and silently
+   * abandoned a pending correction. Found by the second whole-branch review.
    */
-  it('opens the account panel on A, closes it on Escape, and forgets on sign-out', async () => {
+  it('opens the account panel on A and closes it on Escape', async () => {
     const host = await open()
-    const signOutButton = () =>
-      [...host.querySelectorAll('button')].find((b) =>
-        (b.textContent ?? '').includes('Sign out'),
-      )
-
     press('A')
     await settle()
-    expect(signOutButton(), 'A opens the panel').toBeDefined()
+    expect(signOutButton(host), 'A opens the panel').toBeDefined()
 
     press('Escape')
     await settle()
-    expect(signOutButton(), 'Escape closes it').toBeUndefined()
+    expect(signOutButton(host), 'Escape closes it').toBeUndefined()
+  })
+
+  /**
+   * Signing out takes the reader away, and takes its pending writes with it.
+   *
+   * **What this pins is an unmount, not a reset.** `App` used to answer
+   * sign-out with `forgetTheReader`, a callback clearing thirteen pieces of
+   * state by hand and cancelling two debounced writers; it grew to that because
+   * each of three consecutive whole-branch reviews found more it had missed —
+   * the second one field, unsaved note bodies drawn to the next account and
+   * then `PUT` under their session; the third three at once, among them a
+   * pending correction whose Confirm wrote the previous reader's pairing into
+   * the shared sidecar. `Gate.tsx` unmounts this component instead, so the list
+   * cannot be incomplete.
+   *
+   * **The timers are the part an unmount does not cover on its own**, and so
+   * the part worth asserting. A page turn arms a 400 ms debounce; the write it
+   * holds must not be left to fire after the account could have changed.
+   * `hooks.ts`'s `useFlushOnHide` cleanup sends it at the unmount commit
+   * instead — which is why the `putProgress` below has happened *by* the time
+   * sign-out has finished, and why running the clock on afterwards produces no
+   * second one.
+   */
+  it('signing out unmounts the reader and leaves no write armed behind it', async () => {
+    const host = await openGated()
+    press('ArrowRight')
+    await settle()
+    // Armed, not sent: the debounce has not expired.
+    expect(ports.putProgress).not.toHaveBeenCalled()
 
     press('A')
     await settle()
     await act(async () => {
-      signOutButton()?.click()
+      signOutButton(host)?.click()
       await Promise.resolve()
     })
     await settle()
 
-    // The reader is gone: no pages, and the panel with it.
+    // The reader is gone — no pages, and the panel with it — and the login
+    // screen is what stands in its place rather than a blank document, which
+    // is what `toEqual([])` alone would also accept.
     expect(pages(host)).toEqual([])
-    expect(signOutButton()).toBeUndefined()
+    expect(signOutButton(host)).toBeUndefined()
+    expect(
+      host.querySelector('input[autocomplete="current-password"]'),
+      'the sign-in form',
+    ).not.toBeNull()
+
+    // Flushed on the way out, under the session that turned the page.
+    expect(ports.putProgress).toHaveBeenCalledOnce()
+    await advance(1000)
+    // And nothing was left armed to land afterwards, when the next account
+    // signing in on this page load would have owned the session.
+    expect(ports.putProgress).toHaveBeenCalledOnce()
   })
 
   it('draws nothing until the load answers, then the restored page', async () => {
-    const host = mount(<App />)
+    const host = mount(<App work={WORK} onLeave={noop} />)
     // `if (!session) return null` — the reader has no loading state, by design.
     expect(host.innerHTML).toBe('')
     await settle()
     // Stored progress said `raw` slot 2, and `restore` validated it against
     // the resolver before it was trusted. The URL is `pageUrl`'s, built from
     // the `Position` the resolver gave for that slot — the whole chain from
-    // `openFirstWork` through `allSlots`, `groups` and `pageAt`.
+    // `openWork` through `allSlots`, `groups` and `pageAt`.
     expect(pages(host)).toEqual([
       expect.stringContaining('/vol-01/raw/pages/2'),
     ])
   })
 
-  it('logs a failed load and stays blank rather than throwing', async () => {
+  /**
+   * `Routes.tsx`'s `<App key={work} .../>` is what keeps this file's "loads
+   * exactly once" assumption true rather than an assumption maintained by
+   * hand — a changing `key` unmounts and remounts rather than reloading a
+   * live instance in place. Asserted here against a real root re-render
+   * rather than two separate `mount()` calls, which would each get a fresh
+   * instance regardless and so could not tell a remount from an update.
+   *
+   * **Asserting only the `getSidecarWithEtag` calls does not pin that.**
+   * `work` is the load effect's only dependency, so a plain in-place prop
+   * update — the same component instance, `work` merely changing — refires
+   * that effect and calls `getSidecarWithEtag('two')` too. A version of this
+   * test that checked only those calls would still pass if `Routes.tsx`
+   * stopped keying `<App>` by `work` entirely, which is the regression this
+   * test exists to catch.
+   *
+   * What only a genuine unmount produces: nothing resets `session` when
+   * `work` changes in place, so an in-place update would go on drawing
+   * `one`'s already-loaded pages, under the `two` prop, until `two`'s own
+   * load resolved. A real remount starts a fresh instance at
+   * `session === undefined` instead, which — per "draws nothing until the
+   * load answers" above — draws nothing at all, synchronously, the instant
+   * the key changes and before its own load has had any chance to run.
+   */
+  it('a changing work remounts rather than reloading in place', async () => {
+    const host = mount(<App key="one" work="one" onLeave={noop} />)
+    await settle()
+    expect(pages(host).length).toBeGreaterThan(0)
+
+    rerender(<App key="two" work="two" onLeave={noop} />)
+    // Synchronous, before `settle()`: a surviving instance would still be
+    // showing `one`'s pages right here, since its load effect has fired but
+    // not yet resolved.
+    expect(host.innerHTML).toBe('')
+
+    await settle()
+    expect(ports.getSidecarWithEtag).toHaveBeenCalledWith('two')
+    expect(pages(host).length).toBeGreaterThan(0)
+  })
+
+  it('routes a failing sidecar read to the console rather than a blank reader', async () => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
-    ports.listWorks.mockRejectedValue(new Error('no server'))
+    ports.getSidecarWithEtag.mockRejectedValue(new Error('no server'))
     const host = await open()
     expect(host.innerHTML).toBe('')
     expect(logged).toHaveBeenCalledWith(expect.any(Error))
@@ -513,7 +604,7 @@ describe('opening a work', () => {
     ports.getNotes.mockRejectedValue(new Error('notes are down'))
     const host = await open()
     // The pages are there — a reader who cannot see their notes still gets
-    // their work, which is `openFirstWork`'s one caught failure reaching the
+    // their work, which is `openWork`'s one caught failure reaching the
     // component's own `notesError` log.
     expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/2')])
     expect(logged).toHaveBeenCalledWith(expect.any(Error))
@@ -716,6 +807,40 @@ describe('the reader keys', () => {
     expect(press('Z').defaultPrevented).toBe(true)
     expect(ports.putNotes).not.toHaveBeenCalled()
     expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/2')])
+  })
+})
+
+// ---- leaving the reader ------------------------------------------------------
+
+/**
+ * Neither way out of the reader was joined to `App`'s own `onLeave` prop.
+ * `keys.test.ts` and `keyplan.test.ts` pin the *plan* `L` produces
+ * (`{ kind: 'leave-reader' }`); `Chrome.test.tsx` pins that its "Library"
+ * button calls whatever `onLeave` it is handed; `Routes.test.tsx` pins a
+ * *mocked* `App`. None of that reaches `App.tsx`'s own `case 'leave-reader':
+ * return onLeave()` or its own `<Chrome onLeave={onLeave} />` wiring — and
+ * this is the branch's headline deliverable. Found by the whole-branch
+ * review.
+ */
+describe('leaving the reader', () => {
+  it('L calls the onLeave prop', async () => {
+    const onLeave = vi.fn()
+    mount(<App work={WORK} onLeave={onLeave} />)
+    await settle()
+    press('L')
+    expect(onLeave).toHaveBeenCalled()
+  })
+
+  it("the chrome's Library button calls the onLeave prop", async () => {
+    const onLeave = vi.fn()
+    const host = mount(<App work={WORK} onLeave={onLeave} />)
+    await settle()
+    // The chrome starts hidden (`chromeVisible` begins `false`) and `Chrome`
+    // renders nothing while it is — `Tab` is what the other tests in this
+    // file use to reach its controls.
+    press('Tab')
+    click(button(host, 'Library'))
+    expect(onLeave).toHaveBeenCalled()
   })
 })
 

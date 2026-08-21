@@ -202,7 +202,11 @@ taiyaku library proposals --dismiss 4
 ```
 
 To read in the browser, build the WebAssembly binding first, then run the reader
-against `serve`. The binding is generated and gitignored, but install order does
+against `serve --db`. The browser opens on a **library** now, not a single work —
+a grid of series with a continue strip above it, `react-router` resolving four
+routes between the grid, a series page, search and the reader itself, and a
+`Library` button in the reader's own chrome for the way back out. The binding is
+generated and gitignored, but install order does
 not decide whether `taiyaku-wasm` resolves: `taiyaku-wasm` is a `link:` symlink,
 and pnpm creates it whether or not `pkg/` exists yet, dangling until it does. The
 symlink is live — it reads through to whatever `pkg/` holds at the moment
@@ -215,7 +219,7 @@ they start: `pkg/` needs to hold the real package by then, not by the time
 ./scripts/build-wasm.sh          # generates crates/taiyaku-wasm/pkg
 pnpm -C web install --frozen-lockfile
 
-taiyaku serve taiyaku.json --addr 127.0.0.1:8080
+taiyaku serve --db taiyaku.db --addr 127.0.0.1:8080
 pnpm -C web run dev              # http://localhost:5173
 ```
 

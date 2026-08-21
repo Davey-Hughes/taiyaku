@@ -1,8 +1,9 @@
 # The library's browse UI — design
 
 **Status: settled in brainstorming on 2026-08-14; amended 2026-08-20 against
-the shipped A2 and B, which reopened two questions this spec had not asked.
-Not built.**
+the shipped A2 and B, which reopened two questions this spec had not asked;
+amended again the same day against its own shipped server half (`8a99580`,
+#81), which is §5.5. Server half built; UI half not built.**
 
 Written in the style of the rest of `docs/`: every decision records the
 alternative it beat and what it cost, a figure asserted here was measured on
@@ -79,6 +80,13 @@ a surface you filter rather than a page you scroll.
 └──────────┴────────────────────────────────┘
 ```
 
+**Two of the four chips read facts the shipped API does not carry**, and §5.5
+adds them: `Added ▾` sorts on `SeriesCard.added`, `Unread` filters on
+`SeriesCard.unread`. The other two need nothing new. `All` is the unfiltered
+list, and `Multi-edition` is `editions > works` exactly rather than
+approximately — a work with no edition is not counted at all, so the counts
+differ if and only if some work here has a second edition.
+
 **The `ROOTS` section is provisional and is marked as such in the design rather
 than discovered later.** A root is a *storage* fact, and spec B's entire
 argument is that where a file sits should stop being how you find it. Putting
@@ -88,7 +96,9 @@ Resolved rather than argued: the section is a preference, defaulting **on for an
 admin and off for everyone else**, and **no navigation path may require it** —
 anything reachable through `ROOTS` is reachable another way. If it turns out to
 be an administrative tool it moves to C4 with the rest of the configuration, and
-nothing breaks when it does.
+nothing breaks when it does. What it lists and what it filters by are §5.5's
+`/api/library/status` and `?root=`, both of which intersect the caller's grant
+rather than replacing it.
 
 **A slim continue-reading strip sits at the top of the Library view**, and
 `Continue` is also a view of its own. This is the one thing the mockups did not
@@ -125,6 +135,13 @@ editions without saying which are aligned is a Komga screen with extra badges.
 So: an alignment mark on the cover (`⇄ 3`), the verdict and paired count in the
 panel, and in `table` layout a dashed badge for an edition that has no page for
 this volume.
+
+**The verdict and the paired count come from `/api/library/works/{slug}` and
+from nowhere else** — §5.5's `AlignmentCard`, fetched when the panel opens.
+That is what makes the `button` default cheap rather than merely tidy: no list
+endpoint carries alignment detail, so a series of 111 volumes costs one query
+for the list and one more for whichever volume is asked about. The `⇄` mark on
+the tile needs none of it; `WorkCard.aligned` is a bool that shipped.
 
 ## 4. Settings are generated, and that is not a hope
 
@@ -389,6 +406,102 @@ whole edition-and-alignment presentation is unreachable for it. That is
 correct rather than a gap — an imported work is one document with its editions
 already in it, and `/api/library/works/{slug}` is where those are shown.
 
+### 5.5 Four facts the UI needs and the shipped API does not carry
+
+*(Added 2026-08-20, after the server half merged as `8a99580` (#81). Found by
+reading §2, §3 and §8 against the routes that shipped rather than against §5,
+which describes them accurately and still leaves four screens unbuildable. §5's
+own listing says `/api/library/series` does "sort, filter, paginate"; the
+handler takes no query parameter at all, and `SeriesCard` carries no field any
+of the three could act on.)*
+
+All four are additive in the sense §5 uses: no shipped route changes its
+response, no field moves, and each inherits the root filter rather than
+introducing a second one.
+
+**1. `SeriesCard` gains `added` and `unread`, and `browse::series` gains a
+`user_id`.**
+
+`added` is `MAX(w.id)` over the works the caller may see — the same recency
+proxy `home`'s `added` list already uses (`w.id DESC LIMIT 20`), on a query
+that already groups by series, so it costs no join. It is a proxy and says so:
+a real `work.created_at` is what would replace it, and a migration for a sort
+order is not worth one while every row any scan has produced sorts identically
+under both.
+
+`unread` counts the works in the series with no `progress` row for this caller
+— one `LEFT JOIN` on a query that already carries four. **The chip means
+`unread == works`: nothing here started.** The alternative, `unread > 0`, was
+rejected on the corpus's own shape — it leaves a 14-volume series in the
+`Unread` chip forever after volume 1, which is the opposite of what the chip is
+for. The count is carried rather than a boolean because the series page wants
+it and it is free once the join exists.
+
+`series` gaining a `user_id` makes its signature `home`'s, which already takes
+one for exactly this reason.
+
+**The sort stays client-side; only the field is added.** §7's measured 127
+series make a `?sort=` round trip a request for something the browser does
+instantly on data it already holds. `?root=` is a query parameter for the
+opposite reason: it changes which rows *exist*, and which rows exist is the
+grant's business and therefore SQL's.
+
+**2. `browse::work` returns alignments; no list query does.**
+
+`AlignmentCard { from, to, verdict, slots, paired }`, read from the `alignment`
+rows §3's panel wants. `verdict`, `slots` and `paired` are columns of migration
+1, so this is a projection rather than a computation.
+
+**One row per edition pair, not a scalar on the work.** A scalar `verdict` has
+no meaning for a work with three editions, and picking one pair's would repeat
+§5.1's `work.root_id` mistake somewhere new: a field with nothing true to hold,
+which a screen then presents as fact.
+
+**Only `/api/library/works/{slug}` carries them.** `works_of` already fires an
+`editions_of` query per row it returns — the N+1 the whole-branch review caught
+in `home` and closed with a SQL `LIMIT` — and an `alignments_of` per row would
+reopen it, at 111 queries on the largest series. §3's panel defaults to
+`button` and opens one work at a time, so the single-work route is what fills
+it.
+
+**3. `GET /api/library/status` → `{ roots: [{ id, name }], scanned }`.**
+
+`scanned` is `EXISTS (SELECT 1 FROM dir_state)`. Read-only, with no writer and
+no screen: C4 still builds roots administration, and this crosses into it the
+way §5.1's `grant-root` did and for the same kind of reason — without it two of
+§8's first-run states cannot be told apart by any caller, and a first-run state
+nobody can render is one that ships broken to the only people who will ever see
+it.
+
+`roots` is the caller's grant resolved to names — every root when the grant is
+empty, per §5.1 — which is also what §2's provisional `ROOTS` section lists. A
+roots-only endpoint was weighed and does less for the same work: it answers "no
+roots configured" and leaves "not yet scanned" unanswerable.
+
+**4. `GET /api/library/series?root=N`.**
+
+An additional filter, **intersected with the grant rather than replacing it**.
+A `root` the caller does not hold answers an empty list rather than an error —
+the same refusal to confirm which ids exist that made `one_series` answer 404
+instead of 403. Client-side filtering was never an option to weigh: `SeriesCard`
+carries no root, and giving it one would mean a work's roots, which §5.1 spends
+its length explaining a work does not have.
+
+**What is deliberately not a fifth change.**
+
+§8's last empty state — *a work whose members are missing from disk* — needs a
+per-member existence fact nothing projects. It is derivable: the scanner
+**deletes** `scan_entry` rows for files it no longer meets (`forget_unseen`)
+while `member` rows survive, so a member under a root with no `scan_entry` at
+its path is a missing file. It is not derivable *cheaply* — `member.path` is
+absolute and `scan_entry.rel_path` is relative to its root, so the join is over
+a computed string rather than an index. That is a question about what the store
+should record when a file vanishes, not about how a browse screen displays it,
+and it goes to C3 with the rest of provenance. Until then the state renders as
+the failure it already is: the work opens and its first page 404s, which is
+exactly what §8 says a reader should not be shown. Recorded rather than
+quietly dropped.
+
 ## 6. Getting back out of the reader
 
 `Chrome.tsx` gains a control, and the key that does it goes **through
@@ -424,7 +537,12 @@ Each is a screen someone will see on their first run, so none of them is a
   on CJK is a place where a query can be surprising.
 - **A work whose members are missing from disk** — the store knows the `sha256`
   and the scanner knows the file is gone. Shown as unreadable rather than
-  offered and then failing at the first page.
+  offered and then failing at the first page. *(Not built by C1 — §5.5 says
+  what it needs and why that is C3's question rather than this spec's.)*
+
+**The first two are told apart by `/api/library/status` and by nothing else**
+(§5.5). `/api/library/series` answers `{ series: [], unfiled: [] }` in both
+states, which is correct of it and useless here.
 
 ## 9. Testing, and an advantage this screen has that the reader does not
 
@@ -481,24 +599,45 @@ this spec adds is coverage CI enforces.
 
 ## 11. Branch shape
 
-1. Migration 6: `member.root_id`, `derive` writing it beside
-   `chapter_declared`, and `library user grant-root` / `revoke-root` so it has
-   a writer. **First, because it is the step that can damage an existing
-   library** — §5.1's empty-means-unrestricted rule is what stops the upgrade
-   emptying every account's shelf, and it should be pinned by a test before
-   anything is built on top of it.
+**Steps 1, 4 and 5 shipped as `8a99580` (#81) on 2026-08-20** — migrations 6
+and 7, `serve --db`, the six `/api/library/*` routes, the root filter and
+`library user grant-root` / `revoke-root`. The ten steps keep their original
+numbers rather than being renumbered, so this list and that commit still
+describe the same branch.
+
+1. ~~Migration 6: `member.root_id`, `derive` writing it, and
+   `grant-root` / `revoke-root` so it has a writer.~~ **Shipped.**
 2. `react-router`, the four routes, and the bundle measurement.
 3. `openWork(slug)` replacing `openFirstWork`, and `<App key={work}>`.
-4. `serve --db`, per §5.3 — the reader reaching a scanned work at all, which
-   everything after this step assumes and which nothing before it provides.
-5. The `/api/library/*` routes, with the store queries behind them — the root
-   filter and §5.2's cover fallback among them. This is where
-   `Principal.roots`'s `#[expect(dead_code)]` comes off.
+4. ~~`serve --db`, per §5.3.~~ **Shipped.**
+5. ~~The `/api/library/*` routes, with the store queries behind them.~~
+   **Shipped**, and §5.5 adds four things to them.
 6. The shell: sidebar, filter chips, the continue strip.
 7. The series page: grid, then table, then the two attachments.
 8. The `browse` module, its registry, and the generated settings section.
 9. Search.
 10. Empty states, and the reader's way back out.
+
+**What is left is two plans against one branch**, split where the library
+first becomes reachable end to end:
+
+- **Plan A** — §5.5's four API changes, then steps 2, 3, 6 and 10. It ends
+  with a reader who can open the app, see their library, filter it, land on
+  what they were reading and get back out, and with two of §13's unknowns
+  answered: what `react-router` costs the bundle, and what the grid's list
+  query costs once §5.5 has added a fifth join to it. It also reads the Rust
+  coverage margin, which is not a §13 unknown but is what §5.5's SQL spends.
+- **Plan B** — steps 7, 8 and 9: the series page's two presentations over one
+  fixture, the `browse` module and its second registry, and search, with §13's
+  FTS5 tokenisation measured against real titles rather than asserted.
+
+**The seam is honest about what it leaves half-built.** At the end of Plan A
+`/series/:id` is unrouted: the grid's tiles have nowhere to go, and only the
+continue strip and the `unfiled` list open anything. That is a checkpoint
+rather than a release — both plans land on one branch and the branch merges
+once — and it is the seam that keeps the two riskiest pieces apart: §5.5's SQL,
+where a permission filter is what goes wrong, and §3's two presentations, where
+divergence from each other is.
 
 ## 12. The measurements this invalidates
 
@@ -521,15 +660,23 @@ this spec adds is coverage CI enforces.
 - `crates/taiyaku-serve/src/lib.rs` — the comment explaining why
   `from_library` was deleted, which §5.3 turns from a standing decision into a
   description of what was built instead
+- `crates/taiyaku-library/src/browse.rs` — `series`'s signature gains a
+  `user_id` and `SeriesCard` two fields, per §5.5; its only caller is the one
+  route
+- `web/package.json` and its lockfile — `react-router`, the first runtime
+  dependency beyond React since the project began
+- `docs/status.md` again — the route list gains `/api/library/status` and the
+  `?root=` parameter
 - `README.md` and `web/README.md` again — `taiyaku serve` gains an invocation
   that takes no paths at all, which is the one every scanned library uses
 
 ## 13. What could not be measured
 
-- **What `react-router` costs this bundle.** Asserted by nobody; §11 step 1 is
-  where it stops being unknown. If it is large enough to matter, the fifty-line
-  hand-rolled router is still on the table and this spec's routing section is
-  the only part that changes.
+- **What `react-router` costs this bundle.** Asserted by nobody; §11 step 2 —
+  Plan A — is where it stops being unknown. *(This said "step 1" until
+  2026-08-20; step 1 was migration 6 and never touched the bundle.)* If it is
+  large enough to matter, the fifty-line hand-rolled router is still on the
+  table and this spec's routing section is the only part that changes.
 - **Whether a 127-cover grid is actually fast enough** on the deployment host
   over a real network, with covers generated on demand the first time. The cover
   cache is content-addressed and warm after one visit; the cold case is the one
@@ -537,7 +684,10 @@ this spec adds is coverage CI enforces.
 - **What the root filter costs a list query, and what the cover fallback costs
   the series grid.** Both add a join to the query behind the busiest screen,
   and §7's argument against virtualisation is a claim about the same numbers.
-  Neither has been timed; step 4 of §11 is where they stop being unknown.
+  **Neither has been timed, and both have now shipped** — this said "step 4 of
+  §11 is where they stop being unknown", step 5 is where they were built, and
+  they were built without being timed. §5.5 adds a fifth join to the same
+  query, so the measurement is Plan A's rather than nobody's.
 - **Whether anyone has ever held a root grant.** `user_root` has no rows in any
   library that exists, here or elsewhere, because nothing could write one until
   this spec. So the filter's non-empty branch is reachable only through the new

@@ -126,6 +126,10 @@ describe('intentOf', () => {
     expect(intentOf(press('1', { metaKey: true }), editions)).toBeUndefined()
     expect(intentOf(press(' ', { ctrlKey: true }), editions)).toBeUndefined()
   })
+
+  it('L asks to go back to the library', () => {
+    expect(intentOf(press('L'), editions)).toEqual({ kind: 'library' })
+  })
 })
 
 describe('READER_KEYS', () => {
@@ -162,6 +166,11 @@ describe('READER_KEYS', () => {
       expect(b.label.length).toBeGreaterThan(0)
       expect(b.keys.length).toBeGreaterThan(0)
     }
+  })
+
+  it('the library key is in the one table the help screen is generated from', () => {
+    const row = READER_KEYS.find((b) => b.keys.includes('L'))
+    expect(row?.label, 'a label, or Help cannot describe it').toBeTruthy()
   })
 
   // The property the ordering carries: a module cannot take a reader key,

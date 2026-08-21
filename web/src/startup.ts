@@ -1,5 +1,5 @@
 /**
- * Opening a work: the five reads, in the order they have to happen, and the
+ * Opening a work: the four reads, in the order they have to happen, and the
  * one of them that is allowed to fail.
  *
  * Extracted from `App.tsx`'s load effect, which was 63 lines of `await` with
@@ -16,12 +16,7 @@
  * fresh clone. `Resolver` as a *type* costs nothing; `wasmResolver` as a value
  * would cost the whole test file.
  */
-import type {
-  FetchedNotes,
-  FetchedSidecar,
-  StoredProgress,
-  WorkSummary,
-} from './api'
+import type { FetchedNotes, FetchedSidecar, StoredProgress } from './api'
 import type { Direction } from './modules/direction'
 import type { NotesDoc } from './notes'
 import { restore, type ReadingState } from './reading'
@@ -62,25 +57,14 @@ export interface Session {
 }
 
 /**
- * Enough of a work listing entry to open the first one. `api.ts`'s
- * `WorkSummary` is the full row a browse screen (spec C1) will read; a load
- * only ever addresses `.slug`. `title` and `editions` stay on this `Pick`
- * rather than being dropped to just `slug` — a real caller (`listWorks`
- * itself) already has the whole `WorkSummary` and hands it through unchanged,
- * so narrowing further here would buy this file nothing.
- */
-export type WorkListing = Pick<WorkSummary, 'slug' | 'title' | 'editions'>
-
-/**
- * The five reads a load makes, injected.
+ * The four reads a load makes, injected.
  *
- * `api.ts`'s four functions and `resolver.ts`'s `wasmResolver`. Ports rather
+ * `api.ts`'s three functions and `resolver.ts`'s `wasmResolver`. Ports rather
  * than imports for two different reasons: `resolve` because of Rule 1 above,
- * and the other four because the order they are called in is the thing this
+ * and the other three because the order they are called in is the thing this
  * module is for and a test that cannot see the order cannot assert on it.
  */
 export interface StartupPorts {
-  works(): Promise<WorkListing[]>
   sidecar(work: string): Promise<FetchedSidecar>
   /** `wasmResolver`, injected — see this file's own doc. Never imported here. */
   resolve(json: string): Promise<Resolver>
@@ -109,41 +93,47 @@ export interface Opened {
 }
 
 /**
- * Open the first work the server offers.
+ * Open one work by slug.
  *
- * Throws for "no works available" and for a work that defines no editions —
- * both are states with no reader to show, so there is nothing to degrade to.
- * The notes read is the one failure that does not stop the reader: a reader
- * who cannot see their notes should still get their pages, so it is caught
- * here and reported through `notesError` rather than rejecting.
+ * **Was `openFirstWork`, which read `/api/works` and took `[0]`.** That was
+ * the only way to reach a work when the reader was handed sidecar paths on
+ * argv; spec C1's browse UI knows which work it wants, and `serve --db` serves
+ * every row, so listing them to discard all but one was a request whose answer
+ * was thrown away.
  *
- * **The order of the five reads is load-bearing and is not an accident of how
- * this was written.** The resolver is built before progress is read, so a
+ * Throws for a work that defines no editions — a state with no reader to show,
+ * so there is nothing to degrade to — and lets a failing sidecar read reject,
+ * which is what a slug that is not in the library looks like. The notes read is
+ * still the one failure that does not stop the reader.
+ *
+ * **The order of the four reads is load-bearing** and is not an accident of how
+ * this was written. The resolver is built before progress is read, so a
  * failure parsing the sidecar surfaces before a second request is made — and
  * because `restore` needs the resolver itself, to check that a stored slot
  * still exists rather than trusting stale JSON outright. Notes are read after
- * progress rather than before it because neither depends on the other and the
- * one that can fail should not be in front of the one that cannot.
+ * progress because neither depends on the other and the one that can fail
+ * should not be in front of the one that cannot.
  */
-export async function openFirstWork(ports: StartupPorts): Promise<Opened> {
-  const [work] = await ports.works()
-  if (!work) throw new Error('no works available')
-  const fetched = await ports.sidecar(work.slug)
+export async function openWork(
+  ports: StartupPorts,
+  slug: string,
+): Promise<Opened> {
+  const fetched = await ports.sidecar(slug)
   const sidecar: SidecarShape = JSON.parse(fetched.json)
   const editions = orderedEditions(sidecar.hub, Object.keys(sidecar.editions))
   const [hub] = editions
-  if (!hub) throw new Error(`${work.slug} defines no editions`)
+  if (!hub) throw new Error(`${slug} defines no editions`)
   const resolver = await ports.resolve(fetched.json)
-  const progress = await ports.progress(work.slug)
+  const progress = await ports.progress(slug)
   let notesError: unknown
-  const notes = await ports.notes(work.slug).catch((err: unknown) => {
+  const notes = await ports.notes(slug).catch((err: unknown) => {
     notesError = err
     return undefined
   })
   const state = restore(progress, hub, resolver)
   return {
     session: {
-      work: work.slug,
+      work: slug,
       resolver,
       reading: sidecar.work.reading,
       editions,
@@ -156,7 +146,7 @@ export async function openFirstWork(ports: StartupPorts): Promise<Opened> {
       previous: initialPrevious(editions, state.authority),
     },
     etag: fetched.etag,
-    notes: notes?.doc ?? { work: work.slug, notes: [] },
+    notes: notes?.doc ?? { work: slug, notes: [] },
     notesEtag: notes?.etag,
     notesError,
   }

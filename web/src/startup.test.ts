@@ -1,7 +1,6 @@
 /**
- * `openFirstWork`, and the two things about a load that only a port seam can
- * see: the *order* the five reads happen in, and which of them is allowed to
- * fail.
+ * `openWork`, and the two things about a load that only a port seam can see:
+ * the *order* the four reads happen in, and which of them is allowed to fail.
  *
  * Both were untestable while this was a `useEffect` in `App.tsx` — not because
  * an effect is hard to drive, but because that file value-imports
@@ -9,10 +8,10 @@
  * here as `ports.resolve`, which is what lets `fakeResolver` stand in for the
  * wasm one.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { bSlots, fakeResolver, whole } from './fixtures'
 import type { Resolver } from './resolver'
-import { allSlots, openFirstWork, type StartupPorts } from './startup'
+import { allSlots, openWork, type StartupPorts } from './startup'
 
 const resolver = fakeResolver({ a: whole(8), b: bSlots }, {})
 
@@ -25,19 +24,10 @@ const sidecar = (over: object = {}) =>
     ...over,
   })
 
-/** The default fixture's sidecar, fixed rather than rebuilt per test — the
- * one test below that opens straight from a listing of objects, with no
- * `scripted()` in between, wants a literal it can point `sidecar` at. */
-const SIDECAR_JSON = sidecar()
-
 /** Every read recorded in the order it was made, so ordering is assertable. */
 function scripted(over: Partial<StartupPorts> = {}) {
   const calls: string[] = []
   const ports: StartupPorts = {
-    works: async () => {
-      calls.push('works')
-      return [{ slug: 'gotoubun', title: 'Gotoubun', editions: ['a', 'b'] }]
-    },
     sidecar: async () => {
       calls.push('sidecar')
       return { json: sidecar(), etag: '"v1"' }
@@ -61,10 +51,10 @@ function scripted(over: Partial<StartupPorts> = {}) {
   return { calls, ports }
 }
 
-describe('openFirstWork', () => {
-  it('opens the first work the server offers', async () => {
+describe('openWork', () => {
+  it('opens the work at the slug it was given', async () => {
     const { ports } = scripted()
-    const opened = await openFirstWork(ports)
+    const opened = await openWork(ports, 'gotoubun')
     expect(opened.session.work).toBe('gotoubun')
     expect(opened.session.resolver).toBe(resolver)
     expect(opened.session.reading).toBe('rtl')
@@ -73,37 +63,28 @@ describe('openFirstWork', () => {
     expect(opened.etag).toBe('"v1"')
   })
 
-  /** Task 14: `works` answers a listing of objects rather than bare ids, and
-   * a load opens the first one's `.slug` — driven with a literal `StartupPorts`
-   * rather than through `scripted()`, so this stands on its own as the shape
-   * `GET /api/works` actually answers. `resolve` answers the module-level
-   * `resolver` rather than a bare `fakeResolver()`: that helper takes the
-   * slots and pairs its first two (required) arguments describe, and the
-   * shared fixture above already builds one matching `SIDECAR_JSON`'s `a`/`b`
-   * editions. */
-  it('opens the first work from a listing of objects', async () => {
-    const opened = await openFirstWork({
-      works: async () => [
-        {
-          slug: 'gotoubun-v01',
-          title: 'Go-Toubun v01',
-          editions: ['raw', 'en'],
-        },
-      ],
-      sidecar: async () => ({ json: SIDECAR_JSON, etag: 'W/"1"' }),
+  it('reads the sidecar for the slug it was given, not the first work listed', async () => {
+    const sidecarFn = vi.fn(async () => ({ json: sidecar(), etag: '"v1"' }))
+    const progressFn = vi.fn(async () => undefined)
+    const notesFn = vi.fn(async () => ({
+      doc: { work: 'gotoubun-v03', notes: [] },
+      etag: '"n1"',
+    }))
+    const ports: StartupPorts = {
+      sidecar: sidecarFn,
       resolve: async () => resolver,
-      progress: async () => undefined,
-      notes: async () => ({
-        doc: { work: 'gotoubun-v01', notes: [] },
-        etag: 'W/"2"',
-      }),
-    })
-    expect(opened.session.work).toBe('gotoubun-v01')
+      progress: progressFn,
+      notes: notesFn,
+    }
+    await openWork(ports, 'gotoubun-v03')
+    expect(sidecarFn).toHaveBeenCalledWith('gotoubun-v03')
+    expect(progressFn).toHaveBeenCalledWith('gotoubun-v03')
+    expect(notesFn).toHaveBeenCalledWith('gotoubun-v03')
   })
 
   it('starts at slot 0 of the hub with nothing recorded', async () => {
     const { ports } = scripted()
-    const { session } = await openFirstWork(ports)
+    const { session } = await openWork(ports, 'gotoubun')
     expect(session.state).toEqual({ authority: 'a', slot: 0, viewing: 'a' })
   })
 
@@ -111,7 +92,7 @@ describe('openFirstWork', () => {
     const { ports } = scripted({
       progress: async () => ({ edition: 'b', slot: 4 }),
     })
-    const { session } = await openFirstWork(ports)
+    const { session } = await openWork(ports, 'gotoubun')
     expect(session.state).toEqual({ authority: 'b', slot: 4, viewing: 'b' })
   })
 
@@ -125,22 +106,22 @@ describe('openFirstWork', () => {
     const { ports } = scripted({
       progress: async () => ({ edition: 'b', slot: 400 }),
     })
-    const { session } = await openFirstWork(ports)
+    const { session } = await openWork(ports, 'gotoubun')
     expect(session.state).toEqual({ authority: 'b', slot: 0, viewing: 'b' })
   })
 
   /** Never the hub itself — see `initialPrevious`'s own doc for the no-op `Space` that costs. */
   it('seeds `previous` one step ahead of the authority, not at it', async () => {
     const { ports } = scripted()
-    const { session } = await openFirstWork(ports)
+    const { session } = await openWork(ports, 'gotoubun')
     expect(session.previous).toBe('b')
     expect(session.previous).not.toBe(session.state.authority)
   })
 
-  it('orders the five reads: sidecar, then resolve, then progress, then notes', async () => {
+  it('orders the four reads: sidecar, then resolve, then progress, then notes', async () => {
     const { calls, ports } = scripted()
-    await openFirstWork(ports)
-    expect(calls).toEqual(['works', 'sidecar', 'resolve', 'progress', 'notes'])
+    await openWork(ports, 'gotoubun')
+    expect(calls).toEqual(['sidecar', 'resolve', 'progress', 'notes'])
   })
 
   /**
@@ -155,14 +136,18 @@ describe('openFirstWork', () => {
         throw new Error('bad sidecar')
       },
     })
-    await expect(openFirstWork(ports)).rejects.toThrow('bad sidecar')
+    await expect(openWork(ports, 'gotoubun')).rejects.toThrow('bad sidecar')
     expect(calls).not.toContain('progress')
     expect(calls).not.toContain('notes')
   })
 
-  it('throws where the server offers no works', async () => {
-    const { ports } = scripted({ works: async () => [] })
-    await expect(openFirstWork(ports)).rejects.toThrow('no works available')
+  it('rejects when the sidecar read fails, rather than opening something else', async () => {
+    const { ports } = scripted({
+      sidecar: async () => {
+        throw new Error('loading x: 404 no work `x`')
+      },
+    })
+    await expect(openWork(ports, 'x')).rejects.toThrow(/404/)
   })
 
   /**
@@ -176,7 +161,7 @@ describe('openFirstWork', () => {
     const { ports } = scripted({
       sidecar: async () => ({ json: sidecar({ hub: '', editions: {} }) }),
     })
-    await expect(openFirstWork(ports)).rejects.toThrow(
+    await expect(openWork(ports, 'gotoubun')).rejects.toThrow(
       'gotoubun defines no editions',
     )
   })
@@ -185,7 +170,7 @@ describe('openFirstWork', () => {
     const { ports } = scripted({
       sidecar: async () => ({ json: sidecar({ editions: {} }) }),
     })
-    const { session } = await openFirstWork(ports)
+    const { session } = await openWork(ports, 'gotoubun')
     expect(session.editions).toEqual(['a'])
   })
 
@@ -194,7 +179,7 @@ describe('openFirstWork', () => {
     const { ports } = scripted({
       sidecar: async () => ({ json: sidecar() }),
     })
-    const opened = await openFirstWork(ports)
+    const opened = await openWork(ports, 'gotoubun')
     expect(opened.etag).toBeUndefined()
     expect(opened.session.work).toBe('gotoubun')
   })
@@ -214,7 +199,7 @@ describe('openFirstWork', () => {
         etag: '"n7"',
       }),
     })
-    const opened = await openFirstWork(ports)
+    const opened = await openWork(ports, 'gotoubun')
     expect(opened.notes.notes).toEqual([note])
     expect(opened.notesEtag).toBe('"n7"')
     expect(opened.notesError).toBeUndefined()
@@ -233,7 +218,7 @@ describe('openFirstWork', () => {
         throw boom
       },
     })
-    const opened = await openFirstWork(ports)
+    const opened = await openWork(ports, 'gotoubun')
     expect(opened.session.work).toBe('gotoubun')
     expect(opened.notes).toEqual({ work: 'gotoubun', notes: [] })
     expect(opened.notesEtag).toBeUndefined()
@@ -247,7 +232,7 @@ describe('openFirstWork', () => {
         throw new Error('sidecar is down')
       },
     })
-    await expect(openFirstWork(ports)).rejects.toThrow('sidecar is down')
+    await expect(openWork(ports, 'gotoubun')).rejects.toThrow('sidecar is down')
   })
 })
 

@@ -233,10 +233,22 @@ interface Flushable {
  * reader leaves.** Until 2026-08-09 it only removed the two listeners, so a
  * pending write survived its own component: `App.tsx`'s two debounces were
  * left armed and could fire `putProgress` or `putNotes` up to 700 ms after the
- * thing that scheduled them had gone. `App` is the SPA root and never
- * unmounts, so no reader has met this — it surfaced as a stray `putProgress`
+ * thing that scheduled them had gone. It surfaced as a stray `putProgress`
  * arriving in a *later test* than the one that caused it, under coverage
  * instrumentation slow enough to let a 400 ms timer outlive its `afterEach`.
+ *
+ * **`App` unmounts for three ordinary reasons now, and this cleanup is what
+ * covers all three.** It was the SPA root when the paragraph above was
+ * written, so no reader could meet the case; since spec C1 §11 step 2 it is
+ * one route of four. Leaving the reader for the library unmounts it, so does
+ * moving between works — `Routes.tsx`'s `<App key={work}>` — and so does
+ * signing out, which is `Gate.tsx` dropping everything below it. That last one
+ * is the one with teeth: `App` used to cancel both writers by hand on a
+ * sign-out, and the reason was that a timer firing afterwards would write the
+ * previous reader's work under whoever had signed in by then. Flushing here
+ * closes that without a second list to keep complete, because the flush
+ * happens *at* the unmount commit — the account cannot have changed yet, and
+ * the session the write goes out under is the one that just ended.
  *
  * **Flush and not cancel, at both call sites, for two different reasons.** For
  * the position, cancelling would drop the last turn a reader made and reopen

@@ -273,7 +273,7 @@ export interface OpenedWork {
 /**
  * The two reads a work selection makes, in one call so `Labeller.tsx`'s
  * effect is a `.then` and five setters rather than the orchestration itself
- * — `startup.ts`'s `openFirstWork` is the same split for the same reason.
+ * — `startup.ts`'s `openWork` is the same split for the same reason.
  */
 export async function openWork(
   ports: Pick<TruthPorts, 'sidecar' | 'get'>,

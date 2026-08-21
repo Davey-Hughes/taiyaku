@@ -87,6 +87,8 @@ export type KeyAction =
   | { kind: 'close-account' }
   | { kind: 'begin-correction' }
   | { kind: 'module'; intent: string }
+  /** Back to the library grid — spec C1 §6. */
+  | { kind: 'leave-reader' }
   /**
    * `ReadingIntent` is `session.ts`'s own `Exclude`, reused rather than
    * restated, so a fourth `Intent` kind cannot be admitted here silently.
@@ -256,6 +258,9 @@ export function keyPlan(
   // review, 2026-08-18.
   if (intent.kind === 'account') {
     return { action: { kind: 'open-account' }, preventDefault: true }
+  }
+  if (intent.kind === 'library') {
+    return { action: { kind: 'leave-reader' }, preventDefault: true }
   }
   if (intent.kind === 'correct') {
     // Not while a correction is already on the wire. Without this,

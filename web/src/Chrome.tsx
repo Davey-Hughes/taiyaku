@@ -134,6 +134,59 @@ const readoutStyle: CSSProperties = {
   textOverflow: 'ellipsis',
 }
 
+// The reader's own way back to the library, docked opposite `CreditsPanel`,
+// `Help` and `NotePanel`'s shared shell — all three dock at `top: 16, right:
+// 16, zIndex: 3` (see e.g. `NotePanel.tsx`'s `panelStyle`), which used to sit
+// directly under this button when any of them was open, and their explicit
+// `zIndex: 3` always beat this button's implicit `auto`. `left: inset`
+// rather than a higher `zIndex` on this side: stacking above an open panel
+// would only trade "hidden behind the panel" for "drawn on top of the
+// panel's own content", which is not reachable either, just differently
+// broken. `left` is a corner none of the three touches.
+//
+// It is not, though, a corner `CorrectionBanner` (`CorrectionBanner.tsx`)
+// leaves alone: that banner spans `left: 16` to `right: 16` at `top: 16`,
+// the full width of the viewport at this same top edge, so `top: inset,
+// left: inset` sits inside it, not beside it. No `zIndex` here can fix that
+// the way it fixes the three panels — this button and the banner both claim
+// real width at the same edge, so any stacking order just decides which one
+// gets obscured. What actually clears it is below, in `Chrome` itself: the
+// button only renders while `filmstrip.correcting` is unset. A correction is
+// a transient, task-focused state with nothing for a "back to the library"
+// control to offer — the reader is choosing a counterpart page, not
+// browsing — and every other corner is already spoken for, so hiding the
+// button is the one move that does not cost another surface its own corner.
+// The `L` key stays live throughout regardless — see `Chrome`'s own comment
+// on the button below.
+//
+// Styled to match, rather than left as a bare native `<button>`: this floats
+// directly over artwork with nothing behind it, unlike the panels' own
+// unstyled `Close`/`Export` buttons, which sit inside a dark box that
+// already does the work. Same recipe `stripStyle` above and `panelStyle`
+// (`NotePanel.tsx`, `CreditsPanel.tsx`, `Help.tsx`) use for that box —
+// `rgba(24, 24, 24, …)` and `rgba(255, 255, 255, …)`, not the library
+// screen's `Canvas`/`ButtonFace` system colours (`index.css`'s `.chips
+// button`), which follow OS light/dark and would put a light-mode button on
+// a reader deliberately dark regardless of theme.
+const leaveButtonStyle: CSSProperties = {
+  position: 'absolute',
+  top: inset,
+  left: inset,
+  // At the panels' own `zIndex: 3`, so a future change that ever shares
+  // their corner again loses no stacking fight the way the implicit `auto`
+  // used to. Does nothing for `CorrectionBanner` — see the comment above.
+  zIndex: 3,
+  border: 'none',
+  borderRadius: 8,
+  padding: '6px 14px',
+  font: 'inherit',
+  fontSize: '0.85em',
+  cursor: 'pointer',
+  background: 'rgba(24, 24, 24, 0.92)',
+  color: 'rgba(255, 255, 255, 0.92)',
+  boxShadow: '0 10px 30px rgba(0, 0, 0, 0.45)',
+}
+
 export interface ChromeProps extends FilmstripProps {
   /** Whether the strip and the readout row are shown at all. */
   visible: boolean
@@ -161,6 +214,8 @@ export interface ChromeProps extends FilmstripProps {
   health?: string
   /** The note count — derived by `modules/annotations.ts`, absent where the work has none. */
   notes?: string
+  /** Back to the library grid — spec C1 §6. */
+  onLeave: () => void
 }
 
 /**
@@ -207,6 +262,7 @@ export function Chrome({
   chapter,
   health,
   notes,
+  onLeave,
   ...filmstrip
 }: ChromeProps) {
   const animating = isAnimating(motion)
@@ -289,6 +345,26 @@ export function Chrome({
       <div style={{ ...readoutStyle, ...fade }} role="status">
         {row}
       </div>
+      {/* Hidden while correcting rather than restacked against
+          `CorrectionBanner` — see `leaveButtonStyle`'s own comment above for
+          why no `zIndex` can clear a banner that claims this same edge.
+          `onLeave` is still one keystroke away regardless: `L` (`keys.ts`,
+          listed on the generated help screen) keeps working during a
+          correction. That is deliberate, not an oversight matching this
+          button — the key is the documented path, and a reader who presses
+          it has explicitly asked to leave. A pending correction has not
+          been written to anything yet, so leaving loses nothing; only this
+          button, which is a convenience rather than the only way out, needs
+          to get out of the banner's way. */}
+      {!filmstrip.correcting && (
+        <button
+          type="button"
+          style={{ ...leaveButtonStyle, ...fade }}
+          onClick={onLeave}
+        >
+          Library
+        </button>
+      )}
     </>
   )
 }

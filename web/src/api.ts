@@ -14,8 +14,9 @@ const seg = (s: string) => encodeURIComponent(s)
  * A 401 from any of this module's calls.
  *
  * **A state change rather than an error to show.** Being signed out is not
- * something a reader can act on by reading a message; it is something `App`
- * routes on. Raised as its own type from one place — `request` below — because
+ * something a reader can act on by reading a message; it is something
+ * `Gate.tsx` routes on. Raised as its own type from one place — `request`
+ * below — because
  * eight separate branches is eight chances for a ninth call site to forget, and
  * the ninth is exactly the one that would ship signed-out readers a stack trace
  * where a login screen belongs.
@@ -41,6 +42,14 @@ export class Unauthenticated extends Error {
  * signatures: the answer is the same for every call, and a signature a caller
  * can decline to pass is how this happened the first time. Found by the
  * whole-branch review, 2026-08-18.
+ *
+ * **One slot, so exactly one component may register.** A second registration
+ * replaces the first with nothing said, which is why this belongs to
+ * `Gate.tsx` — the one component above the router, mounted for the whole page
+ * load — and not to a screen. It belonged to `App` until 2026-08-21, and the
+ * cost was the whole library: `main.tsx` renders the router, `/` is the
+ * library, and `App` mounts on `/read/:work` alone — so a signed-out visitor
+ * on `/` reached a screen where this hook was never registered at all.
  */
 let onUnauthenticated: (() => void) | undefined
 
@@ -55,8 +64,8 @@ export function whenSignedOut(handler: () => void): void {
  * `pageUrl` and `thumbUrl` are the deliberate exceptions and do not: they
  * return URLs for an `<img src>`, so the browser fetches them and a 401 there
  * shows as a broken image rather than reaching any code here — which is why
- * `App` asks `me()` on load instead of waiting to be told by a page that failed
- * to draw.
+ * `Gate.tsx` asks `me()` on load instead of waiting to be told by a page that
+ * failed to draw.
  */
 const request = async (input: string, init?: RequestInit) => {
   // Forwarded without an explicit `undefined` when there is no init, so the
@@ -73,6 +82,20 @@ const request = async (input: string, init?: RequestInit) => {
     throw new Unauthenticated()
   }
   return res
+}
+
+/**
+ * A guarded `GET` returning JSON.
+ *
+ * Exported for `library.ts`, which is a second module of calls against the
+ * same server and the same session. A second `fetch` wrapper there would be a
+ * second place for the 401 rule to be forgotten, which is the exact failure
+ * `whenSignedOut` above exists to have fixed once.
+ */
+export async function getJson<T>(path: string): Promise<T> {
+  const res = await request(path)
+  if (!res.ok) throw new Error(`${path}: ${res.status}`)
+  return (await res.json()) as T
 }
 
 /** Who the server resolved this browser to, or `Unauthenticated`. */

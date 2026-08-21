@@ -61,6 +61,8 @@ fn series_json(s: &browse::SeriesCard) -> serde_json::Value {
         "works": s.works,
         "editions": s.editions,
         "aligned": s.aligned,
+        "added": s.added,
+        "unread": s.unread,
         "cover": format!("/api/library/series/{}/cover", s.id),
     })
 }
@@ -82,6 +84,12 @@ pub(crate) async fn home(
     }
 }
 
+/// The optional `?root=` a grid carries — spec C1 §5.5.
+#[derive(serde::Deserialize)]
+pub(crate) struct GridQuery {
+    root: Option<i64>,
+}
+
 /// `GET /api/library/series` — the grid.
 ///
 /// Returns `{ series, unfiled }`, per spec C1 §5.4: a hand-imported work has
@@ -89,13 +97,20 @@ pub(crate) async fn home(
 pub(crate) async fn series(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    Query(query): Query<GridQuery>,
 ) -> Response {
     let conn = state.library.conn();
-    let series = match browse::series(&conn, &principal.roots) {
+    let series = match browse::series(&conn, &principal.roots, principal.user_id, query.root) {
         Ok(series) => series,
         Err(why) => return failed("the series listing", &why),
     };
-    let unfiled = match browse::unfiled(&conn, &principal.roots) {
+    // **`query.root` here too.** Fetched without it, this answered a
+    // root-agnostic list of every imported work in the library beside a
+    // root-scoped grid — one response, two different questions. `browse`
+    // empties it in SQL, from §5.1's own NULL-excludes-itself rule: an
+    // imported member sits under no root, and asking for a root asks for what
+    // is under it. Whole-branch review, 2026-08-21.
+    let unfiled = match browse::unfiled(&conn, &principal.roots, query.root) {
         Ok(unfiled) => unfiled,
         Err(why) => return failed("the unfiled works", &why),
     };
@@ -113,7 +128,7 @@ pub(crate) async fn one_series(
     AxPath(id): AxPath<i64>,
 ) -> Response {
     let conn = state.library.conn();
-    match browse::one_series(&conn, &principal.roots, id) {
+    match browse::one_series(&conn, &principal.roots, principal.user_id, id) {
         Ok(Some((card, works))) => Json(serde_json::json!({
             "series": series_json(&card),
             "works": works.iter().map(work_json).collect::<Vec<_>>(),
@@ -136,7 +151,23 @@ pub(crate) async fn work(
 ) -> Response {
     let conn = state.library.conn();
     match browse::work(&conn, &principal.roots, &slug) {
-        Ok(Some(card)) => Json(work_json(&card)).into_response(),
+        Ok(Some(detail)) => {
+            let mut body = work_json(&detail.card);
+            body["alignments"] = serde_json::json!(
+                detail
+                    .alignments
+                    .iter()
+                    .map(|a| serde_json::json!({
+                        "from": a.from,
+                        "to": a.to,
+                        "verdict": a.verdict,
+                        "slots": a.slots,
+                        "paired": a.paired,
+                    }))
+                    .collect::<Vec<_>>()
+            );
+            Json(body).into_response()
+        }
         Ok(None) => (StatusCode::NOT_FOUND, format!("no work `{slug}`")).into_response(),
         Err(why) => failed("the work", &why),
     }
@@ -160,7 +191,7 @@ pub(crate) async fn search(
     Query(query): Query<SearchQuery>,
 ) -> Response {
     let conn = state.library.conn();
-    match browse::search(&conn, &principal.roots, &query.q) {
+    match browse::search(&conn, &principal.roots, principal.user_id, &query.q) {
         Ok(hits) => Json(serde_json::json!({
             "query": query.q,
             "series": hits.series.iter().map(series_json).collect::<Vec<_>>(),
@@ -213,6 +244,29 @@ pub(crate) async fn cover(
         )],
     )
         .into_response()
+}
+
+/// `GET /api/library/status` — spec C1 §5.5.
+///
+/// Read-only. Two of spec C1 §8's first-run states are indistinguishable to
+/// every other route, and a first-run state nobody can render is one that
+/// ships broken to the only people who will ever see it.
+pub(crate) async fn status(
+    State(state): State<Arc<ServeState>>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
+    let conn = state.library.conn();
+    match browse::status(&conn, &principal.roots) {
+        Ok(status) => Json(serde_json::json!({
+            "roots": status.roots.iter().map(|r| serde_json::json!({
+                "id": r.id,
+                "name": r.name,
+            })).collect::<Vec<_>>(),
+            "scanned": status.scanned,
+        }))
+        .into_response(),
+        Err(why) => failed("the library status", &why),
+    }
 }
 
 #[cfg(test)]
