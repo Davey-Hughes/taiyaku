@@ -1136,3 +1136,227 @@ fn scanned_turns_true_only_after_a_scan_of_this_library_runs() {
     let status = status(&conn, &[]).expect("reads status");
     assert!(status.scanned, "the scan wrote a dir_state row");
 }
+
+/// A two-character Japanese query is a real word, and trigram answers it with
+/// silence — so `search` answers it with `LIKE`.
+///
+/// `花嫁` is the second half of `五等分の花嫁` and two characters long: below
+/// trigram's window, above nothing. Measured 2026-08-21: `series_fts MATCH
+/// '"花嫁"'` returns no rows against an index that contains that exact title.
+#[test]
+fn a_query_too_short_for_trigram_is_answered_by_like() {
+    let (library, _, _, _en, _raw) = two_root_library();
+    let conn = library.conn();
+    conn.execute(
+        "INSERT INTO series_title (series_id, title, kind, is_primary)
+         SELECT id, '五等分の花嫁', 'native', 0 FROM series LIMIT 1",
+        [],
+    )
+    .expect("gives the series its native title");
+
+    let hits = search(&conn, &[], 1, "花嫁").expect("searches");
+    assert_eq!(
+        hits.series.len(),
+        1,
+        "two characters must still find the shelf"
+    );
+
+    let long = search(&conn, &[], 1, "分の花嫁").expect("searches");
+    assert_eq!(
+        long.series.len(),
+        1,
+        "and four characters go through the index instead"
+    );
+}
+
+/// `match_for` is pinned directly, not only through what `search` returns.
+///
+/// **I6, whole-branch review.** `LIKE '%q%'` is a superset of what trigram
+/// `MATCH` answers for every fixture above it in this file — pin
+/// `TRIGRAM_MIN` at `100` instead of `3` and every one of those tests still
+/// passes, because the `LIKE` scan quietly answers what the index was
+/// supposed to. A result-shaped assertion cannot tell the two paths apart;
+/// asserting on `match_for`'s own return is a direct unit test of the
+/// decision rather than of a consequence the wrong path also produces, and
+/// simpler than proving the same thing through `EXPLAIN QUERY PLAN`.
+#[test]
+fn match_for_switches_paths_exactly_at_trigram_min() {
+    // Fixed lengths, not `TRIGRAM_MIN - 1` / `TRIGRAM_MIN`: building the
+    // fixture from the constant under test would make this test move with
+    // any mutation to it and never fail. `TRIGRAM_MIN` is 3, measured
+    // against the tokeniser above; a change to that measurement should
+    // break this pin, not glide past it.
+    assert!(
+        matches!(match_for("ab"), Match::Like(_)),
+        "two characters is below TRIGRAM_MIN and must take the LIKE path"
+    );
+
+    assert!(
+        matches!(match_for("abc"), Match::Fts(_)),
+        "three characters is TRIGRAM_MIN and must take the FTS path"
+    );
+}
+
+/// The `LIKE` path escapes the reader's own wildcards.
+///
+/// **Without `ESCAPE`, a search for `%` returns the whole library.** Measured
+/// 2026-08-21: `title LIKE '%' || '%' || '%'` matched all six rows of a
+/// fixture. That is the one input that turns a search box into a table dump,
+/// and it is one character long, which is exactly the path this task adds.
+#[test]
+fn a_wildcard_typed_into_the_search_box_is_a_literal() {
+    let (library, _, _, _en, _raw) = two_root_library();
+    let conn = library.conn();
+
+    for wildcard in ["%", "_"] {
+        let hits = search(&conn, &[], 1, wildcard).expect("searches");
+        assert!(
+            hits.series.is_empty() && hits.unfiled.is_empty(),
+            "`{wildcard}` is a character to look for, not an operator"
+        );
+    }
+}
+
+/// A backslash typed into the search box is a literal too — pinned
+/// separately from `%` and `_` because an empty-result assertion cannot
+/// tell an escaped backslash from an unescaped one.
+///
+/// Measured 2026-08-21 against SQLite 3.53.4: unescaped, `%` and `_` each
+/// match *every* row of a fixture, which the "expect nothing" assertion
+/// above catches fine. An unescaped `\` does the opposite — it escapes the
+/// query's own trailing `%` in `title LIKE '%' || ? || '%' ESCAPE '\'`, so
+/// the pattern becomes "ends with a literal `%`" and matches *nothing*,
+/// same as the correctly-escaped form. A fixture with no backslash in any
+/// title makes the two behaviours indistinguishable by an empty-result
+/// check — deleting `'\\'` from `escape_like`'s `matches!` arm left this
+/// suite green. The only assertion that tells them apart is a positive
+/// one: give a work a title that contains a literal backslash and expect
+/// to find it.
+#[test]
+fn a_backslash_typed_into_the_search_box_is_a_literal() {
+    let (library, _, _, _en, _raw) = two_root_library();
+    import_a_work(&library, "Placeholder", "/x/taiyaku.json");
+    let conn = library.conn();
+    conn.execute(
+        "UPDATE work SET title = 'back\\slash' WHERE series_id IS NULL",
+        [],
+    )
+    .expect("gives the unfiled work a title with a literal backslash");
+
+    let hits = search(&conn, &[], 1, "\\").expect("searches");
+    assert_eq!(
+        hits.unfiled.len(),
+        1,
+        "a literal backslash in the query must still find the work that has one"
+    );
+}
+
+/// An unfiled work is reachable by a short query too — the `LIKE` path has to
+/// cover both indexes, not only the series one.
+#[test]
+fn a_short_query_finds_an_unfiled_work_by_its_own_title() {
+    let (library, _, _, _en, _raw) = two_root_library();
+    // `two_root_library` files its one work into a series; an unfiled work
+    // needs an import, same as `search_finds_an_unfiled_work_by_its_own_title`
+    // above. Without this, the `UPDATE` below renames zero rows.
+    import_a_work(&library, "Placeholder", "/x/taiyaku.json");
+    let conn = library.conn();
+    conn.execute("UPDATE work SET title = '花嫁' WHERE series_id IS NULL", [])
+        .expect("renames the unfiled work");
+
+    let hits = search(&conn, &[], 1, "花嫁").expect("searches");
+    assert_eq!(
+        hits.unfiled.len(),
+        1,
+        "the unfiled index needs the same fallback"
+    );
+}
+
+/// A short query matching a *work's* title must still drag its parent series
+/// into the results — `series_of_matching_works`'s `LIKE` arm, pinned on its
+/// own.
+///
+/// `each_search_index_is_load_bearing_on_its_own` above already proves
+/// `series_of_matching_works` is load-bearing, but only on the FTS path: its
+/// fixture renames the work to `Nakano`, five characters, well above
+/// `TRIGRAM_MIN`, so that test never reaches `Match::Like` at all. This one
+/// gives the work a two-character title its series does not carry and
+/// searches for the whole thing, which is short enough that `match_for` can
+/// only produce `Match::Like` — so it is the `LIKE` arm on trial here, not
+/// the `MATCH` one.
+#[test]
+fn a_short_query_matching_a_works_title_drags_its_series_in() {
+    let (library, _, _, _en, _raw) = two_root_library();
+    let conn = library.conn();
+    conn.execute(
+        "UPDATE work SET title = '花嫁' WHERE series_id IS NOT NULL",
+        [],
+    )
+    .expect("gives the work a title its series does not carry");
+
+    let hits = search(&conn, &[], 1, "花嫁").expect("searches");
+    assert_eq!(
+        hits.series.len(),
+        1,
+        "a work's own short title must still surface the series it belongs to"
+    );
+}
+
+/// The grant still decides, whichever path answered.
+///
+/// **This is the property the whole-branch review found broken once already**
+/// — `ids` used to `LIMIT` before the grant filter ran, so a search that
+/// matched only invisible rows reported nothing found. A second query path is
+/// a second chance to make that mistake, so it is pinned on both.
+#[test]
+fn a_short_query_is_filtered_by_the_grant_like_a_long_one() {
+    let (library, _en_root, raw_root, _en, _raw) = two_root_library();
+    let conn = library.conn();
+    conn.execute(
+        "INSERT INTO series_title (series_id, title, kind, is_primary)
+         SELECT id, '五等分の花嫁', 'native', 0 FROM series LIMIT 1",
+        [],
+    )
+    .expect("native title");
+
+    let unrestricted = search(&conn, &[], 1, "花嫁").expect("searches");
+    assert_eq!(unrestricted.series.len(), 1, "an empty grant sees it");
+
+    let granted = search(&conn, &[raw_root], 1, "花嫁").expect("searches");
+    assert_eq!(
+        granted.series.len(),
+        1,
+        "a grant covering an edition of it still sees it"
+    );
+
+    let elsewhere = search(&conn, &[9999], 1, "花嫁").expect("searches");
+    assert!(
+        elsewhere.series.is_empty(),
+        "a grant covering nothing sees nothing, however the query was answered"
+    );
+}
+
+/// `?root=` deliberately does not reach search, and this says so out loud.
+///
+/// `search` passes `None` for `only` to both `series` and `unfiled`. That is a
+/// decision rather than an omission — the sidebar's root links point at
+/// `/?root=`, not at `/search` — and it is pinned here so that changing it is
+/// a change to a test rather than a silent widening. See this plan's "What
+/// this plan deliberately does not do", and Plan A's ledger, which carried it.
+#[test]
+fn search_spans_the_whole_grant_rather_than_one_root() {
+    let (library, en_root, raw_root, _en, _raw) = two_root_library();
+    let conn = library.conn();
+
+    let both = search(&conn, &[en_root, raw_root], 1, "Series").expect("searches");
+    assert_eq!(
+        both.series.len(),
+        1,
+        "the series is found through the grant covering both its roots"
+    );
+    let card = both.series.first().expect("one series");
+    assert_eq!(
+        card.editions, 2,
+        "and it carries both editions — search narrows to no single root"
+    );
+}

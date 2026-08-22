@@ -28,10 +28,12 @@ beyond React since the project began, spec C1 §1:
 
 | Route | Renders |
 | ----- | ------- |
-| `/` | the library grid — `Library.tsx`: a persistent sidebar, a continue strip, three filter chips and an `added` sort, all client-side over `library.ts`'s `/api/library/*` client. `?root=N` narrows the grid to one root |
-| `/series/:id` | the series page. Not built by this branch — Plan B |
-| `/search` | search. Not built by this branch — Plan B |
+| `/` | the library grid — `Library.tsx`: a continue strip, three filter chips and an `added` sort, all client-side over `library.ts`'s `/api/library/*` client. `?root=N` narrows the grid to one root. Its tiles are `SeriesGrid.tsx`, shared with `/search` |
+| `/series/:id` | one series and its volumes — `Series.tsx`: a grid or a table layout, an edition selector that dims a volume rather than removing it, and an optional `i` panel naming a verdict and a paired count from `/api/library/works/{slug}` |
+| `/search` | search — `Search.tsx`: `?q=` in the URL, debounced through `debounce.ts` at the reader's own 250 ms. Migration 8 tokenises both FTS5 indexes `trigram`, answering any query of three characters or more in either script; `browse::search`'s `LIKE` path answers the two `trigram` cannot |
 | `/read/:work` | the reader (`App.tsx`), keyed by the slug in the URL so a swap between works remounts rather than trying to stay one component |
+
+The sidebar and its settings panel (`BrowseSettings.tsx`, generated from `browseModule.ts` exactly as `Settings.tsx` is generated from the reader's module registry) live in `Shell.tsx`, which wraps the three library screens above — not the reader — and owns the one status fetch all three need.
 
 Any other path redirects to `/`.
 

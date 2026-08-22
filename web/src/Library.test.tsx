@@ -4,14 +4,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Me } from './api'
 import { GateContext } from './gate'
 import * as library from './library'
+import type { LibraryStatus } from './library'
 import { Library } from './Library'
+import { StatusContext } from './shell'
 import { mount } from './testing/mount'
 
 vi.mock('./library', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./library')>()),
   home: vi.fn(),
   grid: vi.fn(),
-  status: vi.fn(),
 }))
 
 const series = (
@@ -39,18 +40,12 @@ const work = (over: Partial<library.WorkCard> = {}): library.WorkCard => ({
   ...over,
 })
 
-const account = (over: Partial<Me> = {}): Me => ({
-  user_id: 1,
-  admin: false,
-  can_download: true,
-  can_stream: true,
-  ...over,
-})
+const defaultStatus: LibraryStatus = { roots: [], scanned: true }
 
 /**
- * Mount and let the three loads settle.
+ * Mount and let the two loads settle.
  *
- * Two flushes, not one: the effect fires a `Promise.all` over three mocked
+ * Two flushes, not one: the effect fires a `Promise.all` over two mocked
  * promises and *then* sets state, so a single microtask turn lands between the
  * resolution and the re-render and the assertions run against a screen that has
  * not drawn yet.
@@ -60,12 +55,20 @@ const account = (over: Partial<Me> = {}): Me => ({
  * this file is about — and every one of them is pinned in `Gate.test.tsx`
  * against a stubbed server. `who` defaults to `undefined`, which is what a
  * screen mounted with no gate above it genuinely reads.
+ *
+ * **The status is supplied through `StatusContext` directly rather than
+ * mocked.** `Shell` owns the `status()` fetch now — `Library` only reads the
+ * context it publishes — so a test of `Library` alone hands it the value
+ * `Shell` would have resolved to, synchronously, the way `Shell.test.tsx`
+ * hands `Shell` itself a mocked fetch.
  */
-const show = async (who?: Me) => {
+const show = async (who?: Me, status: LibraryStatus = defaultStatus) => {
   let host!: HTMLElement
   const screen = (
     <MemoryRouter>
-      <Library />
+      <StatusContext.Provider value={status}>
+        <Library />
+      </StatusContext.Provider>
     </MemoryRouter>
   )
   await act(async () => {
@@ -88,7 +91,6 @@ const show = async (who?: Me) => {
 
 describe('the library screen', () => {
   beforeEach(() => {
-    vi.mocked(library.status).mockResolvedValue({ roots: [], scanned: true })
     vi.mocked(library.home).mockResolvedValue({
       continuing: [],
       added: [],
@@ -125,6 +127,12 @@ describe('the library screen', () => {
     const host = await show()
     // The rendered mark itself, not a bare digit anywhere on the page.
     expect(host.querySelector('.aligned')?.textContent).toBe('⇄ 7')
+    // I7 of the whole-branch review: spec C1 §3 puts the mark *on the
+    // cover*, and `index.css` has exactly one rule for it —
+    // `.cover-box .aligned` — so outside that box the mark loses its
+    // positioning and its chip. `textContent` alone cannot tell "on the
+    // cover" from "moved below the title"; only the ancestor can.
+    expect(host.querySelector('.cover-box .aligned')).not.toBeNull()
   })
 
   it('links an unfiled work straight into the reader, since it has no series page', async () => {
@@ -173,27 +181,24 @@ describe('the library screen', () => {
   })
 
   it('a library with no roots is told so, rather than shown an empty grid', async () => {
-    vi.mocked(library.status).mockResolvedValue({ roots: [], scanned: false })
-    const host = await show()
+    const host = await show(undefined, { roots: [], scanned: false })
     expect(host.textContent).toContain('library scan --add')
   })
 
   it('a configured but unscanned library is told the other thing', async () => {
-    vi.mocked(library.status).mockResolvedValue({
+    const host = await show(undefined, {
       roots: [{ id: 1, name: 'Manga' }],
       scanned: false,
     })
-    const host = await show()
     expect(host.textContent).not.toContain('--add')
     expect(host.textContent).toContain('library scan')
   })
 
   it('a scanned library with no series says nothing matched, not that it is unconfigured', async () => {
-    vi.mocked(library.status).mockResolvedValue({
+    const host = await show(undefined, {
       roots: [{ id: 1, name: 'Manga' }],
       scanned: true,
     })
-    const host = await show()
     expect(host.textContent).not.toContain('library scan')
     // Positive half: the no-matches empty state actually rendered, rather
     // than nothing at all — the same shape `Routes.test.tsx`'s "does not
@@ -212,20 +217,21 @@ describe('the library screen', () => {
     vi.mocked(library.grid).mockRejectedValueOnce(new Error('offline'))
 
     // The effect re-fires on `root` alone (`Library.tsx`'s own dependency
-    // array), and nothing inside `Library` changes it here — this mount has
-    // no gate above it, so `showRoots` is false and `Sidebar` draws no root
-    // links. A sibling link inside the same `MemoryRouter`, changing only the
-    // `?root=` query parameter `Library` reads via `useSearchParams`, is what
-    // stands in for "the reader retried" without inventing a retry control
-    // this task did not ask for.
+    // array), and nothing inside `Library` changes it here. A sibling link
+    // inside the same `MemoryRouter`, changing only the `?root=` query
+    // parameter `Library` reads via `useSearchParams`, is what stands in for
+    // "the reader retried" without inventing a retry control this task did
+    // not ask for.
     let host!: HTMLElement
     await act(async () => {
       host = mount(
         <MemoryRouter initialEntries={['/?root=1']}>
-          <div>
-            <Link to="/?root=2">retry</Link>
-            <Library />
-          </div>
+          <StatusContext.Provider value={defaultStatus}>
+            <div>
+              <Link to="/?root=2">retry</Link>
+              <Library />
+            </div>
+          </StatusContext.Provider>
         </MemoryRouter>,
       )
     })
@@ -246,47 +252,6 @@ describe('the library screen', () => {
     // is gone — not merely replaced by a new one, which `.toBeNull()` alone
     // would not distinguish from "still broken, differently".
     expect(host.querySelector('[role="alert"]')).toBeNull()
-  })
-
-  /**
-   * `showRoots` was a hardcoded `false` from the day this screen was written
-   * until 2026-08-21, while `Sidebar.tsx`'s own doc said its caller passed the
-   * admin-dependent default — a comment that was false as written rather than
-   * merely stale. Four things this branch shipped were unreachable behind it:
-   * the `?root=` API, `status.roots`' names, `named()`'s collision fallback and
-   * this component's own reading of `useSearchParams`.
-   */
-  describe('the roots list, which is an admin\u2019s', () => {
-    beforeEach(() => {
-      vi.mocked(library.status).mockResolvedValue({
-        roots: [
-          { id: 1, name: 'Manga' },
-          { id: 2, name: 'Manga (RAW)' },
-        ],
-        scanned: true,
-      })
-    })
-
-    it('is drawn for an admin', async () => {
-      const host = await show(account({ admin: true }))
-      const links = [...host.querySelectorAll('a[href^="/?root="]')]
-      expect(links.map((a) => a.textContent)).toEqual(['Manga', 'Manga (RAW)'])
-    })
-
-    it('is not drawn for anybody else', async () => {
-      const host = await show(account({ admin: false }))
-      expect(host.querySelector('a[href^="/?root="]')).toBeNull()
-      // The positive half: the sidebar itself is there, so this is "the roots
-      // section is absent" rather than "nothing rendered".
-      expect(host.querySelector('.sidebar a[href="/"]')).not.toBeNull()
-    })
-
-    it('is not drawn where no gate says who is asking', async () => {
-      // `undefined` from `useGate` has to read as "no account known", never as
-      // an admin — the safe direction, since this decides only what is shown.
-      const host = await show()
-      expect(host.querySelector('a[href^="/?root="]')).toBeNull()
-    })
   })
 
   /**

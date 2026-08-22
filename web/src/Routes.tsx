@@ -21,6 +21,9 @@
 import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router'
 import App from './App'
 import { Library } from './Library'
+import { Search } from './Search'
+import { Series } from './Series'
+import { Shell } from './Shell'
 
 /** The reader, keyed by the slug in the URL. */
 function Reader() {
@@ -30,22 +33,33 @@ function Reader() {
   return <App key={work} work={work} onLeave={() => void navigate('/')} />
 }
 
-/** Plan B builds these two. Named rather than blank, so the seam is visible. */
-function NotBuiltYet({ what }: { what: string }) {
-  return (
-    <main>
-      <h1>{what}</h1>
-      <p>Not built yet.</p>
-    </main>
-  )
-}
-
 export function AppRoutes() {
   return (
     <Routes>
-      <Route path="/" element={<Library />} />
-      <Route path="/series/:id" element={<NotBuiltYet what="Series" />} />
-      <Route path="/search" element={<NotBuiltYet what="Search" />} />
+      <Route
+        path="/"
+        element={
+          <Shell>
+            <Library />
+          </Shell>
+        }
+      />
+      <Route
+        path="/series/:id"
+        element={
+          <Shell>
+            <Series />
+          </Shell>
+        }
+      />
+      <Route
+        path="/search"
+        element={
+          <Shell>
+            <Search />
+          </Shell>
+        }
+      />
       <Route path="/read/:work" element={<Reader />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

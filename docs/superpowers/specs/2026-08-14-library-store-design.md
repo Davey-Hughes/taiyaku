@@ -801,7 +801,7 @@ machine-obtained data with nothing to backfill.
 | **A** *(this one; shipped 2026-08-18, #76)* | the store, import/export, `serve` off the database | — |
 | **A2** *(shipped 2026-08-18)* | argon2id, sessions, **API keys / HTTP Basic for OPDS**, guards, roles, per-root visibility, `FILE_DOWNLOAD`-equivalent — designed in `2026-08-14-library-auth-design.md`. Per-root visibility ships as a resolved `Principal.roots` that no route filters on yet, and the capability flags likewise: B landed first and gave `work` no `root_id`, so C1's browse API is the first caller that can act on either (O54) | A |
 | **B** *(shipped 2026-08-18, #77)* | the scanner: facts on disk, a user-editable rule layer over them, proposals, change detection — **standing alone, per §13.6**; designed in `2026-08-14-library-scanner-design.md` | A |
-| **C1** *(server half shipped 2026-08-20, #81)* | browse API and UI: shell, series page, search, and the reader gaining an entry point — designed in `2026-08-14-library-browse-design.md` | A2, B |
+| **C1** *(server half shipped 2026-08-20, #81; shell and sign-in shipped 2026-08-21, #82; series page, search and the trigram tokeniser on branch `library-browse-series`, PR not yet opened)* | browse API and UI: shell, series page, search, and the reader gaining an entry point — designed in `2026-08-14-library-browse-design.md` | A2, B |
 | **C2** | download: member bytes, and an edition as one streamed CBZ (§13.1) | A2 |
 | **C3** | curation: the proposals inbox and metadata editing — designed in `2026-08-14-library-curation-design.md` | C1 |
 | **C4** | configuration: roots, scan control, spec B's rule editor and its per-field provenance, A2's user management, backup — designed in `2026-08-14-library-configuration-design.md` | C1 |

@@ -1,12 +1,7 @@
 import type { CSSProperties } from 'react'
 import type { ReaderModule } from './module'
-import {
-  fieldsOf,
-  humanize,
-  nestedCount,
-  nestedSummary,
-  type Field,
-} from './settingsPanel'
+import { fieldsOf } from './settingsPanel'
+import { FieldControl } from './settingsFields'
 
 // A centred modal rather than a docked panel — unlike `Chrome`'s strip and
 // readout row, which must never cover the page underneath, the settings
@@ -63,87 +58,6 @@ const noteStyle: CSSProperties = {
   margin: '4px 0 0',
   fontSize: '0.9em',
   opacity: 0.7,
-}
-
-/** One field's control — inferred purely from `field.kind`, which `settingsPanel.ts`'s `fieldKind` already derived from the preference's own runtime type. Nothing here branches on which module or which key this is. */
-function FieldControl({
-  field,
-  value,
-  onChange,
-}: {
-  field: Field
-  value: unknown
-  onChange: (raw: unknown) => void
-}) {
-  const label = humanize(field.key)
-  if (field.kind === 'boolean') {
-    return (
-      <label style={rowStyle}>
-        <span>{label}</span>
-        <input
-          type="checkbox"
-          checked={value === true}
-          onChange={(e) => onChange(e.target.checked)}
-        />
-      </label>
-    )
-  }
-  if (field.kind === 'number') {
-    return (
-      <label style={rowStyle}>
-        <span>{label}</span>
-        <input
-          type="number"
-          value={typeof value === 'number' ? value : ''}
-          onChange={(e) => onChange(e.target.value)}
-          style={{ width: 72 }}
-        />
-      </label>
-    )
-  }
-  if (field.kind === 'select') {
-    return (
-      <label style={rowStyle}>
-        <span>{label}</span>
-        <select
-          value={typeof value === 'string' ? value : ''}
-          onChange={(e) => onChange(e.target.value)}
-        >
-          {(field.options ?? []).map((option) => (
-            <option key={option} value={option}>
-              {humanize(option)}
-            </option>
-          ))}
-        </select>
-      </label>
-    )
-  }
-  if (field.kind === 'string') {
-    return (
-      <label style={rowStyle}>
-        <span>{label}</span>
-        <input
-          type="text"
-          value={typeof value === 'string' ? value : ''}
-          onChange={(e) => onChange(e.target.value)}
-        />
-      </label>
-    )
-  }
-  // `'object'` — a nested per-key record such as `direction`'s `override` or
-  // `regroup`'s `breaks`, keyed by edition rather than a single settable
-  // value. There is no safe primitive control to infer for it (see
-  // `fieldKind`'s own doc), so this shows how many entries are set and
-  // leaves clearing them to the section's own Reset button, which already
-  // clears the whole slice back to `defaults` — a per-edition editor would
-  // need to know what "edition" means, which a generated, module-agnostic
-  // panel deliberately does not.
-  return (
-    <div style={rowStyle}>
-      <span>{label}</span>
-      <span style={{ opacity: 0.7 }}>{nestedSummary(nestedCount(value))}</span>
-    </div>
-  )
 }
 
 export interface SettingsProps {
@@ -233,6 +147,7 @@ export function Settings({
                   field={field}
                   value={modulePrefs[field.key]}
                   onChange={(raw) => onChange(mod.id, field.key, raw)}
+                  rowStyle={rowStyle}
                 />
               ))}
               {note && <p style={noteStyle}>{note}</p>}

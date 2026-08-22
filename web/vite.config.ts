@@ -52,6 +52,16 @@ export default defineConfig({
           name: 'node',
           include: ['src/**/*.test.ts'],
           exclude: ['src/**/*.browser.test.*'],
+          // Vitest's default `css: false` stubs every CSS import — `?raw`
+          // included — to an empty string, which is fine for the rest of
+          // this project (no test here reads CSS text) but breaks
+          // `index.css.test.ts`'s `import cssSource from './index.css?raw'`,
+          // the WCAG-contrast regression test for the browser pass's D2 and
+          // D3: `Login.theme.test.ts` already reads `.tsx` source the same
+          // way to catch a hardcoded colour, and CSS needs the identical
+          // treatment to catch a wrong opacity. Scoped to `index.css` alone,
+          // not `css: true`, so no other test pays for real CSS processing.
+          css: { include: [/index\.css/] },
         },
       },
       {

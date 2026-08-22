@@ -180,11 +180,14 @@ pub(crate) struct SearchQuery {
     q: String,
 }
 
-/// `GET /api/library/search?q=` — FTS5 over series titles and work titles.
+/// `GET /api/library/search?q=` — trigram FTS5 over series titles and work
+/// titles, with a `LIKE` scan underneath for a query too short for trigram to
+/// answer at all. See `browse::search`.
 ///
 /// **The query is echoed back**, because spec C1 §8 wants the empty state to
-/// name what was searched: FTS5's default tokeniser does not segment CJK, so a
-/// query can match nothing for reasons that are invisible unless it is shown.
+/// name what was searched: a reader looking at zero results cannot tell "no
+/// matches" from "the box didn't hold what I thought it did" without the
+/// server saying back what it understood the query to be.
 pub(crate) async fn search(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,

@@ -1,6 +1,7 @@
 import { act, useEffect } from 'react'
 import { MemoryRouter, useNavigate, useParams } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as library from './library'
 import { AppRoutes } from './Routes'
 import { mount } from './testing/mount'
 
@@ -47,6 +48,32 @@ vi.mock('./library', () => ({
   status: vi.fn().mockResolvedValue({ roots: [], scanned: true }),
   matchesChip: () => true,
   sorted: (s: unknown[]) => s,
+  // Task 4 wires `/series/:id` to `Series`, which fetches `oneSeries` on
+  // mount — a route this file exercises (`/series/1`, below). Its own
+  // behaviour is `Series.test.tsx`'s job; this fixture only has to resolve
+  // so the route mounts without an unhandled rejection.
+  oneSeries: vi.fn().mockResolvedValue({
+    series: {
+      id: 1,
+      title: 'Series',
+      works: 0,
+      editions: 0,
+      aligned: 0,
+      added: 0,
+      unread: 0,
+      cover: '',
+    },
+    works: [],
+  }),
+  // Task 10 wires `/search` to `Search`, which calls `search` once the
+  // debounce settles on the `?q=` value carried in from the URL — a route
+  // this file exercises (`/search?q=hello`, below). Its own behaviour is
+  // `Search.test.tsx`'s job; this fixture only has to resolve so the route
+  // mounts without an unhandled rejection, the same reason `oneSeries` above
+  // exists.
+  search: vi
+    .fn()
+    .mockResolvedValue({ series: [], unfiled: [], query: 'hello' }),
 }))
 
 const at = (path: string) =>
@@ -59,6 +86,14 @@ const at = (path: string) =>
 describe('the four routes', () => {
   beforeEach(() => {
     mounts.length = 0
+  })
+
+  // Only the search route below turns fake timers on — `Search`'s debounce
+  // needs them to settle deterministically. Every other test here runs on
+  // real timers, so this has to come back off after, not just get left on
+  // for whichever test happens to run next in the file.
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('opens the reader on the work in the URL', () => {
@@ -90,17 +125,46 @@ describe('the four routes', () => {
     expect(host.querySelector('[data-testid="reader"]')).toBeNull()
   })
 
-  it('builds a series page placeholder, named rather than blank', () => {
+  it('routes a series id into the series page inside the shell', async () => {
+    // `.library`/`.sidebar` alone come from `Shell`, which wraps every route
+    // in this file — they would still be present if `/series/:id` rendered
+    // `<Shell><Library /></Shell>` by mistake, so on their own they cannot
+    // tell `Series` apart from any other child. `oneSeries` having been
+    // called with the id parsed out of the URL is something only `Series`
+    // produces; `Series.test.tsx` owns the rest of that component's content.
     const host = at('/series/1')
-    expect(host.querySelector('h1')?.textContent).toBe('Series')
-    expect(host.textContent).toContain('Not built yet.')
+    await act(async () => {
+      await Promise.resolve()
+    })
     expect(host.querySelector('[data-testid="reader"]')).toBeNull()
+    expect(host.querySelector('.library')).not.toBeNull()
+    expect(host.querySelector('.sidebar')).not.toBeNull()
+    expect(vi.mocked(library.oneSeries)).toHaveBeenCalledWith(1)
   })
 
-  it('builds a search page placeholder, named rather than blank', () => {
-    const host = at('/search')
-    expect(host.querySelector('h1')?.textContent).toBe('Search')
-    expect(host.textContent).toContain('Not built yet.')
+  /**
+   * The same trap "routes a series id into the series page inside the shell"
+   * above already had to avoid: `.library`/`.sidebar` alone come from `Shell`,
+   * which wraps every route in this file, so they would still be present if
+   * `/search` rendered `<Shell><Library /></Shell>` by mistake. A search box
+   * is something only `Search` renders, and `library.search` having been
+   * called with the `?q=` value parsed out of the URL is something only its
+   * own effect produces; `Search.test.tsx` owns the rest of that component's
+   * content.
+   */
+  it('routes a search into the search screen inside the shell', async () => {
+    vi.useFakeTimers()
+    const host = at('/search?q=hello')
+    expect(host.querySelector('input[type="search"]')).not.toBeNull()
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[data-testid="reader"]')).toBeNull()
+    expect(host.querySelector('.library')).not.toBeNull()
+    expect(host.querySelector('.sidebar')).not.toBeNull()
+    expect(vi.mocked(library.search)).toHaveBeenCalledWith('hello')
   })
 
   it('sends a reader route with no :work back to the library rather than crashing', () => {

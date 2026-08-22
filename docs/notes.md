@@ -12680,3 +12680,198 @@ the pair of environments the old catch could not manage.
 What is left is O59: any other mutant those two tests happen to fail under is
 credited the same way, and a caught count cannot distinguish that from a real
 catch.
+
+## The trigram tokeniser against a real shelf: six rows confirmed, the index size that finally moves, and what still is not measured
+
+Task 1 built migration 8 on a measurement §13 of `2026-08-14-library-browse-design.md`
+had left open — whether SQLite's default FTS5 tokeniser can find a Japanese
+title by a substring of it — and this closes the two things that measurement
+itself flagged as unfinished: a `docs/notes.md` entry for it, and a size figure
+taken over more than one title. Machine throughout: this workstation, 32 cores,
+SQLite 3.53.4 (the system library `rusqlite` links against here, no `bundled`
+feature).
+
+### The `fts5vocab` finding, six queries against the shipped tokeniser and its replacement — measured 2026-08-21
+
+`unicode61`, FTS5's default and what every table here shipped with until
+migration 8, tokenises on Unicode word/script boundaries and treats a run of
+CJK characters as **one token**. Built from `001_initial.sql` and given the
+real titles `五等分の花嫁` and `かぐや様は告らせたい～天才たちの恋愛頭脳戦～`,
+`fts5vocab` shows the index holds exactly `五等分の花嫁`,
+`かぐや様は告らせたい` and `天才たちの恋愛頭脳戦` — whole runs, split only
+where the `～` interrupts them. Nothing mid-string can ever match, at any query
+length, because the index has no smaller unit to offer.
+
+| query | `unicode61` (shipped) | `unicode61` + `*` | `trigram` |
+| --- | --- | --- | --- |
+| `五等分の花嫁` whole | ✅ | ✅ | ✅ |
+| `五` / `五等` (1–2 chars) | ❌ | ✅ | ❌ |
+| `五等分` (prefix, 3) | ❌ | ✅ | ✅ |
+| `花嫁` (mid-string, 2) | ❌ | ❌ | ❌ |
+| `の花嫁` / `告らせたい` (mid-string, 3+) | ❌ | ❌ | ✅ |
+| `Hanay` (Latin prefix) | ❌ | ✅ | ✅ |
+
+`trigram` indexes every three-character window rather than whole tokens, so
+any substring of three characters or more is findable in either script — the
+only queries it answers with silence are the ones under three characters,
+including the first two keystrokes of every search. `unicode61` with a
+trailing `*` (a prefix query) recovers the *first* few characters of a run but
+never a mid-string substring, which is why `花嫁` stays ❌ in that column.
+Trigram plus `browse::search`'s `LIKE` fallback for queries under three
+characters (Task 2) is the only column pair in this table with no ❌ anywhere,
+which is why migration 8 ships both rather than trigram alone.
+
+### Index size, before and after migration 8: a one-title sample, and a three-work one
+
+**Task 1's own figure, one imported title (`corpus/gotoubun-v01/taiyaku.json`,
+no series row).** `dbstat`'s `SUM(pgsize)` over every `*fts*` shadow table read
+an identical **32768 bytes** on a version-7 (`unicode61`) database and a
+version-8 (`trigram`) database built from the same single work row — SQLite's
+per-table minimum allocation (four shadow tables per FTS5 virtual table, one
+4096-byte page each) swamping whatever the tokeniser actually did to the
+content. `SELECT SUM(length(block)) FROM work_fts_data` showed the real
+difference: **69 bytes (`unicode61`) → 216 bytes (`trigram`), a 3.1× growth**
+in indexed content for one ~25-character title. `series_fts_data` was
+uninformative either way (7 → 9 bytes) because that import writes no series
+row. **`dbstat` was the wrong instrument at this scale, not a defect in the
+migration.**
+
+**This task's figure, a real multi-work scan.** Built a scratch library by
+hardlink from three corpus volumes (`gotoubun-v01`, `gotoubun-v03`,
+`kaguya-v01`, 2.1 GB, hardlinked in seconds — nothing in `corpus/` touched,
+confirmed with `find corpus -newermt` after) and scanned it with
+`library scan --add`: 5 series, 7 works, 7 editions, 9 members derived. On the
+resulting (trigram-only; every table here has been at schema 8 since migration
+8, so there is no "before" to rebuild without hand-applying migrations 1–7
+again as Task 1 did) database:
+
+| table | `dbstat` `SUM(pgsize)` | `SUM(length(block))` |
+| --- | ---: | ---: |
+| `work_fts_data` | 12288 bytes (3 pages) | 4782 bytes |
+| `work_fts_idx` / `_docsize` / `_config` | 4096 bytes each | — |
+| `series_fts_data` | 4096 bytes (1 page) | 944 bytes |
+| `series_fts_idx` / `_docsize` / `_config` | 4096 bytes each | — |
+
+**`dbstat` finally shows something at this size, but `length(block)` is still
+the figure to quote.** Unlike Task 1's one-title sample — where both content
+tables sat at the identical one-page floor — `work_fts_data` here has enough
+trigram-indexed content (4782 bytes, seven titles including two long romanised
+ones) to spill into a third page, while `series_fts_data` (944 bytes, five
+short series titles) does not yet cross even the second. So `dbstat` now
+*differentiates* the two tables in the right direction — more content, more
+pages — but it does so in 4096-byte jumps, telling you nothing about where
+inside that range the real number sits; `length(block)` is exact at any scale
+and is what this file should keep quoting. The migration-8 ratio itself is
+still best represented by Task 1's controlled one-title before/after (3.1×,
+same content indexed twice under two tokenisers) rather than this section's
+figures, which have no "before" to compare against without redoing that same
+hand-applied-migration exercise on three works instead of one — not done here,
+since the question this task actually owed `docs/notes.md` was which
+*instrument* is informative at library scale, and the answer is `length(block)`
+at every scale measured so far, `dbstat` only sometimes.
+
+### The `の花嫁` query time on the scratch library — measured 2026-08-21
+
+```
+sqlite3 lib.db ".timer on" "SELECT count(*) FROM series_fts WHERE series_fts MATCH '\"の花嫁\"';"
+sqlite3 lib.db ".timer on" "SELECT count(*) FROM work_fts WHERE work_fts MATCH '\"の花嫁\"';"
+```
+
+`series_fts`: 0 rows, 0.000556 s real. `work_fts`: 0 rows, 0.000441 s real.
+Both count zero — **honestly, not as a defect.** These three corpus volumes'
+derived titles (`Go-Toubun no Hanayome - v01 (2018).cbz` and siblings,
+`kaguya-v01`) are romanised throughout; nothing in `work.title`,
+`series.sort_title` or `series_title.title` in this scratch library carries
+any CJK text at all, checked directly by pattern-matching every title against
+the Hiragana/Katakana/CJK Unicode blocks. So `の花嫁` legitimately cannot
+match anything here — this is a timing over a full negative trigram scan, not
+a hit-path timing, and this scratch library answers no positive case for it.
+Sanity-checked that `MATCH` itself works correctly on this database first:
+`work_fts MATCH '"Hana"'` returns 6, `series_fts MATCH '"Hana"'` returns 3, so
+the zero above is the corpus subset's content, not a broken index or a broken
+query. Half a millisecond either way, over 7 titles and 5 series titles, is not
+a library-scale timing claim — it says the mechanism is cheap at this size and
+nothing about whether it stays cheap at thousands of series.
+
+### What was not measured
+
+- **The cold-cover timing §13 of the browse design spec still leaves open.**
+  "Whether a 127-cover grid is actually fast enough on the deployment host over
+  a real network, with covers generated on demand the first time... the cold
+  case is the one nobody has timed" — still true after this task. Nothing here
+  touches cover generation, and the scratch library built for Step 1 was never
+  served, so no request against it was timed either.
+- **Whether anyone has ever held a root grant on a real deployment.** Also
+  named open by §13, in the same terms: `user_root` has no rows in any library
+  that exists outside a test fixture, here or elsewhere, because nothing wrote
+  one before spec C1. The scratch library this task built was scanned and
+  queried directly against `lib.db`; no account was created against it and no
+  grant was issued, so this remains a prediction rather than an observation.
+
+## O64 and O65: two pre-existing defects a browser pass found, 2026-08-21
+
+Run against `library-browse-series` @ `5ce1122`, in Chrome via the
+chrome-devtools MCP, 1440x900, both colour schemes. The full session record —
+setup, screenshots, contrast sweep, three other (branch-diff) defects fixed
+the same session — is `.superpowers/sdd/srs-browser-pass.md` (its D4 and D5),
+session-local like `panels.jsonl` and not part of the committed record; what
+follows is what that session measured for these two.
+
+Fixture: `corpus`'s `gotoubun-v01`, `gotoubun-v03`, `gotoubun-v08` and
+`kaguya-v01` hardlinked under `target/browser-check/shelf` (`cp -al`,
+confirmed afterward with `find corpus -newermt` that no corpus inode's mtime
+moved), scanned, given rules by `library rules --import` so one volume
+(`v08`) is covered by only one of the two editions the others have, scanned
+again, then round-tripped through `library export` / `library import` to
+carry over the corpus's own real alignment blocks. Servers were killed by PID
+after, ports confirmed free, working tree left clean.
+
+### O64 — `library import` clears `member.root_id`
+
+A/B on one database:
+
+```
+after `library scan`                      -> root_id 1 : 33 members
+after `library import` (all four works)   -> root_id NULL : 33 members
+after `library scan` again                -> root_id 1 : 33 members
+after `library import` of work 4 only     -> work 1: root 1 (16)   work 2: root 1 (11)
+                                             work 3: root 1 (4)    work 4: NULL (2)
+```
+
+Exactly the imported work's members lose their root. `import.rs`'s member
+insert (`INSERT INTO member (edition_id, ordinal, path, sha256, pages) …`)
+never mentions `root_id`, so a fresh row takes the column's NULL default.
+
+The user-visible consequence, measured over HTTP as a `reader` account
+holding `library user grant-root reader $W/shelf` (the admin account still
+saw everything):
+
+```
+GET /api/library/series          -> 五等分の花嫁  works=2  editions=9   (should be 3 / 11)
+GET /api/library/series/2        -> volumes: [v01, v03]                 (v08 gone)
+GET /api/library/works/…v08…     -> 404
+```
+
+`grant-root` already detects and reports the condition when granting —
+"Note: 2 member(s) carry no root yet and are invisible to any restricted
+account. `taiyaku library scan` re-derives them." — but that warning fires
+only on the grant path. Grant-then-import, the more ordinary order, prints
+nothing and the work vanishes in silence.
+
+### O65 — the reader chrome's `Library` button covers two layout buttons
+
+Reproduced by opening any volume in the reader and pressing `Tab` to show the
+chrome. `Chrome.tsx`'s `leaveButtonStyle` (`position: absolute; z-index: 3`,
+`top`/`left` at the module's `inset` constant, 16) sits over the layout-mode
+strip (8,8, no `z-index`, normal flow). `document.elementFromPoint` at each
+mode button's own centre:
+
+| button | rect | element actually on top at its centre | reachable |
+| --- | --- | --- | --- |
+| `single` | x 8-58.8, y 8-29 | `BUTTON:Library` | no |
+| `two` | x 66.8-103.6, y 8-29 | `BUTTON:Library` | no |
+| `scroll` | x 111.6-158.7, y 8-29 | `BUTTON:scroll` | yes |
+
+With the chrome open — the state a reader is in exactly when reaching for the
+layout switch — clicking where `single` or `two` appear to be leaves the
+reader instead.

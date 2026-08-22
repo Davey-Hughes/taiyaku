@@ -317,10 +317,30 @@ body {
   background: Canvas;
 }
 
-.sidebar {
+/* was `.sidebar`; the border and the scroll belong to the column holding both
+ * the navigation and the settings, so the two scroll together. */
+.sidebar-column {
   border-right: 1px solid ButtonBorder;
-  padding: 1rem;
   overflow-y: auto;
+}
+
+.sidebar {
+  padding: 1rem;
+}
+
+.browse-settings {
+  padding: 0 1rem 1rem;
+}
+
+.browse-settings button {
+  margin-top: 0.5rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid ButtonBorder;
+  border-radius: 4px;
+  background: ButtonFace;
+  color: CanvasText;
+  font-size: 0.8rem;
+  cursor: pointer;
 }
 
 .sidebar-primary {
@@ -418,7 +438,8 @@ body {
   gap: 1rem;
 }
 
-.grid li a {
+.grid li a,
+.volumes li a {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
@@ -431,7 +452,9 @@ body {
  * space the artwork would have, and the grid does not reflow as covers arrive
  * or fail. System colours, not `--box-*`: this is chrome, not artwork. */
 .grid img,
-.grid .cover-missing {
+.grid .cover-missing,
+.volumes img,
+.volumes .cover-missing {
   width: 100%;
   aspect-ratio: 2 / 3;
   border: 1px solid ButtonBorder;
@@ -439,11 +462,13 @@ body {
   background: ButtonFace;
 }
 
-.grid img {
+.grid img,
+.volumes img {
   object-fit: cover;
 }
 
-.grid .cover-missing {
+.grid .cover-missing,
+.volumes .cover-missing {
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -456,12 +481,203 @@ body {
   text-align: center;
 }
 
-.grid .title {
+.grid .title,
+.volumes .title {
   font-size: 0.9rem;
   line-height: 1.3;
 }
 
-.grid .aligned {
+/* The volume list on a series page — spec C1 §3. Narrower tiles than the
+ * library grid's `9rem`: a series page shows volumes of one work, so the
+ * covers are near-identical and the title under each is what distinguishes
+ * them. Everything else it shares with `.grid` by name, above. */
+.volumes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+  gap: 1rem;
+}
+
+/* §4's `density`. Compact is the same grid with less room per tile — not a
+ * different layout, which is the whole argument of §3. After both `.grid`
+ * and `.volumes` in source order, so its higher specificity does not read as
+ * a cascade defect to the descending-specificity lint rule. */
+.library.compact .grid,
+.library.compact .volumes {
+  grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+  gap: 0.6rem;
+}
+
+/* §3 puts the alignment mark **on the cover**, which needs a positioned box
+ * around it — Plan A shipped it below the title and its ledger carried that
+ * forward as this plan's to fix.
+ *
+ * `Canvas`/`CanvasText` rather than a translucent black: a mark over artwork
+ * has to stay legible against a white gutter and a saturated cover alike,
+ * which is the same requirement `--box-*` exists for above and the same one
+ * `Login.tsx`'s hardcoded `#111` failed. */
+.cover-box {
+  position: relative;
+  display: block;
+}
+
+.cover-box .aligned {
+  position: absolute;
+  right: 0.25rem;
+  bottom: 0.25rem;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid ButtonBorder;
+  border-radius: 4px;
+  background: Canvas;
+  color: CanvasText;
   font-size: 0.8rem;
-  opacity: 0.7;
+  line-height: 1.4;
+}
+
+/* §3's preset B. System colours, like every other rule in this block. */
+.editions {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.editions th,
+.editions td {
+  border-bottom: 1px solid ButtonBorder;
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.editions th {
+  font-weight: 600;
+}
+
+.editions a {
+  color: LinkText;
+  text-decoration: none;
+}
+
+.editions a:hover {
+  text-decoration: underline;
+}
+
+/* A dashed border rather than a lighter colour: the cell means "this edition
+ * is not here", and opacity alone reads as "loading" against a screen whose
+ * covers arrive one at a time. */
+.editions td.missing {
+  border: 1px dashed ButtonBorder;
+  color: CanvasText;
+  opacity: 0.55;
+  text-align: center;
+}
+
+.edition-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+}
+
+/* Dimmed, not hidden — see the component's own note.
+ *
+ * **On the cover, not the whole tile.** Opacity on the `<li>` also dimmed
+ * `.title` and the `i` button — legible text and a control the reader can
+ * still use (the link still navigates, the button still opens the panel;
+ * neither is disabled) faded to a fail: measured (Chromium system colours,
+ * whole-`<li>` opacity composited against the page's `Canvas` backdrop)
+ * `.title` at **3.98:1 light**, the button at **3.71:1 light / 3.01:1
+ * dark** — all below WCAG AA's 4.5:1. What the dimming is meant to say is
+ * "the edition you picked does not cover this volume", which is a fact about
+ * the artwork, so the opacity now scopes to `.cover-box` and leaves the
+ * title and button at full opacity: measured after, `.title` on `Canvas` is
+ * **21.00:1 light / 18.73:1 dark** and the button's `CanvasText` on
+ * `ButtonFace` is **18.26:1 light / 5.33:1 dark** — both comfortably clear.
+ *
+ * **Opacity *and* greyscale, because opacity alone is ambiguous here.** A
+ * cover at reduced opacity on a screen whose covers arrive one at a time
+ * reads as "still loading"; draining the colour out of the artwork as well
+ * reads as a deliberate state, because nothing about loading makes an image
+ * monochrome. The two together say "this volume exists and the edition you
+ * picked does not cover it", which is the fact §3 wants shown rather than
+ * hidden.
+ *
+ * **`.cover-missing` as well as `img`.** `Cover.tsx` calls a cold cover "the
+ * common first-run case, not an edge one", and when it fails to load it
+ * renders that placeholder span instead of an `<img>` at all. Greyscale on
+ * `img` alone left a dimmed volume with a failed cover at opacity by itself
+ * — the one cue this rule's own comment above says reads as "still
+ * loading". */
+.volumes li.without .cover-box {
+  opacity: 0.5;
+}
+
+.volumes li.without img,
+.volumes li.without .cover-missing {
+  filter: grayscale(1);
+}
+
+.volumes .panel-open {
+  margin-top: 0.15rem;
+  padding: 0 0.4rem;
+  border: 1px solid ButtonBorder;
+  border-radius: 999px;
+  background: ButtonFace;
+  color: CanvasText;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.alignment-panel {
+  margin-top: 0.35rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid ButtonBorder;
+  border-radius: 6px;
+  background: ButtonFace;
+  color: CanvasText;
+  font-size: 0.8rem;
+}
+
+.alignment-panel ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.alignment-panel .pair {
+  font-weight: 600;
+}
+
+/* `178 of 180` is the number this panel exists to show, so it must clear
+ * WCAG AA (4.5:1) as text, not merely as decoration. `ButtonFace` is a
+ * mid-grey in dark and near-white in light, so the same opacity lands at two
+ * very different ratios: measured (Chromium system colours, `CanvasText` at
+ * this opacity over `ButtonFace`) at the previous `0.75`, **3.81:1 dark /
+ * 9.63:1 light** — dark fails. At `0.9`, **4.69:1 dark / 15.46:1 light** —
+ * both clear 4.5:1, with headroom rather than sitting on the boundary. */
+.alignment-panel .paired {
+  opacity: 0.9;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+}
+
+.search-box input {
+  flex: 1;
+  max-width: 24rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid ButtonBorder;
+  border-radius: 4px;
+  background: Canvas;
+  color: CanvasText;
+  font: inherit;
 }

@@ -98,6 +98,20 @@ export const oneSeries = (id: number) =>
     `/api/library/series/${id}`,
   )
 
+/**
+ * A volume's cover: page 0 of one of its editions, through the thumbnail route
+ * the reader already has.
+ *
+ * **Not a `/api/library/…` route, and there is deliberately no such thing.**
+ * `/api/library/series/{id}/cover` is a 307 to exactly this URL — see
+ * `library_api.rs::cover`, whose whole argument is that a series cover *is* an
+ * edition cover and a second pipeline would be a second implementation of
+ * caching, guarding and `Cache-Control`. A volume tile already knows which
+ * edition it is showing, so it needs no redirect to find out.
+ */
+export const workCover = (slug: string, edition: string) =>
+  `/api/works/${encodeURIComponent(slug)}/${encodeURIComponent(edition)}/pages/0/thumb`
+
 export const work = (slug: string) =>
   getJson<WorkDetail>(`/api/library/works/${encodeURIComponent(slug)}`)
 

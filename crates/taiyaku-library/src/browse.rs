@@ -663,15 +663,71 @@ pub fn unfiled(
     )
 }
 
-/// Search titles through FTS5 — **over both indexes**.
+/// The shortest query FTS5's `trigram` tokeniser can answer.
 ///
-/// **The query is quoted as an FTS5 string literal**, doubling any `"`, so a
-/// reader typing `AND`, `*` or `-` gets a search for those characters rather
-/// than a syntax error or an operator they did not ask for. Spec C1 §13 notes
-/// that FTS5's default tokeniser does not segment CJK, so 「五等分の花嫁」 may
-/// match as one token or not at all; §8's "name what was searched" empty state
-/// exists partly for that, and a `trigram` tokeniser is where this would go
-/// next, measured against real titles first.
+/// Measured 2026-08-21 against SQLite 3.53.4: a trigram index over
+/// `五等分の花嫁` answers `五` and `五等` with nothing, and `五等分` with the
+/// row — the `*` prefix operator does not change that, because trigram has no
+/// prefix to operate on. Below this length the index is not slow, it is
+/// silent, which is a different failure and needs a different answer.
+const TRIGRAM_MIN: usize = 3;
+
+/// How one query is going to be asked, chosen by its length alone.
+///
+/// **Two paths rather than one widened one.** `LIKE '%q%'` would answer every
+/// query correctly at this library's size — §7's measured 127 series — and was
+/// considered; the index is kept because it is the part that still holds at
+/// ten times that, and the scan is kept because it is the only thing that
+/// answers the first two keystrokes at all.
+enum Match {
+    /// An FTS5 string literal, quotes doubled, for `MATCH`.
+    Fts(String),
+    /// A `LIKE` needle with `%`, `_` and `\` escaped, for `LIKE … ESCAPE '\'`.
+    Like(String),
+}
+
+/// Which path a query takes, by `chars().count()` rather than `len()`.
+///
+/// **Bytes would be wrong in exactly the case this exists for**: `花嫁` is two
+/// characters and six UTF-8 bytes, so a byte length would send it to trigram,
+/// which is the silence this function is avoiding. Every Japanese query short
+/// enough to need the fallback is long enough in bytes to miss it.
+fn match_for(trimmed: &str) -> Match {
+    if trimmed.chars().count() < TRIGRAM_MIN {
+        Match::Like(escape_like(trimmed))
+    } else {
+        Match::Fts(format!("\"{}\"", trimmed.replace('"', "\"\"")))
+    }
+}
+
+/// A `LIKE` needle in which the reader's own `%`, `_` and `\` are literals.
+///
+/// Measured 2026-08-21: without this, `title LIKE '%' || '%' || '%'` matches
+/// every row — a one-character search that dumps the library. `ESCAPE '\'` is
+/// what makes the backslash meaningful, and so what makes a typed backslash
+/// need one of its own.
+fn escape_like(q: &str) -> String {
+    let mut out = String::with_capacity(q.len());
+    for ch in q.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Search titles through FTS5 — **over both indexes, and past it when the
+/// query is too short for one.**
+///
+/// **A query of three characters or more is quoted as an FTS5 string
+/// literal**, doubling any `"`, so a reader typing `AND`, `*` or `-` gets a
+/// search for those characters rather than a syntax error or an operator they
+/// did not ask for. **A shorter one is a `LIKE` scan**, because migration 8's
+/// `trigram` tokeniser has no term shorter than three characters to match and
+/// answers such a query with silence rather than slowness — and `花嫁`, two
+/// characters, is an ordinary Japanese word and the second half of a title
+/// this library holds. See [`TRIGRAM_MIN`] and [`escape_like`].
 ///
 /// `work_fts` has been populated by triggers since migration 1 with nothing
 /// reading it. Searching series alone leaves an imported work unfindable by its
@@ -693,10 +749,10 @@ pub fn search(
             unfiled: Vec::new(),
         });
     }
-    let quoted = format!("\"{}\"", trimmed.replace('"', "\"\""));
+    let matcher = match_for(trimmed);
 
-    let mut matched = matching_series(conn, &quoted, trimmed)?;
-    matched.extend(series_of_matching_works(conn, &quoted, trimmed)?);
+    let mut matched = matching_series(conn, &matcher, trimmed)?;
+    matched.extend(series_of_matching_works(conn, &matcher, trimmed)?);
 
     // Filtered through `series` and `unfiled` rather than joined into the FTS
     // queries, so a hit this caller may not see is dropped by exactly the same
@@ -708,7 +764,7 @@ pub fn search(
         .take(cap)
         .collect();
 
-    let unfiled_ids = matching_unfiled_works(conn, &quoted, trimmed)?;
+    let unfiled_ids = matching_unfiled_works(conn, &matcher, trimmed)?;
     let unfiled_hits = unfiled(conn, roots, None)?
         .into_iter()
         .filter(|w| unfiled_ids.contains(&w.id))
@@ -722,51 +778,73 @@ pub fn search(
 }
 
 /// Series ids whose own titles match.
-fn matching_series(conn: &Connection, quoted: &str, shown: &str) -> Result<Vec<i64>, String> {
+fn matching_series(conn: &Connection, m: &Match, shown: &str) -> Result<Vec<i64>, String> {
+    let (sql, needle) = match m {
+        Match::Fts(q) => (
+            "SELECT DISTINCT st.series_id FROM series_fts f
+               JOIN series_title st ON st.rowid = f.rowid
+              WHERE series_fts MATCH ?",
+            q,
+        ),
+        Match::Like(q) => (
+            "SELECT DISTINCT st.series_id FROM series_title st
+              WHERE st.title LIKE '%' || ? || '%' ESCAPE '\\'",
+            q,
+        ),
+    };
     ids(
         conn,
-        "SELECT DISTINCT st.series_id FROM series_fts f
-           JOIN series_title st ON st.rowid = f.rowid
-          WHERE series_fts MATCH ?",
-        quoted,
+        sql,
+        needle,
         &format!("searching series for `{shown}`"),
     )
 }
 
 /// Series ids dragged in by a *work* whose title matches — searching
 /// "Hanayome" should find the shelf, not only the volume that spells it.
-fn series_of_matching_works(
-    conn: &Connection,
-    quoted: &str,
-    shown: &str,
-) -> Result<Vec<i64>, String> {
-    ids(
-        conn,
-        "SELECT DISTINCT w.series_id FROM work_fts f
-           JOIN work w ON w.id = f.rowid
-          WHERE work_fts MATCH ? AND w.series_id IS NOT NULL",
-        quoted,
-        &format!("searching works for `{shown}`"),
-    )
+fn series_of_matching_works(conn: &Connection, m: &Match, shown: &str) -> Result<Vec<i64>, String> {
+    let (sql, needle) = match m {
+        Match::Fts(q) => (
+            "SELECT DISTINCT w.series_id FROM work_fts f
+               JOIN work w ON w.id = f.rowid
+              WHERE work_fts MATCH ? AND w.series_id IS NOT NULL",
+            q,
+        ),
+        Match::Like(q) => (
+            "SELECT DISTINCT w.series_id FROM work w
+              WHERE w.title LIKE '%' || ? || '%' ESCAPE '\\'
+                AND w.series_id IS NOT NULL",
+            q,
+        ),
+    };
+    ids(conn, sql, needle, &format!("searching works for `{shown}`"))
 }
 
 /// Work ids matching, among those belonging to no series.
-fn matching_unfiled_works(
-    conn: &Connection,
-    quoted: &str,
-    shown: &str,
-) -> Result<Vec<i64>, String> {
+fn matching_unfiled_works(conn: &Connection, m: &Match, shown: &str) -> Result<Vec<i64>, String> {
+    let (sql, needle) = match m {
+        Match::Fts(q) => (
+            "SELECT f.rowid FROM work_fts f
+               JOIN work w ON w.id = f.rowid
+              WHERE work_fts MATCH ? AND w.series_id IS NULL",
+            q,
+        ),
+        Match::Like(q) => (
+            "SELECT w.id FROM work w
+              WHERE w.title LIKE '%' || ? || '%' ESCAPE '\\'
+                AND w.series_id IS NULL",
+            q,
+        ),
+    };
     ids(
         conn,
-        "SELECT f.rowid FROM work_fts f
-           JOIN work w ON w.id = f.rowid
-          WHERE work_fts MATCH ? AND w.series_id IS NULL",
-        quoted,
+        sql,
+        needle,
         &format!("searching unfiled works for `{shown}`"),
     )
 }
 
-/// One column of ids from an FTS query, which the three above differ only in.
+/// One column of ids from a title query, which the three above differ only in.
 ///
 /// **Unbounded, deliberately, and the cap moved to the caller.** These used to
 /// `LIMIT ?2` and were only then intersected with what the grant allows — so
@@ -776,14 +854,18 @@ fn matching_unfiled_works(
 /// argues against, committed by the one function that argued it. Found by the
 /// whole-branch review.
 ///
-/// Unbounded is affordable because these return ids from an FTS match over
-/// title columns, and [`search`] caps the filtered result instead.
-fn ids(conn: &Connection, sql: &str, quoted: &str, doing: &str) -> Result<Vec<i64>, String> {
+/// Unbounded is affordable because these return ids from a query over title
+/// columns, and [`search`] caps the filtered result instead. It stays
+/// affordable on the `LIKE` path for the same reason §7 declines
+/// virtualisation: 127 series and their titles is a scan measured in
+/// microseconds, and it is only ever reached by a query of one or two
+/// characters.
+fn ids(conn: &Connection, sql: &str, needle: &str, doing: &str) -> Result<Vec<i64>, String> {
     let mut stmt = conn
         .prepare(sql)
         .map_err(|e| format!("preparing: {doing}: {e}"))?;
     let rows = stmt
-        .query_map(rusqlite::params![quoted], |row| row.get(0))
+        .query_map(rusqlite::params![needle], |row| row.get(0))
         .map_err(|e| format!("{doing}: {e}"))?;
     rows.collect::<rusqlite::Result<Vec<i64>>>()
         .map_err(|e| format!("{doing}: {e}"))

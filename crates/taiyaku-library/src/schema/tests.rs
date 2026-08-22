@@ -759,8 +759,8 @@ fn migration_6_adds_member_root_id_leaving_existing_members_null() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_seven() {
-    assert_eq!(SCHEMA_VERSION, 7);
+fn the_schema_version_is_eight() {
+    assert_eq!(SCHEMA_VERSION, 8);
 }
 
 /// Migration 7 backfills the root of every member a scan produced, which
@@ -817,5 +817,150 @@ fn migration_7_backfills_the_root_of_a_member_under_one() {
         vec![Some(1), Some(2), None],
         "the nested root wins for its own member, and a relative path \
          (an imported work) stays NULL"
+    );
+}
+
+/// Migration 8 makes a Japanese title findable by a substring of it, which is
+/// what the default tokeniser could not do at any query length.
+///
+/// **`の花嫁` rather than `花嫁`.** Trigram indexes three-character windows, so
+/// a two-character query matches nothing however correct the index is;
+/// `browse::search` answers those with `LIKE` instead, and this test is about
+/// the index rather than about that fallback.
+#[test]
+fn migration_8_finds_a_japanese_title_by_its_middle() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("fk on");
+    migrate(&conn).expect("migration");
+    conn.execute_batch(
+        "INSERT INTO series (id, sort_title) VALUES (1, 'gotoubun');
+         INSERT INTO series_title (series_id, title) VALUES (1, '五等分の花嫁');
+         INSERT INTO work (id, content_key, slug, series_id, title, reading, hub)
+             VALUES (1, 'k', 's', 1, '小林さんちのメイドラゴン 第1巻', 'rtl', 'raw');",
+    )
+    .expect("two real titles");
+
+    let hits = |table: &str, term: &str| -> i64 {
+        conn.query_row(
+            &format!("SELECT count(*) FROM {table} WHERE {table} MATCH ?"),
+            [format!("\"{term}\"")],
+            |row| row.get(0),
+        )
+        .expect("fts query")
+    };
+
+    assert_eq!(
+        hits("series_fts", "の花嫁"),
+        1,
+        "a substring from the middle of the run must match"
+    );
+    assert_eq!(
+        hits("series_fts", "五等分"),
+        1,
+        "and so must one from the start"
+    );
+    assert_eq!(
+        hits("work_fts", "メイドラゴン"),
+        1,
+        "the work index is tokenised the same way"
+    );
+    assert_eq!(
+        hits("series_fts", "花婿"),
+        0,
+        "a substring that is not there still matches nothing"
+    );
+}
+
+/// The rebuild is not the end of it: the triggers must still be writing into
+/// the tables migration 8 replaced.
+///
+/// **This is the failure the migration would otherwise hide.** `'rebuild'`
+/// populates the index once, so every test that inserts before migrating
+/// passes whether or not a trigger ever fires again. A row written *after*
+/// the migration is the only one that proves it.
+#[test]
+fn migration_8_leaves_the_triggers_writing_into_the_new_tables() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("fk on");
+    migrate(&conn).expect("migration");
+    conn.execute_batch(
+        "INSERT INTO series (id, sort_title) VALUES (1, 'kaguya');
+         INSERT INTO series_title (series_id, title) VALUES (1, 'かぐや様');
+         UPDATE series_title SET title = 'ぼっち・ざ・ろっく!' WHERE series_id = 1;",
+    )
+    .expect("insert then rename, both after the migration");
+
+    let hits = |term: &str| -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM series_fts WHERE series_fts MATCH ?",
+            [format!("\"{term}\"")],
+            |row| row.get(0),
+        )
+        .expect("fts query")
+    };
+
+    assert_eq!(
+        hits("ざ・ろっ"),
+        1,
+        "the update trigger wrote the new title"
+    );
+    assert_eq!(hits("かぐや様"), 0, "and deleted the old one");
+}
+
+/// `'rebuild'` is the one statement in migration 8 that the two tests above
+/// cannot exercise: both of them call `migrate` on an empty database and
+/// insert their rows afterward, so the triggers alone populate the trigram
+/// tables and `'rebuild'` runs over zero content rows either way. A real
+/// library is never empty when 008 runs — it is a version-7 database that
+/// already holds titles indexed by `unicode61`, and `'rebuild'` is what
+/// carries them into the replacement tables. This test is that database.
+///
+/// **Stop at migration 7, write the titles while the tables are still
+/// `unicode61`, then apply 008.** If `'rebuild'` were missing or broken,
+/// `series_fts` and `work_fts` would come out empty and stay that way until
+/// something next wrote to the row — every already-imported title in a real
+/// library would silently drop out of search. Deleting the two `'rebuild'`
+/// statements from `008_trigram_fts.sql` must fail this test alone; the two
+/// above populate after migrating and so cannot see the gap.
+#[test]
+fn migration_8_rebuild_reindexes_titles_that_predate_it() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("fk on");
+    // Stop one migration short, so the rows are written while series_fts and
+    // work_fts are still the unicode61 tables 001 created.
+    let upto: Vec<&str> = MIGRATIONS[..7].to_vec();
+    migrate_with(&conn, &upto).expect("migrates to 7");
+
+    conn.execute_batch(
+        "INSERT INTO series (id, sort_title) VALUES (1, 'gotoubun');
+         INSERT INTO series_title (series_id, title) VALUES (1, '五等分の花嫁');
+         INSERT INTO work (id, content_key, slug, series_id, title, reading, hub)
+             VALUES (1, 'k', 's', 1, '小林さんちのメイドラゴン 第1巻', 'rtl', 'raw');",
+    )
+    .expect("two real titles, written before migration 8 exists");
+
+    migrate(&conn).expect("applies migration 8 over a database that already holds titles");
+
+    let hits = |table: &str, term: &str| -> i64 {
+        conn.query_row(
+            &format!("SELECT count(*) FROM {table} WHERE {table} MATCH ?"),
+            [format!("\"{term}\"")],
+            |row| row.get(0),
+        )
+        .expect("fts query")
+    };
+
+    assert_eq!(
+        hits("series_fts", "の花嫁"),
+        1,
+        "rebuild must have reindexed the title that already existed"
+    );
+    assert_eq!(
+        hits("work_fts", "メイドラゴン"),
+        1,
+        "and the work index too"
     );
 }

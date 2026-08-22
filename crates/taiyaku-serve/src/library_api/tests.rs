@@ -139,8 +139,8 @@ async fn the_home_lists_are_present_and_empty_for_a_reader_who_has_read_nothing(
     );
 }
 
-/// Spec C1 §8: the empty state names what was searched, because FTS5's default
-/// tokeniser does not segment CJK and a query can miss invisibly.
+/// Spec C1 §8: the empty state names what was searched, so a reader can tell
+/// "no matches" from "the box didn't hold what I thought it did".
 #[tokio::test]
 async fn a_search_echoes_the_query_back_so_an_empty_result_can_name_it() {
     let (router, _state) = test_support::router_over_a_library().await;
@@ -153,6 +153,11 @@ async fn a_search_echoes_the_query_back_so_an_empty_result_can_name_it() {
         "the imported work is found by its own title"
     );
 
+    // Not a tokeniser miss: three characters is `TRIGRAM_MIN` exactly, so
+    // this goes through the trigram index, which segments CJK fine since
+    // migration 8. It misses because this fixture holds no Japanese title —
+    // what this half pins is that a non-ASCII `query` round-trips through the
+    // URL and back out into the echoed empty state, not any search failure.
     let miss = get_json(&router, "/api/library/search?q=%E4%BA%94%E7%AD%89%E5%88%86").await;
     assert_eq!(miss["query"], "五等分");
     assert_eq!(miss["series"].as_array().expect("series").len(), 0);
