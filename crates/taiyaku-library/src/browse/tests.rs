@@ -159,6 +159,59 @@ fn an_imported_work_is_unfiled_rather_than_a_series_of_its_own() {
     );
 }
 
+/// O64. Contrast `an_imported_work_is_unfiled_rather_than_a_series_of_its_own`
+/// directly above: a member genuinely new to the document has no held row and
+/// correctly gets `root_id` NULL, but a member `two_root_library`'s own scan
+/// already stamped is not new — a `library import` over the same work (the
+/// route a hand-corrected `taiyaku.json` reimport opens) must not blank it.
+///
+/// Reproduces the measured symptom directly: `import.rs`'s `replace_editions`
+/// deletes and reinserts every member under `Scope::Document`, naming no
+/// `root_id`, so every fresh row lands NULL — and nothing re-stamps it,
+/// because `derive.rs`'s `write_roots` runs only on the derive path, which a
+/// plain `library import` never takes. `browse.rs`'s `IN (…)` filter then
+/// excludes the NULL member by SQL's own rules — correct behaviour reacting to
+/// a wrong fact — so the work vanishes from a root-restricted grant that could
+/// see it before the reimport.
+#[test]
+fn a_reimport_over_a_scanned_work_keeps_its_roots_grant() {
+    let (library, en_id, raw_id, _en, _raw) = two_root_library();
+    let conn = library.conn();
+    let (work_id, slug): (i64, String) = conn
+        .query_row("SELECT id, slug FROM work LIMIT 1", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("reads the work the scan derived");
+
+    // The baseline this test's failure would otherwise be mistaken for: both
+    // roots see the work before any reimport touches it.
+    assert!(
+        work(&conn, &[en_id], &slug).expect("reads").is_some(),
+        "the en root sees the work before the reimport"
+    );
+    assert!(
+        work(&conn, &[raw_id], &slug).expect("reads").is_some(),
+        "the raw root sees the work before the reimport"
+    );
+
+    // A `library import` over the very document this work already is —
+    // exactly the route `taiyaku library import` opens when re-importing a
+    // hand-corrected `taiyaku.json`. Reconciling by `content_key`, this lands
+    // on the same row rather than minting a second work.
+    let doc = crate::project::sidecar(&conn, work_id).expect("projects the current document");
+    crate::import::sidecar(&conn, &doc, std::path::Path::new("/x/taiyaku.json"))
+        .expect("reimports");
+
+    assert!(
+        work(&conn, &[en_id], &slug).expect("reads").is_some(),
+        "the en root's grant must still see a work its own scan stamped"
+    );
+    assert!(
+        work(&conn, &[raw_id], &slug).expect("reads").is_some(),
+        "the raw root's grant must still see a work its own scan stamped"
+    );
+}
+
 #[test]
 fn a_work_is_found_by_slug_within_the_grant() {
     let (library, en_id, raw_id, _en, _raw) = two_root_library();

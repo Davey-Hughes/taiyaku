@@ -787,13 +787,14 @@ fn replace_editions(
             )
             .map_err(|e| format!("inserting a member of `{key}`: {e}"))?;
 
-            if let Some(chapter) = held_members.get(&member.sha256) {
+            if let Some(held) = held_members.get(&member.sha256) {
                 let member_id = conn.last_insert_rowid();
                 conn.execute(
-                    "UPDATE member SET chapter_declared = ?1, chapter_source = ?2 WHERE id = ?3",
-                    rusqlite::params![chapter.declared, chapter.source, member_id],
+                    "UPDATE member SET chapter_declared = ?1, chapter_source = ?2, root_id = ?3
+                      WHERE id = ?4",
+                    rusqlite::params![held.declared, held.source, held.root_id, member_id],
                 )
-                .map_err(|e| format!("restoring a chapter on a member of `{key}`: {e}"))?;
+                .map_err(|e| format!("restoring metadata on a member of `{key}`: {e}"))?;
             }
         }
         match scope {
@@ -968,72 +969,162 @@ fn held_credits(conn: &Connection, edition_id: i64) -> Result<Vec<(i64, String)>
         .map_err(|e| format!("reading held credits: {e}"))
 }
 
-/// One member's hand-set chapter columns, read before `replace_editions`'
-/// wholesale delete. Keyed by `sha256` alone in the map that holds these —
-/// see `held_member_meta`'s doc comment for the work-wide-match limitation
-/// that follows from that.
-struct HeldChapter {
+/// One member's data that lives on the row `replace_editions`' wholesale
+/// delete would otherwise drop: the hand-set chapter columns, and `root_id` —
+/// a fact a scan alone establishes and no document, hand-written or
+/// projected, carries a field for. Keyed by `sha256` alone in the map that
+/// holds these — see `held_member_meta`'s doc comment for the work-wide-match
+/// limitation that follows from that.
+struct HeldMember {
     declared: Option<f64>,
     source: Option<String>,
+    /// **Restoring this is a fix for a defect, not a decision — but only when
+    /// there is one root to restore.** A member a scan has already stamped
+    /// keeps the root association that scan established across a later
+    /// `Scope::Document` reimport — the sidecar format has no field for a
+    /// root, so there is nothing for the document to override it with, only a
+    /// wholesale delete to lose it to. This holds regardless of which row of
+    /// a shared hash wins `declared`/`source`'s chapter tie-break below:
+    /// `root_id` is resolved as its own value across every held row for the
+    /// hash, not inherited from the tie-break's choice, so a hand-set chapter
+    /// on one edition's copy does not cost a different edition's copy its
+    /// scanned root. A member genuinely new to the document has no held row
+    /// here and correctly gets `root_id` NULL, which is what leaves a
+    /// purely-imported work "under no root" exactly as spec C1 §5.1 intends
+    /// (O64).
+    ///
+    /// **When `held_member_meta` finds the same hash claimed by two distinct
+    /// roots, this is NULL by construction, and that is not the same
+    /// situation as `declared`/`source`'s tie-break below.** A chapter number
+    /// picked arbitrarily between two rows is a cosmetic wrong guess — there
+    /// was never a "true" chapter number for the tie-break to miss. A root is
+    /// different: exactly one root produced each physical member, so guessing
+    /// is not arbitrary, it is a permission-shaped fact stated wrong — a
+    /// member whose real root is B comes back stamped A, an account granted
+    /// only A sees a work that does not live there, and one granted only B
+    /// loses it. NULL fails *closed* (spec C1 §5.1's `IN (…)` excludes it from
+    /// every grant); a wrongly-guessed non-null root fails *open*. So this
+    /// field alone declines to guess: see `held_member_meta`'s doc comment for
+    /// how.
+    root_id: Option<i64>,
 }
 
-/// Every member's hand-set chapter number currently on `work_id`, keyed by
-/// `sha256` — content identity, the same reason `<stem>.library.json` keys
-/// its own `members` on it rather than on path (`librarydoc.rs`'s own doc
-/// comment). A path or an edition can move underneath a reimport; the hash
-/// does not.
+/// Every member's hand-set chapter number and `root_id` currently on
+/// `work_id`, keyed by `sha256` — content identity, the same reason
+/// `<stem>.library.json` keys its own `members` on it rather than on path
+/// (`librarydoc.rs`'s own doc comment). A path or an edition can move
+/// underneath a reimport; the hash does not.
 ///
 /// **The match is work-wide, not edition-scoped — a real limitation, not a
 /// hypothetical one.** Nothing forbids the same `sha256` from being a member
 /// of two editions of one work: not the `Sidecar`/`Edition`/`Member` types,
 /// not JSON parsing, and not the schema (`member_by_sha` indexes `sha256`
 /// with no uniqueness constraint). A repack or omnibus edition that shares a
-/// literal file with a standalone edition produces exactly this. When it
-/// happens, only one of the two held chapter rows can survive into this map,
-/// keyed as it is by hash alone — so the query below carries an explicit
-/// `ORDER BY edition.id, member.ordinal`, and building the map with
-/// `or_insert` keeps only the first row seen in that order: the
+/// literal file with a standalone edition produces exactly this, and so does
+/// an ordinary pair of roots added with `library scan --add` and no
+/// `edition_key`: both fall back to `raw` and derivation merges their members
+/// into one edition (O54). When it happens, only one of the two held rows can
+/// survive into this map, keyed as it is by hash alone — so the query below
+/// carries an explicit `ORDER BY edition.id, member.ordinal`, and building the
+/// map with `or_insert` keeps only the first row seen in that order: the
 /// earliest-inserted edition (lowest `edition.id`, i.e. first in the
-/// document), and within it the earliest member (lowest `ordinal`). That
-/// choice is arbitrary — there is no principled reason the earlier edition's
-/// chapter number should be the one that wins — but it is now deterministic
-/// rather than depending on whatever order SQLite happens to return rows in.
-/// Whether a hand-set chapter number should instead be scoped to the edition
-/// it was set on, so two editions sharing a file could carry different
-/// chapter numbers for it, is an open design question this function does not
-/// settle.
+/// document), and within it the earliest member (lowest `ordinal`).
+///
+/// **For `declared`/`source`, that choice is arbitrary — there is no
+/// principled reason the earlier edition's chapter number should be the one
+/// that wins — but it is now deterministic** rather than depending on
+/// whatever order SQLite happens to return rows in. Whether a hand-set
+/// chapter number should instead be scoped to the edition it was set on, so
+/// two editions sharing a file could carry different values for it, is an
+/// open design question this function does not settle.
+///
+/// **For `root_id` the two are not the same question, and this function does
+/// not treat them alike.** A chapter number has no "true" value to get wrong,
+/// so an arbitrary pick costs nothing worse than a cosmetic surprise. A root
+/// has exactly one true value per physical member — it is which directory a
+/// scan found the bytes under — so picking between two distinct roots is not
+/// an arbitrary tie-break, it is a guess that can be wrong, and wrong here
+/// means a permission grant misfires (see [`HeldMember::root_id`]). So
+/// `root_id` is not carried by the first-row-wins pass below at all: it is
+/// resolved separately, as its own value per hash, from every held row the
+/// hash had — not from whichever row `or_insert` happened to keep for the
+/// chapter columns. No non-null root seen across those rows leaves it `None`;
+/// exactly one distinct non-null root seen restores that root, even onto a
+/// representative row whose own `root_id` was NULL because a hand-set
+/// chapter, not a scan, is what put that row here; two or more distinct roots
+/// seen — the "same file under two roots" case above — sets it back to
+/// `None`. The chapter columns on the row `or_insert` kept are untouched
+/// throughout: only `root_id` is decided independently of that choice.
 fn held_member_meta(
     conn: &Connection,
     work_id: i64,
-) -> Result<HashMap<String, HeldChapter>, String> {
+) -> Result<HashMap<String, HeldMember>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT member.sha256, member.chapter_declared, member.chapter_source
+            "SELECT member.sha256, member.chapter_declared, member.chapter_source,
+                    member.root_id
              FROM member JOIN edition ON edition.id = member.edition_id
              WHERE edition.work_id = ?1
-               AND (member.chapter_declared IS NOT NULL OR member.chapter_source IS NOT NULL)
+               AND (member.chapter_declared IS NOT NULL OR member.chapter_source IS NOT NULL
+                    OR member.root_id IS NOT NULL)
              ORDER BY edition.id, member.ordinal",
         )
-        .map_err(|e| format!("preparing held member chapters: {e}"))?;
+        .map_err(|e| format!("preparing held member metadata: {e}"))?;
     let rows = stmt
         .query_map([work_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                HeldChapter {
+                HeldMember {
                     declared: row.get(1)?,
                     source: row.get(2)?,
+                    root_id: row.get(3)?,
                 },
             ))
         })
-        .map_err(|e| format!("querying held member chapters: {e}"))?;
+        .map_err(|e| format!("querying held member metadata: {e}"))?;
 
     let mut out = HashMap::new();
+    // The one distinct non-null `root_id` seen so far for a hash, so a second,
+    // *different* one can be told apart from a repeat of the same root or from
+    // a row that carries no root at all.
+    let mut root_seen: HashMap<String, i64> = HashMap::new();
+    let mut ambiguous_root = std::collections::HashSet::new();
     for row in rows {
-        let (sha256, chapter) = row.map_err(|e| format!("reading held member chapters: {e}"))?;
+        let (sha256, held) = row.map_err(|e| format!("reading held member metadata: {e}"))?;
+        if let Some(root_id) = held.root_id {
+            match root_seen.get(&sha256) {
+                None => {
+                    root_seen.insert(sha256.clone(), root_id);
+                }
+                Some(&first) if first != root_id => {
+                    ambiguous_root.insert(sha256.clone());
+                }
+                _ => {}
+            }
+        }
         // First row wins: the earliest edition, earliest ordinal within it,
         // per the `ORDER BY` above. A later duplicate for the same hash is
-        // dropped rather than overwriting it.
-        out.entry(sha256).or_insert(chapter);
+        // dropped rather than overwriting it — but only for the chapter
+        // columns. `root_id` is resolved separately, below, from every row
+        // seen for the hash rather than from whichever one this `or_insert`
+        // happens to keep.
+        out.entry(sha256).or_insert(held);
+    }
+    // `root_id` is its own value per hash, independent of which row the
+    // chapter tie-break above kept: `root_seen`/`ambiguous_root` were built
+    // from every held row for the hash, not just the one `or_insert` chose.
+    // No non-null root seen at all leaves it `None`; exactly one distinct
+    // non-null root seen restores it, even onto a representative row whose
+    // own `root_id` was NULL; two or more distinct roots seen — a hash
+    // claimed by two roots cannot be restored safely, see
+    // `HeldMember::root_id` — sets it back to `None`. The chapter columns on
+    // the row `or_insert` kept are untouched either way.
+    for (sha256, held) in &mut out {
+        held.root_id = if ambiguous_root.contains(sha256) {
+            None
+        } else {
+            root_seen.get(sha256).copied()
+        };
     }
     Ok(out)
 }

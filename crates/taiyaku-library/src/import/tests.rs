@@ -1468,6 +1468,214 @@ fn held_member_meta_keeps_the_earliest_edition_and_ordinal_for_a_shared_hash() {
     );
 }
 
+/// **A hash held under two distinct roots must come back NULL, not either
+/// root — this is the half of `held_member_meta` that is not allowed to be
+/// arbitrary.** Unlike a chapter number, where "the earliest edition wins" is
+/// a coin flip with nothing at stake, a wrongly-restored `root_id` is a
+/// permission-shaped fact stated wrong: an account granted only the root the
+/// member did *not* come from would see a work that does not physically live
+/// there, and one granted the root it actually lives under would lose it.
+/// Reachable without any hypothetical setup — two roots added with
+/// `library scan --add` and no `edition_key` both fall back to `raw` and
+/// derivation merges their members into one edition (O54), and the same file
+/// present under two roots is ordinary — so this fixture is exactly that
+/// shape: one hash, two editions, each edition's copy of it scanned from a
+/// different root.
+///
+/// Confirmed red against the code before this test's fix landed: it restored
+/// one of the two roots (whichever `held_member_meta`'s earliest-edition tie-
+/// break preferred) rather than NULL on both.
+#[test]
+fn a_hash_held_under_two_distinct_roots_comes_back_with_no_root_on_either() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let path = Path::new("/x/taiyaku.json");
+
+    // One hash, two editions — an omnibus/standalone pair, or two roots
+    // merged under the shared `raw` fallback edition key (O54).
+    let json = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{
+          "raw":{"label":"R","members":[
+            {"path":"raw/v01.cbz","sha256":"dup","pages":10}]},
+          "omni":{"label":"O","members":[
+            {"path":"omni/v01.cbz","sha256":"dup","pages":10}]}
+        },
+        "hub":"raw","alignments":[]}"#;
+    let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+    let work_id = sidecar(&conn, &doc, path).expect("first import");
+
+    conn.execute("INSERT INTO root (path) VALUES ('/a')", [])
+        .expect("root a");
+    let root_a = conn.last_insert_rowid();
+    conn.execute("INSERT INTO root (path) VALUES ('/b')", [])
+        .expect("root b");
+    let root_b = conn.last_insert_rowid();
+
+    // Each edition's copy of the shared hash was resolved from a different
+    // root, exactly as a scan would leave it.
+    conn.execute(
+        "UPDATE member SET root_id = ?1 WHERE sha256 = 'dup' AND edition_id = (
+           SELECT id FROM edition WHERE work_id = ?2 AND key = 'raw')",
+        rusqlite::params![root_a, work_id],
+    )
+    .expect("stamp raw's copy with root a");
+    conn.execute(
+        "UPDATE member SET root_id = ?1 WHERE sha256 = 'dup' AND edition_id = (
+           SELECT id FROM edition WHERE work_id = ?2 AND key = 'omni')",
+        rusqlite::params![root_b, work_id],
+    )
+    .expect("stamp omni's copy with root b");
+
+    sidecar(&conn, &doc, path).expect("reimport");
+
+    let roots: Vec<Option<i64>> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT member.root_id FROM member
+                 JOIN edition ON edition.id = member.edition_id
+                 WHERE edition.work_id = ?1 AND member.sha256 = 'dup'
+                 ORDER BY edition.id",
+            )
+            .expect("preparing");
+        let found = stmt.query_map([work_id], |r| r.get(0)).expect("querying");
+        found.map(|r| r.expect("row")).collect()
+    };
+    assert_eq!(
+        roots.len(),
+        2,
+        "both editions must still hold the shared hash"
+    );
+    assert!(
+        roots.iter().all(Option::is_none),
+        "a hash claimed by two distinct roots must come back NULL on both \
+         members rather than either root winning: got {roots:?}"
+    );
+}
+
+/// **An unambiguous root must survive even when the row the chapter
+/// tie-break keeps never carried it.** `root_id` used to ride along on
+/// whichever row `or_insert` kept for `declared`/`source` — so when the
+/// earlier-sorting row (by `edition.id, member.ordinal`) is the one with a
+/// hand-set chapter and no root, and a *different*, later-sorting row is the
+/// only one that ever carried a root, the representative's own `root_id` is
+/// `None` and the ambiguity pass never fires (only one distinct non-null root
+/// was ever seen), so the one legitimate root was silently dropped. This is
+/// reachable without any contrived setup: a hand-corrected chapter on one
+/// copy alongside a scanned copy of identical bytes in another edition is
+/// exactly the ordinary "same hash, two editions" shape the sibling tests
+/// above already establish.
+///
+/// Confirmed red against the code before this test's fix landed: it restored
+/// `declared=Some(5.0) source=None root_id=None` — the chapter survived, the
+/// root did not.
+#[test]
+fn an_unambiguous_root_survives_even_when_the_chapter_tie_break_row_lacks_it() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let path = Path::new("/x/taiyaku.json");
+
+    // "aaa" sorts before "zzz" in the `BTreeMap` iteration `replace_editions`
+    // walks, so "aaa" gets the lower `edition.id` and is the row
+    // `held_member_meta`'s chapter tie-break keeps.
+    let json = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{
+          "aaa":{"label":"A","members":[
+            {"path":"aaa/v01.cbz","sha256":"dup","pages":10}]},
+          "zzz":{"label":"Z","members":[
+            {"path":"zzz/v01.cbz","sha256":"dup","pages":10}]}
+        },
+        "hub":"aaa","alignments":[]}"#;
+    let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+    let work_id = sidecar(&conn, &doc, path).expect("first import");
+
+    conn.execute("INSERT INTO root (path) VALUES ('/scanned')", [])
+        .expect("root");
+    let root_id = conn.last_insert_rowid();
+
+    // `aaa`'s copy: a hand-set chapter, never scanned under a root — the
+    // edition whose copy of this file was never touched by a scan.
+    conn.execute(
+        "UPDATE member SET chapter_declared = 5.0, chapter_source = 'hand'
+         WHERE sha256 = 'dup' AND edition_id = (
+           SELECT id FROM edition WHERE work_id = ?1 AND key = 'aaa')",
+        [work_id],
+    )
+    .expect("hand-set chapter on aaa's copy");
+    // `zzz`'s copy: the one root a scan actually found it under.
+    conn.execute(
+        "UPDATE member SET root_id = ?1 WHERE sha256 = 'dup' AND edition_id = (
+           SELECT id FROM edition WHERE work_id = ?2 AND key = 'zzz')",
+        rusqlite::params![root_id, work_id],
+    )
+    .expect("stamp zzz's copy with the scanned root");
+
+    let held = held_member_meta(&conn, work_id).expect("held member metadata");
+    let held = held.get("dup").expect("the shared hash is held");
+    assert_eq!(
+        held.declared,
+        Some(5.0),
+        "the chapter tie-break must still keep the earlier-sorting row's \
+         value, unchanged by fixing root_id"
+    );
+    assert_eq!(
+        held.root_id,
+        Some(root_id),
+        "the one unambiguous root must be restored even though the row the \
+         chapter tie-break kept never carried it: declared={:?} source={:?} \
+         root_id={:?}",
+        held.declared,
+        held.source,
+        held.root_id
+    );
+}
+
+/// **Two rows agreeing on one root is not ambiguity.** The obvious
+/// wrong-but-plausible implementation of the ambiguity check is "a hash held
+/// by more than one row loses its root," rather than "a hash held by more
+/// than one *distinct non-null root* loses its root" — and that version
+/// passes both `held_member_meta_keeps_the_earliest_edition_and_ordinal_for_
+/// a_shared_hash` and `a_hash_held_under_two_distinct_roots_comes_back_with_
+/// no_root_on_either` above, since neither has two rows sharing the *same*
+/// non-null root. This is that missing shape: one hash, two editions, both
+/// copies scanned under the same root.
+#[test]
+fn two_rows_agreeing_on_the_same_root_still_restore_it() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let path = Path::new("/x/taiyaku.json");
+
+    let json = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{
+          "raw":{"label":"R","members":[
+            {"path":"raw/v01.cbz","sha256":"dup","pages":10}]},
+          "omni":{"label":"O","members":[
+            {"path":"omni/v01.cbz","sha256":"dup","pages":10}]}
+        },
+        "hub":"raw","alignments":[]}"#;
+    let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+    let work_id = sidecar(&conn, &doc, path).expect("first import");
+
+    conn.execute("INSERT INTO root (path) VALUES ('/shared')", [])
+        .expect("root");
+    let root_id = conn.last_insert_rowid();
+
+    // Both editions' copies were scanned under the same root — no
+    // disagreement, so nothing here is ambiguous.
+    conn.execute(
+        "UPDATE member SET root_id = ?1 WHERE sha256 = 'dup'",
+        [root_id],
+    )
+    .expect("stamp both copies with the same root");
+
+    let held = held_member_meta(&conn, work_id).expect("held member metadata");
+    assert_eq!(
+        held.get("dup").expect("the shared hash is held").root_id,
+        Some(root_id),
+        "two rows carrying the same non-null root must still restore it, \
+         not be zeroed as though they disagreed"
+    );
+}
+
 /// **A document from a newer taiyaku is refused, by both public entry points,
 /// before a row is written.** `Sidecar::from_json` checks nothing, so a
 /// version 2 document parses on a version 1 build with every field it does not
