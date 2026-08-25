@@ -2758,3 +2758,271 @@ async fn correcting_a_work_with_no_document_writes_rows_and_no_file() {
         .expect("counting hand-corrected runs");
     assert!(hand > 0, "the correction reached the rows");
 }
+
+// ---------------------------------------------------------------------------
+// The grant gap: `list_works` (`GET /api/works`) applied none of spec C1's
+// per-root visibility — it iterates `state.works` and returns every work the
+// server holds, with no reference to `Principal.roots` at all. The
+// whole-branch review closed the equivalent hole on the page routes
+// (`refuse_if_hidden`) and commit 5d41bd6 closed it on the OPDS mirror
+// (`opds::visible_slugs`); this is the last route in that class.
+//
+// Mirrors `opds::tests::router_with_two_works_one_withheld` exactly: two
+// works imported through `taiyaku_library::import::scanned` into a real
+// library database (a `work`/`edition`/`member` row is what
+// `browse::visible_editions` reads — an in-memory-only `Work` cannot
+// exercise the grant), filed under two different roots, with the fixture
+// account (`user_id` 1) granted only one of them.
+// ---------------------------------------------------------------------------
+
+/// A router over **two** works, one filed under the root the fixture account
+/// holds and one under a root it does not.
+fn router_with_two_works_one_withheld(dir: &str) -> (axum::Router, Arc<ServeState>) {
+    let root = std::env::temp_dir().join(dir);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let shelf = root.to_string_lossy().into_owned();
+
+    let visible_json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Visible Work", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/v1.cbz", "sha256": "v", "pages": 2 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#
+    );
+    let hidden_json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Hidden Work", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/h1.cbz", "sha256": "h", "pages": 2 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#
+    );
+
+    let library = crate::test_support::library();
+    {
+        let conn = library.conn();
+        let visible_doc =
+            taiyaku_core::Sidecar::from_json(&visible_json).expect("visible sidecar parses");
+        let visible_id = taiyaku_library::import::scanned(&conn, &visible_doc, None)
+            .expect("import the visible work");
+        let hidden_doc =
+            taiyaku_core::Sidecar::from_json(&hidden_json).expect("hidden sidecar parses");
+        let hidden_id = taiyaku_library::import::scanned(&conn, &hidden_doc, None)
+            .expect("import the hidden work");
+
+        conn.execute(
+            "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/withheld')",
+            [],
+        )
+        .expect("two roots");
+        conn.execute(
+            "UPDATE member SET root_id = 1 WHERE edition_id IN \
+             (SELECT id FROM edition WHERE work_id = ?1)",
+            [visible_id],
+        )
+        .expect("files the visible work under the held root");
+        conn.execute(
+            "UPDATE member SET root_id = 2 WHERE edition_id IN \
+             (SELECT id FROM edition WHERE work_id = ?1)",
+            [hidden_id],
+        )
+        .expect("files the hidden work under the withheld root");
+        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
+            .expect("grants only the held root");
+    }
+    let works = crate::works::from_library(&library).expect("projects the imported works");
+    let state = Arc::new(ServeState {
+        library,
+        works,
+        source: Arc::new(crate::LocalLibrary),
+        cache_dir: root.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    let router = build_router(state.clone());
+    (router, state)
+}
+
+/// **The gap itself.** `GET /api/works` must answer the same grant `opds::works`
+/// and the page routes already do: a restricted account learns the id, title,
+/// series and volume of a work outside every root it holds, and this asserts
+/// it does not, mirroring `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant`
+/// for the JSON route.
+#[tokio::test]
+async fn the_work_list_does_not_name_a_work_outside_the_grant() {
+    let (router, _state) =
+        router_with_two_works_one_withheld("taiyaku-test-routes-grant-works-list");
+
+    let response = crate::test_support::get(&router, "/api/works").await;
+    let status = response.status();
+    let body = crate::test_support::body_string(response).await;
+
+    crate::test_support::cleanup("taiyaku-test-routes-grant-works-list");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.contains("Visible Work"),
+        "the granted work must still be listed: {body}"
+    );
+    assert!(
+        !body.contains("Hidden Work"),
+        "a work outside the grant must not be named in the work list: {body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The write leak: `patch_alignments` resolved its target by slug alone
+// (`state.work_or_missing`), consulting no `Extensions` and no `Principal` at
+// all — unlike every other route in this file. A restricted account could
+// therefore both read the sidecar this handler returns and write shared
+// `alignment`/`run` rows for a work outside every root it held. This is worse
+// than the six read leaks: an alignment is shared library truth rather than
+// per-account state, so O60's "nothing leaks" reasoning for progress, notes
+// and truth does not carry to it.
+// ---------------------------------------------------------------------------
+
+/// A router over a work with two editions and a solved alignment edge
+/// between them — `test_support::router_over_a_scanned_work`'s exact shape,
+/// since a correction needs an edge to address — but filed entirely under a
+/// root the fixture account is **not** granted, mirroring
+/// `opds::tests::router_with_a_real_page_under_a_withheld_root`'s root split.
+fn router_over_a_scanned_work_under_a_withheld_root(dir: &str) -> (axum::Router, Arc<ServeState>) {
+    let fixture_root = std::env::temp_dir().join(dir);
+    let _ = std::fs::remove_dir_all(&fixture_root);
+    std::fs::create_dir_all(&fixture_root).unwrap();
+    let shelf = fixture_root.to_string_lossy().into_owned();
+
+    let json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Withheld", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/raw/c1.cbz", "sha256": "x", "pages": 2 }},
+              {{ "path": "{shelf}/raw/c2.cbz", "sha256": "y", "pages": 2 }}
+            ], "spreads": [] }},
+            "en": {{ "label": "En", "members": [
+              {{ "path": "{shelf}/en/d1.cbz", "sha256": "p", "pages": 2 }},
+              {{ "path": "{shelf}/en/d2.cbz", "sha256": "q", "pages": 2 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": [
+            {{ "from": "raw", "to": "en", "by": "solver", "runs": [{{ "a": "0-3", "b": "0-3" }}] }}
+          ]
+        }}"#
+    );
+
+    let library = crate::test_support::library();
+    {
+        let conn = library.conn();
+        let doc = taiyaku_core::Sidecar::from_json(&json).expect("fixture sidecar parses");
+        let work_id =
+            taiyaku_library::import::scanned(&conn, &doc, None).expect("import as a scan");
+
+        // A scan cannot know the edge; write the rows a solve would leave,
+        // the same way `test_support::router_over_a_scanned_work` does —
+        // otherwise the correction below answers 404 `NoPath` and this
+        // fixture cannot exercise the write at all.
+        conn.execute(
+            "INSERT INTO alignment (work_id, from_key, to_key, by) VALUES (?1, 'raw', 'en', 'solver')",
+            [work_id],
+        )
+        .expect("writes the solved edge");
+        let alignment_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO run (alignment_id, ordinal, a_start_page, a_end_page, b_start_page, b_end_page)
+             VALUES (?1, 0, 0, 3, 0, 3)",
+            [alignment_id],
+        )
+        .expect("writes the run");
+
+        conn.execute(
+            "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/withheld')",
+            [],
+        )
+        .expect("two roots");
+        conn.execute("UPDATE member SET root_id = 2", [])
+            .expect("files every member under the withheld root");
+        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
+            .expect("grants the fixture account the other root");
+    }
+    let works = crate::works::from_library(&library).expect("projects the imported work");
+    let state = Arc::new(ServeState {
+        library,
+        works,
+        source: Arc::new(crate::LocalLibrary),
+        cache_dir: fixture_root.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    let router = build_router(state.clone());
+    (router, state)
+}
+
+/// **The write leak itself.** Before the fix, `patch_alignments` asked
+/// nothing about the grant, so a restricted account could write shared
+/// `alignment`/`run` rows — library truth every other reader sees — for a
+/// work outside every root it holds.
+///
+/// Both the response and the rows are checked, not only the status: a 404
+/// that still let the write through, or a 200 that happened not to change
+/// anything, would each be a colour change rather than evidence that the
+/// grant was actually consulted.
+#[tokio::test]
+async fn a_restricted_account_cannot_patch_alignments_on_a_work_in_a_withheld_root() {
+    let (router, state) = router_over_a_scanned_work_under_a_withheld_root(
+        "taiyaku-test-routes-grant-alignments-write",
+    );
+    let slug = state.works[0].id.clone();
+    // Computed directly from the state the running server holds, rather than
+    // fetched through `GET /api/works/{slug}` — that route is already fixed
+    // and would itself answer 404 to this restricted account, which is
+    // exactly what would make an attacker compute this offline instead.
+    let tag = super::sidecar_etag(&state.works[0].sidecar());
+
+    let (status, body) = correct_with_body(
+        &router,
+        &slug,
+        &tag,
+        r#"{"from":"raw","to":"en","a":"2","b":"1","note":"leaked"}"#,
+    )
+    .await;
+
+    let hand_writes: i64 = {
+        let conn = state.library.conn();
+        conn.query_row("SELECT COUNT(*) FROM run WHERE by = 'hand'", [], |row| {
+            row.get(0)
+        })
+        .expect("counting hand-corrected runs")
+    };
+
+    crate::test_support::cleanup("taiyaku-test-routes-grant-alignments-write");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a restricted account must not be able to correct a work outside every \
+         root it holds: {body}"
+    );
+    assert_eq!(
+        body,
+        format!("no work `{slug}`"),
+        "refused by the grant, in `get_sidecar`'s own words, not by some other 404"
+    );
+    assert_eq!(
+        hand_writes, 0,
+        "no correction may reach the shared rows for a work outside the grant, \
+         whatever the response said"
+    );
+}

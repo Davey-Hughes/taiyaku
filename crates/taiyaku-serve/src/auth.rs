@@ -254,11 +254,16 @@ pub enum Role {
 /// `user_id` is read by the progress and notes routes, which is what replaced
 /// the two `LOCAL_USER = 1` constants, and `role` decides `admin` in `/api/me`.
 ///
-/// **`can_download` and `can_stream` are reported by `/api/me` and govern
-/// nothing** — a distinction worth keeping, because an earlier version of this
-/// comment said they were unread, which `whoami` had already made false. They
-/// wait for spec C2's download; `roots` waits for C1's browse, and is the one
-/// field genuinely nothing reads. O54 tracks all three.
+/// **`can_download` and `can_stream` are reported by `/api/me` and, since
+/// spec C2, gate a route each** — `routes::refuse_if_cannot_download` reads
+/// the first for the two download routes, `refuse_if_cannot_stream` reads the
+/// second for `/pages` and the OPDS PSE stream, and neither gates a thumbnail,
+/// a cover or any browse route, because a download-only account must still be
+/// able to see its shelf. Both default to 1 (`schema/004_auth.sql:18`), so
+/// nothing changed for any existing account the day this shipped, and nothing
+/// can set either to 0 outside a fixture until spec C4's user administration.
+/// O54 is closed: this pair was its open half, `roots` the half C1 closed
+/// first.
 #[derive(Debug, Clone)]
 pub struct Principal {
     pub user_id: i64,
@@ -280,8 +285,8 @@ pub struct Principal {
     /// **The `#[expect(dead_code)]` spec A2 put here came off in the same
     /// commit that first read this field**, which is what that attribute was
     /// for: `#[expect]` fails the build when the lint does not fire, so it
-    /// could not linger. O54 closes for this field and stays open for
-    /// `can_download` and `can_stream`, which are still C2's.
+    /// could not linger. This field closed O54's first half, under C1;
+    /// `can_download` and `can_stream` above closed the rest, under C2.
     pub roots: Vec<i64>,
 }
 

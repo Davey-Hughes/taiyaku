@@ -45,6 +45,18 @@
 # 639 tests exceeds 0.75 s. The slack is for a shared docker runner, which is
 # slower than the machine that measured this by a factor nobody has measured —
 # the one guess here, and it says so.
+#
+# **"639" is this file's own dated count, not today's — the workspace is
+# 1,529 tests as of the library-download branch, and re-measuring all of them
+# against this margin was not repeated for that reason alone.** What *is*
+# worth stating: `taiyaku-serve/src/corpus.rs` gained a check
+# (`a_real_multi_member_edition_downloads_as_a_readable_cbz`, spec C2) that
+# runs about 1.02 s, past this file's 0.75 s figure. It does not reopen either
+# measurement above, because it runs in the corpus job — gated on
+# `TAIYAKU_CORPUS`, which `scripts/check-all.sh`'s `test` job unsets — and so
+# never shares a `nextest` invocation, a `slow-timeout` or this file's margin
+# with the 1,529 tests the figures above describe. `docs/notes.md`, "Task 10's
+# two corpus download checks", has the reproduction.
 [profile.default]
 # A machine-readable summary of the run, at `target/nextest/default/junit.xml`,
 # written as a side effect of a run that was happening anyway. It is what
@@ -93,10 +105,10 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # omitting `terminate-after` is what makes a slow-timeout advisory, not a
 # separate key.
 #
-# `test(corpus::)` selects **twenty-two** tests, counted with
-# `cargo nextest list -E 'test(corpus::)'` on 2026-08-18 rather than reasoned
-# about: fifteen standing checks against real archives (ten in taiyaku-cli,
-# three in taiyaku-serve, two in taiyaku-library — the second of those being
+# `test(corpus::)` selects **twenty-four** tests, counted with
+# `cargo nextest list -E 'test(corpus::)'` on 2026-08-24 rather than reasoned
+# about: seventeen standing checks against real archives (ten in taiyaku-cli,
+# five in taiyaku-serve, two in taiyaku-library — the second of those being
 # the scanner's own walk-through-derive check, added by the library scanner
 # branch), three `corpus::tests::` helpers that only assert how
 # TAIYAKU_CORPUS is validated, and **four `score_corpus::` tests caught by
@@ -105,8 +117,13 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # `test(score_corpus)` term below is redundant. It is kept anyway: it costs
 # nothing, and it keeps the intent legible if either module is ever renamed.
 #
-# **This comment has now been wrong three times, in the file that warns about
-# exactly that.** The third: it read twenty-one / fourteen until 2026-08-18,
+# **This comment has now been wrong four times, in the file that warns about
+# exactly that.** The fourth: it read twenty-two / fifteen until 2026-08-24,
+# the figures from before this branch's Task 10 gave
+# `taiyaku-serve/src/corpus.rs` two more standing checks (`corpus.rs`'s own
+# entry above already names one of them) — not the substring trap again,
+# just a count nobody re-ran once the download work landed.
+# The third: it read twenty-one / fourteen until 2026-08-18,
 # the figures from before `taiyaku-library`'s second corpus check landed —
 # which is not the substring trap again, just a count nobody re-ran.
 # The first two: It said "sixteen / thirteen" while the real figures were twenty /

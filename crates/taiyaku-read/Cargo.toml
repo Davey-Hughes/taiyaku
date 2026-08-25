@@ -11,6 +11,11 @@ authors.workspace = true
 # Native-only by design: archive reading and content hashing. taiyaku-core stays
 # free of all of this so it keeps compiling to wasm32.
 [dependencies]
+# Already in the dependency tree via `zip` — named directly here only so
+# `member_page_entries` can hash a directory member's pages, which is the one
+# case a zip central directory cannot answer. Same version `zip` resolves to,
+# so the resolver unifies one copy rather than two.
+crc32fast = "1.5.0"
 sha2 = "0.11.0"
 zip = "7.2.0"
 

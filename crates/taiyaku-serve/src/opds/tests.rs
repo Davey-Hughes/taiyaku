@@ -808,3 +808,428 @@ fn work_with_a_pageless_first_member(dir: &str) -> crate::Work {
         taiyaku_core::Sidecar::from_json(json).unwrap(),
     )
 }
+
+// ---------------------------------------------------------------------------
+// The grant gap: `opds.rs` applied none of spec C1's per-root visibility.
+// The whole-branch review closed the equivalent hole on the `/api/…` side —
+// `refuse_if_hidden` and `get_sidecar`'s use of `browse::work` — and this
+// mirror of those routes was never covered. `taiyaku library user
+// grant-root` ships grants for real, so a restricted account reading the
+// bytes of a root it does not hold through these routes is not theoretical.
+//
+// Every fixture below imports through `taiyaku_library::import::scanned`
+// into a real library database rather than handing `ServeState` an
+// in-memory-only `Work` — `edition_visible`/`browse::work` read `work`,
+// `edition` and `member` rows, and a work absent from those tables cannot
+// exercise the grant at all, only the "work does not exist" path every
+// existing test in this file already covers. And the page/cover fixture
+// writes a real, decodable image rather than reusing `test_support::work`'s
+// placeholder bytes: those routes read *bytes*, not rows, so a 404 from a
+// nonexistent placeholder path would be indistinguishable from the grant
+// actually refusing anything.
+// ---------------------------------------------------------------------------
+
+/// A router over one work with one real, decodable page, imported into the
+/// library's own database and filed entirely under a root the fixture
+/// account (`user_id` 1, via `test_support::authenticating`) is granted a
+/// *different* root than — so every edition of this work is wholly outside
+/// the grant.
+///
+/// Used both for `stream_page`/`cover`'s bypass (a route that should refuse
+/// the bytes) and for `work_feed`'s full-hide case (a route that should
+/// refuse the feed itself), since both need the same "nothing here is
+/// visible" shape.
+fn router_with_a_real_page_under_a_withheld_root(
+    dir: &str,
+) -> (axum::Router, std::sync::Arc<ServeState>) {
+    use std::io::Write as _;
+
+    let root = std::env::temp_dir().join(dir);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+
+    let page = image::RgbImage::from_fn(16, 16, |x, y| {
+        let r = channel(x * 16);
+        let g = channel(y * 16);
+        image::Rgb([r, g, 200])
+    });
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(page)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let real_image = encoded.into_inner();
+
+    let member_path = root.join("c1.cbz");
+    {
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&member_path).unwrap());
+        zip.start_file("p1.png", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&real_image).unwrap();
+        zip.finish().unwrap();
+    }
+
+    let json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Withheld", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{path}", "sha256": "real", "pages": 1 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#,
+        path = member_path.display()
+    );
+
+    let library = crate::test_support::library();
+    {
+        let conn = library.conn();
+        let doc = taiyaku_core::Sidecar::from_json(&json).expect("fixture sidecar parses");
+        taiyaku_library::import::scanned(&conn, &doc, None).expect("import as a scan");
+        conn.execute(
+            "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/withheld')",
+            [],
+        )
+        .expect("two roots");
+        // Every member of this work's one edition lives under the root the
+        // reader is NOT granted.
+        conn.execute("UPDATE member SET root_id = 2", [])
+            .expect("files the material under the withheld root");
+        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
+            .expect("grants the fixture account the other root");
+    }
+    let works = crate::works::from_library(&library).expect("projects the imported work");
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works,
+        source: Arc::new(crate::LocalLibrary),
+        cache_dir: root.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    let router = crate::test_support::authenticating(crate::build_router(state.clone()));
+    (router, state)
+}
+
+/// A router over one work with **two** editions, each filed under a
+/// different root — `en` under the root the fixture account holds, `raw`
+/// under the one it does not. What `work_feed`'s partial-visibility test
+/// needs: a work that is itself visible, with exactly one of its editions
+/// outside the grant.
+fn router_with_two_editions_split_across_roots(
+    dir: &str,
+) -> (axum::Router, std::sync::Arc<ServeState>) {
+    let root = std::env::temp_dir().join(dir);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let shelf = root.to_string_lossy().into_owned();
+
+    let json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Split", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/raw/c1.cbz", "sha256": "x", "pages": 2 }}
+            ], "spreads": [] }},
+            "en": {{ "label": "En", "members": [
+              {{ "path": "{shelf}/en/d1.cbz", "sha256": "p", "pages": 2 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#
+    );
+
+    let library = crate::test_support::library();
+    {
+        let conn = library.conn();
+        let doc = taiyaku_core::Sidecar::from_json(&json).expect("fixture sidecar parses");
+        let work_id =
+            taiyaku_library::import::scanned(&conn, &doc, None).expect("import as a scan");
+        conn.execute(
+            "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/withheld')",
+            [],
+        )
+        .expect("two roots");
+        conn.execute(
+            "UPDATE member SET root_id = 2 WHERE edition_id = \
+             (SELECT id FROM edition WHERE work_id = ?1 AND key = 'raw')",
+            [work_id],
+        )
+        .expect("files raw under the withheld root");
+        conn.execute(
+            "UPDATE member SET root_id = 1 WHERE edition_id = \
+             (SELECT id FROM edition WHERE work_id = ?1 AND key = 'en')",
+            [work_id],
+        )
+        .expect("files en under the held root");
+        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
+            .expect("grants only the held root");
+    }
+    let works = crate::works::from_library(&library).expect("projects the imported work");
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works,
+        source: Arc::new(crate::LocalLibrary),
+        cache_dir: root.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    let router = crate::test_support::authenticating(crate::build_router(state.clone()));
+    (router, state)
+}
+
+/// A router over **two** works, one filed under the root the fixture
+/// account holds and one under a root it does not. What the `works` list
+/// feed's test needs: a work it must keep naming beside one it must not.
+fn router_with_two_works_one_withheld(dir: &str) -> (axum::Router, std::sync::Arc<ServeState>) {
+    let root = std::env::temp_dir().join(dir);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let shelf = root.to_string_lossy().into_owned();
+
+    let visible_json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Visible Work", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/v1.cbz", "sha256": "v", "pages": 2 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#
+    );
+    let hidden_json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Hidden Work", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/h1.cbz", "sha256": "h", "pages": 2 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#
+    );
+
+    let library = crate::test_support::library();
+    {
+        let conn = library.conn();
+        let visible_doc =
+            taiyaku_core::Sidecar::from_json(&visible_json).expect("visible sidecar parses");
+        let visible_id = taiyaku_library::import::scanned(&conn, &visible_doc, None)
+            .expect("import the visible work");
+        let hidden_doc =
+            taiyaku_core::Sidecar::from_json(&hidden_json).expect("hidden sidecar parses");
+        let hidden_id = taiyaku_library::import::scanned(&conn, &hidden_doc, None)
+            .expect("import the hidden work");
+
+        conn.execute(
+            "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/withheld')",
+            [],
+        )
+        .expect("two roots");
+        conn.execute(
+            "UPDATE member SET root_id = 1 WHERE edition_id IN \
+             (SELECT id FROM edition WHERE work_id = ?1)",
+            [visible_id],
+        )
+        .expect("files the visible work under the held root");
+        conn.execute(
+            "UPDATE member SET root_id = 2 WHERE edition_id IN \
+             (SELECT id FROM edition WHERE work_id = ?1)",
+            [hidden_id],
+        )
+        .expect("files the hidden work under the withheld root");
+        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
+            .expect("grants only the held root");
+    }
+    let works = crate::works::from_library(&library).expect("projects the imported works");
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works,
+        source: Arc::new(crate::LocalLibrary),
+        cache_dir: root.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    let router = crate::test_support::authenticating(crate::build_router(state.clone()));
+    (router, state)
+}
+
+/// **The core of the gap.** Before the fix, `stream_page` and `cover` asked
+/// nothing about the grant, so a reader restricted to one root could read
+/// the bytes of a work filed under a different root through the OPDS
+/// routes alone — exactly the failure spec C1's whole-branch review closed
+/// on `/api/…`, unfixed here.
+///
+/// Proven with real, decodable page bytes rather than a coincidental
+/// filesystem 404: `router_with_a_real_page_under_a_withheld_root` writes an
+/// actual PNG the un-guarded routes can and — before the fix — do serve, so
+/// a passing assertion here cannot be satisfied by the member file simply
+/// not existing.
+///
+/// **Bodies are decoded with `from_utf8_lossy`, not `test_support::body_string`.**
+/// Before the fix this route answers `200` with the PNG's raw bytes, which
+/// are not valid UTF-8 — `body_string`'s `unwrap` turns that into a panic
+/// naming the exact byte sequence served, which is itself the bypass this
+/// test exists to catch, but a panic is a worse failure message than an
+/// assertion. Lossy decoding keeps the proof as a normal, readable
+/// assertion failure instead.
+#[tokio::test]
+async fn a_restricted_reader_cannot_stream_pages_or_covers_from_a_root_they_do_not_hold() {
+    let (router, state) =
+        router_with_a_real_page_under_a_withheld_root("taiyaku-test-opds-grant-stream");
+    let slug = state.works[0].id.clone();
+
+    let page =
+        crate::test_support::get(&router, &format!("/opds/v1.2/works/{slug}/raw/pages/0")).await;
+    let page_status = page.status();
+    let page_bytes = axum::body::to_bytes(page.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let page_body = String::from_utf8_lossy(&page_bytes).into_owned();
+
+    let cover =
+        crate::test_support::get(&router, &format!("/opds/v1.2/works/{slug}/raw/cover")).await;
+    let cover_status = cover.status();
+    let cover_bytes = axum::body::to_bytes(cover.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let cover_body = String::from_utf8_lossy(&cover_bytes).into_owned();
+
+    crate::test_support::cleanup("taiyaku-test-opds-grant-stream");
+    assert_eq!(
+        page_status,
+        StatusCode::NOT_FOUND,
+        "a restricted reader must not stream a page from a withheld root: {page_body}"
+    );
+    assert_eq!(
+        page_body,
+        format!("no work `{slug}`"),
+        "must be refused by the grant, not by the filesystem"
+    );
+    assert_eq!(
+        cover_status,
+        StatusCode::NOT_FOUND,
+        "a restricted reader must not fetch a cover from a withheld root: {cover_body}"
+    );
+    assert_eq!(
+        cover_body,
+        format!("no work `{slug}`"),
+        "must be refused by the grant, not by the filesystem"
+    );
+}
+
+/// A work that is itself visible must still hide the one edition outside
+/// the grant — the feed's own entries are the leak, not merely the route
+/// that lists works.
+#[tokio::test]
+async fn a_restricted_readers_work_feed_lists_only_the_editions_they_may_see() {
+    let (router, state) =
+        router_with_two_editions_split_across_roots("taiyaku-test-opds-grant-work-feed");
+    let slug = state.works[0].id.clone();
+
+    let response = crate::test_support::get(&router, &format!("/opds/v1.2/works/{slug}")).await;
+    let status = response.status();
+    let body = crate::test_support::body_string(response).await;
+
+    crate::test_support::cleanup("taiyaku-test-opds-grant-work-feed");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a partly-visible work must still be served: {body}"
+    );
+    assert!(
+        body.contains("/en/"),
+        "the granted edition must still be listed: {body}"
+    );
+    assert!(
+        !body.contains("/raw/"),
+        "an edition outside the grant must not be named in the work's own feed: {body}"
+    );
+}
+
+/// Finding 2: the list feed named each work with a count of its editions —
+/// `sidecar.editions.len()`, computed over every edition regardless of the
+/// caller's grant — so a restricted reader learned how many editions a work
+/// held under a root they cannot see, even though the work's own feed just
+/// above already hides every one of those editions by name. A count is a
+/// smaller leak than a key or a path, and it is still one.
+#[tokio::test]
+async fn a_restricted_readers_works_list_counts_only_the_editions_they_may_see() {
+    let (router, state) =
+        router_with_two_editions_split_across_roots("taiyaku-test-opds-grant-works-count");
+    let slug = state.works[0].id.clone();
+
+    let response = crate::test_support::get(&router, "/opds/v1.2/works").await;
+    let status = response.status();
+    let body = crate::test_support::body_string(response).await;
+
+    crate::test_support::cleanup("taiyaku-test-opds-grant-works-count");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.contains(&format!("href=\"/opds/v1.2/works/{slug}\"")),
+        "the granted work must still be listed: {body}"
+    );
+    assert!(
+        body.contains("<content type=\"text\">1 editions</content>"),
+        "the edition count must be filtered to the one edition this account \
+         may see, not the work's real total of two: {body}"
+    );
+    assert!(
+        !body.contains("<content type=\"text\">2 editions</content>"),
+        "the list feed named the withheld edition through its count: {body}"
+    );
+}
+
+/// The full-hide case beside the partial one above: a work with no edition
+/// inside the grant must answer exactly as a work that does not exist —
+/// `browse::work`'s own contract, unread by this route before the fix.
+#[tokio::test]
+async fn a_restricted_readers_work_feed_404s_when_no_edition_is_visible() {
+    let (router, state) =
+        router_with_a_real_page_under_a_withheld_root("taiyaku-test-opds-grant-work-feed-hidden");
+    let slug = state.works[0].id.clone();
+
+    let response = crate::test_support::get(&router, &format!("/opds/v1.2/works/{slug}")).await;
+    let status = response.status();
+    let body = crate::test_support::body_string(response).await;
+
+    crate::test_support::cleanup("taiyaku-test-opds-grant-work-feed-hidden");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a wholly hidden work must not be served: {body}"
+    );
+    assert_eq!(body, format!("no work `{slug}`"));
+}
+
+/// The list feed's own leak: before the fix, `works` named every work this
+/// server holds regardless of the caller's grant, admitting the existence
+/// of material a restricted reader cannot see anywhere else.
+#[tokio::test]
+async fn the_works_feed_does_not_name_a_work_outside_the_grant() {
+    let (router, _state) = router_with_two_works_one_withheld("taiyaku-test-opds-grant-works-list");
+
+    let response = crate::test_support::get(&router, "/opds/v1.2/works").await;
+    let status = response.status();
+    let body = crate::test_support::body_string(response).await;
+
+    crate::test_support::cleanup("taiyaku-test-opds-grant-works-list");
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("Visible Work"),
+        "the granted work must still be listed: {body}"
+    );
+    assert!(
+        !body.contains("Hidden Work"),
+        "a work outside the grant must not be named in the works feed: {body}"
+    );
+}

@@ -180,7 +180,7 @@ fn summary_reads_series_and_volume_from_the_row_when_present() {
     }
     let works = crate::test_support::works_in(&library);
     let conn = library.conn();
-    let summary = crate::works::summary(&conn, &works[0]).expect("summary");
+    let summary = crate::works::summary(&conn, &works[0], None).expect("summary");
     assert_eq!(summary.series.as_deref(), Some("Some Series"));
     assert_eq!(summary.volume, Some(1.0));
 }
@@ -195,7 +195,7 @@ fn summary_answers_none_for_series_and_volume_with_no_row_at_all() {
     let library = taiyaku_library::Library::open_in_memory().expect("library");
     let work = crate::test_support::work("taiyaku-test-works-summary-no-row");
     let conn = library.conn();
-    let summary = crate::works::summary(&conn, &work).expect("summary");
+    let summary = crate::works::summary(&conn, &work, None).expect("summary");
     crate::test_support::cleanup("taiyaku-test-works-summary-no-row");
     assert_eq!(summary.slug, "t");
     assert_eq!(summary.title, "T");
@@ -203,6 +203,56 @@ fn summary_answers_none_for_series_and_volume_with_no_row_at_all() {
     assert_eq!(summary.volume, None);
     assert_eq!(summary.editions, vec!["raw".to_string()]);
     assert_eq!(summary.cover, "/api/works/t/raw/pages/0/thumb");
+}
+
+/// **A restricted grant filters `editions`, and — when the hub itself is
+/// hidden — the `cover` URL too.** `list_works` (`routes.rs`) is the only
+/// production caller of the `Some` branch; this drives `summary` directly so
+/// the filtering rule has a unit test of its own rather than being provable
+/// only through a whole HTTP round trip.
+#[test]
+fn summary_filters_editions_and_falls_back_off_a_hidden_hub() {
+    let library = taiyaku_library::Library::open_in_memory().expect("library");
+    let mut doc = fixture_doc(1, "aa");
+    doc.editions.insert(
+        "en".to_string(),
+        taiyaku_core::Edition {
+            label: "En".to_string(),
+            members: vec![taiyaku_core::Member {
+                path: "/corpus/v01/en/c1.cbz".to_string(),
+                sha256: "en1".to_string(),
+                pages: 1,
+            }],
+            spreads: Vec::new(),
+            credits: Vec::new(),
+        },
+    );
+    {
+        let conn = library.conn();
+        taiyaku_library::import::sidecar(
+            &conn,
+            &doc,
+            std::path::Path::new("/corpus/v01/taiyaku.json"),
+        )
+        .expect("import");
+    }
+    let works = crate::test_support::works_in(&library);
+    let conn = library.conn();
+
+    // The hub (`fixture_doc`'s "raw") is outside the grant; only "en" is
+    // inside it.
+    let visible: std::collections::HashSet<String> = ["en".to_string()].into_iter().collect();
+    let summary = crate::works::summary(&conn, &works[0], Some(&visible)).expect("summary");
+
+    assert_eq!(
+        summary.editions,
+        vec!["en".to_string()],
+        "the hidden edition must not be named"
+    );
+    assert_eq!(
+        summary.cover, "/api/works/volume-1/en/pages/0/thumb",
+        "the cover must not be built from the hidden hub"
+    );
 }
 
 /// **Two bridge rows, two `content_key`s.** `row_id_for_write` mints a `work`

@@ -119,9 +119,70 @@ async fn catalog() -> Response {
     ))
 }
 
-async fn works(State(state): State<Arc<ServeState>>) -> Response {
+/// The visible editions a restricted principal's grant admits, keyed by
+/// work slug, or `None` for an unrestricted caller (no `Principal` at all —
+/// this file's own tests build requests with none — or an empty grant,
+/// which spec C1 reads as "every root").
+///
+/// `None` rather than "every edition of every work" so `works` can skip the
+/// lookup entirely for the ordinary, unrestricted case instead of filtering
+/// against a map built from every work — the same reason `refuse_if_hidden`
+/// short-circuits on `roots.is_empty()` before ever reaching SQL.
+fn visible_editions_by_work(
+    state: &ServeState,
+    extensions: &axum::http::Extensions,
+) -> Result<Option<std::collections::HashMap<String, std::collections::HashSet<String>>>, String> {
+    let Some(principal) = extensions.get::<crate::auth::Principal>() else {
+        return Ok(None);
+    };
+    if principal.roots.is_empty() {
+        return Ok(None);
+    }
+    let conn = state.library.conn();
+    taiyaku_library::browse::visible_editions(&conn, &principal.roots).map(Some)
+}
+
+/// Every work this caller may see, with its editions.
+///
+/// **A grant must not name a work it hides**, or the entry itself is the
+/// leak `refuse_if_hidden` exists to close everywhere else on this server.
+/// **Nor may the edition *count* say more than the entry does** — this feed
+/// names no edition directly, only `{count} editions`, but a count computed
+/// over `sidecar.editions` rather than the caller's visible subset still
+/// discloses how many editions exist under a root the caller cannot see,
+/// which is a smaller leak than a key or a path and a leak all the same.
+/// Found beside the other four in this file, after they closed — a count is
+/// easy to read as "not really naming anything."
+///
+/// **One query for the whole feed, not one per work.** A loop calling
+/// `browse::edition_visible` per work here would be the same shape of N+1
+/// the whole-branch review closed in `home` at 111 queries on the largest
+/// series, reopened for a feed that walks every work the server holds
+/// rather than one series — so `browse::visible_editions` (the same bulk
+/// query `routes::list_works` already uses for the identical `/api/works`
+/// question) answers every work's visible edition set in one round trip, in
+/// [`visible_editions_by_work`] above, and this loop only ever does a
+/// `HashMap` lookup per work.
+async fn works(
+    State(state): State<Arc<ServeState>>,
+    extensions: axum::http::Extensions,
+) -> Response {
+    let visible = match visible_editions_by_work(&state, &extensions) {
+        Ok(visible) => visible,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    };
     let mut entries = String::new();
     for work in &state.works {
+        // A work absent from `visible`'s keys has no edition inside the
+        // grant at all — `visible_editions`'s own contract — so it is
+        // skipped entirely rather than named with a count of zero.
+        let editions = match &visible {
+            None => None,
+            Some(map) => match map.get(&work.id) {
+                Some(keys) => Some(keys),
+                None => continue,
+            },
+        };
         let sidecar = work.sidecar();
         let title = escape(&sidecar.work.title);
         let id = escape(&work.id);
@@ -129,7 +190,7 @@ async fn works(State(state): State<Arc<ServeState>>) -> Response {
         // no encoding, but encoding it anyway costs nothing and does not
         // depend on a guarantee made in another module.
         let href_id = escape(&percent_encode(&work.id));
-        let count = sidecar.editions.len();
+        let count = editions.map_or(sidecar.editions.len(), std::collections::HashSet::len);
         let _ = writeln!(
             entries,
             r#"  <entry>
@@ -158,20 +219,64 @@ async fn works(State(state): State<Arc<ServeState>>) -> Response {
 /// One entry per edition of a work, each carrying the links OPDS 1.2
 /// requires.
 ///
-/// **The acquisition link is a deliberate deviation, decided by the owner.**
-/// OPDS 1.2 requires at least one `rel="http://opds-spec.org/acquisition"`
-/// link on every entry in an acquisition feed, or a conformant client may
-/// render the entry as unopenable — but taiyaku does not serve a whole
-/// publication a client could download; it streams pages, and PSE
-/// (`rel="http://vaemendis.net/opds-pse/stream"`, below) is the real
-/// acquisition mechanism a reader uses. The acquisition link here points at
-/// the edition's first page — a real, fetchable image, not a dead link — so
-/// a conformant client sees a satisfiable entry rather than an empty one.
-async fn work_feed(State(state): State<Arc<ServeState>>, AxPath(id): AxPath<String>) -> Response {
+/// **The acquisition link still points at the edition's first page, not at
+/// a download — a known remaining step, not a considered end state.** OPDS
+/// 1.2 requires at least one `rel="http://opds-spec.org/acquisition"` link
+/// on every entry in an acquisition feed, or a conformant client may render
+/// the entry as unopenable, which is what this link has always guarded
+/// against. That reasoning used to end there — this server had no download
+/// a client could be pointed at, and PSE
+/// (`rel="http://vaemendis.net/opds-pse/stream"`, below) was the only
+/// acquisition mechanism a reader had. It no longer holds: spec C2 shipped
+/// `GET /api/works/{work}/{edition}/download` (and a per-member route
+/// beside it), so a whole publication a client could download now exists.
+/// Repointing this link at it — spec C2 §9's own next step, an
+/// OPDS-namespace mirror of that route so the guard's `WWW-Authenticate`
+/// prompt still fires for an OPDS client — was deferred to a second plan
+/// alongside §8's web UI control (`docs/status.md`'s `taiyaku-serve` entry
+/// names both), not built on this branch. Until that lands, the link keeps
+/// pointing at the first page — a real, fetchable image, not a dead link —
+/// so a conformant client still sees a satisfiable entry rather than an
+/// empty one; today, only a direct call to the `/api` route above reaches
+/// the download — neither this feed nor the web UI (§8, also deferred)
+/// offers it yet.
+async fn work_feed(
+    State(state): State<Arc<ServeState>>,
+    AxPath(id): AxPath<String>,
+    extensions: axum::http::Extensions,
+) -> Response {
     let work = match state.work_or_missing(&id) {
         Ok(work) => work,
         Err(message) => return missing(message),
     };
+
+    // A grant restricts which *editions* of a work may be named here, not
+    // only whether the work itself may — the same distinction
+    // `refuse_if_hidden` draws for the page and cover routes below, applied
+    // to a feed rather than a single fetch. `browse::work` already answers
+    // both halves in one round trip: `None` for a work with no edition
+    // inside the grant (the same 404 `get_sidecar` sends for the identical
+    // case), `Some` carrying only the editions that survive otherwise —
+    // `WorkCard::editions`'s own contract. Reused rather than reimplemented,
+    // and cheap for the one work this route addresses: `works_of`'s row plus
+    // one `editions_of` call, not one query per edition.
+    let visible_editions: Option<std::collections::HashSet<String>> = match extensions
+        .get::<crate::auth::Principal>(
+    ) {
+        Some(principal) if !principal.roots.is_empty() => {
+            let detail = {
+                let conn = state.library.conn();
+                taiyaku_library::browse::work(&conn, &principal.roots, &id)
+            };
+            match detail {
+                Ok(None) => return missing(format!("no work `{id}`")),
+                Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+                Ok(Some(detail)) => Some(detail.card.editions.into_iter().map(|e| e.key).collect()),
+            }
+        }
+        _ => None,
+    };
+
     let work_id = escape(&work.id);
     // See the note in `works`: `work.id` is already URL-safe by
     // construction, but every other `href` in this feed needs encoding, so
@@ -183,6 +288,9 @@ async fn work_feed(State(state): State<Arc<ServeState>>, AxPath(id): AxPath<Stri
 
     let mut entries = String::new();
     for (key, edition) in &sidecar.editions {
+        if visible_editions.as_ref().is_some_and(|v| !v.contains(key)) {
+            continue;
+        }
         // Two layers, two variables: `key_x` is XML-escaped display text —
         // the atom `<id>` a reader never sees rendered as a link — and
         // `key_href` is percent-encoded for the `href`s below. An edition
@@ -243,7 +351,20 @@ async fn stream_page(
     // rejection.
     AxPath((id, edition, number)): AxPath<(String, String, String)>,
     headers: HeaderMap,
+    extensions: axum::http::Extensions,
 ) -> Response {
+    // Grant first (404, it does not exist for you), capability second (403,
+    // you may see it and may not have it) — the order every other refusal
+    // pair on this server follows. `refuse_if_hidden` is the exact check
+    // `get_page` sends for the `/api/…` page route; reused rather than
+    // reimplemented, because a second spelling of this rule is exactly what
+    // spec C1's whole-branch review warned about.
+    if let Some(refusal) = crate::routes::refuse_if_hidden(&state, &extensions, &id, &edition) {
+        return refusal;
+    }
+    if let Some(refusal) = crate::routes::refuse_if_cannot_stream(&extensions) {
+        return refusal;
+    }
     let number = match crate::routes::page_index(&number, &edition) {
         Ok(number) => number,
         Err(refusal) => return refusal.into_response(),
@@ -321,7 +442,15 @@ async fn stream_page(
 async fn cover(
     State(state): State<Arc<ServeState>>,
     AxPath((id, edition)): AxPath<(String, String)>,
+    extensions: axum::http::Extensions,
 ) -> Response {
+    // Same grant `stream_page` refuses on, and deliberately no capability
+    // check beside it: `refuse_if_cannot_stream`'s own doc says covers and
+    // thumbnails follow browse, not `can_stream` — an account that may not
+    // read pages here must still be able to see what it could download.
+    if let Some(refusal) = crate::routes::refuse_if_hidden(&state, &extensions, &id, &edition) {
+        return refusal;
+    }
     let fetched = tokio::task::spawn_blocking(move || {
         let work = state.work_or_missing(&id)?;
         let sidecar = work.sidecar();

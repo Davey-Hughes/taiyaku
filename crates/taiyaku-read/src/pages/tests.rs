@@ -518,6 +518,178 @@ fn a_lying_member_page_does_not_reserve_past_the_ceiling_either() {
     );
 }
 
+/// The triple `for_each_member_page`'s local-header caller relies on:
+/// natural order (not stored order — this archive is written 002 first),
+/// the real uncompressed size of each entry, and its crc32.
+///
+/// Deflated deliberately: 97.9% of this corpus's entries are, and the point
+/// of this function is that it never inflates one to answer.
+#[test]
+fn member_page_entries_reads_names_sizes_and_crcs_from_an_archive() {
+    let path = std::env::temp_dir().join("taiyaku-test-entries-archive.cbz");
+    let _ = std::fs::remove_file(&path);
+    {
+        use std::io::Write as _;
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, bytes) in [("002.jpg", &b"second page"[..]), ("001.jpg", &b"first"[..])] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    let entries = member_page_entries(&path).unwrap();
+
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+        vec!["001.jpg", "002.jpg"]
+    );
+    assert_eq!(entries[0].size, 5);
+    assert_eq!(entries[1].size, 11);
+    assert_eq!(entries[0].crc32, crc32fast::hash(b"first"));
+    assert_eq!(entries[1].crc32, crc32fast::hash(b"second page"));
+}
+
+/// A directory member's entries, hashed and sized from the bytes actually
+/// read rather than left to trust the filesystem — both fields checked on
+/// both entries, since a zeroed or wrong `size` here would otherwise pass
+/// undetected.
+#[test]
+fn member_page_entries_hashes_a_directory_members_pages() {
+    let dir = std::env::temp_dir().join("taiyaku-test-entries-dir");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("member/ch1")).unwrap();
+    std::fs::write(dir.join("member/ch1/002.jpg"), b"two").unwrap();
+    std::fs::write(dir.join("member/ch1/001.jpg"), b"one").unwrap();
+    // Not a page, and must not become an entry.
+    std::fs::write(dir.join("member/ComicInfo.xml"), b"<x/>").unwrap();
+
+    let entries = member_page_entries(&dir.join("member")).unwrap();
+
+    let _ = std::fs::remove_dir_all(&dir);
+    // The whole path relative to the member, not the basename — `docs/sidecar.md`.
+    assert_eq!(
+        entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+        vec!["ch1/001.jpg", "ch1/002.jpg"]
+    );
+    assert_eq!(entries[0].size, 3, "\"one\" is 3 bytes");
+    assert_eq!(entries[1].size, 3, "\"two\" is 3 bytes");
+    assert_eq!(entries[0].crc32, crc32fast::hash(b"one"));
+    assert_eq!(entries[1].crc32, crc32fast::hash(b"two"));
+}
+
+/// The path a download's local-header writer takes: one archive open, one
+/// page in memory at a time, each handed to `f` with the entry that
+/// describes it.
+#[test]
+fn for_each_member_page_visits_every_page_in_order_with_its_entry() {
+    let path = std::env::temp_dir().join("taiyaku-test-each-page.cbz");
+    let _ = std::fs::remove_file(&path);
+    {
+        use std::io::Write as _;
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        for (name, bytes) in [("001.jpg", &b"one"[..]), ("002.jpg", &b"two"[..])] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    let mut seen: Vec<(String, u64, Vec<u8>)> = Vec::new();
+    for_each_member_page(&path, &mut |entry, bytes| {
+        seen.push((entry.name.clone(), entry.size, bytes.to_vec()));
+        Ok(())
+    })
+    .unwrap();
+
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        seen,
+        vec![
+            ("001.jpg".to_string(), 3, b"one".to_vec()),
+            ("002.jpg".to_string(), 3, b"two".to_vec()),
+        ]
+    );
+}
+
+/// `f`'s `Err` stops the walk on the spot: a client that hung up must not
+/// cost the rest of the volume.
+#[test]
+fn for_each_member_page_stops_at_the_first_refusal() {
+    let path = std::env::temp_dir().join("taiyaku-test-each-stop.cbz");
+    let _ = std::fs::remove_file(&path);
+    {
+        use std::io::Write as _;
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        for name in ["001.jpg", "002.jpg", "003.jpg"] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"x").unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    let mut count = 0usize;
+    let refused = for_each_member_page(&path, &mut |_, _| {
+        count += 1;
+        if count == 2 {
+            Err("the caller gave up".to_string())
+        } else {
+            Ok(())
+        }
+    });
+
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(refused, Err("the caller gave up".to_string()));
+    // The third page was never read: a download whose client hung up must not
+    // keep inflating the rest of a 1.49 GB volume.
+    assert_eq!(count, 2);
+}
+
+/// Finding 1's fix, pinned so it cannot be "tidied up" back to symmetry:
+/// `for_each_member_page` must report the real byte count `read_to_end`
+/// produced, not the central directory's declared `uncompressed_size` — a
+/// field `zip` never checks against anything (unlike `crc32`, which
+/// `Crc32Reader` validates against the real bytes on every read). A corrupt
+/// or hand-edited archive can misstate its declared size and still read back
+/// cleanly, so before this fix `f` received an entry whose `size` disagreed
+/// with the `bytes` beside it.
+///
+/// `member_page_entries` must keep reporting the declared lie on the very
+/// same file: it is the planning function, and reading page data to verify
+/// the size would destroy the property it exists for. The two are supposed
+/// to disagree on a lying archive — that disagreement is what lets a later
+/// plan-vs-stream comparison catch an archive that changed mid-download.
+#[test]
+fn for_each_member_page_reports_the_real_size_while_member_page_entries_keeps_the_declared_lie() {
+    let path = lying_size_cbz("taiyaku-test-lying-size-for-each.cbz", &["p1.jpg"]);
+
+    let mut seen: Vec<PageEntry> = Vec::new();
+    for_each_member_page(&path, &mut |entry, _bytes| {
+        seen.push(entry.clone());
+        Ok(())
+    })
+    .unwrap();
+    let planned = member_page_entries(&path).unwrap();
+
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        seen[0].size,
+        b"p1.jpg".len() as u64,
+        "for_each_member_page must report the real byte count, not the declared lie"
+    );
+    assert_eq!(
+        planned[0].size, 0x7FFF_FFF0,
+        "member_page_entries is the planning function and must keep reporting \
+         the declared lie, or the plan-vs-stream comparison can never catch one"
+    );
+}
+
 /// `member_entry` is what `taiyaku-cli::credits` reads `ComicInfo.xml`
 /// through, so this pins the one property that function relies on: it
 /// finds a non-page entry `page_names_from` would have filtered out, and

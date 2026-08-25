@@ -2298,6 +2298,7 @@ dependencies = [
 name = "taiyaku-read"
 version = "0.0.0"
 dependencies = [
+ "crc32fast",
  "sha2 0.11.0",
  "zip",
 ]
@@ -2308,6 +2309,9 @@ version = "0.0.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "bytes",
+ "crc32fast",
+ "futures-core",
  "image",
  "rusqlite",
  "serde",

@@ -261,10 +261,26 @@ pub(crate) struct WorkSummary {
 /// cover of an edition, so this adds no new route and generates no image at
 /// list time.
 ///
+/// **`visible` filters both `editions` and `cover`.** `None` is an
+/// unrestricted caller — every edition, and the hub — read straight off the
+/// sidecar as before. `Some(keys)` is a restricted one: `editions` drops to
+/// `keys`, and if the hub itself is not in `keys` — a grant can hide the hub
+/// exactly as it can hide any other edition, `browse::cover_target`'s own
+/// trap — the cover falls back to the first surviving edition by key
+/// (`sidecar.editions` is a `BTreeMap`, so this is deterministic), the same
+/// tiebreak `routes::filter_sidecar_editions` uses for `hub` on the sidecar
+/// routes. `list_works` never calls this for a work with no visible edition
+/// at all — `browse::visible_editions` has no entry for one — so the
+/// fallback always finds something.
+///
 /// # Errors
 ///
 /// Returns an error if the `SELECT` against `conn` fails.
-pub(crate) fn summary(conn: &rusqlite::Connection, work: &Work) -> Result<WorkSummary, String> {
+pub(crate) fn summary(
+    conn: &rusqlite::Connection,
+    work: &Work,
+    visible: Option<&std::collections::HashSet<String>>,
+) -> Result<WorkSummary, String> {
     let sidecar = work.sidecar();
     let (volume, series): (Option<f64>, Option<String>) = conn
         .query_row(
@@ -278,10 +294,24 @@ pub(crate) fn summary(conn: &rusqlite::Connection, work: &Work) -> Result<WorkSu
         .map_err(|e| format!("reading library metadata for `{}`: {e}", work.id))?
         .unwrap_or((None, None));
 
+    let editions: Vec<String> = sidecar
+        .editions
+        .keys()
+        .filter(|key| visible.is_none_or(|v| v.contains(*key)))
+        .cloned()
+        .collect();
+
+    let cover_edition = match visible {
+        Some(v) if !v.contains(&sidecar.hub) => editions
+            .first()
+            .cloned()
+            .unwrap_or_else(|| sidecar.hub.clone()),
+        _ => sidecar.hub.clone(),
+    };
     let cover = format!(
         "/api/works/{}/{}/pages/0/thumb",
         crate::opds::percent_encode(&work.id),
-        crate::opds::percent_encode(&sidecar.hub),
+        crate::opds::percent_encode(&cover_edition),
     );
 
     Ok(WorkSummary {
@@ -289,7 +319,7 @@ pub(crate) fn summary(conn: &rusqlite::Connection, work: &Work) -> Result<WorkSu
         title: sidecar.work.title.clone(),
         series,
         volume,
-        editions: sidecar.editions.keys().cloned().collect(),
+        editions,
         cover,
     })
 }

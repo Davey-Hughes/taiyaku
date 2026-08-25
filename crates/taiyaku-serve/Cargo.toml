@@ -1,6 +1,6 @@
 [package]
 name = "taiyaku-serve"
-description = "HTTP server handing a reader the sidecar, pages, and progress, over its own API and an OPDS 1.2 + PSE feed, proxying Stump for pages it holds"
+description = "HTTP server handing a reader the sidecar, pages, progress, and a download, over its own API and an OPDS 1.2 + PSE feed, proxying Stump for pages it holds"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,18 @@ authors.workspace = true
 [dependencies]
 axum = "0.8"
 base64 = "0.23.1"
+# Both already in the dependency tree via axum and hyper — named directly here
+# only so `download.rs` can implement `Stream` over an mpsc receiver and hand
+# `Body::from_stream` the `Bytes` it wants. Same versions the tree already
+# resolves to, so the resolver unifies one copy rather than two. Same reasoning
+# as `rusqlite` below.
+bytes = "1.12.1"
+# Already in the dependency tree via taiyaku-read — named directly here only
+# so `download.rs`'s generated path can hash its own `ComicInfo.xml`, whose
+# bytes exist only in this crate. Same version taiyaku-read pins, so the
+# resolver unifies one copy rather than two.
+crc32fast = "1.5.0"
+futures-core = "0.3.33"
 image = "0.25.9"
 # Already in the dependency tree via taiyaku-library — named directly here
 # only so `works.rs`'s bridge from a slug-keyed `Work` to the library's
@@ -24,7 +36,11 @@ sha2 = "0.11.0"
 taiyaku-core = { path = "../taiyaku-core" }
 taiyaku-library = { path = "../taiyaku-library" }
 taiyaku-read = { path = "../taiyaku-read" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+# "time" is already in the dependency tree — axum's own "tokio" feature pulls
+# it in via hyper-util — but named directly here so `download.rs`'s idle send
+# timeout can name `tokio::time::timeout` without depending on another
+# crate's feature graph to keep enabling it.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
 ureq = "3.3.0"
 
 [dev-dependencies]

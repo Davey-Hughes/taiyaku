@@ -1070,6 +1070,63 @@ pub fn edition_visible(
     Ok(found.is_some())
 }
 
+/// Every edition key this caller may see, for every work, keyed by slug.
+///
+/// **What `taiyaku-serve`'s `/api/works` list and OPDS `works` feed both need
+/// instead of a loop.** `browse::work` already answers "only the editions
+/// this caller may see" for one work (`WorkCard::editions`'s own contract),
+/// but calling it once per work to build a whole-library list would be the
+/// same shape of N+1 the whole-branch review closed in `home` at 111 queries
+/// on the largest series — this answers the whole library in one round trip,
+/// and the caller does one `HashSet` lookup per edition after that. [`work`]
+/// stays the right tool for a caller that already holds one slug —
+/// `get_sidecar` and `patch_alignments` need nothing else.
+///
+/// This is [`root_clause`] alone — no `?root=`, no alignment, no
+/// `member_clause` — because the question is only "does this edition keep a
+/// member under one of these roots", which is the same question
+/// [`edition_visible`] answers one edition at a time. A work with zero
+/// visible editions has no key in the returned map at all, rather than an
+/// entry mapping to an empty set — a caller that iterates the map's keys
+/// never sees such a work named.
+///
+/// Answers every edition of every work for an empty grant, like every other
+/// query here — though a caller checking `roots.is_empty()` first, the way
+/// `routes::refuse_if_hidden` does, never reaches this call at all.
+///
+/// # Errors
+///
+/// Returns an error if the query fails.
+pub fn visible_editions(
+    conn: &Connection,
+    roots: &[i64],
+) -> Result<std::collections::HashMap<String, std::collections::HashSet<String>>, String> {
+    let clause = root_clause(roots);
+    let sql = format!(
+        "SELECT DISTINCT w.slug, e.key
+           FROM work w
+           JOIN edition e ON e.work_id = w.id{clause}"
+    );
+    let params: Vec<&dyn rusqlite::ToSql> =
+        roots.iter().map(|r| r as &dyn rusqlite::ToSql).collect();
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("preparing the visible edition listing: {e}"))?;
+    let rows = stmt
+        .query_map(params.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| format!("listing visible editions: {e}"))?;
+
+    let mut out: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    for pair in rows {
+        let (slug, key) = pair.map_err(|e| format!("reading visible editions: {e}"))?;
+        out.entry(slug).or_default().insert(key);
+    }
+    Ok(out)
+}
+
 /// One root, as §2's provisional `ROOTS` section lists it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RootCard {

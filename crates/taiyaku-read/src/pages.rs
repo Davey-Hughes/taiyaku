@@ -597,6 +597,179 @@ pub fn member_page_sizes(path: &Path) -> Result<Vec<u64>, String> {
         .collect()
 }
 
+/// One page entry, described without being decoded.
+///
+/// The triple a `STORE` zip's local header needs, and the reason this exists
+/// beside `member_page_names` and `member_page_sizes` rather than replacing
+/// them: those two are listings, and this one hashes. For an **archive** all
+/// three fields come out of the central directory, so the archive's page data
+/// is never touched; for a **directory** the crc does not exist anywhere and
+/// each page is read once to compute it. Spec C2 §4 records why paying that on
+/// directory members beat the alternative (data descriptors) and why folding
+/// the listings onto this would have been a regression, not a de-duplication.
+///
+/// `size` is the **uncompressed** size on both sides, which is what a `STORE`
+/// output writes and what makes a directory of loose images and a `.cbz` of the
+/// same scan produce the same list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageEntry {
+    pub name: String,
+    pub size: u64,
+    pub crc32: u32,
+}
+
+/// One directory page, described and read together: the member-relative
+/// name, the entry built from the bytes actually read, and those bytes
+/// themselves.
+///
+/// Shared by `member_page_entries` and `for_each_member_page`'s directory
+/// branches, which otherwise repeated this identically. Not shared with
+/// `member_page_names`, `member_page_sizes` or `member_pages` — those three
+/// are deliberately separate listings that never read a page's bytes, and
+/// folding them in here would cost every scanner call a read it does not
+/// need.
+fn directory_page_entry(member: &Path, page: &Path) -> Result<(PageEntry, Vec<u8>), String> {
+    let name = page
+        .strip_prefix(member)
+        .unwrap_or(page)
+        .to_string_lossy()
+        .to_string();
+    // Read rather than `metadata` + read: the size that goes into the header
+    // and the bytes that were hashed then provably come from the same read,
+    // where a stat first would leave a window in which the file changed size
+    // between the two.
+    let bytes = std::fs::read(page).map_err(|e| format!("{}: {e}", page.display()))?;
+    let entry = PageEntry {
+        name,
+        size: bytes.len() as u64,
+        crc32: crc32fast::hash(&bytes),
+    };
+    Ok((entry, bytes))
+}
+
+/// Every page of a member, described in reading order.
+///
+/// The name is the same one `member_page_names` reports — whole path relative
+/// to the member for a directory, the bare entry name for an archive — and an
+/// entry name that is not valid UTF-8 arrives garbled rather than refused, for
+/// the reason that function's doc comment gives.
+///
+/// # Errors
+///
+/// For a directory, returns an error if it, or a directory nested under it,
+/// cannot be listed, or if a page cannot be read back — removed or made
+/// unreadable since listing. For an archive, returns an error if it cannot be
+/// opened, if its leading bytes identify a recognised-but-unsupported
+/// container — 7-Zip, RAR, or tar, named as such — if it does not parse as a
+/// zip archive, or if a listed entry cannot be looked up again by name.
+pub fn member_page_entries(path: &Path) -> Result<Vec<PageEntry>, String> {
+    if path.is_dir() {
+        return directory_page_paths(path)?
+            .iter()
+            .map(|page| directory_page_entry(path, page).map(|(entry, _bytes)| entry))
+            .collect();
+    }
+    let mut zip = open_archive(path)?;
+    let names = page_names_from(&mut zip);
+    names
+        .iter()
+        .map(|name| {
+            let entry = zip
+                .by_name(name)
+                .map_err(|e| format!("{}: {name}: {e}", path.display()))?;
+            Ok(PageEntry {
+                name: name.clone(),
+                size: entry.size(),
+                crc32: entry.crc32(),
+            })
+        })
+        .collect()
+}
+
+/// A page-visiting closure: one page's entry and bytes in, an early-stop
+/// decision out. Named so `for_each_member_page`'s signature reads as a type
+/// rather than as the unnamed `dyn FnMut(...)` clippy flags as too complex to
+/// inline — the same fix `taiyaku-cli::duplicates::Fingerprint` uses for the
+/// identical complaint on an identically-shaped closure type.
+type PageVisitor<'a> = dyn FnMut(&PageEntry, &[u8]) -> Result<(), String> + 'a;
+
+/// Every page of a member, handed to `f` one at a time, in reading order.
+///
+/// **One archive open for the whole member, one page in memory at a time.**
+/// `member_page` opens the archive per index, which is right for a route
+/// serving one page and wrong for a download reading two hundred of them: this
+/// is that loop with the open hoisted out. `read_edition` is the other
+/// neighbour and holds *every* page at once, which for this corpus's largest
+/// member would be 1.49 GB.
+///
+/// The `PageEntry` travels with the bytes so a caller that planned an output
+/// from `member_page_entries` can check the member still matches as it
+/// streams — on both `size` and `crc32`. That is true of `crc32` on its own
+/// regardless: `zip`'s `Crc32Reader` validates it against the real bytes on
+/// every read, so a lying crc32 fails inside `read_to_end` before this
+/// function ever sees the entry. It is true of `size` too only because this
+/// function, for an archive, reports the byte count `read_to_end` actually
+/// produced rather than the central directory's declared `uncompressed_size`
+/// — a field `zip` never checks against anything. `member_page_entries`, by
+/// contrast, reports the declared size, because reading the bytes to verify
+/// it would destroy the property that function exists for. So the two
+/// deliberately disagree on an archive that misstates its own size: a
+/// plan built from `member_page_entries` and a stream read through this
+/// function are then comparable on `size` as well as `crc32`, and an
+/// archive replaced — or corrupted — mid-download is detectable rather than
+/// producing a file whose local header states a length its payload does not
+/// have.
+///
+/// **`f`'s `Err` stops the walk on the spot** and is returned unchanged. A
+/// client that hung up must not cost the rest of the volume.
+///
+/// # Errors
+///
+/// The errors of [`member_page_entries`], plus whatever `f` returns, plus — for
+/// an archive — an entry whose compressed data does not decode.
+pub fn for_each_member_page(path: &Path, f: &mut PageVisitor<'_>) -> Result<(), String> {
+    if path.is_dir() {
+        for page in directory_page_paths(path)? {
+            let (entry, bytes) = directory_page_entry(path, &page)?;
+            f(&entry, &bytes)?;
+        }
+        return Ok(());
+    }
+
+    let mut zip = open_archive(path)?;
+    let names = page_names_from(&mut zip);
+    for name in names {
+        let mut handle = zip
+            .by_name(&name)
+            .map_err(|e| format!("{}: {name}: {e}", path.display()))?;
+        // crc32 is read now but not trusted yet: `read_to_end` below validates
+        // it against the real bytes (`zip`'s `Crc32Reader`) and errors on a
+        // mismatch, so by the time `f` sees it, it is proven rather than
+        // merely declared.
+        let crc32 = handle.crc32();
+        // `size()` is unverified archive metadata — see
+        // `MAX_ENTRY_CAPACITY_HINT`'s doc comment — so it drives a bounded
+        // hint here, never the entry `f` receives. `read_to_end` grows the
+        // buffer to the real size regardless of what was reserved.
+        let hint = handle.size().min(MAX_ENTRY_CAPACITY_HINT) as usize;
+        let mut bytes = Vec::with_capacity(hint);
+        handle
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("{}: {name}: {e}", path.display()))?;
+        drop(handle);
+        // Built from the bytes just read, not `handle.size()`'s declared
+        // figure — see this function's doc comment for why the two must be
+        // able to disagree.
+        let entry = PageEntry {
+            name: name.clone(),
+            size: bytes.len() as u64,
+            crc32,
+        };
+        f(&entry, &bytes)?;
+    }
+    Ok(())
+}
+
 /// One named entry's raw bytes, read directly rather than filtered through
 /// `is_page_name` — for a member's metadata, `ComicInfo.xml` above all, which
 /// `page_names_from` deliberately excludes from the page sequence and which no

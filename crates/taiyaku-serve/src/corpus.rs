@@ -24,7 +24,7 @@
 //! and if they ever disagree the reader shows the wrong page while every hash
 //! and page count in the sidecar still matches.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::{LocalLibrary, PageSource, ServeState, load_works};
@@ -331,5 +331,255 @@ fn a_note_can_be_anchored_to_every_slot_of_every_real_edition() {
     assert!(
         spread_editions > 0,
         "no edition here joins spreads, so this run could not tell a slot check from a page check"
+    );
+}
+
+// --- Task 10: the download route against real material. ---
+//
+// Everything above reads pages through `ServeState::page`, never through
+// `/api/works/{slug}/{edition}/download` — so a bug specific to that route
+// (`download.rs`'s inflate-then-`STORE` rebuild, or its passthrough) is
+// invisible to every check above no matter how much real material they read.
+// The fixtures `download/tests.rs` otherwise runs against are two `Stored`
+// entries of six bytes apiece, written by the `zip` crate with default
+// options; this corpus is 11,431 `DEFLATE` entries out of 11,681, with pages
+// nested in per-chapter folders and archives up to 1.49 GB. Only a check
+// that actually walks the HTTP route over that material can say the rebuild
+// survives it.
+
+/// Sidecars this corpus holds, one per work directory that has one.
+///
+/// A flat scan of `root`'s immediate children — the shape `corpus/` itself
+/// already uses (`<work-slug>/taiyaku.json`) — rather than a recursive walk,
+/// so `corpus/incoming/`'s untriaged archives (no sidecar of their own) are
+/// out of scope rather than half-parsed. Sorted, so which edition the two
+/// helpers below land on does not depend on the filesystem's own iteration
+/// order.
+fn corpus_sidecars(root: &Path) -> Vec<PathBuf> {
+    let mut sidecars: Vec<PathBuf> = std::fs::read_dir(root)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path().join("taiyaku.json"))
+                .filter(|path| path.is_file())
+                .collect()
+        })
+        .unwrap_or_default();
+    sidecars.sort();
+    sidecars
+}
+
+/// A `(router, slug, edition key, page count)` over the first corpus edition
+/// whose member count is at least `at_least.start` — scanned, not assumed.
+///
+/// The multi-member check below was sketched against `gotoubun-v01`'s
+/// `en-fan` (seven chapter files); this is what confirms that guess rather
+/// than taking it on faith, and it is a `BTreeMap` (`Sidecar::editions`) over
+/// a sorted directory scan, so which edition it lands on is deterministic
+/// across runs.
+///
+/// # Panics
+///
+/// Panics if no edition anywhere under `root` has a member count in range,
+/// naming the root that was scanned. A corpus that no longer has the shape
+/// this check needs is a finding to report, not a check to quietly skip —
+/// skipping is reserved for `TAIYAKU_CORPUS` being unset entirely (O30).
+fn a_corpus_edition_with_members(
+    root: &Path,
+    at_least: std::ops::RangeFrom<usize>,
+) -> (axum::Router, String, String, u32) {
+    for sidecar in corpus_sidecars(root) {
+        let works = load_works(std::slice::from_ref(&sidecar)).expect("sidecar loads");
+        let doc = works[0].sidecar();
+        let found = doc
+            .editions
+            .iter()
+            .find(|(_, edition)| at_least.contains(&edition.members.len()))
+            .map(|(key, edition)| (key.clone(), edition.total_pages()));
+        if let Some((key, pages)) = found {
+            let slug = works[0].id.clone();
+            let state = Arc::new(ServeState {
+                library: crate::test_support::library(),
+                works,
+                source: Arc::new(LocalLibrary),
+                cache_dir: std::env::temp_dir().join("taiyaku-corpus-download-covers"),
+                log: None,
+                auth: crate::session::AuthConfig::default(),
+            });
+            let router = crate::test_support::authenticating(crate::build_router(state));
+            return (router, slug, key, pages);
+        }
+    }
+    panic!(
+        "no edition under {} has {} or more members; the corpus this check was written against \
+         may have changed shape, which is a finding, not something to paper over by testing the \
+         single-member path twice under a misleading name",
+        root.display(),
+        at_least.start
+    );
+}
+
+/// A `(router, slug, edition key, absolute path)` over the first corpus
+/// edition whose one member is a plain file — not a directory of loose page
+/// images, which several of this corpus's `raw-mono` editions are, and which
+/// `download::prepare`'s own `paths[0].is_file()` guard already routes away
+/// from passthrough. Scanned rather than assumed, for the same reason as
+/// [`a_corpus_edition_with_members`] above.
+///
+/// # Panics
+///
+/// Panics if no edition anywhere under `root` has exactly one member that is
+/// a file, naming the root that was scanned.
+fn a_corpus_edition_of_one_file(root: &Path) -> (axum::Router, String, String, PathBuf) {
+    for sidecar in corpus_sidecars(root) {
+        let works = load_works(std::slice::from_ref(&sidecar)).expect("sidecar loads");
+        let dir = sidecar.parent().unwrap().to_path_buf();
+        let doc = works[0].sidecar();
+        let found = doc.editions.iter().find_map(|(key, edition)| {
+            let [member] = edition.members.as_slice() else {
+                return None;
+            };
+            let path = dir.join(&member.path);
+            path.is_file().then(|| (key.clone(), path))
+        });
+        if let Some((key, path)) = found {
+            let slug = works[0].id.clone();
+            let state = Arc::new(ServeState {
+                library: crate::test_support::library(),
+                works,
+                source: Arc::new(LocalLibrary),
+                cache_dir: std::env::temp_dir().join("taiyaku-corpus-download-covers"),
+                log: None,
+                auth: crate::session::AuthConfig::default(),
+            });
+            let router = crate::test_support::authenticating(crate::build_router(state));
+            return (router, slug, key, path);
+        }
+    }
+    panic!(
+        "no edition under {} has a single file member; the corpus this check was written \
+         against may have changed shape",
+        root.display()
+    );
+}
+
+/// `GET /api/works/{slug}/{key}/download`, driven the way every other route
+/// test in this crate drives one — `test_support::get`, not a hand-rolled
+/// request.
+async fn download(
+    router: &axum::Router,
+    slug: &str,
+    key: &str,
+) -> axum::http::Response<axum::body::Body> {
+    crate::test_support::get(router, &format!("/api/works/{slug}/{key}/download")).await
+}
+
+/// Read a whole response body, however large the corpus made it.
+///
+/// `usize::MAX` rather than `download::tests::all_of`'s 64 MiB cap: that
+/// limit exists for that module's fixtures, and would reject this module's
+/// largest real single-member edition (334 MB, `gotoubun-v01`'s `en-mono`,
+/// as of this writing) outright.
+async fn all_of(response: axum::http::Response<axum::body::Body>) -> Vec<u8> {
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the body")
+        .to_vec()
+}
+
+/// A real multi-member edition downloads as a zip that reads back with the
+/// page count the edition claims.
+///
+/// The fixtures cannot reach this: they are `Stored` entries of six bytes,
+/// and 11,431 of this corpus's 11,681 entries are `DEFLATE`, so a bug in the
+/// inflate-then-`STORE` path would be invisible to every other test in this
+/// crate.
+///
+/// **Wall-clock, measured 2026-08-24 against `gotoubun-v01`'s `en-fan`** (7
+/// members, 235 pages, DEFLATE), three runs of `cargo test ... -- \
+/// --test-threads=1`: 1.02-1.03 s each. `.config/nextest.toml` justifies its
+/// 30 s slow mark against "nothing in the suite exceeds 0.75 s" — this is
+/// the one check in this crate that now does, by about a third of a second,
+/// well short of tripping the slow mark itself.
+#[tokio::test]
+async fn a_real_multi_member_edition_downloads_as_a_readable_cbz() {
+    let Some(corpus) = corpus_root() else {
+        eprintln!("TAIYAKU_CORPUS unset — skipping");
+        return;
+    };
+    // Whichever corpus edition has more than one member. `gotoubun-v01`'s
+    // `en-fan` holds chapter files; if that stops being true,
+    // `a_corpus_edition_with_members`'s panic reports it rather than this
+    // check silently testing the single-member path twice under a
+    // misleading name.
+    let (router, slug, key, pages) = a_corpus_edition_with_members(&corpus, 2..);
+
+    let response = download(&router, &slug, &key).await;
+    assert_eq!(response.status(), 200);
+    let stated: u64 = response
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .expect("an exact length")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let bytes = all_of(response).await;
+    assert_eq!(
+        bytes.len() as u64,
+        stated,
+        "Content-Length was a lie on real material"
+    );
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("a readable zip");
+    // Every page, plus the generated metadata document.
+    assert_eq!(archive.len() as u32, pages + 1);
+    assert_eq!(archive.by_index(0).unwrap().name(), "ComicInfo.xml");
+    // Names sort into reading order, which is the whole point of
+    // renumbering them — `docs/sidecar.md` rule 1.
+    let names: Vec<String> = (1..archive.len())
+        .map(|i| archive.by_index(i).unwrap().name().to_string())
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "stored order must already be name order");
+}
+
+/// A real single-member edition is served byte for byte.
+///
+/// This is the check that fails if someone ever "improves" passthrough into
+/// a rebuild: `download::prepare`'s `single_file` branch exists precisely so
+/// a 300+ MB archive is streamed from disk rather than re-zipped, and no
+/// fixture is large enough to make the difference between the two show up in
+/// a `Content-Length` or a wall-clock.
+///
+/// **Wall-clock, measured 2026-08-24 against `gotoubun-v01`'s `en-mono`**
+/// (one 334,752,036-byte archive; no corpus edition reachable through a
+/// sidecar here reaches the corpus-wide 1.49 GB outlier, which sits in
+/// `corpus/incoming/` with no `taiyaku.json` of its own — see the report):
+/// three runs of `cargo test ... -- --test-threads=1`, 0.19 s each,
+/// faster than expected for a third-of-a-gigabyte file read twice (once by
+/// `std::fs::read`, once buffering the streamed response) — the filesystem
+/// cache from repeated corpus runs is doing real work here. Under
+/// `.config/nextest.toml`'s stated "nothing in the suite exceeds 0.75 s",
+/// but noted anyway: a cold-cache run, or a larger corpus volume, could push
+/// this well past that, and nobody should have to rediscover that by
+/// wondering why the corpus job got slow.
+#[tokio::test]
+async fn a_real_single_member_edition_is_the_file_on_disk() {
+    let Some(corpus) = corpus_root() else {
+        eprintln!("TAIYAKU_CORPUS unset — skipping");
+        return;
+    };
+    let (router, slug, key, path) = a_corpus_edition_of_one_file(&corpus);
+    let on_disk = std::fs::read(&path).expect("the archive");
+
+    let response = download(&router, &slug, &key).await;
+    assert_eq!(response.status(), 200);
+    let bytes = all_of(response).await;
+    assert_eq!(bytes.len(), on_disk.len());
+    assert_eq!(
+        bytes, on_disk,
+        "passthrough must not rebuild real material either"
     );
 }

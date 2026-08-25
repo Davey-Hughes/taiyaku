@@ -18,7 +18,7 @@ use crate::{ServeState, Work};
 /// Every failure here names the thing that was not found, because a reader
 /// showing a blank page with no explanation is the failure mode this whole
 /// project exists to avoid.
-fn not_found(message: String) -> Response {
+pub(crate) fn not_found(message: String) -> Response {
     (StatusCode::NOT_FOUND, message).into_response()
 }
 
@@ -330,10 +330,47 @@ impl IntoResponse for NoProgress {
     }
 }
 
-/// Every work this server holds, as `GET /api/works` answers it: slug,
-/// title, series, volume, editions and a cover URL — see
+/// Every work this caller's grant admits, as `GET /api/works` answers it:
+/// slug, title, series, volume, editions and a cover URL — see
 /// `works::WorkSummary` for where each of those six comes from and why two
 /// of them are `null` today.
+///
+/// **Applied no grant at all until this route joined the other four.** This
+/// list answered every work the server held regardless of `Principal.roots`,
+/// which handed a restricted account the id, title, series and volume of
+/// every work outside every root it was granted — the same shape of gap the
+/// whole-branch review closed on the page routes (`refuse_if_hidden`) and
+/// commit 5d41bd6 closed on the OPDS mirror (`opds::visible_editions_by_work`,
+/// named `visible_slugs` at the time).
+///
+/// **Filtered `editions` too, and the `cover` URL built from a visible one —
+/// gated only at the work level until a second whole-branch review.** This
+/// list first filtered by the now-removed `browse::visible_work_slugs`,
+/// which answered "does this work keep *any* edition under a granted root",
+/// and then reported
+/// every edition of each surviving work regardless: a work split across
+/// roots (`en` granted, `raw` withheld) named `raw` in its `editions` array
+/// and built its `cover` from `sidecar.hub` unconditionally, so a hidden
+/// hub's key reached the client through a thumbnail URL. Filtered per
+/// edition now, through `works::summary`'s `visible` parameter — the same
+/// per-edition question `get_sidecar` and `patch_alignments` ask via
+/// `visible_editions_or_refuse`, asked here for every work in the library at
+/// once so this route stays a list rather than becoming a lookup.
+///
+/// **A list, not a lookup: filtered, not refused.** A restricted account gets
+/// the works it may see and simply does not learn about the rest; refusing
+/// the whole route the way `refuse_if_hidden` refuses a single edition would
+/// hide the library from every restricted reader, not just the parts outside
+/// their grant.
+///
+/// **One query for the whole list, not one per work.** Asking
+/// `browse::work` per work here — the tool the single-work routes use — would
+/// be the same N+1 the whole-branch review closed in `home` at 111 queries
+/// on the largest series, reopened at the edition level this time:
+/// `browse::visible_editions` answers every work's visible edition set in one
+/// round trip, and this filter is then only a `HashSet` lookup per edition.
+/// An empty grant is unrestricted and skips that query entirely, the same
+/// short-circuit `refuse_if_hidden` applies.
 ///
 /// **Not a home screen.** Spec C1 is the browse UI this payload exists to
 /// eventually feed; nothing here builds one, and `openFirstWork`
@@ -343,15 +380,37 @@ impl IntoResponse for NoProgress {
 /// through a `Library`-taking wrapper the way `progress::load` does — a list
 /// answers every work in one request, so one lock over the whole pass beats
 /// re-acquiring `state.library`'s mutex per work.
-async fn list_works(State(state): State<Arc<ServeState>>) -> Response {
+async fn list_works(
+    State(state): State<Arc<ServeState>>,
+    request_extensions: axum::http::Extensions,
+) -> Response {
+    let roots = request_extensions
+        .get::<crate::auth::Principal>()
+        .map_or_else(Vec::new, |principal| principal.roots.clone());
+
     // A SELECT per work against `state.library` — `get_page`'s reasoning
     // about the async worker applies unchanged.
     let built = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
+        let visible = if roots.is_empty() {
+            None
+        } else {
+            Some(taiyaku_library::browse::visible_editions(&conn, &roots)?)
+        };
         state
             .works
             .iter()
-            .map(|w| crate::works::summary(&conn, w))
+            // A work absent from `visible`'s keys has no edition inside the
+            // grant at all — `browse::visible_editions` never mints an entry
+            // for one — so it is dropped here exactly as it was before, and
+            // a work present in it always has a non-empty edition set for
+            // `summary` to fall back on.
+            .filter_map(|w| match &visible {
+                None => Some(crate::works::summary(&conn, w, None)),
+                Some(map) => map
+                    .get(&w.id)
+                    .map(|keys| crate::works::summary(&conn, w, Some(keys))),
+            })
             .collect::<Result<Vec<_>, String>>()
     })
     .await;
@@ -388,7 +447,7 @@ async fn list_works(State(state): State<Arc<ServeState>>) -> Response {
 /// reader can only write their own, and widening the check to them is a
 /// question about what a grant *means* rather than about what it leaks —
 /// recorded as an open item rather than answered in a fix round.
-fn refuse_if_hidden(
+pub(crate) fn refuse_if_hidden(
     state: &Arc<ServeState>,
     extensions: &axum::http::Extensions,
     slug: &str,
@@ -406,6 +465,149 @@ fn refuse_if_hidden(
     }
 }
 
+/// **403, not 404, and that is the design.** `refuse_if_hidden` above answers
+/// 404 because an edition outside the grant does not admit that it exists;
+/// this answers 403 because the caller *may* see this edition and may not have
+/// a copy of it — a different fact that a 404 would lie about.
+///
+/// **This landed as an always-passing stub and did not stay one.** Task 7 added
+/// it returning `None` so the crate would compile before the capability work,
+/// and a security review flagged the obvious: a fail-open authorization gate in
+/// committed code is not made safe by a comment promising a later task. The
+/// real check is here; Task 9 keeps the tests that prove a withheld capability
+/// refuses, and the `can_stream` half beside it. Half of O54.
+pub(crate) fn refuse_if_cannot_download(extensions: &axum::http::Extensions) -> Option<Response> {
+    let principal = extensions.get::<crate::auth::Principal>()?;
+    (!principal.can_download).then(|| {
+        (
+            StatusCode::FORBIDDEN,
+            "this account may browse and read but not download",
+        )
+            .into_response()
+    })
+}
+
+/// The same for reading pages in place.
+///
+/// **Gates `/pages` and the OPDS PSE stream, and deliberately not `/thumb`, the
+/// library covers, or any browse route.** The line is there because a
+/// download-only account must still be able to *see* its shelf: an account that
+/// cannot render a cover cannot choose what to download, and "you may take
+/// volumes away but not read them here" is a coherent policy while "you may
+/// take volumes away but not see which ones exist" is not. Thumbnails are how
+/// the shelf renders, so they follow browse.
+///
+/// Both columns default to 1 (`schema/004_auth.sql:18`), so nothing changed for
+/// any existing account the day this shipped, and nothing can set either to 0
+/// outside a fixture until spec C4's user administration. Spec C2 §2.2.
+pub(crate) fn refuse_if_cannot_stream(extensions: &axum::http::Extensions) -> Option<Response> {
+    let principal = extensions.get::<crate::auth::Principal>()?;
+    (!principal.can_stream).then(|| {
+        (
+            StatusCode::FORBIDDEN,
+            "this account may browse and download but not read pages here",
+        )
+            .into_response()
+    })
+}
+
+/// Which editions of `slug` this caller may see, or the refusal to send
+/// instead — [`refuse_if_hidden`]'s whole-work counterpart, for a route that
+/// has no single edition to check against: the document `get_sidecar`
+/// returns lists every edition, and the rows `patch_alignments` writes are
+/// not scoped to one edition either, since a correction names two.
+///
+/// **Data-carrying, unlike `refuse_if_hidden`, and that is the fix.** The
+/// function this replaced (`refuse_if_work_hidden`) answered only the
+/// *work*-level question — does `slug` keep any edition under a granted
+/// root? — and both of this crate's callers then sent back the whole
+/// document regardless: a grant that let the work through gated nothing
+/// inside it, which the whole-branch review found leaking a hidden
+/// edition's key, label, member path and `sha256` through `get_sidecar` and
+/// `patch_alignments` alike. `browse::work` already answers the finer
+/// question — `WorkCard::editions` is "only the editions this caller may
+/// see", its own contract — so this returns that set instead of discarding
+/// it, and the two callers filter with it via [`filter_sidecar_editions`]
+/// rather than reinventing the rule a third time.
+///
+/// `Ok(None)`: an unrestricted caller — no [`crate::auth::Principal`] at
+/// all, or an empty grant (every account in an un-migrated library holds
+/// one, spec C1 §5.1) — and the database is never touched, the same
+/// short-circuit `refuse_if_hidden` applies.
+/// `Ok(Some(keys))`: a restricted caller; `keys` is `slug`'s visible
+/// edition set, and a caller with nothing to filter still gets a real
+/// (possibly full) set rather than `None`, so it cannot be mistaken for
+/// "unrestricted" downstream.
+/// `Err`: the refusal to send instead. `browse::work` answers `None` for a
+/// work outside the grant exactly as it does for one that does not exist,
+/// so this refuses identically either way — the same rule `refuse_if_hidden`
+/// states for [`taiyaku_library::browse::edition_visible`].
+#[expect(
+    clippy::result_large_err,
+    reason = "the `Err` carries a `Response`, which every other refusal-returning function in \
+              this file also does (`NoSuchWork`, `NoPrincipal`, `NoNotes`, `NoTruth` all wrap \
+              one for the identical reason their own doc comments give); this is a routing \
+              handler's own refusal path, called once per request, not a hot loop, so the 128 \
+              bytes clippy measures are not worth an indirection at every call site"
+)]
+fn visible_editions_or_refuse(
+    state: &Arc<ServeState>,
+    extensions: &axum::http::Extensions,
+    slug: &str,
+) -> Result<Option<std::collections::HashSet<String>>, Response> {
+    let Some(principal) = extensions.get::<crate::auth::Principal>() else {
+        return Ok(None);
+    };
+    if principal.roots.is_empty() {
+        return Ok(None);
+    }
+    let conn = state.library.conn();
+    match taiyaku_library::browse::work(&conn, &principal.roots, slug) {
+        Ok(Some(detail)) => Ok(Some(
+            detail.card.editions.into_iter().map(|e| e.key).collect(),
+        )),
+        Ok(None) => Err(not_found(format!("no work `{slug}`"))),
+        Err(why) => Err((StatusCode::INTERNAL_SERVER_ERROR, why).into_response()),
+    }
+}
+
+/// A copy of `sidecar` with every edition and alignment outside `visible`
+/// removed — what [`get_sidecar`] and [`patch_alignments`] send a restricted
+/// caller instead of the document verbatim.
+///
+/// **Both `editions` and `alignments` are filtered, not only the former.**
+/// An alignment names two editions on the wire (`from`/`to`); one naming a
+/// withheld edition on either side is that edition's key leaking through a
+/// second field, which is exactly the kind of second spelling this function
+/// exists to avoid a caller inventing at the call site.
+///
+/// **`hub` is checked too, and substituted rather than left dangling.** A
+/// grant can hide the hub edition precisely as it can hide any other —
+/// `browse::cover_target`'s own doc comment names the same trap for a
+/// series cover. `editions` is a `BTreeMap`, so its `keys()` are already
+/// sorted; the first surviving one is the deterministic fallback, the same
+/// tiebreak `works::summary` uses for a list entry's cover when its hub is
+/// hidden. The caller is expected to have already refused a `slug` with no
+/// visible edition at all (`visible_editions_or_refuse` never returns an
+/// empty set for one — `browse::work` answers `None` first), so this always
+/// finds a fallback when it needs one.
+fn filter_sidecar_editions(
+    sidecar: &taiyaku_core::Sidecar,
+    visible: &std::collections::HashSet<String>,
+) -> taiyaku_core::Sidecar {
+    let mut filtered = sidecar.clone();
+    filtered.editions.retain(|key, _| visible.contains(key));
+    filtered
+        .alignments
+        .retain(|a| visible.contains(&a.from) && visible.contains(&a.to));
+    if !visible.contains(&filtered.hub)
+        && let Some(first) = filtered.editions.keys().next()
+    {
+        filtered.hub = first.clone();
+    }
+    filtered
+}
+
 async fn get_sidecar(
     State(state): State<Arc<ServeState>>,
     AxPath(id): AxPath<String>,
@@ -413,39 +615,47 @@ async fn get_sidecar(
     request_extensions: axum::http::Extensions,
 ) -> Response {
     // The document lists every edition, so a grant that hides the whole work
-    // must refuse it. `browse::work` answers `None` for a work outside the
-    // grant exactly as it does for one that does not exist.
-    if let Some(principal) = request_extensions.get::<crate::auth::Principal>()
-        && !principal.roots.is_empty()
-    {
-        let hidden = {
-            let conn = state.library.conn();
-            taiyaku_library::browse::work(&conn, &principal.roots, &id)
-        };
-        match hidden {
-            Ok(None) => return not_found(format!("no work `{id}`")),
-            Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
-            Ok(Some(_)) => {}
-        }
-    }
+    // must refuse it, and a grant that only hides *some* of it must filter
+    // the rest — `visible_editions_or_refuse` answers both.
+    let visible = match visible_editions_or_refuse(&state, &request_extensions, &id) {
+        Ok(visible) => visible,
+        Err(refusal) => return refusal,
+    };
     let found = match work(&state, &id) {
         Ok(found) => found,
         Err(missing) => return missing.into_response(),
     };
     let sidecar = found.sidecar();
+    // The `ETag` is computed over the **full** document regardless of what
+    // this response sends: it is the resource's own fingerprint, and it is
+    // what `patch_alignments`'s `If-Match` validates against — a tag over a
+    // caller-specific projection would never match that check, and a
+    // restricted reader's own correction would fail its precondition every
+    // time. Filtering changes the body, not the version being agreed on.
+    // The cost of that choice: the tag is also a change-detection oracle
+    // over content this caller cannot see — a restricted reader's next
+    // `If-None-Match` answers 200 whenever a *withheld* edition changes,
+    // never a 304, even though nothing in the body they can see moved. Never
+    // a *shared* cache, though — `every_guarded_response_refuses_a_shared_cache`
+    // covers that half — so the leak is "something changed," not what.
     let tag = sidecar_etag(&sidecar);
     if if_none_match_hits(&headers, &tag) {
         return not_modified(&tag, None);
     }
-    // Served verbatim from the parsed document rather than by re-reading the
-    // file, so what the client resolves against is exactly what this server
-    // holds — and exactly what the `ETag` above was computed over.
+    let body = match &visible {
+        Some(keys) => filter_sidecar_editions(&sidecar, keys).to_json(),
+        // Served verbatim from the parsed document rather than by
+        // re-reading the file, so what the client resolves against is
+        // exactly what this server holds — and exactly what the `ETag`
+        // above was computed over.
+        None => sidecar.to_json(),
+    };
     (
         [
             (header::CONTENT_TYPE, "application/json"),
             (header::ETAG, tag.as_str()),
         ],
-        sidecar.to_json(),
+        body,
     )
         .into_response()
 }
@@ -484,6 +694,9 @@ async fn get_page(
     request_extensions: axum::http::Extensions,
 ) -> Response {
     if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &edition) {
+        return refusal;
+    }
+    if let Some(refusal) = refuse_if_cannot_stream(&request_extensions) {
         return refusal;
     }
     let index = match page_index(&raw, &edition) {
@@ -1282,6 +1495,44 @@ fn one_slot(text: &str, side: &str) -> Result<taiyaku_core::Slot, Response> {
 /// replace an edge wholesale. `If-Match` is what makes "the document this
 /// server holds" and "the document the client was looking at" the same thing.
 ///
+/// **Took no `Extensions` and consulted no grant at all until this joined the
+/// other six.** It resolved its target by slug alone
+/// (`state.work_or_missing`), so a restricted account could both read the
+/// sidecar this handler returns and write shared `alignment`/`run` rows for a
+/// work outside every root it held — worse than the read leaks the sibling
+/// routes closed, because an alignment is shared library truth rather than
+/// per-account state, and O60's "nothing leaks" reasoning for progress, notes
+/// and truth does not carry to it.
+///
+/// **Filters its response exactly as `get_sidecar` does, and for the same
+/// reason — this was declared a 404-only lookup and was not one.** This
+/// route sits on the same [`visible_editions_or_refuse`] helper `get_sidecar`
+/// uses: a reader granted only `en` on a work also holding a withheld `raw`
+/// passes it — the work keeps a visible edition — and until this fix got
+/// back a 200 carrying the *whole* corrected sidecar, `raw` included. The
+/// fix filters the response the same way.
+///
+/// **Refuses a correction that itself names a withheld edition, on either
+/// side.** The read-leak fix above shaped only what came back; it left the
+/// write open — a reader granted `en` alone could still submit
+/// `{"from":"en","to":"raw",…}` and have it accepted, writing shared
+/// `alignment`/`run` rows for `raw` that every reader who *can* see `raw`
+/// is then served from. That is worse than the response leak this function
+/// closed first: a read leak costs the caller who triggered it a fact they
+/// should not have; this write would have cost every other reader a fact
+/// they did not ask this caller to assert. Closed with two calls to
+/// [`refuse_if_hidden`] — the exact per-edition question `/pages`, `/thumb`
+/// and the download routes already ask, reused rather than a third spelling
+/// of it — before the body is otherwise parsed.
+///
+/// **What is stored is never filtered — only what is returned.** `visible`
+/// is read once, before the write, and used solely to shape the HTTP
+/// response; the file and the `alignment`/`run` rows below always hold the
+/// complete, unfiltered document, because a correction is shared library
+/// truth and a caller-specific projection of it must never reach disk. The
+/// `refuse_if_hidden` calls above are what keep an invisible edition from
+/// reaching that write at all, rather than a filter on it afterward.
+///
 /// `#[allow(clippy::result_large_err)]` because everything under this
 /// handler — `one_slot`'s calls, the `spawn_blocking` closure and the
 /// `Work::update` closure nested inside it — resolves a `Response` as its
@@ -1293,12 +1544,33 @@ async fn patch_alignments(
     State(state): State<Arc<ServeState>>,
     AxPath(id): AxPath<String>,
     headers: HeaderMap,
+    request_extensions: axum::http::Extensions,
     body: axum::body::Bytes,
 ) -> Response {
+    let visible = match visible_editions_or_refuse(&state, &request_extensions, &id) {
+        Ok(visible) => visible,
+        Err(refusal) => return refusal,
+    };
     let correction: Correction = match serde_json::from_slice(&body) {
         Ok(correction) => correction,
         Err(why) => return bad_request(format!("this is not a correction: {why}")),
     };
+    // **The write-authorization half of Finding 1, not merely its response
+    // leak.** `visible` above only shapes what this handler sends back; it
+    // was read once and never asked whether the correction's own `from`/`to`
+    // are inside the grant. A reader granted only `en` on a work that also
+    // holds a withheld `raw` could name `raw` on either side and have it
+    // written into the shared `alignment`/`run` rows every other reader of
+    // this work is served from — worse than a read leak, because the write
+    // is not scoped to the caller who made it. `refuse_if_hidden` is the
+    // exact per-edition question `/pages`, `/thumb` and the download routes
+    // already ask; reused here rather than a second spelling of it.
+    if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &correction.from) {
+        return refusal;
+    }
+    if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &correction.to) {
+        return refusal;
+    }
     let a = match one_slot(&correction.a, "a") {
         Ok(slot) => slot,
         Err(refusal) => return refusal,
@@ -1398,6 +1670,10 @@ async fn patch_alignments(
             // because the next start imports that file. The reverse ordering
             // would put the only copy of the correction in a database the
             // reader was never told to look in.
+            // The full document — what gets written to disk and to the
+            // `alignment`/`run` rows below. Never the filtered projection:
+            // see this function's own doc comment on why storage is never
+            // filtered.
             let json = next.to_json();
             if what != taiyaku_core::Corrected::AlreadyTrue {
                 // **The file, then the rows — unless there is no file.**
@@ -1432,9 +1708,17 @@ async fn patch_alignments(
                 crate::alignments::store(&conn, found, &next)
                     .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
             }
+            // The response is filtered to this caller's grant, the same
+            // question `get_sidecar` answers with the same helper — `json`
+            // above stays the full document that was stored.
+            let response_json = match &visible {
+                Some(keys) => filter_sidecar_editions(&next, keys).to_json(),
+                None => json,
+            };
+
             let next = std::sync::Arc::new(next);
             let tag = sidecar_etag(&next);
-            Ok((next, (json, tag)))
+            Ok((next, (response_json, tag)))
         })
     })
     .await;
@@ -1481,6 +1765,14 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         (
             "/api/works/{work}/{edition}/pages/{index}/thumb",
             get(get_thumb),
+        ),
+        (
+            "/api/works/{work}/{edition}/download",
+            get(crate::download::edition),
+        ),
+        (
+            "/api/works/{work}/{edition}/members/{ordinal}/download",
+            get(crate::download::member),
         ),
         (
             "/api/works/{work}/progress",
@@ -1536,6 +1828,253 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
     ]);
     routes.extend(crate::opds::routes());
     routes
+}
+
+/// Why a guarded route may or may not read [`crate::auth::Principal::roots`],
+/// and how that claim can be told apart from a hope.
+///
+/// **Beside [`guarded_routes`] rather than in a test file**, for the reason
+/// [`open_routes`] sits here too: the lists are read together, and
+/// `auth::tests::every_route_declares_its_grant_posture` asserts this table's
+/// route set against `guarded_routes`'s exactly — so a route added to one
+/// without the other fails the build on the commit that adds it.
+/// [`guarded_routes`]'s own doc comment makes this argument for
+/// authentication: "that is exactly the failure a reviewer's checklist has:
+/// it goes stale the first time someone adds a route and does not think
+/// about auth." Authorization had no such test until this one, and six
+/// routes — `stream_page`, `cover`, `work_feed` and `works` in `opds.rs`,
+/// `list_works` in this file, and `patch_alignments` — drifted out of the
+/// grant one at a time, over more than one spec, before anything said so.
+///
+/// `#[cfg(test)]`, like `test_support` itself: this table has no production
+/// caller — its whole job is being checked against `guarded_routes` by
+/// `auth::tests::every_route_declares_its_grant_posture` — and leaving it
+/// compiled into the production binary would make it dead code there,
+/// failing this crate's `-D warnings` clippy gate on the plain `--lib`
+/// target.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum GrantPosture {
+    /// A lookup, not a list: a work or edition the grant hides must answer
+    /// 404 — `browse::work`'s or `browse::edition_visible`'s own contract,
+    /// answering a hidden work exactly as it answers one that does not
+    /// exist.
+    Refuses,
+    /// A list: the route answers 200, and material outside the grant must
+    /// simply never be named in the body.
+    Filters,
+    /// **Both of the above, for one route with two distinct grant-facing
+    /// jobs.** A single posture per route was the table's own premise until
+    /// `/api/works/{work}/alignments` broke it: `patch_alignments` refuses a
+    /// request that itself *names* a withheld edition (`Refuses`, on the
+    /// write) and separately filters the response body of a request that
+    /// does not (`Filters`, on the read) — two different questions asked of
+    /// two different parts of one request, neither of which subsumes the
+    /// other. Recording it as bare `Refuses` was true but incomplete: it
+    /// said nothing about the response, which is exactly why the response
+    /// filter went unproven — `every_route_declares_its_grant_posture`'s
+    /// `Filters` completeness check has no reason to look at a route the
+    /// table calls `Refuses`. A second table (refuse-postures crossed with
+    /// filter-postures) was rejected: every other route needs only one axis,
+    /// so a second table would carry an empty column for all but this one
+    /// entry. A combined variant costs one arm in each match already written
+    /// for `Refuses` and `Filters` and states the truth in one place.
+    RefusesAndFilters,
+    /// The grant cannot apply — `reason` says why, stated per entry rather
+    /// than inherited, the same rule [`open_routes`] holds its own list to.
+    GrantIndependent { reason: &'static str },
+    /// **Not one of the three above, and deliberately so.** Reserved for a
+    /// route that is neither: shared library material, the way an alignment
+    /// or a sidecar is, so `GrantIndependent` would misstate it as being
+    /// about the account rather than the library — but unenforced, so no
+    /// request against it can produce the 404 `Refuses` would assert without
+    /// the test asserting something false about what the code does today.
+    /// `auth::tests::every_route_declares_its_grant_posture` does not drive a
+    /// request for this case; it only checks the entry exists. See its own
+    /// doc comment, and this branch's grant-enumeration report, for why.
+    KnownGap {
+        open_item: &'static str,
+        reason: &'static str,
+    },
+}
+
+/// The table [`GrantPosture`]'s own doc comment describes: every entry in
+/// [`guarded_routes`], in the same order, classified by how it must answer a
+/// caller whose grant does not cover the material a request names.
+///
+/// # `/api/works/{work}/truth` is not `Refuses`, and this is not an oversight
+///
+/// `get_truth`/`put_truth` take no `Extensions` at all — unlike every other
+/// route in this table — so they cannot consult `Principal` under any
+/// circumstance, and a truth document is shared library material rather than
+/// the per-account state O60 found "nothing leaks" for in progress and notes.
+/// O60 already names this exact gap ("truth is the awkward one, since it is
+/// shared rather than per-account") and defers it to spec C4's permission
+/// model rather than "a sixth call to a helper." This table does not close
+/// that decision — doing so was out of scope for the write leak this branch
+/// closed in `patch_alignments` — but it also must not claim a safety
+/// property the code does not have, which is what `KnownGap` is for.
+#[cfg(test)]
+pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
+    use GrantPosture::{Filters, GrantIndependent, KnownGap, Refuses, RefusesAndFilters};
+    vec![
+        ("/api/works", Filters),
+        // Was `Refuses` until this table's proof was extended to a work
+        // split across roots (Finding 2): `get_sidecar` refuses only a work
+        // with *no* visible edition, and filters `editions`/`alignments`/
+        // `hub` down to the visible set for one that has some — the same
+        // `Filters` shape `/opds/v1.2/works/{work}` already declares below,
+        // for the identical reason stated there.
+        ("/api/works/{work}", Filters),
+        ("/api/works/{work}/{edition}/pages/{index}", Refuses),
+        ("/api/works/{work}/{edition}/pages/{index}/thumb", Refuses),
+        ("/api/works/{work}/{edition}/download", Refuses),
+        (
+            "/api/works/{work}/{edition}/members/{ordinal}/download",
+            Refuses,
+        ),
+        (
+            "/api/works/{work}/progress",
+            GrantIndependent {
+                reason: "per-account state on a work, keyed by user_id — O60: \
+                          \"nothing leaks: progress and notes are per-account, \
+                          and a reader can only write their own.\" A \
+                          restricted reader can create a position on a work \
+                          outside their grant, but can only ever read or \
+                          overwrite their own row, never another reader's or \
+                          the library's shared material",
+            },
+        ),
+        (
+            "/api/works/{work}/notes",
+            GrantIndependent {
+                reason: "O60's identical reasoning for progress, applied to \
+                          notes: per-account, keyed by user_id, and a reader \
+                          can only ever act on their own",
+            },
+        ),
+        (
+            "/api/works/{work}/truth",
+            KnownGap {
+                open_item: "O60",
+                reason: "shared library material, not per-account — O60's own \
+                          words: \"truth is the awkward one, since it is \
+                          shared rather than per-account\" — and unlike every \
+                          Refuses entry, get_truth/put_truth take no \
+                          Extensions at all, so no request against this route \
+                          can currently produce a grant-driven 404 (get_truth \
+                          still 404s an unknown slug through work_or_missing \
+                          — the same as every other route — it is only the \
+                          grant check that is absent); asserting Refuses here \
+                          would encode a false safety claim into the suite. \
+                          Reported, not fixed here — see this branch's \
+                          grant-enumeration report",
+            },
+        ),
+        // Was briefly `Filters`, for `/api/works/{work}`'s exact reason: the
+        // response-leak fix round put `patch_alignments` on the same
+        // `visible_editions_or_refuse` helper `get_sidecar` uses, and a
+        // correction on a work split across roots answered 200 with the
+        // corrected sidecar filtered to the visible editions.
+        //
+        // **Then `Refuses`, once the write itself was guarded — and that was
+        // still only half true.** `visible_editions_or_refuse` only ever
+        // shaped the *response*; it never asked whether the correction's own
+        // `from`/`to` were inside the grant, so a reader granted `en` alone
+        // could still write `alignment`/`run` rows for `raw` — shared state
+        // every reader who *can* see `raw` is then served from, which is
+        // worse than the read leak the response-only fix closed. Two
+        // `refuse_if_hidden` calls now refuse such a correction outright
+        // (404) before `Sidecar::correct` or the write beneath it ever runs
+        // — but the response-filtering half never stopped being true, and
+        // marking this bare `Refuses` said it had: `Filters`'s completeness
+        // check in `every_route_declares_its_grant_posture` only walks
+        // routes the table calls `Filters`, so the response filter on a
+        // correction between two *visible* editions went unproven for the
+        // whole gap between the two fix rounds — a verification pass caught
+        // it (Finding 1/A in this branch's report) with a mutation that
+        // passed all 371 tests that existed before it.
+        //
+        // `RefusesAndFilters` now: the write half is proven in
+        // `every_route_declares_its_grant_posture`'s own dedicated block
+        // rather than the generic `Refuses` loops (which explicitly skip
+        // this pattern) because a correction needs a body and `If-Match`
+        // that a GET-only mechanism cannot send; the response-filter half is
+        // proven there too, against a correction between two visible
+        // editions, and recorded in `proven_filters` like every other
+        // `Filters`/`RefusesAndFilters` entry.
+        ("/api/works/{work}/alignments", RefusesAndFilters),
+        (
+            "/api/me",
+            GrantIndependent {
+                reason: "who the caller is, not what they may see",
+            },
+        ),
+        (
+            "/api/keys",
+            GrantIndependent {
+                reason: "device credentials for the caller's own account",
+            },
+        ),
+        (
+            "/api/keys/{id}",
+            GrantIndependent {
+                reason: "revokes one of the caller's own keys; \
+                          session::revoke_key refuses an id it does not own, \
+                          which is an ownership check rather than a root grant",
+            },
+        ),
+        (
+            "/api/sessions",
+            GrantIndependent {
+                reason: "the caller's own signed-in devices",
+            },
+        ),
+        (
+            "/api/sessions/{id}",
+            GrantIndependent {
+                reason: "revokes one of the caller's own sessions, the same \
+                          ownership check as /api/keys/{id}",
+            },
+        ),
+        (
+            "/api/password",
+            GrantIndependent {
+                reason: "the caller's own credential",
+            },
+        ),
+        ("/api/library/home", Filters),
+        ("/api/library/series", Filters),
+        // Were `Refuses` until Finding 2's split-fixture proof caught the
+        // mislabelling: all three already reuse `browse::work`/`one_series`/
+        // `cover_work`, which filter to visible editions and 404 only when
+        // *none* survive — a work split across roots gets 200 with `en`
+        // alone, not a 404. The underlying code was never the bug here
+        // (unlike `routes.rs`'s three); only the table's claim about it was
+        // wrong, and a wrong claim is exactly what this table exists to
+        // catch.
+        ("/api/library/series/{id}", Filters),
+        ("/api/library/series/{id}/cover", Filters),
+        ("/api/library/works/{slug}", Filters),
+        ("/api/library/search", Filters),
+        ("/api/library/status", Filters),
+        (
+            "/opds/v1.2/catalog",
+            GrantIndependent {
+                reason: "one static navigation entry naming no work at all",
+            },
+        ),
+        ("/opds/v1.2/works", Filters),
+        // A work or edition outside the grant must not be *named*, but a
+        // work with no edition inside the grant still answers 404
+        // (`browse::work`'s own contract, `work_feed`'s doc comment) — a list
+        // that can be entirely empty is still a list, the same way
+        // `list_works` answering `[]` for a grant with nothing to show is
+        // still `Filters` rather than `Refuses`.
+        ("/opds/v1.2/works/{work}", Filters),
+        ("/opds/v1.2/works/{work}/{edition}/pages/{number}", Refuses),
+        ("/opds/v1.2/works/{work}/{edition}/cover", Refuses),
+    ]
 }
 
 /// The routes that are **not** behind the guard, and why each one cannot be.

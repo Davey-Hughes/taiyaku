@@ -12875,3 +12875,376 @@ mode button's own centre:
 With the chrome open — the state a reader is in exactly when reaching for the
 layout switch — clicking where `single` or `two` appear to be leaves the
 reader instead.
+
+## Four measurements for spec C2's download, 2026-08-23
+
+Taken while designing `docs/superpowers/specs/2026-08-23-library-download-design.md`,
+against the same `corpus/` this repository already measures against elsewhere.
+`cbz.rs`'s module doc names the first of these; §1 of the spec corrects §13.1
+of the older browse design on the strength of it.
+
+### The entry compression split: producing a `STORE` download inflates 97.9% of what it draws from
+
+§13.1 called generation "a copy". It is not: a generated CBZ writes every
+page as `STORE`, so any page whose source archive used `DEFLATE` comes out
+larger than it went in. Measured over every `.cbz` under `corpus/` (140
+archives, `incoming/` included):
+
+```
+python3 - <<'PY'
+import zipfile
+from pathlib import Path
+total = deflate = store = dominant_stored = archives = 0
+for cbz in sorted(Path('corpus').rglob('*.cbz')):
+    try:
+        z = zipfile.ZipFile(cbz)
+    except Exception:
+        continue
+    archives += 1
+    a_deflate = a_store = 0
+    for info in z.infolist():
+        if info.is_dir():
+            continue
+        total += 1
+        if info.compress_type == zipfile.ZIP_DEFLATED:
+            deflate += 1; a_deflate += 1
+        elif info.compress_type == zipfile.ZIP_STORED:
+            store += 1; a_store += 1
+    if a_store > a_deflate:
+        dominant_stored += 1
+print(archives, "archives,", total, "entries")
+print("DEFLATE:", deflate, "STORE:", store)
+print("archives dominantly stored:", dominant_stored)
+PY
+```
+
+```
+140 archives, 11681 entries
+DEFLATE: 11431
+STORE:   250
+archives dominantly stored (STORE entries > DEFLATE entries): 4
+```
+
+11,431 of 11,681 entries (97.9%) are `DEFLATE`; 250 are `STORE`; every entry
+sniffed as one or the other, none reported anything else. 4 of the 140
+archives are dominantly stored themselves, so a generated CBZ is occasionally
+close to a straight copy — just not because generation *is* one.
+
+### How often passthrough fires: 31 of 47 directories hold exactly one page-bearing archive
+
+Spec C2 §3's single-file passthrough only has somewhere to apply when a
+directory holds exactly one archive with pages in it; a directory holding
+more (a chaptered fan release, a set of alternates) always generates. Same
+corpus walk, grouped by parent directory and counting only archives with at
+least one image entry:
+
+```
+python3 - <<'PY'
+import zipfile
+from pathlib import Path
+from collections import defaultdict
+IMG = {"jpg","jpeg","png","webp","gif","bmp","avif","tif","tiff"}
+def is_page(name):
+    if name.endswith('/'):
+        return False
+    base = name.rsplit('/', 1)[-1]
+    if base.startswith('.') or name.startswith('__MACOSX'):
+        return False
+    ext = base.rsplit('.', 1)[-1].lower() if '.' in base else ''
+    return ext in IMG
+by_dir = defaultdict(list)
+for cbz in sorted(Path('corpus').rglob('*.cbz')):
+    try:
+        z = zipfile.ZipFile(cbz)
+    except Exception:
+        continue
+    pages = sum(1 for info in z.infolist() if is_page(info.filename))
+    if pages > 0:
+        by_dir[cbz.parent].append(cbz.name)
+dirs = list(by_dir.items())
+one = sum(1 for _, a in dirs if len(a) == 1)
+print(len(dirs), "directories;", one, "hold exactly one",
+      f"({one/len(dirs)*100:.0f}%)")
+PY
+```
+
+```
+47 directories; 31 hold exactly one (66%)
+```
+
+### What zip64 is not exercised by: no group in the corpus reaches 4 GiB
+
+A download's `Plan` takes the zip64 branch once a *group's* total — every
+member a generated edition would draw from, summed — exceeds `U32_MAX`
+bytes. Same walk, this time by total bytes rather than page count:
+
+```
+python3 - <<'PY'
+import zipfile
+from pathlib import Path
+from collections import defaultdict
+IMG = {"jpg","jpeg","png","webp","gif","bmp","avif","tif","tiff"}
+def is_page(name):
+    if name.endswith('/'):
+        return False
+    base = name.rsplit('/', 1)[-1]
+    if base.startswith('.') or name.startswith('__MACOSX'):
+        return False
+    ext = base.rsplit('.', 1)[-1].lower() if '.' in base else ''
+    return ext in IMG
+by_dir = defaultdict(list)
+largest = (0, None)
+for cbz in sorted(Path('corpus').rglob('*.cbz')):
+    try:
+        z = zipfile.ZipFile(cbz)
+    except Exception:
+        continue
+    if sum(1 for info in z.infolist() if is_page(info.filename)) == 0:
+        continue
+    size = cbz.stat().st_size
+    by_dir[cbz.parent].append(size)
+    if size > largest[0]:
+        largest = (size, cbz)
+GIB = 1024**3
+print("largest single archive:", largest[1], largest[0], "bytes")
+group_sizes = {d: sum(s) for d, s in by_dir.items()}
+biggest_group = max(group_sizes.items(), key=lambda kv: kv[1])
+print("largest summed group:", biggest_group[0], biggest_group[1], "bytes")
+over = sum(1 for s in group_sizes.values() if s > 4 * GIB)
+print(f"{over} of {len(group_sizes)} groups exceed 4 GiB")
+PY
+```
+
+```
+largest single archive: corpus/incoming/nausicaa/en-deluxe-v01.cbz 1491678844 bytes
+largest summed group: corpus/incoming/nausicaa 1491678844 bytes
+0 of 47 groups exceed 4 GiB
+```
+
+1.49 GB (1,491,678,844 bytes), and the largest *group* is the same number,
+because that directory holds only the one archive. **This is also the corpus's
+one outlier with no `taiyaku.json`** — Task 10 found `load_works` cannot reach
+it, so no download route can currently serve it either; the figure describes
+the corpus, not what any check exercises. Even counting it, 0 of the 47
+page-bearing groups pass 4 GiB, so zip64 is arithmetic this branch's tests
+exercise (`cbz/tests.rs`'s `oversized()` fixture, declared rather than real)
+and real material does not.
+
+### Directory-backed members: 121 candidates, 14 survive, ~9% of what a download could ever pass through
+
+A member need not be an archive: `taiyaku-read::format::sniff` calls any
+directory `Format::Dir` outright, with no distinction drawn by what is
+inside it. What decides whether one *particular* directory is the member,
+rather than double-counting a subdirectory's pages under both it and its
+parent, is nesting — `derive.rs::nested_in_claim`'s rule, "a directory is a
+member only if nothing above it is."
+
+**Tried first, and worth recording so it is not re-tried:** running the real
+`scan::scan_root` + `derive::derive` over `corpus/`, as
+`scanning_and_deriving_the_corpus_produces_real_structure` already does for
+the settled `<series>-vNN/` directories, admits zero directory members
+anywhere in this corpus — not because none exist, but because `admit()`
+requires the rule engine to resolve a series from the path, and the loose
+material under `corpus/incoming/` (`berserk-cleaned/Berserk.T01/`,
+`colorwalk-pages/`, …) matches none of the seeded naming rules a real library
+scan needs. The count below is therefore computed directly against the
+filesystem, applying `nested_in_claim`'s same ancestor-prefix rule by hand
+rather than through the rule engine that would refuse to admit this material
+at all:
+
+```
+python3 - <<'PY'
+from pathlib import Path
+IMG = {"jpg","jpeg","png","webp","gif","bmp","avif","tif","tiff"}
+def has_direct_images(d):
+    for child in d.iterdir():
+        if child.is_file() and not child.name.startswith('.'):
+            ext = child.name.rsplit('.', 1)[-1].lower() if '.' in child.name else ''
+            if ext in IMG:
+                return True
+    return False
+page_bearing = [d for d in sorted(Path('corpus').rglob('*'))
+                if d.is_dir() and '.taiyaku-cache' not in d.parts
+                and has_direct_images(d)]
+pb = set(page_bearing)
+survivors = [d for d in page_bearing if not any(a in pb for a in d.parents)]
+print(len(page_bearing), "hold pages directly;", len(survivors), "survive;",
+      len(page_bearing) - len(survivors), "suppressed as nested")
+PY
+```
+
+```
+121 hold pages directly; 14 survive; 107 suppressed as nested
+```
+
+121 directories hold page images as direct children. 107 of those sit inside
+another page-bearing directory's own tree — a chapter folder inside a volume
+folder, mostly, the same shape §7 of the scanner's design names — and are
+correctly excluded rather than double-counted; 14 are the deepest page-bearing
+directory in their own chain and are what a library would actually treat as a
+member.
+
+Divided against the same corpus's page-bearing archives (140, all of them —
+the entry-compression measurement above already counted every `.cbz` and
+found none with zero page entries), a real download's set of candidate members
+is 154: 140 archives plus these 14 directories. **14 of 154 is 9.1%, the ~9%
+this branch's design cites** — and the reason it matters here rather than
+being trivia: `download.rs::prepare`'s single-file passthrough branch requires
+`std::path::Path::is_file()`, so every one of these 14 always generates a
+`STORE` zip from its loose pages rather than passing anything through,
+whatever else is true of the directory that holds it.
+
+### Task 10's two corpus download checks, and the one that now exceeds `.config/nextest.toml`'s stated ceiling
+
+`taiyaku-serve/src/corpus.rs` gained two standing checks for spec C2:
+`a_real_multi_member_edition_downloads_as_a_readable_cbz` and
+`a_real_single_member_edition_is_the_file_on_disk`. Both carry their own
+wall-clock measurement as a doc comment, dated 2026-08-24, from three runs of:
+
+```sh
+TAIYAKU_CORPUS="$PWD/corpus" cargo test -p taiyaku-serve --lib \
+  corpus::a_real_multi_member_edition_downloads_as_a_readable_cbz \
+  -- --test-threads=1
+TAIYAKU_CORPUS="$PWD/corpus" cargo test -p taiyaku-serve --lib \
+  corpus::a_real_single_member_edition_is_the_file_on_disk \
+  -- --test-threads=1
+```
+
+Against `gotoubun-v01/en-fan` (7 members, 235 pages, `DEFLATE`), the
+multi-member check ran **1.02–1.03 s** each of three runs — reproduced here at
+1.06 s. Against `gotoubun-v01/en-mono` (one 334,752,036-byte archive), the
+single-member check ran **0.19 s** each — reproduced here at 0.30 s, the
+difference plausibly this session's colder cache, since the doc comment
+itself calls 0.19 s "faster than expected for a third-of-a-gigabyte file read
+twice" and credits repeated corpus runs' filesystem cache.
+
+**The multi-member figure is the one fact this branch's own tests add that
+`.config/nextest.toml`'s justification for its 30 s slow mark no longer
+states correctly.** That file's comment reads "nothing in 639 tests exceeds
+0.75 s"; the workspace is now 1,513 tests and this one check runs about a
+third of a second past that ceiling, on real material a corpus-less CI never
+sees. See this task's edit to that file for how the sentence was corrected —
+qualified to name corpus checks as a separate, un-timed-here category, rather
+than re-measured line by line, since the corpus job is a distinct job from
+the nextest suite the 0.75 s claim was ever about.
+
+## The doc pass's own re-measurements, 2026-08-24
+
+Findings 1 and 6 of the branch's documentation review asked for figures to be
+recounted rather than trusted, since this branch had already drifted the same
+`docs/status.md` paragraph twice. Both recounts below were run with
+`TAIYAKU_CORPUS` unset (confirmed with `echo "${TAIYAKU_CORPUS:-<unset>}"`
+first), matching what `check-all.sh`'s `test` job and CI both run.
+
+### `routes::grant_postures`: the table itself, counted, not grepped
+
+`grep -c` over the enum definition and its doc comments would double-count —
+both name every variant. Counted instead from the `vec![` literal in
+`routes::grant_postures` (`crates/taiyaku-serve/src/routes.rs`), by extracting
+the function body with `awk` and excluding comment lines before counting each
+posture's closing token:
+
+```sh
+awk '/pub\(crate\) fn grant_postures/,/^}/' crates/taiyaku-serve/src/routes.rs \
+  | grep -vE '^\s*//' \
+  | grep -c 'Refuses,\?$\|Refuses)'      # 7
+  | grep -c 'Filters)'                    # 11
+  | grep -c 'GrantIndependent {'          # 9
+  | grep -c 'KnownGap {'                  # 1
+```
+
+**7 `Refuses`, 11 `Filters`, 9 `GrantIndependent`, 1 `KnownGap` — 28 total,
+matching `docs/status.md`'s "28 guarded routes".** Cross-checked against
+`auth::tests::every_route_declares_its_grant_posture` (`crates/taiyaku-serve/src/auth/tests.rs`):
+every `Refuses` entry is driven by the generic GET loop except
+`/api/works/{work}/alignments` (`PATCH`-only, driven in its own block with a
+body and `If-Match`), every `Filters` entry is inserted into `proven_filters`
+by the end of the test (the `/opds/v1.2/works` split-fixture edition-count is
+proven separately in `opds::tests`, but the route's whole-work case is still
+driven in this test's first loop), and `GrantIndependent`/`KnownGap` entries
+are declared only. So **18 driven (7 + 11), 10 declared (9 + 1)** — which is
+exactly what `docs/status.md`'s paragraph already stated before this pass
+touched it.
+
+**This figure was already correct on the tree.** `git show cf937f8 --
+docs/status.md` shows the parenthetical was corrected from "(6 and 12)" to
+"(7 and 11)" in the same commit that moved `patch_alignments` from `Filters`
+to `Refuses` — so the branch had already caught its own third drift before
+this doc pass started. What changed here instead: the sentence was reworded
+to drop the exact `Refuses`/`Filters` and `GrantIndependent`/`KnownGap`
+sub-splits, keeping only "18 of the 28" and "the remaining 10" — both stable
+across a route moving *within* the driven or declared set (exactly the kind
+of move that broke the parenthetical twice), and both still meaningful
+because they only change if a route crosses from driven to declared or back,
+which is the substantive event worth a human re-reading the sentence for.
+
+### Six crates, 1,524 tests — not 1,513
+
+```sh
+env -u TAIYAKU_CORPUS cargo llvm-cov nextest --workspace --all-features
+node scripts/status-test-count.mjs target/nextest/default/junit.xml docs/status.md
+```
+
+Run twice, because this doc pass's own Finding 4 added a test after the
+first measurement — the second run is the one the committed figures match.
+
+**First run**, before any Rust edit: `target/nextest/default/junit.xml`'s
+`<testsuites>` root reported `tests="1523" failures="0" errors="0"`.
+`scripts/status-test-count.mjs` (the mechanical gate `check-all.sh` runs)
+confirmed both live claims — "Six crates, N tests" at `docs/status.md:120`
+and "N of the N are standing checks" at `:178` — were both still saying
+1513, and both moved to 1523. Both occurrences are the *same* number by
+construction (the standing-check sentence's `N` in "Nineteen of the N" is
+the workspace total, not a second derived figure), so a single fix moved
+both.
+
+**Second run**, after Finding 4 added
+`comicinfo::tests::noncharacters_u_fffe_and_u_ffff_are_dropped_too`:
+`tests="1524"`. Both `docs/status.md` occurrences and `.config/nextest.toml`'s
+two "1,523 tests" mentions (the "as of the library-download branch" sentence
+and the one beside it) moved again, to 1524, so the gate and this file agree
+with the tree Finding 3 and Finding 4 actually left.
+
+`env -u TAIYAKU_CORPUS cargo test -p taiyaku-serve` separately confirms:
+**371 passed; 0 failed** — the given 370-test baseline plus the one test
+Finding 4 added; Finding 3 changed no test count, only where two `#[expect]`
+attributes live.
+
+The "Nineteen" standing-check figure itself needed no correction. Verified by
+hand against the same methodology this file already used for the
+"thirteen" era of this count (grep `#[test]`/`#[tokio::test]` per file, then
+exclude anything that does not actually gate on `TAIYAKU_CORPUS`):
+`crates/taiyaku-cli/src/corpus.rs` — 10 (excludes its `mod tests;` submodule,
+3 helpers that only assert path validation); `crates/taiyaku-serve/src/corpus.rs`
+— 5 (grew from 3 with Task 10's two download checks); `crates/taiyaku-cli/src/score_corpus.rs`
+— 2 of its 4 `#[test]`s (the other two are marked "these need no
+`TAIYAKU_CORPUS`, deliberately"); `crates/taiyaku-library/src/corpus.rs` — 2.
+10 + 5 + 2 + 2 = 19, matching `docs/status.md`'s existing text exactly.
+
+### `.config/nextest.toml`'s own count went stale the same way, and was not named in the review brief
+
+While re-measuring the above, `.config/nextest.toml`'s comment above
+`[profile.default]` claimed `test(corpus::)` selects "twenty-two" tests
+(measured 2026-08-18) with "fifteen standing checks ... three in
+taiyaku-serve" — both stale by the same Task 10 change that took
+`taiyaku-serve/src/corpus.rs` from 3 standing checks to 5. Recounted:
+
+```sh
+env -u TAIYAKU_CORPUS cargo nextest list -E 'test(corpus::)' \
+  | grep -v "Compiling\|Finished" | wc -l
+```
+
+**24**, not 22 (17 standing checks — ten `taiyaku-cli`, five `taiyaku-serve`,
+two `taiyaku-library` — plus 3 `corpus::tests::` helpers plus 4
+`score_corpus::` tests caught by substring; 17 + 3 + 4 = 24). Fixed in the
+same file, alongside its two "1,513" occurrences (one inside the "workspace is
+1,513 tests as of the library-download branch" sentence, which is a live
+claim about "the library-download branch" rather than a dated snapshot like
+the "639" figure two paragraphs above it, so it was corrected rather than
+left as historical narrative) — and its own running tally of how many times
+this exact comment has been wrong was extended from three to four, following
+the pattern the three previous corrections already established there.
+
+Not named in the review brief; fixed anyway because it is the same class of
+drift, in the same file family, caught while the corpus test population was
+already being counted by hand for the paragraph above.

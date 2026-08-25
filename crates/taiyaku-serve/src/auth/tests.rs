@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
 use taiyaku_library::credential;
 use tower::ServiceExt as _;
@@ -62,6 +62,8 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/works/{work}",
         "/api/works/{work}/{edition}/pages/{index}",
         "/api/works/{work}/{edition}/pages/{index}/thumb",
+        "/api/works/{work}/{edition}/download",
+        "/api/works/{work}/{edition}/members/{ordinal}/download",
         "/api/works/{work}/progress",
         "/api/works/{work}/notes",
         "/api/works/{work}/truth",
@@ -982,4 +984,1555 @@ async fn a_password_change_the_database_refuses_is_not_answered_as_success() {
         "a password change that did not happen came back as success, so the \
          reader now believes a password they cannot log in with"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The enumeration `routes::guarded_routes`'s own doc comment argues for and
+// authentication already has: "that is exactly the failure a reviewer's
+// checklist has: it goes stale the first time someone adds a route and does
+// not think about auth." Six routes proved the identical failure for
+// `Principal.roots` — `stream_page`, `cover`, `work_feed` and `works` in
+// `opds.rs`, `list_works` in `routes.rs`, and `patch_alignments` — drifting
+// out of the grant one at a time, over more than one spec, before anything
+// caught it. `routes::grant_postures` and the test below are what stops a
+// seventh.
+// ---------------------------------------------------------------------------
+
+/// A concrete path for a route pattern, filled in with identifiers this
+/// module's grant-proof fixtures actually define — unlike [`concrete`]
+/// above, which never needs `{id}`, `{slug}` or `{ordinal}` because every
+/// caller of it is anonymous and refused by the guard before any handler
+/// reads a path parameter at all. These requests are authenticated and reach
+/// the handler, so a placeholder left as literal text (`{id}`) would be
+/// rejected by axum's own path extractor before the grant is ever consulted —
+/// answering 400, not the 404 a `Refuses` entry is being asked to prove.
+fn grant_proof_concrete(pattern: &str) -> String {
+    pattern
+        .replace("{work}", "t")
+        .replace("{slug}", "t")
+        .replace("{edition}", "raw")
+        .replace("{index}", "0")
+        .replace("{number}", "0")
+        .replace("{ordinal}", "0")
+        .replace("{id}", "1")
+}
+
+/// A channel value for [`router_with_material_under_a_withheld_root`]'s
+/// real page image — the same helper `opds::tests` and `test_support`
+/// duplicate locally, for the same reason: each module's fixtures are read
+/// on their own.
+///
+/// # Panics
+///
+/// Panics if `v` exceeds `u8::MAX`. It cannot: the caller multiplies a
+/// coordinate `from_fn` bounds to `0..16` by 16, topping out at `15 * 16
+/// == 240`.
+fn channel(v: u32) -> u8 {
+    u8::try_from(v).expect("channel value exceeds u8::MAX")
+}
+
+/// A router over one work (`"t"`, edition `"raw"`, two members holding a
+/// real, decodable page each) and the one series (id 1) it belongs to —
+/// both filed entirely under a root the fixture account is **not** granted,
+/// so the work and the series it alone stands for are as wholly hidden as
+/// each other.
+///
+/// What every `Refuses` entry in `routes::grant_postures` needs, from a
+/// single fixture: the page, thumb, download, sidecar and alignment routes
+/// address the work by slug; the OPDS mirrors address the same work; the
+/// library routes address the work by slug and the series by id.
+///
+/// **Real bytes, not placeholders — measured to matter.** `refuse_if_hidden`
+/// and `refuse_if_work_hidden` both answer 404 before any of these routes
+/// opens a member, so a first draft of this fixture used the shared
+/// placeholder bytes `test_support::work` writes, on the reasoning that
+/// nothing here should ever reach them. Proven wrong by deliberately
+/// disabling `refuse_if_hidden` (returning `None` unconditionally) and
+/// re-running this suite: `get_page`, `get_thumb`, both download routes and
+/// the OPDS page/cover mirrors fell through to a real file read, found
+/// nothing at the placeholder paths, and answered 404 from *that* instead —
+/// the exact "colour change is not evidence" trap this branch's report
+/// warns about, and the same reason `opds::tests::router_with_a_real_page_under_a_withheld_root`
+/// already insists on real bytes. With real, decodable images in place, the
+/// same mutation now answers 200 with the actual page for every one of
+/// those routes, which is what makes the loop below a proof rather than a
+/// coincidence.
+fn router_with_material_under_a_withheld_root(dir: &str) -> axum::Router {
+    use std::io::Write as _;
+
+    let root = std::env::temp_dir().join(dir);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let shelf = root.to_string_lossy().into_owned();
+
+    let page = image::RgbImage::from_fn(16, 16, |x, y| {
+        let r = channel(x * 16);
+        let g = channel(y * 16);
+        image::Rgb([r, g, 200])
+    });
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(page)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let real_image = encoded.into_inner();
+
+    for name in ["c1.cbz", "c2.cbz"] {
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(root.join(name)).unwrap());
+        zip.start_file("p1.png", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&real_image).unwrap();
+        zip.finish().unwrap();
+    }
+
+    let json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "T", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/c1.cbz", "sha256": "x", "pages": 1 }},
+              {{ "path": "{shelf}/c2.cbz", "sha256": "y", "pages": 1 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#
+    );
+
+    let library = crate::test_support::library();
+    {
+        let conn = library.conn();
+        let doc = taiyaku_core::Sidecar::from_json(&json).expect("fixture sidecar parses");
+        taiyaku_library::import::scanned(&conn, &doc, None).expect("import as a scan");
+
+        conn.execute(
+            "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/withheld')",
+            [],
+        )
+        .expect("two roots");
+        conn.execute("UPDATE member SET root_id = 2", [])
+            .expect("files every member under the withheld root");
+        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
+            .expect("grants the fixture account the other root");
+
+        conn.execute(
+            "INSERT INTO series (id, sort_title) VALUES (1, 'Series')",
+            [],
+        )
+        .expect("writes the series");
+        conn.execute(
+            "INSERT INTO series_title (series_id, title, kind, is_primary) \
+             VALUES (1, 'Series', 'english', 1)",
+            [],
+        )
+        .expect("names the series");
+        conn.execute("UPDATE work SET series_id = 1, volume = 1.0", [])
+            .expect(
+                "files the work under the series — its only work, so the \
+                 series is as wholly hidden as the work is",
+            );
+    }
+    let works = crate::works::from_library(&library).expect("projects the imported work");
+    let state = Arc::new(ServeState {
+        library,
+        works,
+        source: Arc::new(crate::LocalLibrary),
+        cache_dir: root.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    build_router(state)
+}
+
+/// A router over two works — one filed under a root the fixture account
+/// holds, one under a root it does not — for the `Filters` entries whose
+/// contract is "name the granted work, omit the withheld one."
+///
+/// Root paths are `/visible-root` and `/hidden-root` rather than the
+/// `/held`/`/withheld` convention `opds::tests` and `routes::tests` use
+/// elsewhere in this crate. `library_api::status`'s proof below checks
+/// whether a root's *name* is present in the body, and `"withheld"` ends in
+/// `"held"` — an assertion that the body contains `"held"` would pass whether
+/// or not `"withheld"` had also leaked. Distinct roots avoid that trap rather
+/// than relying on a reader noticing it.
+fn two_works_one_withheld(dir: &str) -> (axum::Router, Arc<ServeState>) {
+    let root = std::env::temp_dir().join(dir);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let shelf = root.to_string_lossy().into_owned();
+
+    let visible_json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Visible Work", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/v1.cbz", "sha256": "v", "pages": 2 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#
+    );
+    let hidden_json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Hidden Work", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/h1.cbz", "sha256": "h", "pages": 2 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#
+    );
+
+    let library = crate::test_support::library();
+    {
+        let conn = library.conn();
+        let visible_doc =
+            taiyaku_core::Sidecar::from_json(&visible_json).expect("visible sidecar parses");
+        let visible_id = taiyaku_library::import::scanned(&conn, &visible_doc, None)
+            .expect("import the visible work");
+        let hidden_doc =
+            taiyaku_core::Sidecar::from_json(&hidden_json).expect("hidden sidecar parses");
+        let hidden_id = taiyaku_library::import::scanned(&conn, &hidden_doc, None)
+            .expect("import the hidden work");
+
+        conn.execute(
+            "INSERT INTO root (id, path) VALUES (1, '/visible-root'), (2, '/hidden-root')",
+            [],
+        )
+        .expect("two roots");
+        conn.execute(
+            "UPDATE member SET root_id = 1 WHERE edition_id IN \
+             (SELECT id FROM edition WHERE work_id = ?1)",
+            [visible_id],
+        )
+        .expect("files the visible work under the visible root");
+        conn.execute(
+            "UPDATE member SET root_id = 2 WHERE edition_id IN \
+             (SELECT id FROM edition WHERE work_id = ?1)",
+            [hidden_id],
+        )
+        .expect("files the hidden work under the hidden root");
+        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
+            .expect("grants only the visible root");
+    }
+    let works = crate::works::from_library(&library).expect("projects the imported works");
+    let state = Arc::new(ServeState {
+        library,
+        works,
+        source: Arc::new(crate::LocalLibrary),
+        cache_dir: root.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    (build_router(state.clone()), state)
+}
+
+/// A router over **one** work with two editions, each filed under a
+/// different root — `en` under the root the fixture account holds, `raw`
+/// under the one it does not. What `work_feed`'s `Filters` classification
+/// needs: a work that is itself visible, with exactly one of its editions
+/// outside the grant, mirroring `opds::tests::router_with_two_editions_split_across_roots`.
+///
+/// **Carries one pre-existing `raw` → `en` alignment**, added for
+/// `patch_alignments_refuses_a_correction_naming_a_withheld_edition` (and
+/// reused by `every_route_declares_its_grant_posture`'s own alignments
+/// proof): `Sidecar::correct` only rewrites a *stored* edge or one it can
+/// compose through the hub from stored edges either side, and a document
+/// with `"alignments": []` has neither — a correction from `en` to the hub
+/// (`raw`) on a document with no prior edge answers `NoPath`, not the write
+/// this fixture exists to drive (or refuse).
+///
+/// **Filed under series id 1**, its only work — added for
+/// `every_route_declares_its_grant_posture`'s split-fixture proof of
+/// `/api/library/series/{id}` and `/cover`, which need a series id to
+/// address. Unlike `router_with_material_under_a_withheld_root`'s series,
+/// this one is *not* wholly hidden: `en` survives the grant, so the series
+/// itself is visible with one of its work's two editions filtered out —
+/// the split case, at the series level rather than the work level.
+fn one_work_two_editions_split_across_roots(dir: &str) -> (axum::Router, Arc<ServeState>) {
+    let root = std::env::temp_dir().join(dir);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let shelf = root.to_string_lossy().into_owned();
+
+    let json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Split", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/raw/c1.cbz", "sha256": "x", "pages": 2 }}
+            ], "spreads": [] }},
+            "en": {{ "label": "En", "members": [
+              {{ "path": "{shelf}/en/d1.cbz", "sha256": "p", "pages": 2 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#
+    );
+
+    let library = crate::test_support::library();
+    {
+        let conn = library.conn();
+        let doc = taiyaku_core::Sidecar::from_json(&json).expect("fixture sidecar parses");
+        let work_id =
+            taiyaku_library::import::scanned(&conn, &doc, None).expect("import as a scan");
+        // Seeded by hand, directly into the `alignment`/`run` tables, rather
+        // than in the document's own `"alignments"` field: `import::scanned`
+        // runs under `Scope::Scan`, which never calls `replace_alignments` —
+        // "a scan describes which files are members of which edition; it has
+        // nothing to say about how two editions correspond" — so an
+        // alignment written into the JSON above would import and vanish.
+        conn.execute(
+            "INSERT INTO alignment (work_id, from_key, to_key, by) \
+             VALUES (?1, 'raw', 'en', 'hand')",
+            [work_id],
+        )
+        .expect("seeds a raw-to-en alignment for the correction test to build on");
+        let alignment_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO run \
+                 (alignment_id, ordinal, a_start_page, a_end_page, b_start_page, b_end_page) \
+             VALUES (?1, 0, 0, 1, 0, 1)",
+            [alignment_id],
+        )
+        .expect("seeds the run pairing both pages straight across");
+        conn.execute(
+            "INSERT INTO root (id, path) VALUES (1, '/visible-root'), (2, '/hidden-root')",
+            [],
+        )
+        .expect("two roots");
+        conn.execute(
+            "UPDATE member SET root_id = 2 WHERE edition_id = \
+             (SELECT id FROM edition WHERE work_id = ?1 AND key = 'raw')",
+            [work_id],
+        )
+        .expect("files raw under the hidden root");
+        conn.execute(
+            "UPDATE member SET root_id = 1 WHERE edition_id = \
+             (SELECT id FROM edition WHERE work_id = ?1 AND key = 'en')",
+            [work_id],
+        )
+        .expect("files en under the visible root");
+        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
+            .expect("grants only the visible root");
+
+        // Filed under a series — its only work, mirroring
+        // `router_with_material_under_a_withheld_root` — so
+        // `/api/library/series/{id}` and `/cover` have an id to address.
+        // Since `en` survives the grant, the series is *not* wholly hidden
+        // the way that fixture's is; what every_route_declares_its_grant_posture
+        // needs from this one is the opposite case.
+        conn.execute(
+            "INSERT INTO series (id, sort_title) VALUES (1, 'Split Series')",
+            [],
+        )
+        .expect("writes the series");
+        conn.execute(
+            "INSERT INTO series_title (series_id, title, kind, is_primary) \
+             VALUES (1, 'Split Series', 'english', 1)",
+            [],
+        )
+        .expect("names the series");
+        conn.execute("UPDATE work SET series_id = 1, volume = 1.0", [])
+            .expect("files the work under the series");
+    }
+    let works = crate::works::from_library(&library).expect("projects the imported work");
+    let state = Arc::new(ServeState {
+        library,
+        works,
+        source: Arc::new(crate::LocalLibrary),
+        cache_dir: root.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    (build_router(state.clone()), state)
+}
+
+/// A router over **one** work with **three** editions: `en` and `fr` filed
+/// under the root the fixture account holds, `raw` under one it does not —
+/// and `raw` is also this work's `hub`. `one_work_two_editions_split_across_roots`
+/// above cannot drive either of Finding 1's two harder properties, because it
+/// keeps only one visible edition: there is no pair of visible editions to
+/// correct between (so a correction's response-filter can never be proven
+/// without also 404ing on a withheld edition first), and its one seeded edge
+/// runs `raw → en`, so a request naming the withheld edition on the `from`
+/// side and a visible one on `to` has no edge to succeed over even if the
+/// guard that refuses it were disabled — a mutation there would still 404,
+/// just for the wrong reason. This fixture keeps two visible editions and
+/// seeds an edge on *each* side of the withheld one so every one of Finding
+/// 1's three assertions has something real to succeed against if its guard
+/// or filter were removed:
+///
+/// - `raw → en`, straight across — lets a correction naming `raw` on the
+///   `from` side actually succeed if `refuse_if_hidden(&correction.from)`
+///   were disabled, rather than failing on `NoPath` regardless.
+/// - `en → fr`, straight across — a correction between two *visible*
+///   editions, so `patch_alignments`'s response-filter can be proven without
+///   the request 404ing before a response is even built.
+///
+/// The withheld hub is deliberate too: `get_sidecar`'s `ETag` is computed
+/// over the full document specifically so it agrees with what
+/// `patch_alignments` recomputes from the same full document — a tag over
+/// the filtered projection a restricted reader sees would drift the moment
+/// `raw` changes, even though nothing this reader can see moved.
+fn one_work_three_editions_hub_withheld(dir: &str) -> (axum::Router, Arc<ServeState>) {
+    let root = std::env::temp_dir().join(dir);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let shelf = root.to_string_lossy().into_owned();
+
+    let json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Triple", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/raw/c1.cbz", "sha256": "x", "pages": 2 }}
+            ], "spreads": [] }},
+            "en": {{ "label": "En", "members": [
+              {{ "path": "{shelf}/en/d1.cbz", "sha256": "p", "pages": 2 }}
+            ], "spreads": [] }},
+            "fr": {{ "label": "Fr", "members": [
+              {{ "path": "{shelf}/fr/d1.cbz", "sha256": "q", "pages": 2 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#
+    );
+
+    let library = crate::test_support::library();
+    {
+        let conn = library.conn();
+        let doc = taiyaku_core::Sidecar::from_json(&json).expect("fixture sidecar parses");
+        let work_id =
+            taiyaku_library::import::scanned(&conn, &doc, None).expect("import as a scan");
+        // Seeded by hand, as `one_work_two_editions_split_across_roots` does,
+        // for the identical reason: `import::scanned` runs under
+        // `Scope::Scan`, which never calls `replace_alignments`.
+        let seed_edge = |from: &str, to: &str| {
+            conn.execute(
+                "INSERT INTO alignment (work_id, from_key, to_key, by) VALUES (?1, ?2, ?3, 'hand')",
+                rusqlite::params![work_id, from, to],
+            )
+            .expect("seeds an alignment");
+            let alignment_id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO run \
+                     (alignment_id, ordinal, a_start_page, a_end_page, b_start_page, b_end_page) \
+                 VALUES (?1, 0, 0, 1, 0, 1)",
+                [alignment_id],
+            )
+            .expect("seeds the run pairing both pages straight across");
+        };
+        seed_edge("raw", "en");
+        seed_edge("en", "fr");
+
+        conn.execute(
+            "INSERT INTO root (id, path) VALUES (1, '/visible-root'), (2, '/hidden-root')",
+            [],
+        )
+        .expect("two roots");
+        for key in ["en", "fr"] {
+            conn.execute(
+                "UPDATE member SET root_id = 1 WHERE edition_id = \
+                 (SELECT id FROM edition WHERE work_id = ?1 AND key = ?2)",
+                rusqlite::params![work_id, key],
+            )
+            .expect("files a visible edition under the visible root");
+        }
+        conn.execute(
+            "UPDATE member SET root_id = 2 WHERE edition_id = \
+             (SELECT id FROM edition WHERE work_id = ?1 AND key = 'raw')",
+            [work_id],
+        )
+        .expect("files raw — the hub — under the hidden root");
+        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
+            .expect("grants only the visible root");
+    }
+    let works = crate::works::from_library(&library).expect("projects the imported work");
+    let state = Arc::new(ServeState {
+        library,
+        works,
+        source: Arc::new(crate::LocalLibrary),
+        cache_dir: root.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    (build_router(state.clone()), state)
+}
+
+/// **The missing enumeration test**, and the deliverable this branch's report
+/// says matters most: without it, an eighth route can drift out of the grant
+/// exactly the way the first six did, and nothing will say so.
+///
+/// Two things are asserted, not one. First, that `routes::grant_postures`'s
+/// route set equals `guarded_routes`'s exactly — a route added without a
+/// classification fails the build on the commit that adds it, and so does a
+/// stale entry for a route `guarded_routes` no longer serves, the same
+/// mechanism `every_route_refuses_an_anonymous_request` above uses for the
+/// full ordered route list rather than a bare count.
+///
+/// Second, where a real request can prove the classification rather than
+/// merely declare it, it does: every `Refuses` entry is driven with a real
+/// request from an account granted a *different* root than the material it
+/// addresses, and asserted 404; every `Filters` entry is driven the same way
+/// and asserted to name the granted material while omitting the withheld
+/// material. `GrantIndependent` and `KnownGap` entries are declared rather
+/// than driven — the former because there is no grant behaviour to exercise,
+/// the latter because driving one would assert something false about code
+/// this branch did not change. See `GrantPosture`'s own doc comment for both.
+#[tokio::test]
+async fn every_route_declares_its_grant_posture() {
+    use crate::routes::GrantPosture;
+
+    let guarded: Vec<&'static str> = guarded_routes().into_iter().map(|(path, _)| path).collect();
+    let table = crate::routes::grant_postures();
+    let declared: Vec<&'static str> = table.iter().map(|(path, _)| *path).collect();
+    assert_eq!(
+        declared, guarded,
+        "routes::grant_postures's route set must equal guarded_routes's \
+         exactly — a route missing here has no stated grant posture, and an \
+         entry here for a route guarded_routes no longer serves is stale"
+    );
+
+    // Every declared (rather than driven) entry has to say why, rather than
+    // an empty string quietly satisfying the type — `GrantIndependent` and
+    // `KnownGap` exist so a reviewer reads a reason, not so the match arm
+    // compiles.
+    for (pattern, posture) in &table {
+        match posture {
+            GrantPosture::GrantIndependent { reason } => assert!(
+                !reason.is_empty(),
+                "{pattern} is classified GrantIndependent but states no reason"
+            ),
+            GrantPosture::KnownGap { open_item, reason } => assert!(
+                !open_item.is_empty() && !reason.is_empty(),
+                "{pattern} is classified KnownGap but does not name the open \
+                 item and reason it defers to"
+            ),
+            GrantPosture::Refuses | GrantPosture::Filters | GrantPosture::RefusesAndFilters => {}
+        }
+    }
+
+    // Pinned to a literal here, not derived from the loops below: those
+    // loops are driven *off* `table`'s own current contents — they walk
+    // whatever `table` calls `Refuses`/`Filters`/`RefusesAndFilters` right
+    // now and simply stop visiting a route once it leaves the pattern they
+    // match. That makes a route's own reclassification invisible to them —
+    // a route demoted from `Refuses` to `GrantIndependent` is not "driven
+    // and failing", it is not driven at all, and the loop has no way to
+    // notice a route it no longer iterates over. `driven` recomputes this
+    // count from `table` on every run, so a route moved off any of the
+    // three driven postures — in either direction, and regardless of which
+    // two it moves between — changes `driven` without this assertion's own
+    // `18` moving to match, which is what actually catches it. (A move the
+    // other way — `GrantIndependent` reclassified `Refuses` — is instead
+    // caught by the loops themselves: driving a real request against a
+    // route with no grant behaviour to enforce a 404 gets back whatever
+    // status the route actually answers, not 404.)
+    let driven = table
+        .iter()
+        .filter(|(_, posture)| {
+            matches!(
+                posture,
+                GrantPosture::Refuses | GrantPosture::Filters | GrantPosture::RefusesAndFilters
+            )
+        })
+        .count();
+    assert_eq!(
+        driven, 18,
+        "18 of the 28 guarded routes must be classified Refuses, Filters or \
+         RefusesAndFilters and driven by the proofs below — a route's \
+         posture changed without this count moving to match, so a route \
+         this suite believes it proves may no longer be one it does"
+    );
+    assert_eq!(
+        table.len() - driven,
+        10,
+        "the remaining 10 guarded routes must be GrantIndependent or \
+         KnownGap — see the `driven == 18` assertion just above, which this \
+         one is the other half of"
+    );
+
+    let credential = crate::test_support::fixture_authorization();
+
+    // ---- `Refuses`: proven against a work, and the one series it belongs
+    // to, both wholly outside the caller's grant. `RefusesAndFilters` shares
+    // this proof for its refuse half — the pattern skip just below still
+    // routes it to its own dedicated block instead. ----
+    let refuses_router =
+        router_with_material_under_a_withheld_root("taiyaku-test-grant-posture-refuses");
+    for (pattern, posture) in &table {
+        if !matches!(
+            posture,
+            GrantPosture::Refuses | GrantPosture::RefusesAndFilters
+        ) {
+            continue;
+        }
+        // `/api/works/{work}/alignments` is `PATCH`-only and names its two
+        // editions in the JSON body, not the URL — this loop's GET-against-a-
+        // pattern mechanism cannot express either, and a GET against it
+        // would answer 405 from axum's own method dispatch, never reaching
+        // the guard this loop means to prove. Driven in its own dedicated
+        // block below instead, with the body and `If-Match` a correction
+        // actually needs — both its `Refuses` half and its `Filters` half.
+        if *pattern == "/api/works/{work}/alignments" {
+            continue;
+        }
+        let path = grant_proof_concrete(pattern);
+        let response = refuses_router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&path)
+                    .header("authorization", &credential)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("router answers");
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{pattern} is classified Refuses, but GET {path} from an \
+             account granted a different root answered {}",
+            response.status()
+        );
+    }
+    crate::test_support::cleanup("taiyaku-test-grant-posture-refuses");
+
+    // ---- `Filters`: proven against two works, and — for `work_feed`, whose
+    // filtering is per-edition rather than per-work — two editions of one
+    // work. A route classified `Filters` is marked proven here only after its
+    // own assertions pass, and every `Filters` entry in the table must be
+    // marked by the end, so a `Filters` route this loop forgot to drive fails
+    // the test rather than silently passing as "declared."
+    let mut proven_filters: std::collections::HashSet<&'static str> =
+        std::collections::HashSet::new();
+
+    let (works_router, _works_state) =
+        two_works_one_withheld("taiyaku-test-grant-posture-filters-a");
+    for (pattern, uri) in [
+        ("/api/works", "/api/works"),
+        ("/opds/v1.2/works", "/opds/v1.2/works"),
+        ("/api/library/home", "/api/library/home"),
+        ("/api/library/series", "/api/library/series"),
+        ("/api/library/search", "/api/library/search?q=Visible"),
+    ] {
+        let response = works_router
+            .clone()
+            .oneshot(
+                Request::get(uri)
+                    .header("authorization", &credential)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("router answers");
+        let status = response.status();
+        let body = crate::test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::OK, "{pattern} ({uri}): {body}");
+        assert!(
+            body.contains("Visible Work"),
+            "{pattern} is classified Filters and must still name the granted \
+             work: {body}"
+        );
+        assert!(
+            !body.contains("Hidden Work"),
+            "{pattern} is classified Filters but named a work outside the \
+             grant: {body}"
+        );
+        proven_filters.insert(pattern);
+    }
+
+    // `library_api::status` filters *roots*, not works or editions — the
+    // split fixture below is one root's worth of material and has nothing
+    // to say about this route, so its proof stays here, against the
+    // distinct root names `two_works_one_withheld` was built with.
+    let status_response = works_router
+        .clone()
+        .oneshot(
+            Request::get("/api/library/status")
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let status_code = status_response.status();
+    let status_body = crate::test_support::body_string(status_response).await;
+    assert_eq!(status_code, StatusCode::OK, "{status_body}");
+    assert!(
+        status_body.contains("visible-root"),
+        "/api/library/status is classified Filters and must still name the \
+         granted root: {status_body}"
+    );
+    assert!(
+        !status_body.contains("hidden-root"),
+        "/api/library/status named a root outside the grant: {status_body}"
+    );
+    proven_filters.insert("/api/library/status");
+    crate::test_support::cleanup("taiyaku-test-grant-posture-filters-a");
+
+    // ---- Finding 2: the split-across-roots case, for every `Refuses` and
+    // `Filters` entry that can usefully be driven against it. ----
+    //
+    // `two_works_one_withheld` and `router_with_material_under_a_withheld_root`
+    // above only ever hide a *whole* work — the fixture shape where the
+    // work-level question and the edition-level one have the same answer,
+    // which is exactly what let `get_sidecar`, `list_works` and
+    // `patch_alignments` pass every proof that existed before this while
+    // leaking a hidden edition sharing a work with a granted one. One
+    // fixture, reused below for both the `Refuses` and the `Filters` half,
+    // so both proofs see the identical split.
+    let (split_router, split_state) =
+        one_work_two_editions_split_across_roots("taiyaku-test-grant-posture-split");
+    let split_slug = split_state.works[0].id.clone();
+
+    // `Refuses`, again: the withheld half (`raw`) of a work that also keeps
+    // a granted half (`en`) must still 404. Only the negative case is
+    // asserted — `one_work_two_editions_split_across_roots` names members no
+    // test writes to disk (it exists for the `Filters` proof below, which
+    // never opens one), so asking for `en` and expecting 200 would answer
+    // 404 from a missing file rather than from the grant: the "colour
+    // change is not evidence" trap
+    // `router_with_material_under_a_withheld_root`'s own doc comment warns
+    // about, the wrong way round.
+    for (pattern, posture) in &table {
+        if !matches!(
+            posture,
+            GrantPosture::Refuses | GrantPosture::RefusesAndFilters
+        ) {
+            continue;
+        }
+        // See the identical skip in the wholly-hidden-work loop above:
+        // `PATCH`-only, body-addressed, driven separately below.
+        if *pattern == "/api/works/{work}/alignments" {
+            continue;
+        }
+        let path = pattern
+            .replace("{work}", &split_slug)
+            .replace("{edition}", "raw")
+            .replace("{index}", "0")
+            .replace("{number}", "0")
+            .replace("{ordinal}", "0")
+            .replace("{id}", "1");
+        let response = split_router
+            .clone()
+            .oneshot(
+                Request::get(&path)
+                    .header("authorization", &credential)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("router answers");
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{pattern} is classified Refuses, but GET {path} against the \
+             withheld half of a work that also has a granted half answered \
+             {}",
+            response.status()
+        );
+    }
+
+    // `Filters`, split. `/opds/v1.2/works/{work}` was already proven this
+    // way before Finding 2; the rest join it here.
+    let work_feed_response = split_router
+        .clone()
+        .oneshot(
+            Request::get(format!("/opds/v1.2/works/{split_slug}"))
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let work_feed_status = work_feed_response.status();
+    let work_feed_body = crate::test_support::body_string(work_feed_response).await;
+    assert_eq!(work_feed_status, StatusCode::OK, "{work_feed_body}");
+    assert!(
+        work_feed_body.contains("/en/"),
+        "/opds/v1.2/works/{{work}} is classified Filters and must still name \
+         the granted edition: {work_feed_body}"
+    );
+    assert!(
+        !work_feed_body.contains("/raw/"),
+        "/opds/v1.2/works/{{work}} named an edition outside the grant: {work_feed_body}"
+    );
+    proven_filters.insert("/opds/v1.2/works/{work}");
+
+    // `/api/works` (`list_works`) — Finding 1's own reproduction: `editions`
+    // must be `["en"]`, and the cover must not be built from the withheld
+    // hub.
+    let list_response = split_router
+        .clone()
+        .oneshot(
+            Request::get("/api/works")
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let list_status = list_response.status();
+    let list_body = crate::test_support::body_string(list_response).await;
+    assert_eq!(list_status, StatusCode::OK, "{list_body}");
+    let list_json: serde_json::Value = serde_json::from_str(&list_body).expect("valid JSON");
+    let split_summary = list_json
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|w| w["slug"].as_str() == Some(split_slug.as_str()))
+        .expect("the split work is listed");
+    let split_summary_editions: Vec<&str> = split_summary["editions"]
+        .as_array()
+        .expect("an editions array")
+        .iter()
+        .map(|e| e.as_str().expect("a string"))
+        .collect();
+    assert_eq!(
+        split_summary_editions,
+        vec!["en"],
+        "/api/works is classified Filters but named an edition outside the \
+         grant: {list_body}"
+    );
+    assert!(
+        !split_summary["cover"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("/raw/"),
+        "/api/works built a cover URL from the withheld edition: {list_body}"
+    );
+    proven_filters.insert("/api/works");
+
+    // `/api/works/{work}` (`get_sidecar`) — the same document, filtered:
+    // `editions` drops to `en`, and `hub` (`"raw"` in the fixture) falls
+    // back to the one surviving edition rather than naming the withheld one.
+    let sidecar_response = split_router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/works/{split_slug}"))
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let sidecar_status = sidecar_response.status();
+    let sidecar_tag = sidecar_response.headers()[header::ETAG].clone();
+    let sidecar_body = crate::test_support::body_string(sidecar_response).await;
+    assert_eq!(sidecar_status, StatusCode::OK, "{sidecar_body}");
+    let sidecar_json: serde_json::Value = serde_json::from_str(&sidecar_body).expect("valid JSON");
+    let sidecar_editions: Vec<&str> = sidecar_json["editions"]
+        .as_object()
+        .expect("an editions object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        sidecar_editions,
+        vec!["en"],
+        "/api/works/{{work}} is classified Filters but named an edition \
+         outside the grant: {sidecar_body}"
+    );
+    assert_eq!(
+        sidecar_json["hub"].as_str(),
+        Some("en"),
+        "/api/works/{{work}} named the withheld hub: {sidecar_body}"
+    );
+    proven_filters.insert("/api/works/{work}");
+
+    // `/api/works/{work}/alignments` (`patch_alignments`) — `RefusesAndFilters`.
+    // Its write half was reclassified `Refuses` by Finding 1's
+    // write-authorization fix: before it, the identical request answered
+    // 200 with a sidecar filtered to `en` alone (the read-leak half, fixed
+    // the round before this one) while still writing `alignment`/`run` rows
+    // for `raw` — shared state every reader who *can* see `raw` would then
+    // be served from. Now it is refused, like every `Refuses` entry, before
+    // either `if_match_hits` or `Sidecar::correct` runs, and the seeded row
+    // is unchanged. Its *response*-filtering half is proven separately just
+    // below, against a work with two visible editions — this fixture keeps
+    // only one, so a correction between two editions it may see cannot be
+    // expressed here. Proven here (and below) rather than in the generic
+    // `Refuses`/`Filters` loops above (all three explicitly skip this
+    // pattern) because a correction needs a body and `If-Match`, which
+    // their GET-only mechanism cannot send.
+    let seeded_run = |conn: &rusqlite::Connection| -> (i64, i64, i64, i64) {
+        conn.query_row(
+            "SELECT a_start_page, a_end_page, b_start_page, b_end_page FROM run",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("the fixture's seeded run row exists")
+    };
+    let run_before = seeded_run(&split_state.library.conn());
+    let patch_response = split_router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/works/{split_slug}/alignments"))
+                .header("authorization", &credential)
+                .header(header::IF_MATCH, sidecar_tag)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"from":"en","to":"raw","a":"1","b":"0"}"#))
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let patch_status = patch_response.status();
+    let patch_body = crate::test_support::body_string(patch_response).await;
+    assert_eq!(
+        patch_status,
+        StatusCode::NOT_FOUND,
+        "/api/works/{{work}}/alignments is classified Refuses, but a \
+         correction naming the withheld edition answered {patch_status}: {patch_body}"
+    );
+    let run_after = seeded_run(&split_state.library.conn());
+    assert_eq!(
+        run_before, run_after,
+        "a correction refused for naming a withheld edition still wrote \
+         shared alignment rows"
+    );
+
+    // `/api/works/{work}/alignments`'s `Filters` half: a correction between
+    // two editions this caller *may* see must still answer with a response
+    // that omits the third, withheld one — `one_work_three_editions_hub_withheld`'s
+    // own doc comment says why `split_router` above cannot drive this case.
+    let (triple_router, triple_state) =
+        one_work_three_editions_hub_withheld("taiyaku-test-grant-posture-triple-filters");
+    let triple_slug = triple_state.works[0].id.clone();
+    let triple_get = triple_router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/works/{triple_slug}"))
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let triple_tag = triple_get.headers()[header::ETAG].clone();
+    let triple_patch = triple_router
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/works/{triple_slug}/alignments"))
+                .header("authorization", &credential)
+                .header(header::IF_MATCH, triple_tag)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"from":"en","to":"fr","a":"1","b":"0"}"#))
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let triple_status = triple_patch.status();
+    let triple_body = crate::test_support::body_string(triple_patch).await;
+    assert_eq!(
+        triple_status,
+        StatusCode::OK,
+        "a correction between two visible editions must succeed: {triple_body}"
+    );
+    assert!(
+        !triple_body.contains("\"raw\""),
+        "/api/works/{{work}}/alignments is classified RefusesAndFilters but \
+         named the withheld edition in its response: {triple_body}"
+    );
+    proven_filters.insert("/api/works/{work}/alignments");
+    crate::test_support::cleanup("taiyaku-test-grant-posture-triple-filters");
+
+    // `/api/library/works/{slug}` — `library_api::work` already reused
+    // `browse::work`; this proves it, rather than merely trusting the read.
+    let library_work_response = split_router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/library/works/{split_slug}"))
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let library_work_status = library_work_response.status();
+    let library_work_body = crate::test_support::body_string(library_work_response).await;
+    assert_eq!(library_work_status, StatusCode::OK, "{library_work_body}");
+    let library_work_json: serde_json::Value =
+        serde_json::from_str(&library_work_body).expect("valid JSON");
+    let library_work_editions: Vec<&str> = library_work_json["editions"]
+        .as_array()
+        .expect("an editions array")
+        .iter()
+        .map(|e| e["key"].as_str().expect("a key"))
+        .collect();
+    assert_eq!(
+        library_work_editions,
+        vec!["en"],
+        "/api/library/works/{{slug}} named an edition outside the grant: \
+         {library_work_body}"
+    );
+    proven_filters.insert("/api/library/works/{slug}");
+
+    // `/api/library/series/{id}` — the series is visible (`en` survives),
+    // its one work must show only `en`.
+    let library_series_response = split_router
+        .clone()
+        .oneshot(
+            Request::get("/api/library/series/1")
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let library_series_status = library_series_response.status();
+    let library_series_body = crate::test_support::body_string(library_series_response).await;
+    assert_eq!(
+        library_series_status,
+        StatusCode::OK,
+        "{library_series_body}"
+    );
+    let library_series_json: serde_json::Value =
+        serde_json::from_str(&library_series_body).expect("valid JSON");
+    let series_work = library_series_json["works"]
+        .as_array()
+        .expect("a works array")
+        .iter()
+        .find(|w| w["slug"].as_str() == Some(split_slug.as_str()))
+        .expect("the split work is listed under its series");
+    let series_work_editions: Vec<&str> = series_work["editions"]
+        .as_array()
+        .expect("an editions array")
+        .iter()
+        .map(|e| e["key"].as_str().expect("a key"))
+        .collect();
+    assert_eq!(
+        series_work_editions,
+        vec!["en"],
+        "/api/library/series/{{id}} named an edition outside the grant: \
+         {library_series_body}"
+    );
+    proven_filters.insert("/api/library/series/{id}");
+
+    // `/api/library/series/{id}/cover` — the series' hand-set cover is
+    // unset, so this falls to `cover_target`'s own visible-only fallback:
+    // the redirect must land on `en`, never on the withheld hub `raw`.
+    let cover_response = split_router
+        .clone()
+        .oneshot(
+            Request::get("/api/library/series/1/cover")
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    assert_eq!(
+        cover_response.status(),
+        StatusCode::TEMPORARY_REDIRECT,
+        "/api/library/series/{{id}}/cover: {}",
+        cover_response.status()
+    );
+    let cover_location = cover_response.headers()[header::LOCATION]
+        .to_str()
+        .expect("ascii")
+        .to_string();
+    assert!(
+        cover_location.contains("/en/"),
+        "/api/library/series/{{id}}/cover is classified Filters and must \
+         still redirect to a granted edition: {cover_location}"
+    );
+    assert!(
+        !cover_location.contains("/raw/"),
+        "/api/library/series/{{id}}/cover redirected to the withheld \
+         edition: {cover_location}"
+    );
+    proven_filters.insert("/api/library/series/{id}/cover");
+
+    // `/api/library/home` — the split work is newly added and carries no
+    // progress, so it surfaces in `added`; its `editions` must still be
+    // `en`-only.
+    let home_response = split_router
+        .clone()
+        .oneshot(
+            Request::get("/api/library/home")
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let home_status = home_response.status();
+    let home_body = crate::test_support::body_string(home_response).await;
+    assert_eq!(home_status, StatusCode::OK, "{home_body}");
+    let home_json: serde_json::Value = serde_json::from_str(&home_body).expect("valid JSON");
+    let home_work = home_json["added"]
+        .as_array()
+        .expect("an added list")
+        .iter()
+        .find(|w| w["slug"].as_str() == Some(split_slug.as_str()))
+        .expect("the split work appears in `added`");
+    let home_editions: Vec<&str> = home_work["editions"]
+        .as_array()
+        .expect("an editions array")
+        .iter()
+        .map(|e| e["key"].as_str().expect("a key"))
+        .collect();
+    assert_eq!(
+        home_editions,
+        vec!["en"],
+        "/api/library/home named an edition outside the grant: {home_body}"
+    );
+    proven_filters.insert("/api/library/home");
+
+    // `/api/library/series` (the grid) and `/api/library/search` both carry
+    // only an *edition count* per series, not per-work detail —
+    // `SeriesCard` has no field for either. The count is still the exact
+    // number the whole-branch review found wrong before 2026-08-21
+    // (`browse`'s module header, `aligned_clause`'s history), so both are
+    // proven by asserting it reads 1 (the visible `en`) rather than 2 (`en`
+    // and the withheld `raw`).
+    let grid_response = split_router
+        .clone()
+        .oneshot(
+            Request::get("/api/library/series")
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let grid_status = grid_response.status();
+    let grid_body = crate::test_support::body_string(grid_response).await;
+    assert_eq!(grid_status, StatusCode::OK, "{grid_body}");
+    let grid_json: serde_json::Value = serde_json::from_str(&grid_body).expect("valid JSON");
+    let grid_series = grid_json["series"]
+        .as_array()
+        .expect("a series list")
+        .iter()
+        .find(|s| s["id"].as_i64() == Some(1))
+        .expect("the split series is listed");
+    assert_eq!(
+        grid_series["editions"].as_i64(),
+        Some(1),
+        "/api/library/series counted an edition outside the grant: {grid_body}"
+    );
+    proven_filters.insert("/api/library/series");
+
+    let search_response = split_router
+        .clone()
+        .oneshot(
+            Request::get("/api/library/search?q=Split")
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let search_status = search_response.status();
+    let search_body = crate::test_support::body_string(search_response).await;
+    assert_eq!(search_status, StatusCode::OK, "{search_body}");
+    let search_json: serde_json::Value = serde_json::from_str(&search_body).expect("valid JSON");
+    let search_series = search_json["series"]
+        .as_array()
+        .expect("a series list")
+        .iter()
+        .find(|s| s["id"].as_i64() == Some(1))
+        .expect("the split series is a search hit");
+    assert_eq!(
+        search_series["editions"].as_i64(),
+        Some(1),
+        "/api/library/search counted an edition outside the grant: {search_body}"
+    );
+    proven_filters.insert("/api/library/search");
+
+    // `/opds/v1.2/works` names no edition at all — only a count. That count
+    // was `sidecar.editions.len()`, unfiltered by any round before Finding
+    // 2 (this branch's report), so a restricted reader learned how many
+    // editions a work held under a withheld root even though `opds::works`
+    // named none of them directly. Fixed to `browse::visible_editions` —
+    // the same bulk query `routes::list_works` already used for the
+    // identical `/api/works` question — and proven against exactly this
+    // split shape in `opds::tests::
+    // a_restricted_readers_works_list_counts_only_the_editions_they_may_see`
+    // rather than re-driven here: a count is the one field this loop's
+    // string-membership assertions cannot express as cleanly as a direct
+    // numeric comparison can.
+
+    crate::test_support::cleanup("taiyaku-test-grant-posture-split");
+
+    for (pattern, posture) in &table {
+        if matches!(
+            posture,
+            GrantPosture::Filters | GrantPosture::RefusesAndFilters
+        ) {
+            assert!(
+                proven_filters.contains(pattern),
+                "{pattern} is classified Filters or RefusesAndFilters but \
+                 this test never drove a request to prove its response is \
+                 filtered"
+            );
+        }
+    }
+}
+
+/// **Finding 1's reproduction.** `refuse_if_work_hidden` answered only the
+/// *work*-level question — does `split` keep any edition under a granted
+/// root? Yes, `en` does — and `get_sidecar` then returned `found.sidecar()`
+/// unfiltered, every edition included. A reader granted only `en` learned
+/// the withheld `raw` edition's key, label, member path and `sha256`.
+#[tokio::test]
+async fn get_sidecar_names_only_visible_editions() {
+    let (router, state) =
+        one_work_two_editions_split_across_roots("taiyaku-test-sidecar-split-leak");
+    let slug = state.works[0].id.clone();
+    let credential = crate::test_support::fixture_authorization();
+
+    let response = router
+        .oneshot(
+            Request::get(format!("/api/works/{slug}"))
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let status = response.status();
+    let body = crate::test_support::body_string(response).await;
+    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        compact.contains("\"en\""),
+        "the granted edition must still be named: {body}"
+    );
+    assert!(
+        !compact.contains("\"raw\""),
+        "GET /api/works/{{work}} named the withheld edition's key: {body}"
+    );
+    assert!(
+        !body.contains("Raw"),
+        "GET /api/works/{{work}} named the withheld edition's label: {body}"
+    );
+    assert!(
+        !body.contains("c1.cbz"),
+        "GET /api/works/{{work}} named the withheld edition's member path: {body}"
+    );
+    assert!(
+        !compact.contains("\"sha256\":\"x\""),
+        "GET /api/works/{{work}} named the withheld edition's member sha256: {body}"
+    );
+    crate::test_support::cleanup("taiyaku-test-sidecar-split-leak");
+}
+
+/// **Finding 1's reproduction**, for the list route. `list_works` filtered
+/// by the now-removed `browse::visible_work_slugs` — work-level — and then
+/// reported every edition of each surviving work, including a cover URL built
+/// from `sidecar.hub` regardless of whether the hub itself was inside the
+/// grant.
+#[tokio::test]
+async fn list_works_names_only_visible_editions_and_cover() {
+    let (router, _state) =
+        one_work_two_editions_split_across_roots("taiyaku-test-listworks-split-leak");
+    let credential = crate::test_support::fixture_authorization();
+
+    let response = router
+        .oneshot(
+            Request::get("/api/works")
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let status = response.status();
+    let body = crate::test_support::body_string(response).await;
+    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        compact.contains("\"en\""),
+        "the granted edition must still be named: {body}"
+    );
+    assert!(
+        !compact.contains("\"raw\""),
+        "GET /api/works named the withheld edition's key: {body}"
+    );
+    assert!(
+        !body.contains("/raw/pages/"),
+        "GET /api/works built a cover URL from the withheld edition: {body}"
+    );
+    crate::test_support::cleanup("taiyaku-test-listworks-split-leak");
+}
+
+/// **Finding 1's reproduction**, for the write itself rather than the
+/// response. The response-leak fix round put `patch_alignments` on the same
+/// work-level `visible_editions_or_refuse` helper `get_sidecar` uses and
+/// filtered what came back — a reader granted only `en` passed it (`split`
+/// keeps `en`), submitted a correction naming `raw` on either side, and got
+/// back a 200 whose *response* no longer named `raw`. The write itself was
+/// never asked: the correction was accepted and its rows landed in shared
+/// `alignment`/`run` state regardless, which every other reader of this
+/// work — including one who *can* see `raw` — is served from. Worse than a
+/// read leak, because a read leak costs only the caller who triggered it; an
+/// unauthorized write like this one costs every other reader a fact this
+/// caller had no standing to assert.
+#[tokio::test]
+async fn patch_alignments_refuses_a_correction_naming_a_withheld_edition() {
+    let (router, state) = one_work_two_editions_split_across_roots("taiyaku-test-patch-write-leak");
+    let slug = state.works[0].id.clone();
+    let credential = crate::test_support::fixture_authorization();
+
+    let seeded_run = |conn: &rusqlite::Connection| -> (i64, i64, i64, i64) {
+        conn.query_row(
+            "SELECT a_start_page, a_end_page, b_start_page, b_end_page FROM run",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("the fixture's seeded run row exists")
+    };
+    let run_before = seeded_run(&state.library.conn());
+
+    // The `If-Match` a real client would send comes from a real `GET`, the
+    // same route the caller's own reader used.
+    let get_response = router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/works/{slug}"))
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let tag = get_response.headers()[header::ETAG].clone();
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/works/{slug}/alignments"))
+                .header("authorization", &credential)
+                .header(header::IF_MATCH, tag)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"from":"en","to":"raw","a":"1","b":"0"}"#))
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let status = response.status();
+    let body = crate::test_support::body_string(response).await;
+
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a correction naming a withheld edition must be refused before it \
+         is written, not merely filtered on the way back out: {body}"
+    );
+
+    let run_after = seeded_run(&state.library.conn());
+    assert_eq!(
+        run_before, run_after,
+        "PATCH /api/works/{{work}}/alignments wrote shared alignment rows \
+         for a correction naming a withheld edition"
+    );
+
+    crate::test_support::cleanup("taiyaku-test-patch-write-leak");
+}
+
+/// **Finding 1** (verification pass, 2026-08-25): three properties on this
+/// path that every one of the 371 tests existing before this one passed
+/// without exercising. Each is proven below against
+/// `one_work_three_editions_hub_withheld` — see that fixture's own doc
+/// comment for why the two-edition split fixture cannot drive any of the
+/// three — in its own test rather than as three assertions of one, **so
+/// that one property failing cannot stop another from being checked at
+/// all**. They started as a single test; a later review (Finding 5, this
+/// branch's second report) found that shape meant a failure in (a) would
+/// abort the test before (b) or (c) ever ran, and (c) — the `from`-side
+/// write guard — has no other coverage anywhere. A regression there would
+/// have looked, from the suite's output, exactly like an unrelated ETag
+/// failure: one red test, not two, and the guard silently unproven. Split
+/// so each reports independently regardless of what the others do.
+///
+/// (a) **The ETag is computed over the full, unfiltered document.** A
+/// restricted reader's own `GET` → `If-Match` → `PATCH` round trip — on two
+/// editions both inside their grant — must succeed. Mutating `get_sidecar`'s
+/// `let tag = sidecar_etag(&sidecar)` to a tag over the filtered projection
+/// instead makes this assertion fail with 412: the reader's `GET` hands back
+/// a tag over `{en, fr}` alone, while `patch_alignments` always recomputes
+/// its own comparison tag over the full (unfiltered) document, so the two
+/// never agree again for a restricted reader.
+#[tokio::test]
+async fn a_restricted_readers_own_etag_round_trips_through_a_correction_between_visible_editions() {
+    let (router, state) =
+        one_work_three_editions_hub_withheld("taiyaku-test-grant-posture-triple-etag");
+    let slug = state.works[0].id.clone();
+    let credential = crate::test_support::fixture_authorization();
+
+    let get_response = router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/works/{slug}"))
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let tag = get_response.headers()[header::ETAG].clone();
+
+    let patch_response = router
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/works/{slug}/alignments"))
+                .header("authorization", &credential)
+                .header(header::IF_MATCH, tag)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"from":"en","to":"fr","a":"1","b":"0"}"#))
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let patch_status = patch_response.status();
+    let patch_body = crate::test_support::body_string(patch_response).await;
+    assert_eq!(
+        patch_status,
+        StatusCode::OK,
+        "a restricted reader's own If-Match, taken from their own GET, must \
+         validate against a correction between two editions they can both \
+         see: {patch_body}"
+    );
+
+    crate::test_support::cleanup("taiyaku-test-grant-posture-triple-etag");
+}
+
+/// (b) **`patch_alignments`'s response is filtered**, on a correction
+/// between two *visible* editions (`en`/`fr`) so the request does not 404
+/// before a response is even built. Mutating the `Some(keys) =>
+/// filter_sidecar_editions(&next, keys).to_json()` arm to return the
+/// unfiltered `json` instead makes this assertion fail: the 200 body then
+/// names `raw`. See the doc comment above the `(a)` test, just above this
+/// one, for why this is its own test rather than a second assertion tacked
+/// onto that one: this property must still be checked (and reported) even
+/// when `(a)` itself is broken.
+#[tokio::test]
+async fn a_correction_between_visible_editions_omits_the_withheld_one_from_its_response() {
+    let (router, state) =
+        one_work_three_editions_hub_withheld("taiyaku-test-grant-posture-triple-response-filter");
+    let slug = state.works[0].id.clone();
+    let credential = crate::test_support::fixture_authorization();
+
+    let get_response = router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/works/{slug}"))
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let tag = get_response.headers()[header::ETAG].clone();
+
+    let patch_response = router
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/works/{slug}/alignments"))
+                .header("authorization", &credential)
+                .header(header::IF_MATCH, tag)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"from":"en","to":"fr","a":"1","b":"0"}"#))
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let patch_status = patch_response.status();
+    let patch_body = crate::test_support::body_string(patch_response).await;
+    assert_eq!(
+        patch_status,
+        StatusCode::OK,
+        "a correction between two editions this reader may see must \
+         succeed before its response can be checked for filtering: {patch_body}"
+    );
+    let patch_json: serde_json::Value = serde_json::from_str(&patch_body).expect("valid JSON");
+    let patch_editions: std::collections::BTreeSet<&str> = patch_json["editions"]
+        .as_object()
+        .expect("an editions object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        patch_editions,
+        std::collections::BTreeSet::from(["en", "fr"]),
+        "PATCH /api/works/{{work}}/alignments named the withheld edition in \
+         its response: {patch_body}"
+    );
+
+    crate::test_support::cleanup("taiyaku-test-grant-posture-triple-response-filter");
+}
+
+/// (c) **Both write guards are covered**, not only the one every existing
+/// test drove. `patch_alignments_refuses_a_correction_naming_a_withheld_edition`
+/// above only ever sent the withheld edition on `to`; this sends it on
+/// `from` instead. Disabling `refuse_if_hidden(&correction.from)` — the
+/// first of the two guard calls — makes this assertion fail: `raw → en` is a
+/// real, seeded edge, so the correction would succeed (200) rather than 404.
+/// This has no other coverage anywhere in the suite — which is exactly why
+/// it is its own test rather than a third assertion after `(a)` and `(b)`:
+/// nothing about this guard should depend on either of those passing first.
+#[tokio::test]
+async fn a_correction_naming_the_withheld_edition_on_the_from_side_is_still_refused() {
+    let (router, state) =
+        one_work_three_editions_hub_withheld("taiyaku-test-grant-posture-triple-from-guard");
+    let slug = state.works[0].id.clone();
+    let credential = crate::test_support::fixture_authorization();
+
+    let get_response = router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/works/{slug}"))
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let tag = get_response.headers()[header::ETAG].clone();
+
+    let refused_response = router
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/works/{slug}/alignments"))
+                .header("authorization", &credential)
+                .header(header::IF_MATCH, tag)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"from":"raw","to":"en","a":"1","b":"0"}"#))
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let refused_status = refused_response.status();
+    let refused_body = crate::test_support::body_string(refused_response).await;
+    assert_eq!(
+        refused_status,
+        StatusCode::NOT_FOUND,
+        "a correction naming the withheld edition on the `from` side must be \
+         refused exactly as one naming it on `to` is: {refused_body}"
+    );
+
+    crate::test_support::cleanup("taiyaku-test-grant-posture-triple-from-guard");
 }

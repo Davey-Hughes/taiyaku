@@ -7,10 +7,13 @@
 mod alignments;
 mod auth;
 mod cache_root;
+mod cbz;
+mod comicinfo;
 mod composite;
 #[cfg(test)]
 mod corpus;
 mod cover;
+pub(crate) mod download;
 pub mod library_api;
 /// A work's notes, beside its sidecar.
 ///
