@@ -13402,6 +13402,11 @@ server's record. **This is a blind spot in the instrument this project uses to
 settle open items**, and it is the same shape as the one O66's own entry
 complains about: the older `panels*.jsonl` logs report `(not recorded)` for
 headers, and their silence was an instrument's limit rather than evidence.
+**Tabled as O68**, because a gap recorded only here is exactly what the
+open-items table exists to prevent — and because closing it is a decision
+rather than a patch: counting a streamed body means writing the log line when
+the body completes rather than when the response is produced, which changes
+when every line is emitted and what `micros` measures for every route.
 
 *A resumed download is the case O66 is about, and nothing here interrupted
 one.* Panels was never made to drop a connection mid-fetch and retry, which is

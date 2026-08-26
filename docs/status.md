@@ -1327,7 +1327,7 @@ both are waiting on L2.
 
 ### Open items
 
-Sixty-seven, each found by a whole-branch review, carried as a deferral,
+Sixty-eight, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -1337,16 +1337,18 @@ turned up by simulating the reader from every position it can hold, turned
 up by reading a file closely enough to write tests for it, turned up while
 reading the code around a line a tool had pointed at, turned up by
 hashing the pages a survey's own column described and finding it disagreed
-with them, or turned up by pointing a real OPDS client at a real library and
-reading what it rendered, and
+with them, turned up by pointing a real OPDS client at a real library and
+reading what it rendered, or turned up by finding that the log which recorded
+that session could not answer what was being asked of it, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
 visible act rather than a thing someone remembers. **Thirty-six are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
 O21, O22, O25, O26, O27, O28, O29, O30, O34, O35, O36, O37, O38, O39, O40, O43,
-O54, O55 and O64 — leaving thirty-one.** *(Thirty-one both before and after
-this edit, which is not an oversight: O55 closed and O67 opened in the same
-session, off the same device run.)*
+O54, O55 and O64 — leaving thirty-two.** *(This read "leaving thirty-one" both
+before and after the edit that opened O67, which was not an oversight: O55
+closed and O67 opened in the same session, off the same device run. O68 opened
+from that same run afterwards, and moved it.)*
 
 **What spec A2's fourth review reported and nobody has verified.** Four rounds
 returned fifteen findings each. Round four's fifteen were: two fixed as security
@@ -1470,6 +1472,7 @@ each is in the detail below; the table is what a reader scans.
 | O65 | [ ] | **The reader chrome's `Library` button covers the layout buttons.** With the chrome open, the leave button (`z-index: 3`, at 16,16) sits over the centres of the `single` and `two` layout buttons: `document.elementFromPoint` returns `BUTTON:Library` for both. Shipped in #82 (`b9581ac`), so it is on `main` and not introduced here. A Minor — a layout collision with a known fix shape — rather than a decision | `Chrome.tsx`'s `leaveButtonStyle`, the layout control group | the library-browse-series browser pass, 2026-08-21 |
 | O66 | [ ] | **A generated download's `Range` resume reads and discards the prefix rather than seeking to it.** `download.rs::generated` walks every member from page 0 regardless of `from`, decoding nothing but paying for every read up to the window, and hands each chunk to `cbz::clipped` to keep only `[from, upto)` — correct on every byte, since a passthrough single-member edition already seeks for real, but a resumed generated download re-reads a prefix it will throw away. `Plan::payload_span` already maps every entry's `[start, end)` in the output, which is the map a true seek would walk to open each member at the right page and `Seek::seek` past the rest instead of reading it. **Not a defect on evidence; a known cost with a known fix, deliberately not built here** (spec C2 §11): no client this project has measured has been shown to request a `Range` on an acquisition fetch at all, so building the seek first would be optimising a path nothing yet proves is taken. The trigger is named rather than left implicit — a fresh `taiyaku serve --log-requests` session against Panels, bound to the LAN, showing `Range` on an acquisition fetch. The existing `panels*.jsonl` logs predate request-header capture and report `(not recorded)` for headers, so their silence is an instrument's blind spot rather than evidence the trigger has not fired | `download.rs::generated`, `cbz::clipped`, `cbz::Plan::payload_span` | spec C2, on shipping |
 | O67 | [ ] | **A scanned work's title is the filename of whichever entry minted its row, so a work spanning several editions is named after one of them.** Measured against Panels on an iPad and in a browser, 2026-08-25: volume 1 of Go-Toubun no Hanayome holds five editions — `en-color`, `en-fan`, `en-mono`, `raw-color`, `raw-mono`, which is `derive.rs`'s `Group` working exactly as designed, since a `Group` is every entry across every root that resolved to the same `(series, volume)` — while `work.title` is `Go-Toubun no Hanayome - Full Color Edition - v01 (2021).cbz`, the stem of the colour file that happened to create the row. `opds::work_feed` renders `{title} — {label}` faithfully, so a reader is shown "…Full Color Edition… — en-mono" for a monochrome edition, and the series page's table repeats it once per row: **the feed is right and the data is wrong.** Two faults stacked — edition-specific text asserted over four editions it does not describe, and a raw filename kept whole, `.cbz` and `(2021)` included. **This is larger than the cost already recorded** in the `taiyaku-library` entry above, which says only that a derived title is *stuck* ("a work this scanner minted keeps the title it first derived, so a later rule edit that would rename it does not reach the row"); what a real client shows is a title wrong about its own contents. `series_id` and `volume` are both on the row and would give "Go-Toubun no Hanayome, volume 1" — the exact string that same entry records a person having written before a scan overwrote it with "Series - v01" — but **`work.slug` derives from `work.title`, and the slug is the address progress, notes and truth all hang on**, so changing the derivation moves every scanned work's URL and strands the positions on it. A decision with a migration attached rather than a patch, and its home is C3's metadata editing, which O44 and O53 record as having no route and an unreachable apply step | `taiyaku-library/src/derive.rs`'s title derivation, `work.title`, `work.slug` | spec C2's second-half device session, 2026-08-25 |
+| O68 | [ ] | **The request log records `bytes: 0` for every streamed response, so it cannot tell a completed download from an abandoned one.** `build_router`'s request-log middleware takes the count from `response.body().size_hint().exact()`, which is `None` for a body built with `Body::from_stream` — which is what both download routes use, deliberately, because the `mpsc` channel behind it is what keeps a 1.49 GB volume out of memory. Measured 2026-08-25, from the same Panels session that closed O55: the catalog logged `bytes: 815` and five downloads logged `bytes: 0` — one of those five separately measured at 334,752,036 real bytes over the wire, and the other four not measured at all, which is the point rather than an omission: the log is the thing that was supposed to say. The field's own middleware comment says why it exists — "bytes-per-page is one of the numbers this log exists to produce" — and it produces it for every buffered response and for none of the streamed ones. **This is a blind spot in the instrument this project settles open items with, which is why it is tabled rather than left in `notes.md`**: O66's trigger is a `--log-requests` session against Panels, and the qualification recorded against the negative result already taken is partly this — the log showed five downloads *started*, and that they finished is the client's report rather than the server's record. The same shape as the gap O66's own entry names, where the older `panels*.jsonl` logs report `(not recorded)` for headers. **A decision rather than a patch**, and that is the reason it is open: the line is written when the *response* is produced, and counting a streamed body means writing it when the body *completes* instead — which changes when every log line is emitted, and what `micros` measures, for every route rather than for downloads alone. Wrapping the body to count frames as they pass is the mechanism; whether one log line per request should describe the response or the transfer is the question. What would settle it: needing to distinguish a completed transfer from an abandoned one in a real measurement, which the direct-LAN repeat O66 now asks for is the first to require | `build_router`'s request-log middleware, `reqlog::Log::finish`, `reqlog::Entry::bytes` | spec C2's second-half device session, 2026-08-25 |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -1483,7 +1486,16 @@ titles Panels renders are the titles this scanner derived, and a work holding a
 colour edition beside three monochrome ones is named after the colour file. No
 review had found it in five specs, and no test can — every assertion in the
 suite is over data a fixture wrote, and a fixture names its work `T`. What
-found it was one shelf rendered by something this project did not write. *One
+found it was one shelf rendered by something this project did not write. **O68
+came from the same run and from the opposite direction** — not from what the
+client displayed but from what the server recorded about it, which turned out
+to be `bytes: 0` for every download. Worth separating from O67 rather than
+folding into it: one is a defect in what this project stores about a work, and
+the other is a defect in what it can observe about its own behaviour. The
+second is the more awkward, because the instrument is what the open-items
+process runs on: O66's negative result, taken the same evening, needs a
+qualification it would not have needed if the log could say how many bytes
+actually moved. *One
 thing the run needed is worth recording where a deployment would look for it:
 **iOS App Transport Security refuses plain HTTP**, so an OPDS source at
 `http://…` reports that the server cannot be found, whatever the credentials.
@@ -3740,7 +3752,7 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the thirty-one open items tabled above — twenty-one of them found by
+What remains: the thirty-two open items tabled above — twenty-one of them found by
 a whole-branch review or by the review of one's own fixes (O42 and O44 among
 them, O45 through O53 all from the scanner branch's own whole-branch
 review or from a fix round inside it, O57 and O58 from spec A2's fourth, and O59 from the mutation workflow's first sharded run), and
