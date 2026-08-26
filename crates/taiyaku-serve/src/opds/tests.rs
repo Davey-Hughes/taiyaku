@@ -630,15 +630,19 @@ async fn navigation_entries_carry_a_subsection_rel() {
     );
 }
 
-/// Important 5: OPDS 1.2 requires at least one acquisition link
+/// OPDS 1.2 requires at least one acquisition link
 /// (`rel="http://opds-spec.org/acquisition"`) on every entry in an
 /// acquisition feed, or a conformant client may render the entry as
-/// unopenable. The owner decided it should point at the edition's first
-/// page — proven here by actually fetching it, not merely asserting the
-/// string is present, so this fails if the link is ever a dead one.
+/// unopenable. It now points at a download — proven by fetching it, not by
+/// asserting the string is present, so this fails if the link is ever dead.
+///
+/// *This replaces `the_acquisition_link_on_an_edition_entry_is_a_real_fetchable_page`,
+/// which asserted the link is a real fetchable **page**. That claim is what
+/// this branch deliberately changes, so the test is rewritten rather than
+/// left to contradict the code beside it.*
 #[tokio::test]
-async fn the_acquisition_link_on_an_edition_entry_is_a_real_fetchable_page() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-acquisition"));
+async fn the_acquisition_link_is_a_real_fetchable_download() {
+    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-acq-dl"));
     let app = feed_router().with_state(state);
 
     let feed = app
@@ -657,30 +661,149 @@ async fn the_acquisition_link_on_an_edition_entry_is_a_real_fetchable_page() {
         "must declare the acquisition rel: {feed_body}"
     );
 
-    // Pulled out of the feed the handler actually returned: the
-    // acquisition link, not the pse:stream template (which contains a
-    // literal `{{pageNumber}}` and is not directly fetchable) or the
-    // thumbnail link.
     let href = feed_body
         .split("href=\"")
         .skip(1)
         .find_map(|rest| {
             let (path, _) = rest.split_once('"')?;
-            (path.contains("/pages/1")).then(|| path.to_string())
+            path.ends_with("/download").then(|| path.to_string())
         })
-        .unwrap_or_else(|| panic!("no concrete page link in feed: {feed_body}"));
+        .unwrap_or_else(|| panic!("no download link in feed: {feed_body}"));
 
-    let page = app
+    let download = app
         .oneshot(Request::get(&href).body(Body::empty()).unwrap())
         .await
         .unwrap();
-    let status = page.status();
+    let status = download.status();
 
-    crate::test_support::cleanup("taiyaku-test-opds-acquisition");
+    // The PSE link is a different mechanism for a different intention and is
+    // untouched. Asserted with its `pse:count`, because a test that would
+    // still pass with the link deleted is not evidence.
+    assert!(
+        feed_body.contains(r#"rel="http://vaemendis.net/opds-pse/stream""#)
+            && feed_body.contains(r#"pse:count="4""#),
+        "streaming stays the in-app read path: {feed_body}"
+    );
+
+    crate::test_support::cleanup("taiyaku-test-opds-acq-dl");
     assert_eq!(
         status,
         StatusCode::OK,
-        "the acquisition link must be a real, fetchable page, not a dead link: {href}"
+        "the acquisition link must be a real, fetchable download: {href}"
+    );
+}
+
+/// The feed declares the type the route will actually send, not a constant.
+/// A generated edition is a `STORE` zip; `download::advertised_type` is what
+/// decides, so the two cannot drift.
+#[tokio::test]
+async fn the_acquisition_link_declares_the_type_the_route_will_send() {
+    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-acq-type"));
+    let app = feed_router().with_state(state);
+
+    let feed = app
+        .oneshot(
+            Request::get("/opds/v1.2/works/t")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let feed_body = body_of(feed).await;
+
+    crate::test_support::cleanup("taiyaku-test-opds-acq-type");
+    assert!(
+        feed_body.contains(
+            r#"<link rel="http://opds-spec.org/acquisition" type="application/vnd.comicbook+zip""#
+        ),
+        "a generated edition is a STORE zip and must say so: {feed_body}"
+    );
+    assert!(
+        !feed_body.contains(r#"rel="http://opds-spec.org/acquisition" type="image/jpeg""#),
+        "the acquisition link is no longer a page: {feed_body}"
+    );
+}
+
+/// The web UI's control is *absent* for a reader who may not download, and
+/// the feed cannot do the same: OPDS 1.2 requires an acquisition link on
+/// every entry, which is why this one pointed at a page in the first place.
+/// So the page link becomes the fallback rather than being deleted, and the
+/// entry carries exactly one acquisition link either way.
+///
+/// **Both branches are driven off one flipped column, deliberately.** An
+/// assertion that a withheld reader sees the page link passes just as well
+/// against a feed that has no branch at all — which is what it did before
+/// this was written, since the page link was then the only thing emitted.
+/// Only the pair distinguishes a working branch from a missing one.
+#[tokio::test]
+async fn the_acquisition_link_follows_can_download_in_both_directions() {
+    async fn feed_for(dir: &str, may_download: bool) -> String {
+        let state = Arc::new(crate::test_support::state(dir));
+        if !may_download {
+            let conn = state.library.conn();
+            conn.execute("UPDATE user SET can_download = 0", [])
+                .expect("withholds the capability");
+        }
+        let router = crate::test_support::authenticating(crate::build_router(state));
+        let response = crate::test_support::get(&router, "/opds/v1.2/works/t").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::test_support::body_string(response).await;
+        crate::test_support::cleanup(dir);
+        body
+    }
+
+    let granted = feed_for("taiyaku-test-opds-acq-yes", true).await;
+    let withheld = feed_for("taiyaku-test-opds-acq-no", false).await;
+
+    for (name, body) in [("granted", &granted), ("withheld", &withheld)] {
+        assert_eq!(
+            body.matches(r#"rel="http://opds-spec.org/acquisition""#)
+                .count(),
+            1,
+            "{name}: exactly one acquisition link per entry, whichever it is: {body}"
+        );
+    }
+
+    assert!(
+        granted.contains(r#"/download"/>"#) && !granted.contains(r#"/pages/0"/>"#),
+        "a reader who may download is offered the download: {granted}"
+    );
+    assert!(
+        withheld.contains(r#"/pages/0"/>"#) && !withheld.contains(r#"/download"/>"#),
+        "a reader who may not download keeps the page link, rather than a \
+         link that 403s on every attempt: {withheld}"
+    );
+
+    // **The fallback is fetched, not merely matched.** The test this replaced
+    // (`…_is_a_real_fetchable_page`) issued a real request against the page
+    // link, and dropping that left the one branch most in need of
+    // "not a dead link" proof with none — which is how `pages/1` survived as
+    // the acquisition target while PSE counts from 0, making it the *second*
+    // page and a 404 for any one-page edition.
+    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-acq-fetch"));
+    {
+        let conn = state.library.conn();
+        conn.execute("UPDATE user SET can_download = 0", [])
+            .expect("withholds the capability");
+    }
+    let router = crate::test_support::authenticating(crate::build_router(state));
+    let feed = crate::test_support::get(&router, "/opds/v1.2/works/t").await;
+    let body = crate::test_support::body_string(feed).await;
+    let href = body
+        .split("href=\"")
+        .skip(1)
+        .find_map(|rest| {
+            let (path, _) = rest.split_once('"')?;
+            path.ends_with("/pages/0").then(|| path.to_string())
+        })
+        .unwrap_or_else(|| panic!("no page link in the withheld feed: {body}"));
+    let page = crate::test_support::get(&router, &href).await;
+    let status = page.status();
+    crate::test_support::cleanup("taiyaku-test-opds-acq-fetch");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the fallback must be a real, fetchable page, not a dead link: {href}"
     );
 }
 
@@ -1231,5 +1354,83 @@ async fn the_works_feed_does_not_name_a_work_outside_the_grant() {
     assert!(
         !body.contains("Hidden Work"),
         "a work outside the grant must not be named in the works feed: {body}"
+    );
+}
+
+// --- Spec C2's second half: the OPDS-namespace download. ---
+
+/// The mirror exists for `auth::refuse`'s sake, not for symmetry: a 401 in
+/// this namespace carries `WWW-Authenticate` and the `/api` twin's
+/// deliberately does not, so an OPDS client following an acquisition link
+/// into `/api` cold would get a bare 401 and never prompt for credentials.
+/// That is the property this registration is *for*, so it is asserted about
+/// this route rather than assumed to follow from registering it.
+#[tokio::test]
+async fn the_opds_download_401s_with_a_prompt_where_the_api_twin_does_not() {
+    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-dl-401"));
+    let router = crate::build_router(state);
+
+    let opds = router
+        .clone()
+        .oneshot(
+            Request::get("/opds/v1.2/works/t/raw/download")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("answers");
+    assert_eq!(opds.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        opds.headers()
+            .get("www-authenticate")
+            .and_then(|value| value.to_str().ok()),
+        Some("Basic realm=\"taiyaku\""),
+        "without this header Panels never prompts, which is the whole reason \
+         this registration exists"
+    );
+
+    let api = router
+        .oneshot(
+            Request::get("/api/works/t/raw/download")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("answers");
+    assert_eq!(api.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        api.headers().get("www-authenticate").is_none(),
+        "an /api 401 carrying WWW-Authenticate raises the browser's own dialog"
+    );
+
+    crate::test_support::cleanup("taiyaku-test-opds-dl-401");
+}
+
+/// "One handler, two registrations" is a claim, so it is checked rather than
+/// hoped for: the same edition through both paths is the same bytes.
+#[tokio::test]
+async fn the_opds_download_serves_the_same_bytes_as_the_api_route() {
+    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-dl-same"));
+    let router = crate::test_support::authenticating(crate::build_router(state));
+
+    let mut bodies = Vec::new();
+    for path in [
+        "/api/works/t/raw/download",
+        "/opds/v1.2/works/t/raw/download",
+    ] {
+        let response = crate::test_support::get(&router, path).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        bodies.push(
+            axum::body::to_bytes(response.into_body(), 64 << 20)
+                .await
+                .expect("body"),
+        );
+    }
+
+    crate::test_support::cleanup("taiyaku-test-opds-dl-same");
+    assert_eq!(
+        bodies[0], bodies[1],
+        "the OPDS registration must be the same handler, not a second \
+         implementation"
     );
 }

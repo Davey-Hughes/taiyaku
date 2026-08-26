@@ -2074,6 +2074,13 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         ("/opds/v1.2/works/{work}", Filters),
         ("/opds/v1.2/works/{work}/{edition}/pages/{number}", Refuses),
         ("/opds/v1.2/works/{work}/{edition}/cover", Refuses),
+        // The same handler as `/api/works/{work}/{edition}/download` behind
+        // the same `refuse_if_hidden`, so necessarily the same posture.
+        // Driven rather than declared: `grant_proof_concrete` substitutes
+        // `{work}` and `{edition}`, so the `Refuses` loops pick this up
+        // against both a wholly-hidden work and one split across roots with
+        // no further work here.
+        ("/opds/v1.2/works/{work}/{edition}/download", Refuses),
     ]
 }
 

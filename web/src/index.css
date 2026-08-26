@@ -563,6 +563,27 @@ body {
   text-decoration: underline;
 }
 
+/* The download control in a cell — spec C2 §8, as the addendum's §2.1 resolves
+ * it for this layout: the page count *is* the link, so no column is added.
+ *
+ * **`LinkText` is wrong here even though these are links**, which a browser
+ * pass caught and no test could. `.editions a` above paints the Volume cell,
+ * which navigates to the reader; painting the page counts the same colour
+ * made every number in the table read as the same kind of thing as that,
+ * when one opens a volume and the other downloads 334 MB of it. §2.1's
+ * argument was that linking the number "adds no element to the layout at
+ * all" — true of the DOM and false of the visual weight, so the colour stays
+ * the cell's own and a dotted underline carries the affordance instead. */
+.editions a.get {
+  color: inherit;
+  text-decoration: underline dotted;
+  text-underline-offset: 0.2em;
+}
+
+.editions a.get:hover {
+  text-decoration: underline solid;
+}
+
 /* A dashed border rather than a lighter colour: the cell means "this edition
  * is not here", and opacity alone reads as "loading" against a screen whose
  * covers arrive one at a time. */
@@ -617,6 +638,30 @@ body {
 .volumes li.without img,
 .volumes li.without .cover-missing {
   filter: grayscale(1);
+}
+
+/* The download control — spec C2 §8. Modelled on `.panel-open` below, which
+ * sits in the same place under a tile and must not look like a different
+ * kind of thing.
+ *
+ * **`display: inline-block` is load-bearing, not tidying.** `.volumes li a`
+ * (line 442) sets `display: flex; flex-direction: column` on every anchor in
+ * a tile — written when the tile's own `<Link>` was the only anchor that had
+ * ever been in one. Without this override the control stretches to the full
+ * tile width and stacks. jsdom computes no layout, so `Series.test.tsx`
+ * passes either way and only a browser sees it. */
+.volumes a.get {
+  display: inline-block;
+  align-self: start;
+  margin-top: 0.15rem;
+  padding: 0 0.4rem;
+  border: 1px solid ButtonBorder;
+  border-radius: 999px;
+  background: ButtonFace;
+  color: CanvasText;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  text-decoration: none;
 }
 
 .volumes .panel-open {

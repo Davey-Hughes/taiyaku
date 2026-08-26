@@ -219,27 +219,55 @@ async fn works(
 /// One entry per edition of a work, each carrying the links OPDS 1.2
 /// requires.
 ///
-/// **The acquisition link still points at the edition's first page, not at
-/// a download — a known remaining step, not a considered end state.** OPDS
-/// 1.2 requires at least one `rel="http://opds-spec.org/acquisition"` link
-/// on every entry in an acquisition feed, or a conformant client may render
-/// the entry as unopenable, which is what this link has always guarded
-/// against. That reasoning used to end there — this server had no download
-/// a client could be pointed at, and PSE
+/// **The acquisition link points at a download.** OPDS 1.2 requires at
+/// least one `rel="http://opds-spec.org/acquisition"` link on every entry in
+/// an acquisition feed, or a conformant client may render the entry as
+/// unopenable. This link used to point at the edition's first page because
+/// this server had no whole publication to point at, and PSE
 /// (`rel="http://vaemendis.net/opds-pse/stream"`, below) was the only
-/// acquisition mechanism a reader had. It no longer holds: spec C2 shipped
-/// `GET /api/works/{work}/{edition}/download` (and a per-member route
-/// beside it), so a whole publication a client could download now exists.
-/// Repointing this link at it — spec C2 §9's own next step, an
-/// OPDS-namespace mirror of that route so the guard's `WWW-Authenticate`
-/// prompt still fires for an OPDS client — was deferred to a second plan
-/// alongside §8's web UI control (`docs/status.md`'s `taiyaku-serve` entry
-/// names both), not built on this branch. Until that lands, the link keeps
-/// pointing at the first page — a real, fetchable image, not a dead link —
-/// so a conformant client still sees a satisfiable entry rather than an
-/// empty one; today, only a direct call to the `/api` route above reaches
-/// the download — neither this feed nor the web UI (§8, also deferred)
-/// offers it yet.
+/// acquisition mechanism a reader had. Spec C2 built the download and its
+/// second half repointed this link at the OPDS-namespace mirror of that
+/// route, so the guard's `WWW-Authenticate` prompt still fires for a client
+/// following it — which is the whole reason that mirror exists.
+///
+/// Its `type` is what the download route will actually answer with rather
+/// than a constant: [`crate::download::advertised_type`] decides, once, for
+/// the feed and the route alike, because a single-member edition can be a
+/// PDF and advertising it as a comic archive would be a claim the response's
+/// own header then contradicts.
+///
+/// **A reader whose `can_download` is withheld keeps the page link.** The
+/// conformance requirement above admits no third option: an entry with no
+/// acquisition link is the unopenable one, and an entry naming a download
+/// that answers 403 on every attempt is worse than the page that has always
+/// been here. The web UI's own control is *absent* in that case rather than
+/// disabled (spec C2 §8), and the two are not inconsistent — a feed has a
+/// conformance floor a screen does not.
+///
+/// **This link does not reach Stump, deliberately.** The one it replaced did:
+/// `stream_page` takes bytes from `ServeState::page` and therefore through
+/// `PageSource`, including `CompositeSource`'s Stump branch.
+/// `download::edition` reads the local filesystem and nothing else, which is
+/// spec C2's own decision and the library store design's standing rule —
+/// "the Stump page source becomes a migration path rather than a feature …
+/// nothing removes it, and nothing should build on it either".
+///
+/// The consequence is named rather than left to be discovered: on a server
+/// run with `--stump-url`, a member whose bytes live *only* on Stump has an
+/// acquisition link that answers 404 where the page link would have served.
+/// That is the changeover being incomplete rather than something to repair
+/// here — the fix is finishing the migration, not teaching a new route to
+/// depend on the thing being replaced.
+///
+/// It does leave one asymmetry inside a single feed, worth knowing before
+/// somebody reads it as a bug: the PSE link still resolves through
+/// `PageSource` and can serve from Stump, while acquisition cannot. The two
+/// disagree for exactly as long as any member is Stump-only.
+///
+/// The PSE link is untouched. Streaming stays the in-app read path and
+/// acquisition became the offline one; they are two mechanisms for two
+/// different intentions and always were, and the documented deviation
+/// existed only because one of them had no implementation.
 async fn work_feed(
     State(state): State<Arc<ServeState>>,
     AxPath(id): AxPath<String>,
@@ -260,6 +288,14 @@ async fn work_feed(
     // `WorkCard::editions`'s own contract. Reused rather than reimplemented,
     // and cheap for the one work this route addresses: `works_of`'s row plus
     // one `editions_of` call, not one query per edition.
+    // **Absent means "may download"**, which is the same reading the grant
+    // filter just below gives an absent principal: `opds::tests`' own
+    // `feed_router` builds this feed without the guard, and a missing
+    // capability must not silently become a withheld one.
+    let may_download = extensions
+        .get::<crate::auth::Principal>()
+        .is_none_or(|principal| principal.can_download);
+
     let visible_editions: Option<std::collections::HashSet<String>> = match extensions
         .get::<crate::auth::Principal>(
     ) {
@@ -306,6 +342,35 @@ async fn work_feed(
         // pages here, which only works because pages are addressed by flat
         // index rather than by member and entry.
         let pages = edition.total_pages();
+        // **OPDS 1.2 requires at least one acquisition link on every entry**,
+        // so a reader who may not download gets the page link rather than
+        // none: removing it would produce exactly the unopenable entry that
+        // requirement exists to prevent, and a download link answering 403 on
+        // every attempt is worse than the page that has always been here.
+        //
+        // The type is what the route will actually send rather than a
+        // constant — a single-member PDF edition is served `application/pdf`,
+        // and a feed advertising it as a comic archive would tell §7's "lie
+        // told twice" a third time.
+        let acquisition = if may_download {
+            format!(
+                r#"<link rel="http://opds-spec.org/acquisition" type="{}"
+          href="/opds/v1.2/works/{work_href}/{key_href}/download"/>"#,
+                crate::download::advertised_type(work, edition)
+            )
+        } else {
+            // **`pages/0`, not `pages/1`.** PSE counts from 0 and
+            // `stream_page` converts nothing, so the `pages/1` this line
+            // carried until now was the *second* page — while the test that
+            // covered it called it "the edition's first page". Inherited
+            // rather than introduced here, and corrected on the way past
+            // because this branch rewrites the line: a one-page edition made
+            // it a 404 outright.
+            format!(
+                r#"<link rel="http://opds-spec.org/acquisition" type="image/jpeg"
+          href="/opds/v1.2/works/{work_href}/{key_href}/pages/0"/>"#
+            )
+        };
         let _ = writeln!(
             entries,
             r#"  <entry>
@@ -315,8 +380,7 @@ async fn work_feed(
     <content type="text">{pages} pages</content>
     <link rel="http://opds-spec.org/image/thumbnail" type="image/jpeg"
           href="/opds/v1.2/works/{work_href}/{key_href}/cover"/>
-    <link rel="http://opds-spec.org/acquisition" type="image/jpeg"
-          href="/opds/v1.2/works/{work_href}/{key_href}/pages/1"/>
+    {acquisition}
     <link rel="http://vaemendis.net/opds-pse/stream" type="image/jpeg"
           href="/opds/v1.2/works/{work_href}/{key_href}/pages/{{pageNumber}}"
           pse:count="{pages}"/>
@@ -514,6 +578,24 @@ pub fn routes() -> Vec<(&'static str, axum::routing::MethodRouter<Arc<ServeState
             get(stream_page),
         ),
         ("/opds/v1.2/works/{work}/{edition}/cover", get(cover)),
+        // **The same handler as `/api/works/{work}/{edition}/download`**,
+        // registered a second time rather than reimplemented: `edition` binds
+        // its path parameters positionally, so `{work}`/`{edition}` here are
+        // the `{slug}`/`{edition}` it expects.
+        //
+        // It exists in this namespace because of `auth::refuse`, not for
+        // symmetry. A 401 on `/opds` carries `WWW-Authenticate` and a 401 on
+        // `/api` deliberately does not, so a client following an acquisition
+        // link into `/api` cold would receive a bare 401 and never prompt for
+        // credentials. `stream_page` above duplicates the page route for
+        // exactly this reason and the download follows it.
+        //
+        // There is no member download here: OPDS asks for a publication, and
+        // a chapter file inside one is not something a feed has an entry for.
+        (
+            "/opds/v1.2/works/{work}/{edition}/download",
+            get(crate::download::edition),
+        ),
     ]
 }
 

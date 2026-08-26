@@ -250,6 +250,69 @@ pub(crate) const CBZ_TYPE: &str = "application/vnd.comicbook+zip";
 /// told in the header as well as in the filename. Spec §7. Only the *generated*
 /// path is unconditionally [`CBZ_TYPE`], because there the container is this
 /// module's own.
+/// The extension a **passthrough** download of these members would serve, or
+/// `None` where the download is generated.
+///
+/// One member that is a file is served byte for byte, and §7's rule is that
+/// its type and its extension follow the bytes rather than the route: a
+/// single-member edition can be a PDF or an EPUB, and serving one as
+/// [`CBZ_TYPE`] under a `.cbz` name would be a lie told twice. Everything
+/// else is generated, and generated output is always a `STORE` zip.
+///
+/// Extracted so [`prepare`] and [`advertised_type`] cannot disagree. A feed
+/// advertising one type while the route sends another is that same lie in a
+/// third place, which is why `refuse_if_hidden` is reused rather than
+/// restated two modules away.
+/// Every member of an edition, resolved against the document's own directory.
+///
+/// The other half of [`passthrough_extension`]'s job: extracting the *test*
+/// while leaving both callers to build its input themselves left the root
+/// rule — and the scanned-work case where these paths are already absolute
+/// and the join is the identity — written out twice, which is the drift the
+/// extraction was for.
+fn member_paths(work: &crate::Work, edition: &taiyaku_core::Edition) -> Vec<std::path::PathBuf> {
+    let root = work
+        .path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
+    edition.members.iter().map(|m| root.join(&m.path)).collect()
+}
+
+fn passthrough_extension(paths: &[std::path::PathBuf]) -> Option<String> {
+    (paths.len() == 1 && paths[0].is_file()).then(|| {
+        paths[0]
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("cbz")
+            .to_ascii_lowercase()
+    })
+}
+
+/// What a download of this edition would answer with as its `Content-Type`.
+///
+/// For [`crate::opds::work_feed`]'s acquisition link, which has to declare
+/// the type the route will actually send rather than a constant.
+///
+/// **Falls back to [`CBZ_TYPE`] rather than failing.** A member missing from
+/// disk must not turn one bad edition into a 500 for a whole work's feed,
+/// and an entry advertising the wrong type for material that is not there is
+/// no worse than the page link it replaced, which for a *local* member would
+/// also 404. (Not for a Stump-only member, where the page link resolves
+/// through `PageSource` and this route does not — see `opds::work_feed`,
+/// which states that asymmetry where the link is built.)
+///
+/// The cost is one `metadata` call per edition, in a feed that otherwise
+/// touches no disk. Bounded — one work, its editions, metadata only, no
+/// archive opened — and it is what buys the feed and the route being unable
+/// to drift apart.
+pub(crate) fn advertised_type(work: &crate::Work, edition: &taiyaku_core::Edition) -> &'static str {
+    match passthrough_extension(&member_paths(work, edition)) {
+        Some(extension) => type_for(&extension),
+        None => CBZ_TYPE,
+    }
+}
+
 fn type_for(extension: &str) -> &'static str {
     match extension {
         "cbz" | "zip" => CBZ_TYPE,
@@ -640,14 +703,9 @@ fn prepare(
     let found = sidecar.editions.get(edition_key).ok_or_else(|| {
         crate::routes::not_found(format!("no edition `{edition_key}` in `{slug}`"))
     })?;
-    let root = work
-        .path
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .to_path_buf();
     // A scanned work has no document, so its member paths are absolute and
     // this join is the identity — `derive.rs` says so where it writes them.
-    let paths: Vec<std::path::PathBuf> = found.members.iter().map(|m| root.join(&m.path)).collect();
+    let paths = member_paths(work, found);
     if paths.is_empty() {
         return Err(crate::routes::not_found(format!(
             "`{edition_key}` of `{slug}` has no members"
@@ -679,16 +737,10 @@ fn prepare(
         .unwrap_or((None, None, sidecar.work.title.clone()))
     };
 
-    let single_file = paths.len() == 1 && paths[0].is_file();
-    if single_file {
+    if let Some(extension) = passthrough_extension(&paths) {
         let length = std::fs::metadata(&paths[0])
             .map_err(|e| crate::routes::not_found(format!("{}: {e}", paths[0].display())))?
             .len();
-        let extension = paths[0]
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("cbz")
-            .to_ascii_lowercase();
         let content_type = type_for(&extension);
         let name = download_name(series.as_deref(), volume, &title, &found.label, &extension);
         return Ok((

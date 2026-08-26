@@ -19,6 +19,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { useBrowsePrefs } from './browseModule'
+import { useGate } from './gate'
 import { Cover } from './Cover'
 import {
   type AlignmentCard,
@@ -26,6 +27,7 @@ import {
   type SeriesCard,
   work as fetchWork,
   type WorkCard,
+  editionDownload,
   workCover,
 } from './library'
 
@@ -68,7 +70,13 @@ function editionColumns(works: WorkCard[]): { key: string; label: string }[] {
  * hence the `aria-label` — §9's rule that this screen is testable in `jsdom`
  * cuts both ways: what is easy to assert is also what is easy to leave out.
  */
-function Table({ works }: { works: WorkCard[] }) {
+function Table({
+  works,
+  mayDownload,
+}: {
+  works: WorkCard[]
+  mayDownload: boolean
+}) {
   const columns = editionColumns(works)
   return (
     <table className="editions">
@@ -97,7 +105,38 @@ function Table({ works }: { works: WorkCard[] }) {
             {columns.map((c) => {
               const held = w.editions.find((e) => e.key === c.key)
               return held ? (
-                <td key={c.key}>{held.pages}</td>
+                // **The page count *is* the control.** Spec C2 §8 asked for
+                // "the same control as a column", which does not survive this
+                // layout's shape: there is one column per edition and no
+                // single edition a row is already showing, so a separate
+                // column would have to pick one arbitrarily — inside the one
+                // view whose whole purpose is comparing them side by side.
+                // §8's "one control rather than three" was an argument about
+                // the tile, which has an edition selector and therefore a
+                // settled question; a row has neither. The number in the cell
+                // is already the per-edition fact, so linking it adds no
+                // element to the layout at all.
+                <td key={c.key}>
+                  {mayDownload ? (
+                    <a
+                      className="get"
+                      href={editionDownload(w.slug, c.key)}
+                      download
+                      // **The count is in the label, not only in the
+                      // content.** `aria-label` *replaces* an element's
+                      // content for its accessible name, and this cell holds
+                      // nothing but the anchor — so labelling it "download …"
+                      // alone stopped a screen reader announcing the page
+                      // count at all, which is the one fact the cell exists
+                      // to carry.
+                      aria-label={`download ${w.title} — ${c.label}, ${held.pages} pages`}
+                    >
+                      {held.pages}
+                    </a>
+                  ) : (
+                    held.pages
+                  )}
+                </td>
               ) : (
                 <td
                   key={c.key}
@@ -199,6 +238,14 @@ function AlignmentPanel({
 
 export function Series() {
   const { layout, editionSelector, panel } = useBrowsePrefs()
+  // `undefined` where no gate sits above this screen, and `gate.ts`'s own
+  // rule is that the safe reading of that is "no account known" rather than a
+  // permissive one — so the control appears only on an explicit `true`.
+  //
+  // **Absent rather than disabled** (spec C2 §8): a disabled button invites a
+  // reader to find out why, and there is nothing on this screen that can tell
+  // them.
+  const mayDownload = useGate()?.who.can_download === true
   const { id } = useParams()
   // **Parsed before the effect, not inside it.** `Number('not-a-number')` is
   // `NaN`, and `/api/library/series/NaN` is a request the server answers with
@@ -353,7 +400,7 @@ export function Series() {
             </label>
           )}
           {layout === 'table' ? (
-            <Table works={loaded.works} />
+            <Table works={loaded.works} mayDownload={mayDownload} />
           ) : (
             <ul className="volumes">
               {loaded.works.map((w) => {
@@ -421,6 +468,25 @@ export function Series() {
                       </span>
                       <span className="title">{w.title}</span>
                     </Link>
+                    {mayDownload && shown && (
+                      // **A sibling of the `<Link>` above, not a child.** A
+                      // nested anchor is invalid HTML and browsers reparent
+                      // it; the `panel-open` button below is already a
+                      // sibling for the same structural reason.
+                      //
+                      // `download` is bare, with no value: the server sends
+                      // `Content-Disposition` with an ASCII `filename=` and
+                      // an RFC 6266 `filename*=`, and a value here would
+                      // override that careful name with a guess.
+                      <a
+                        className="get"
+                        href={editionDownload(w.slug, shown.key)}
+                        download
+                        aria-label={`download ${w.title} — ${shown.label}`}
+                      >
+                        ↓
+                      </a>
+                    )}
                     {panel === 'button' && (
                       <button
                         type="button"

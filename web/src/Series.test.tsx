@@ -1,7 +1,9 @@
 import { act } from 'react'
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Me } from './api'
 import { BrowsePrefsContext, browseModule } from './browseModule'
+import { GateContext } from './gate'
 import * as library from './library'
 import { Series } from './Series'
 import { mount } from './testing/mount'
@@ -30,6 +32,14 @@ const work = (over: Partial<library.WorkCard> = {}): library.WorkCard => ({
   aligned: false,
   pages: 180,
   editions: [edition()],
+  ...over,
+})
+
+const who = (over: Partial<Me> = {}): Me => ({
+  user_id: 1,
+  admin: false,
+  can_download: true,
+  can_stream: true,
   ...over,
 })
 
@@ -62,6 +72,7 @@ async function settleWith(
       'layout' | 'editionSelector' | 'panel'
     >
   > = {},
+  me?: Me,
 ): Promise<HTMLElement> {
   let host: HTMLElement | undefined
   await act(async () => {
@@ -69,11 +80,15 @@ async function settleWith(
       <BrowsePrefsContext.Provider
         value={{ ...browseModule.defaults, ...props }}
       >
-        <MemoryRouter initialEntries={['/series/7']}>
-          <Routes>
-            <Route path="/series/:id" element={<Series />} />
-          </Routes>
-        </MemoryRouter>
+        <GateContext.Provider
+          value={me ? { who: me, signOut: () => {} } : undefined}
+        >
+          <MemoryRouter initialEntries={['/series/7']}>
+            <Routes>
+              <Route path="/series/:id" element={<Series />} />
+            </Routes>
+          </MemoryRouter>
+        </GateContext.Provider>
       </BrowsePrefsContext.Provider>,
     )
     await Promise.resolve()
@@ -214,6 +229,45 @@ describe('Series, grid layout', () => {
     expect(vi.mocked(library.oneSeries)).not.toHaveBeenCalled()
     expect(host?.querySelector('[role="alert"]')?.textContent).toContain(tooBig)
   })
+
+  it('offers a download per tile, for the edition the tile is showing', async () => {
+    const host = await settleWith({}, who())
+    const links = [
+      ...host.querySelectorAll<HTMLAnchorElement>('.volumes a.get'),
+    ]
+    expect(links).toHaveLength(3)
+    expect(links[0].getAttribute('href')).toBe(
+      '/api/works/gotoubun-v01/raw/download',
+    )
+    // Bare, with no value. The server's `Content-Disposition` carries an
+    // ASCII `filename=` and an RFC 6266 `filename*=`, and a value here would
+    // override both with a guess made in the browser.
+    expect(links[0].getAttribute('download')).toBe('')
+  })
+
+  it('keeps the download anchor outside the tile link, not nested in it', async () => {
+    const host = await settleWith({}, who())
+    const get = host.querySelector('.volumes a.get')
+    expect(get).not.toBeNull()
+    // A nested anchor is invalid HTML and browsers reparent it, which a
+    // snapshot would render identically — so this is asserted structurally.
+    // The tile's own `<Link>` is the anchor holding `.cover-box`.
+    const tileLink = host.querySelector('.volumes li a:has(.cover-box)')
+    expect(tileLink).not.toBeNull()
+    expect(tileLink?.contains(get)).toBe(false)
+  })
+
+  it('shows no download at all when the account may not download', async () => {
+    const host = await settleWith({}, who({ can_download: false }))
+    expect(host.querySelectorAll('.volumes a.get')).toHaveLength(0)
+  })
+
+  it('shows no download when no gate sits above the screen', async () => {
+    // `useGate()` is `undefined` here, and `gate.ts` says the safe reading of
+    // that is "no account known" rather than a permissive one.
+    const host = await settle()
+    expect(host.querySelectorAll('.volumes a.get')).toHaveLength(0)
+  })
 })
 
 describe('Series, table layout', () => {
@@ -339,6 +393,43 @@ describe('Series, table layout', () => {
     const host = await settleWith({ layout: 'table' })
     expect(host.querySelector('.edition-selector')).toBeNull()
     expect(host.querySelector('.panel-open')).toBeNull()
+  })
+
+  it('makes each held edition’s page count a download link', async () => {
+    const host = await settleWith({ layout: 'table' }, who())
+    const cell = host.querySelector<HTMLAnchorElement>(
+      'table.editions tbody tr td a.get',
+    )
+    expect(cell).not.toBeNull()
+    expect(cell?.getAttribute('href')).toBe(
+      '/api/works/gotoubun-v01/raw/download',
+    )
+    expect(cell?.textContent).toBe('180')
+    expect(cell?.getAttribute('download')).toBe('')
+    // `aria-label` *replaces* the element's content for the accessible name,
+    // and this cell holds nothing but the anchor — so the count has to be in
+    // the label too, or a screen reader stops announcing the one fact the
+    // cell exists to carry.
+    expect(cell?.getAttribute('aria-label')).toContain('180 pages')
+  })
+
+  it('leaves a missing edition’s cell as plain text', async () => {
+    const host = await settleWith({ layout: 'table' }, who())
+    const missing = host.querySelector('table.editions td.missing')
+    expect(missing).not.toBeNull()
+    expect(missing?.querySelector('a')).toBeNull()
+    expect(missing?.textContent).toBe('—')
+  })
+
+  it('renders page counts as plain text when the account may not download', async () => {
+    const host = await settleWith(
+      { layout: 'table' },
+      who({ can_download: false }),
+    )
+    expect(host.querySelectorAll('table.editions a.get')).toHaveLength(0)
+    // The number is still there — only the link is gone.
+    const cells = [...host.querySelectorAll('table.editions tbody td')]
+    expect(cells.some((c) => c.textContent === '180')).toBe(true)
   })
 })
 

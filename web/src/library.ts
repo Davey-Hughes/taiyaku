@@ -112,6 +112,17 @@ export const oneSeries = (id: number) =>
 export const workCover = (slug: string, edition: string) =>
   `/api/works/${encodeURIComponent(slug)}/${encodeURIComponent(edition)}/pages/0/thumb`
 
+/**
+ * One edition as a single CBZ — spec C2's download route.
+ *
+ * **A URL, not a fetch.** The series page links to it with a plain
+ * `<a download>`: an anchor navigation carries the session cookie like every
+ * other browser request, and the browser's own download manager takes the
+ * file, where a `fetch`-to-blob would buffer a 1.49 GB volume in the tab.
+ */
+export const editionDownload = (slug: string, edition: string) =>
+  `/api/works/${encodeURIComponent(slug)}/${encodeURIComponent(edition)}/download`
+
 export const work = (slug: string) =>
   getJson<WorkDetail>(`/api/library/works/${encodeURIComponent(slug)}`)
 

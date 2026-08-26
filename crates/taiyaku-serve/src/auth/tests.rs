@@ -91,6 +91,7 @@ async fn every_route_refuses_an_anonymous_request() {
         "/opds/v1.2/works/{work}",
         "/opds/v1.2/works/{work}/{edition}/pages/{number}",
         "/opds/v1.2/works/{work}/{edition}/cover",
+        "/opds/v1.2/works/{work}/{edition}/download",
     ];
     assert_eq!(
         patterns, expected,
@@ -1548,8 +1549,8 @@ async fn every_route_declares_its_grant_posture() {
         })
         .count();
     assert_eq!(
-        driven, 18,
-        "18 of the 28 guarded routes must be classified Refuses, Filters or \
+        driven, 19,
+        "19 of the 29 guarded routes must be classified Refuses, Filters or \
          RefusesAndFilters and driven by the proofs below — a route's \
          posture changed without this count moving to match, so a route \
          this suite believes it proves may no longer be one it does"
@@ -1558,7 +1559,7 @@ async fn every_route_declares_its_grant_posture() {
         table.len() - driven,
         10,
         "the remaining 10 guarded routes must be GrantIndependent or \
-         KnownGap — see the `driven == 18` assertion just above, which this \
+         KnownGap — see the `driven == 19` assertion just above, which this \
          one is the other half of"
     );
 

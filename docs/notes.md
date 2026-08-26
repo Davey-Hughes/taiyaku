@@ -13248,3 +13248,162 @@ the pattern the three previous corrections already established there.
 Not named in the review brief; fixed anyway because it is the same class of
 drift, in the same file family, caught while the corpus test population was
 already being counted by hand for the paragraph above.
+
+## The first real OPDS client, 2026-08-25 — spec C2's second half
+
+Everything here comes from one session against a real iPad, driven because
+spec C2's stated purpose is offline reading in Panels and nothing had ever
+checked that a device could reach a download at all.
+
+### O55 closes: Panels accepts a `tyk_` key in the Basic password field
+
+The library is a scratch one — `target/o64-check/library.db`, three works and
+eleven editions hardlinked from `corpus/`, built for O64's browser pass and
+reused rather than rescanned.
+
+```sh
+./target/release/taiyaku library key create local --name ipad-o55 --db target/o64-check/library.db
+./target/release/taiyaku serve --db target/o64-check/library.db --addr 0.0.0.0:8080 \
+  --log-requests "$PWD/panels-o55.jsonl"
+```
+
+What the log recorded, filtered to the client rather than the shell:
+
+| status | path | user-agent |
+| --- | --- | --- |
+| 401 | `/opds/v1.2/catalog` | `Panels/950 CFNetwork/3860.700.1 Darwin/25.6.0` |
+| 200 | `/opds/v1.2/catalog` | same |
+| 200 | `/opds/v1.2/works` | same |
+| 200 | `/opds/v1.2/works/{work}` | same |
+| 200 | five `…/cover` fetches, then `…/pages/{n}` | same |
+
+The 401-then-200 pair is the whole finding: Panels was handed
+`WWW-Authenticate`, prompted, sent the `tyk_` key as the Basic password, and
+was served. The `tyk_` design needs no fallback.
+
+**Read the `user-agent` before believing any of this.** An earlier attempt at
+the same URL produced an identical-looking 401/200 pair from
+`Mozilla/5.0 (X11; Linux x86_64) … Firefox/155.0` — a desktop browser, which
+proves only the server half that `curl` had already proved. The two runs are
+indistinguishable by status code alone.
+
+### Two things the attempt needed that nothing had recorded
+
+**iOS App Transport Security refuses plain HTTP.** Panels answered
+`http://192.168.1.21:8080/…` with an ATS policy error, not a credential
+prompt — so no key, correct or otherwise, could have worked. The session
+reached the server through `tailscale serve --bg --https=443
+http://127.0.0.1:8080`, tailnet-only, which supplies a real certificate and
+therefore needs nothing trusted by hand on the device. The account screen's
+instructions do not mention any of this.
+
+**The LAN address was unreachable in the first place**, independently of ATS:
+`nft` and `iptables` rulesets are both empty on this workstation and the
+server binds `0.0.0.0`, so the iPad simply was not on `192.168.1.0/24` at the
+time. Worth separating from the ATS finding, because the two produce
+different messages and only one of them is about the server.
+
+### What the client rendered, which is O67
+
+The feed is faithful and the data is wrong. `opds::work_feed` renders
+`{title} — {label}`, and for the five editions of volume 1 that is:
+
+```
+Go-Toubun no Hanayome - Full Color Edition - v01 (2021).cbz — en-color
+Go-Toubun no Hanayome - Full Color Edition - v01 (2021).cbz — en-fan
+Go-Toubun no Hanayome - Full Color Edition - v01 (2021).cbz — en-mono
+Go-Toubun no Hanayome - Full Color Edition - v01 (2021).cbz — raw-color
+Go-Toubun no Hanayome - Full Color Edition - v01 (2021).cbz — raw-mono
+```
+
+The rows behind it:
+
+```
+work.id  work.slug                                                     work.title                                                   volume  series_id  hub
+1        go-toubun-no-hanayome---full-color-edition---v01--2021--cbz   Go-Toubun no Hanayome - Full Color Edition - v01 (2021).cbz   1.0     1          en-color
+```
+
+One work, five editions, which is `derive.rs`'s `Group` behaving exactly as
+designed. The title is the stem of whichever entry minted the row. The labels
+are all correct; only the title is not, and the slug derives from it.
+
+### The acquisition link, against real material
+
+Verified after Task 3, on the same library, over the `/opds` namespace:
+
+```sh
+curl -s -u 'local:…' "http://127.0.0.1:8080/opds/v1.2/works/$W" | grep -A1 acquisition
+curl -s -u 'local:…' -o /dev/null -w '%{http_code} %{content_type} %{size_download}\n' \
+  "http://127.0.0.1:8080/opds/v1.2/works/$W/en-mono/download"
+```
+
+Five acquisition links, each `type="application/vnd.comicbook+zip"` and each
+ending `/download`; the one fetched answered `200`,
+`application/vnd.comicbook+zip`, **334,752,036 bytes**. That is the largest
+download this project has served end to end, and it is a **passthrough** one:
+the edition has a single `.cbz` member, so the bytes are the member's own
+rather than a rebuilt archive. *(An earlier draft of this paragraph called it
+generated, which contradicts the clause after it — the two branches are
+exclusive and a lone `.cbz` member takes the second.)*
+
+### Test counts, and a stale pair corrected
+
+Workspace **1529 → 1536** over this branch's five code commits: two for the
+OPDS route, three for `advertised_type`, and a net two for the acquisition
+link (one existing test replaced by three). Counted with
+`cargo nextest list --workspace --all-features`.
+
+`web/`'s figures in `status.md` were **already stale before this branch**, and
+by more than it changed. Measured on `main` at `3595b02`: 1,030 in the `node`
+project and 497 in `jsdom`, against the 1,024 and 488 recorded — 1,527 rather
+than 1,512. This branch adds seven `jsdom` tests, so the corrected pair is
+1,030 and 504. Both projects were run on `main` and again on the branch rather
+than one figure being derived from the other.
+
+### O66's trigger, checked once and not fired — 2026-08-25
+
+O66 names its own reopening condition: "a fresh `taiyaku serve --log-requests`
+session against Panels, bound to the LAN, showing `Range` on an acquisition
+fetch". This branch is the first build where an acquisition fetch exists at
+all, so this is the first time that trigger *could* fire.
+
+Panels took five downloads, one per edition of volume 1:
+
+| status | path | `range` header |
+| --- | --- | --- |
+| 200 | `…/en-color/download` | (none) |
+| 200 | `…/en-fan/download` | (none) |
+| 200 | `…/en-mono/download` | (none) |
+| 200 | `…/raw-color/download` | (none) |
+| 200 | `…/raw-mono/download` | (none) |
+
+All `200`, none `206`, and no `Range` on any. **O66 stays open exactly as
+written**, and nothing about the generated seek is built on this branch — which
+also removes the reason this branch might have had to carry a behaviour change
+into a squash commit alongside a feature.
+
+**Three qualifications, because a negative result is only as good as its
+instrument.**
+
+*The session ran over a TLS reverse proxy, not the LAN the item asks for.* iOS
+ATS refuses plain HTTP (above), so the fetches reached the server through
+`tailscale serve` and arrive from `127.0.0.1`. A proxy cannot invent the
+absence of a header, so the result stands — but it is one step removed from
+the direct connection O66 names, and a proxy that buffered a ranged request
+into an unranged origin fetch would look exactly like this. A direct-LAN repeat
+would settle it outright and has not been run.
+
+*The log cannot confirm the downloads completed.* Every one recorded
+`bytes: 0`, because `routes.rs`'s middleware takes its count from
+`response.body().size_hint().exact()` and a streamed body has no exact hint —
+the same field reads 815 for the catalog, which is buffered. So the log shows
+five downloads *started*. That they finished is the client's report, not the
+server's record. **This is a blind spot in the instrument this project uses to
+settle open items**, and it is the same shape as the one O66's own entry
+complains about: the older `panels*.jsonl` logs report `(not recorded)` for
+headers, and their silence was an instrument's limit rather than evidence.
+
+*A resumed download is the case O66 is about, and nothing here interrupted
+one.* Panels was never made to drop a connection mid-fetch and retry, which is
+the circumstance a `Range` would most plausibly appear in. The five fetches
+above are five clean first attempts.

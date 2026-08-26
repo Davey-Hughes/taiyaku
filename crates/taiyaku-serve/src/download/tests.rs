@@ -1391,3 +1391,83 @@ fn a_slow_but_progressing_consumer_is_not_cut_off() {
         "a slow but progressing consumer must not be cut off, got {outcome:?}"
     );
 }
+
+// --- What type the feed advertises is what the route sends (addendum §2.2). ---
+
+/// A work of one member, written the way `test_support::work` writes its
+/// fixture — from JSON through `Sidecar::from_json`, since none of these
+/// types derives `Default`.
+fn one_member_work(dir: &str, member: &str, write_it: bool) -> crate::Work {
+    let root = std::env::temp_dir().join(dir);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    if write_it {
+        std::fs::write(root.join(member), b"%PDF-1.4\n").unwrap();
+    }
+
+    let json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "T", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{member}", "sha256": "x", "pages": 1 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#
+    );
+    let path = root.join("taiyaku.json");
+    std::fs::write(&path, &json).unwrap();
+    crate::Work::new(
+        "t".into(),
+        path,
+        taiyaku_core::Sidecar::from_json(&json).unwrap(),
+    )
+}
+
+/// A generated edition is always a `STORE` zip, whatever its members are.
+#[test]
+fn a_multi_member_edition_advertises_the_comic_type() {
+    let work = crate::test_support::work("download-advertised-generated");
+    let sidecar = work.sidecar();
+    let edition = sidecar.editions.get("raw").expect("fixture edition");
+    assert_eq!(
+        crate::download::advertised_type(&work, edition),
+        crate::download::CBZ_TYPE
+    );
+    crate::test_support::cleanup("download-advertised-generated");
+}
+
+/// A single-member edition whose member is **not** a comic archive must not
+/// be advertised as one — §7's own argument, applied to the feed. Serving a
+/// PDF as `application/vnd.comicbook+zip` would be a lie told twice; a feed
+/// that advertises the same thing tells it a third time.
+#[test]
+fn a_single_pdf_member_advertises_the_pdf_type() {
+    let work = one_member_work("download-advertised-pdf", "volume.pdf", true);
+    let sidecar = work.sidecar();
+    let edition = sidecar.editions.get("raw").expect("fixture edition");
+    assert_eq!(
+        crate::download::advertised_type(&work, edition),
+        "application/pdf",
+        "the route serves this passthrough as application/pdf, so the feed \
+         must not advertise it as a comic archive"
+    );
+    crate::test_support::cleanup("download-advertised-pdf");
+}
+
+/// A member that is not on disk falls back rather than failing: one bad
+/// edition must not turn into a 500 for a whole work's feed.
+#[test]
+fn a_missing_member_falls_back_to_the_comic_type() {
+    let work = one_member_work("download-advertised-missing", "gone.pdf", false);
+    let sidecar = work.sidecar();
+    let edition = sidecar.editions.get("raw").expect("fixture edition");
+    assert_eq!(
+        crate::download::advertised_type(&work, edition),
+        crate::download::CBZ_TYPE
+    );
+    crate::test_support::cleanup("download-advertised-missing");
+}
