@@ -13412,3 +13412,411 @@ when every line is emitted and what `micros` measures for every route.
 one.* Panels was never made to drop a connection mid-fetch and retry, which is
 the circumstance a `Range` would most plausibly appear in. The five fetches
 above are five clean first attempts.
+
+## What the proposals inbox costs, and what it looks like against real pages, 2026-08-26
+
+Spec C3's first PR — the proposals inbox. Three measurements the build design
+listed as not taken, and one look at the screen with real manga in it.
+
+### The `/resolution` dry run's cost
+
+Build design §11 listed "what the `resolution` dry run costs on a real
+library" under what could not be measured. It has been.
+
+Release build, synthetic `scan_entry` rows, one machine:
+
+| rows | `POST …/{id}/resolution` | `GET …/{id}` | `GET …/proposals` |
+| --- | --- | --- | --- |
+| 8 | 0.28 ms | 0.32 ms | 0.10 ms |
+| 5,008 | 5.9 ms | 6.6 ms | 0.15 ms |
+| 25,008 | 27.4 ms | 30.5 ms | 0.23 ms |
+
+The two sweeping routes cost about 1.1–1.2 µs per row and the list route is
+flat, which is the shape the design predicted: the list reads `proposal` and
+the other two walk every entry under the root.
+
+**Two things this is not.** The rows are synthetic rather than a real
+library's, and a library holding many `regex` rules compiles more per request
+than this one did — so the figures are a floor rather than a range. Neither
+qualification is a reason to distrust the shape; both are reasons not to quote
+the milliseconds as what any particular library will cost.
+
+> **Corrected 2026-08-26, by re-measurement — see "What a swept row actually
+> costs" below.** *"About 1.1–1.2 µs per row"* is not a property of the route.
+> It is a property of the rows this harness happened to generate, whose
+> `rel_path`s were the length a real library's are. **The cost tracks the
+> bytes of `rel_path` swept, not the row count**, and at a fixed 250,005 rows
+> it moves by 2.4× with path length alone. This table's per-row figure is
+> therefore quotable only alongside the paths it swept, which the paragraph
+> above does not state — and that omission is what put it two-fold at odds
+> with the `spawn_blocking` figures immediately below, which measure the same
+> quantity over shorter synthetic names. The three columns and the shape of
+> the curve are unaffected; the µs-per-row constant is the part that was
+> being read as more general than it is.
+
+### The `spawn_blocking` result
+
+Measured with a canary task recording how long the runtime could poll nothing
+else — the same instrument O8's failure class wants, since a handler's own
+duration is unchanged by moving it off the reactor and cannot show this.
+
+At 250,000 rows: `/resolution` stalled the runtime **138.45 ms** before and
+**0.02 ms** after; `GET …/{id}` **167.86 ms** → **0.01 ms**. Handler duration
+was unchanged in both, which is the point — what moved is what else could run.
+An independent reproduction on a second harness got roughly 20% higher
+absolute numbers and the same shape.
+
+> **Qualified 2026-08-26, by the same re-measurement.** These figures are
+> *this* harness's synthetic rows, whose `rel_path`s were short tokens rather
+> than library-shaped paths — which is why they sit at roughly half the
+> per-row cost of the table above, and why the pair quoted from them into
+> `curation/tests.rs` read as a contradiction of it. **The equality the
+> paragraph asserts — stall ≈ handler duration — is corroborated** and is the
+> part that mattered: at 250,005 short-path rows the handlers themselves take
+> 115.31 ms and 143.70 ms on this tree, which brackets 138.45 and 167.86 at
+> the ±20% this section already allows itself. What is not corroborated is
+> "at 250,000 rows" as a statement about row count.
+
+### What a swept row actually costs, and why two records of it disagreed
+
+**The complaint.** Two figures for one quantity were shipped on this branch,
+about 2× apart, and nothing said they measured different things:
+
+- `crates/taiyaku-serve/src/curation/tests.rs` — *"the runtime was stalled for
+  exactly as long as the handler ran — 14.4 ms and 17.5 ms at 25,000 rows,
+  138 ms and 168 ms at 250,000"*.
+- the table two sections above — 27.4 ms and 30.5 ms at 25,008 rows.
+
+The 250,000 pair agrees exactly with the `spawn_blocking` section's own
+138.45/167.86, which rules out a units slip and says both came from one
+instrument family. Settled below by re-measuring rather than by reasoning
+about which looked more plausible.
+
+**The instrument.** An `#[ignore]`d harness in `curation/tests.rs`, run as
+`cargo test --release -p taiyaku-serve -- --ignored --nocapture`, built on the
+existing `test_support::router_over_two_suffixed_series()` fixture and calling
+the handlers directly rather than through the router — the same reason
+`no_curation_route_stalls_the_runtime` gives for doing so. It is recorded here
+in full rather than kept in the tree, because *what it generated* turns out to
+be the whole finding and a harness whose row shape is not written down is how
+this contradiction happened in the first place:
+
+```rust
+// N rows under the fixture's one root, in one transaction.
+let mut stmt = conn.prepare(
+    "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime, pages)
+     VALUES (?1, ?2, 'file', 'zip', 1024, 0, 12)")?;
+for i in 0..n {
+    // (a) library-shaped, ~55 characters, two separators:
+    //     format!("{under}/Synthetic {:06}/Synthetic {:06} - v{:02}.cbz", i/20, i/20, i%20)
+    // (b) short, one separator:  format!("{under}/{i}")
+    // (c) fixed width w, one separator:  format!("{under}/{i:0w$}")
+    stmt.execute(params![root_id, rel])?;   // asserts 1, so a duplicate cannot
+}                                           // quietly make the row count a lie
+// then, best of five per row count:
+let t = Instant::now();
+curation::resolution(State(state.clone()), Extension(admin), AxPath(id),
+                     Json(curation::rule_json(&rule))).await;
+```
+
+`under` decides whether the rows *match* the candidate rule the fixture's own
+proposal offers (`prefix`, `Go-Toubun no Hanayome - Full Color Edition/`), and
+the harness prints `entries_matched` back out of the response so that is a
+measurement rather than an assumption.
+
+**Result, this tree, 2026-08-26, release, best of five.** Row counts include
+the fixture's own five entries.
+
+| rows | path shape | matched | `POST …/resolution` | `GET …/{id}` | `GET …/proposals` |
+| --- | --- | --- | --- | --- | --- |
+| 25,005 | library-shaped | 1 | 31.45 ms | 33.59 ms | 0.06 ms |
+| 250,005 | library-shaped | 1 | 302.68 ms | 325.38 ms | 0.07 ms |
+| 25,005 | short | 1 | 10.36 ms | 13.77 ms | 0.05 ms |
+| 250,005 | short | 1 | 115.31 ms | 143.70 ms | 0.06 ms |
+| 25,005 | library-shaped | 25,001 | 77.62 ms | 34.43 ms | 0.06 ms |
+| 250,005 | library-shaped | 250,001 | 861.64 ms | 337.86 ms | 0.07 ms |
+
+**Both records reproduce, on different rows.** The table above this section
+lands on the library-shaped, unmatched rows (27.4/30.5 against 31.45/33.59);
+`curation/tests.rs`'s pair lands on the short ones (138/168 against
+115.31/143.70, and 14.4/17.5 against 10.36/13.77) — each inside the ±20%
+spread the `spawn_blocking` section already records between two harnesses. The
+*ordering* corroborates it independently: both records have `GET …/{id}`
+slower than `/resolution`, which only holds when the swept entries do not
+match the candidate. Where they do match, `/resolution` resolves each entry a
+second time and overtakes it by 2.5×, which neither record shows.
+
+**The controlled variable, because "different rows" is not yet a cause.** Row
+count held at 250,005, separator depth held at one, `entries_matched` held at
+one, and nothing varied but the number of characters in each `rel_path`:
+
+| `rel_path` width | `POST …/resolution` | `GET …/{id}` |
+| --- | --- | --- |
+| 8 | 118.96 ms | 145.01 ms |
+| 24 | 163.96 ms | 190.26 ms |
+| 48 | 206.98 ms | 222.92 ms |
+| 96 | 289.13 ms | 325.88 ms |
+
+**So the cost is per byte of path swept, not per row** — 2.4× across that
+range, from path length alone, with every other variable pinned. Roughly
+0.42 µs of fixed per-row cost plus about 7.6 ns per character, on this
+machine. A "µs per row" constant is therefore not a property of the route at
+all, and both records quoted one as though it were.
+
+**What this changes.**
+
+- `curation/tests.rs`'s doc keeps the claim its test is about — no curation
+  route does its SQLite work on the async worker, and the stall equalled the
+  handler's own duration — and **stops quoting milliseconds against a row
+  count**, pointing here instead. Its numbers were the ones being read as a
+  general statement about 25,000 and 250,000 rows, and that reading is what
+  did not survive.
+- Both records above are marked in place rather than rewritten, per the
+  open-items ritual: the reasoning is why they disagreed.
+- **The equality the `spawn_blocking` section rests on survives intact.** Its
+  138.45/167.86 sit inside this tree's 115.31/143.70 for handlers doing the
+  same sweep over the same shape of row, so "stalled for exactly as long as
+  the handler ran" is corroborated by an independent instrument. Only the
+  framing "at 250,000 rows" was doing more work than it could carry.
+
+**What is still not measured.** A real library's `scan_entry` table rather
+than a synthetic one — every figure on this branch is synthetic, and the two
+qualifications the first table already carries (synthetic rows, one `regex`
+rule) both still apply. What has changed is that the sensitivity nobody had
+measured is now measured, and it is larger than either qualification.
+
+### O62's cost claim, and the plan that disproves it
+
+Spec C1 §5.5 deferred *"a work whose members are missing from disk"* to C3 on
+the reasoning that the fact is *"not derivable cheaply — `member.path` is
+absolute and `scan_entry.rel_path` is relative to its root, so the join is over
+a computed string rather than an index"*. The build design's §8 disputes that
+and quotes a plan; recorded here because `status.md`'s preamble promises every
+claim there traces to a measurement in this file, and O62's row is being
+marked against it.
+
+Reproduced 2026-08-26 on a database built by applying
+`crates/taiyaku-library/src/schema/001`–`008` to an empty file, with no rows in
+it — a plan is chosen from the schema, and an empty table is the case least
+favourable to a claim that an index is used:
+
+```
+sqlite> EXPLAIN QUERY PLAN
+   ...> SELECT m.id, se.id IS NULL AS missing
+   ...>   FROM member m
+   ...>   LEFT JOIN root r ON r.id = m.root_id
+   ...>   LEFT JOIN scan_entry se
+   ...>          ON se.root_id  = m.root_id
+   ...>         AND se.rel_path = ltrim(substr(m.path, length(r.path) + 1), '/')
+   ...>  WHERE m.root_id IS NOT NULL;
+QUERY PLAN
+|--SCAN m
+|--SEARCH r USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN
+`--SEARCH se USING COVERING INDEX sqlite_autoindex_scan_entry_1
+                                  (root_id=? AND rel_path=?) LEFT-JOIN
+```
+
+One pass over `member`, which is unavoidable because the question is asked
+about every member, and one covering-index probe per row. **The computed
+string is on the probing side**; the side being probed is `scan_entry`, whose
+`UNIQUE (root_id, rel_path)` is exactly the index the probe wants.
+
+**With a negative control, because a plan naming an index proves nothing on its
+own.** `SEARCH … USING COVERING INDEX` and `SCAN … USING COVERING INDEX` differ
+by one word and mean opposite things, so the same session was asked a join the
+index genuinely cannot serve:
+
+```
+sqlite> EXPLAIN QUERY PLAN
+   ...> SELECT m.id FROM member m
+   ...>   LEFT JOIN scan_entry se ON se.rel_path LIKE '%' || m.path;
+QUERY PLAN
+|--SCAN m
+`--SCAN se USING COVERING INDEX sqlite_autoindex_scan_entry_1 LEFT-JOIN
+```
+
+`SCAN`, and the index named anyway. So the word above is load-bearing and the
+check can tell the two apart.
+
+Shipped code already performs the same join for a different reason:
+`proposals::edition_formats` reads an edition's formats back out of
+`scan_entry` on `(root_id, rel_path)`, with `rtrim` in place of `ltrim` for a
+root that is a bare `/`. **O62 is therefore a defect with a known fix rather
+than a decision**, and it stays open only because the fix is not built.
+
+### The panel against real pages
+
+Nothing on this branch had met real material until here: every screenshot
+archived through Task 9 used placeholder images or failed loads, so C3 §2's
+first decision — a cover **and two interior pages** per side — had never been
+exercised on the comparison it exists to serve.
+
+Ten archives from `corpus/` were hardlinked into a scratch tree under
+`target/` and scanned into a scratch database, giving five series, ten works
+and three `edition-of` proposals, each scoring 1.0. Nothing wrote into
+`corpus/`: the scratch tree held hardlinks rather than copies, and after it was
+deleted `find corpus -newermt` over the whole session's span returned nothing
+and every source file was still in place.
+
+**The decision holds, and the interiors are what carry it.** The two covers
+are two entirely different illustrations — the Full Color edition's Latin-titled
+cover against the raw Japanese one — and *both are in colour*, because a manga
+cover always is. A reader comparing covers alone sees two unrelated pictures
+and learns nothing about whether one edition is the other colourised. The
+interior pages answer it immediately: one side's are colour, the other's are
+monochrome, in the same panel layout.
+
+`interior_indices` picks `page_count / 4` and `page_count * 3 / 5`, computed
+per side, so **how well the two interiors line up depends on the two editions
+paginating alike**:
+
+| pair | pages | interiors shown | what the two sides show |
+| --- | --- | --- | --- |
+| `Full Color` (raw) against the base | 195 and 195 | 49 and 118 both sides | the same two pages, one colourised |
+| `Full Color Edition` (en) against the base | 199 and 195 | 50/120 against 49/118 | neighbouring pages, not the same page |
+
+The first row is the design's claim exactly as written. The second is the
+qualification it does not state: the interiors are chosen by proportion, not by
+alignment, so where the page counts differ the two sides land near each other
+rather than on one page. Colour against monochrome still reads at a glance;
+"the same panel layout" does not.
+
+`.superpowers/sdd/shots/t10-corpus-*.png` are the shots, and the two `-crop-`
+files are the strips at 2×, which is the magnification the judgement actually
+needs — at the panel's own thumbnail size the colour/mono difference is
+obvious and the panel *layout* is not.
+
+**At 700px the two sides stack**, subject above proposed target. Nothing is
+cut off and the thumbnails stay legible, but a side-by-side judgement becomes a
+scroll-and-remember one. The alternative is thumbnails too small to read, so
+this is the better trade rather than a defect — recorded because the panel's
+whole purpose is a comparison, and at that width the comparison is no longer
+simultaneous.
+
+**A root whose archives sit directly in it offers `/` as the pattern**, and the
+form answers "This rule matches nothing." with Accept disabled — correct, and
+worth writing down because it is what a flat scratch tree produces and reads
+like a defect until you notice the refusal is right. With the archives in
+per-series directories the offered pattern is
+`Go-Toubun no Hanayome - Full Color/` and the form is live.
+
+Timings against that library — **debug build**, so these are not comparable
+with the release figures above and are recorded only for the shape: warm,
+over 16 `scan_entry` rows, `/resolution` about 3.0 ms, `GET …/{id}` about
+2.5–2.8 ms, `GET …/proposals` about 0.6 ms and flat.
+
+### Accepting one, and the rows the next scan leaves behind
+
+The accept path had never run outside a fixture either. Through the API, on
+the rule the panel offered: it writes the rule, marks the proposal `accepted`,
+and **changes no `edition` row at all** — which is what the panel's own
+sentence promises ("Nothing on disk is touched"), the rule taking effect on the
+next scan.
+
+The next scan applies it, and the library ends up holding two of something.
+From a fresh database, one accept and one `library scan`:
+
+| | series | works | editions | members | distinct files |
+| --- | --- | --- | --- | --- | --- |
+| before the scan | 5 | 10 | 10 | 10 | 10 |
+| what the scan printed | 4 | 8 | 10 | 10 | — |
+| after the scan | 5 | 10 | **12** | **12** | 10 |
+
+The derivation is right and the store does not follow it: the two colour
+volumes each end up present **twice** — once as the `full-color` edition of the
+base series' work, which is what was asked for, and once still standing as
+their own work under the series the rule was supposed to fold away. Twelve
+member rows over ten files, and the command's own summary line disagrees with
+its database on every count it prints.
+
+Also measured on those new rows: `edition.kind` is NULL, while the rule that
+produced them stores `set_kind = 'official'`. Whether that is the same fault or
+a second one is not established here.
+
+They were recorded here undiagnosed, because they are reproducible from a
+clean database in two commands and because they were found the only way they
+could be — by accepting a real proposal over real archives rather than by
+reading the code that does it.
+
+**They turned out to be two faults rather than one, and they were separated
+before either was answered.** The NULL `edition.kind` is fixed: nothing wrote
+`edition.kind` or `edition.language` from the rules at all, and
+`derive::write_edition_metadata` now does. The duplicated volumes are **O73**,
+open, because a fix means designing what happens to a work that has been
+emptied — including the `progress`, `note` and truth rows that cascade off it.
+Re-run after the first fix landed, at four archives rather than ten: the
+duplication is unchanged, so the two really were independent.
+
+### What the accept panel promised, and what the database held, 2026-08-26
+
+The whole-branch review's first blocker: the sentence over the Accept button
+read *"Accepting will: … to series X, **move N works**, and keep every volume
+number as-is."* — and nothing moves. Re-run from a clean database to check the
+corrected wording against what the store actually does, rather than editing
+the sentence from the code.
+
+**The reproduction.** Four archives hardlinked out of `corpus/` into
+`target/c3fix/tree`, two per-series directories:
+
+```
+Go-Toubun no Hanayome/               v01, v03  (raw-mono)
+Go-Toubun no Hanayome - Full Color/  v01, v03  (raw-color)
+```
+
+`library scan --add` → 2 series, 4 works, 4 editions, 4 members, one
+`edition-of` proposal at score 2.0. The dry run for the rule the panel offers,
+read through `proposals::preview` + `proposals::resolves` on that database:
+
+```
+pattern "Go-Toubun no Hanayome - Full Color/", root-scoped, set_series
+"Go-Toubun no Hanayome", set_edition_key "full-color", set_kind "official"
+Resolution { entries_matched: 2, subject_reached: true, works_moved: 2, … }
+```
+
+So the panel printed **move 2 works**. `library proposals --accept 1` writes
+rule 5 and changes no `edition` row; `library scan` then prints
+`derived 1 series, 2 works, 4 editions, 4 members` over a database holding:
+
+| work | series | vol | editions after the rescan |
+| --- | --- | --- | --- |
+| 1 | Go-Toubun no Hanayome | 1.0 | `full-color`/`official`, `raw` |
+| 2 | Go-Toubun no Hanayome | 3.0 | `full-color`/`official`, `raw` |
+| 3 | Go-Toubun no Hanayome - Full Color | 1.0 | `raw` |
+| 4 | Go-Toubun no Hanayome - Full Color | 3.0 | `raw` |
+
+**Six member rows over four files.** Works 1 and 2 gained the edition the rule
+asked for, with the kind the rule set — that half is right, and is what the
+edition-kind fix beside O73 shipped. Works 3 and 4 are untouched: same series,
+same files, nothing emptied. `works_moved: 2` is right about the *members*;
+"move" is wrong about all of it. This is O73 unchanged, reproduced a third
+time, and the sentence is what was fixed here — `curation.ts`'s `consequence`
+now says "from 2 works … nothing in the library changes until the next scan",
+with `LEFT_STANDING` drawn beneath it naming the duplication and the item.
+
+### Un-accepting, driven the whole way, 2026-08-26
+
+Same database, immediately after the above. The review noted
+`curation.ts`'s `unacceptProposal` has no caller and asked whether the gap is
+a missing screen. It is not, and this is why:
+
+| step | rule 5 | proposal 1 | editions on works 1–2 |
+| --- | --- | --- | --- |
+| after accept + scan | present | `accepted` | `full-color`/`official`, `raw` |
+| after `--unaccept 1` | **gone** | **`open`** | *unchanged* |
+| after the next scan | gone | `open` | *unchanged* |
+
+That last scan prints
+`derived 2 series, 4 works, 4 editions, 4 members, **2 editions kept**` — the
+two kept editions being exactly those `full-color` rows, left standing by
+`import::replace_editions`' deliberate rule that an edition the incoming
+document no longer names is kept rather than deleted
+(`DeriveReport::kept_editions`). Six member rows over four files before the
+un-accept and six after it.
+
+**So un-accept reopens the question and returns the library to nothing.** A
+control labelled Undo would be a false statement about what it does, which is
+why one is not built here. **O74.**
+
+Nothing wrote into `corpus/`: hardlinks rather than copies, and
+`find corpus -newer target/c3fix/started-at` returned 0 entries afterwards.
+The scratch tree and both databases are deleted.

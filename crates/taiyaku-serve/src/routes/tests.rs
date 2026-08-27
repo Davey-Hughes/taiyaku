@@ -394,6 +394,21 @@ async fn the_last_slot_of_a_spread_carrying_edition_is_in_range() {
 
 /// O12/O8: a progress read must not run on the async worker.
 ///
+/// ***This test cannot observe the property the paragraphs below claim it
+/// proves — O71, opened 2026-08-26. The prose is kept as written and marked
+/// here rather than rewritten, because the reasoning in it is careful and is
+/// exactly what made the gap invisible.*** What it misses is the router:
+/// `auth::guard` resolves inside its own `spawn_blocking` and takes the mutex
+/// wait with it, so by the time the handler under test touches SQLite the
+/// reactor is already free and the canary runs whatever the handler does.
+/// Proved rather than suspected — `routes::get_progress` was moved wholly
+/// onto the async worker, the exact defect this names, and this test still
+/// passed. Ten `routes.rs` handlers stand behind it with nothing else
+/// guarding that property. The shape of the fix costs no new mechanism and is
+/// already in the tree: `curation/tests.rs::no_curation_route_stalls_the_runtime`
+/// calls handlers directly rather than through the router, and does have
+/// teeth. **Do not model a new stall test on this one.**
+///
 /// Restores `a_progress_read_does_not_stall_the_runtime`, removed when Task
 /// 13 moved progress off files and onto `taiyaku-library`'s SQLite
 /// connection, on the premise — recorded then, and wrong — that "an

@@ -30,11 +30,12 @@
 //! [`crate::import::scanned`] rather than issuing its own inserts, so the
 //! column lists cannot drift from `project.rs`'s reader. What it then writes
 //! itself is exactly what the sidecar format has no field for and so cannot
-//! carry: `work.series_id`, `work.volume` and
-//! `member.chapter_declared`/`chapter_source`. Each of those is already a
-//! targeted update in `librarydoc::apply`, so this is the established shape
-//! here rather than a new one. `series` and `series_title` have no importer at
-//! all and are written here outright.
+//! carry: `work.series_id`, `work.volume`, `edition.kind`/`edition.language`,
+//! `member.chapter_declared`/`chapter_source` and `member.root_id`. All but
+//! the last of those are already targeted updates in `librarydoc::apply`, so
+//! this is the established shape here rather than a new one; a member's root
+//! is the one column nothing but a walk can know. `series` and `series_title`
+//! have no importer at all and are written here outright.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -164,6 +165,18 @@ pub struct DeriveReport {
     /// particular merge is fixed (those entries are keyed individually now),
     /// and the ones that remain are reported rather than assumed correct.
     pub merged: usize,
+    /// Editions whose rules named an `edition.kind` the column's closed set
+    /// does not hold, so none was written.
+    ///
+    /// **Counted for the reason [`Self::suppressed`], [`Self::rekeyed`],
+    /// [`Self::kept_editions`] and [`Self::merged`] are.** A typo in a
+    /// `set_kind` otherwise decides nothing in silence, and reads from every
+    /// side exactly like a rule that named no kind at all — while the person
+    /// who wrote it is looking at an edition whose kind never moved.
+    ///
+    /// See [`write_edition_metadata`] for why the value is dropped rather
+    /// than stored, and what stores it would break.
+    pub unrecognised_kinds: usize,
     /// Newly-opened proposals this derive's own [`proposals::raise`] call
     /// produced.
     ///
@@ -364,6 +377,17 @@ struct Candidate {
     pages: u32,
     chapter: Option<f64>,
     title: Option<String>,
+    /// What the rules resolved for `edition.kind` on **this entry's own**
+    /// path, unvalidated: `rule.set_kind` is a bare `TEXT` column while
+    /// `edition.kind` is a closed set, and one edition can gather entries
+    /// that resolved differently. [`write_edition_metadata`] settles both
+    /// questions, because both are questions about an edition rather than
+    /// about a member.
+    kind: Option<String>,
+    /// What the rules resolved for `edition.language` on this entry's own
+    /// path. Free text in the schema, so there is nothing to validate it
+    /// against — only the same disagreement to settle.
+    language: Option<String>,
 }
 
 /// One work, before it is a work: every entry across every root that resolved
@@ -726,6 +750,8 @@ fn classify(
         pages,
         chapter: resolved.chapter,
         title: resolved.title,
+        kind: resolved.kind,
+        language: resolved.language,
     });
     Ok(())
 }
@@ -847,12 +873,7 @@ fn write_work(
 ) -> Result<(), String> {
     let mut editions = BTreeMap::new();
     for (key, candidates) in &group.editions {
-        let mut ordered: Vec<&Candidate> = candidates.iter().collect();
-        // Member order is page order — `Edition::pages` calls it normative,
-        // and every offset in every alignment after the first member is
-        // computed from it. `natural_cmp` rather than SQL's `ORDER BY`,
-        // because `c10` sorts before `c9` as text.
-        ordered.sort_by(|a, b| taiyaku_read::natural_cmp(&a.rel_path, &b.rel_path));
+        let ordered = in_page_order(candidates);
         editions.insert(
             key.clone(),
             Edition {
@@ -954,9 +975,13 @@ fn write_work(
     // therefore both simpler and exact.
     report.kept_editions += kept_editions(conn, work_id, &doc)?;
 
-    // The two columns the sidecar format has no field for, and the two the
-    // hub lookup above reads back. Written after the import rather than
-    // before, because a brand-new work has no id until then.
+    // The `work` columns the sidecar format has no field for, which are also
+    // the two the hub lookup above reads back — and, under the same guard and
+    // for the same reason, `edition.kind` and `edition.language`, which the
+    // format has no field for either. See [`write_edition_metadata`], which
+    // is where that second pair's own argument for being here lives. Written
+    // after the import rather than before, because a brand-new work has no id
+    // until then.
     //
     // **Skipped when a hand document has actually been applied to this
     // work (I7).** `librarydoc::apply` — reached through `migrate::work`,
@@ -982,16 +1007,19 @@ fn write_work(
     // same row by its content, exactly as an ordinary rescan is; only the
     // two columns below are left alone.
     //
-    // **Narrow, deliberately.** Everything else about hand-versus-derived
-    // metadata — a provenance column, scoping this to works with no
-    // `sidecar_path`, and so on — is a real design question that belongs to
-    // spec C3, not to this branch (whole-branch review, I7).
+    // **Still narrow.** `edition.kind` and `edition.language` joined this
+    // guard because the same question settles them — `librarydoc::apply` is
+    // the other writer of both, exactly as it is of the two columns above.
+    // Everything else about hand-versus-derived metadata — a provenance
+    // column, scoping this to works with no `sidecar_path`, and so on — is
+    // still the design question I7 left open, and nothing here answers it.
     if !crate::migrate::absorbed(conn, work_id, crate::migrate::LIBRARY)? {
         conn.execute(
             "UPDATE work SET series_id = ?1, volume = ?2 WHERE id = ?3",
             rusqlite::params![series_id, group.volume, work_id],
         )
         .map_err(|e| format!("attaching work {work_id} to series {series_id}: {e}"))?;
+        write_edition_metadata(conn, work_id, group, report)?;
     }
     write_chapters(conn, work_id, group)?;
     write_roots(conn, work_id, group)?;
@@ -1196,8 +1224,7 @@ fn write_chapters(conn: &Connection, work_id: i64, group: &Group) -> Result<(), 
     .map_err(|e| format!("clearing derived chapters on work {work_id}: {e}"))?;
 
     for (key, candidates) in &group.editions {
-        let mut ordered: Vec<&Candidate> = candidates.iter().collect();
-        ordered.sort_by(|a, b| taiyaku_read::natural_cmp(&a.rel_path, &b.rel_path));
+        let ordered = in_page_order(candidates);
         // `(0_i64..).zip(…)` rather than `enumerate()`, so the ordinal is the
         // `i64` the column wants without a `usize as i64` cast on the way.
         for (ordinal, candidate) in (0_i64..).zip(ordered) {
@@ -1239,8 +1266,7 @@ fn write_chapters(conn: &Connection, work_id: i64, group: &Group) -> Result<(), 
 /// `ORDER BY ordinal`.
 fn write_roots(conn: &Connection, work_id: i64, group: &Group) -> Result<(), String> {
     for (key, candidates) in &group.editions {
-        let mut ordered: Vec<&Candidate> = candidates.iter().collect();
-        ordered.sort_by(|a, b| taiyaku_read::natural_cmp(&a.rel_path, &b.rel_path));
+        let ordered = in_page_order(candidates);
         for (ordinal, candidate) in (0_i64..).zip(ordered) {
             conn.execute(
                 "UPDATE member SET root_id = ?1
@@ -1253,6 +1279,121 @@ fn write_roots(conn: &Connection, work_id: i64, group: &Group) -> Result<(), Str
                 format!("recording the root of `{key}` member {ordinal} on work {work_id}: {e}")
             })?;
         }
+    }
+    Ok(())
+}
+
+/// One edition's candidates in page order.
+///
+/// **Member order is page order** — `Edition::pages` calls it normative, and
+/// every offset in every alignment after the first member is computed from
+/// it. `natural_cmp` rather than SQL's `ORDER BY`, because `c10` sorts before
+/// `c9` as text.
+///
+/// One function rather than the same two lines at each call site, because
+/// they are not four independent sorts: [`write_work`] writes the members in
+/// this order, [`write_chapters`] and [`write_roots`] then address those very
+/// rows by the ordinal it produced, and [`write_edition_metadata`] settles a
+/// disagreement by it. Four copies would be four chances for one of them to
+/// disagree about which member is `ordinal` 0.
+fn in_page_order(candidates: &[Candidate]) -> Vec<&Candidate> {
+    let mut ordered: Vec<&Candidate> = candidates.iter().collect();
+    ordered.sort_by(|a, b| taiyaku_read::natural_cmp(&a.rel_path, &b.rel_path));
+    ordered
+}
+
+/// Write the edition kind and language the rules resolved onto the `edition`
+/// rows [`crate::import::scanned`] just wrote.
+///
+/// **The columns were there and nothing reached them.** `rule` has carried
+/// `set_kind` and `set_language` since the scanner's own migration, the
+/// engine resolves both into [`crate::rules::Resolved`], and C3's accept form
+/// offers both as controls — while `import::replace_editions` inserts
+/// `(work_id, key, label)` and nothing else, so a rule saying
+/// `set_kind = 'official'` left `edition.kind` NULL. Measured on real
+/// archives rather than reasoned about: one accepted `edition-of` proposal,
+/// one rescan, and the `full-color` edition that rescan produced held no kind
+/// at all, so two of the accept form's five controls decided nothing.
+///
+/// # Why these two do not join the never-overwrite list
+///
+/// A scan must not write over what a person established, which is why
+/// `import::update_work` leaves `work.title`, `work.reading` and `work.hub`
+/// alone on a row that already holds them, and why `import::replace_editions`
+/// keeps a held `edition.label`. **What forces that rule on those four is an
+/// absence**: nothing records whether the value there came from a person or
+/// from an earlier derive, so never writing is the only rule available that
+/// cannot destroy the answer.
+///
+/// This pair does not share the absence. `librarydoc::apply` is the only
+/// other production writer of a *value* into `edition.kind`/`edition.language`
+/// — `replace_editions`' `UPDATE` puts back what the row already held, across
+/// its own delete-and-reinsert — and `migrate::absorbed(…, LIBRARY)` answers,
+/// per work, whether such a document has actually been applied. So these join
+/// `work.series_id` and `work.volume` under that guard instead of joining a
+/// list whose reason does not reach them; see [`write_work`]'s own comment on
+/// it.
+///
+/// **Per work rather than per edition, which is the granularity the other
+/// writer has.** `librarydoc::apply` nulls `kind` and `language` on every
+/// edition of the work before applying the document over them, so what it
+/// speaks for is the whole work's edition metadata. A finer guard here would
+/// be claiming a distinction the document itself does not draw. The cost is
+/// real and stated: an edition derived *after* a document was absorbed takes
+/// no kind from the rules, and editing the document is the fix.
+///
+/// **Unconditional within the guard, and that is the point.** Editing a rule
+/// changes what the next scan writes, including back to NULL once no rule
+/// resolves one — the same shape [`write_chapters`] gives a chapter number
+/// this module wrote itself. Filling only a NULL would have been the safer
+/// looking rule and would have made C3's Edition Kind control work exactly
+/// once per edition.
+///
+/// **A kind outside the closed set is not written, and is counted.**
+/// `edition.kind` is `raw | official | fan` (`001_initial.sql`), which is the
+/// set `librarydoc::parse_edition_kind` reads and refuses against — a stored
+/// value outside it makes `librarydoc::of` fail for that work, so writing one
+/// would turn a typo in a rule into a work that cannot be described or
+/// exported. It is reachable: `rule.set_kind` is a bare `TEXT` column, and
+/// C3's accept route takes the field as free text. Filtered here rather than
+/// refused where a rule is written, because this is the one place every
+/// source of a rule arrives at, and counted as
+/// [`DeriveReport::unrecognised_kinds`] rather than dropped in silence.
+/// `language` is free text in the schema and in `librarydoc` alike, so there
+/// is nothing to filter it against.
+///
+/// **Where one edition's entries disagree, the first in page order that
+/// resolved anything decides, per field.** The rules resolve per path and an
+/// edition can gather paths from more than one root, so the disagreement is
+/// reachable; nothing reconciles it and nothing reports it. Per field rather
+/// than per entry because that is how the rules themselves resolve — a later
+/// rule overrides only the fields it sets. The alternative, writing nothing
+/// unless every entry agrees, would throw away a root's `default_kind`
+/// because a file from a differently-configured root sorted first.
+fn write_edition_metadata(
+    conn: &Connection,
+    work_id: i64,
+    group: &Group,
+    report: &mut DeriveReport,
+) -> Result<(), String> {
+    for (key, candidates) in &group.editions {
+        let ordered = in_page_order(candidates);
+        let language = ordered.iter().find_map(|c| c.language.clone());
+        let kind = match ordered.iter().find_map(|c| c.kind.clone()) {
+            Some(kind) if crate::librarydoc::parse_edition_kind(&kind).is_ok() => Some(kind),
+            Some(_) => {
+                report.unrecognised_kinds += 1;
+                None
+            }
+            None => None,
+        };
+        conn.execute(
+            "UPDATE edition SET kind = ?1, language = ?2 WHERE work_id = ?3 AND key = ?4",
+            rusqlite::params![kind, language, work_id, key],
+        )
+        .map_err(|e| {
+            format!("recording the kind and language of `{key}` on work {work_id}: {e}")
+        })?;
     }
     Ok(())
 }
@@ -1357,83 +1498,73 @@ pub(crate) fn rel_paths_for_series(
     conn: &Connection,
     series: &str,
 ) -> Result<Vec<(i64, String)>, String> {
+    Ok(rel_paths_by_series(conn, &BTreeSet::from([series]))?
+        .remove(series)
+        .unwrap_or_default())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`rel_paths_by_series`] has run **on the calling
+    /// thread**, in this test process. The one-sweep guarantee its own doc
+    /// describes used to be pinned by a claim in a comment ("every callee
+    /// takes `&[(i64, String)]`, so a second call is not reachable without a
+    /// signature change"), which was false: `proposals::side` holds a
+    /// `Connection` and `proposals::offered_rule` holds a `Connection` and a
+    /// `&str`, and either could call [`rel_paths_for_series`] again with no
+    /// signature change at all. This counts instead of asserting.
+    ///
+    /// Thread-local, not a shared `static`, because libtest runs `#[test]`
+    /// functions concurrently on a thread pool: a single process-wide
+    /// counter measured `2` for a lone `evidence` call the moment another
+    /// test's `evidence`/`preview` happened to land inside the same
+    /// reset-then-read window on a different thread. Nothing here calls
+    /// `rel_paths_by_series` from a second thread, so a thread-local count
+    /// is exact for whichever test resets and reads it, regardless of what
+    /// else the suite is doing.
+    pub(crate) static REL_PATHS_BY_SERIES_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// [`rel_paths_for_series`] for several series in **one** pass.
+///
+/// Every requested title is a key of the answer, holding an empty `Vec` where
+/// nothing resolved to it — "no entries" is an answer here, not an absence.
+///
+/// **The pass is what costs, not the filter.** Each call compiles every rule
+/// in the library ([`Engine::load`]), reads every root, `SELECT`s every
+/// `scan_entry` row under each, and resolves every one of them; deciding
+/// whether the series that came back is one of two rather than one of one is
+/// free beside it. `proposals::evidence` asks about both ends of a proposal
+/// at once and used to pay for the whole sweep twice to do it.
+pub(crate) fn rel_paths_by_series(
+    conn: &Connection,
+    series: &BTreeSet<&str>,
+) -> Result<BTreeMap<String, Vec<(i64, String)>>, String> {
+    #[cfg(test)]
+    REL_PATHS_BY_SERIES_CALLS.with(|c| c.set(c.get() + 1));
     let (engine, _complaints) = Engine::load(conn)?;
     let roots = crate::scan::roots(conn)?;
     let mut report = DeriveReport::default();
-    let mut paths = Vec::new();
+    let mut found: BTreeMap<String, Vec<(i64, String)>> = series
+        .iter()
+        .map(|title| ((*title).to_string(), Vec::new()))
+        .collect();
 
     for root in &roots {
         for entry in entries(conn, root.id)? {
             let Some(admitted) = admit(&engine, root, entry, &mut report) else {
                 continue;
             };
-            if admitted.series == series {
+            if let Some(paths) = found.get_mut(&admitted.series) {
                 paths.push((root.id, admitted.entry.rel_path));
             }
         }
     }
-    paths.sort();
-    Ok(paths)
-}
-
-/// Every series, other than `subject`, that the rules currently resolve for
-/// an entry under `root_id` whose `rel_path` starts with `prefix` — what a
-/// `prefix` rule written for `subject` at `prefix`, scoped to `root_id`,
-/// would additionally decide for, silently, if accepted.
-///
-/// **The check `proposals::accept` needed and the first version did not
-/// have.** A pattern derived from [`rel_paths_for_series`]'s own answer is
-/// guaranteed to match the subject; it is not guaranteed to match *only* the
-/// subject, because a `prefix` rule matches every path beneath it, not only
-/// the ones that produced it. Measured on a publisher directory holding
-/// several series: an accepted colour-edition proposal wrote `Publisher/`,
-/// which matched every other series under `Publisher/` too, and their
-/// volumes were silently re-derived into the accepted series' page
-/// sequence — `write_work`'s own doc records that member order is page order
-/// and every alignment offset is computed from it, so this is not a cosmetic
-/// mistake. The bug [`rel_paths_for_series`] fixed left `accept` deciding
-/// nothing; this one leaves it deciding too much, which is worse because it
-/// looks like a decision.
-///
-/// **Scoped to `root_id` since I6.** The rule `accept` writes carries a
-/// `root_id` of its own now — see [`rel_paths_for_series`] — so material
-/// under a same-looking prefix in a *different* root is not collateral: the
-/// rule can never reach it. Scanning every root here regardless would refuse
-/// accepts over nothing but a coincidence of directory names between two
-/// otherwise unrelated roots.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions [`derive`] does: the rules or
-/// roots cannot be read, or a `scan_entry` row will not project.
-pub(crate) fn other_series_under_prefix(
-    conn: &Connection,
-    prefix: &str,
-    subject: &str,
-    root_id: i64,
-) -> Result<BTreeSet<String>, String> {
-    let (engine, _complaints) = Engine::load(conn)?;
-    let roots = crate::scan::roots(conn)?;
-    let mut report = DeriveReport::default();
-    let mut others = BTreeSet::new();
-
-    for root in &roots {
-        if root.id != root_id {
-            continue;
-        }
-        for entry in entries(conn, root.id)? {
-            if !entry.rel_path.starts_with(prefix) {
-                continue;
-            }
-            let Some(admitted) = admit(&engine, root, entry, &mut report) else {
-                continue;
-            };
-            if admitted.series != subject {
-                others.insert(admitted.series);
-            }
-        }
+    for paths in found.values_mut() {
+        paths.sort();
     }
-    Ok(others)
+    Ok(found)
 }
 
 #[cfg(test)]

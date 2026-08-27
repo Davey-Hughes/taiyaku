@@ -405,12 +405,14 @@ fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
 /// `series`/`works`/`editions`/`members` print unconditionally — a library
 /// that genuinely derived nothing is exactly as informative a zero as any
 /// other. `unattached_chapter_dirs` and `unreadable` print only when
-/// non-zero, and so do `suppressed`, `rekeyed`, `kept_editions` and `merged`:
+/// non-zero, and so do `suppressed`, `rekeyed`, `kept_editions`, `merged` and
+/// `unrecognised_kinds`:
 /// [`taiyaku_library::derive::DeriveReport`]'s own doc comment is explicit
 /// that each exists because a silent drop, a silent re-key, a silently
-/// orphaned edition or a silent merge is indistinguishable from an empty
-/// library, from growth, from a clean derive, or from a work that genuinely
-/// holds one volume — a counter that never reaches this line is the failure
+/// orphaned edition, a silent merge or a silently refused edition kind is
+/// indistinguishable from an empty library, from growth, from a clean derive,
+/// from a work that genuinely holds one volume, or from a rule that never
+/// named a kind — a counter that never reaches this line is the failure
 /// they were added to prevent.
 fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize) -> String {
     use std::fmt::Write as _;
@@ -440,6 +442,13 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
     }
     if report.merged > 0 {
         let _ = write!(line, ", {} merged", report.merged);
+    }
+    if report.unrecognised_kinds > 0 {
+        let _ = write!(
+            line,
+            ", {} unrecognised edition kinds",
+            report.unrecognised_kinds
+        );
     }
     let _ = write!(line, "; {raised} proposal(s) raised");
     line

@@ -10,19 +10,20 @@
  * System colours throughout — see `index.css`'s `.library` block, and
  * `Login.tsx`, which shipped a hardcoded `#111` on this app's front door.
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { BrowseSettings } from './BrowseSettings'
 import {
   BrowsePrefsContext,
   browseModule,
   browseRegistry,
 } from './browseModule'
+import { INBOX_MIN_SCORE, inboxTotal, listProposals } from './curation'
 import { useGate } from './gate'
 import { usePrefsMap } from './hooks'
 import { type LibraryStatus, status as fetchStatus } from './library'
 import { fieldChanged, sliceFor, sliceReset } from './module'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
-import { StatusContext } from './shell'
+import { InboxRefreshContext, StatusContext } from './shell'
 import { Sidebar } from './Sidebar'
 
 /**
@@ -112,22 +113,78 @@ export function Shell({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  // **The open count on the sidebar's Proposals entry — C3 §6, and the build
+  // design's file-structure table.** The entry shipped without it, on the
+  // ground that this component mounts around every screen and so a count is a
+  // request on every page load. Measured, that request is the cheap one:
+  // `GET /api/library/proposals` reads `proposal` — joined to `series` twice
+  // for the two titles a row draws, and grouped for the counts — and it
+  // neither compiles the rule set nor walks `scan_entry`, which is what the
+  // detail and dry-run routes both do. So it is flat where those two cost
+  // 1.1–1.2 µs per entry: 0.10 ms at 8 rows and 0.23 ms at 25,008
+  // (`notes.md`, 2026-08-26). It is admin-only on top of that, so a reader
+  // pays nothing.
+  //
+  // **It uses `counts` and throws the rows away**, which is worth saying
+  // rather than leaving to be discovered: there is no counts-only route, and
+  // adding one for a badge would be a route to keep in step with the list's
+  // own filters for no measured gain.
+  //
+  // **A failure is swallowed on purpose, unlike the status fetch above.** A
+  // count is an ornament on a link that works without it; the link is drawn
+  // either way, and putting a second `role="alert"` over every screen in the
+  // library because a badge could not be fetched would be the failure
+  // reporting more than the failure costs. `undefined` — never fetched, still
+  // in flight, or failed — draws no badge, which is `StatusContext`'s own
+  // rule for the same three states.
+  const [openProposals, setOpenProposals] = useState<number | undefined>()
+  const [inboxReads, setInboxReads] = useState(0)
+  const refreshInbox = useCallback(() => setInboxReads((n) => n + 1), [])
+
+  // `Proposals.tsx` carries the same suppression for the same shape, and
+  // `hooks.ts`'s `useScrollFollow` is where it is written down: a dependency
+  // the body never reads, listed because its *change* is the signal.
+  // Removing it — which is what this rule suggests — would leave the badge at
+  // whatever it read when the shell mounted, however many proposals the
+  // screen beside it has since answered.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `inboxReads` is a trigger, not a closure read — the body reads only `admin`.
+  useEffect(() => {
+    if (!admin) return
+    let cancelled = false
+    listProposals({ state: 'open', min_score: INBOX_MIN_SCORE })
+      .then((inbox) => {
+        if (cancelled) return
+        setOpenProposals(inboxTotal(inbox.counts))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [admin, inboxReads])
+
   return (
     <BrowsePrefsContext.Provider value={prefs}>
-      <StatusContext.Provider value={status}>
-        <div
-          className={`library ${prefs.density === 'compact' ? 'compact' : ''}`.trim()}
-        >
-          <div className="sidebar-column">
-            <Sidebar roots={status?.roots ?? []} showRoots={prefs.showRoots} />
-            <BrowseSettings prefs={prefs} onChange={change} onReset={reset} />
+      <InboxRefreshContext.Provider value={refreshInbox}>
+        <StatusContext.Provider value={status}>
+          <div
+            className={`library ${prefs.density === 'compact' ? 'compact' : ''}`.trim()}
+          >
+            <div className="sidebar-column">
+              <Sidebar
+                roots={status?.roots ?? []}
+                showRoots={prefs.showRoots}
+                admin={admin}
+                openProposals={openProposals}
+              />
+              <BrowseSettings prefs={prefs} onChange={change} onReset={reset} />
+            </div>
+            <main>
+              {failure !== undefined && <p role="alert">{failure}</p>}
+              {children}
+            </main>
           </div>
-          <main>
-            {failure !== undefined && <p role="alert">{failure}</p>}
-            {children}
-          </main>
-        </div>
-      </StatusContext.Provider>
+        </StatusContext.Provider>
+      </InboxRefreshContext.Provider>
     </BrowsePrefsContext.Provider>
   )
 }

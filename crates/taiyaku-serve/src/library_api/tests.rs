@@ -1,34 +1,12 @@
 use crate::test_support;
+// `get` and `get_json` were private here until C3's `curation` module needed
+// the same two. Promoted rather than copied: `get_json`'s panic is
+// load-bearing (see its own doc comment), and two copies would be two places
+// to forget it. `get` sends no credential of its own — the fixture's router
+// injects one — which is what lets a *reader* fixture answer as a reader
+// through the very same helper.
+use crate::test_support::{get, get_json};
 use tower::ServiceExt as _;
-
-/// `GET path` through the real router and the real guard.
-async fn get(router: &axum::Router, path: &str) -> axum::http::Response<axum::body::Body> {
-    router
-        .clone()
-        .oneshot(
-            axum::http::Request::builder()
-                .uri(path)
-                .header(
-                    axum::http::header::AUTHORIZATION,
-                    test_support::fixture_authorization(),
-                )
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap()
-}
-
-/// [`get`], with the body parsed. Panics on a non-200 naming the status — a
-/// helper that silently returned `null` from a 401 would be a test asserting
-/// nothing.
-async fn get_json(router: &axum::Router, path: &str) -> serde_json::Value {
-    let response = get(router, path).await;
-    let status = response.status();
-    let body = test_support::body_string(response).await;
-    assert_eq!(status, axum::http::StatusCode::OK, "{path}: {body}");
-    serde_json::from_str(&body).expect("a JSON body")
-}
 
 /// The same request with no credentials at all.
 ///

@@ -58,6 +58,46 @@ Matching on the description alone would carry an accepted survivor across a
 rewrite that turned it into a real defect, with the entry still explaining why
 the old code was fine.
 
+The cost is paid in whole files rather than in single entries, and spec C3 is
+the first branch to pay it visibly. **Every one of the six `proposals.rs`
+entries below has moved**, checked with `cargo mutants --list` against the
+branch rather than inferred: `115:26` → `170:26`, `846:20` → `2549:20`,
+`867:53` → `2570:53`, `889:31` → `2584:31` and `902:20` → `2597:20` all keep
+their description and column and move only in line, while
+`784:54: replace && with || in raise_edition_of` becomes
+`2428:38: … in EditionOfSignals::volume_signal` — the same
+`… == 0 && … == 0` condition, extracted into a method, so its description
+changed too. All six would otherwise have been reported as new survivors by any
+sweep of this branch, and **that would not have been evidence that anything got
+worse**. A module-scoped sweep during the branch reported ten pre-existing
+survivors in this file's scoring and `raise` code; six baseline entries having
+moved accounts for at most six of them, and which of the remainder are
+genuinely new was not settled — the sweep's line numbers were taken against a
+mid-branch tree that has since moved again, so they cannot be re-resolved after
+the fact.
+
+**The six entries below now carry the new keys**, applied by hand against
+`cargo mutants --list` at the branch head rather than left as prose for the
+next reader to apply — which is what this paragraph asked for and did not do,
+while `derive.rs`'s one moved entry was properly re-keyed in the same commit.
+Two `interior_indices` survivors are added beside them, predicted verbatim by
+that function's own doc comment and confirmed against `--list`. Without both
+edits the next sweep reports eight new survivors and none of them is one. Note
+the shape of the trap either way: the entries most likely to go stale are in
+the file the branch worked hardest on, which is also the file where a real new
+survivor matters most.
+
+**A sweep reporting a mutant as *caught* is not proof that it is.** Measured on
+this branch: `scripts/mutants.sh --since a17d442` reported
+`curation.rs:125` as caught (`panicked`); applying that same mutation by hand
+and running the whole suite serially shows it **survives**. The cause was not
+identified — the run's own logs had been overwritten by a later sweep before
+the discrepancy was noticed, and the obvious suspect, a timing-sensitive stall
+test, was ruled out at 0 failures in 25 runs under load. So one of the two
+readings is wrong and it is not established which. Treat a *caught* as evidence
+rather than as a result, and confirm by hand before deleting a test on the
+strength of one.
+
 ## Regenerating
 
 `scripts/mutants.sh --baseline` (with whatever scope) rewrites the entries below
@@ -87,8 +127,12 @@ it mutates only changed code and takes minutes.
 | 2026-08-19 | spec A2's four modules (255 mutants) | 30 survivors; 17 killed by new tests, 13 recorded |
 | 2026-08-19 | whole workspace (3,191 mutants, 3 h 12 m) | 150 survivors — the baseline below |
 | 2026-08-20 | `taiyaku-library` on the forge, 3 shards | 3 survivors outside the baseline: `mtime_secs`, a catch the workstation had invented. Fixed, O59 opened |
+| 2026-08-26 | spec C3's `proposals.rs`, module-scoped (220 mutants) | 168 caught, 41 unviable, 11 missed. Only 1 of the 11 belongs to this branch; the other 10 are pre-existing scoring/`raise` code, and see the note above on why the baseline could not tell moved entries from new ones |
+| 2026-08-26 | spec C3, `--since` per task | 0 survivors on the web components (`Proposals.tsx` 21 of 76 before its fix round, 0 of 84 after; `AcceptForm.tsx` 0 of 29). One reported catch on `curation.rs:125` did not reproduce by hand — see "What this file cannot tell you" |
 | 2026-08-20 | spec C1's browse API, `--since main` (132 mutants, 4 m) | 14 survivors, all killed rather than recorded. The one that mattered: `refuse_if_hidden` replaceable with `None` — the page-route grant check this branch added, deletable with every test passing. Two lessons kept: the first test written for it passed *with the guard deleted*, because the fixture's files do not exist and `/pages` answers 404 either way, so the assertion is on the refusal's body; and three of the fourteen were a comparison inside a `println!`, which is the third time this file has produced that shape after `sessions_ended_note` |
 | 2026-08-20 | wasm, read, core, library, serve (2,049 mutants, 42 m) | re-measured after excluding `detect.rs`/`regions.rs` and capping `--jobs`; **every crate unchanged against the baseline.** `taiyaku-cli` was stopped partway and has not been re-measured since the exclusion — the numbers below for it are from the 2026-08-19 sweep |
+| 2026-08-26 | `derive.rs`, file-scoped (133 mutants, 4 m) | 126 caught, 4 unviable, 2 timeouts, 1 missed — and the one missed is the entry already below, moved from `:1262` to `:1451` because `write_edition_metadata` and `in_page_order` were added above it. **0 survivors in the code this branch added**: every mutant of the new writer, of the shared sort, and of the closed-set filter was caught. The two timeouts are `nested_in_claim`'s `!` and `parent_of`'s return value, both of which make the walk non-terminating rather than wrong |
+| 2026-08-26 | `proposals.rs`, file-scoped, after the whole-branch fix round (206 mutants, 8 m) | 156 caught, 42 unviable, **8 missed and every one of them already below** — the six re-keyed entries and the two `interior_indices` ones added in the same commit. `mutants-baseline: no survivor outside the baseline`, which is what the re-key was for: the same run against the un-re-keyed file would have reported all eight as new. `EditionOfSignals::vocabulary_phrase` is *not* among them any more — both its `FnValue` mutants are caught by the test added this round |
 | 2026-08-21 | `library-browse-series`, `--since main` (23 mutants, 59s) | 0 survivors: 21 caught, 2 unviable (`match_for` and `search` each replaced with `Default::default()`, refused at compile time — `Match` and `SearchResults` derive no `Default`). All 21 catches are semantic, not arity-refused: none of the 23 mutants touch a placeholder count. `match_for_switches_paths_exactly_at_trigram_min` (added this branch) catches all three comparison-operator mutants at `TRIGRAM_MIN`'s use site |
 
 <!-- entries -->### `crates/taiyaku-cli/src/duplicates.rs`
@@ -588,9 +632,14 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-library/src/derive.rs`
 
-- `crates/taiyaku-library/src/derive.rs:1262:51: replace && with || in unattached_chapter_dirs`
+- `crates/taiyaku-library/src/derive.rs:1451:51: replace && with || in unattached_chapter_dirs`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
+
+  *Renumbered from `:1262` on 2026-08-26 — same expression, same function, same
+  description; `write_edition_metadata` and `in_page_order` were added above it
+  in the file. Recorded rather than left to reappear as a new survivor on the
+  next run, which is the one thing this file exists to prevent.*
 
   It is here so a dispatched run's diff stays readable, **not** because anybody has
   judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
@@ -711,7 +760,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-library/src/proposals.rs`
 
-- `crates/taiyaku-library/src/proposals.rs:115:26: replace * with /`
+- `crates/taiyaku-library/src/proposals.rs:170:26: replace * with /`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -720,7 +769,38 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/proposals.rs:784:54: replace && with || in raise_edition_of`
+- `crates/taiyaku-library/src/proposals.rs:2193:40: replace - with + in interior_indices`
+  Equivalent: the bound becomes `page_count + 1`.
+  **The upper half of the `clamp` never fires**, so raising its bound cannot
+  change a returned value: `page_count * 3 / 5 <= page_count - 1` holds for
+  every `page_count >= 2`, and the function returns empty below two. Predicted
+  in the source before it was measured — `interior_indices`' own doc comment
+  says "A mutation raising it to `page_count` survives the suite for exactly
+  that reason".
+
+  **Kept in the code rather than deleted, which is why these two are accepted
+  rather than killed.** The clamp states an invariant of this function — an
+  interior index is never 0 and never past the last page — not a property of
+  whichever fractions somebody later picks. A test could only kill them by
+  asserting on fractions that do not exist, and a fix that deleted the bound
+  would leave the next fraction free to run off the end.
+- `crates/taiyaku-library/src/proposals.rs:2193:40: replace - with / in interior_indices`
+  Equivalent: the bound becomes `page_count / 1`, which is the mutation the
+  code comment names verbatim.
+  **The upper half of the `clamp` never fires**, so raising its bound cannot
+  change a returned value: `page_count * 3 / 5 <= page_count - 1` holds for
+  every `page_count >= 2`, and the function returns empty below two. Predicted
+  in the source before it was measured — `interior_indices`' own doc comment
+  says "A mutation raising it to `page_count` survives the suite for exactly
+  that reason".
+
+  **Kept in the code rather than deleted, which is why these two are accepted
+  rather than killed.** The clamp states an invariant of this function — an
+  interior index is never 0 and never past the last page — not a property of
+  whichever fractions somebody later picks. A test could only kill them by
+  asserting on fractions that do not exist, and a fix that deleted the bound
+  would leave the next fraction free to run off the end.
+- `crates/taiyaku-library/src/proposals.rs:2428:38: replace && with || in EditionOfSignals::volume_signal`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -729,7 +809,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/proposals.rs:846:20: replace += with *= in raise_same_series`
+- `crates/taiyaku-library/src/proposals.rs:2549:20: replace += with *= in raise_same_series`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -738,7 +818,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/proposals.rs:867:53: replace += with *= in raise_attach_chapters`
+- `crates/taiyaku-library/src/proposals.rs:2570:53: replace += with *= in raise_attach_chapters`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -747,7 +827,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/proposals.rs:889:31: replace == with != in raise_attach_chapters`
+- `crates/taiyaku-library/src/proposals.rs:2584:31: replace == with != in raise_attach_chapters`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -756,7 +836,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/proposals.rs:902:20: replace += with *= in raise_attach_chapters`
+- `crates/taiyaku-library/src/proposals.rs:2597:20: replace += with *= in raise_attach_chapters`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 

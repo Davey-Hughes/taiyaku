@@ -91,10 +91,55 @@ const request = async (input: string, init?: RequestInit) => {
  * same server and the same session. A second `fetch` wrapper there would be a
  * second place for the 401 rule to be forgotten, which is the exact failure
  * `whenSignedOut` above exists to have fixed once.
+ *
+ * **A non-2xx throws the body along with the status, the same as `sendJson`
+ * below and for the same reason.** This threw the path and the status alone
+ * until spec C3, and the read routes it serves are where that cost the most:
+ * `listProposals` and `proposalDetail` both come through here, `Routes.tsx`
+ * puts no admin guard on `/proposals`, and so a reader who types that URL was
+ * shown `"/api/library/proposals: 403"` while the server's own sentence — the
+ * proposals inbox is an administrator's — was read off the wire and dropped.
+ * Every other thrower in this file carries `await res.text()`; this was the
+ * one that did not.
  */
 export async function getJson<T>(path: string): Promise<T> {
   const res = await request(path)
-  if (!res.ok) throw new Error(`${path}: ${res.status}`)
+  if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`)
+  return (await res.json()) as T
+}
+
+/**
+ * A guarded write returning JSON, or `undefined` for a 204.
+ *
+ * Exported for the same reason `getJson` is: `curation.ts` is a third
+ * module of calls against the same server and the same session, and a
+ * second `fetch` wrapper there would be a second place for the 401 rule to
+ * be forgotten.
+ *
+ * A non-2xx throws the path, the status and the body together — the shape
+ * `patchAlignment` and `putNotes` already throw, and for the same reason
+ * `patchAlignment`'s own doc gives: the status is what tells a caller a
+ * stale-validator refusal apart from one it cannot fix by retrying. The body
+ * matters here specially: the proposals API refuses an accept by *naming the
+ * series it would have moved*, and a caller shown only the status would
+ * throw away the whole point of the refusal.
+ */
+export async function sendJson<T>(
+  path: string,
+  method: 'POST' | 'DELETE' | 'PATCH',
+  body?: unknown,
+): Promise<T | undefined> {
+  const res = await request(path, {
+    method,
+    ...(body === undefined
+      ? {}
+      : {
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+  })
+  if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`)
+  if (res.status === 204) return undefined
   return (await res.json()) as T
 }
 
@@ -460,11 +505,14 @@ export interface CorrectionRequest {
  * a reader is watching the result of, not a background write that has to
  * survive the tab going away.
  *
- * The thrown message carries `res.status` ahead of the body, like every other
- * failure in this file — a caller telling a stale-validator `412` apart from
- * a malformed-body `400` or a missing-`If-Match` `428` needs the status, not
+ * The thrown message carries `res.status` ahead of the body, as most writes
+ * in this file do — a caller telling a stale-validator `412` apart from a
+ * malformed-body `400` or a missing-`If-Match` `428` needs the status, not
  * just the server's prose. The body text still comes along too: on a `412`
  * it names the fresh `ETag`, which is what a caller needs to retry.
+ * (`listKeys`, `createKey`, `revokeKey`, `changePassword`, `revokeSession`
+ * and `logout` are the exceptions: they throw on status alone, because none
+ * of their failure bodies carry anything a caller acts on.)
  */
 export async function patchAlignment(
   work: string,

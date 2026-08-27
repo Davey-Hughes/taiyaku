@@ -75,6 +75,15 @@ vi.mock('./library', () => ({
     .fn()
     .mockResolvedValue({ series: [], unfiled: [], query: 'hello' }),
 }))
+// Task 7 wires `/proposals` to `Proposals`, which fetches `listProposals` on
+// mount — a route this file exercises (`/proposals`, below). Its own
+// behaviour is `Proposals.test.tsx`'s job; this fixture only has to resolve
+// so the route mounts without an unhandled rejection, the same reason
+// `oneSeries` and `search` above exist.
+vi.mock('./curation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./curation')>()),
+  listProposals: vi.fn().mockResolvedValue({ proposals: [], counts: {} }),
+}))
 
 const at = (path: string) =>
   mount(
@@ -83,7 +92,7 @@ const at = (path: string) =>
     </MemoryRouter>,
   )
 
-describe('the four routes', () => {
+describe('the routes', () => {
   beforeEach(() => {
     mounts.length = 0
   })
@@ -165,6 +174,24 @@ describe('the four routes', () => {
     expect(host.querySelector('.library')).not.toBeNull()
     expect(host.querySelector('.sidebar')).not.toBeNull()
     expect(vi.mocked(library.search)).toHaveBeenCalledWith('hello')
+  })
+
+  /**
+   * Same trap as the two tests above: `.library`/`.sidebar` alone come from
+   * `Shell`, which wraps every route in this file, so they would still be
+   * present if `/proposals` rendered `<Shell><Library /></Shell>` by mistake.
+   * `.proposals` is a class only `Proposals` itself renders.
+   */
+  it('routes /proposals into the proposals screen inside the shell', async () => {
+    const host = at('/proposals')
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[data-testid="reader"]')).toBeNull()
+    expect(host.querySelector('.library')).not.toBeNull()
+    expect(host.querySelector('.sidebar')).not.toBeNull()
+    expect(host.querySelector('.proposals')).not.toBeNull()
   })
 
   it('sends a reader route with no :work back to the library rather than crashing', () => {

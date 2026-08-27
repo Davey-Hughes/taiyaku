@@ -226,6 +226,15 @@ exist who cannot do it.
 All of it lands in the `jsdom` project, per C1 §9: nothing here touches the
 resolver, so the coverage this adds is coverage CI enforces.
 
+> **Corrected 2026-08-26 by what shipped.** Not all of it did. Vitest's three
+> projects split on *filename*: `curation.test.ts` is a `.test.ts` and so runs
+> in **`node`**, and eight tests landed in **`browser`** (five in
+> `AcceptForm.browser.test.tsx`, three in `Proposals.browser.test.tsx`) for
+> the layout and focus questions jsdom cannot answer. The clause after the
+> colon still holds for `node` and `jsdom`, which are both in CI's gate; the
+> eight browser tests are the part outside it. C3's build design §6 carries
+> the same sentence and the same correction.
+
 ## 9. What is deliberately not done
 
 - **No roots, no scan control, no rule editor, no user management.** Spec C4.

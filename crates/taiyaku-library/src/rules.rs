@@ -350,90 +350,7 @@ impl Engine {
     /// Returns an error only if SQLite refuses the query. A malformed
     /// pattern is a complaint, not an error.
     pub fn load(conn: &Connection) -> Result<(Self, Vec<String>), String> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, ordinal, enabled, root_id, kind, pattern, match_on, \
-                 set_edition_key, set_kind, set_language, set_series, note \
-                 FROM rule ORDER BY ordinal, id",
-            )
-            .map_err(|e| format!("loading rules: {e}"))?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)? != 0,
-                    r.get::<_, Option<i64>>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, String>(6)?,
-                    r.get::<_, Option<String>>(7)?,
-                    r.get::<_, Option<String>>(8)?,
-                    r.get::<_, Option<String>>(9)?,
-                    r.get::<_, Option<String>>(10)?,
-                    r.get::<_, Option<String>>(11)?,
-                ))
-            })
-            .map_err(|e| format!("loading rules: {e}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("loading rules: {e}"))?;
-
-        let mut rules = Vec::with_capacity(rows.len());
-        let mut complaints = Vec::new();
-        for (
-            id,
-            ordinal,
-            enabled,
-            root_id,
-            kind,
-            pattern,
-            match_on,
-            set_ek,
-            set_k,
-            set_l,
-            set_s,
-            note,
-        ) in rows
-        {
-            // `kind` and `match_on` are written only through validated paths
-            // — C4's editor offers a fixed set, and an imported rule is
-            // expected to name one of them — so a row that fails to parse
-            // either is unreachable in practice. Handled as a complaint
-            // rather than trusted with `.expect`, or promoted to the one
-            // `Err` this function has (SQLite refusing the query): the same
-            // "never die over one bad row" reasoning that governs a bad
-            // pattern applies just as well to a bad `kind` string, and this
-            // function's own doc says the only `Err` case is SQLite itself.
-            let kind = match kind.parse::<RuleKind>() {
-                Ok(k) => k,
-                Err(e) => {
-                    complaints.push(format!("rule {id}: {e}"));
-                    continue;
-                }
-            };
-            let match_on = match match_on.parse::<MatchOn>() {
-                Ok(m) => m,
-                Err(e) => {
-                    complaints.push(format!("rule {id}: {e}"));
-                    continue;
-                }
-            };
-            rules.push(Rule {
-                id,
-                ordinal,
-                enabled,
-                root_id,
-                kind,
-                pattern,
-                match_on,
-                set_edition_key: set_ek,
-                set_kind: set_k,
-                set_language: set_l,
-                set_series: set_s,
-                note,
-            });
-        }
-
+        let (rules, mut complaints) = read(conn)?;
         let (engine, compile_complaints) = Self::compile(&rules);
         complaints.extend(compile_complaints);
         Ok((engine, complaints))
@@ -487,6 +404,106 @@ impl Engine {
         apply_root_fallback(root, &mut resolved);
         resolved
     }
+}
+
+/// Every rule in the database, in `ordinal, id` order, with the complaints
+/// raised by rows whose `kind` or `match_on` would not parse.
+///
+/// Split out of [`Engine::load`] so a caller can add a rule that is not in
+/// the table yet — `proposals::resolves` asks what a *candidate* rule would
+/// decide, and the only honest way to answer is to put it in the set the real
+/// engine compiles.
+///
+/// # Errors
+///
+/// Only if SQLite refuses the query. A row that will not parse is a
+/// complaint, exactly as it was inside `load`.
+pub fn read(conn: &Connection) -> Result<(Vec<Rule>, Vec<String>), String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, ordinal, enabled, root_id, kind, pattern, match_on, \
+             set_edition_key, set_kind, set_language, set_series, note \
+             FROM rule ORDER BY ordinal, id",
+        )
+        .map_err(|e| format!("loading rules: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)? != 0,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, Option<String>>(7)?,
+                r.get::<_, Option<String>>(8)?,
+                r.get::<_, Option<String>>(9)?,
+                r.get::<_, Option<String>>(10)?,
+                r.get::<_, Option<String>>(11)?,
+            ))
+        })
+        .map_err(|e| format!("loading rules: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("loading rules: {e}"))?;
+
+    let mut rules = Vec::with_capacity(rows.len());
+    let mut complaints = Vec::new();
+    for (
+        id,
+        ordinal,
+        enabled,
+        root_id,
+        kind,
+        pattern,
+        match_on,
+        set_ek,
+        set_k,
+        set_l,
+        set_s,
+        note,
+    ) in rows
+    {
+        // `kind` and `match_on` are written only through validated paths
+        // — C4's editor offers a fixed set, and an imported rule is
+        // expected to name one of them — so a row that fails to parse
+        // either is unreachable in practice. Handled as a complaint
+        // rather than trusted with `.expect`, or promoted to the one
+        // `Err` this function has (SQLite refusing the query): the same
+        // "never die over one bad row" reasoning that governs a bad
+        // pattern applies just as well to a bad `kind` string, and this
+        // function's own doc says the only `Err` case is SQLite itself.
+        let kind = match kind.parse::<RuleKind>() {
+            Ok(k) => k,
+            Err(e) => {
+                complaints.push(format!("rule {id}: {e}"));
+                continue;
+            }
+        };
+        let match_on = match match_on.parse::<MatchOn>() {
+            Ok(m) => m,
+            Err(e) => {
+                complaints.push(format!("rule {id}: {e}"));
+                continue;
+            }
+        };
+        rules.push(Rule {
+            id,
+            ordinal,
+            enabled,
+            root_id,
+            kind,
+            pattern,
+            match_on,
+            set_edition_key: set_ek,
+            set_kind: set_k,
+            set_language: set_l,
+            set_series: set_s,
+            note,
+        });
+    }
+
+    Ok((rules, complaints))
 }
 
 /// The string one `match_on` value picks out of `rel_path`, per this

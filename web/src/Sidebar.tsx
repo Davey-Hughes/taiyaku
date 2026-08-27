@@ -22,6 +22,34 @@
  * one's. The current answer is `browseModule.ts`'s and `Shell.tsx`'s to keep
  * correct; this file no longer tries to also keep it correct.
  *
+ * **`admin` is a plain prop, unlike `showRoots`.** The proposals inbox is
+ * spec C3's, and nothing yet gives an account a reason to hide it once they
+ * can see it — no `browse`-module preference exists for it — so `Shell.tsx`
+ * hands over the gate's own `admin` bit directly, the same value it computes
+ * for `showRoots`'s default. `undefined` reads as "not an admin", the same
+ * safe default `gate.ts`'s own doc comment gives for a screen mounted with no
+ * gate above it at all.
+ *
+ * **`openProposals` is the count spec C3 §6 and the build design's
+ * file-structure table both asked for, and this entry shipped without.** The
+ * deviation was recorded rather than silently taken, and its stated cost was
+ * that this component mounts around every screen, so a live count is a
+ * request on every page load. What settled it is that the request in question
+ * is the flat one: `GET /api/library/proposals` reads `proposal` — joined to
+ * `series` for the titles, grouped for the counts — and neither compiles a
+ * rule nor walks `scan_entry`, which is what the detail and dry-run routes
+ * both do. 0.10 ms at 8 rows and 0.23 ms at 25,008 (`notes.md`, 2026-08-26),
+ * against 1.1–1.2 µs per entry for those two. Admin-only besides, while the
+ * premise of C3 §3's whole argument is that somebody learns the inbox is
+ * non-empty, and nothing else in this app ever told them.
+ *
+ * The other half of the deviation was a real question — *what* would it
+ * count, given the screen defaults to score 1 and above and a badge counting
+ * every open proposal would send somebody to an empty list. `INBOX_MIN_SCORE`
+ * is the answer: one constant, read by this count and by the screen's own
+ * first request, so the two cannot mean different things. This file does not
+ * hold it, and draws the number it is handed.
+ *
  * **This paragraph once described behaviour that was not true, and that is
  * worth keeping on record rather than editing away.** `Library` passed a
  * hardcoded `false` from the day it was written until 2026-08-21, so no
@@ -36,9 +64,24 @@ import type { RootCard } from './library'
 export interface SidebarProps {
   roots: RootCard[]
   showRoots: boolean
+  /** Admin-only: the proposals inbox link. See this file's own doc comment. */
+  admin?: boolean
+  /**
+   * Open proposals at `curation.ts`'s `INBOX_MIN_SCORE`, once known.
+   *
+   * `undefined` covers never fetched, still in flight and failed alike — the
+   * same three-states-as-one `StatusContext` uses — and draws no badge.
+   * Zero is *not* that: an inbox somebody has emptied is worth saying.
+   */
+  openProposals?: number
 }
 
-export function Sidebar({ roots, showRoots }: SidebarProps) {
+export function Sidebar({
+  roots,
+  showRoots,
+  admin = false,
+  openProposals,
+}: SidebarProps) {
   return (
     <nav className="sidebar" aria-label="Library">
       <ul className="sidebar-primary">
@@ -48,6 +91,16 @@ export function Sidebar({ roots, showRoots }: SidebarProps) {
         <li>
           <Link to="/search">Search</Link>
         </li>
+        {admin && (
+          <li>
+            <Link to="/proposals">
+              Proposals
+              {openProposals !== undefined && (
+                <span className="count">{openProposals}</span>
+              )}
+            </Link>
+          </li>
+        )}
       </ul>
       {showRoots && roots.length > 0 && (
         <>

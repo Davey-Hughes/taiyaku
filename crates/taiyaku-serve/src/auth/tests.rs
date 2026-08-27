@@ -86,6 +86,15 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/library/works/{slug}",
         "/api/library/search",
         "/api/library/status",
+        // Spec C3 §7's proposals inbox, which is admin-gated *inside* each
+        // handler — so it is doubly important that it is guarded here first:
+        // an anonymous request has no `Principal` for that gate to read at
+        // all.
+        "/api/library/proposals",
+        "/api/library/proposals/{id}",
+        "/api/library/proposals/{id}/resolution",
+        "/api/library/proposals/{id}/accept",
+        "/api/library/proposals/{id}/dismiss",
         "/opds/v1.2/catalog",
         "/opds/v1.2/works",
         "/opds/v1.2/works/{work}",
@@ -1534,7 +1543,7 @@ async fn every_route_declares_its_grant_posture() {
     // count from `table` on every run, so a route moved off any of the
     // three driven postures — in either direction, and regardless of which
     // two it moves between — changes `driven` without this assertion's own
-    // `18` moving to match, which is what actually catches it. (A move the
+    // literal moving to match, which is what actually catches it. (A move the
     // other way — `GrantIndependent` reclassified `Refuses` — is instead
     // caught by the loops themselves: driving a real request against a
     // route with no grant behaviour to enforce a 404 gets back whatever
@@ -1550,15 +1559,15 @@ async fn every_route_declares_its_grant_posture() {
         .count();
     assert_eq!(
         driven, 19,
-        "19 of the 29 guarded routes must be classified Refuses, Filters or \
+        "19 of the 34 guarded routes must be classified Refuses, Filters or \
          RefusesAndFilters and driven by the proofs below — a route's \
          posture changed without this count moving to match, so a route \
          this suite believes it proves may no longer be one it does"
     );
     assert_eq!(
         table.len() - driven,
-        10,
-        "the remaining 10 guarded routes must be GrantIndependent or \
+        15,
+        "the remaining 15 guarded routes must be GrantIndependent or \
          KnownGap — see the `driven == 19` assertion just above, which this \
          one is the other half of"
     );

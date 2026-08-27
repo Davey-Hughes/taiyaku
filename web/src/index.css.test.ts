@@ -166,3 +166,115 @@ describe('D3: a dimmed volume tile fades its cover, not its label or its button'
     expect(contrast(darkText, darkFace)).toBeGreaterThanOrEqual(4.5)
   })
 })
+
+/**
+ * **The disabled Accept — the one place on the proposals panel where the
+ * "WCAG exempts an inactive component" exemption was the wrong call.**
+ *
+ * `.proposal-detail .accept` is disabled for the whole of every edit whose
+ * answer is a refusal, which is the state the form sits in while a pattern is
+ * being widened — not a momentary one like the dismiss button beside it. It
+ * shipped at `color: GrayText` over the `ButtonFace` its enabled rule paints,
+ * which the model above puts at **1.35:1 in dark** and 3.43:1 in light: the
+ * word was gone and only the border said a control was there.
+ *
+ * Those two figures are what this block's own model produces for the unfixed
+ * declarations, which is what shows it is the real one — the same check the
+ * D2/D3 comment above makes of itself. `GrayText` is `rgb(128 128 128)` in
+ * both schemes, measured off a live Chromium the way the three colours above
+ * were, and reconfirmed by `AcceptForm.browser.test.tsx`, which reads the
+ * shipped control's own computed colours rather than modelling them.
+ *
+ * The fix keeps the word at full contrast and says "unavailable" with the
+ * ground and the border instead, so what this guards is both halves: legible
+ * in either scheme, and still not drawn as the live control.
+ */
+describe('the disabled Accept is legible in both schemes', () => {
+  const GRAY_TEXT = [128, 128, 128] as const
+
+  const PALETTE = {
+    light: {
+      Canvas: LIGHT.canvas,
+      CanvasText: LIGHT.canvasText,
+      ButtonFace: LIGHT.buttonFace,
+      GrayText: GRAY_TEXT,
+    },
+    dark: {
+      Canvas: DARK.canvas,
+      CanvasText: DARK.canvasText,
+      ButtonFace: DARK.buttonFace,
+      GrayText: GRAY_TEXT,
+    },
+  } as const
+
+  type Scheme = keyof typeof PALETTE
+  type ColourName = keyof (typeof PALETTE)['light']
+
+  function declared(body: string, property: string): string | undefined {
+    const m = body.match(new RegExp(`(?:^|;)\\s*${property}:\\s*([^;]+)`))
+    return m?.[1].trim()
+  }
+
+  const enabled = ruleBody('.proposal-detail .accept')
+  const disabled = ruleBody('.proposal-detail .accept:disabled')
+
+  /** What the disabled control actually paints: its own rule, or the base. */
+  function effective(property: string): string {
+    const value = declared(disabled, property) ?? declared(enabled, property)
+    if (value === undefined) {
+      throw new Error(`neither .accept nor .accept:disabled sets ${property}`)
+    }
+    return value
+  }
+
+  function rgb(
+    name: string,
+    scheme: Scheme,
+  ): readonly [number, number, number] {
+    const found = PALETTE[scheme][name as ColourName]
+    if (!found) throw new Error(`not a system colour this model knows: ${name}`)
+    return found
+  }
+
+  it('reproduces the shipped defect from the same model, so the model is the real one', () => {
+    // `GrayText` on the enabled rule's `ButtonFace`, which is what the file
+    // held before this block existed.
+    expect(
+      contrast(rgb('GrayText', 'dark'), rgb('ButtonFace', 'dark')),
+    ).toBeCloseTo(1.35, 2)
+    expect(
+      contrast(rgb('GrayText', 'light'), rgb('ButtonFace', 'light')),
+    ).toBeCloseTo(3.43, 2)
+  })
+
+  it('clears 4.5:1 in dark — the scheme the shipped `GrayText` failed at 1.35:1', () => {
+    expect(
+      contrast(
+        rgb(effective('color'), 'dark'),
+        rgb(effective('background'), 'dark'),
+      ),
+    ).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('clears 4.5:1 in light too', () => {
+    expect(
+      contrast(
+        rgb(effective('color'), 'light'),
+        rgb(effective('background'), 'light'),
+      ),
+    ).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('is still not drawn as the live control', () => {
+    // The other half, and the reason legibility alone is not the whole fix: a
+    // readable button that looks exactly like the enabled one says the form
+    // is ready when it is refusing. The ground and the border carry that
+    // here, since the word no longer can.
+    expect(declared(disabled, 'background')).toBeDefined()
+    expect(declared(disabled, 'background')).not.toBe(
+      declared(enabled, 'background'),
+    )
+    expect(declared(disabled, 'border-style')).toBe('dashed')
+    expect(declared(enabled, 'border')).toContain('solid')
+  })
+})

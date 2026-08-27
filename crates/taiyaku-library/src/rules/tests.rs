@@ -349,10 +349,14 @@ fn a_parent_rule_matches_the_parents_own_name_and_not_the_whole_path() {
 /// The cost of the difference is not cosmetic — a one-click "this directory
 /// is the colour edition" rule whose pattern is `Color` would capture every
 /// series with `Color` anywhere in its path — and it is the predicate
-/// `proposals::accept`'s swallow-check rests on: `derive::other_series_under_prefix`
-/// asks `rel_path.starts_with(pattern)` and `accept`'s post-write
-/// verification asks `substr(rel_path, 1, length(?1)) = ?1`, so all three
-/// agree today and only this test says so.
+/// `proposals::accept`'s swallow-check rests on. It used to rest on two
+/// restatements of it as well — `derive::other_series_under_prefix` asking
+/// `rel_path.starts_with(pattern)`, and `accept`'s post-write verification
+/// asking `substr(rel_path, 1, length(?1)) = ?1` — and this test was what
+/// said all three agreed. Both restatements are gone: `proposals::resolves`
+/// asks this engine what a candidate rule would decide, so the predicate
+/// below is now the only one there is, and this test is the only thing
+/// pinning it.
 #[test]
 fn a_prefix_rule_matches_a_prefix_and_not_a_substring() {
     let mut mid_path = rule(1, "prefix", "Color", "path");

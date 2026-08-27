@@ -651,14 +651,48 @@ fn slugify(title: &str) -> String {
 /// **Also restores the columns the sidecar does not own.**
 /// `edition.label` under a scan, `edition.language`/`kind`, `credit` rows on
 /// an edition, and
-/// `member.chapter_declared`/`chapter_source` are hand-entered — set by
-/// `librarydoc::apply`, by a `taiyaku.json`, or by a person, never by a walk
-/// — but they live on rows this function deletes and reinserts wholesale
+/// `member.chapter_declared`/`chapter_source` are not this document's — but
+/// they live on rows this function deletes and reinserts wholesale
 /// because the rest of those rows *is* derived from the document. Deleting
 /// them without
 /// a plan would silently null a hand-classified edition or discard a
 /// hand-set chapter number on the next routine rescan, which is exactly the
 /// data `<stem>.library.json` exists to keep from costing a re-derivation.
+///
+/// **Who does write them, per column, because they do not share a list.**
+/// This used to say "by `librarydoc::apply`, by a `taiyaku.json`, or by a
+/// person" of all four at once, and no one of those three is true of all
+/// four. Written out instead:
+///
+/// - `edition.label` — this function alone, out of the document it is handed.
+///   That is the document's own value under [`Scope::Document`], which is
+///   where a `taiyaku.json` reaches it, and the *held* value under
+///   [`Scope::Scan`], which is the restore below. `derive::write_work` puts
+///   `key.clone()` in the document a scan builds, and the restore is what
+///   keeps that from landing over a person's `Japanese raw`.
+/// - `edition.language`/`kind` — `librarydoc::apply`, and
+///   `derive::write_edition_metadata`, under the per-work guard that paragraph
+///   describes. **Nothing writes either from a `taiyaku.json`**: `project.rs`
+///   touches neither column, so the wide sentence named a writer that has
+///   never existed, and `write_edition_metadata`'s own doc states the narrow
+///   claim — the two files disagreed until this was corrected.
+/// - `credit` rows — `librarydoc::apply`, which deletes and reinserts them
+///   per work, and this function's own restore below.
+/// - `member.chapter_declared`/`chapter_source` — `librarydoc::apply`, and
+///   `derive::write_chapters`, which clears only rows carrying
+///   `SCANNER_CHAPTER_SOURCE` so a hand-entered number survives.
+///
+/// `librarydoc::apply` is the only writer common to three of the four, and it
+/// does not write `edition.label` at all.
+///
+/// **`edition.language`/`kind` have a second writer, and this restore is what
+/// hands the row over to it rather than being made redundant by it.**
+/// `derive::write_edition_metadata` writes both from the rules after this
+/// returns — but only over a work no `<stem>.library.json` has been absorbed
+/// onto, and only for the editions that derive itself named. For every other
+/// row it is the value restored here that stands, so dropping this restore as
+/// superfluous would null a hand-classified edition on the next rescan after
+/// all.
 ///
 /// So this reads those columns before the delete and restores them after
 /// the reinsert, **matching editions by `key` and members by `sha256`**

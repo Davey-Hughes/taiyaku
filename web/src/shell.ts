@@ -33,3 +33,27 @@ export const StatusContext = createContext<LibraryStatus | undefined>(undefined)
 export function useLibraryStatus(): LibraryStatus | undefined {
   return useContext(StatusContext)
 }
+
+/**
+ * Ask the chrome to re-read the sidebar's open-proposals count.
+ *
+ * The default is a no-op, for the same reason `StatusContext`'s is
+ * `undefined`: a screen mounted with no shell above it — which is what every
+ * test of one screen is — must not have to know that.
+ *
+ * **This exists because the two numbers are on screen together.** The inbox
+ * re-reads its own list after an accept or a dismiss; the sidebar's count is
+ * fetched once, when the shell mounts. Without a way to say "that write moved
+ * your number too", accepting a proposal leaves a badge reading 3 beside a
+ * header reading 2, on the same screen, until a navigation. The alternative —
+ * having the inbox *publish* its own total upward — was not taken: the inbox
+ * asks at whichever threshold "Show weak proposals" is currently on, so
+ * leaving the screen with weak shown would leave the badge counting a set
+ * pressing it no longer produces.
+ */
+export const InboxRefreshContext = createContext<() => void>(() => {})
+
+/** Re-read the open-proposals count after a write that moved it. */
+export function useInboxRefresh(): () => void {
+  return useContext(InboxRefreshContext)
+}

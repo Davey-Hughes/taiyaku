@@ -1,5 +1,5 @@
 /**
- * The four routes, and the one place `App` is mounted.
+ * The app's routes, and the one place `App` is mounted.
  *
  * Spec C1 §1. `react-router` is the first runtime dependency beyond React
  * since the project began, taken over a hand-rolled fifty-line router because
@@ -8,7 +8,7 @@
  *
  * **Every route here is below `Gate.tsx`**, which `main.tsx` wraps around this
  * component — so nothing in this file has to think about a 401, and a
- * signed-out visitor never reaches any of the four. That was not true when this
+ * signed-out visitor never reaches any of them. That was not true when this
  * file first shipped: sign-in lived inside `App`, `App` mounts on `/read/:work`
  * alone, and `/` therefore had no way to sign in at all.
  *
@@ -21,6 +21,7 @@
 import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router'
 import App from './App'
 import { Library } from './Library'
+import { Proposals } from './Proposals'
 import { Search } from './Search'
 import { Series } from './Series'
 import { Shell } from './Shell'
@@ -57,6 +58,14 @@ export function AppRoutes() {
         element={
           <Shell>
             <Search />
+          </Shell>
+        }
+      />
+      <Route
+        path="/proposals"
+        element={
+          <Shell>
+            <Proposals />
           </Shell>
         }
       />

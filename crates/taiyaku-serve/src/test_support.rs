@@ -620,10 +620,165 @@ pub(crate) fn router_over_a_scanned_work_in_a_series()
     (router, state, fixture)
 }
 
+/// [`router_over_a_scanned_work_in_a_series`], with the fixture account
+/// demoted to a reader.
+///
+/// **The account's `role`, not a missing credential**, which is the whole
+/// point: the router is still wrapped in [`authenticating`], so a request
+/// through it authenticates perfectly and simply is not an administrator's.
+/// A fixture that merely failed to sign in would answer a refusal to a broken
+/// admin gate exactly as readily as to a working one — see
+/// `library_api::tests::get_anonymous`'s note for the same trap found from
+/// the other side.
+///
+/// # Panics
+///
+/// Panics if the demotion updates no row, which would leave the fixture an
+/// administrator with nothing saying so.
+pub(crate) fn router_over_a_scanned_work_as_a_reader()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let (router, state, fixture) = router_over_a_scanned_work_in_a_series();
+    {
+        let conn = state.library.conn();
+        let demoted = conn
+            .execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+            .expect("demotes the fixture account");
+        assert_eq!(
+            demoted, 1,
+            "the fixture account must actually stop being an administrator"
+        );
+    }
+    (router, state, fixture)
+}
+
+/// A directory of page files, the same recipe `taiyaku-library`'s own scan
+/// fixtures use (`scan::tests::write_pages`, which is `pub(crate)` there and
+/// so out of reach here).
+///
+/// Each page's bytes carry the directory's own name, which is what stops two
+/// volumes of the same length colliding on `content_key`.
+fn write_pages(dir: &std::path::Path, pages: usize) {
+    std::fs::create_dir_all(dir).expect("mkdir");
+    let label = dir.to_string_lossy().into_owned();
+    for page in 0..pages {
+        std::fs::write(
+            dir.join(format!("{page:03}.jpg")),
+            format!("not really a jpeg: {label} page {page}").as_bytes(),
+        )
+        .expect("write");
+    }
+}
+
+/// A router over a library **scanned and derived from a real tree on disk**.
+///
+/// No fixture above can stand in for this. `import::sidecar` and
+/// `import::scanned` write `work` and `series` rows and no `scan_entry` rows
+/// at all — and `scan_entry` is what every proposal is raised from, what a
+/// candidate rule is evaluated against, and what an accept's collateral guard
+/// sweeps. A library imported rather than scanned raises nothing, so a route
+/// test over one would assert against an empty inbox whatever the handler
+/// did.
+///
+/// `titles` names one series each, laid out `{parent}/{title}/{title} - v01/`
+/// — `parent` empty puts them at the root. Page counts ascend from two so
+/// that no two volumes are the same length, the same belt-and-braces
+/// `taiyaku-library`'s `library_with_series` keeps.
+///
+/// # Panics
+///
+/// Panics if the tree cannot be written, or if the scan or the derive fails —
+/// each of which means the fixture itself is broken.
+fn router_over_a_scanned_tree(
+    prefix: &str,
+    parent: &str,
+    titles: &[&str],
+) -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let fixture = Fixture::new(prefix);
+    for (pages, title) in (2_usize..).zip(titles) {
+        let under = if parent.is_empty() {
+            fixture.path().to_path_buf()
+        } else {
+            fixture.path().join(parent)
+        };
+        write_pages(&under.join(title).join(format!("{title} - v01")), pages);
+    }
+
+    let library = library();
+    {
+        let conn = library.conn();
+        let root = taiyaku_library::scan::add_root(&conn, fixture.path()).expect("adds the root");
+        taiyaku_library::scan::scan_root(&conn, &root).expect("scans the tree");
+        taiyaku_library::derive::derive(&conn).expect("derives the library");
+    }
+    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works,
+        // A sibling of the scanned tree rather than a directory inside it:
+        // nothing here creates it, and one that appeared under the root
+        // would be material a later scan walked.
+        cache_dir: fixture.path().with_file_name(format!("{prefix}-covers")),
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    let router = authenticating(crate::build_router(state.clone()));
+    (router, state, fixture)
+}
+
+/// A base series and its colour edition, side by side at the root — the
+/// `edition-of` proposal `raise` was written for, and the one shape an accept
+/// can be carried all the way through.
+///
+/// The same layout `taiyaku-library`'s `library_with_two_suffixed_series`
+/// scans, so a route test and a store test are talking about one library.
+pub(crate) fn router_over_two_suffixed_series()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    router_over_a_scanned_tree(
+        "taiyaku-test-two-suffixed-series",
+        "",
+        &[
+            "Go-Toubun no Hanayome",
+            "Go-Toubun no Hanayome - Full Color Edition",
+        ],
+    )
+}
+
+/// The same pair, plus one entirely unrelated series, all three under one
+/// `Publisher/` directory.
+///
+/// The measured shape behind the collateral guard: a pattern widened to
+/// `Publisher/` reaches "Kaguya-sama wa Kokurasetai" as surely as it reaches
+/// the subject, so accepting it would move somebody else's volumes into the
+/// accepted series. `taiyaku-library`'s
+/// `library_with_a_shared_publisher_directory` is the same tree.
+pub(crate) fn router_over_a_shared_publisher_directory()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    router_over_a_scanned_tree(
+        "taiyaku-test-shared-publisher",
+        "Publisher",
+        &[
+            "Go-Toubun no Hanayome",
+            "Go-Toubun no Hanayome - Full Color Edition",
+            "Kaguya-sama wa Kokurasetai",
+        ],
+    )
+}
+
 /// A `GET` against `router`, driven with `oneshot` and no socket. Most
 /// existing tests in `routes/tests.rs` build this same request by hand — this
 /// exists for the shorter tests `router_over_a_library` was added alongside,
 /// not as a mandate to rewrite the others.
+///
+/// **It sets no `Authorization` header of its own, deliberately.** Who the
+/// caller is belongs to the router: every `router_over_*` helper above wraps
+/// its router in [`authenticating`], which injects that fixture's own
+/// credential, so a fixture built for a *reader* answers as a reader through
+/// this same function. A `get` that hard-coded [`fixture_authorization`]
+/// would send the administrator's key to every router it was handed and turn
+/// a reader fixture back into an administrator without saying so — which is
+/// the same trap `library_api::tests::get_anonymous`'s own note records from
+/// the other direction.
 pub(crate) async fn get(
     router: &axum::Router,
     uri: &str,
@@ -634,6 +789,52 @@ pub(crate) async fn get(
         .oneshot(
             axum::http::Request::get(uri)
                 .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// [`get`], with the body parsed. Panics on a non-200 naming the status — a
+/// helper that silently returned `null` from a 401 would be a test asserting
+/// nothing.
+///
+/// **Here rather than private to one test module**, which is the argument
+/// `api.ts` already makes for exporting `getJson` instead of letting each
+/// caller re-wrap `fetch`: the panic above is load-bearing, and two copies of
+/// it would be two places for it to be forgotten.
+pub(crate) async fn get_json(router: &axum::Router, path: &str) -> serde_json::Value {
+    let response = get(router, path).await;
+    let status = response.status();
+    let body = body_string(response).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{path}: {body}");
+    serde_json::from_str(&body).expect("a JSON body")
+}
+
+/// A request carrying a JSON body — what the write routes need and what
+/// [`get`] cannot express.
+///
+/// The status is handed back rather than asserted, because the tests this
+/// exists for are as often about a refusal as about a success: [`get_json`]
+/// above is the one that insists on 200, and it insists because its return
+/// type leaves a caller nothing to check.
+///
+/// Sets no `Authorization` header, for the reason [`get`] states.
+pub(crate) async fn send_json(
+    router: &axum::Router,
+    method: axum::http::Method,
+    uri: &str,
+    body: &serde_json::Value,
+) -> axum::http::Response<axum::body::Body> {
+    use tower::ServiceExt;
+    router
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(body.to_string()))
                 .unwrap(),
         )
         .await

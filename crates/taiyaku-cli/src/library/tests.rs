@@ -1437,6 +1437,20 @@ fn derive_summary_prints_kept_editions_and_merged_when_nonzero_and_omits_them_wh
     assert!(!quiet.contains("merged"), "{quiet}");
 }
 
+/// The same rule once more, for the counter `derive::write_edition_metadata`
+/// added. A rule naming an edition kind the column's closed set does not hold
+/// decides nothing, and without this line it decides nothing *silently* —
+/// indistinguishable, from every side, from a rule that named no kind at all.
+#[test]
+fn derive_summary_prints_unrecognised_kinds_when_nonzero_and_omits_them_when_zero() {
+    let mut report = derive_report();
+    report.unrecognised_kinds = 5;
+    let line = derive_summary(&report, 0);
+    assert!(line.contains("5 unrecognised edition kinds"), "{line}");
+    let quiet = derive_summary(&derive_report(), 0);
+    assert!(!quiet.contains("unrecognised"), "{quiet}");
+}
+
 #[test]
 fn derive_summary_prints_unattached_and_unreadable_when_nonzero() {
     let mut report = derive_report();

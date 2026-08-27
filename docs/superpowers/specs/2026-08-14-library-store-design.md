@@ -801,9 +801,9 @@ machine-obtained data with nothing to backfill.
 | **A** *(this one; shipped 2026-08-18, #76)* | the store, import/export, `serve` off the database | — |
 | **A2** *(shipped 2026-08-18)* | argon2id, sessions, **API keys / HTTP Basic for OPDS**, guards, roles, per-root visibility, `FILE_DOWNLOAD`-equivalent — designed in `2026-08-14-library-auth-design.md`. Per-root visibility ships as a resolved `Principal.roots` that no route filters on yet, and the capability flags likewise: B landed first and gave `work` no `root_id`, so C1's browse API is the first caller that can act on either (O54) | A |
 | **B** *(shipped 2026-08-18, #77)* | the scanner: facts on disk, a user-editable rule layer over them, proposals, change detection — **standing alone, per §13.6**; designed in `2026-08-14-library-scanner-design.md` | A |
-| **C1** *(server half shipped 2026-08-20, #81; shell and sign-in shipped 2026-08-21, #82; series page, search and the trigram tokeniser on branch `library-browse-series`, PR not yet opened)* | browse API and UI: shell, series page, search, and the reader gaining an entry point — designed in `2026-08-14-library-browse-design.md` | A2, B |
-| **C2** | download: member bytes, and an edition as one streamed CBZ (§13.1) | A2 |
-| **C3** | curation: the proposals inbox and metadata editing — designed in `2026-08-14-library-curation-design.md` | C1 |
+| **C1** *(shipped in three: server half 2026-08-20, #81; shell and sign-in 2026-08-21, #82; series page, search and the trigram tokeniser 2026-08-21, #83)* | browse API and UI: shell, series page, search, and the reader gaining an entry point — designed in `2026-08-14-library-browse-design.md` | A2, B |
+| **C2** *(shipped in two: the download 2026-08-25, #85; its deferred second half — the OPDS-namespace route, the acquisition link repointed at it, and a download control on the series page — 2026-08-25, #86)* | download: member bytes, and an edition as one streamed CBZ (§13.1) | A2 |
+| **C3** *(§§1–4, the proposals inbox, open as #88; §5 metadata editing and §6 the ComicInfo write-back not built)* | curation: the proposals inbox and metadata editing — designed in `2026-08-14-library-curation-design.md`, built to `2026-08-26-library-curation-build-design.md` | C1 |
 | **C4** | configuration: roots, scan control, spec B's rule editor and its per-field provenance, A2's user management, backup — designed in `2026-08-14-library-configuration-design.md` | C1 |
 | **D–F** | project 2: extract the alignment pipeline, a job runner, align from the UI | A, C |
 | **G** | AniList / MAL sync: `user_credential`, `sync_state`, the push loop | A, and a chapter number worth pushing |
@@ -812,6 +812,16 @@ machine-obtained data with nothing to backfill.
 | **project 3** | reflowable EPUB: a spine-and-CFI position model and a second reader | H |
 
 Three of those rows exist because this spec's own prose placed them nowhere.
+**C1, C2 and C3 each landed in pieces rather than as a row**, which the
+`Delivers` column does not show and the parentheses now do. The split was not
+planned in any of the three: C1's third PR exists because a series page needed
+a tokeniser nobody had costed, C2's because a download's second half was
+deferred once its first half was reviewed, and C3's because §§1–4 are a screen
+and §5 is a different one over the same store. **A row here is a spec, not a
+branch**, and reading it as a branch is what left C1's row claiming a PR was
+not yet opened from the day #83 merged until C3's own branch went looking for
+what came next.
+
 **G** waits on more than spec A: pushing chapter progress means having chapter
 numbers, and `chapter_at` refuses to infer one from a filename
 (`core/sidecar.rs:477`), so the useful version of G follows a scanner that has

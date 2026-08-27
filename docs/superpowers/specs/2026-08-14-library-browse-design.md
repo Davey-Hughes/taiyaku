@@ -495,7 +495,16 @@ per-member existence fact nothing projects. It is derivable: the scanner
 while `member` rows survive, so a member under a root with no `scan_entry` at
 its path is a missing file. It is not derivable *cheaply* — `member.path` is
 absolute and `scan_entry.rel_path` is relative to its root, so the join is over
-a computed string rather than an index. That is a question about what the store
+a computed string rather than an index.
+
+*This last sentence is wrong, and is kept rather than rewritten because it is
+why the item sat unbuilt. The computed string is on the **probing** side; the
+side being probed is `scan_entry`, whose `UNIQUE (root_id, rel_path)` is the
+index the probe wants, and `member.root_id` has existed since migration 6 —
+which this same spec shipped. Measured 2026-08-26 against `schema/001`–`008`:
+`SEARCH se USING COVERING INDEX sqlite_autoindex_scan_entry_1`, one probe per
+member. Shipped code performs that exact join for another reason
+(`proposals::edition_formats`). See C3's build design §8 and O62's row.* That is a question about what the store
 should record when a file vanishes, not about how a browse screen displays it,
 and it goes to C3 with the rest of provenance. Until then the state renders as
 the failure it already is: the work opens and its first page 404s, which is

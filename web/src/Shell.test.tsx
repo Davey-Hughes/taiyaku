@@ -3,16 +3,26 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Me } from './api'
 import { useBrowsePrefs } from './browseModule'
+import * as curation from './curation'
 import { GateContext } from './gate'
 import * as library from './library'
 import { Shell } from './Shell'
-import { useLibraryStatus } from './shell'
+import { useInboxRefresh, useLibraryStatus } from './shell'
 import { mount } from './testing/mount'
 import { fakeStorage } from './testing/storage'
 
 vi.mock('./library', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./library')>()),
   status: vi.fn(),
+}))
+
+// Only the one call. `INBOX_MIN_SCORE` and `inboxTotal` are pure and are what
+// the assertions below read the request and the badge through, so mocking
+// them would leave the test agreeing with itself about a threshold the app
+// does not use.
+vi.mock('./curation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./curation')>()),
+  listProposals: vi.fn(),
 }))
 
 const who = (over: Partial<Me> = {}): Me => ({
@@ -77,6 +87,26 @@ function showRootsProbe() {
   return <Probe />
 }
 
+/**
+ * A child that asks the chrome to re-count, on demand.
+ *
+ * Declared inside a function for `reporter()`'s reason — the two lint rules
+ * its own comment names. This stands in for `Proposals.tsx`, which calls the
+ * same hook from its `reload`; what belongs here is that the *shell* answers
+ * it, and `Proposals.test.tsx` owns the half where a dismissal makes the call.
+ */
+function recountProbe() {
+  function Probe() {
+    const recount = useInboxRefresh()
+    return (
+      <button type="button" data-testid="recount" onClick={recount}>
+        recount
+      </button>
+    )
+  }
+  return <Probe />
+}
+
 /** The `<label>` whose own text is exactly `label`, and the checkbox inside it. */
 function checkboxLabelled(host: HTMLElement, label: string): HTMLInputElement {
   const row = [...host.querySelectorAll('.browse-settings label')].find(
@@ -91,9 +121,17 @@ function checkboxLabelled(host: HTMLElement, label: string): HTMLInputElement {
 
 describe('Shell', () => {
   beforeEach(() => {
+    // Call records, not implementations — `asks for no count at all for a
+    // reader` asserts on *not* having been called, and without this it reads
+    // the admin mounts three tests above it.
+    vi.clearAllMocks()
     vi.mocked(library.status).mockResolvedValue({
       roots: [{ id: 1, name: 'Manga' }],
       scanned: true,
+    })
+    vi.mocked(curation.listProposals).mockResolvedValue({
+      proposals: [],
+      counts: { 'edition-of': 5, 'same-series': 2 },
     })
   })
 
@@ -123,6 +161,128 @@ describe('Shell', () => {
       who({ admin: false }),
     )
     expect(asReader.querySelector('.sidebar-roots')).toBeNull()
+  })
+
+  /**
+   * `Sidebar.tsx`'s proposals link is admin-only, and `Sidebar` itself only
+   * knows that from its `admin` prop — nothing about the sidebar's own tests
+   * can pin that `Shell` actually threads the gate's `admin` bit into that
+   * prop, since `Sidebar.test.tsx` constructs `<Sidebar>` directly. Without
+   * this, deleting the `admin={admin}` line `Shell.tsx` passes down would
+   * leave every admin account seeing no link, silently, and no test in this
+   * suite or `Sidebar.test.tsx` would fail.
+   */
+  it('gives the sidebar the account’s admin bit, so the proposals link follows it too', async () => {
+    const asAdmin = await settle(
+      <Shell>
+        <p>x</p>
+      </Shell>,
+      who({ admin: true }),
+    )
+    expect(asAdmin.querySelector('a[href="/proposals"]')).not.toBeNull()
+
+    const asReader = await settle(
+      <Shell>
+        <p>x</p>
+      </Shell>,
+      who({ admin: false }),
+    )
+    expect(asReader.querySelector('a[href="/proposals"]')).toBeNull()
+  })
+
+  /**
+   * The count itself. `Sidebar.test.tsx` pins that a number handed to
+   * `Sidebar` is drawn; nothing there can pin that `Shell` fetches one, or
+   * *which* one — deleting this effect leaves every sidebar test green and
+   * every deployment back to a bare `Proposals` entry, which is exactly how
+   * the entry shipped without a count in the first place.
+   *
+   * The two kind counts differ (5 and 2), so `7` cannot come from either one
+   * alone, and the request's own filter is asserted: a count taken at no
+   * threshold, or across every state, is a badge that disagrees with the
+   * screen it links to.
+   */
+  it('reads the open count for an admin, at the threshold the inbox opens at', async () => {
+    const host = await settle(
+      <Shell>
+        <p>x</p>
+      </Shell>,
+      who({ admin: true }),
+    )
+    expect(vi.mocked(curation.listProposals)).toHaveBeenCalledWith({
+      state: 'open',
+      min_score: curation.INBOX_MIN_SCORE,
+    })
+    expect(host.querySelector('a[href="/proposals"] .count')?.textContent).toBe(
+      '7',
+    )
+  })
+
+  it('re-reads the count when a screen under it says a write moved the inbox', async () => {
+    // `Shell` fetches once on mount; the inbox screen re-reads its own list
+    // after every accept and dismiss, and without this seam the badge sits at
+    // the mount's number beside a header that has moved. The second answer
+    // differs from the first so "it asked again" and "it drew the first
+    // answer twice" are distinguishable.
+    vi.mocked(curation.listProposals)
+      .mockResolvedValueOnce({
+        proposals: [],
+        counts: { 'edition-of': 5, 'same-series': 2 },
+      })
+      .mockResolvedValue({ proposals: [], counts: { 'edition-of': 4 } })
+
+    const host = await settle(
+      <Shell>{recountProbe()}</Shell>,
+      who({ admin: true }),
+    )
+    expect(host.querySelector('a[href="/proposals"] .count')?.textContent).toBe(
+      '7',
+    )
+
+    const button = host.querySelector<HTMLElement>('[data-testid="recount"]')
+    if (!button) throw new Error('no recount control rendered')
+    await act(async () => {
+      button.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(vi.mocked(curation.listProposals)).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('a[href="/proposals"] .count')?.textContent).toBe(
+      '4',
+    )
+  })
+
+  it('asks for no count at all for a reader, who has no inbox to count', async () => {
+    await settle(
+      <Shell>
+        <p>x</p>
+      </Shell>,
+      who({ admin: false }),
+    )
+    expect(vi.mocked(curation.listProposals)).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The badge is an ornament and its failure is not the reader's problem —
+   * but "swallowed" must mean *the link still works*, not "the shell throws
+   * an alert over every screen in the library". The status fetch beside it
+   * does report, and the two are deliberately different; this is the test
+   * that says which is which.
+   */
+  it('keeps the proposals link and stays quiet when the count cannot be read', async () => {
+    vi.mocked(curation.listProposals).mockRejectedValue(
+      new Error('/api/library/proposals: 500'),
+    )
+    const host = await settle(
+      <Shell>
+        <p>x</p>
+      </Shell>,
+      who({ admin: true }),
+    )
+    expect(host.querySelector('a[href="/proposals"]')).not.toBeNull()
+    expect(host.querySelector('a[href="/proposals"] .count')).toBeNull()
+    expect(host.querySelector('[role="alert"]')).toBeNull()
   })
 
   /**

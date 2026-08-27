@@ -12,16 +12,40 @@
  * both states, which is correct of it and useless here. The difference is
  * between "you have no library" and "your library has not been read yet", and
  * the person seeing it can act on exactly one of those.
+ *
+ * **Three more for the proposals inbox — spec C3 §3 — split on that same
+ * rule.** An inbox that draws nothing is three different situations, and the
+ * person seeing it can act on exactly one of each: `inbox-clear` is "there is
+ * nothing to answer", `inbox-weak-hidden` is "there may be something and the
+ * score threshold is holding it back", and `kind-answered` is "this one kind
+ * is answered out and the others are still waiting". Collapsing the second
+ * into the first would tell somebody their work was finished while the
+ * control that would show them otherwise sat unpressed above the message.
+ *
+ * **None of them draws a control of its own.** Every recovery these three
+ * name — `Show weak proposals`, the `All` tab — is already on screen above
+ * the list, drawn by `Proposals.tsx`, so this names it in words rather than
+ * offering a second button that does the same thing from a different place.
+ * The two library states point at a shell command for the same reason: the
+ * act that fixes them is not on the page at all.
  */
-export type EmptyKind = 'no-roots' | 'not-scanned' | 'no-matches'
+export type EmptyKind =
+  | 'no-roots'
+  | 'not-scanned'
+  | 'no-matches'
+  | 'inbox-clear'
+  | 'inbox-weak-hidden'
+  | 'kind-answered'
 
 export interface EmptyStateProps {
   kind: EmptyKind
   /** What was searched, for `no-matches`. */
   query?: string
+  /** Which kind's tab is selected, as `kindLabel` writes it, for `kind-answered`. */
+  label?: string
 }
 
-export function EmptyState({ kind, query }: EmptyStateProps) {
+export function EmptyState({ kind, query, label }: EmptyStateProps) {
   if (kind === 'no-roots') {
     return (
       <section className="empty">
@@ -44,6 +68,42 @@ export function EmptyState({ kind, query }: EmptyStateProps) {
         <h2>Not read yet</h2>
         <p>This library has roots, and nothing has scanned them.</p>
         <pre>taiyaku library scan</pre>
+      </section>
+    )
+  }
+  if (kind === 'inbox-clear') {
+    return (
+      <section className="empty">
+        <h2>Nothing to answer</h2>
+        <p>
+          Every proposal this library has raised has been accepted or dismissed.
+          A scan raises new ones:
+        </p>
+        <pre>taiyaku library scan</pre>
+      </section>
+    )
+  }
+  if (kind === 'inbox-weak-hidden') {
+    return (
+      <section className="empty">
+        <h2>Nothing to answer</h2>
+        <p>
+          Nothing is open above the score threshold. Show weak proposals reveals
+          the ones below it — a weak proposal is hidden, never dropped.
+        </p>
+      </section>
+    )
+  }
+  if (kind === 'kind-answered') {
+    return (
+      <section className="empty">
+        <h2>Nothing here</h2>
+        <p>
+          {label === undefined || label === ''
+            ? 'No proposal of this kind is waiting on a decision.'
+            : `No ${label} proposal is waiting on a decision.`}{' '}
+          All shows the ones that are.
+        </p>
       </section>
     )
   }

@@ -712,6 +712,222 @@ fn a_re_derive_still_writes_the_volume_for_a_work_no_hand_document_has_touched()
     );
 }
 
+/// Every edition's `(key, kind, language)`, in a fixed order — the shape an
+/// assertion about the two columns `derive::write_edition_metadata` writes
+/// needs, since `SELECT … LIMIT 1` would pass on a library where only one of
+/// two editions was written.
+fn edition_metadata(conn: &rusqlite::Connection) -> Vec<(String, Option<String>, Option<String>)> {
+    conn.prepare("SELECT key, kind, language FROM edition ORDER BY key, id")
+        .expect("prepare")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect")
+}
+
+/// `(kind, language)` as owned strings, so an assertion reads as the two
+/// values rather than as a tower of `Some("…".to_string())`.
+fn metadata(kind: Option<&str>, language: Option<&str>) -> (Option<String>, Option<String>) {
+    (kind.map(str::to_string), language.map(str::to_string))
+}
+
+/// A rule that names an edition kind and a language over the fixture's own
+/// series — the two columns C3's accept form offers as controls, written the
+/// way `proposals::accept_with` writes them.
+fn a_rule_setting(conn: &rusqlite::Connection, kind: Option<&str>, language: Option<&str>) {
+    conn.execute(
+        "INSERT INTO rule (ordinal, kind, pattern, match_on, set_kind, set_language)
+         VALUES (99, 'prefix', 'Go-Toubun no Hanayome/', 'path', ?1, ?2)",
+        rusqlite::params![kind, language],
+    )
+    .expect("the rule an accept would have written");
+}
+
+#[test]
+fn a_rules_edition_kind_and_language_reach_the_edition_row() {
+    // Measured on real archives before this was written, not reasoned about:
+    // accepting an `edition-of` proposal writes a rule holding
+    // `set_kind = 'official'`, the next scan derives the edition that rule
+    // names, and `edition.kind` came back NULL — `import::replace_editions`
+    // inserts `(work_id, key, label)`, and until now nothing else wrote
+    // either column from the rules at all.
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    a_rule_setting(&conn, Some("official"), Some("Japanese"));
+
+    let report = derive::derive(&conn).expect("derive");
+
+    assert_eq!(report.unrecognised_kinds, 0);
+    let held = edition_metadata(&conn);
+    assert_eq!(
+        held.iter()
+            .map(|(_, kind, language)| (kind.clone(), language.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            metadata(Some("official"), Some("Japanese")),
+            metadata(Some("official"), Some("Japanese")),
+        ],
+        "both of the fixture's editions are under the rule's prefix: {held:?}",
+    );
+}
+
+#[test]
+fn a_rule_that_stops_naming_a_kind_clears_the_one_the_last_derive_wrote() {
+    // The half that makes the control usable more than once. Filling only a
+    // NULL would have been the safer-looking rule and would have frozen the
+    // first answer a person ever gave: `import::replace_editions` restores
+    // these two columns across its own delete-and-reinsert, so nothing else
+    // would ever remove the stale value.
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    a_rule_setting(&conn, Some("official"), Some("Japanese"));
+    derive::derive(&conn).expect("first derive");
+
+    conn.execute("DELETE FROM rule WHERE ordinal = 99", [])
+        .expect("the person edits the rule back");
+    derive::derive(&conn).expect("second derive");
+
+    let held = edition_metadata(&conn);
+    assert!(
+        held.iter()
+            .all(|(_, kind, language)| kind.is_none() && language.is_none()),
+        "a rule that resolves nothing leaves nothing standing: {held:?}",
+    );
+}
+
+#[test]
+fn an_edition_kind_the_closed_set_does_not_hold_is_refused_and_counted() {
+    // `edition.kind` is `raw | official | fan` and `rule.set_kind` is a bare
+    // `TEXT` column, so a rule can carry a word the column cannot. Storing it
+    // would cost more than the typo: `librarydoc::of` refuses an unrecognised
+    // stored kind, so the work would stop describing and stop exporting —
+    // which is what the last assertion here pins.
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    a_rule_setting(&conn, Some("bootleg"), Some("Japanese"));
+
+    let report = derive::derive(&conn).expect("derive");
+
+    assert_eq!(
+        report.unrecognised_kinds, 2,
+        "one per edition the rule reached, so a person is told rather than left \
+         wondering why the kind never moved",
+    );
+    let held = edition_metadata(&conn);
+    assert!(
+        held.iter().all(|(_, kind, _)| kind.is_none()),
+        "the word the column cannot hold is not stored: {held:?}",
+    );
+    assert!(
+        held.iter()
+            .all(|(_, _, language)| language.as_deref() == Some("Japanese")),
+        "and the field that was fine is still written: {held:?}",
+    );
+    let work_id: i64 = conn
+        .query_row("SELECT id FROM work ORDER BY id LIMIT 1", [], |r| r.get(0))
+        .expect("a work");
+    assert!(
+        crate::librarydoc::of(&conn, work_id).is_ok(),
+        "the work still describes, which is the whole reason the value is dropped",
+    );
+}
+
+#[test]
+fn a_hand_applied_library_documents_edition_kind_outlives_a_re_derive() {
+    // The other side of I7's guard, now that these two columns sit behind it.
+    // `librarydoc::apply` is the only other production writer of a value into
+    // them, and `migrate::absorbed(…, LIBRARY)` is what says, per work,
+    // whether such a document has actually been applied — the same question
+    // `work.volume` and `work.series_id` already ask two lines away.
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+
+    let hand: i64 = conn
+        .query_row("SELECT id FROM work ORDER BY volume LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .expect("the volume 1 work");
+    crate::migrate::record_absorbed(&conn, hand, crate::migrate::LIBRARY, true)
+        .expect("marks this work's library metadata as this library's own");
+    conn.execute(
+        "UPDATE edition SET kind = 'fan', language = 'English' WHERE work_id = ?1",
+        [hand],
+    )
+    .expect("what the document said");
+    a_rule_setting(&conn, Some("official"), Some("Japanese"));
+
+    derive::derive(&conn).expect("second derive, over the same unchanged files");
+
+    let (kind, language): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT kind, language FROM edition WHERE work_id = ?1",
+            [hand],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the absorbed work's edition");
+    assert_eq!(
+        (kind, language),
+        metadata(Some("fan"), Some("English")),
+        "the document owns this work's edition metadata, so the rule does not reach it",
+    );
+    // And the guard is per work, not a switch that quiets the whole library:
+    // the other work, which no document has touched, follows the rule.
+    let (kind, language): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT kind, language FROM edition WHERE work_id != ?1",
+            [hand],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the untouched work's edition");
+    assert_eq!(
+        (kind, language),
+        metadata(Some("official"), Some("Japanese"))
+    );
+}
+
+#[test]
+fn an_edition_takes_the_kind_of_the_first_member_that_resolved_one() {
+    // One edition can gather entries the rules answered differently — this
+    // fixture's volume arrives as two chapter directories, and only the
+    // second in page order is under the rule's prefix. Reading the kind off
+    // the first member alone would answer NULL here and would throw away a
+    // root's `default_kind` the moment a file from another root sorted first.
+    let tree = chaptered();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    conn.execute(
+        "INSERT INTO rule (ordinal, kind, pattern, match_on, set_kind)
+         VALUES (99, 'prefix', 'Chaptered/Chaptered - v03 - c10', 'path', 'fan')",
+        [],
+    )
+    .expect("a rule reaching only the later chapter");
+
+    derive::derive(&conn).expect("derive");
+
+    // `c9` sorts before `c10` in page order — that is what `chaptered()` is
+    // built to make true — so this is the second member's answer, reached
+    // past the first member's silence.
+    assert_eq!(
+        edition_metadata(&conn),
+        vec![("raw".to_string(), Some("fan".to_string()), None)],
+    );
+}
+
 #[test]
 fn a_member_directly_under_the_root_keeps_its_whole_name_as_the_title() {
     // `work.title` is what a reader sees, what `work_fts` indexes and what
@@ -1762,4 +1978,48 @@ fn a_rederive_rewrites_the_root_rather_than_leaving_the_old_one() {
         )
         .expect("counting");
     assert_eq!(wrong, 0, "a re-derive rewrites every member's root");
+}
+
+#[test]
+fn one_pass_answers_for_every_series_it_was_asked_about() {
+    // `rel_paths_by_series` exists so `proposals::evidence` can ask about
+    // both ends of a proposal — and about the rule beside them — without
+    // paying for three passes over every `scan_entry` row in the library,
+    // which is what it did. The property that makes the plural form
+    // substitutable for the singular one is this: each title gets exactly
+    // what a separate call would have given it, and a title nothing resolves
+    // to is present and empty rather than missing.
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("derive");
+
+    let asked = std::collections::BTreeSet::from([
+        "Go-Toubun no Hanayome",
+        "Kaguya-sama - Fan Translated",
+        "A Series Nothing Here Is",
+    ]);
+    let together = derive::rel_paths_by_series(&conn, &asked).expect("one pass");
+
+    assert_eq!(
+        together.keys().map(String::as_str).collect::<Vec<_>>(),
+        asked.iter().copied().collect::<Vec<_>>(),
+        "every title asked about is answered, including the one with nothing under it",
+    );
+    for title in &asked {
+        assert_eq!(
+            together[*title],
+            derive::rel_paths_for_series(&conn, title).expect("one at a time"),
+            "`{title}` is answered the same either way",
+        );
+    }
+    assert!(
+        !together["Go-Toubun no Hanayome"].is_empty()
+            && !together["Kaguya-sama - Fan Translated"].is_empty(),
+        "and two of the three genuinely have entries, or this compares empty against empty: \
+         {together:?}",
+    );
+    assert!(together["A Series Nothing Here Is"].is_empty());
 }

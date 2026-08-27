@@ -13,6 +13,13 @@ mod composite;
 #[cfg(test)]
 mod corpus;
 mod cover;
+/// Spec C3 §7's proposals inbox: the admin-only routes over
+/// [`taiyaku_library::proposals`].
+///
+/// Private, because every handler in it is reached through
+/// [`build_router`] and nothing else — a `pub` here would be surface with no
+/// caller.
+mod curation;
 pub(crate) mod download;
 pub mod library_api;
 /// A work's notes, beside its sidecar.

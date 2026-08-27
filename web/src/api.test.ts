@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   Unauthenticated,
+  getJson,
   getNotes,
   getProgress,
   getSidecar,
@@ -81,6 +82,32 @@ describe('network calls', () => {
     )
 
     await expect(listWorks()).rejects.toThrow(/no works configured/)
+  })
+
+  it("getJson rejects with the status and the server's own sentence, not the status alone", async () => {
+    // Every read in `library.ts` and `curation.ts` comes through `getJson`,
+    // and this threw `path: status` with the body read off the wire and
+    // dropped. The proposals inbox is where that cost the most: `Routes.tsx`
+    // puts no admin guard on `/proposals`, so a reader who types the URL
+    // reaches `listProposals`, and `curation.rs::admin_or_forbidden` answers
+    // 403 with the sentence below — the only part of the refusal a person
+    // can act on.
+    //
+    // The whole message is asserted rather than a substring of it: a version
+    // that dropped the status, or the path, or appended the body to the
+    // wrong one of them, passes `toThrow(/administrator/)`.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response("the proposals inbox is an administrator's", {
+          status: 403,
+        }),
+      ),
+    )
+
+    await expect(getJson('/api/library/proposals')).rejects.toThrow(
+      "/api/library/proposals: 403 the proposals inbox is an administrator's",
+    )
   })
 
   it('getSidecar returns the sidecar verbatim as text, unparsed', async () => {

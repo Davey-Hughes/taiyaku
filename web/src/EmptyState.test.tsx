@@ -19,8 +19,50 @@ describe('the empty states', () => {
     expect(host.textContent).toContain('五等分の花嫁')
   })
 
+  it('names the kind whose tab has just been answered out, and the control that undoes it', () => {
+    const host = mount(
+      <EmptyState kind="kind-answered" label="Attach Chapters" />,
+    )
+    expect(host.textContent).toContain(
+      'No Attach Chapters proposal is waiting on a decision.',
+    )
+    expect(host.textContent).toContain('All shows the ones that are.')
+  })
+
+  it('still says something useful for a kind-answered state with no label to name', () => {
+    // `Proposals.tsx` always has a label to pass, so this is the branch no
+    // screen reaches — and a template dropped straight into the sentence
+    // would render "No undefined proposal is waiting", which is the failure
+    // `no-matches` already carries the same guard against.
+    const host = mount(<EmptyState kind="kind-answered" />)
+    expect(host.textContent).toContain(
+      'No proposal of this kind is waiting on a decision.',
+    )
+    expect(host.textContent).not.toContain('undefined')
+  })
+
+  it('separates a cleared inbox from one whose weak proposals are hidden', () => {
+    // The same split `no-roots` and `not-scanned` are drawn on: the person
+    // can act on exactly one of the two, and the acts are different. A
+    // shared message would send somebody to a scan when the proposal they
+    // want is already raised and merely below the threshold.
+    const clear = mount(<EmptyState kind="inbox-clear" />)
+    const hidden = mount(<EmptyState kind="inbox-weak-hidden" />)
+    expect(clear.textContent).toContain('taiyaku library scan')
+    expect(clear.textContent).not.toContain('Show weak proposals')
+    expect(hidden.textContent).toContain('Show weak proposals')
+    expect(hidden.textContent).not.toContain('taiyaku library scan')
+  })
+
   it('renders something for every kind — none of them is a null return', () => {
-    for (const kind of ['no-roots', 'not-scanned', 'no-matches'] as const) {
+    for (const kind of [
+      'no-roots',
+      'not-scanned',
+      'no-matches',
+      'inbox-clear',
+      'inbox-weak-hidden',
+      'kind-answered',
+    ] as const) {
       expect(mount(<EmptyState kind={kind} />).textContent).not.toBe('')
     }
   })

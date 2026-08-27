@@ -1825,6 +1825,36 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         ("/api/library/works/{slug}", get(crate::library_api::work)),
         ("/api/library/search", get(crate::library_api::search)),
         ("/api/library/status", get(crate::library_api::status)),
+        // **Spec C3 §7, and in `guarded_routes` rather than
+        // `open_routes`** — the identical argument the C1 comment above
+        // makes, and one these routes cannot afford to get wrong: they
+        // write.
+        //
+        // Which `extend` call they arrive in is not what carries that.
+        // `guarded_routes` returns one Vec and `build_router` applies
+        // `route_layer` to the whole of it, so the `opds::routes()` extended
+        // on the next line is as guarded as these are. What holds the line is
+        // three tests, none of which can be satisfied by a route that is
+        // merely nearby: `auth::tests::every_route_refuses_an_anonymous
+        // _request` checks this function's paths against a typed list and
+        // drives each one for a 401, `auth::tests::every_route_declares_its
+        // _grant_posture` asserts its posture table's route set against this
+        // function's exactly, and `curation::tests::every_curation_route
+        // _refuses_a_reader` drives all six of these for a 403.
+        ("/api/library/proposals", get(crate::curation::list)),
+        ("/api/library/proposals/{id}", get(crate::curation::detail)),
+        (
+            "/api/library/proposals/{id}/resolution",
+            axum::routing::post(crate::curation::resolution),
+        ),
+        (
+            "/api/library/proposals/{id}/accept",
+            axum::routing::post(crate::curation::accept).delete(crate::curation::unaccept),
+        ),
+        (
+            "/api/library/proposals/{id}/dismiss",
+            axum::routing::post(crate::curation::dismiss),
+        ),
     ]);
     routes.extend(crate::opds::routes());
     routes
@@ -2058,6 +2088,59 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         ("/api/library/works/{slug}", Filters),
         ("/api/library/search", Filters),
         ("/api/library/status", Filters),
+        // Spec C3 §7's inbox. Every entry states its own reason rather than
+        // inheriting a shared one, which is the rule `GrantPosture` holds
+        // this table to — and here they genuinely differ: one lists, one
+        // draws two series, one evaluates a rule against the whole library,
+        // one writes that rule, one records an answer.
+        (
+            "/api/library/proposals",
+            GrantIndependent {
+                reason: "admin-only and about the library's organisation, not \
+                          about what any one account may see: a proposal names \
+                          two series, and an administrator answering it is \
+                          deciding structure for everybody",
+            },
+        ),
+        (
+            "/api/library/proposals/{id}",
+            GrantIndependent {
+                reason: "the evidence for one proposal draws both series it \
+                          names, the directories they sit in and the volume \
+                          each side leads with; narrowing that to the \
+                          administrator's own roots would hide exactly the \
+                          material the decision is about",
+            },
+        ),
+        (
+            "/api/library/proposals/{id}/resolution",
+            GrantIndependent {
+                reason: "a dry run of a candidate rule over every scan_entry \
+                          in the library — the whole answer is which series \
+                          the rule would decide for, and scoping it to one \
+                          account's roots would under-report the collateral \
+                          the guard exists to name",
+            },
+        ),
+        (
+            "/api/library/proposals/{id}/accept",
+            GrantIndependent {
+                reason: "writes a `rule` row, and a rule decides series and \
+                          edition keys for the whole library rather than for \
+                          the account that wrote it; there is no grant that \
+                          could scope it, so admin-only plus the collateral \
+                          guard is what bounds it. The DELETE half undoes \
+                          exactly that write",
+            },
+        ),
+        (
+            "/api/library/proposals/{id}/dismiss",
+            GrantIndependent {
+                reason: "records, for the whole library, that a question was \
+                          answered no — a proposal is not per-account state, \
+                          and no grant narrows which ones exist",
+            },
+        ),
         (
             "/opds/v1.2/catalog",
             GrantIndependent {

@@ -905,7 +905,15 @@ fn edition_kind_text(kind: EditionKind) -> &'static str {
     }
 }
 
-fn parse_edition_kind(text: &str) -> Result<EditionKind, String> {
+/// `edition.kind`'s closed set, read out of the column's stored text.
+///
+/// `pub(crate)` for `derive::write_edition_metadata`, which has to know
+/// whether a rule's `set_kind` is a value this column can hold before it
+/// writes one — and the answer has to be this list, since this is the list
+/// [`of`] refuses a stored value against. A second copy of the three words is
+/// how two mechanisms come to disagree, which is the same argument
+/// `derive::parent_of` carries for `proposals::common_directory_pattern`.
+pub(crate) fn parse_edition_kind(text: &str) -> Result<EditionKind, String> {
     match text {
         "raw" => Ok(EditionKind::Raw),
         "official" => Ok(EditionKind::Official),
