@@ -13820,3 +13820,184 @@ why one is not built here. **O74.**
 Nothing wrote into `corpus/`: hardlinks rather than copies, and
 `find corpus -newer target/c3fix/started-at` returned 0 entries afterwards.
 The scratch tree and both databases are deleted.
+
+## O73's cascade, measured — 2026-08-27
+
+O73 named the measurement it was waiting on and left it untaken: *"whether a
+stranded work also strands the `progress`, `note` and `truth_*` rows hanging on
+its slug. The corpus session reproduced the duplication and not the cascade …
+Reproduce it before choosing."* This is that measurement. **The rows survive on
+the work the fold empties, and a plain delete takes every one of them** — so by
+the item's own criterion the first option is data loss, and the third is the
+only honest one. Whether the third is *reachable* is the second half of what
+was measured, and it is not free either.
+
+### The reproduction, with a reader on it
+
+The four-archive tree of 2026-08-26, rebuilt at `target/o73/tree` — hardlinks,
+not copies:
+
+```
+Go-Toubun no Hanayome/               v01, v03  (raw-mono)
+Go-Toubun no Hanayome - Full Color/  v01, v03  (raw-color)
+```
+
+`library scan --add` prints `7 added, 0 updated, 0 gone` and
+`derived 2 series, 4 works, 4 editions, 4 members; 1 proposal(s) raised` — the
+same `edition-of` proposal at score 2.0 as before. 5.8 s, debug build.
+
+**What the three earlier reproductions did not have is a reader.** Before the
+accept, each of the four works was given a position, a note, one looked-at
+page, one box and one labelled member digest — **through the API rather than by
+`INSERT`**, so every row is one the product's own write path produced:
+`PUT /api/works/{work}/progress`, then `PUT …/notes` and `PUT …/truth` each
+behind the `If-Match` its handler demands. Slots 11, 22, 33 and 44, one per
+work, so a row can be told from its neighbour by eye.
+
+| work | | progress | note | truth_page + box | truth_member |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `Go-Toubun no Hanayome` v01 (mono) | `raw` slot 11 | slot 11 | `raw` p11 | `86c82cea…` |
+| 2 | `Go-Toubun no Hanayome` v03 (mono) | `raw` slot 22 | slot 22 | `raw` p22 | `641a19a8…` |
+| 3 | `… - Full Color` v01 (colour) | `raw` slot 33 | slot 33 | `raw` p33 | `920d44d8…` |
+| 4 | `… - Full Color` v03 (colour) | `raw` slot 44 | slot 44 | `raw` p44 | `6b302592…` |
+
+Then `library proposals --accept 1` (`wrote rule 5`) and `library scan`, which
+prints `0 added, 1 updated, 0 gone` and
+`derived 1 series, 2 works, 4 editions, 4 members; 0 proposal(s) raised` over a
+database holding **four works, six editions and six members over four files**.
+**O73 unchanged, reproduced a fourth time**, now with a reader's data standing
+on the works the fold was supposed to empty.
+
+**One thing the rescan does that is worth recording on its own.** Works 1 and 2
+lost their `edition` rows and gained new ones — ids 1 and 2 are gone, replaced
+by 6 and 8, beside the new `full-color` rows 5 and 7 —
+`import::replace_editions` doing exactly what its name says. Every
+`progress`, `note` and `truth_*` row on those works survived that, because all
+five tables key on the edition **string** and not on `edition.id`. A schema
+that had joined them to the row id would have lost the base works' reader data
+on an ordinary rescan, with no accept involved at all.
+
+### The cascade
+
+`DELETE FROM work WHERE id IN (3,4)` — the two works a fix would be emptying —
+on a copy, `PRAGMA foreign_keys=ON`:
+
+| | work | edition | member | progress | note | truth_page | truth_box | truth_member |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| before | 4 | 6 | 6 | 4 | 4 | 4 | 4 | 4 |
+| after | 2 | 4 | 4 | **2** | **2** | **2** | **2** | **2** |
+
+Every per-reader and per-labeller row on those two works goes with them: a
+position, a note, a page somebody had looked at, the box they drew on it and
+the digest of the archive they drew it against. This is the answer O73 asked
+for, and it is the one that closes off the cheap option.
+
+**A copying trap worth recording, because the first attempt fell into it.** The
+library runs in WAL mode, so `cp DB COPY` copies the main file and not the
+`-wal` beside it. The first copy read as four editions and **zero** progress
+rows — a snapshot from before the session's writes — and would have answered
+the question backwards, reporting a cascade that costs nothing. `sqlite3 DB
+".backup COPY"` is the copy to take, and it works while `serve` holds the
+database.
+
+### "Stranded" is not true of the library today
+
+The duplicates are not orphans. After the rescan **and** after a `serve`
+restart, works 3 and 4 answer everything:
+
+| request against work 3 | answer |
+| --- | --- |
+| `GET /api/works` | lists all four works; 1 and 2 now carry `["full-color","raw"]` |
+| `GET …/progress` | `{"edition":"raw","slot":33}` |
+| `GET …/notes` | the planted note, unchanged |
+| `GET …/raw/pages/33` | `200`, 725,192 bytes |
+| `GET /api/library/series` | **both** series — 1 with 2 works/4 editions, 2 with 2 works/2 editions |
+
+So today's defect is duplication, not loss: the reader's position is intact and
+reachable, and the library simply holds each colour volume twice. The word
+*stranded* describes the state a fix would create, not the state that exists —
+worth saying plainly, because it is the difference between a data-loss item and
+a correctness one, and O73 was opened without knowing which it was.
+
+A **third** scan, with nothing changed on disk, leaves it at four works, six
+editions and six members. Nothing tidies this up later.
+
+### What a move would have to get past
+
+The third option — move what hangs off the emptied work onto the work its
+material went to — was tried as SQL, each statement on its own `.backup` copy:
+
+| move | result |
+| --- | --- |
+| `progress` → work 1, edition kept `raw` | **REFUSED** — UNIQUE `(user_id, work_id)` |
+| `progress` → work 1, edition → `full-color` | **REFUSED** — same; the key holds no edition |
+| `truth_page` → work 1, edition kept `raw` | **REFUSED** — FOREIGN KEY |
+| `truth_page` → work 1, edition → `full-color` | **REFUSED** — same |
+| `truth_member` → work 1, edition kept `raw` | **REFUSED** — UNIQUE `(work_id, edition, ordinal)` |
+| `truth_member` → work 1, edition → `full-color` | accepted |
+| `note` → work 1, edition kept `raw` | **accepted, and wrong** |
+| `note` → work 1, edition → `full-color` | accepted |
+
+`truth_page` refuses because `truth_box`'s composite foreign key names
+`(work_id, edition, page)` with no `ON UPDATE` — the schema is built for
+`put_truth`'s order, page row then boxes, and does not support relocation by
+`UPDATE` at all. A move has to delete and re-insert in that order.
+
+**The `note` row is the sharp one, because nothing stops it.** Moved with its
+`edition` left as `raw`, a note the reader wrote about **colour** page 33 lands
+on work 1, whose `raw` edition is the **monochrome** archive: same slot number,
+different book, and no constraint, validator or screen says so. It is the same
+failure `truth_member`'s own schema comment calls the sharpest form of this
+problem — a box on the wrong art on the right page — one table over, and
+reached by the obvious one-line fix.
+
+**What makes the move possible at all** is that the two rows describe the same
+bytes. Work 3's `raw` edition and work 1's new `full-color` edition are the
+same archive: sha256 `920d44d8…`, 195 pages, one member each. So slots, page
+indices and box coordinates transfer one for one, and only the `edition` string
+has to change. The arithmetic is exact; there is nothing to re-derive.
+
+| work | edition | sha256 | pages |
+| --- | --- | --- | --- |
+| 1 | `full-color` | `920d44d8…` | 195 |
+| 1 | `raw` | `86c82cea…` | 195 |
+| 3 | `raw` | `920d44d8…` | 195 |
+
+**What makes it a decision** is `progress`'s primary key, `(user_id, work_id)`:
+one position per work, not one per edition — deliberate, and its own schema
+comment says why. The reader here holds a position on work 1 (`raw`, slot 11)
+and a position on work 3 (colour, slot 33). After the fold those are two
+positions on one work, and the schema stores one. Keep the most recently
+updated, keep the target's, keep the incoming one, or widen the key: that is a
+product call about what a reading position *means* across editions of one
+volume, and it is the thing to settle before any of this is written. `note`,
+`truth_page`, `truth_box` and `truth_member` have no such problem — they are
+per-edition all the way down and merge cleanly once the edition string is
+rewritten.
+
+### The emptied series, and what the screen does with it
+
+`series` has no dependency on `work` — `work.series_id` is `ON DELETE SET NULL`
+in the other direction — so deleting works 3 and 4 leaves the
+`Go-Toubun no Hanayome - Full Color` series row standing with nothing in it.
+Served: `GET /api/works` answers two works and `GET /api/library/series` answers
+**one** series, so `browse` filters an empty series out and the orphan row is
+invisible on screen. It is still in the database, and nothing deletes it.
+
+### Reproducing this
+
+Six commands from a clean tree; the whole run is about a minute in a debug
+build.
+
+```sh
+mkdir -p target/o73/tree/"Go-Toubun no Hanayome" target/o73/tree/"Go-Toubun no Hanayome - Full Color"
+ln corpus/gotoubun-v01/raw-mono/*.cbz corpus/gotoubun-v03/raw-mono/*.cbz  target/o73/tree/"Go-Toubun no Hanayome"/
+ln corpus/gotoubun-v01/raw-color/*.cbz corpus/gotoubun-v03/raw-color/*.cbz target/o73/tree/"Go-Toubun no Hanayome - Full Color"/
+taiyaku library scan --add "$PWD/target/o73/tree" --db target/o73/lib.db
+printf 'pw\npw\n' | taiyaku library user promote reader --db target/o73/lib.db   # then plant over the API
+taiyaku library proposals --accept 1 --db target/o73/lib.db && taiyaku library scan --db target/o73/lib.db
+```
+
+Nothing wrote into `corpus/`: hardlinks rather than copies, and
+`find corpus -newermt '2026-08-27 09:00'` returned nothing afterwards. The
+scratch tree and its databases are deleted.
