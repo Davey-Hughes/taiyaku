@@ -14001,3 +14001,120 @@ taiyaku library proposals --accept 1 --db target/o73/lib.db && taiyaku library s
 Nothing wrote into `corpus/`: hardlinks rather than copies, and
 `find corpus -newermt '2026-08-27 09:00'` returned nothing afterwards. The
 scratch tree and its databases are deleted.
+
+## O73's fold, proved against real archives, 2026-08-27
+
+Nine tasks of the progress-per-edition plan shipped the widened `progress`
+key, the fold and its refusals against fixtures. None of it had met a real
+library. This is that run: plant a reader through the API, accept, rescan,
+and read back what the database actually holds — the same four-archive
+reproduction O73 itself came from, taken all the way through this time.
+
+### The reproduction, rebuilt
+
+Four archives hardlinked (never copied) out of `corpus/` into
+`target/o73/tree`, the same two per-series directories as O73's own
+reproduction:
+
+```
+Go-Toubun no Hanayome/               v01, v03  (raw-mono)
+Go-Toubun no Hanayome - Full Color/  v01, v03  (raw-color)
+```
+
+`library scan --add "$PWD/target/o73/tree" --db target/o73/lib.db` printed
+`derived 2 series, 4 works, 4 editions, 4 members; 1 proposal(s) raised` —
+matching the plan's stated expectation exactly. Before the fold: 4 works, 4
+editions, 4 members over 4 distinct files.
+
+### The reader, planted through the API, not by `INSERT`
+
+`library user promote reader` created the account, and
+`taiyaku serve --db target/o73/lib.db --addr 127.0.0.1:8099` served it. A
+position, a note and a truth document — one box, one member digest — were PUT
+onto all four works, at slots 11, 22, 33 and 44 on works 1 through 4
+respectively (`raw` is every edition's only key before the fold, so every PUT
+named it). Every write is a real route response, not a row this session
+constructed by hand:
+
+- `PUT .../progress` (unconditional, no `If-Match`): `204` on all four.
+- `PUT .../notes`, `If-Match` read off the prior `GET`'s `ETag`: `200` on all
+  four.
+- `PUT .../truth`, same `If-Match` pattern, each work's own member `sha256` as
+  provenance: `200` on all four.
+
+Twelve reader rows stood before the fold: 4 `progress`, 4 `note`, 4
+`truth_page` (one `truth_box` and one `truth_member` under each).
+
+### The fold, and what it actually printed
+
+`library proposals --accept 1` wrote rule 5 and changed no `edition` row, as
+every earlier accept in this branch's history has. The following
+`library scan` printed:
+
+```
+derived 1 series, 2 works, 4 editions, 4 members, 2 work(s) folded away
+(2 position(s) written, 0 position(s) lost, 2 note(s) and 2 truth page(s)
+moved, 0 truth page(s) already held, 0 row(s) discarded), 1 series left
+empty; 0 proposal(s) raised
+```
+
+**It fired.** Six narrowings landed on this detection rule over the course of
+this branch, and this is the first time it has run against material this
+project's own test fixtures did not write. The two colour works
+(`Full Color - v01`, `Full Color - v03`) are gone, and their series
+(`Go-Toubun no Hanayome - Full Color`) stands empty — measured to show the series
+row stands with no work referencing it, matching the design's §6 claim that an
+emptied series is left standing rather than cascaded. The design document also states
+it is invisible on screen for exactly that reason, a visibility claim not re-verified
+in this session.
+
+### The end state, queried rather than trusted
+
+```
+sqlite3 target/o73/lib.db "SELECT (SELECT count(*) FROM work), (SELECT count(*) FROM edition),
+  (SELECT count(*) FROM member), (SELECT count(DISTINCT path) FROM member);"
+2|4|4|4
+```
+
+Two works, four editions, four members over four files — the duplication this
+whole plan exists to close is gone, and both remaining works carry a `raw`
+edition and a `full-color` edition, the latter's `kind` correctly `official`
+off the accepted rule.
+
+Every reader row survived, remapped rather than lost:
+
+| work | edition | slot | truth page |
+| --- | --- | --- | --- |
+| 1 (`v01`) | `raw` | 11 | 11 |
+| 1 (`v01`) | `full-color` | 33 | 33 |
+| 2 (`v03`) | `raw` | 22 | 22 |
+| 2 (`v03`) | `full-color` | 44 | 44 |
+
+Twelve reader rows before the fold and twelve after, on the four `(work,
+edition)` pairs above — nothing lost, which is exactly what the scan's own
+`0 position(s) lost` and `0 row(s) discarded` said before the database was
+ever queried.
+
+### Reachable, not just present
+
+`serve` was restarted against the post-fold database — its own startup line
+now reads `2 editions` for both works, where it read `1` before the fold.
+`GET /api/works/go-toubun-no-hanayome---v01-cbz/progress` answered both
+positions, newest first:
+
+```json
+{"positions":[{"edition":"full-color","slot":33,"updated":"2026-08-27 16:08:33"},
+              {"edition":"raw","slot":11,"updated":"2026-08-27 16:08:32"}]}
+```
+
+`GET .../full-color/pages/33` answered `200 image/jpeg`, 1605×2400 — and it is
+actually colour, not merely on the colour edition's route: a 50×50 downsample
+put 720 of the 1,650 sampled pixels outside the ±8 per-channel band a
+monochrome scan would produce.
+
+### The corpus, untouched
+
+Hardlinks throughout, and `find corpus -newermt '2026-08-27T16:07:40Z'`
+printed nothing once the whole run — plant, fold, assert, restart, clean up —
+was done. The scratch tree and database were removed with
+`rm -rf "${W:?}"`, `W=target/o73`, the colon form rather than a bare `"$W"`.

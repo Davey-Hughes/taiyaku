@@ -251,27 +251,167 @@ fn progress_round_trips() {
         },
     )
     .expect("write");
-    let back = progress(&conn, work_id, 1).expect("read").expect("some");
-    assert_eq!(back.slot, 193);
+    let back = progress(&conn, work_id, 1).expect("read");
+    assert_eq!(back.len(), 1, "one edition written, one position held");
+    assert_eq!(back[0].slot, 193);
 }
 
 /// "Never opened" and "on the first page" must stay distinguishable — the
 /// same rule `taiyaku-serve`'s file-backed `progress::load` was written to
-/// keep (O3).
+/// keep (O3). `progress` returns a `Vec` since migration 9, so "never opened"
+/// is now the empty vector rather than `None`.
 #[test]
-fn progress_is_none_when_nothing_recorded() {
+fn progress_is_empty_when_nothing_recorded() {
     let library = Library::open_in_memory().expect("library");
     let conn = library.conn();
     let work_id = a_work(&conn);
     let back = progress(&conn, work_id, 1).expect("read");
-    assert_eq!(back, None);
+    assert_eq!(back, Vec::new());
 }
 
-/// The later write must win outright, not add a second row: `progress`'s
-/// primary key is `(user_id, work_id)`, so this also pins that `put_progress`
-/// is an upsert rather than an insert that fails the second time.
+/// Newest first, so a caller that wants "where was I" takes the head.
+///
+/// **`ORDER BY updated DESC, edition ASC`.** `updated` has one-second
+/// resolution, so two positions written in the same second would otherwise
+/// come back in an order SQLite is free to vary — a test that passed on
+/// insertion order and failed on a rebuild. The tiebreak makes the order
+/// total.
+///
+/// This test exercises the primary key (`updated DESC`) by choosing edition
+/// names whose alphabetical order is the *opposite* of their recency order.
+/// `"en-fan"` is written first and aged to 2020; `"raw-mono"` is written
+/// last as newest. With correct `ORDER BY updated DESC, edition ASC`, the
+/// result is `["raw-mono", "en-fan"]` (newest first). With a broken query
+/// that had lost the `updated DESC` key — leaving only `ORDER BY edition ASC`
+/// — the result would be `["en-fan", "raw-mono"]` (alphabetical). Only the
+/// correct sort produces the asserted order, so this test can fail.
 #[test]
-fn a_second_put_progress_overwrites_the_first() {
+fn positions_come_back_newest_first() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    // Create a work with a second edition so we can write to "en-fan".
+    // The standard a_work has only "raw-mono", so we construct directly.
+    let json = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{"raw-mono":{"label":"R","members":[
+          {"path":"raw/v01.cbz","sha256":"deadbeef","pages":300}]},
+        "en-fan":{"label":"F","members":[
+          {"path":"en/v01.cbz","sha256":"cafebabe","pages":300}]}},
+        "hub":"raw-mono","alignments":[]}"#;
+    let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+    let work_id =
+        crate::import::sidecar(&conn, &doc, Path::new("/x/taiyaku.json")).expect("import");
+
+    put_progress(
+        &conn,
+        work_id,
+        1,
+        &Progress {
+            edition: "en-fan".into(),
+            slot: 1,
+        },
+    )
+    .expect("older");
+    // `updated` defaults to `datetime('now')`, whose resolution is one
+    // second, so the two rows are separated by hand rather than by waiting.
+    conn.execute(
+        "UPDATE progress SET updated = '2020-01-01 00:00:00' WHERE edition = 'en-fan'",
+        [],
+    )
+    .expect("ageing the first row");
+    put_progress(
+        &conn,
+        work_id,
+        1,
+        &Progress {
+            edition: "raw-mono".into(),
+            slot: 2,
+        },
+    )
+    .expect("newer");
+
+    let held = progress(&conn, work_id, 1).expect("reading back");
+    assert_eq!(
+        held.iter().map(|p| p.edition.as_str()).collect::<Vec<_>>(),
+        vec!["raw-mono", "en-fan"],
+        "the most recently updated position comes first; edition names are chosen \
+         so alphabetical order (en-fan < raw-mono) and recency order are opposite, \
+         so only a correct ORDER BY updated DESC produces this result"
+    );
+}
+
+/// The tiebreak: when two positions have the same `updated` timestamp, they
+/// must come back in ascending `edition` order.
+///
+/// `updated` has one-second resolution. Two positions written in the same
+/// second (a real case, not contrived) would come back in an undefined order
+/// without the `ORDER BY … edition ASC` tiebreak — a test that passes on
+/// insertion order and fails on a rebuild. This test explicitly sets both rows'
+/// `updated` to an identical value, so the tiebreak is the only thing that
+/// can order them. `progress` queries `ORDER BY updated DESC, edition ASC`,
+/// so both positions have the same `updated` here, and the result is
+/// determined entirely by `edition ASC`.
+#[test]
+fn positions_with_the_same_updated_come_back_in_ascending_edition_order() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    // Use a work with two editions.
+    let json = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{"raw-mono":{"label":"R","members":[
+          {"path":"raw/v01.cbz","sha256":"deadbeef","pages":300}]},
+        "en-fan":{"label":"F","members":[
+          {"path":"en/v01.cbz","sha256":"cafebabe","pages":300}]}},
+        "hub":"raw-mono","alignments":[]}"#;
+    let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+    let work_id =
+        crate::import::sidecar(&conn, &doc, Path::new("/x/taiyaku.json")).expect("import");
+
+    put_progress(
+        &conn,
+        work_id,
+        1,
+        &Progress {
+            edition: "raw-mono".into(),
+            slot: 1,
+        },
+    )
+    .expect("first position");
+    put_progress(
+        &conn,
+        work_id,
+        1,
+        &Progress {
+            edition: "en-fan".into(),
+            slot: 2,
+        },
+    )
+    .expect("second position");
+
+    // Set both rows' `updated` to the same literal value, so the tiebreak is
+    // the only thing that can order them.
+    conn.execute(
+        "UPDATE progress SET updated = '2026-08-27 12:00:00' WHERE work_id = ?1",
+        [work_id],
+    )
+    .expect("synchronizing timestamps");
+
+    let held = progress(&conn, work_id, 1).expect("reading back");
+    assert_eq!(
+        held.iter().map(|p| p.edition.as_str()).collect::<Vec<_>>(),
+        vec!["en-fan", "raw-mono"],
+        "with identical updated timestamps, positions come back in ascending edition order; \
+         only ORDER BY edition ASC makes this happen"
+    );
+}
+
+/// **A position on a second edition must not disturb the first.** `progress`'s
+/// primary key is `(user_id, work_id, edition)` since migration 9; before it,
+/// `put_progress`'s `ON CONFLICT` named `(user_id, work_id)` alone, so a
+/// reader at slot 0 of `raw-mono` who then opened `full-color` and turned one
+/// page silently lost the `raw-mono` position. A reader now holds a position
+/// per edition, and this test is what would still be red if that conflict
+/// target had merely been left alone.
+#[test]
+fn a_second_put_progress_on_a_different_edition_leaves_the_first_position_standing() {
     let library = Library::open_in_memory().expect("library");
     let conn = library.conn();
     let work_id = a_work(&conn);
@@ -290,27 +430,34 @@ fn a_second_put_progress_overwrites_the_first() {
         work_id,
         1,
         &Progress {
-            edition: "raw-mono".into(),
+            edition: "full-color".into(),
             slot: 12,
         },
     )
-    .expect("second write");
+    .expect("second write, a different edition");
 
-    let back = progress(&conn, work_id, 1).expect("read").expect("some");
-    assert_eq!(back.slot, 12);
+    let held = progress(&conn, work_id, 1).expect("reading back");
+    let mut pairs: Vec<(String, u32)> = held.into_iter().map(|p| (p.edition, p.slot)).collect();
+    pairs.sort();
+    assert_eq!(
+        pairs,
+        vec![("full-color".to_string(), 12), ("raw-mono".to_string(), 0)],
+        "both editions' positions must stand, not just the one written last"
+    );
 }
 
 /// **A page turn must not reset the reading history**, which is the one
 /// property standing between `put_progress` and the two columns
 /// `001_initial.sql` describes as "behavioural data with NOTHING to backfill".
 ///
-/// `progress` is `WITHOUT ROWID` with `PRIMARY KEY (user_id, work_id)`, so
-/// `INSERT OR REPLACE` would be the obvious way to write it and would clear
+/// `progress` is `WITHOUT ROWID` with `PRIMARY KEY (user_id, work_id, edition)`,
+/// so `INSERT OR REPLACE` would be the obvious way to write it and would clear
 /// `completed_at` and `read_count` on **every page turn** — a reader who
 /// finished a volume in March would lose that fact the next time they opened
-/// it, silently and permanently. `ON CONFLICT … DO UPDATE` naming three
-/// columns is what keeps them; nothing observed that until this test, so the
-/// swap survived the whole suite (whole-branch review 2, I6).
+/// it, silently and permanently. `ON CONFLICT … DO UPDATE` naming the two
+/// columns that are not part of the conflict target is what keeps them;
+/// nothing observed that until this test, so the swap survived the whole
+/// suite (whole-branch review 2, I6).
 ///
 /// The two columns are written here by hand because nothing in this module's
 /// interface manages them yet — which is exactly why the guard is needed

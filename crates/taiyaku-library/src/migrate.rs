@@ -57,7 +57,7 @@
 //!
 //! | Document | "Already holds state" means | Checked with |
 //! | --- | --- | --- |
-//! | `.progress.json` | a `progress` row exists for this work and [`crate::user_id`] | [`crate::state::progress`] is `Some` |
+//! | `.progress.json` | a `progress` row exists for this work and [`crate::user_id`] | [`crate::state::progress`] is non-empty |
 //! | `.notes.json` | at least one `note` row exists for this work and that user | [`crate::state::notes`]`.notes` is non-empty |
 //! | `.truth.json` | at least one `truth_page` or `truth_member` row exists for this work | [`crate::state::truth`] is `Some` |
 //! | `.library.json` | any hand-fixed metadata is recorded for this work | ![`LibraryDoc::is_empty`] |
@@ -117,12 +117,14 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use taiyaku_core::TruthDoc;
 
-use crate::{Notes, Progress, export, librarydoc, state};
+use crate::{Notes, export, librarydoc, state};
 
 /// What happened to one work's `.progress.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProgressOutcome {
-    /// Read and written into the `progress` row.
+    /// Read and written into `progress` — one row per position the document
+    /// held, which is one per edition since migration 9 widened that table's
+    /// key. The bare legacy document carries exactly one.
     Applied,
     /// The database already held a reading position for this work; the file,
     /// if it exists, was left unread.
@@ -525,7 +527,7 @@ fn migrate_progress(
 ) -> Result<Option<ProgressOutcome>, String> {
     let path = sibling_path(sidecar_path, "progress.json");
     match step(conn, work_id, PROGRESS, &path, || {
-        Ok(state::progress(conn, work_id, user_id)?.is_some())
+        Ok(!state::progress(conn, work_id, user_id)?.is_empty())
     })? {
         Step::Absent => Ok(None),
         Step::Kept => Ok(Some(ProgressOutcome::AlreadyPresent)),
@@ -547,9 +549,25 @@ fn apply_progress(
     path: &Path,
 ) -> Result<(), String> {
     let text = read_sibling(path)?;
-    let progress: Progress = serde_json::from_str(&text)
-        .map_err(|e| format!("{}: not a readable progress document: {e}", path.display()))?;
-    state::put_progress(conn, work_id, user_id, &progress)
+    let recorded =
+        crate::progressdoc::from_json(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    // **The document's own `updated`, not `datetime('now')`.** These rows are
+    // a reading being reinstated rather than one being made, and stamping them
+    // now puts every position a reader holds in one second — which makes
+    // `state::progress`'s `ORDER BY updated DESC, edition ASC` alphabetical
+    // and hands `getProgress` an arbitrary edition to resume into. The legacy
+    // bare form records no time, so it gets the stamp: see
+    // `state::put_progress_at`.
+    for position in &recorded {
+        state::put_progress_at(
+            conn,
+            work_id,
+            user_id,
+            &position.place,
+            position.updated.as_deref(),
+        )?;
+    }
+    Ok(())
 }
 
 fn migrate_notes(

@@ -132,18 +132,60 @@ describe('network calls', () => {
     await expect(getProgress('taiyaku')).resolves.toBeUndefined()
   })
 
-  it('getProgress resolves to the parsed position on a 200', async () => {
+  it('getProgress resolves to the position parsed out of a single-element set on a 200', async () => {
     const progress = { edition: 'en-mono', slot: 12 }
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response(JSON.stringify(progress), { status: 200 }),
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            positions: [{ ...progress, updated: '2026-08-27 09:00:00' }],
+          }),
+          { status: 200 },
         ),
+      ),
     )
 
     await expect(getProgress('taiyaku')).resolves.toEqual(progress)
+  })
+
+  it('getProgress takes the newest position out of the set the server answers', async () => {
+    // The fixture is built so the right answer ('raw'/7, the head of the
+    // newest-first list) is neither the last element (which would catch a
+    // fold that took the tail instead of the head) nor the alphabetically
+    // first edition (which would catch an implementation that re-sorted by
+    // name instead of trusting server order): 'full-color' < 'monochrome' <
+    // 'raw' alphabetically, and 'monochrome' is last in the array. A
+    // fixture where the right and a plausible wrong answer coincide proves
+    // nothing.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            positions: [
+              { edition: 'raw', slot: 7, updated: '2026-08-27 10:00:00' },
+              {
+                edition: 'full-color',
+                slot: 33,
+                updated: '2026-08-27 09:24:41',
+              },
+              {
+                edition: 'monochrome',
+                slot: 2,
+                updated: '2026-08-27 08:00:00',
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      ),
+    )
+
+    await expect(getProgress('taiyaku')).resolves.toEqual({
+      edition: 'raw',
+      slot: 7,
+    })
   })
 
   it("getProgress rejects on a non-2xx, carrying the server's own wording", async () => {

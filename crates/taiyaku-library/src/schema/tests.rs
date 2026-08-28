@@ -759,8 +759,8 @@ fn migration_6_adds_member_root_id_leaving_existing_members_null() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_eight() {
-    assert_eq!(SCHEMA_VERSION, 8);
+fn the_schema_version_is_nine() {
+    assert_eq!(SCHEMA_VERSION, 9);
 }
 
 /// Migration 7 backfills the root of every member a scan produced, which
@@ -963,4 +963,105 @@ fn migration_8_rebuild_reindexes_titles_that_predate_it() {
         1,
         "and the work index too"
     );
+}
+
+/// Two editions of one work, both with a position, at the new key.
+///
+/// The narrow key made this shape unreachable before the migration, so the
+/// rows are inserted after it has run — what is under test is that the wider
+/// key admits them at all. The sibling test,
+/// `migration_9_rebuild_carries_a_pre_existing_position_across_intact`, is
+/// what checks the other half: that a row written under the *old* key
+/// survives the rebuild.
+#[test]
+fn migration_9_lets_one_work_hold_a_position_per_edition() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    migrate(&conn).expect("migrating");
+
+    conn.execute(
+        "INSERT INTO user (id, name, password_hash) VALUES (2, 'reader', '!')",
+        [],
+    )
+    .expect("user");
+    conn.execute(
+        "INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (1, 'k', 's', 't', 'rtl', 'raw')",
+        [],
+    )
+    .expect("work");
+
+    for edition in ["raw", "full-color"] {
+        conn.execute(
+            "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (2, 1, ?1, 7)",
+            [edition],
+        )
+        .expect("a position per edition");
+    }
+
+    let held: i64 = conn
+        .query_row("SELECT count(*) FROM progress WHERE work_id = 1", [], |r| {
+            r.get(0)
+        })
+        .expect("counting");
+    assert_eq!(held, 2, "both editions' positions must stand");
+}
+
+/// **The migration's stated risk, actually exercised.** Every other rebuild
+/// test in this file plants a row at the prior version and migrates it
+/// forward — `migration_4_rebuilds_user_without_taking_the_notes_with_it`,
+/// `migration_5_rebuilds_note_keeping_the_rows_and_the_index`,
+/// `migration_6_adds_member_root_id_leaving_existing_members_null` and
+/// `migration_8_rebuild_reindexes_titles_that_predate_it` all do this.
+/// `migration_9_lets_one_work_hold_a_position_per_edition` does not: it
+/// migrates a fresh database straight to version 9 and only inserts
+/// afterwards, which shows the new key admits two editions but never shows
+/// that a row written under the *old* `(user_id, work_id)` key — the shape
+/// every real library holds before this migration ever runs — survives the
+/// `progress_new` copy intact.
+///
+/// So this test stops at 8, writes a row the old key still accepts, with
+/// `completed_at` and `read_count` both set, then runs the full migration and
+/// checks all four columns came across unchanged.
+#[test]
+fn migration_9_rebuild_carries_a_pre_existing_position_across_intact() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+
+    migrate_with(&conn, &MIGRATIONS[..8]).expect("migrates to 8");
+    conn.execute(
+        "INSERT INTO work (content_key, slug, title, reading, hub)
+         VALUES ('k', 's', 'T', 'rtl', 'raw')",
+        [],
+    )
+    .expect("work");
+    let work_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot, completed_at, read_count)
+         VALUES (1, ?1, 'raw-mono', 42, '2026-03-01T00:00:00Z', 2)",
+        [work_id],
+    )
+    .expect("a reading position written under the old (user_id, work_id) key");
+
+    migrate(&conn).expect("migrates to 9");
+
+    let (edition, slot, completed_at, read_count): (String, i64, Option<String>, i64) = conn
+        .query_row(
+            "SELECT edition, slot, completed_at, read_count FROM progress
+             WHERE user_id = 1 AND work_id = ?1",
+            [work_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("the pre-009 row survived the rebuild");
+    assert_eq!(
+        edition, "raw-mono",
+        "the rebuild must not drop or reorder a column"
+    );
+    assert_eq!(slot, 42);
+    assert_eq!(
+        completed_at.as_deref(),
+        Some("2026-03-01T00:00:00Z"),
+        "a finished-once fact must not be lost by the copy"
+    );
+    assert_eq!(read_count, 2);
 }

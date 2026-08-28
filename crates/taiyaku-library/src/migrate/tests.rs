@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::{Library, Note, Region};
+use crate::{Library, Note, Progress, Region};
 
 /// A temp root nobody else is using — `taiyaku-cli`'s own `library/tests.rs`
 /// carries the identical idiom under the identical name, for the identical
@@ -82,15 +82,65 @@ fn a_progress_json_beside_the_sidecar_migrates_the_reading_position() {
     let report = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert_eq!(report.progress, Some(ProgressOutcome::Applied));
 
-    let recovered = state::progress(&conn, work_id, THE_READER)
-        .expect("reads")
-        .expect("a position was recorded");
+    let recovered = state::progress(&conn, work_id, THE_READER).expect("reads");
+    assert_eq!(recovered.len(), 1, "a position was recorded");
+    assert_eq!(recovered[0].edition, "raw-mono");
+    assert_eq!(recovered[0].slot, 7);
+}
+
+/// The property this task added `progressdoc` for: a versioned document
+/// carrying more than one position must land *every* position, not just the
+/// first — `apply_progress` loops over `progressdoc::from_json`'s output, and
+/// nothing before this test ran that loop over more than one element.
+///
+/// **And each position's own `updated`, which the loop used to drop.**
+/// `apply_progress` called `state::put_progress`, which stamps
+/// `datetime('now')`, so every reimported position landed in the same second
+/// and `state::progress`'s `ORDER BY updated DESC, edition ASC` fell back to
+/// alphabet — deciding by edition key which position `getProgress` resumes a
+/// reader into. The two times below are minutes apart and in the opposite
+/// order to the two edition keys, so a version that restamps them is red on
+/// the order and on the times both.
+#[test]
+fn a_versioned_progress_json_migrates_every_position() {
+    let root = scratch("progress-versioned");
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let (work_id, path) = a_work(&conn, &root);
+    write_sibling(
+        &root,
+        "progress.json",
+        r#"{"taiyaku_progress":1,"positions":[
+             {"edition":"raw-mono","slot":7,"updated":"2026-08-27 09:00:00"},
+             {"edition":"full-color","slot":33,"updated":"2026-08-27 09:24:41"}]}"#,
+    );
+
+    let report = work(&conn, work_id, THE_READER, &path).expect("migrates");
+    assert_eq!(report.progress, Some(ProgressOutcome::Applied));
+
+    let recovered = state::progress(&conn, work_id, THE_READER).expect("reads");
     assert_eq!(
-        recovered,
-        Progress {
-            edition: "raw-mono".to_string(),
-            slot: 7
-        }
+        recovered.len(),
+        2,
+        "both positions must have been recorded, got: {recovered:?}"
+    );
+    let by_edition: BTreeMap<&str, u32> = recovered
+        .iter()
+        .map(|p| (p.edition.as_str(), p.slot))
+        .collect();
+    assert_eq!(by_edition.get("raw-mono"), Some(&7));
+    assert_eq!(by_edition.get("full-color"), Some(&33));
+    assert_eq!(
+        recovered
+            .iter()
+            .map(|p| (p.edition.as_str(), p.updated.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("full-color", "2026-08-27 09:24:41"),
+            ("raw-mono", "2026-08-27 09:00:00"),
+        ],
+        "each position kept the time the document recorded, and the newer \
+         one is the head a reader resumes into"
     );
 }
 
@@ -116,10 +166,9 @@ fn a_position_already_recorded_is_not_overwritten_by_the_file() {
     let report = work(&conn, work_id, THE_READER, &path).expect("migrates");
     assert_eq!(report.progress, Some(ProgressOutcome::AlreadyPresent));
 
-    let recovered = state::progress(&conn, work_id, THE_READER)
-        .expect("reads")
-        .expect("still recorded");
-    assert_eq!(recovered.slot, 42, "the file must not have won");
+    let recovered = state::progress(&conn, work_id, THE_READER).expect("reads");
+    assert_eq!(recovered.len(), 1, "still recorded");
+    assert_eq!(recovered[0].slot, 42, "the file must not have won");
 }
 
 #[test]
@@ -137,7 +186,7 @@ fn a_progress_json_that_does_not_parse_is_reported_and_skipped() {
     }
     assert_eq!(
         state::progress(&conn, work_id, THE_READER).expect("reads"),
-        None,
+        Vec::new(),
         "nothing was written from an unreadable file"
     );
 }

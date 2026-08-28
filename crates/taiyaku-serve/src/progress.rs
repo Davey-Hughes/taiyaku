@@ -13,27 +13,27 @@
 //! to the numeric `work_id` those functions need (`works::find_row`,
 //! `works::row_id_for_write`).
 
-use taiyaku_library::{Library, Progress};
+use taiyaku_library::{Library, Position, Progress};
 
 use crate::works::{self, Work};
 
-/// What was recorded, or `None` when nothing ever was.
+/// Every position this reader holds on this work, newest first.
 ///
-/// The distinction matters: "never opened" and "on the first page" are
-/// different, and conflating them reopens a work at its cover forever.
+/// An empty vector where nothing was ever recorded. The distinction the old
+/// `Option` carried is intact: "never opened" is an empty set and "on the
+/// first page" is a set holding slot 0, and conflating them would reopen a
+/// work at its cover forever.
 ///
-/// A work with no row in `library`'s `work` table — nothing has ever been
-/// written against it — answers `None` without touching `taiyaku_library`'s
-/// `progress` table at all: `works::find_row` never creates a row, so there
-/// is nothing yet for a `work_id` to be.
+/// A work with no row in `library`'s `work` table answers empty without
+/// touching `progress` at all: `works::find_row` never creates a row.
 ///
 /// # Errors
 ///
 /// Returns an error if SQLite fails.
-pub fn load(library: &Library, work: &Work, user_id: i64) -> Result<Option<Progress>, String> {
+pub fn load(library: &Library, work: &Work, user_id: i64) -> Result<Vec<Position>, String> {
     let conn = library.conn();
     let Some(work_id) = works::find_row(&conn, work)? else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     taiyaku_library::state::progress(&conn, work_id, user_id)
 }

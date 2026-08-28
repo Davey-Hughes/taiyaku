@@ -1288,9 +1288,15 @@ async fn get_progress(
 
     match loaded {
         // Nothing recorded is not an error: a work never opened has no
-        // position, and 404 would say the work does not exist.
-        Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Ok(Some(p))) => axum::Json(p).into_response(),
+        // position, and 404 would say the work does not exist. An empty set
+        // is that same fact, and it stays a status code rather than becoming
+        // a document a client has to unpack.
+        Ok(Ok(positions)) if positions.is_empty() => StatusCode::NO_CONTENT.into_response(),
+        // Every edition the reader holds a position in, newest first —
+        // `crate::progress::load`'s own promise, unchanged here.
+        Ok(Ok(positions)) => {
+            axum::Json(serde_json::json!({ "positions": positions })).into_response()
+        }
         Ok(Err(refusal)) => refusal.into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

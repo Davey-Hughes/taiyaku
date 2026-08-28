@@ -15,10 +15,18 @@
 //! | truth | whole document, later wins |
 //!
 //! Only notes' rule has structure worth a pure function to test —
-//! [`merge_notes`]. Progress is one row with nothing to conflict over, and
-//! truth's rule is whole-document last-write-wins because `TruthRegion` has no
-//! identity to merge on; both are simple enough to apply inline wherever a
-//! caller compares two `updated` timestamps, which is not this module's job.
+//! [`merge_notes`]. Progress is one row per edition and truth's rule is
+//! whole-document last-write-wins because `TruthRegion` has no identity to
+//! merge on; both are simple enough to apply inline wherever a caller compares
+//! two `updated` timestamps, which is not this module's job.
+//!
+//! **"Progress has nothing to conflict over" stood here and stopped being
+//! true.** It was one row per work, and migration 9 made it one per edition;
+//! `fold::move_positions` is then a conflict resolution over this very table,
+//! applying the newer-wins rule tabled above when two works' positions meet on
+//! one edition key, and `fold::Moved::lost_positions` counts the reading the
+//! loser gives up. The rule is still not applied *here* — that much is
+//! unchanged — but it is applied, and by name.
 //!
 //! [`put_alignments`] is the fourth writer here and belongs to none of those
 //! three rules — see its own doc comment for why the document it writes is a
@@ -29,47 +37,48 @@
 
 use std::collections::BTreeMap;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use taiyaku_core::{Axis, Kind, RegionMember, Sidecar, TruthDoc, TruthEdition, TruthRegion};
 
-use crate::{Note, Notes, Progress, Region};
+use crate::{Note, Notes, Position, Progress, Region};
 
 // --- progress ----------------------------------------------------------
 
-/// What was recorded for one reader on one work, or `None` when nothing ever
-/// was.
+/// Every position one reader holds on one work, newest first.
+///
+/// **A vector rather than an `Option` since migration 009**: a reader holds a
+/// place in each edition of a volume. The head is the most recently updated,
+/// which is what a caller wanting "where was I" should take — see
+/// `serve`'s `get_progress` and `web/src/api.ts`'s `getProgress`.
 ///
 /// # Errors
 ///
 /// Returns an error if SQLite fails.
-pub fn progress(conn: &Connection, work_id: i64, user_id: i64) -> Result<Option<Progress>, String> {
-    conn.query_row(
-        "SELECT edition, slot FROM progress WHERE work_id = ?1 AND user_id = ?2",
-        params![work_id, user_id],
-        |row| {
-            Ok(Progress {
+pub fn progress(conn: &Connection, work_id: i64, user_id: i64) -> Result<Vec<Position>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT edition, slot, updated FROM progress
+              WHERE work_id = ?1 AND user_id = ?2
+              ORDER BY updated DESC, edition ASC",
+        )
+        .map_err(|e| format!("preparing the progress read: {e}"))?;
+    let rows = statement
+        .query_map(params![work_id, user_id], |row| {
+            Ok(Position {
                 edition: row.get(0)?,
                 slot: row.get(1)?,
+                updated: row.get(2)?,
             })
-        },
-    )
-    .optional()
-    .map_err(|e| format!("reading progress for work {work_id}, user {user_id}: {e}"))
+        })
+        .map_err(|e| format!("reading progress for work {work_id}, user {user_id}: {e}"))?;
+    rows.collect::<rusqlite::Result<Vec<Position>>>()
+        .map_err(|e| format!("reading progress for work {work_id}, user {user_id}: {e}"))
 }
 
-/// Record where a reader got to.
+/// Record where a reader got to, now.
 ///
-/// An upsert on `(user_id, work_id)`: it does not touch `completed_at` or
-/// `read_count`, which nothing in this module's interface manages.
-///
-/// **`ON CONFLICT … DO UPDATE` naming three columns rather than
-/// `INSERT OR REPLACE`, and that is the whole of the promise above.** A
-/// REPLACE would clear both columns on every page turn — reading history the
-/// schema calls "behavioural data with NOTHING to backfill" — and the two
-/// statements are otherwise interchangeable here, `progress` being
-/// `WITHOUT ROWID` on `(user_id, work_id)`. Pinned by
-/// `put_progress_leaves_completed_at_and_read_count_alone` in this module's
-/// `tests.rs`, which is red under exactly that swap.
+/// The ordinary page turn, and [`put_progress_at`] with no recorded time —
+/// see that function for the statement and for everything it promises.
 ///
 /// # Errors
 ///
@@ -80,14 +89,62 @@ pub fn put_progress(
     user_id: i64,
     progress: &Progress,
 ) -> Result<(), String> {
+    put_progress_at(conn, work_id, user_id, progress, None)
+}
+
+/// Record where a reader got to, at the time the caller names.
+///
+/// An upsert on `(user_id, work_id, edition)`: it does not touch
+/// `completed_at` or `read_count`, which nothing in this module's interface
+/// manages.
+///
+/// **`ON CONFLICT … DO UPDATE` naming two columns rather than
+/// `INSERT OR REPLACE`, and that is the whole of the promise above.** A
+/// REPLACE would clear both columns on every page turn — reading history the
+/// schema calls "behavioural data with NOTHING to backfill" — and the two
+/// statements are otherwise interchangeable here, `progress` being
+/// `WITHOUT ROWID` on `(user_id, work_id, edition)`. `edition` itself is not
+/// named in the `DO UPDATE` list: it is part of the conflict target, so
+/// assigning it would be assigning a column to itself. Pinned by
+/// `put_progress_leaves_completed_at_and_read_count_alone` in this module's
+/// `tests.rs`, which is red under exactly that swap.
+///
+/// **`updated: None` stamps `datetime('now')` and is what every live write
+/// passes.** `Some` exists for one caller: `migrate::apply_progress`,
+/// reinstating positions out of a `taiyaku.progress.json` this project
+/// exported from this very column. Stamping *those* now lands every position
+/// a reader holds in the same second, which collapses
+/// [`progress`]'s `ORDER BY updated DESC, edition ASC` to alphabetical — and
+/// that head is what `web/src/api.ts`'s `getProgress` resumes into, so a
+/// reader 190 slots into `raw-mono` and 2 into `en-fan` reopens in `en-fan`.
+/// The document records when each position was reached; honouring it is the
+/// difference between restoring a reading and restoring a set of slots.
+///
+/// **The string is written as given, and it is compared lexically
+/// everywhere.** This table's own `ORDER BY`, and
+/// `fold::move_positions`' `excluded.updated > progress.updated`, are both
+/// string comparisons, so a time in any format but SQLite's own
+/// `YYYY-MM-DD HH:MM:SS` sorts against the rest of the column rather than
+/// beside it. Nothing here validates that; the one caller passing `Some`
+/// reads its value back out of a document written from these rows.
+///
+/// # Errors
+///
+/// Returns an error if SQLite fails.
+pub fn put_progress_at(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+    progress: &Progress,
+    updated: Option<&str>,
+) -> Result<(), String> {
     conn.execute(
         "INSERT INTO progress (user_id, work_id, edition, slot, updated)
-         VALUES (?1, ?2, ?3, ?4, datetime('now'))
-         ON CONFLICT(user_id, work_id) DO UPDATE SET
-           edition = excluded.edition,
+         VALUES (?1, ?2, ?3, ?4, coalesce(?5, datetime('now')))
+         ON CONFLICT(user_id, work_id, edition) DO UPDATE SET
            slot = excluded.slot,
            updated = excluded.updated",
-        params![user_id, work_id, progress.edition, progress.slot],
+        params![user_id, work_id, progress.edition, progress.slot, updated],
     )
     .map_err(|e| format!("writing progress for work {work_id}, user {user_id}: {e}"))?;
     Ok(())

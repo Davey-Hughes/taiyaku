@@ -90,7 +90,14 @@ pub struct SeriesCard {
     /// sort order is not worth one while every row any scan has produced sorts
     /// identically under both.
     pub added: i64,
-    /// Works in this series with no `progress` row for the calling reader.
+    /// Works in this series with no `progress` row for the calling reader on
+    /// **any** edition.
+    ///
+    /// The key has been `(user_id, work_id, edition)` since migration 9, so
+    /// "no row" and "no row for the edition they are in" are different
+    /// questions; the design mandated the first and the `LEFT JOIN` answers
+    /// it — every joined row for a work carries a non-NULL `p.work_id` as
+    /// soon as the reader holds one position anywhere in it.
     ///
     /// The `Unread` chip means `unread == works`: nothing here started.
     /// `unread > 0` was the alternative and leaves a 14-volume series in the
@@ -873,14 +880,33 @@ fn ids(conn: &Connection, sql: &str, needle: &str, doing: &str) -> Result<Vec<i6
 
 /// The three lists the library screen opens on, for one reader.
 ///
-/// `continuing` is progress that is not finished, `read` is progress that is,
-/// and `added` is the newest works — each capped at [`LIST_CAP`], each filtered
-/// by the same grant.
+/// `continuing` is progress that is not finished, `read` is progress that is
+/// **and no sibling edition is still open** (see below), and `added` is the
+/// newest works — each capped at [`LIST_CAP`], each filtered by the same
+/// grant.
 ///
-/// **`user_id` binds twice** in the first two: once for the predicate and once
-/// for the ordering subquery, and `works_of` binds `extra` in text order after
-/// the roots. One binding is a hard refusal from `rusqlite` rather than a wrong
-/// answer.
+/// **Both orderings are `MAX(…)` over `progress`, not a scalar subquery.**
+/// Since migration 009 a reader holds a position per *edition* of a work, so
+/// `(SELECT updated FROM progress p WHERE p.work_id = w.id AND p.user_id = ?)`
+/// is a subquery over what can now be several rows — and a scalar subquery
+/// over several rows returns whichever one SQLite reaches first, with no
+/// error and no warning, so the ordering was silently arbitrary among a
+/// work's editions. `MAX(updated)` / `MAX(completed_at)` answer "this work's
+/// most recent position", across however many editions it has one in.
+///
+/// **`read`'s predicate also excludes a work still open in any edition.** The
+/// old `(user_id, work_id)` key could never be both "finished" and "still
+/// reading" at once; the per-edition key can, when one edition is finished and
+/// a sibling is not. Showing the same volume under both Continuing and Read on
+/// one screen would state a contradiction to the reader, so a work counts as
+/// read only once no edition is still open — a judgement call rather than a
+/// measurement, made here rather than by showing the volume in both.
+///
+/// **`continuing` binds `user_id` twice — once for the predicate, once for the
+/// ordering subquery — and `read` binds it three times**, the third being the
+/// `NOT IN` clause above. `works_of` binds `extra` in text order after the
+/// roots, so a miscount here is a hard refusal from `rusqlite` rather than a
+/// wrong answer.
 ///
 /// # Errors
 ///
@@ -892,15 +918,17 @@ pub fn home(conn: &Connection, roots: &[i64], user_id: i64) -> Result<Home, Stri
         "w.id IN (SELECT work_id FROM progress
                    WHERE user_id = ? AND completed_at IS NULL)",
         &[&user_id, &user_id],
-        "(SELECT updated FROM progress p WHERE p.work_id = w.id AND p.user_id = ?) DESC",
+        "(SELECT MAX(updated) FROM progress p WHERE p.work_id = w.id AND p.user_id = ?) DESC",
     )?;
     let read = works_of(
         conn,
         roots,
         "w.id IN (SELECT work_id FROM progress
-                   WHERE user_id = ? AND completed_at IS NOT NULL)",
-        &[&user_id, &user_id],
-        "(SELECT completed_at FROM progress p WHERE p.work_id = w.id AND p.user_id = ?) DESC",
+                   WHERE user_id = ? AND completed_at IS NOT NULL)
+         AND w.id NOT IN (SELECT work_id FROM progress
+                           WHERE user_id = ? AND completed_at IS NULL)",
+        &[&user_id, &user_id, &user_id],
+        "(SELECT MAX(completed_at) FROM progress p WHERE p.work_id = w.id AND p.user_id = ?) DESC",
     )?;
     // **`LIMIT` in the SQL, not `.take()` afterwards.** `works_of` fires an
     // `editions_of` query per row it returns, so selecting every work in the

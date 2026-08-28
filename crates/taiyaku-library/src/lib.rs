@@ -13,10 +13,18 @@ pub mod browse;
 pub mod credential;
 pub mod derive;
 pub mod export;
+// **Private, and that is the point.** `fold::absorb` is the only code in this
+// project that deletes a `work` row, and `derive` is the only thing that has
+// any business calling it — `derive::superseded` is what decides the pair.
+// It was `pub` only because two of `DeriveReport`'s doc comments linked to it;
+// those name it in plain backticks now. Narrowing the door is a mitigation
+// rather than a guarantee, so `absorb` guards its own invariants regardless.
+mod fold;
 pub mod identity;
 pub mod import;
 pub mod librarydoc;
 pub mod migrate;
+pub mod progressdoc;
 pub mod project;
 pub mod proposals;
 pub mod rules;
@@ -46,6 +54,38 @@ use serde::{Deserialize, Serialize};
 pub struct Progress {
     pub edition: String,
     pub slot: u32,
+}
+
+/// One recorded position, as a reader of the store sees it.
+///
+/// **Separate from [`Progress`], which is the write shape.** `Progress` is the
+/// body of `PUT /api/works/{work}/progress`, where `updated` is the store's to
+/// set: putting it on `Progress` would ask a client to invent a timestamp the
+/// server then ignores. The two are one field apart and that field is the
+/// whole distinction.
+///
+/// **A sibling `taiyaku.progress.json` is the one place a time arrives from
+/// outside the store**, and it arrives as this crate's own export of these
+/// rows. `progressdoc::Recorded` carries it and `state::put_progress_at`
+/// writes it, because a reimport that restamped every position with
+/// `datetime('now')` would leave them all in one second and let alphabet
+/// decide which edition a reader resumes into.
+///
+/// **The format is SQLite's `datetime('now')` — `"2026-08-27 16:08:33"`, no
+/// `T` and no zone — where `Note`'s `created`/`updated` on the same API are
+/// RFC 3339.** The clocks differ, which is why the formats do: a note's times
+/// are minted by the client that wrote it, a position's by the server. Making
+/// the two one format is a data migration rather than an edit. Every
+/// comparison of this column is lexical — `state::progress`'s `ORDER BY`, and
+/// `fold::move_positions`' `excluded.updated > progress.updated` — and
+/// `'2026-08-27 23:59:59' > '2026-08-27T00:00:00Z'` is false, so a build that
+/// began writing one format into a column already holding the other would
+/// sort every same-day row by which format it was written in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Position {
+    pub edition: String,
+    pub slot: u32,
+    pub updated: String,
 }
 
 /// A rectangle on one slot, in fractions of that slot's own width and height.

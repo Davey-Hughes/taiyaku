@@ -1305,7 +1305,7 @@ body {
  * comment gives: this is the other line that has to be read before the button
  * under it is pressed. Not a refusal — the accept is offered and is correct —
  * so it takes the strip and not the list. */
-.proposal-detail .left-standing {
+.proposal-detail .the-fold {
   margin: 0.35rem 0 0;
   border-left: 3px solid Highlight;
   padding-left: 0.5rem;

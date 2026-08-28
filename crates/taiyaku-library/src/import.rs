@@ -720,9 +720,15 @@ fn slugify(title: &str) -> String {
 /// **What the key cannot carry, since restoring still beats deleting but is
 /// not free.** A page flag is a page *number*, and the key says nothing about
 /// how many pages precede it. A work survives a rescan whenever its **hub**'s
-/// members are unchanged, so a spoke edition that gained or lost a member
-/// keeps its credit and spread flags at the page numbers they had before the
-/// member set moved — pointing at whatever is now at those offsets. Re-running
+/// members are unchanged *and no fold takes it* — `derive::superseded` and
+/// `fold::absorb` delete a work precisely when its material is unchanged and
+/// already held by another, which is the one shape this sentence used to rule
+/// out — so a spoke edition that gained or lost a member keeps its credit and
+/// spread flags at the page numbers they had before the member set moved,
+/// pointing at whatever is now at those offsets. (A folded work's flags are
+/// not left pointing anywhere: `fold::DISCARDED` counts `page_flag` and the
+/// `DELETE` takes it, which is O76's territory rather than this one's.)
+/// Re-running
 /// `taiyaku credits --write` over that edition is the recovery, and nothing
 /// signals the need. Deleting them instead would cost that same re-run on
 /// every rescan of every edition, which is why this is the residual case

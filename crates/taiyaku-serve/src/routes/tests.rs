@@ -285,11 +285,125 @@ async fn progress_round_trips_through_the_api() {
     let bytes = axum::body::to_bytes(got.into_body(), 1 << 16)
         .await
         .unwrap();
-    let back: crate::Progress = serde_json::from_slice(&bytes).unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    // Pin the exact shape at both levels: the top-level object carries
+    // exactly `positions`, and each element of it carries exactly edition,
+    // slot and updated — no other top-level field, and no field leaking
+    // into (or missing from) an element.
+    let top_keys: std::collections::HashSet<_> = doc
+        .as_object()
+        .expect("response body is a JSON object")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        top_keys,
+        std::collections::HashSet::from_iter(vec!["positions".to_string()]),
+        "progress response must have exactly a `positions` field, no other top-level fields"
+    );
+    let positions = doc["positions"].as_array().expect("positions is an array");
+    assert_eq!(positions.len(), 1, "one write, one position");
+    let entry = positions[0].as_object().expect("a position is an object");
+    let keys: std::collections::HashSet<_> = entry.keys().cloned().collect();
+    assert_eq!(
+        keys,
+        std::collections::HashSet::from_iter(vec![
+            "edition".to_string(),
+            "slot".to_string(),
+            "updated".to_string()
+        ]),
+        "each position must have exactly edition, slot and updated fields"
+    );
 
     crate::test_support::cleanup("taiyaku-test-progress-api");
-    assert_eq!(back.edition, "raw");
-    assert_eq!(back.slot, 3);
+    assert_eq!(entry["edition"].as_str().unwrap(), "raw");
+    assert_eq!(entry["slot"].as_u64().unwrap(), 3);
+}
+
+/// Every edition the reader holds a position in comes back, newest first.
+///
+/// Built on `progress_round_trips_through_the_api`'s harness directly above,
+/// but on `state_with_two_editions` rather than `state`: the plain `state`
+/// fixture's work only declares the `raw` edition, and a `PUT` to an edition
+/// it does not have gets a 404 from `put_progress`'s own edition check —
+/// proving nothing about ordering. `state_with_two_editions` adds `en` over
+/// the same two archive members, so both editions' slots are real ones.
+///
+/// **Chosen so no other plausible ordering produces the same answer.** `en`
+/// is written first and `raw` second, so "first written first" would answer
+/// `[en, raw]`; `en` also sorts before `raw`, so "alphabetically first"
+/// would answer `[en, raw]` too. Only the real rule — most recently
+/// `updated` first — answers `[raw, en]`. `updated` is SQLite's
+/// `datetime('now')`, one-second resolution (see `taiyaku-library`'s
+/// `positions_come_back_newest_first`), so the two writes' timestamps are
+/// forced apart directly in the store rather than trusted to land in
+/// different seconds.
+#[tokio::test]
+async fn every_edition_the_reader_has_a_position_in_comes_back_newest_first() {
+    let state = Arc::new(crate::test_support::state_with_two_editions(
+        "taiyaku-test-progress-set",
+    ));
+    let library = state.library.clone();
+    let app = build_router(state);
+
+    for (edition, slot) in [("en", 1), ("raw", 3)] {
+        let put = app
+            .clone()
+            .oneshot(
+                Request::put("/api/works/t/progress")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"edition":"{edition}","slot":{slot}}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(put.status(), StatusCode::NO_CONTENT, "writing {edition}");
+    }
+
+    // Back-date `en`'s position so it cannot tie with `raw`'s — both were
+    // just written and `datetime('now')` cannot tell them apart within the
+    // same second.
+    library
+        .conn()
+        .execute(
+            "UPDATE progress SET updated = '2020-01-01 00:00:00'
+              WHERE work_id = (SELECT id FROM work WHERE slug = 't') AND edition = 'en'",
+            [],
+        )
+        .expect("backdating en's position");
+
+    let got = app
+        .clone()
+        .oneshot(
+            Request::get("/api/works/t/progress")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(got.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(got.into_body(), 1 << 16)
+        .await
+        .expect("reading the body");
+    let doc: serde_json::Value = serde_json::from_slice(&body).expect("json");
+
+    let positions = doc["positions"].as_array().expect("positions is an array");
+    let editions: Vec<&str> = positions
+        .iter()
+        .map(|p| p["edition"].as_str().expect("an edition"))
+        .collect();
+    assert_eq!(editions.len(), 2, "both positions, not the newest only");
+    assert_eq!(
+        editions,
+        vec!["raw", "en"],
+        "raw is the newest position and must come first — not alphabetically \
+         first (`en`) and not the position written first (`en`): got {editions:?}"
+    );
+
+    crate::test_support::cleanup("taiyaku-test-progress-set");
 }
 
 /// O3: the edition check was only half the guard. A position naming a real
@@ -525,10 +639,13 @@ async fn a_progress_read_does_not_stall_the_runtime() {
     let bytes = axum::body::to_bytes(response.into_body(), 1 << 16)
         .await
         .unwrap();
-    let back: crate::Progress = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(back.edition, "raw");
+    let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let positions = doc["positions"].as_array().expect("positions is an array");
+    assert_eq!(positions.len(), 1, "one write, one position");
+    assert_eq!(positions[0]["edition"].as_str().unwrap(), "raw");
     assert_eq!(
-        back.slot, 1,
+        positions[0]["slot"].as_u64().unwrap(),
+        1,
         "the value written before the block still comes back correctly"
     );
 }
@@ -2560,8 +2677,10 @@ async fn a_broken_library_connection_answers_500_rather_than_panicking() {
 /// answered user 1 for both could not express.
 ///
 /// Spec A2 §5.1 records the shape of the problem: `progress` and `note` have
-/// been keyed `(user_id, work_id)` since migration 1, so the database could
-/// always hold two readers — it was the server that could only ask about one.
+/// carried `user_id` in their primary key since migration 1 — `progress`'s is
+/// `(user_id, work_id, edition)` since migration 9 — so the database could
+/// always hold two readers, and it was the server that could only ask about
+/// one.
 #[tokio::test]
 async fn two_readers_hold_separate_positions_in_one_work() {
     use base64::Engine as _;

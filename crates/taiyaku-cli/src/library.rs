@@ -405,8 +405,10 @@ fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
 /// `series`/`works`/`editions`/`members` print unconditionally — a library
 /// that genuinely derived nothing is exactly as informative a zero as any
 /// other. `unattached_chapter_dirs` and `unreadable` print only when
-/// non-zero, and so do `suppressed`, `rekeyed`, `kept_editions`, `merged` and
-/// `unrecognised_kinds`:
+/// non-zero, and so do `suppressed`, `rekeyed`, `kept_editions`, `merged`,
+/// `unrecognised_kinds`, `emptied_works` (with the counts of what its fold
+/// wrote, what stopped existing, and what it discarded), `unfolded_works` and
+/// `series_holding_no_work`:
 /// [`taiyaku_library::derive::DeriveReport`]'s own doc comment is explicit
 /// that each exists because a silent drop, a silent re-key, a silently
 /// orphaned edition, a silent merge or a silently refused edition kind is
@@ -414,6 +416,39 @@ fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
 /// from a work that genuinely holds one volume, or from a rule that never
 /// named a kind — a counter that never reaches this line is the failure
 /// they were added to prevent.
+///
+/// **`emptied_works` is the sharpest of them**, being the only outcome in the
+/// project that deletes a `work` row: what moved with it, how many reading
+/// positions stopped existing, what a labeller already held that it left
+/// alone, and what its `DELETE` took and did not move all travel on the same
+/// line, so "1 work folded away" can never stand on its own.
+///
+/// **The two position clauses sit together**, which they did not: the lost
+/// count printed between "truth page(s) moved" and "truth page(s) already
+/// held", so the one number that is about a reading position destroyed was
+/// read in the middle of two clauses about labelling. Grouping is the only
+/// thing a single line of prose has instead of columns.
+///
+/// **`unfolded_works` prints its reasons beside its count**, the way
+/// [`scan_summary`] prints `unreadable_dirs`: the refusal messages name the
+/// work and the edition keys, and a bare "1 superseded work left standing"
+/// over a library of thousands tells a person something happened and gives
+/// them nothing to look at.
+///
+/// **`series_holding_no_work` says "holding no work" and not "left empty", which
+/// is what it said and did not count.** The field is a whole-library census
+/// taken after the folds — `derive` mints a series row for every named series,
+/// a series holding only unattached chapter directories among them — so a
+/// first scan of an ordinary chapter tree printed `1 series left empty` beside
+/// the fold's own numbers with nothing having been emptied by anything:
+/// `derived 1 series, 0 works, 0 editions, 0 members, 1 unattached chapter
+/// directories, 1 series left empty`, reproduced 2026-08-27. The clause sits
+/// on the line reporting what a fold did, so the past participle read as a
+/// claim about this run, and the present participle agrees with one series
+/// and with six alike — no singular/plural branch, for the reason
+/// `fold::absorb`'s `edition(s)` gives. The count is unchanged and deliberately so — see
+/// `DeriveReport::series_holding_no_work`, which argues for the census — only
+/// the tense is.
 fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize) -> String {
     use std::fmt::Write as _;
 
@@ -448,6 +483,36 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
             line,
             ", {} unrecognised edition kinds",
             report.unrecognised_kinds
+        );
+    }
+    if report.emptied_works > 0 {
+        let _ = write!(
+            line,
+            ", {} work(s) folded away ({} position(s) written, {} position(s) lost, \
+             {} note(s) and {} truth page(s) moved, {} truth page(s) already held, \
+             {} row(s) discarded)",
+            report.emptied_works,
+            report.moved_positions,
+            report.lost_positions,
+            report.moved_notes,
+            report.moved_truth_pages,
+            report.moved_truth_collisions,
+            report.discarded_rows,
+        );
+    }
+    if report.unfolded_works > 0 {
+        let _ = write!(
+            line,
+            ", {} superseded work(s) left standing: {}",
+            report.unfolded_works,
+            report.unfoldable.join("; ")
+        );
+    }
+    if report.series_holding_no_work > 0 {
+        let _ = write!(
+            line,
+            ", {} series holding no work",
+            report.series_holding_no_work
         );
     }
     let _ = write!(line, "; {raised} proposal(s) raised");

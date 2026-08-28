@@ -50,9 +50,12 @@ pub struct Exported {
     /// The other readers holding notes or a reading position for this work,
     /// whose state is **not** in the documents just written.
     ///
-    /// **§5.1, decided 2026-08-18.** `note` and `progress` have been keyed
-    /// `(user_id, work_id)` since migration 1, so the database holds every
-    /// reader; a sidecar carries one set, which is what the format is, and
+    /// **§5.1, decided 2026-08-18.** `note` and `progress` have carried
+    /// `user_id` in their primary key since migration 1 — `note`'s is
+    /// `(user_id, work_id, id)` since migration 5 and `progress`'s is
+    /// `(user_id, work_id, edition)` since migration 9 — so the database
+    /// holds every reader; a sidecar carries one set, which is what the
+    /// format is, and
     /// versioning it to hold several was declined — those files are consumed by
     /// `taiyaku-serve`'s routes and by the reader, and the blast radius is the
     /// whole round trip.
@@ -129,19 +132,24 @@ pub struct Exported {
 /// the work.** `state::notes` answers an empty document rather than `None`
 /// for exactly this reason (`startup.ts`'s `getNotes`), so there is no
 /// empty-versus-absent case for this function to invent on top of it.
-/// `taiyaku.progress.json` and `taiyaku.truth.json` are the opposite: both
-/// `state::progress` and `state::truth` return `Option`, and export honours
-/// that distinction rather than papering over it — `None` means the file is
-/// not written at all, the same convention `taiyaku-serve`'s own
-/// `progress::load`/`truth::load` already read back ("a file that is not
-/// there is `Ok(None)`... which is not a failure"). Neither document has a
-/// meaningful empty form the way `Notes` does: a `Progress` with no position
-/// to report is not a smaller `Progress`, it is the absence of one, and
-/// `taiyaku.truth.json` already models "never labelled" as the whole
-/// document being missing, not as `editions` being empty (`state::truth`'s
-/// own doc comment). Writing an empty placeholder for either would assert a
-/// fact — "this work has a recorded position", "someone opened the labelling
-/// tool here" — that is not true.
+/// `taiyaku.progress.json` and `taiyaku.truth.json` are the opposite: each
+/// has a meaningful absence, and export honours it rather than papering over
+/// it — nothing recorded means the file is not written at all, the same
+/// convention `taiyaku-serve`'s own `truth::load` already reads back ("a file
+/// that is not there is `Ok(None)`... which is not a failure").
+///
+/// **The two say "nothing recorded" differently, and only truth says it with
+/// an `Option`.** `state::progress` answers a `Vec<Position>` — one position
+/// per edition since migration 009 widened `progress`'s key — so its absence
+/// is the empty vector, which is what the `progress.is_empty()` test below
+/// asks and what `taiyaku-serve`'s `progress::load` now answers with too.
+/// Neither document has a meaningful empty form the way `Notes` does: a
+/// progress document with no position to report is not a smaller one, it is
+/// the absence of one, and `taiyaku.truth.json` already models "never
+/// labelled" as the whole document being missing, not as `editions` being
+/// empty (`state::truth`'s own doc comment). Writing an empty placeholder for
+/// either would assert a fact — "this work has a recorded position", "someone
+/// opened the labelling tool here" — that is not true.
 ///
 /// **`taiyaku.library.json` joins those two rather than the always-written
 /// pair, and that is a decision this branch made rather than inherited**
@@ -258,13 +266,19 @@ pub fn work(
 
     let notes_json = serde_json::to_string_pretty(&notes)
         .map_err(|e| format!("serialising notes for work `{slug}`: {e}"))?;
-    let progress_json = progress
-        .as_ref()
-        .map(|p| {
-            serde_json::to_string_pretty(p)
-                .map_err(|e| format!("serialising progress for work `{slug}`: {e}"))
-        })
-        .transpose()?;
+    // `state::progress` answers one position per edition, newest first
+    // (migration 009); `taiyaku.progress.json` carries all of them, versioned,
+    // via `progressdoc::to_json` — see that module's doc comment for why the
+    // document had to gain a shape that can say what a reader now holds,
+    // rather than only ever writing back the head.
+    let progress_json = if progress.is_empty() {
+        None
+    } else {
+        Some(
+            crate::progressdoc::to_json(&progress)
+                .map_err(|e| format!("serialising progress for work `{slug}`: {e}"))?,
+        )
+    };
 
     // Fixed order, matching the table in this module's doc comment: the
     // sidecar test that checks this byte-for-byte relies on `taiyaku.json`

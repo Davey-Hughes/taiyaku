@@ -118,7 +118,7 @@ import {
 import {
   acceptProposal,
   consequence,
-  LEFT_STANDING,
+  THE_FOLD,
   type Resolution,
   refusals,
   resolution,
@@ -378,15 +378,18 @@ export function AcceptForm({
           </ul>
         ) : (
           /* Two paragraphs, inside the same block Accept is
-             `aria-describedby` — what an accept leaves behind is a
+             `aria-describedby` — the fold this accept sets off is a
              consequence of pressing the button, so a screen reader reading
              the control reads it, and it sits below the sentence rather than
-             inside it because `consequence` says what accepting is *for*. */
+             inside it because `consequence` says what accepting is *for*.
+             It read "what an accept leaves behind" while the accept left a
+             duplicate standing; the fold closed that (O73) and the framing
+             went with it. */
           <>
             <p className="consequence">
               {consequence(target, candidate, preview)}
             </p>
-            <p className="left-standing">{LEFT_STANDING}</p>
+            <p className="the-fold">{THE_FOLD}</p>
           </>
         )}
       </div>

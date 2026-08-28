@@ -146,6 +146,129 @@ pub struct DeriveReport {
     /// standing orphan is a standing fact, and a count that appeared once and
     /// then went quiet would say the library had been fixed.
     pub kept_editions: usize,
+    /// Works whose every member is now held by a work this derive wrote — see
+    /// [`superseded`] for the five conditions — and which this derive has
+    /// therefore folded away: their reader rows moved onto the target and the
+    /// `work` row itself deleted, by `fold::absorb`.
+    ///
+    /// **Counted for the reason [`Self::kept_editions`] is, and more so.** A
+    /// store that silently deleted a work would be worse than the duplication
+    /// (O73) it fixes, and a number nobody prints is a change nobody can see.
+    /// This is the only `DELETE FROM work` in the project, so it is the last
+    /// thing that should do its job quietly — which is why the four counters
+    /// below travel with it rather than leaving "1 work folded away" to stand
+    /// for whatever happened inside.
+    pub emptied_works: usize,
+    /// Superseded works left standing because the fold was refused.
+    ///
+    /// **`superseded` covers the digest *set*, not the edition layout.** A
+    /// candidate holding `[X, Y]` as one edition, against a target holding
+    /// `[X]` and `[Y]` as two, satisfies every one of that function's five
+    /// conditions and has no edition on the target holding its archives in
+    /// its own order. `fold::absorb` refuses such a pair outright — half a
+    /// fold is worse than none — and `derive` counts the refusal
+    /// rather than propagating it: a scan that died because one work of
+    /// thousands could not be folded would be worse than a scan that folds
+    /// nothing. The work stays visible and duplicated, which is the safe
+    /// direction, and this is what says so.
+    ///
+    /// A refusal is not always a mapping failure. `fold::absorb` also refuses
+    /// a work carrying a reader's row on an edition key it no longer holds; a
+    /// pair where one reader holds one note id on both works, which `note`'s
+    /// key was widened to permit and which the move would collide on; and a
+    /// pair whose ground truth on a mapped edition was drawn against different
+    /// archives on the two sides. All three are the reader's own state or the
+    /// library's ground truth, and none is this fold's to destroy or to
+    /// rewrite. [`Self::unfoldable`] is where the difference is legible.
+    pub unfolded_works: usize,
+    /// Why each of those works was left standing, one message per work,
+    /// naming the work and what could not be mapped or was stranded on it.
+    ///
+    /// **A count says something was refused; it does not say what to look
+    /// at.** The refusal message `fold::absorb` builds already names the work
+    /// id and the edition keys, and dropping it for a number left an operator
+    /// with "1 superseded work left standing" over a library of thousands.
+    /// [`crate::scan::ScanReport::unreadable_dirs`] is the precedent and the
+    /// same argument: a `Vec` costs one field, and the alternative is a
+    /// person grepping for a work they cannot name.
+    ///
+    /// In `superseded`'s own order, which is deterministic, so two runs over
+    /// an unchanged library produce the same list.
+    pub unfoldable: Vec<String>,
+    /// Reading positions written onto the target's matching edition by a
+    /// fold — writes, not survivors, for the reason `fold::Moved::positions`
+    /// states. [`Self::lost_positions`] is the exact number.
+    pub moved_positions: usize,
+    /// Reading positions that existed before a fold and do not exist after
+    /// it — the superseded work's or the target's own.
+    ///
+    /// **The conflict is reachable, and `fold` documents both routes.**
+    /// `fold::edition_map` is explicitly non-injective, so two editions of the
+    /// superseded work over identical digests both land on the one edition of
+    /// the target that holds them inside a single fold; and `progress.edition`
+    /// has no foreign key to `edition(key)`, so the target can already carry a
+    /// grandfathered row under the mapped key. "The newer position wins" is
+    /// the decision and it stands — a slot number is not mergeable — but the
+    /// loser is a reading position the fold's `DELETE` then makes
+    /// unrecoverable.
+    ///
+    /// **A whole-fold identity rather than a per-edition subtraction**, which
+    /// matters to what this number can be trusted to say:
+    /// `fold::Moved::lost_positions` reads the `progress` rows on both works
+    /// before the move loop and on the target after it, so it counts a row
+    /// overwritten by an incoming one as well as a row that never landed, and
+    /// does not depend on which edition key sorted first. The subtraction it
+    /// replaced could see neither, and reported `0` for a fold that destroyed
+    /// a position.
+    ///
+    /// Counted for [`Self::moved_truth_collisions`]' reason, which is the same
+    /// reason: a silent loss is indistinguishable from no loss.
+    pub lost_positions: usize,
+    /// Notes moved onto the target's matching edition by a fold, `edition`
+    /// rewritten with them.
+    pub moved_notes: usize,
+    /// Labelled truth pages, with their boxes, moved onto the target.
+    pub moved_truth_pages: usize,
+    /// Truth pages a fold left behind because the target already held them.
+    ///
+    /// Counted for [`Self::kept_editions`]' reason: truth is library-wide, so
+    /// this is somebody's labelling that the fold declined to overwrite, and
+    /// a labelling silently not moved is exactly the loss these counters
+    /// exist to make visible.
+    pub moved_truth_collisions: usize,
+    /// Rows a fold's `DELETE` took that the fold did not move.
+    ///
+    /// Credits, alignments and their runs, tags, collection places, page
+    /// flags, hand-entered chapter numbers and hand-classified editions —
+    /// `fold::DISCARDED` is the list and states, per entry, why each is
+    /// counted rather than migrated. The number exists so that "1 work folded
+    /// away" can never quietly mean "and its hand-corrected alignment went
+    /// with it".
+    pub discarded_rows: usize,
+    /// Series holding no work at all.
+    ///
+    /// **Left standing deliberately.** `series` has no dependency on `work` —
+    /// `work.series_id` is `ON DELETE SET NULL` in the other direction — so a
+    /// fold that deletes a series' last work leaves the row behind. `browse`
+    /// filters a series with no works out of its listing, so it is invisible
+    /// rather than wrong, and deleting it would cascade `series_title`,
+    /// `series_tag`, `credit`, `external_id` and `collection_item` — a second
+    /// cascade question, and not the one the fold was built to answer.
+    /// Counted so that "invisible" never quietly becomes "unknown".
+    ///
+    /// **Counted on every derive, over the whole library**, not only over the
+    /// works this pass folded: a series standing with nothing in it is a
+    /// standing fact, for [`Self::kept_editions`]' reason.
+    ///
+    /// **So a fold is not the only way in, and the name says so since
+    /// 2026-08-27.** [`derive`] mints a series row for every series a rule or
+    /// a directory names, including one holding nothing but unattached chapter
+    /// directories — an ordinary shape in this project's corpus — so a first
+    /// scan of a library that has never folded anything reports one of these.
+    /// It was called `emptied_series`, and `taiyaku-cli`'s summary printed
+    /// "N series left empty" from it on the same line as the fold's own
+    /// counts.
+    pub series_holding_no_work: usize,
     /// Entries that joined an edition another entry had already opened — a
     /// volume arriving as two chapter directories contributes two members and
     /// one of these.
@@ -288,12 +411,66 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
     }
     report.series = series_ids.len();
 
+    let mut written: BTreeSet<i64> = BTreeSet::new();
+    // `(work_id, edition key)` pairs this pass actually wrote — narrower than
+    // `written` alone, because a written work can still be holding an edition
+    // this pass never touched (`DeriveReport::kept_editions`). `superseded`
+    // needs the narrower set: only these rows count as evidence that a
+    // candidate's material has a home. `group.editions.keys()` is exactly
+    // `doc.editions.keys()` below in `write_work`, which is what
+    // `import::scanned`'s `Scope::Scan` arm actually writes into `edition`.
+    let mut written_editions: BTreeSet<(i64, String)> = BTreeSet::new();
     for group in groups.into_values() {
         let series_id = *series_ids
             .get(&group.series)
             .ok_or_else(|| format!("no series row was reconciled for `{}`", group.series))?;
-        write_work(conn, series_id, &group, &mut report)?;
+        let work_id = write_work(conn, series_id, &group, &mut report)?;
+        written_editions.extend(group.editions.keys().cloned().map(|key| (work_id, key)));
+        written.insert(work_id);
     }
+
+    // **The only place in this project that reaches a `DELETE FROM work`.**
+    // `superseded` decides *which* work the fold takes and `fold::absorb`
+    // decides whether it can be taken safely — the reader's rows moving onto
+    // the target first, in one transaction, with the delete last. A pair it
+    // refuses is counted (`DeriveReport::unfolded_works`) and left standing,
+    // never propagated: a scan that died because one work of thousands could
+    // not be folded would be worse than a scan that folds nothing.
+    //
+    // The refusal's own message travels out in `DeriveReport::unfoldable`
+    // rather than being dropped for the count beside it: it already names the
+    // work and the keys, and a count alone leaves an operator with "1
+    // superseded work left standing" over a library of thousands.
+    for (from_work, into_work) in superseded(conn, &written, &written_editions)? {
+        match crate::fold::absorb(conn, from_work, into_work)? {
+            crate::fold::Outcome::Folded(moved) => {
+                report.emptied_works += 1;
+                report.moved_positions += moved.positions;
+                report.lost_positions += moved.lost_positions;
+                report.moved_notes += moved.notes;
+                report.moved_truth_pages += moved.truth_pages;
+                report.moved_truth_collisions += moved.collisions;
+                report.discarded_rows += moved.discarded;
+            }
+            crate::fold::Outcome::Refused(why) => {
+                report.unfolded_works += 1;
+                report.unfoldable.push(why);
+            }
+        }
+    }
+
+    // After the folds, because a fold is what empties a series — but over the
+    // whole library rather than over the works just folded, for the reason
+    // `DeriveReport::series_holding_no_work` gives.
+    report.series_holding_no_work = conn
+        .query_row(
+            "SELECT count(*) FROM series s
+              WHERE NOT EXISTS (SELECT 1 FROM work w WHERE w.series_id = s.id)",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+        .map_err(|e| format!("counting series left with no works: {e}"))?;
 
     // Task 8: raised last, because every kind of proposal points at a series
     // row and this is the point at which every series this derive touched —
@@ -865,12 +1042,15 @@ fn reconcile_series(conn: &Connection, sort_title: &str) -> Result<i64, String> 
 /// Build one group's document and hand it to [`crate::import::scanned`], then
 /// write the columns the document cannot carry — `work.series_id`,
 /// `work.volume` and, through [`write_chapters`], `member.chapter_declared`.
+///
+/// Returns the `work_id` it resolved — new or reconciled — so [`derive`] can
+/// collect the set of works this pass wrote and hand it to [`superseded`].
 fn write_work(
     conn: &Connection,
     series_id: i64,
     group: &Group,
     report: &mut DeriveReport,
-) -> Result<(), String> {
+) -> Result<i64, String> {
     let mut editions = BTreeMap::new();
     for (key, candidates) in &group.editions {
         let ordered = in_page_order(candidates);
@@ -1024,7 +1204,263 @@ fn write_work(
     write_chapters(conn, work_id, group)?;
     write_roots(conn, work_id, group)?;
     report.works += 1;
-    Ok(())
+    Ok(work_id)
+}
+
+/// One member as [`superseded`] reads it.
+struct HeldDigest {
+    /// The edition it sits on — needed to test whether this row was written
+    /// by *this* derive (see [`superseded`]'s condition 3), which `work_id`
+    /// alone cannot answer: a written work can still hold an edition this
+    /// pass never touched (`DeriveReport::kept_editions`).
+    edition_key: String,
+    /// Matched against a candidate's own path as well as its `sha256` — see
+    /// [`superseded`]'s condition 2. Without it, a byte-identical file at an
+    /// unrelated path anywhere in the library reads as evidence that this one
+    /// moved.
+    path: String,
+    sha256: String,
+    /// `None` fails condition 4 outright. When `Some`, it also joins the
+    /// match key alongside `path` and `sha256` — see [`superseded`]'s
+    /// condition 2. `scan::add_root` canonicalises and inserts with no
+    /// containment check, so one absolute file can be walked under two
+    /// registered roots at once, as two `scan_entry` rows with different
+    /// `rel_path`s but the identical `path` and `sha256`; the rules can then
+    /// resolve those two rows into two different works that share nothing but
+    /// the file itself. `path`/`sha256` alone cannot tell that shape apart
+    /// from a real fold, in which the candidate's member and its covering
+    /// member descend from the very same `scan_entry` and so carry the same
+    /// `root_id` by construction.
+    root_id: Option<i64>,
+}
+
+/// Every work's members, by work id. One query rather than one per work: a
+/// library of thousands is one pass here and thousands of round trips the
+/// other way.
+fn digests_by_work(conn: &Connection) -> Result<BTreeMap<i64, Vec<HeldDigest>>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT edition.work_id, edition.key, member.path, member.sha256, member.root_id
+               FROM member JOIN edition ON edition.id = member.edition_id",
+        )
+        .map_err(|e| format!("preparing the digest read: {e}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                HeldDigest {
+                    edition_key: row.get(1)?,
+                    path: row.get(2)?,
+                    sha256: row.get(3)?,
+                    root_id: row.get(4)?,
+                },
+            ))
+        })
+        .map_err(|e| format!("reading member digests: {e}"))?;
+    let mut by_work: BTreeMap<i64, Vec<HeldDigest>> = BTreeMap::new();
+    for row in rows {
+        let (work_id, digest) = row.map_err(|e| format!("reading a member digest: {e}"))?;
+        by_work.entry(work_id).or_default().push(digest);
+    }
+    Ok(by_work)
+}
+
+/// Works whose every member is now held — at the same `(root_id, path,
+/// sha256)`, on an edition this derive actually wrote — by a work this derive
+/// wrote, paired with the work that holds it. Detection only — see
+/// [`DeriveReport::emptied_works`]; nothing here moves or deletes a row.
+///
+/// **The five conditions, and why each is needed.** A work qualifies when:
+///
+/// 1. this derive did not write it;
+/// 2. it holds at least one member, and *every* member's
+///    `(root_id, path, sha256)` is also held by some one work this derive
+///    *did* write;
+/// 3. that covering row sits on an edition of that work whose key is in
+///    `written_editions`, not merely on the work;
+/// 4. every one of its members carries a non-NULL `root_id`;
+/// 5. across every one of its members, the intersection of the sets of
+///    written works holding that member's key resolves to exactly one
+///    work — the target.
+///
+/// **(2) matches on `path`, not `sha256` alone — a false positive a review
+/// found in the design itself (O73's fold), not in an implementation of
+/// it.** A live work can drop material from `held` through at least three
+/// ordinary routes with nothing wrong having happened — `scan::forget_unseen`
+/// deleting `scan_entry` rows out from under a `member.root_id` that survives
+/// an unreadable subtree, a rule edit that suppresses entries
+/// (`Produces::Deferred`, see [`DeriveReport::suppressed`]), or a re-hash that
+/// fails and leaves the entry dropped while the member keeps its old digest.
+/// A byte-identical file sitting at an unrelated path anywhere else in the
+/// library would, on `sha256` alone, read as proof that one of those routes
+/// was actually a fold. It is not: the fold this function exists to detect —
+/// measured against the reproduction that opened O73 — never moves a file on
+/// disk, it only reclassifies which work and edition an unchanged path
+/// belongs to. So the superseded work's member and the covering member on the
+/// target must name the identical path, exactly as O73's own reproduction
+/// does, or there is no evidence of a fold at all.
+///
+/// **(2) also requires the covering member's `root_id` to equal the
+/// candidate's own — a second false positive a review found in the
+/// registration path rather than in a fold.** `scan::add_root` canonicalises
+/// and inserts with no containment check, and `scan_entry` is unique on
+/// `(root_id, rel_path)`, so registering `/srv/manga` and then
+/// `/srv/manga/Extras` walks everything under `Extras` twice, as two rows
+/// with different `rel_path`s but identical absolute `path` and `sha256`. The
+/// rules can resolve those two rows into two different works, and letting
+/// either one leave `held` through any of the three routes above then
+/// produces every symptom of a fold over material that never moved: same
+/// path, same digest, and both roots still present so condition 4 excludes
+/// neither side. `root_id` equality on top of `path` and `sha256` separates
+/// that shape from an actual fold cleanly: O73's own reproduction has the
+/// candidate's member and the covering member descend from the same
+/// `scan_entry` under the same root, so the two ids are equal by
+/// construction, and [`write_roots`] guarantees the covering member carries
+/// one at all.
+///
+/// **(3) requires the covering row to sit on an edition this derive
+/// actually wrote, not merely on a work it wrote.** A written work can still
+/// be holding an edition this pass never touched —
+/// [`DeriveReport::kept_editions`]'s own doc names exactly this shape, a work
+/// "naming files the rules no longer place there". Treating such a stale row
+/// as evidence would let a work be judged superseded on the strength of a
+/// fact this derive did not establish, and the `or_insert` tie-break that used
+/// to sit here compounded it by preferring the smallest work id — the older,
+/// and so likelier-stale, holder.
+///
+/// **(4) is what keeps an imported work safe.** `006_member_root.sql` states
+/// that NULL means "under no root", "which is exactly true of an imported
+/// work" — so a hand-imported `taiyaku.json` naming the same archive is never
+/// superseded by a scan. A scanned work whose root was removed also reads
+/// NULL throughout (`member.root_id` is `ON DELETE SET NULL`) and is likewise
+/// left alone: the safe direction of an ambiguity this function must not
+/// resolve on its own.
+///
+/// **(2) is deliberately "every member", never "any".** A work half of whose
+/// material moved is not emptied, and treating it as superseded would later
+/// delete material nothing else holds.
+///
+/// **(5) chooses the target by intersecting, not by a first-write-wins
+/// map.** For each member, the set of written works holding its exact
+/// `(root_id, path, sha256)` as counted evidence is computed; a candidate is
+/// covered only when the intersection of those sets, taken across every one
+/// of its members, has exactly one work in it — that work is the target. A
+/// map from digest to a single "owner" work is stricter than this and misses
+/// a real target: with `written = {1, 5}`, work 1 holding `[A]`, work 5
+/// holding `[A, B]`, and a candidate holding `[A, B]`, such a map assigns
+/// `A → 1` and `B → 5` and refuses the candidate outright, even though work
+/// 5 alone covers both of its members — the intersection `{1, 5} ∩ {5} =
+/// {5}` finds it. Where the intersection holds more than one work, this
+/// leaves the candidate standing rather than guessing which one is "the"
+/// target.
+///
+/// # Errors
+///
+/// Returns an error if SQLite fails.
+fn superseded(
+    conn: &Connection,
+    written: &BTreeSet<i64>,
+    written_editions: &BTreeSet<(i64, String)>,
+) -> Result<Vec<(i64, i64)>, String> {
+    if written.is_empty() {
+        return Ok(Vec::new());
+    }
+    let held = digests_by_work(conn)?;
+
+    // Borrowed once rather than cloning `edition_key` per member below: a
+    // work id's written edition keys as `&str`, borrowed straight out of
+    // `written_editions` instead of allocating a fresh `String` at every
+    // membership test.
+    //
+    // Named `wrote_editions`, not `kept_editions`: that name is already taken
+    // by [`DeriveReport::kept_editions`] and [`kept_editions`] (the
+    // function), both of which mean editions this derive did *not* write and
+    // left standing. This map is the opposite — editions this derive *did*
+    // write — and a local shadowing that name would make the guard below
+    // read backwards to anyone carrying the module's own vocabulary.
+    let mut wrote_editions: BTreeMap<i64, BTreeSet<&str>> = BTreeMap::new();
+    for (work_id, key) in written_editions {
+        wrote_editions
+            .entry(*work_id)
+            .or_default()
+            .insert(key.as_str());
+    }
+
+    // Every `(root_id, path, sha256)` held on an edition this derive actually
+    // wrote, mapped to the *set* of written works that hold it — not to a
+    // single "owner", which is what made the map too strict (see this
+    // function's own doc). A stale edition on a written work
+    // (`DeriveReport::kept_editions`) contributes nothing here, by
+    // construction: only rows whose `(work_id, edition_key)` is in
+    // `written_editions` are counted as evidence at all. `root_id` joins the
+    // key alongside `path` and `sha256` — see condition 2's own doc above for
+    // why matching on the file alone is not enough.
+    let mut digest_holders: BTreeMap<(i64, &str, &str), BTreeSet<i64>> = BTreeMap::new();
+    for &work_id in written {
+        let Some(editions) = wrote_editions.get(&work_id) else {
+            continue;
+        };
+        for member in held.get(&work_id).into_iter().flatten() {
+            if !editions.contains(member.edition_key.as_str()) {
+                continue;
+            }
+            // `write_roots` guarantees a written member carries one; if it
+            // somehow did not, it could never equal a candidate's own
+            // (condition 4 already refuses any candidate with a NULL), so it
+            // would never be selected as evidence regardless.
+            let Some(root_id) = member.root_id else {
+                continue;
+            };
+            digest_holders
+                .entry((root_id, member.path.as_str(), member.sha256.as_str()))
+                .or_default()
+                .insert(work_id);
+        }
+    }
+
+    let mut found = Vec::new();
+    for (&work_id, members) in &held {
+        // `members.is_empty()` cannot occur: `held` is built from an inner
+        // `JOIN`, so a work with zero members never produces a row and so
+        // never becomes a key in this map at all. Kept as a guard anyway,
+        // named here so a later reader does not have to rediscover that.
+        if written.contains(&work_id)
+            || members.is_empty()
+            || members.iter().any(|m| m.root_id.is_none())
+        {
+            continue;
+        }
+        let mut candidates: Option<BTreeSet<i64>> = None;
+        for member in members {
+            // `.is_none()` was excluded for every member of this work above.
+            let root_id = member
+                .root_id
+                .expect("checked above: every member here carries a root_id");
+            let key = (root_id, member.path.as_str(), member.sha256.as_str());
+            // Intersected in place against a borrowed holder set rather than
+            // cloning one per member: only the first member that finds a
+            // match needs to allocate an owned set at all.
+            match &mut candidates {
+                None => candidates = Some(digest_holders.get(&key).cloned().unwrap_or_default()),
+                Some(current) => match digest_holders.get(&key) {
+                    Some(holders) => current.retain(|w| holders.contains(w)),
+                    None => current.clear(),
+                },
+            }
+            if candidates.as_ref().is_some_and(BTreeSet::is_empty) {
+                break;
+            }
+        }
+        if let Some(target) = candidates.filter(|c| c.len() == 1) {
+            let target = *target.iter().next().expect("len() == 1 checked above");
+            found.push((work_id, target));
+        }
+    }
+    // Ascending by superseded work id, and stated rather than left to
+    // `BTreeMap` iteration order: the next task iterates this list to delete,
+    // and that order must not depend on an incidental property of `held`.
+    found.sort_unstable();
+    Ok(found)
 }
 
 /// The `work` row this group already sits on, as `(id, hub, content_key)`, or

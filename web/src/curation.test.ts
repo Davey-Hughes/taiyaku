@@ -7,7 +7,7 @@ import {
   INBOX_MIN_SCORE,
   inboxTotal,
   kindLabel,
-  LEFT_STANDING,
+  THE_FOLD,
   listProposals,
   proposalDetail,
   refusals,
@@ -124,8 +124,10 @@ describe('consequence', () => {
     // **The verb, pinned.** This said `move 9 works` until a reproduction
     // from a clean database — scan, accept, rescan — showed the matched
     // volumes arriving as a new edition of the target's works while their
-    // original works stayed standing over the same files (O73). Nothing
-    // moves, and the word is the whole finding.
+    // original works stayed standing over the same files (O73, since closed
+    // by the fold `THE_FOLD` now describes). Nothing moves *on disk*,
+    // and the word is the whole finding — the fold that follows moves rows,
+    // not files.
     expect(line).not.toContain('move')
     expect(line).toContain('from 9 works')
     // And when: the accept writes a rule and changes no `edition` row.
@@ -187,16 +189,49 @@ describe('consequence', () => {
   })
 })
 
-describe('LEFT_STANDING', () => {
-  it('names the open item rather than restating its evidence', () => {
-    // The panel draws this beneath `consequence`. It is deliberately short of
-    // the reproduction — `docs/status.md` holds an open item's evidence, and
-    // a screen carrying a copy of it is a second copy to keep correct — so
-    // what this pins is that the pointer is there to follow and that the line
-    // does not quietly become a second "nothing happens" reassurance.
-    expect(LEFT_STANDING).toContain('O73')
-    expect(LEFT_STANDING).toContain('twice')
-    expect(LEFT_STANDING).not.toContain('move')
+describe('THE_FOLD', () => {
+  it('describes the fold rather than the duplication it closed', () => {
+    // Until O73 closed this line named the open item and asserted `twice`
+    // and `not.toContain('move')` — the accept-time truth being that nothing
+    // moved and the duplication was permanent. The fold built to close it
+    // (`derive::superseded`, `fold::absorb`) now removes the superseded work
+    // on the next scan and carries a reader's own state onto the surviving
+    // edition, so the line has to say the opposite of what it said before:
+    // this pins that it does, and that the rarer refusal path — where moving
+    // a reader's own state would not be safe — is still named rather than
+    // silently dropped.
+    expect(THE_FOLD).toContain('folds these works together')
+    expect(THE_FOLD).toContain('refuses instead')
+    expect(THE_FOLD).not.toContain('O73')
+  })
+
+  it('promises the move only as far as the store makes it', () => {
+    // **The unqualified promise is what this replaces.** The line said "any
+    // reader position, note or marked page on them moves onto this edition
+    // instead", and `fold::Moved` carries a counter for each of the three
+    // ways that is not so — `collisions`, `lost_positions` and `discarded`,
+    // every one of them constructed by a test in `taiyaku-library`. This is
+    // the control that causes the fold, so `works_moved`'s rule in
+    // `proposals.rs` governs it: a false statement to the person deciding is
+    // a defect whether it is a number or a verb.
+    expect(THE_FOLD).toContain('move onto this edition wherever they can')
+    expect(THE_FOLD).not.toContain('moves onto this edition instead')
+    // `Moved::collisions`: the surviving edition's own marks win.
+    expect(THE_FOLD).toContain('already has marked keeps its own marks')
+    // `Moved::lost_positions`: two places in one edition, one survivor.
+    expect(THE_FOLD).toContain('only the newer survives')
+  })
+
+  it('names what the fold discards, which nothing on this panel said', () => {
+    // `Moved::discarded` takes the work's `work_tag` rows and its
+    // `collection_item` places — a reader's own curation — along with its
+    // credits and alignments. A hand-corrected alignment is **O76**, open
+    // against exactly this, and the panel offering the accept was silent
+    // about all of it.
+    expect(THE_FOLD).toContain('discards')
+    expect(THE_FOLD).toContain('tags')
+    expect(THE_FOLD).toContain('places in reading lists')
+    expect(THE_FOLD).toContain('alignment corrected by hand')
   })
 })
 

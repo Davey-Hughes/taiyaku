@@ -1,3 +1,7 @@
+use std::collections::BTreeSet;
+
+use rusqlite::Connection;
+
 use crate::scan::tests::{fixture, write_archive, write_pages};
 use crate::{Library, derive, scan};
 
@@ -2022,4 +2026,747 @@ fn one_pass_answers_for_every_series_it_was_asked_about() {
          {together:?}",
     );
     assert!(together["A Series Nothing Here Is"].is_empty());
+}
+
+/// One `work` row, one `edition` and one `member` per `(edition key, path,
+/// sha256)` triple, every member's `root_id` pointing at root 1 — the shape a
+/// scan leaves behind. `seed_work_without_root` is the same shape with
+/// `root_id` left NULL, which is what an imported work (no root at all) and a
+/// work whose root was later removed (`ON DELETE SET NULL`) both look like.
+///
+/// **`path` is given explicitly, not derived from `name`/`key`.** `superseded`
+/// matches a candidate's members against a target's by `path` as well as by
+/// `sha256` (C1), so a fixture meaning "this file moved from one work's
+/// edition to another's" has to give the two members the identical path a
+/// real fold leaves behind — the file never moves on disk, only the
+/// classification of who owns it does — while a fixture meaning "coincidence,
+/// not a fold" has to give them different ones.
+///
+/// `content_key` and `slug` are both `name`, which is fine: they are unique
+/// on different columns, and every caller in this module uses a distinct
+/// `name` per work.
+fn seed_work(conn: &Connection, work_id: i64, name: &str, editions: &[(&str, &str, &str)]) {
+    seed_work_at(conn, work_id, name, editions, Some(1));
+}
+
+/// As [`seed_work`], but with no root at all — see its doc.
+fn seed_work_without_root(
+    conn: &Connection,
+    work_id: i64,
+    name: &str,
+    editions: &[(&str, &str, &str)],
+) {
+    seed_work_at(conn, work_id, name, editions, None);
+}
+
+fn seed_work_at(
+    conn: &Connection,
+    work_id: i64,
+    name: &str,
+    editions: &[(&str, &str, &str)],
+    root_id: Option<i64>,
+) {
+    let hub = editions.first().map_or("raw", |(key, _, _)| *key);
+    conn.execute(
+        "INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (?1, ?2, ?2, ?2, 'rtl', ?3)",
+        rusqlite::params![work_id, name, hub],
+    )
+    .expect("seeding a work");
+    for (key, path, sha256) in editions {
+        conn.execute(
+            "INSERT INTO edition (work_id, key, label) VALUES (?1, ?2, ?2)",
+            rusqlite::params![work_id, key],
+        )
+        .expect("seeding an edition");
+        let edition_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO member (edition_id, ordinal, path, sha256, pages, root_id)
+             VALUES (?1, 0, ?2, ?3, 1, ?4)",
+            rusqlite::params![edition_id, path, sha256, root_id],
+        )
+        .expect("seeding a member");
+    }
+}
+
+/// A work whose every member is now held by a work this derive wrote.
+///
+/// **Not "a work with zero editions", which never occurs.** Under
+/// `Scope::Scan`, `import::replace_editions` deletes only the editions the
+/// incoming document names, and the superseded work is not in `groups` at all
+/// — so nothing empties it. Measured 2026-08-27: after the fold, the two
+/// superseded works still held their editions over the same files.
+///
+/// **The covering member shares work 2's exact path.** That is what a fold
+/// actually leaves behind — see `superseded`'s own doc on C1 — and it is
+/// deliberate here rather than incidental: `a_byte_identical_file_at_a_different_path_is_not_superseded`
+/// is the fixture that isolates what happens when it does not.
+#[test]
+fn a_work_whose_material_all_moved_is_superseded() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    conn.execute("INSERT INTO root (id, path) VALUES (1, '/r')", [])
+        .expect("root");
+
+    // Work 1 keeps its own `raw` and gains `full-color` over the same archive
+    // work 2 holds — same path *and* digest; work 2 is the one the fold
+    // supersedes.
+    seed_work(
+        &conn,
+        1,
+        "target",
+        &[
+            ("raw", "target/raw", "aaa"),
+            ("full-color", "archive/v01", "bbb"),
+        ],
+    );
+    seed_work(&conn, 2, "superseded", &[("raw", "archive/v01", "bbb")]);
+
+    let written = BTreeSet::from([1_i64]);
+    let written_editions = BTreeSet::from([(1_i64, "full-color".to_string())]);
+    let found = super::superseded(&conn, &written, &written_editions).expect("detecting");
+    assert_eq!(found, vec![(2, 1)], "work 2's material is all under work 1");
+}
+
+/// Half a work's material moving is not supersession.
+#[test]
+fn a_work_that_kept_some_of_its_material_is_not_superseded() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    conn.execute("INSERT INTO root (id, path) VALUES (1, '/r')", [])
+        .expect("root");
+    seed_work(&conn, 1, "target", &[("full-color", "archive/v01", "bbb")]);
+    seed_work(
+        &conn,
+        2,
+        "kept",
+        &[("raw", "archive/v01", "bbb"), ("raw2", "kept/raw2", "ccc")],
+    );
+
+    let written = BTreeSet::from([1_i64]);
+    let written_editions = BTreeSet::from([(1_i64, "full-color".to_string())]);
+    let found = super::superseded(&conn, &written, &written_editions).expect("detecting");
+    assert!(
+        found.is_empty(),
+        "ccc is held by nothing else, got {found:?}"
+    );
+}
+
+/// An imported work is never superseded by a scan.
+#[test]
+fn a_work_with_no_root_is_left_alone() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    conn.execute("INSERT INTO root (id, path) VALUES (1, '/r')", [])
+        .expect("root");
+    seed_work(&conn, 1, "target", &[("full-color", "archive/v01", "bbb")]);
+    seed_work_without_root(&conn, 2, "imported", &[("raw", "archive/v01", "bbb")]);
+
+    let written = BTreeSet::from([1_i64]);
+    let written_editions = BTreeSet::from([(1_i64, "full-color".to_string())]);
+    let found = super::superseded(&conn, &written, &written_editions).expect("detecting");
+    assert!(
+        found.is_empty(),
+        "an imported work has no root, got {found:?}"
+    );
+}
+
+/// The same absolute file reachable under two registered roots is not
+/// evidence of a fold, even though it satisfies every other condition.
+///
+/// `scan::add_root` canonicalises and inserts with no containment check, and
+/// `scan_entry` is unique on `(root_id, rel_path)` — so registering `/r` and
+/// then `/r/extras` walks everything under `extras` twice, as two rows with
+/// different `rel_path`s but the identical absolute `path` and `sha256`. The
+/// rules can resolve those two rows into two different works. Nothing here
+/// moved: both `root` rows still exist, so condition 4 excludes neither side,
+/// and `path`/`sha256` alone match exactly as they would for a real fold.
+/// Only the two members' `root_id`s tell them apart — work 1's covering
+/// member sits under root 2, work 2's own member sits under root 1.
+#[test]
+fn nested_roots_covering_the_same_path_are_not_superseded() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    conn.execute(
+        "INSERT INTO root (id, path) VALUES (1, '/r'), (2, '/r/extras')",
+        [],
+    )
+    .expect("roots");
+
+    // Same absolute path, same digest — what nested registration leaves
+    // behind — but each member sits under a different root.
+    seed_work_at(
+        &conn,
+        1,
+        "target",
+        &[("full-color", "/r/extras/v01", "bbb")],
+        Some(2),
+    );
+    seed_work_at(
+        &conn,
+        2,
+        "unrelated-duplicate",
+        &[("raw", "/r/extras/v01", "bbb")],
+        Some(1),
+    );
+
+    let written = BTreeSet::from([1_i64]);
+    let written_editions = BTreeSet::from([(1_i64, "full-color".to_string())]);
+    let found = super::superseded(&conn, &written, &written_editions).expect("detecting");
+    assert!(
+        found.is_empty(),
+        "same path and digest under two different roots is not a fold, got {found:?}"
+    );
+}
+
+/// A byte-identical file at a different path is not evidence of a fold — C1.
+///
+/// Without the `path` half of the match this is indistinguishable from
+/// `a_work_whose_material_all_moved_is_superseded`: same `sha256`, held by a
+/// written work, root intact. The difference is that nothing here actually
+/// moved — `live-duplicate`'s file sits where it always has — and that is
+/// exactly the case `superseded`'s own doc lists three ordinary routes into:
+/// an unreadable subtree, a rule edit that suppresses entries, or a failed
+/// re-hash can each hand a fully live work this same "written work holds an
+/// identical digest" shape. A false positive here is `DELETE FROM work` on a
+/// live row.
+#[test]
+fn a_byte_identical_file_at_a_different_path_is_not_superseded() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    conn.execute("INSERT INTO root (id, path) VALUES (1, '/r')", [])
+        .expect("root");
+    seed_work(&conn, 1, "target", &[("raw", "archive/target", "dup")]);
+    // Not written, root intact: a fully live work that happens to hold the
+    // same bytes at a path of its own.
+    seed_work(
+        &conn,
+        2,
+        "live-duplicate",
+        &[("raw", "elsewhere/live", "dup")],
+    );
+
+    let written = BTreeSet::from([1_i64]);
+    let written_editions = BTreeSet::from([(1_i64, "raw".to_string())]);
+    let found = super::superseded(&conn, &written, &written_editions).expect("detecting");
+    assert!(
+        found.is_empty(),
+        "same bytes, different path — nothing moved, got {found:?}"
+    );
+}
+
+/// A stale edition on a written work is not evidence of a fold — C2.
+///
+/// Work 1 is written this pass, but only its `full-color` edition is: `raw`
+/// is exactly `DeriveReport::kept_editions`'s shape, a row a rule edit
+/// orphaned that this derive left standing rather than deleting. Work 2's
+/// only member matches `raw`'s path and digest, not `full-color`'s, so it
+/// must not read as covered — the tie-break that used to sit here preferred
+/// exactly this kind of row, being the smaller (so older, so likelier-stale)
+/// work id.
+#[test]
+fn a_stale_edition_on_a_written_work_is_not_evidence() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    conn.execute("INSERT INTO root (id, path) VALUES (1, '/r')", [])
+        .expect("root");
+    seed_work(
+        &conn,
+        1,
+        "target",
+        &[
+            ("raw", "archive/v01", "bbb"),
+            ("full-color", "target/full-color", "aaa"),
+        ],
+    );
+    seed_work(&conn, 2, "superseded", &[("raw", "archive/v01", "bbb")]);
+
+    let written = BTreeSet::from([1_i64]);
+    // Only `full-color` was actually written this pass — `raw` is standing
+    // from an earlier one, exactly as `kept_editions` describes.
+    let written_editions = BTreeSet::from([(1_i64, "full-color".to_string())]);
+    let found = super::superseded(&conn, &written, &written_editions).expect("detecting");
+    assert!(
+        found.is_empty(),
+        "the only covering member sits on an edition this derive did not write, got {found:?}"
+    );
+}
+
+/// The single target is found by intersecting per-member holder sets, not by
+/// a first-write-wins map from digest to one "owner" — I1.
+///
+/// Work 1 and work 5 are both written. Work 1 holds only `A`; work 5 holds
+/// both `A` and `B`, its `A` at the identical path and digest work 1's copy
+/// carries. A map that assigns each digest to a single owner resolves
+/// `A → 1` and `B → 5`; those disagree, so it refuses work 2 even though
+/// work 5 alone covers everything work 2 holds. Intersecting the holder sets
+/// `{1, 5}` (of `A`) and `{5}` (of `B`) finds it: `{5}`.
+#[test]
+fn a_target_found_by_intersection_a_single_owner_map_would_miss() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    conn.execute("INSERT INTO root (id, path) VALUES (1, '/r')", [])
+        .expect("root");
+    seed_work(&conn, 1, "narrow", &[("raw", "shared/a", "aaa")]);
+    seed_work(
+        &conn,
+        5,
+        "wide",
+        &[("raw", "shared/a", "aaa"), ("full-color", "wide/b", "bbb")],
+    );
+    seed_work(
+        &conn,
+        2,
+        "superseded",
+        &[("raw", "shared/a", "aaa"), ("full-color", "wide/b", "bbb")],
+    );
+
+    let written = BTreeSet::from([1_i64, 5_i64]);
+    let written_editions = BTreeSet::from([
+        (1_i64, "raw".to_string()),
+        (5_i64, "raw".to_string()),
+        (5_i64, "full-color".to_string()),
+    ]);
+    let found = super::superseded(&conn, &written, &written_editions).expect("detecting");
+    assert_eq!(
+        found,
+        vec![(2, 5)],
+        "work 5 alone covers both of work 2's members"
+    );
+}
+
+/// Two written works covering a candidate's one member identically leave the
+/// candidate standing — condition 5, and the only fixture that gives it
+/// anything to check.
+///
+/// Every other fixture in this module produces an intersection of size 0 or
+/// 1, so `candidates.filter(|c| c.len() == 1)` and a hypothetical
+/// `candidates.filter(|c| !c.is_empty())` agree on every one of them —
+/// the latter would additionally take the lowest work id as an arbitrary
+/// target, exactly the tie-break an earlier fix round was raised to remove.
+/// Here work 1 and work 3 both hold `shared/a`/`aaa` under root 1, so the
+/// intersection across the candidate's single member is `{1, 3}`: no exact
+/// answer, so nothing is reported.
+#[test]
+fn two_works_covering_the_same_material_leave_the_candidate_standing() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    conn.execute("INSERT INTO root (id, path) VALUES (1, '/r')", [])
+        .expect("root");
+    seed_work(&conn, 1, "alpha", &[("raw", "shared/a", "aaa")]);
+    seed_work(&conn, 3, "beta", &[("raw", "shared/a", "aaa")]);
+    seed_work(&conn, 2, "candidate", &[("raw", "shared/a", "aaa")]);
+
+    let written = BTreeSet::from([1_i64, 3_i64]);
+    let written_editions = BTreeSet::from([(1_i64, "raw".to_string()), (3_i64, "raw".to_string())]);
+    let found = super::superseded(&conn, &written, &written_editions).expect("detecting");
+    assert!(
+        found.is_empty(),
+        "work 1 and work 3 both cover the candidate — no single target, got {found:?}"
+    );
+}
+
+/// The only fixture here where a written work that is *not* the target sits
+/// in the written set at all — every other fixture has exactly one written
+/// work, which also happens to be the target.
+///
+/// This does not isolate condition 1 on its own: removing the
+/// `written.contains(&work_id)` exclusion would make work 1 join `found` as
+/// `(1, 1)` too, through the same degenerate self-supersession every other
+/// fixture already fails through once that exclusion is gone. What this
+/// fixture actually adds is narrower and is not covered elsewhere — work 5's
+/// own written material sits in `digest_holders` alongside work 1's, and
+/// proving that a candidate with nothing to do with work 5 is still found
+/// (and found as `(2, 1)`, not refused or misdirected) shows that unrelated
+/// written material does not perturb the intersection.
+#[test]
+fn a_written_work_holding_unrelated_material_is_never_a_candidate() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    conn.execute("INSERT INTO root (id, path) VALUES (1, '/r')", [])
+        .expect("root");
+    seed_work(&conn, 1, "target", &[("full-color", "archive/v01", "bbb")]);
+    seed_work(&conn, 5, "unrelated", &[("raw", "unrelated/v01", "zzz")]);
+    seed_work(&conn, 2, "superseded", &[("raw", "archive/v01", "bbb")]);
+
+    let written = BTreeSet::from([1_i64, 5_i64]);
+    let written_editions = BTreeSet::from([
+        (1_i64, "full-color".to_string()),
+        (5_i64, "raw".to_string()),
+    ]);
+    let found = super::superseded(&conn, &written, &written_editions).expect("detecting");
+    assert_eq!(
+        found,
+        vec![(2, 1)],
+        "work 5's own material must not make it a candidate, got {found:?}"
+    );
+}
+
+/// One truth page per number in `pages`, each carrying one box, plus the
+/// digest the labelling was drawn against — written through
+/// `state::put_truth` so the rows are the shape the labelling client
+/// produces rather than a hand-built approximation.
+fn seed_truth_pages(conn: &Connection, work_id: i64, edition: &str, pages: std::ops::Range<u32>) {
+    let mut doc = taiyaku_core::TruthDoc::new();
+    doc.editions.insert(
+        edition.to_string(),
+        taiyaku_core::TruthEdition {
+            members: vec![taiyaku_core::RegionMember {
+                sha256: "0".repeat(64),
+            }],
+            pages: pages
+                .map(|page| {
+                    (
+                        page,
+                        vec![taiyaku_core::TruthRegion {
+                            x: 0.1,
+                            y: 0.2,
+                            w: 0.3,
+                            h: 0.4,
+                            axis: None,
+                            kind: taiyaku_core::Kind::Dialogue,
+                            ignore: false,
+                            text: None,
+                        }],
+                    )
+                })
+                .collect(),
+        },
+    );
+    crate::state::put_truth(conn, work_id, &doc).expect("the labelling");
+}
+
+/// A reader's note on `edition`, one per id given.
+fn seed_notes(conn: &Connection, work_id: i64, user_id: i64, edition: &str, ids: &[&str]) {
+    crate::state::put_notes(
+        conn,
+        work_id,
+        user_id,
+        &crate::Notes {
+            work: "ignored".to_string(),
+            notes: ids
+                .iter()
+                .map(|id| crate::Note {
+                    id: (*id).to_string(),
+                    edition: edition.to_string(),
+                    slot: 2,
+                    region: None,
+                    color: None,
+                    body: format!("the sign, note {id}"),
+                    created: "2026-08-27T09:00:00Z".to_string(),
+                    updated: "2026-08-27T09:00:00Z".to_string(),
+                })
+                .collect(),
+        },
+    )
+    .expect("the reader's notes");
+}
+
+/// The two directories the two tests below both start from: a base series and
+/// a Full Color one, scanned and derived into two separate works, with the id
+/// of the colour work returned.
+fn two_works_before_the_fold(tree: &crate::tests::TempDir, conn: &Connection) -> i64 {
+    write_pages(&tree.path.join("Series").join("Series - v01"), 12);
+    write_pages(
+        &tree
+            .path
+            .join("Series - Full Color")
+            .join("Series - Full Color - v01"),
+        12,
+    );
+    let root = scan::add_root(conn, &tree.path).expect("add");
+    scan::scan_root(conn, &root).expect("scan");
+
+    let first = derive::derive(conn).expect("first derive");
+    assert_eq!(first.works, 2, "two directories, two series, two works");
+    assert_eq!(
+        first.emptied_works, 0,
+        "nothing has folded yet — both works were just written"
+    );
+
+    conn.query_row(
+        "SELECT edition.work_id FROM member
+           JOIN edition ON edition.id = member.edition_id
+          WHERE member.path LIKE '%Full Color%'",
+        [],
+        |r| r.get(0),
+    )
+    .expect("the colour work")
+}
+
+/// The rule `proposals::accept` writes for exactly this shape: fold the Full
+/// Color directory into the base series as a `full-color` edition.
+fn write_the_fold_rule(conn: &Connection) {
+    conn.execute(
+        "INSERT INTO rule (ordinal, kind, pattern, match_on, set_series, set_edition_key)
+         VALUES (99, 'prefix', 'Series - Full Color/', 'path', 'Series', 'full-color')",
+        [],
+    )
+    .expect("the fold rule");
+}
+
+/// `derive`'s own wiring from `write_work`'s returned id through
+/// `written`/`written_editions` to `superseded`, and on into `fold::absorb`.
+///
+/// The `superseded` tests above all call the function directly with a
+/// hand-built `written` set and `fold`'s own tests seed their two works by
+/// `INSERT`, so none of them would notice `write_work` returning the wrong
+/// id, or `derive` never populating `written` or `written_editions` at all,
+/// or the fold never being called. This is the one test that goes through
+/// `derive()` itself, over real scanned directories: two directories start as
+/// two separate series and two separate works, and a `set_series` +
+/// `set_edition_key` rule — the same shape `proposals::accept` writes, and
+/// the one the "O73's cascade, measured" reproduction uses against real
+/// archives — folds the second into the first as a new edition on the next
+/// derive.
+///
+/// **The reader is planted before the fold and read back after it**, through
+/// `state`'s own writers rather than by `INSERT`, because the whole claim of
+/// this branch is that their place survives a rescan they never asked for.
+///
+/// **Every counter gets its own number, and that is the point of the
+/// fixture's shape.** `derive` fans one `fold::Moved` out into seven report
+/// fields, and this is the only test that goes through that fan-out. An
+/// earlier version of it planted one position and one note and asserted
+/// `(1, 0, 1, 1)` — so swapping the two assignments passed, and
+/// `moved_truth_pages`, `moved_truth_collisions` and `discarded_rows` were
+/// asserted nowhere at all: deleting `report.discarded_rows += …` broke
+/// nothing. Two readers who move, three notes, four pages moved, five pages
+/// the target already held, six discarded rows and seven readings destroyed
+/// make every one of the seven pinned by the number in it rather than by
+/// luck.
+///
+/// **`lost_positions` was the last one still exempt from that rule**, and
+/// asserting it as `0` was the exemption: `usize::default()` is `0`, so
+/// deleting `report.lost_positions += moved.lost_positions;` from the fan-out
+/// left the assertion green. It said "none was lost" and pinned "the counter
+/// was never reached" equally well — which is the one thing a counter for a
+/// destroyed reading must not do. Seven readers therefore arrive holding a
+/// *newer* place on the target's mapped edition than the one they hold on the
+/// work about to be folded, which is exactly the shape
+/// `fold::move_positions`' `WHERE excluded.updated > progress.updated` makes
+/// a silent no-op, and `Moved::lost_positions` exists to see.
+#[test]
+fn deriving_after_a_fold_moves_the_reader_onto_the_target_and_deletes_the_work() {
+    let tree = crate::tests::tempdir("derive-fold-emptied");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let colour = two_works_before_the_fold(&tree, &conn);
+    let base: i64 = conn
+        .query_row("SELECT id FROM work WHERE id <> ?1", [colour], |r| r.get(0))
+        .expect("the base work");
+
+    // Two readers whose places move, so `moved_positions` cannot be the same
+    // number as anything else in the report: `progress` is keyed per user per
+    // edition, so one reader can only ever contribute one row here, and
+    // `move_positions` counts rows it actually wrote.
+    conn.execute(
+        "INSERT INTO user (id, name, password_hash, role) VALUES (2, 'second', '!', 'user')",
+        [],
+    )
+    .expect("a second reader");
+    for user in [1, 2] {
+        crate::state::put_progress(
+            &conn,
+            colour,
+            user,
+            &crate::Progress {
+                edition: "raw".into(),
+                slot: 2,
+            },
+        )
+        .expect("the reader's place");
+    }
+    // Seven more who lose one. Each holds a place on the work about to be
+    // folded *and* a newer one on the target, under the very edition key the
+    // fold maps onto — the grandfathered row `move_positions` documents,
+    // legal because `progress.edition` has no foreign key to `edition(key)`.
+    // Newer wins, so their place on the folded work is skipped by the upsert
+    // and destroyed by the `DELETE`: seven readings that existed before this
+    // derive and do not exist after it, and nothing but `lost_positions` says
+    // so.
+    for user in 3..=9 {
+        conn.execute(
+            "INSERT INTO user (id, name, password_hash, role)
+             VALUES (?1, 'reader ' || ?1, '!', 'user')",
+            [user],
+        )
+        .expect("a reader who is about to lose a place");
+        crate::state::put_progress(
+            &conn,
+            colour,
+            user,
+            &crate::Progress {
+                edition: "raw".into(),
+                slot: 60,
+            },
+        )
+        .expect("the place on the work about to be folded");
+        conn.execute(
+            "INSERT INTO progress (user_id, work_id, edition, slot, updated)
+             VALUES (?1, ?2, 'full-color', 90, '2099-01-01 00:00:00')",
+            [user, base],
+        )
+        .expect("the newer place they already hold on the target");
+    }
+    seed_notes(
+        &conn,
+        colour,
+        1,
+        "raw",
+        &[
+            "01JEXAMPLE0000000000000001",
+            "01JEXAMPLE0000000000000002",
+            "01JEXAMPLE0000000000000003",
+        ],
+    );
+    // Nine labelled pages on the work that is about to be folded away, and
+    // five of the same nine already labelled on the target under the edition
+    // the fold will map onto — so four move and five are left as the target's.
+    // The target holds them under an edition key it does not yet carry, which
+    // is legal (`truth_page.edition` has no foreign key) and is what the next
+    // derive is about to create.
+    seed_truth_pages(&conn, colour, "raw", 0..9);
+    seed_truth_pages(&conn, base, "full-color", 0..5);
+    // Six rows the fold counts and does not move — `fold::DISCARDED`'s first
+    // predicate that is a plain `work_id`, six times over.
+    for tag in 1..=6 {
+        conn.execute(
+            "INSERT INTO tag (id, name) VALUES (?1, 'tag ' || ?1)",
+            [tag],
+        )
+        .expect("a tag");
+        conn.execute(
+            "INSERT INTO work_tag (work_id, tag_id) VALUES (?1, ?2)",
+            [colour, tag],
+        )
+        .expect("a tag on the work about to be folded");
+    }
+
+    write_the_fold_rule(&conn);
+
+    let second = derive::derive(&conn).expect("second derive");
+    assert_eq!(
+        second.works, 1,
+        "one group now — both directories resolve series `Series`, volume 1.0"
+    );
+    assert_eq!(
+        (
+            second.emptied_works,
+            second.unfolded_works,
+            second.moved_positions,
+            second.moved_notes,
+            second.moved_truth_pages,
+            second.moved_truth_collisions,
+            second.discarded_rows,
+            second.lost_positions,
+        ),
+        (1, 0, 2, 3, 4, 5, 6, 7),
+        "the Full Color work folded away; two places and three notes moved, \
+         four labelled pages moved and five stayed the target's, six rows \
+         the fold does not move were counted before the delete took them, \
+         and seven readings the newer target place overrode stopped existing"
+    );
+    assert!(
+        second.unfoldable.is_empty(),
+        "nothing was refused, so nothing is named: {:?}",
+        second.unfoldable
+    );
+
+    let works: i64 = conn
+        .query_row("SELECT count(*) FROM work", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(works, 1, "the superseded work is gone");
+    let survivor: i64 = conn
+        .query_row("SELECT id FROM work", [], |r| r.get(0))
+        .expect("the one work left");
+    assert_ne!(survivor, colour, "and it is the target, not the candidate");
+
+    let held: Vec<(String, u32)> = crate::state::progress(&conn, survivor, 1)
+        .expect("reading the position back")
+        .into_iter()
+        .map(|p| (p.edition, p.slot))
+        .collect();
+    assert_eq!(
+        held,
+        vec![("full-color".to_string(), 2)],
+        "the reader's place is on the target, under the edition holding the \
+         archive they were actually reading"
+    );
+    let notes: Vec<(i64, String)> = conn
+        .prepare("SELECT work_id, edition FROM note ORDER BY id")
+        .and_then(|mut s| {
+            s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .expect("the notes");
+    assert_eq!(
+        notes,
+        vec![(survivor, "full-color".to_string()); 3],
+        "and so are all three of their notes, on the same edition"
+    );
+}
+
+/// The other end of the same wiring: a fold `absorb` refuses is counted,
+/// named, and leaves everything standing — through `derive()` rather than
+/// through `fold`'s own tests.
+///
+/// **The refusal here is the reader-row one**, which is the reachable shape:
+/// a note on an edition key the work no longer holds is a *supported* state —
+/// `taiyaku-serve`'s `notes` module grandfathers exactly this so it survives
+/// later writes — and `progress.edition`, `note.edition`, `truth_page.edition`
+/// and `truth_member.edition` are plain `TEXT` with no foreign key to
+/// `edition(key)`. Every mover in `fold` is keyed on a `from_key` out of the
+/// `edition` table, so before the guard this note was moved by nothing,
+/// counted by nothing, and taken by the `DELETE FROM work`.
+///
+/// The message travelling out in `DeriveReport::unfoldable` is the other half:
+/// a count tells an operator that something was refused and not which work to
+/// go and look at.
+#[test]
+fn deriving_leaves_a_work_standing_when_the_fold_is_refused_and_names_it() {
+    let tree = crate::tests::tempdir("derive-fold-refused");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let colour = two_works_before_the_fold(&tree, &conn);
+
+    // A rule edit renamed this work's edition key some derives ago; the note
+    // still names the old one, which is what `notes.rs` promises it may.
+    seed_notes(
+        &conn,
+        colour,
+        1,
+        "the-key-a-rule-edit-dropped",
+        &["01JEXAMPLE0000000000000001"],
+    );
+
+    write_the_fold_rule(&conn);
+
+    let second = derive::derive(&conn).expect("second derive");
+    assert_eq!(
+        (second.emptied_works, second.unfolded_works),
+        (0, 1),
+        "the fold was refused, so nothing was folded away"
+    );
+    assert_eq!(second.unfoldable.len(), 1, "{:?}", second.unfoldable);
+    let why = &second.unfoldable[0];
+    assert!(
+        why.contains(&colour.to_string()) && why.contains("the-key-a-rule-edit-dropped"),
+        "the refusal must name the work to look at and the key stranded on it: {why}"
+    );
+
+    let works: i64 = conn
+        .query_row("SELECT count(*) FROM work", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(works, 2, "both works still stand, visibly duplicated");
+    let (note_work, note_edition): (i64, String) = conn
+        .query_row("SELECT work_id, edition FROM note", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .expect("the note");
+    assert_eq!(
+        (note_work, note_edition.as_str()),
+        (colour, "the-key-a-rule-edit-dropped"),
+        "and the note nobody could map is exactly where the reader left it"
+    );
 }

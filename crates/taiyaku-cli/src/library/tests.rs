@@ -796,6 +796,8 @@ fn importing_the_same_file_under_a_different_spelling_reuses_the_placeholder_row
 
     let recovered = taiyaku_library::state::progress(&library.conn(), work_id, 1)
         .expect("reading progress back")
+        .into_iter()
+        .next()
         .expect("the reading position survived the import");
     assert_eq!(
         recovered.slot, 7,
@@ -896,6 +898,8 @@ fn importing_a_work_with_all_four_siblings_present_migrates_every_one() {
     let conn = library.conn();
     let progress = taiyaku_library::state::progress(&conn, work_id, 1)
         .expect("reads")
+        .into_iter()
+        .next()
         .expect("migrated");
     assert_eq!(progress.slot, 7);
 
@@ -982,6 +986,8 @@ fn a_second_import_does_not_overwrite_state_changed_since_the_first() {
     let conn = library.conn();
     let progress = taiyaku_library::state::progress(&conn, work_id, 1)
         .expect("reads")
+        .into_iter()
+        .next()
         .expect("still there");
     assert_eq!(progress.slot, 99, "the file must not have won");
 
@@ -1182,16 +1188,41 @@ fn round_trip_export_wipe_the_database_and_reimport_recovers_the_same_state() {
         import_canonical(&library_a, &canonical).expect("imports");
     {
         let conn = library_a.conn();
+        // **Two positions in different editions, at different times.** One
+        // renders right and wrong identically: `state::progress` orders
+        // `updated DESC, edition ASC` and `web/src/api.ts`'s `getProgress`
+        // resumes into the head, so a round trip that restamped every
+        // reimported row with `datetime('now')` ties them and the alphabet
+        // decides — this reader, 190 slots into `raw`, comes back into
+        // `en-fan` at slot 2.
+        taiyaku_library::state::put_progress(
+            &conn,
+            work_id_a,
+            1,
+            &taiyaku_library::Progress {
+                edition: "en-fan".to_string(),
+                slot: 2,
+            },
+        )
+        .expect("the position they left off in weeks ago");
         taiyaku_library::state::put_progress(
             &conn,
             work_id_a,
             1,
             &taiyaku_library::Progress {
                 edition: "raw".to_string(),
-                slot: 4,
+                slot: 190,
             },
         )
-        .expect("progress");
+        .expect("the position they are actually in");
+        // Both were written in the same second, which no real library's are.
+        // Backdating one is what gives the pair an order to survive.
+        conn.execute(
+            "UPDATE progress SET updated = '2026-08-01 09:00:00'
+              WHERE work_id = ?1 AND edition = 'en-fan'",
+            [work_id_a],
+        )
+        .expect("backdating the older reading");
         taiyaku_library::state::put_notes(
             &conn,
             work_id_a,
@@ -1238,10 +1269,21 @@ fn round_trip_export_wipe_the_database_and_reimport_recovers_the_same_state() {
     );
 
     let conn = library_b.conn();
-    let progress = taiyaku_library::state::progress(&conn, work_id_b, 1)
-        .expect("reads")
-        .expect("recovered");
-    assert_eq!(progress.slot, 4, "the reading position round-tripped");
+    let positions = taiyaku_library::state::progress(&conn, work_id_b, 1).expect("reads");
+    assert_eq!(
+        positions
+            .iter()
+            .map(|p| (p.edition.as_str(), p.slot))
+            .collect::<Vec<_>>(),
+        vec![("raw", 190), ("en-fan", 2)],
+        "both reading positions round-tripped, newest first — the order \
+         `getProgress` resumes into"
+    );
+    assert_eq!(
+        positions[1].updated, "2026-08-01 09:00:00",
+        "and each position's own recorded time came back with it, which is \
+         the only thing that order rests on"
+    );
 
     let notes = taiyaku_library::state::notes(&conn, work_id_b, 1).expect("reads");
     assert_eq!(notes.notes.len(), 1);
@@ -1449,6 +1491,87 @@ fn derive_summary_prints_unrecognised_kinds_when_nonzero_and_omits_them_when_zer
     assert!(line.contains("5 unrecognised edition kinds"), "{line}");
     let quiet = derive_summary(&derive_report(), 0);
     assert!(!quiet.contains("unrecognised"), "{quiet}");
+}
+
+/// The same rule once more, for the counters the fold added — and the one
+/// place it matters most, `emptied_works` being the only outcome in the
+/// project that deletes a `work` row.
+///
+/// **Seven distinct numbers, deliberately**, for the reason
+/// `derive_summary_names_the_four_headline_counts_and_the_proposal_count`
+/// gives: six counts travel inside one parenthesis here, and a fixture that
+/// repeated a value would let two of them swap places and print the identical
+/// line.
+#[test]
+fn derive_summary_says_what_a_fold_moved_and_what_its_delete_took() {
+    let mut report = derive_report();
+    report.emptied_works = 2;
+    report.moved_positions = 3;
+    report.moved_notes = 5;
+    report.moved_truth_pages = 8;
+    report.lost_positions = 13;
+    report.moved_truth_collisions = 21;
+    report.discarded_rows = 34;
+    let line = derive_summary(&report, 0);
+    assert!(
+        line.contains(
+            "2 work(s) folded away (3 position(s) written, 13 position(s) lost, \
+             5 note(s) and 8 truth page(s) moved, 21 truth page(s) already held, \
+             34 row(s) discarded)"
+        ),
+        "{line}"
+    );
+    let quiet = derive_summary(&derive_report(), 0);
+    assert!(!quiet.contains("folded"), "{quiet}");
+    assert!(!quiet.contains("discarded"), "{quiet}");
+    assert!(!quiet.contains("lost"), "{quiet}");
+}
+
+/// A superseded work the fold could not map is left standing and duplicated,
+/// and a series holding no work is left standing and invisible. Both are
+/// silent outcomes by construction — nothing on screen changes — so this line
+/// is the only place either is ever mentioned.
+///
+/// **The reasons print with the count**, because a count alone tells a person
+/// that something was refused and not which work to go and look at — the
+/// whole of `DeriveReport::unfoldable`'s reason for existing, and
+/// `scan_summary`'s treatment of `unreadable_dirs` above.
+///
+/// **The second clause is present tense, and that is the assertion.** It read
+/// `6 series left empty`, which on a library that has never folded anything —
+/// a first scan of a chapter-directory tree, an ordinary shape in this
+/// project's corpus — states that a fold emptied a series. The count is a
+/// census of the whole library rather than of this run, so the words have to
+/// be too.
+#[test]
+fn derive_summary_names_a_work_left_standing_and_a_series_holding_no_work() {
+    let mut report = derive_report();
+    report.unfolded_works = 4;
+    report.unfoldable = vec![
+        "work 12 holds edition(s) `raw` with no digest-identical edition on work 7".to_string(),
+        "work 19 carries 3 reader row(s) on edition key(s) `colour` that it does not hold"
+            .to_string(),
+    ];
+    report.series_holding_no_work = 6;
+    let line = derive_summary(&report, 0);
+    assert!(
+        line.contains("4 superseded work(s) left standing"),
+        "{line}"
+    );
+    assert!(line.contains("work 12"), "the reasons travel too: {line}");
+    assert!(
+        line.contains("work 19"),
+        "all of them, not just the first: {line}"
+    );
+    assert!(line.contains("6 series holding no work"), "{line}");
+    assert!(
+        !line.contains("left empty"),
+        "nothing was emptied by this derive, and the past tense claimed it \
+         was: {line}"
+    );
+    let quiet = derive_summary(&derive_report(), 0);
+    assert!(!quiet.contains("left standing"), "{quiet}");
+    assert!(!quiet.contains("holding no work"), "{quiet}");
 }
 
 #[test]

@@ -466,6 +466,56 @@ fn exporting_writes_five_documents_beside_the_sidecar() {
     );
 }
 
+/// The property this task's versioned document exists for: a reader with
+/// positions on more than one edition of the same work must get every one of
+/// them back out of `taiyaku.progress.json`, not just the first one this
+/// module happens to serialise.
+#[test]
+fn exporting_writes_every_position_across_editions() {
+    let dir = tempdir();
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let id = a_bare_work(&conn, &dir);
+    crate::state::put_progress(
+        &conn,
+        id,
+        THE_READER,
+        &crate::Progress {
+            edition: "raw".to_string(),
+            slot: 11,
+        },
+    )
+    .expect("first position");
+    crate::state::put_progress(
+        &conn,
+        id,
+        THE_READER,
+        &crate::Progress {
+            edition: "full-color".to_string(),
+            slot: 33,
+        },
+    )
+    .expect("second position");
+
+    let exported = work(&conn, id, THE_READER, None).expect("export");
+    let progress_path = dir.path().join("taiyaku.progress.json");
+    assert!(exported.written.contains(&progress_path));
+
+    let text = std::fs::read_to_string(&progress_path).expect("reads back");
+    let positions = crate::progressdoc::from_json(&text).expect("parses");
+    assert_eq!(
+        positions.len(),
+        2,
+        "both positions must round-trip through the document: {text}"
+    );
+    let by_edition: std::collections::BTreeMap<&str, u32> = positions
+        .iter()
+        .map(|p| (p.place.edition.as_str(), p.place.slot))
+        .collect();
+    assert_eq!(by_edition.get("raw"), Some(&11));
+    assert_eq!(by_edition.get("full-color"), Some(&33));
+}
+
 /// Export and import are inverses. The exported bytes are exactly what a
 /// projection produces, which is what makes "the sidecar remains the
 /// interchange format" true rather than nominal.

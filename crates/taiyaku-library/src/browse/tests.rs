@@ -1,6 +1,6 @@
 use super::*;
 use crate::scan::tests::write_pages;
-use crate::{Library, derive, scan};
+use crate::{Library, Progress, derive, scan, state};
 
 /// Two roots, one series, one volume in each — the shape spec C1 §5.1 is
 /// designed around, and the only one where the filter can be seen working.
@@ -373,6 +373,173 @@ fn a_completed_position_is_read_rather_than_continuing() {
     assert!(home.continuing.is_empty());
     assert_eq!(home.read.len(), 1);
     assert_eq!(home.added.len(), 1, "the work is still newly added");
+}
+
+/// `two_root_library`'s two roots (`en`, `raw`), but **two volumes** in each
+/// — the smallest fixture where one work can hold a position in more than one
+/// edition while a second work exists, so an ordering test cannot pass by
+/// having only one row to sort.
+fn library_with_two_works() -> (Library, crate::tests::TempDir, crate::tests::TempDir) {
+    let en = crate::tests::tempdir("browse-home-en");
+    write_pages(&en.path.join("Series").join("Series - v01"), 2);
+    write_pages(&en.path.join("Series").join("Series - v02"), 2);
+    let raw = crate::tests::tempdir("browse-home-raw");
+    write_pages(&raw.path.join("Series").join("Series - v01"), 2);
+    write_pages(&raw.path.join("Series").join("Series - v02"), 2);
+
+    let library = Library::open_in_memory().expect("in-memory");
+    {
+        let conn = library.conn();
+        let en_root = scan::add_root(&conn, &en.path).expect("adds en");
+        let raw_root = scan::add_root(&conn, &raw.path).expect("adds raw");
+        // As in `two_root_library`: each root names its own edition key, or
+        // both fall back to `raw` and derivation merges them into one.
+        conn.execute(
+            "UPDATE root SET edition_key = 'en' WHERE id = ?1",
+            [en_root.id],
+        )
+        .expect("names the English root's edition");
+        conn.execute(
+            "UPDATE root SET edition_key = 'raw' WHERE id = ?1",
+            [raw_root.id],
+        )
+        .expect("names the raw root's edition");
+        let en_root = scan::roots(&conn)
+            .expect("re-reads the roots")
+            .into_iter()
+            .find(|r| r.id == en_root.id)
+            .expect("the English root");
+        let raw_root = scan::roots(&conn)
+            .expect("re-reads the roots")
+            .into_iter()
+            .find(|r| r.id == raw_root.id)
+            .expect("the raw root");
+        scan::scan_root(&conn, &en_root).expect("scans en");
+        scan::scan_root(&conn, &raw_root).expect("scans raw");
+        derive::derive(&conn).expect("derives");
+    }
+    (library, en, raw)
+}
+
+/// A work sorts by the newest of its positions, not by an arbitrary one.
+///
+/// `(SELECT updated FROM progress p WHERE p.work_id = w.id AND p.user_id = ?)`
+/// is a scalar subquery over what is now a set: SQLite returns whichever row
+/// it reaches first and reports no error, so the ordering was silently
+/// arbitrary among a work's editions.
+///
+/// **The old position is put on `en` and the new one on `raw`, deliberately.**
+/// `progress` has no index but its own primary key, `(user_id, work_id,
+/// edition)`, so an unordered scan of it — exactly what the scalar subquery
+/// runs — reaches `en` before `raw` for a fixed work: `'en' < 'raw'`
+/// lexically. Putting the newer timestamp on `raw` means the broken query
+/// reaches the *older* row first for `ids[0]` and reports it as that work's
+/// position — the one arrangement a single-position fixture cannot produce,
+/// and the reason this test needs two positions on one work to mean anything.
+#[test]
+fn continuing_sorts_on_the_newest_position_a_work_holds() {
+    let (library, _en, _raw) = library_with_two_works();
+    let ids = work_ids(&library);
+    let conn = library.conn();
+
+    // Work `ids[0]` was touched long ago in `en` and just now in `raw`; work
+    // `ids[1]` in between. Newest-first must therefore put `ids[0]` ahead of
+    // `ids[1]`.
+    state::put_progress(
+        &conn,
+        ids[0],
+        1,
+        &Progress {
+            edition: "en".into(),
+            slot: 1,
+        },
+    )
+    .expect("an old en position");
+    conn.execute(
+        "UPDATE progress SET updated = '2020-01-01 00:00:00'
+          WHERE work_id = ?1 AND edition = 'en'",
+        [ids[0]],
+    )
+    .expect("backdates it");
+    state::put_progress(
+        &conn,
+        ids[1],
+        1,
+        &Progress {
+            edition: "raw".into(),
+            slot: 1,
+        },
+    )
+    .expect("a position in between");
+    conn.execute(
+        "UPDATE progress SET updated = '2024-01-01 00:00:00' WHERE work_id = ?1",
+        [ids[1]],
+    )
+    .expect("backdates it");
+    state::put_progress(
+        &conn,
+        ids[0],
+        1,
+        &Progress {
+            edition: "raw".into(),
+            slot: 1,
+        },
+    )
+    .expect("a fresh raw position, newer than both of the above");
+
+    let home = home(&conn, &[], 1).expect("reads home");
+    let order: Vec<i64> = home.continuing.iter().map(|w| w.id).collect();
+    assert_eq!(
+        order,
+        vec![ids[0], ids[1]],
+        "work 0's newest position (`raw`, just now) is the newest of all"
+    );
+}
+
+/// Finishing one edition while reading another does not put a work in both
+/// lists.
+#[test]
+fn a_work_finished_in_one_edition_and_open_in_another_is_still_continuing() {
+    let (library, _en, _raw) = library_with_two_works();
+    let ids = work_ids(&library);
+    let conn = library.conn();
+
+    state::put_progress(
+        &conn,
+        ids[0],
+        1,
+        &Progress {
+            edition: "raw".into(),
+            slot: 3,
+        },
+    )
+    .expect("a raw position");
+    conn.execute(
+        "UPDATE progress SET completed_at = '2026-01-01 00:00:00'
+          WHERE work_id = ?1 AND edition = 'raw'",
+        [ids[0]],
+    )
+    .expect("finishes the raw edition");
+    state::put_progress(
+        &conn,
+        ids[0],
+        1,
+        &Progress {
+            edition: "en".into(),
+            slot: 1,
+        },
+    )
+    .expect("an open en position");
+
+    let home = home(&conn, &[], 1).expect("reads home");
+    assert!(
+        home.continuing.iter().any(|w| w.id == ids[0]),
+        "an unfinished edition keeps the work continuing"
+    );
+    assert!(
+        !home.read.iter().any(|w| w.id == ids[0]),
+        "and it must not also be sitting in Read"
+    );
 }
 
 /// Two roots added the **ordinary** way — no `edition_key` on either — which

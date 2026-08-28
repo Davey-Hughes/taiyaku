@@ -295,11 +295,11 @@ describe('the accept form, in a browser', () => {
     // The line under it — what the accept leaves standing — is longer still,
     // and it names an open item at the end of the sentence, which is the part
     // a clipped box loses first.
-    expect(cut(host, '.left-standing')).toBe(false)
-    expect(box(host, '.left-standing').width).toBeLessThanOrEqual(
+    expect(cut(host, '.the-fold')).toBe(false)
+    expect(box(host, '.the-fold').width).toBeLessThanOrEqual(
       box(host, '.accept-form').width,
     )
-    expect(box(host, '.left-standing').top).toBeGreaterThanOrEqual(
+    expect(box(host, '.the-fold').top).toBeGreaterThanOrEqual(
       box(host, '.consequence').top,
     )
 

@@ -338,17 +338,19 @@ export const relation = (kind: string): string =>
  * unknown" — the form offers it, and an accept that did not set it made no
  * claim about language at all.
  *
- * **It says "from N works" rather than "move N works", because nothing
- * moves.** This read `move ${works_moved} works` until a reproduction from a
- * clean database — scan a scratch tree of four archives, accept, rescan —
- * showed the two matched volumes arriving as the new edition of the target's
- * works *and* their original works still standing under the old series over
- * the same files: six `member` rows over four files. That is O73, which is a
- * design decision rather than a patch and is not fixed here; what is fixed
- * here is the sentence, because `works_moved`'s own doc comment in
- * `proposals.rs` already argues that a wrong number in this line "is a false
- * statement to the person deciding", and a wrong *verb* is the same thing.
- * [`LEFT_STANDING`] is the other half, and the panel draws it beneath this.
+ * **It says "from N works" rather than "move N works", because nothing on
+ * disk moves.** This read `move ${works_moved} works` until a reproduction
+ * from a clean database — scan a scratch tree of four archives, accept,
+ * rescan — showed the two matched volumes arriving as the new edition of the
+ * target's works *and* their original works still standing under the old
+ * series over the same files: six `member` rows over four files. That was
+ * O73; `works_moved`'s own doc comment in `proposals.rs` already argues that
+ * a wrong number in this line "is a false statement to the person deciding",
+ * and a wrong *verb* is the same thing, so the sentence was fixed on the spot
+ * rather than waiting on the store. [`THE_FOLD`] is the other half, and the
+ * panel draws it beneath this — it once named the duplication O73 was about;
+ * now that the fold closes it on the next scan, it names what the fold moves,
+ * what it cannot, and what it discards.
  *
  * **And it says when.** The same reproduction showed the accept changing no
  * `edition` row at all: it writes the rule and marks the proposal accepted,
@@ -374,26 +376,51 @@ export function consequence(
 }
 
 /**
- * What an accept leaves standing, drawn beneath [`consequence`].
+ * What an accept also does on the next scan, drawn beneath [`consequence`].
  *
  * A separate line rather than another clause of that sentence, because it is
  * not part of what accepting is *for*: the new edition is created and is
  * correct — measured, with `edition.kind` following the rule since
- * `derive::write_edition_metadata` — and this is the one consequence nobody
- * asked for. "Accepting will:" is a statement of intent, and this belongs
- * outside it.
+ * `derive::write_edition_metadata` — and folding the now-superseded works
+ * away is a second effect nobody asked for in so many words. "Accepting
+ * will:" is a statement of intent, and this belongs outside it.
  *
  * **No count in it, deliberately.** The number is already in the sentence
  * above and reading `works_moved` twice is two places for it to be wrong;
  * this line names the *kind* of thing that happens, which does not vary with
  * how many works are in reach.
  *
- * It names O73 rather than describing the defect in full: `docs/status.md`
- * is where an open item's evidence lives, and a panel that carried the
- * reproduction would be a second copy of it to keep correct.
+ * **Rewritten when O73 closed, 2026-08-27, because the fact changed rather
+ * than the wording.** Until then this line named O73 — the duplication left
+ * behind by a scan that created the new edition and emptied nothing. The fold
+ * built to close it (`derive::superseded`, `fold::absorb`) now removes the
+ * superseded works on that same scan and carries a reader's position, notes
+ * and marked pages onto the surviving edition, proved against real archives
+ * in `docs/notes.md`. What the sentence could not promise before it closed —
+ * that the fold always succeeds — it still cannot: `fold::absorb` refuses
+ * per work, leaving it standing, wherever moving a reader's own state would
+ * not be safe (an edition key nothing maps, a note id one reader holds on
+ * both works). That refusal is the rarer path now rather than the only one,
+ * which is why it is named here in a clause rather than carrying its own
+ * line.
+ *
+ * **"Moves onto this edition instead" was an unqualified promise the store
+ * has never made, and the qualification is the point of this control.** This
+ * is what *causes* the fold, so `works_moved`'s own doc in `proposals.rs`
+ * governs it — "a wrong number in this line is a false statement to the
+ * person deciding" — and three of `fold::Moved`'s own fields exist because
+ * three things do not move. `collisions`: a page the surviving edition
+ * already has marked keeps its own marks and the incoming ones die with the
+ * work. `lost_positions`: when both sides hold a place in one edition the
+ * older is destroyed. `discarded`: the work's `work_tag` rows and its
+ * `collection_item` places — a reader's own curation — and its `credit` and
+ * `alignment` rows, hand corrections among them, which is **O76**. All three
+ * states are constructed by this branch's own tests, so none is a hypothesis.
+ * Two clauses therefore replace the promise: the move is what the fold *can*
+ * move, and what it cannot carry is named rather than left to be discovered.
  */
-export const LEFT_STANDING =
-  'Accepting empties nothing: the works this rule draws from are still standing after the next scan, under the same series and holding the same files, so those volumes are then in the library twice. That is open item O73.'
+export const THE_FOLD =
+  'Accepting folds these works together on the next scan: the volumes named above are removed as their own works, and the reader positions, notes and marked pages on them move onto this edition wherever they can — a page this edition already has marked keeps its own marks, and where both sides hold a place in one edition only the newer survives. What the fold cannot carry it discards with the works: their tags, their places in reading lists, and any alignment corrected by hand. A fold that cannot move a reader’s own state safely refuses instead, leaving the volumes standing rather than losing anything.'
 
 /**
  * The refusal sentences a candidate rule runs into — one line per condition

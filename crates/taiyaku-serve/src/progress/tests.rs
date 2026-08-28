@@ -30,14 +30,14 @@ fn absent_progress_is_not_the_same_as_slot_zero() {
     let after = load(&library, &work, 1).unwrap();
 
     crate::test_support::cleanup("taiyaku-test-progress");
-    assert_eq!(before, None, "nothing recorded yet");
+    assert_eq!(before, Vec::new(), "nothing recorded yet");
     assert_eq!(
-        after,
-        Some(Progress {
-            edition: "raw".into(),
-            slot: 0
-        })
+        after.len(),
+        1,
+        "on the first page: exactly one position held"
     );
+    assert_eq!(after[0].edition, "raw");
+    assert_eq!(after[0].slot, 0);
 }
 
 /// The sidecar must not gain a progress field. It is an alignment document
@@ -112,13 +112,10 @@ fn storing_progress_mints_exactly_one_bridge_row_for_a_work_the_library_never_im
         first_id, second_id,
         "the second write reuses the first's row"
     );
-    assert_eq!(
-        load(&library, &work, 1).unwrap(),
-        Some(Progress {
-            edition: "raw".into(),
-            slot: 2
-        })
-    );
+    let loaded = load(&library, &work, 1).unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].edition, "raw");
+    assert_eq!(loaded[0].slot, 2);
 }
 
 /// A read must never mint a bridge row as a side effect — `works::find_row`'s
@@ -133,6 +130,6 @@ fn loading_progress_for_an_unregistered_work_creates_no_row() {
 
     let row = crate::works::find_row(&library.conn(), &work).unwrap();
     crate::test_support::cleanup("taiyaku-test-progress-read-only");
-    assert_eq!(loaded, None);
+    assert_eq!(loaded, Vec::new());
     assert_eq!(row, None, "a GET must not write");
 }

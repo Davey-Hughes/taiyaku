@@ -551,22 +551,41 @@ describe('AcceptForm', () => {
     expect(accept(host).disabled).toBe(false)
   })
 
-  it('says what the accept leaves standing, inside what describes the button', async () => {
-    // **O73, named on the screen that causes it.** The consequence sentence
-    // says a new edition is added; what it cannot say inside "Accepting
-    // will:" is that the works the material comes from are not emptied, so
-    // the volumes end up in the library twice. That is a real consequence of
+  it('says what the accept also does, inside what describes the button', async () => {
+    // **O73 named this line until the fold that closes it shipped.** The
+    // consequence sentence says a new edition is added; what it cannot say
+    // inside "Accepting will:" is that the works the material comes from are
+    // folded away on the next scan, carrying a reader's own position, notes
+    // and marked pages onto the new edition. That is a real consequence of
     // pressing this control, so it goes inside the described block rather
     // than somewhere else on the panel — a screen reader on Accept has to
     // reach it.
     const { host } = await ready()
 
     const why = control(host, '.why')
-    expect(why.querySelector('.left-standing')).not.toBeNull()
-    expect(why.textContent).toContain('O73')
+    expect(why.querySelector('.the-fold')).not.toBeNull()
+    expect(why.textContent).toContain('folds these works together')
     // Beneath the sentence, not instead of it: the accept is offered and the
     // edition it creates is correct.
     expect(why.querySelector('.consequence')).not.toBeNull()
+  })
+
+  it('reaches the qualifications and the discards, not only the promise', async () => {
+    // **The whole line has to be inside `.why`, not just its first clause.**
+    // A screen reader on Accept reads this block and nothing else, and the
+    // three things the fold does *not* carry — the marks the surviving
+    // edition already holds, the older of two places in one edition, and the
+    // tags, reading-list places and hand-corrected alignments the `DELETE`
+    // takes (O76) — are the parts a person deciding cannot find out any
+    // other way. Asserted here rather than only in `curation.test.ts`
+    // because that file pins the string and this one pins that the string
+    // reaches the control.
+    const { host } = await ready()
+
+    const why = control(host, '.why')
+    expect(why.textContent).toContain('wherever they can')
+    expect(why.textContent).toContain('only the newer survives')
+    expect(why.textContent).toContain('alignment corrected by hand')
   })
 
   it('says nothing about what is left standing when the rule is refused', async () => {
@@ -580,7 +599,7 @@ describe('AcceptForm', () => {
     await typeInto(pattern(host), 'Publisher/')
     await settle()
 
-    expect(host.querySelector('.left-standing')).toBeNull()
+    expect(host.querySelector('.the-fold')).toBeNull()
     expect(host.querySelector('.consequence')).toBeNull()
   })
 

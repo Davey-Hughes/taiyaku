@@ -376,7 +376,20 @@ export interface StoredProgress {
   slot: number
 }
 
-/** `undefined` where nothing is recorded — the server answers 204, not 404. */
+/** One position per edition, as the server stores them. */
+interface ServerPosition extends StoredProgress {
+  updated: string
+}
+
+/**
+ * `undefined` where nothing is recorded — the server answers 204, not 404.
+ *
+ * The server answers **every** edition's position, newest first, since a
+ * position became per-edition. The reader resumes into the head: it opens one
+ * edition at a time, and the most recently updated is the one the reader was
+ * last in. The rest are not discarded server-side — switching edition and
+ * coming back finds the place that edition held.
+ */
 export async function getProgress(
   work: string,
 ): Promise<StoredProgress | undefined> {
@@ -384,7 +397,9 @@ export async function getProgress(
   if (res.status === 204) return undefined
   if (!res.ok)
     throw new Error(`reading progress: ${res.status} ${await res.text()}`)
-  return res.json()
+  const body = (await res.json()) as { positions?: ServerPosition[] }
+  const newest = body.positions?.[0]
+  return newest ? { edition: newest.edition, slot: newest.slot } : undefined
 }
 
 /**
