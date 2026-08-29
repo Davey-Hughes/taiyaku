@@ -63,7 +63,58 @@
 //! that mixes groups states its own order in a comment above the `format!`;
 //! read that against the params vector directly below it.
 
+// **Imported rather than written `std::collections::HashMap` inline, and that
+// is load-bearing for the mutation harness.** `cargo-mutants` replaces a
+// function body with a literal it generates — `Ok(HashMap::new())` — and emits
+// the short name, so while this module spelled the path out in full every such
+// mutant failed to *compile* and was reported `unviable`. O85's own two
+// functions had **fourteen** whole-body mutants and all fourteen were unviable,
+// which is a zero-survivor result that establishes nothing about them. Measured
+// 2026-08-29, before and after this line.
+use std::collections::{HashMap, HashSet};
+
 use rusqlite::{Connection, OptionalExtension as _, params_from_iter};
+
+#[cfg(test)]
+thread_local! {
+    /// Every statement this module issues, counted.
+    ///
+    /// **A thread-local counter rather than `rusqlite`'s `trace` feature**,
+    /// the same choice `proposals::tests`' one-sweep check made and for the
+    /// same reason: no Cargo feature has to be turned on for a test to see
+    /// it, and thread-local rather than a shared `static` so a test running
+    /// concurrently on another thread cannot land inside this one's
+    /// reset-then-read window.
+    ///
+    /// **Statements, not calls to a named function.** The claim worth holding
+    /// is O85's — that a listing's cost does not grow with the number of works
+    /// in it — and a call counter on the per-work loop would go to zero the
+    /// moment that loop is deleted, passing for the wrong reason.
+    pub(crate) static STATEMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `Connection::prepare`, counted in test builds.
+///
+/// **Every query in this module goes through this or [`query_row`]**, so the
+/// count is the module's whole SQL cost rather than the part somebody
+/// remembered to instrument. A new query added straight onto `conn` is
+/// invisible to O85's check and silently weakens it.
+fn prepare<'c>(conn: &'c Connection, sql: &str) -> rusqlite::Result<rusqlite::Statement<'c>> {
+    #[cfg(test)]
+    STATEMENTS.with(|c| c.set(c.get() + 1));
+    conn.prepare(sql)
+}
+
+/// `Connection::query_row`, counted in test builds. See [`prepare`].
+fn query_row<T, P, F>(conn: &Connection, sql: &str, params: P, f: F) -> rusqlite::Result<T>
+where
+    P: rusqlite::Params,
+    F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+{
+    #[cfg(test)]
+    STATEMENTS.with(|c| c.set(c.get() + 1));
+    conn.query_row(sql, params, f)
+}
 
 /// One series as a grid tile.
 ///
@@ -152,10 +203,11 @@ pub struct AlignmentCard {
 /// One work with its alignment detail — what `/api/library/works/{slug}`
 /// answers and **what no list route carries**.
 ///
-/// `works_of` already fires an `editions_of` query per row; an `alignments_of`
-/// per row would put back the N+1 the whole-branch review closed in `home`, at
-/// 111 queries on the largest series. §3's panel opens one work at a time, so
-/// this is the route that fills it.
+/// `works_of` answers a whole listing's editions in two statements since O85,
+/// and an `alignments_of` per row would put back exactly the N+1 that fix
+/// removed — the shape the whole-branch review closed in `home` at 111 queries
+/// on the largest series, and reopened here once already. §3's panel opens one
+/// work at a time, so this is the route that fills it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkDetail {
     pub card: WorkCard,
@@ -220,20 +272,27 @@ fn root_clause_for(alias: &str, roots: &[i64]) -> String {
     if roots.is_empty() {
         return String::new();
     }
-    let holes = std::iter::repeat_n("?", roots.len())
-        .collect::<Vec<_>>()
-        .join(",");
+    let holes = holes(roots.len());
     format!(
         " AND EXISTS (SELECT 1 FROM member rm WHERE rm.edition_id = {alias}.id \
          AND rm.root_id IN ({holes}))"
     )
 }
 
+/// `?,?,?` for an `IN` list of `n` values.
+///
+/// Spelled out inline in [`root_clause_for`], [`member_clause`] and [`status`]
+/// before O85 added two more `IN` lists; one place to read the rule the module
+/// header states, that every placeholder here is anonymous.
+fn holes(n: usize) -> String {
+    std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",")
+}
+
 /// The `AND` restricting a joined `member m` to the caller's roots.
 ///
 /// **Distinct from [`root_clause`], and the whole-branch review found out
 /// why.** `root_clause` decides whether an *edition* survives; this decides
-/// which of its *members* are counted. Without it, `editions_of`'s
+/// which of its *members* are counted. Without it, the edition listing's
 /// `LEFT JOIN member m` counted every member of a surviving edition — so a
 /// reader granted one root saw member and page counts covering roots they
 /// cannot see, and the module header's claim that counts are computed after
@@ -246,9 +305,7 @@ fn member_clause(roots: &[i64]) -> String {
     if roots.is_empty() {
         return String::new();
     }
-    let holes = std::iter::repeat_n("?", roots.len())
-        .collect::<Vec<_>>()
-        .join(",");
+    let holes = holes(roots.len());
     format!(" AND m.root_id IN ({holes})")
 }
 
@@ -399,9 +456,7 @@ pub fn series(
     }
     params.push(user_id);
 
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| format!("preparing the series listing: {e}"))?;
+    let mut stmt = prepare(conn, &sql).map_err(|e| format!("preparing the series listing: {e}"))?;
     let rows = stmt
         .query_map(params_from_iter(params), |row| {
             Ok(SeriesCard {
@@ -420,56 +475,92 @@ pub fn series(
         .map_err(|e| format!("reading series: {e}"))
 }
 
-/// One work's surviving editions, in key order.
-fn editions_of(conn: &Connection, roots: &[i64], work_id: i64) -> Result<Vec<EditionCard>, String> {
+/// Every edition of every work in `work_ids`, keyed by work id, in key order.
+///
+/// **One statement for the whole set, and one more for every edition's
+/// `missing` — O85.** This was `editions_of`, called once per work by
+/// [`works_of`], which then called `missing_members` once per edition: an N+1
+/// nested inside an N+1, in the very module whose own comment on
+/// [`WorkDetail`] cites the whole-branch review's 111-query fix in `home` as
+/// the precedent not to repeat. Measured on the two-root fixture
+/// `library_with_volumes` builds, before the fix: **2 + 3n statements** for an
+/// n-work series — 8 at two works, 20 at six — against 4 for any n after it.
+///
+/// A work whose editions the grant wholly hides has **no key in the map**
+/// rather than an empty vector, which is [`visible_editions`]' rule for the same
+/// question and keeps `WorkCard::editions`' "never empty" contract readable at
+/// the one place that fills it.
+///
+/// **The `IN` list is bounded by SQLite's parameter ceiling, which this trades
+/// one unbounded thing for another against.** `unfiled` takes no `LIMIT`, so
+/// `work_ids` is as long as the caller's set; where the old shape issued one
+/// query per work and could never exceed a parameter count, this issues one
+/// query with one placeholder per work. Measured on this machine's system
+/// libsqlite3, 3.53.4, 2026-08-29: **at least 200,000** bound parameters bind
+/// without complaint, against a library that would need that many works in a
+/// single listing to reach it. Recorded rather than guarded, because a guard
+/// would be code no library can execute.
+///
+/// Placeholders bind in text order, all anonymous: the member join's roots,
+/// then the `EXISTS` clause's roots, then `work_ids`. See the module header.
+fn editions_by_work(
+    conn: &Connection,
+    roots: &[i64],
+    work_ids: &[i64],
+) -> Result<HashMap<i64, Vec<EditionCard>>, String> {
+    if work_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
     let joined = member_clause(roots);
     let clause = root_clause(roots);
-    // Placeholders bind in text order, all anonymous: the join's roots, then
-    // the EXISTS clause's roots, then `work_id`. See the module header.
+    let wanted = holes(work_ids.len());
     let sql = format!(
-        "SELECT e.id, e.key, e.label, COUNT(m.id), COALESCE(SUM(m.pages), 0)
+        "SELECT e.work_id, e.id, e.key, e.label, COUNT(m.id), COALESCE(SUM(m.pages), 0)
            FROM edition e
            LEFT JOIN member m ON m.edition_id = e.id{joined}
-          WHERE 1 = 1{clause} AND e.work_id = ?
+          WHERE 1 = 1{clause} AND e.work_id IN ({wanted})
           GROUP BY e.id
-          ORDER BY e.key"
+          ORDER BY e.work_id, e.key"
     );
     let mut params: Vec<&dyn rusqlite::ToSql> =
         roots.iter().map(|r| r as &dyn rusqlite::ToSql).collect();
     params.extend(roots.iter().map(|r| r as &dyn rusqlite::ToSql));
-    params.push(&work_id);
+    params.extend(work_ids.iter().map(|w| w as &dyn rusqlite::ToSql));
 
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| format!("preparing the edition listing: {e}"))?;
+    let mut stmt =
+        prepare(conn, &sql).map_err(|e| format!("preparing the edition listing: {e}"))?;
     let rows = stmt
         .query_map(params.as_slice(), |row| {
             Ok((
                 row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
                 EditionCard {
-                    key: row.get(1)?,
-                    label: row.get(2)?,
-                    members: row.get(3)?,
-                    pages: row.get(4)?,
+                    key: row.get(2)?,
+                    label: row.get(3)?,
+                    members: row.get(4)?,
+                    pages: row.get(5)?,
                     missing: 0,
                 },
             ))
         })
-        .map_err(|e| format!("listing editions of work {work_id}: {e}"))?
-        .collect::<rusqlite::Result<Vec<(i64, EditionCard)>>>()
-        .map_err(|e| format!("reading editions of work {work_id}: {e}"))?;
+        .map_err(|e| format!("listing editions: {e}"))?
+        .collect::<rusqlite::Result<Vec<(i64, i64, EditionCard)>>>()
+        .map_err(|e| format!("reading editions: {e}"))?;
 
-    rows.into_iter()
-        .map(|(edition_id, card)| {
-            Ok(EditionCard {
-                missing: missing_members(conn, roots, edition_id)?,
-                ..card
-            })
-        })
-        .collect()
+    let edition_ids: Vec<i64> = rows.iter().map(|(_, id, _)| *id).collect();
+    let missing = missing_by_edition(conn, roots, &edition_ids)?;
+
+    let mut by_work: HashMap<i64, Vec<EditionCard>> = HashMap::new();
+    for (work_id, edition_id, card) in rows {
+        by_work.entry(work_id).or_default().push(EditionCard {
+            missing: missing.get(&edition_id).copied().unwrap_or(0),
+            ..card
+        });
+    }
+    Ok(by_work)
 }
 
-/// How many of this edition's members no longer exist on disk.
+/// How many of each edition's members no longer exist on disk.
 ///
 /// **O62.** The scanner deletes a `scan_entry` for a file it no longer meets
 /// (`scan::forget_unseen`) while the `member` row survives, so the difference
@@ -498,31 +589,57 @@ fn editions_of(conn: &Connection, roots: &[i64], work_id: i64) -> Result<Vec<Edi
 /// ordinary way merge into one edition, and a caller granted only one of them
 /// was told a `missing` count covering material under the root they cannot
 /// see — a fact about material the grant hides. [`member_clause`] is the same
-/// clause `editions_of`'s member join already reads for the same reason.
+/// clause [`editions_by_work`]'s member join already reads for the same reason.
+///
+/// **O85: a set, not one edition.** This took a single `edition_id` and was
+/// called once per edition of every work in a listing. **An edition with
+/// nothing missing has no row here at all** — `COUNT(*)` over an empty group
+/// produces none — so a caller reads its absence as zero rather than expecting
+/// a key per edition, which is what the single-edition version returned.
 ///
 /// # Errors
 ///
 /// Returns an error if SQLite fails.
-pub fn missing_members(conn: &Connection, roots: &[i64], edition_id: i64) -> Result<usize, String> {
+pub fn missing_by_edition(
+    conn: &Connection,
+    roots: &[i64],
+    edition_ids: &[i64],
+) -> Result<HashMap<i64, usize>, String> {
+    if edition_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
     // Parameter order is text order (the module header, and `alignments_of`'s
-    // doc): `edition_id`'s `?` precedes `{members}`'s anonymous `?`s in the
+    // doc): the `IN` list's `?`s precede `{members}`'s anonymous `?`s in the
     // SQL text, matching the order `params` below pushes them in.
     let members = member_clause(roots);
+    let wanted = holes(edition_ids.len());
     let sql = format!(
-        "SELECT COUNT(*)
+        "SELECT m.edition_id, COUNT(*)
            FROM member m
            JOIN root r ON r.id = m.root_id
            LEFT JOIN scan_entry se
                   ON se.root_id  = m.root_id
                  AND se.rel_path = ltrim(substr(m.path, length(r.path) + 1), '/')
-          WHERE m.edition_id = ? AND se.rel_path IS NULL{members}"
+          WHERE m.edition_id IN ({wanted}) AND se.rel_path IS NULL{members}
+          GROUP BY m.edition_id"
     );
-    let mut params: Vec<i64> = vec![edition_id];
+    let mut params: Vec<i64> = edition_ids.to_vec();
     params.extend(roots.iter().copied());
 
-    conn.query_row(&sql, params_from_iter(params), |row| row.get::<_, i64>(0))
-        .map(|n| usize::try_from(n).unwrap_or(0))
-        .map_err(|e| format!("counting missing members of edition {edition_id}: {e}"))
+    let mut stmt =
+        prepare(conn, &sql).map_err(|e| format!("preparing the missing-member count: {e}"))?;
+    let rows = stmt
+        .query_map(params_from_iter(params), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|e| format!("counting missing members: {e}"))?
+        .collect::<rusqlite::Result<Vec<(i64, i64)>>>()
+        .map_err(|e| format!("reading missing members: {e}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, n)| (id, usize::try_from(n).unwrap_or(0)))
+        .collect())
 }
 
 /// One work's alignments, with both sides restricted to the caller's roots.
@@ -556,9 +673,8 @@ fn alignments_of(
     params.extend(roots.iter().copied());
     params.push(work_id);
 
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| format!("preparing the alignment listing: {e}"))?;
+    let mut stmt =
+        prepare(conn, &sql).map_err(|e| format!("preparing the alignment listing: {e}"))?;
     let rows = stmt
         .query_map(params_from_iter(params), |row| {
             Ok(AlignmentCard {
@@ -621,9 +737,7 @@ fn works_of(
     params.extend(roots.iter().map(|r| r as &dyn rusqlite::ToSql));
     params.extend_from_slice(extra);
 
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| format!("preparing the work listing: {e}"))?;
+    let mut stmt = prepare(conn, &sql).map_err(|e| format!("preparing the work listing: {e}"))?;
     let rows: Vec<(i64, String, String, Option<f64>, bool)> = stmt
         .query_map(params.as_slice(), |row| {
             Ok((
@@ -638,11 +752,18 @@ fn works_of(
         .collect::<rusqlite::Result<_>>()
         .map_err(|e| format!("reading works: {e}"))?;
 
-    rows.into_iter()
+    // **O85: the editions for the whole set, not one work at a time.** Two
+    // statements for any number of works, where this was one per work and one
+    // more per edition of each.
+    let ids: Vec<i64> = rows.iter().map(|(id, ..)| *id).collect();
+    let mut editions = editions_by_work(conn, roots, &ids)?;
+
+    Ok(rows
+        .into_iter()
         .map(|(id, slug, title, volume, aligned)| {
-            let editions = editions_of(conn, roots, id)?;
+            let editions = editions.remove(&id).unwrap_or_default();
             let pages = editions.iter().map(|e| e.pages).max().unwrap_or(0);
-            Ok(WorkCard {
+            WorkCard {
                 id,
                 slug,
                 title,
@@ -650,9 +771,9 @@ fn works_of(
                 editions,
                 aligned,
                 pages,
-            })
+            }
         })
-        .collect()
+        .collect())
 }
 
 /// One series and its works, or `None` if this caller cannot see it.
@@ -940,9 +1061,7 @@ fn matching_unfiled_works(conn: &Connection, m: &Match, shown: &str) -> Result<V
 /// microseconds, and it is only ever reached by a query of one or two
 /// characters.
 fn ids(conn: &Connection, sql: &str, needle: &str, doing: &str) -> Result<Vec<i64>, String> {
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|e| format!("preparing: {doing}: {e}"))?;
+    let mut stmt = prepare(conn, sql).map_err(|e| format!("preparing: {doing}: {e}"))?;
     let rows = stmt
         .query_map(rusqlite::params![needle], |row| row.get(0))
         .map_err(|e| format!("{doing}: {e}"))?;
@@ -1002,11 +1121,14 @@ pub fn home(conn: &Connection, roots: &[i64], user_id: i64) -> Result<Home, Stri
         &[&user_id, &user_id, &user_id],
         "(SELECT MAX(completed_at) FROM progress p WHERE p.work_id = w.id AND p.user_id = ?) DESC",
     )?;
-    // **`LIMIT` in the SQL, not `.take()` afterwards.** `works_of` fires an
-    // `editions_of` query per row it returns, so selecting every work in the
-    // library and discarding all but twenty cost one query per work — 69 per
-    // `/api/library/home` on the measured corpus, and thousands on a real
-    // library. Found by the whole-branch review.
+    // **`LIMIT` in the SQL, not `.take()` afterwards.** When this was written
+    // `works_of` fired an edition query per row it returned, so selecting every
+    // work in the library and discarding all but twenty cost one query per work
+    // — 69 per `/api/library/home` on the measured corpus, and thousands on a
+    // real library. Found by the whole-branch review. **O85 has since made that
+    // one statement for the whole set, which removes the per-row cost but not
+    // this bound's reason**: it keeps the rows read proportional to what the
+    // route returns rather than to the size of the library.
     let added = works_of(conn, roots, "1 = 1", &[], "w.id DESC LIMIT 20")?;
 
     let cap = usize::try_from(LIST_CAP).unwrap_or(usize::MAX);
@@ -1048,15 +1170,15 @@ pub fn cover_work(
     // while `/series/9999` answers 404 is an enumeration oracle — exactly the
     // distinction `one_series` goes out of its way not to expose. Found by the
     // whole-branch review.
-    let set: Option<i64> = conn
-        .query_row(
-            "SELECT cover_work_id FROM series WHERE id = ?",
-            rusqlite::params![series_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("reading the cover of series {series_id}: {e}"))?
-        .flatten();
+    let set: Option<i64> = query_row(
+        conn,
+        "SELECT cover_work_id FROM series WHERE id = ?",
+        rusqlite::params![series_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| format!("reading the cover of series {series_id}: {e}"))?
+    .flatten();
 
     // A hand-set cover must still survive the filter — a reader granted one
     // root must not be handed a cover generated from a root they cannot see —
@@ -1087,9 +1209,12 @@ pub struct CoverTarget {
 /// One query for the cover, rather than building every `WorkCard` in the
 /// series to read one id off the front.
 ///
-/// `works_of` fires an `editions_of` query per work, and the grid asks for one
-/// cover per tile — so a 127-series library rendered thousands of queries to
-/// answer 127 questions. Found by the whole-branch review.
+/// When this was written `works_of` fired an edition query per work, and the
+/// grid asks for one cover per tile — so a 127-series library rendered
+/// thousands of queries to answer 127 questions. Found by the whole-branch
+/// review. O85 has since bounded the listing itself; asking for a cover with
+/// one query rather than by building every `WorkCard` is what this function is
+/// still for.
 ///
 /// `wanted` pins a specific work (the hand-set cover); `None` takes the
 /// lowest-volume visible one, with `w.id` as the tiebreak so a series of
@@ -1121,7 +1246,7 @@ fn cover_target(
     if let Some(id) = wanted.as_ref() {
         params.push(id);
     }
-    conn.query_row(&sql, params.as_slice(), |row| {
+    query_row(conn, &sql, params.as_slice(), |row| {
         Ok(CoverTarget {
             work_id: row.get(0)?,
             slug: row.get(1)?,
@@ -1165,8 +1290,7 @@ pub fn edition_visible(
     );
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&slug, &edition];
     params.extend(roots.iter().map(|r| r as &dyn rusqlite::ToSql));
-    let found: Option<i64> = conn
-        .query_row(&sql, params.as_slice(), |row| row.get(0))
+    let found: Option<i64> = query_row(conn, &sql, params.as_slice(), |row| row.get(0))
         .optional()
         .map_err(|e| format!("checking visibility of `{slug}`/`{edition}`: {e}"))?;
     Ok(found.is_some())
@@ -1202,7 +1326,7 @@ pub fn edition_visible(
 pub fn visible_editions(
     conn: &Connection,
     roots: &[i64],
-) -> Result<std::collections::HashMap<String, std::collections::HashSet<String>>, String> {
+) -> Result<HashMap<String, HashSet<String>>, String> {
     let clause = root_clause(roots);
     let sql = format!(
         "SELECT DISTINCT w.slug, e.key
@@ -1211,17 +1335,15 @@ pub fn visible_editions(
     );
     let params: Vec<&dyn rusqlite::ToSql> =
         roots.iter().map(|r| r as &dyn rusqlite::ToSql).collect();
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| format!("preparing the visible edition listing: {e}"))?;
+    let mut stmt =
+        prepare(conn, &sql).map_err(|e| format!("preparing the visible edition listing: {e}"))?;
     let rows = stmt
         .query_map(params.as_slice(), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|e| format!("listing visible editions: {e}"))?;
 
-    let mut out: std::collections::HashMap<String, std::collections::HashSet<String>> =
-        std::collections::HashMap::new();
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
     for pair in rows {
         let (slug, key) = pair.map_err(|e| format!("reading visible editions: {e}"))?;
         out.entry(slug).or_default().insert(key);
@@ -1264,7 +1386,7 @@ fn last_component(path: &str) -> String {
 /// `/media/a/Manga`, and a non-admin reader has no business being handed the
 /// server's filesystem layout to render a sidebar that does not collide.
 fn named(rows: Vec<(i64, String)>) -> Vec<RootCard> {
-    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut counts: HashMap<String, usize> = HashMap::new();
     for (_, path) in &rows {
         *counts.entry(last_component(path)).or_default() += 1;
     }
@@ -1290,15 +1412,10 @@ pub fn status(conn: &Connection, roots: &[i64]) -> Result<Status, String> {
     let clause = if roots.is_empty() {
         String::new()
     } else {
-        let holes = std::iter::repeat_n("?", roots.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        format!(" WHERE id IN ({holes})")
+        format!(" WHERE id IN ({})", holes(roots.len()))
     };
     let sql = format!("SELECT id, path FROM root{clause} ORDER BY path");
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| format!("preparing the root listing: {e}"))?;
+    let mut stmt = prepare(conn, &sql).map_err(|e| format!("preparing the root listing: {e}"))?;
     let rows = stmt
         .query_map(params_from_iter(roots), |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
@@ -1307,11 +1424,10 @@ pub fn status(conn: &Connection, roots: &[i64]) -> Result<Status, String> {
         .collect::<rusqlite::Result<Vec<(i64, String)>>>()
         .map_err(|e| format!("reading roots: {e}"))?;
 
-    let scanned: bool = conn
-        .query_row("SELECT EXISTS (SELECT 1 FROM dir_state)", [], |row| {
-            row.get(0)
-        })
-        .map_err(|e| format!("reading whether a scan has run: {e}"))?;
+    let scanned: bool = query_row(conn, "SELECT EXISTS (SELECT 1 FROM dir_state)", [], |row| {
+        row.get(0)
+    })
+    .map_err(|e| format!("reading whether a scan has run: {e}"))?;
 
     Ok(Status {
         roots: named(rows),

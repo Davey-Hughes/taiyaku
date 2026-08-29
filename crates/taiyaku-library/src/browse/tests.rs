@@ -379,46 +379,11 @@ fn a_completed_position_is_read_rather_than_continuing() {
 /// — the smallest fixture where one work can hold a position in more than one
 /// edition while a second work exists, so an ordering test cannot pass by
 /// having only one row to sort.
+///
+/// [`library_with_volumes`] at two, under its own name because the tests below
+/// read as statements about two works rather than about a parameter.
 fn library_with_two_works() -> (Library, crate::tests::TempDir, crate::tests::TempDir) {
-    let en = crate::tests::tempdir("browse-home-en");
-    write_pages(&en.path.join("Series").join("Series - v01"), 2);
-    write_pages(&en.path.join("Series").join("Series - v02"), 2);
-    let raw = crate::tests::tempdir("browse-home-raw");
-    write_pages(&raw.path.join("Series").join("Series - v01"), 2);
-    write_pages(&raw.path.join("Series").join("Series - v02"), 2);
-
-    let library = Library::open_in_memory().expect("in-memory");
-    {
-        let conn = library.conn();
-        let en_root = scan::add_root(&conn, &en.path).expect("adds en");
-        let raw_root = scan::add_root(&conn, &raw.path).expect("adds raw");
-        // As in `two_root_library`: each root names its own edition key, or
-        // both fall back to `raw` and derivation merges them into one.
-        conn.execute(
-            "UPDATE root SET edition_key = 'en' WHERE id = ?1",
-            [en_root.id],
-        )
-        .expect("names the English root's edition");
-        conn.execute(
-            "UPDATE root SET edition_key = 'raw' WHERE id = ?1",
-            [raw_root.id],
-        )
-        .expect("names the raw root's edition");
-        let en_root = scan::roots(&conn)
-            .expect("re-reads the roots")
-            .into_iter()
-            .find(|r| r.id == en_root.id)
-            .expect("the English root");
-        let raw_root = scan::roots(&conn)
-            .expect("re-reads the roots")
-            .into_iter()
-            .find(|r| r.id == raw_root.id)
-            .expect("the raw root");
-        scan::scan_root(&conn, &en_root).expect("scans en");
-        scan::scan_root(&conn, &raw_root).expect("scans raw");
-        derive::derive(&conn).expect("derives");
-    }
-    (library, en, raw)
+    library_with_volumes(2)
 }
 
 /// A work sorts by the newest of its positions, not by an arbitrary one.
@@ -1647,7 +1612,7 @@ fn an_edition_whose_file_has_left_the_disk_reports_it_missing() {
     )
     .expect("seeding");
 
-    let missing = super::missing_members(&conn, &[], 1).expect("counting");
+    let missing = missing_for(&conn, &[], 1);
 
     assert_eq!(
         missing, 1,
@@ -1656,7 +1621,7 @@ fn an_edition_whose_file_has_left_the_disk_reports_it_missing() {
     );
 }
 
-/// **O73/Task 7b: `missing_members` must take the caller's grant.** It was
+/// **O73/Task 7b: `missing_by_edition` must take the caller's grant.** It was
 /// the only function in this module that did not, and `member_clause`'s own
 /// doc records that a merged edition — two roots with no `edition_key`,
 /// reachable in the default configuration rather than in a corner — is
@@ -1686,16 +1651,172 @@ fn a_restricted_grant_counts_only_the_missing_members_it_may_see() {
     conn.execute("DELETE FROM scan_entry WHERE root_id = ?1", [b_id])
         .expect("simulates forget_unseen dropping root b's file");
 
-    let unrestricted = missing_members(&conn, &[], edition_id).expect("counts");
+    let unrestricted = missing_for(&conn, &[], edition_id);
     assert_eq!(
         unrestricted, 2,
         "an empty grant is unrestricted and still sees both roots' missing members"
     );
 
-    let restricted = missing_members(&conn, &[a_id], edition_id).expect("counts");
+    let restricted = missing_for(&conn, &[a_id], edition_id);
     assert_eq!(
         restricted, 1,
         "a grant naming only root a is told about its one missing member, \
          not root b's, which it cannot see at all"
     );
+}
+
+/// One edition's missing count, as [`missing_by_edition`] now answers it.
+///
+/// A map since O85, where an edition with nothing missing has no row at all —
+/// so absence reads as zero here, at the one place these tests ask.
+fn missing_for(conn: &Connection, roots: &[i64], edition_id: i64) -> usize {
+    missing_by_edition(conn, roots, &[edition_id])
+        .expect("counts")
+        .get(&edition_id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Two roots (`en`, `raw`), one series, `volumes` volumes in each.
+///
+/// O85's check needs two libraries whose *only* difference is how many works
+/// the series holds, so the count it compares can be attributed to that and
+/// nothing else. Two roots as ever, each naming its own edition key, so every
+/// work carries two editions and the per-edition half of the N+1 is reachable.
+fn library_with_volumes(volumes: usize) -> (Library, crate::tests::TempDir, crate::tests::TempDir) {
+    let en = crate::tests::tempdir("browse-count-en");
+    let raw = crate::tests::tempdir("browse-count-raw");
+    for v in 1..=volumes {
+        let name = format!("Series - v{v:02}");
+        write_pages(&en.path.join("Series").join(&name), 2);
+        write_pages(&raw.path.join("Series").join(&name), 2);
+    }
+
+    let library = Library::open_in_memory().expect("in-memory");
+    {
+        let conn = library.conn();
+        let en_root = scan::add_root(&conn, &en.path).expect("adds en");
+        let raw_root = scan::add_root(&conn, &raw.path).expect("adds raw");
+        conn.execute(
+            "UPDATE root SET edition_key = 'en' WHERE id = ?1",
+            [en_root.id],
+        )
+        .expect("names the English root's edition");
+        conn.execute(
+            "UPDATE root SET edition_key = 'raw' WHERE id = ?1",
+            [raw_root.id],
+        )
+        .expect("names the raw root's edition");
+        for id in [en_root.id, raw_root.id] {
+            let root = scan::roots(&conn)
+                .expect("re-reads the roots")
+                .into_iter()
+                .find(|r| r.id == id)
+                .expect("the root just added");
+            scan::scan_root(&conn, &root).expect("scans");
+        }
+        derive::derive(&conn).expect("derives");
+    }
+    (library, en, raw)
+}
+
+/// How many SQL statements one `one_series` listing issues.
+fn statements_listing_series(library: &Library) -> (usize, usize) {
+    let conn = library.conn();
+    let series_id: i64 = conn
+        .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
+        .expect("reads the series");
+
+    STATEMENTS.with(|c| c.set(0));
+    let (_card, works) = one_series(&conn, &[], 1, series_id)
+        .expect("reads")
+        .expect("the series is visible");
+    (STATEMENTS.with(std::cell::Cell::get), works.len())
+}
+
+/// **O85.** `works_of` called `editions_of` once per work, and `editions_of`
+/// called `missing_members` once per edition — an N+1 nested inside an N+1,
+/// the same shape the whole-branch review closed in `home` at 111 queries and
+/// reopened in the same module.
+///
+/// Scale invariance rather than a constant: the number itself is an
+/// implementation detail that a later join may legitimately move, while "the
+/// cost does not grow with the set" is the property O85 is about. A test
+/// asserting a literal would have to be edited by the very change that breaks
+/// it.
+#[test]
+fn listing_a_series_costs_the_same_number_of_statements_however_many_works_it_holds() {
+    let (small_lib, _sen, _sraw) = library_with_volumes(2);
+    let (large_lib, _len, _lraw) = library_with_volumes(6);
+
+    let (small, small_works) = statements_listing_series(&small_lib);
+    let (large, large_works) = statements_listing_series(&large_lib);
+
+    assert_eq!(small_works, 2, "the small fixture's works");
+    assert_eq!(large_works, 6, "the large fixture's works");
+    assert_eq!(
+        small, large,
+        "a {small_works}-work series cost {small} statements and a \
+         {large_works}-work one cost {large}: the listing's cost must not \
+         grow with the number of works or editions in it",
+    );
+}
+
+/// **The batched edition listing under a restricted grant, across more than one
+/// work.**
+///
+/// [`editions_by_work`] binds its roots twice and then a generated
+/// `IN (?,?,…)` of work ids, so both the placeholder count and the binding
+/// order scale with the set. Every other grant test in this module asks about a
+/// **single** work — `two_root_library` holds one volume — and an `IN` list of
+/// one cannot show a mis-sized list or an off-by-one in the order the
+/// parameters are pushed.
+///
+/// **The grant is on `raw`, the root added *second*, and that is the whole
+/// point of the fixture.** Granting `en` — root id 1, against work ids 1, 2 and
+/// 3 — cannot distinguish the correct binding from one that pushes the work ids
+/// before the second root group: the swapped parameters read `{w2, w3, r}` for
+/// the `IN` list, which is `{2, 3, 1}`, *the same set* as `{1, 2, 3}`, and the
+/// misplaced root id is `w1`, which is `1`, the granted root. Right and wrong
+/// render identically. Verified by making that substitution: with the grant on
+/// `en` the test passes under it, and with the grant on `raw` it fails.
+#[test]
+fn a_restricted_grant_hides_its_edition_in_every_work_of_a_series() {
+    let (library, _en, _raw) = library_with_volumes(3);
+    let conn = library.conn();
+    let raw_id: i64 = conn
+        .query_row("SELECT id FROM root WHERE edition_key = 'raw'", [], |row| {
+            row.get(0)
+        })
+        .expect("the raw root");
+    let series_id: i64 = conn
+        .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
+        .expect("the series");
+
+    let (_card, unrestricted) = one_series(&conn, &[], 1, series_id)
+        .expect("reads")
+        .expect("visible");
+    assert_eq!(unrestricted.len(), 3, "three volumes");
+    for work in &unrestricted {
+        assert_eq!(
+            work.editions.len(),
+            2,
+            "an empty grant is unrestricted, so every work keeps both editions"
+        );
+    }
+
+    let (_card, restricted) = one_series(&conn, &[raw_id], 1, series_id)
+        .expect("reads")
+        .expect("visible");
+    assert_eq!(restricted.len(), 3, "the works themselves all survive");
+    for work in &restricted {
+        let keys: Vec<&str> = work.editions.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["raw"],
+            "work {:?} must keep only the granted root's edition — the en one \
+             is hidden in every work of the set, not just the first",
+            work.slug
+        );
+    }
 }

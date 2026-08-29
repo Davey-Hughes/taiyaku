@@ -137,6 +137,7 @@ it mutates only changed code and takes minutes.
 | 2026-08-28 | spec C3, `--since main`, after the fresh-database fix and the seven survivors it also reported (116 mutants, 8 m) | 0 survivors: 101 caught, 15 unviable. All seven from the prior run on this branch — `hand.rs:154` and `:163` (`save`'s empty-document and non-`NotFound` guards), `metadata.rs:175` (`panicked`), `metadata.rs:272` (`worst_case`, both constant variants), `metadata.rs:462` (`series_of_work`), `metadata.rs:711` (`patch_member`'s `retain`, the one with the `PATCH {}`-shaped data-loss risk) — are now caught; none were baselined |
 
 | 2026-08-29 | spec C3, `--since main`, after the whole-branch review's fix waves (123 mutants, 8 m) | **1 reported survivor, and it is a false one — which is the finding.** `librarydoc.rs:639`'s `apply_with_series_id -> Ok(())` was reported MISSED; hand-applying it in place fails **five** `taiyaku-serve` tests. **cargo-mutants' `--test-workspace` defaults to `false`, so it runs only the tests in the *mutated package*.** The timing says so plainly: 26 s of tests at baseline against 7 s for the mutant. `taiyaku-library` is the store and a great deal of its behaviour is asserted through `taiyaku-serve`'s routes, so **every sweep of this repository under-reports cross-crate coverage**, and some of the untriaged survivors below may be false for the same reason. The error runs one way only — a mutation caught solely by another package reads as MISSED, but nothing uncaught ever reads as caught — so a zero-survivor result stays trustworthy and a survivor list does not. Setting `test_workspace = true` in `.cargo/mutants.toml` fixes it and multiplies the per-mutant cost by the workspace's test time, which is the trade this file cannot make on its own: **O87** |
+| 2026-08-29 | O85's `browse.rs`, file-scoped, after importing `HashMap` (95 mutants, 6 m) | **The import is the finding.** The same file swept as `--since main` an hour earlier reported 48 mutants, 18 caught, 30 unviable, 0 survivors — and O85's two new functions accounted for **fourteen of the thirty unviable**, every one of their whole-body mutants. `cargo-mutants` writes its replacement with the short type name (`Ok(HashMap::new())`), so in a module that spelled `std::collections::HashMap` out in full **none of them compiled**, and a zero-survivor run said nothing whatever about the code the branch added. One `use` line turned 48 mutants into 95; both new functions are now covered and every one of their mutants is caught, including `delete field missing from struct EditionCard expression in editions_by_work`. The seven new survivors are all `visible_editions` and all false, by O87 — see the entries below. **37 files in this workspace still spell those paths out in full**, `proposals.rs` among them at 41 and 42 unviable in its two logged sweeps, so this is not one file's problem: O88 |
 
 <!-- entries -->### `crates/taiyaku-cli/src/duplicates.rs`
 
@@ -616,6 +617,92 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
+
+### `crates/taiyaku-library/src/browse.rs`
+
+- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::new())`
+  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
+  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
+  replaced, while `taiyaku-serve` fails **five**, among them
+  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
+  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
+  by hand on 2026-08-29 by making the substitution and running both packages,
+  not read off a timing. This function exists *for* `taiyaku-serve` — its own
+  doc says so — so every assertion on it lives across the crate boundary that
+  `--test-workspace = false` does not cross. These stop being reported at all
+  the day O87 is settled; they are not a gap in the tests.
+
+- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::from_iter([(String::new(), HashSet::new())]))`
+  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
+  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
+  replaced, while `taiyaku-serve` fails **five**, among them
+  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
+  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
+  by hand on 2026-08-29 by making the substitution and running both packages,
+  not read off a timing. This function exists *for* `taiyaku-serve` — its own
+  doc says so — so every assertion on it lives across the crate boundary that
+  `--test-workspace = false` does not cross. These stop being reported at all
+  the day O87 is settled; they are not a gap in the tests.
+
+- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::from_iter([(String::new(), HashSet::from_iter([String::new()]))]))`
+  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
+  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
+  replaced, while `taiyaku-serve` fails **five**, among them
+  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
+  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
+  by hand on 2026-08-29 by making the substitution and running both packages,
+  not read off a timing. This function exists *for* `taiyaku-serve` — its own
+  doc says so — so every assertion on it lives across the crate boundary that
+  `--test-workspace = false` does not cross. These stop being reported at all
+  the day O87 is settled; they are not a gap in the tests.
+
+- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::from_iter([(String::new(), HashSet::from_iter(["xyzzy".into()]))]))`
+  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
+  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
+  replaced, while `taiyaku-serve` fails **five**, among them
+  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
+  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
+  by hand on 2026-08-29 by making the substitution and running both packages,
+  not read off a timing. This function exists *for* `taiyaku-serve` — its own
+  doc says so — so every assertion on it lives across the crate boundary that
+  `--test-workspace = false` does not cross. These stop being reported at all
+  the day O87 is settled; they are not a gap in the tests.
+
+- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::from_iter([("xyzzy".into(), HashSet::new())]))`
+  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
+  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
+  replaced, while `taiyaku-serve` fails **five**, among them
+  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
+  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
+  by hand on 2026-08-29 by making the substitution and running both packages,
+  not read off a timing. This function exists *for* `taiyaku-serve` — its own
+  doc says so — so every assertion on it lives across the crate boundary that
+  `--test-workspace = false` does not cross. These stop being reported at all
+  the day O87 is settled; they are not a gap in the tests.
+
+- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::from_iter([("xyzzy".into(), HashSet::from_iter([String::new()]))]))`
+  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
+  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
+  replaced, while `taiyaku-serve` fails **five**, among them
+  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
+  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
+  by hand on 2026-08-29 by making the substitution and running both packages,
+  not read off a timing. This function exists *for* `taiyaku-serve` — its own
+  doc says so — so every assertion on it lives across the crate boundary that
+  `--test-workspace = false` does not cross. These stop being reported at all
+  the day O87 is settled; they are not a gap in the tests.
+
+- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::from_iter([("xyzzy".into(), HashSet::from_iter(["xyzzy".into()]))]))`
+  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
+  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
+  replaced, while `taiyaku-serve` fails **five**, among them
+  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
+  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
+  by hand on 2026-08-29 by making the substitution and running both packages,
+  not read off a timing. This function exists *for* `taiyaku-serve` — its own
+  doc says so — so every assertion on it lives across the crate boundary that
+  `--test-workspace = false` does not cross. These stop being reported at all
+  the day O87 is settled; they are not a gap in the tests.
 
 ### `crates/taiyaku-library/src/credential.rs`
 

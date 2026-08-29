@@ -14161,3 +14161,159 @@ one that was.
 against 1,669 before. Both figures are the ones `docs/status.md` now states,
 and `scripts/status-test-count.mjs` checks the Rust one against the JUnit report
 at both of its two sites.
+
+### O85, measured: what a browse listing cost in SQL statements, and what it costs now
+
+The item was recorded as *"not measured against the corpus"*. It is now
+measured, twice against the same corpus and with the same instrument, so the
+before and after are comparable rather than one figure beside an argument.
+
+**The instrument.** `browse.rs` routes every query it issues through two
+wrappers, `prepare` and `query_row`, which increment a `#[cfg(test)]`
+thread-local counter. That is the same choice `proposals::tests`' one-sweep
+check made and for the same reason — no `rusqlite` Cargo feature has to be
+turned on for a test to see it, and thread-local rather than a shared `static`
+so a test running concurrently on another thread cannot land inside the
+reset-then-read window. Counting *statements* rather than calls to a named
+function matters: a call counter on the per-work loop would read zero the
+moment that loop was deleted, which is passing for the wrong reason.
+
+**The before figure was taken with the same counter, not inferred.**
+`crates/taiyaku-library/src/browse.rs` and its `tests.rs` were restored to
+`c85c357`, the instrumentation re-applied to that version alone, and the
+measurement re-run — so the only difference between the two columns is the
+query shape.
+
+**Corpus, 2026-08-29** — 13 settled roots (`incoming/` excluded, as
+`scanning_and_deriving_the_corpus_produces_real_structure` excludes it), 11
+series, largest series `Kobayashi-san Chi no Meidoragon` at 3 works and 3
+editions:
+
+| call | before | after |
+| --- | --- | --- |
+| `one_series`, largest series | 8 | 4 |
+| `home` | 43 | 5 |
+
+**`home`'s 43 is the *capped* case, not the worst one.** Its three lists are
+bound at `LIMIT 20` each and its `added` list was full — 20 works — so 43 is
+what a bound already in place produced. `unfiled`, reached by both
+`/api/library/series` and `/api/library/search`, carries no such bound, and it
+is the same 4 after.
+
+**The fixture is where the law is legible**, because the corpus's largest
+series is only three works and a real hurt needs a bigger set than this corpus
+holds. `library_with_volumes` builds two roots, so every work carries two
+editions:
+
+| works in the series | before | after |
+| --- | --- | --- |
+| 2 | 8 | 4 |
+| 6 | 20 | 4 |
+
+That is **2 + 3n** — one statement for the series, one for the works, then per
+work one for its editions and one per edition for its `missing` count —
+against a flat **4**. The standing check asserts the two counts are *equal*
+rather than asserting 4, because the number is an implementation detail a later
+join may legitimately move while "the cost does not grow with the set" is the
+property the item is about.
+
+**A rename travels with this**: `browse::missing_members`, which answered one
+edition, is now `browse::missing_by_edition`, which answers a set and returns a
+map. **An edition with nothing missing has no row in that map** — `COUNT(*)`
+over an empty group produces none — so a caller reads absence as zero. O84's
+row named the old symbol as a site and now names the new one. The passage above
+in "O62's query plan, re-measured after migration 010" names the old one too
+and is left as written: it records what was measured on the day, and the plan
+it reports was taken against that code.
+
+### The mutation sweep that proved nothing, and the one `use` line that fixed it
+
+O85's branch swept clean on its first run — `--since main`, 48 mutants, **18
+caught, 30 unviable, 0 survivors**. Read at face value that is the result the
+harness exists to produce. It was worth nothing about the code the branch had
+just written.
+
+**Fourteen of the thirty unviable were the whole-body mutants of the two new
+functions**, `editions_by_work` and `missing_by_edition` — every one of them.
+`cargo-mutants` replaces a body with a literal it generates and writes the
+**short** type name:
+
+```
+replace editions_by_work -> Result<HashMap<i64, Vec<EditionCard>>, String> with Ok(HashMap::new())
+```
+
+`browse.rs` spelled `std::collections::HashMap` out in full at every use site,
+so `HashMap` was not in scope, so none of those mutants compiled, so all of them
+were counted `unviable` and none was ever run. **An unviable mutant is not a
+survivor**, so this does not appear in the survivor list at all — it is
+invisible in exactly the output the harness is read for.
+
+Adding `use std::collections::{HashMap, HashSet};` to the module took the same
+file from **48 mutants to 95**, and both new functions are now covered with
+every one of their mutants caught — including
+`delete field missing from struct EditionCard expression in editions_by_work`,
+which is the one that asserts the batched `missing` count is actually wired
+through the map. That comment on the import is load-bearing and says so.
+
+**The seven new survivors that run reported are all false, and checking cost
+ten minutes.** All seven are `visible_editions`. Hand-applying
+`Ok(HashMap::new())` in place and running both packages:
+
+| package | result with the mutation applied |
+| --- | --- |
+| `taiyaku-library` (the package the sweep tested) | 557 passed, 0 failed |
+| `taiyaku-serve` | **5 failed**, incl. `the_works_feed_does_not_name_a_work_outside_the_grant` and `the_work_list_does_not_name_a_work_outside_the_grant` |
+
+That is **O87 reproduced on a second function**, independently of the
+`librarydoc::apply_with_series_id` case that opened it — and with the same
+count of five cross-crate failures. `visible_editions` exists *for*
+`taiyaku-serve`; its own doc says so. The seven are recorded in
+`docs/mutants-baseline.md` as deferred behind O87 rather than as a gap in the
+tests, with this verification as their reason.
+
+**Two different failures, one shared consequence.** O87 makes a *caught* mutant
+read as MISSED. O88 makes an *untested* function read as a compile artefact.
+The first inflates the survivor list, the second empties it — and the second is
+the more dangerous, because a clean run reads as a result. **37 files in this
+workspace still spell those paths out in full.** `proposals.rs` is one, at 41
+and 42 unviable across its two logged sweeps; how many of those are this has
+not been separated.
+
+### The grant test that could not tell right from wrong, and the id collision that hid it
+
+O85 replaced a per-work edition query with one that binds its roots twice and
+then a generated `IN (?,?,…)` of work ids, so both the placeholder count and
+the binding order now scale with the set. Every grant test in `browse` asked
+about a **single** work — `two_root_library` holds one volume — and an `IN`
+list of one can show neither a mis-sized list nor an off-by-one in the order
+the parameters are pushed. So a multi-work grant test was added.
+
+**The first version of it passed against a deliberately broken build**, which
+is the only reason it is worth writing down. Swapping the last two parameter
+groups — pushing the work ids before the second root group — left it green.
+The fixture is why: `library_with_volumes` adds `en` first, so the granted root
+is id **1**, and derivation gives the three works ids **1, 2, 3**. Under the
+swap the `IN` list reads `{w2, w3, r}` = `{2, 3, 1}`, which is *the same set*
+as `{1, 2, 3}`, and the root id that lands in the `EXISTS` clause is `w1` = 1,
+which is the granted root. Every parameter is in the wrong place and every one
+of them is coincidentally right.
+
+**Granting `raw` — the root added second, id 2 — breaks the coincidence**, and
+the same substitution then fails on the first work. That is the version kept.
+Both failure modes are now checked by hand: the binding-order swap fails it,
+and `holes(1)` in place of `holes(work_ids.len())` fails it.
+
+The general shape is one this repository has met before: a test written against
+a fixture whose values collide cannot distinguish the code it was written for
+from the bug it was written against. The cheap defence is what was done here —
+make the mutation by hand and watch the new test fail — and it costs about two
+minutes.
+
+**The parameter ceiling this trades into.** Replacing N queries with one
+N-parameter query moves an unbounded count from one place to another, and
+`unfiled` carries no `LIMIT` at all. Measured against this machine's system
+libsqlite3, 3.53.4, 2026-08-29 by binary search on a bound `IN` list: **at
+least 200,000** parameters bind without complaint. A library would need that
+many works in one listing to reach it, so this is recorded on
+`editions_by_work` rather than guarded — a guard would be code no library can
+execute.
