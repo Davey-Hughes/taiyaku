@@ -759,8 +759,73 @@ fn migration_6_adds_member_root_id_leaving_existing_members_null() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_nine() {
-    assert_eq!(SCHEMA_VERSION, 9);
+fn the_schema_version_is_ten() {
+    assert_eq!(SCHEMA_VERSION, 10);
+}
+
+/// **I5.** The row this test used to seed was inserted *after* `migrate()`
+/// had already run migration 010 to completion — through the plain `INSERT`
+/// every other seeding helper in this file uses, which leaves `title_hand`
+/// and `label_hand` at their column default (`NULL`) regardless of whether
+/// migration 010 ever ran at all. `title_hand`/`label_hand` reading `None`
+/// was never evidence of anything migration 010 does; the two `UPDATE
+/// … SET *_derived = *` statements — the ones `librarydoc::apply`'s
+/// `COALESCE(?2, title_derived)` depends on to be safe on every pre-010 row
+/// (I3 is what that COALESCE reads as when the column it falls back to is
+/// unexpectedly NULL) — ran over a table with zero rows in it and nothing
+/// here ever checked what they did to one that already existed.
+///
+/// `migrate_with(&conn, &MIGRATIONS[..9])` is the established pattern for
+/// this in the same file (`migration_7_backfills_the_root_of_a_member_under_
+/// one`): stop one migration short, seed a row in the shape the *previous*
+/// schema version actually left it, then apply the migration under test and
+/// check what it did to a real row rather than a fresh one.
+#[test]
+fn migration_ten_backfills_derived_columns_and_leaves_hand_ones_null() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let upto: Vec<&str> = MIGRATIONS[..9].to_vec();
+    migrate_with(&conn, &upto).expect("migrates to 9, before title_hand/title_derived exist");
+
+    conn.execute_batch(
+        "INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (1, 'k', 'w', 'Derived Title', 'rtl', 'en');
+         INSERT INTO edition (id, work_id, key, label)
+         VALUES (1, 1, 'en', 'Derived Label');",
+    )
+    .expect("seeding a pre-010 row, the shape migration 010 actually runs over");
+
+    migrate(&conn).expect("applies migration 10");
+
+    let (title_hand, title_derived): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT title_hand, title_derived FROM work WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("reading work's hand and derived titles");
+    let (label_hand, label_derived): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT label_hand, label_derived FROM edition WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("reading edition's hand and derived labels");
+
+    assert_eq!(title_hand, None, "a pre-010 row never had a hand-set title");
+    assert_eq!(label_hand, None, "a pre-010 row never had a hand-set label");
+    assert_eq!(
+        title_derived,
+        Some("Derived Title".to_string()),
+        "the backfill states a truth rather than guessing one (010's own \
+         comment): every title in a pre-010 database is the derived one, so \
+         the migration must copy the existing title across, not leave the \
+         new column NULL"
+    );
+    assert_eq!(
+        label_derived,
+        Some("Derived Label".to_string()),
+        "same backfill, same reason, for edition.label"
+    );
 }
 
 /// Migration 7 backfills the root of every member a scan produced, which

@@ -95,6 +95,18 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/library/proposals/{id}/resolution",
         "/api/library/proposals/{id}/accept",
         "/api/library/proposals/{id}/dismiss",
+        // Spec C3 §5's metadata-editing routes, admin-gated the same way —
+        // and it matters doubly here too, since the guard is what stands
+        // between an anonymous request and a `Principal`-less
+        // `admin_or_forbidden` call. `/api/library/works/{slug}` and
+        // `/api/library/series/{id}` repeat two paths already above: a
+        // `PATCH` merged onto the same `GET` route, not a second route at
+        // the same address (`routes.rs`'s own comment beside the
+        // registration).
+        "/api/library/works/{slug}",
+        "/api/library/series/{id}",
+        "/api/library/editions/{id}",
+        "/api/library/members/{id}",
         "/opds/v1.2/catalog",
         "/opds/v1.2/works",
         "/opds/v1.2/works/{work}",
@@ -1052,6 +1064,11 @@ fn channel(v: u32) -> u8 {
 /// address the work by slug; the OPDS mirrors address the same work; the
 /// library routes address the work by slug and the series by id.
 ///
+/// **Returns the state too (I8)**, unlike its first version: the four
+/// metadata PATCH routes need a real edition id and member id to address,
+/// neither reachable from the slug alone the way the read routes' own ids
+/// are.
+///
 /// **Real bytes, not placeholders — measured to matter.** `refuse_if_hidden`
 /// and `refuse_if_work_hidden` both answer 404 before any of these routes
 /// opens a member, so a first draft of this fixture used the shared
@@ -1067,7 +1084,7 @@ fn channel(v: u32) -> u8 {
 /// same mutation now answers 200 with the actual page for every one of
 /// those routes, which is what makes the loop below a proof rather than a
 /// coincidence.
-fn router_with_material_under_a_withheld_root(dir: &str) -> axum::Router {
+fn router_with_material_under_a_withheld_root(dir: &str) -> (axum::Router, Arc<ServeState>) {
     use std::io::Write as _;
 
     let root = std::env::temp_dir().join(dir);
@@ -1151,7 +1168,7 @@ fn router_with_material_under_a_withheld_root(dir: &str) -> axum::Router {
         log: None,
         auth: crate::session::AuthConfig::default(),
     });
-    build_router(state)
+    (build_router(state.clone()), state)
 }
 
 /// A router over two works — one filed under a root the fixture account
@@ -1558,18 +1575,23 @@ async fn every_route_declares_its_grant_posture() {
         })
         .count();
     assert_eq!(
-        driven, 19,
-        "19 of the 34 guarded routes must be classified Refuses, Filters or \
+        driven, 23,
+        "23 of the 38 guarded routes must be classified Refuses, Filters or \
          RefusesAndFilters and driven by the proofs below — a route's \
          posture changed without this count moving to match, so a route \
-         this suite believes it proves may no longer be one it does"
+         this suite believes it proves may no longer be one it does. Raised \
+         from 19 when I8 reclassified spec C3 §5's four metadata routes from \
+         `GrantIndependent` to `Refuses`: `library_api::work`/`one_series` \
+         already resolved a slug/id through `principal.roots`, and these \
+         four did not, so a hidden work answered 404 on GET and 200 on PATCH"
     );
     assert_eq!(
         table.len() - driven,
         15,
         "the remaining 15 guarded routes must be GrantIndependent or \
-         KnownGap — see the `driven == 19` assertion just above, which this \
-         one is the other half of"
+         KnownGap — see the `driven == 23` assertion just above, which this \
+         one is the other half of. Was 19 before I8 moved the same four \
+         routes out of this half"
     );
 
     let credential = crate::test_support::fixture_authorization();
@@ -1578,7 +1600,7 @@ async fn every_route_declares_its_grant_posture() {
     // to, both wholly outside the caller's grant. `RefusesAndFilters` shares
     // this proof for its refuse half — the pattern skip just below still
     // routes it to its own dedicated block instead. ----
-    let refuses_router =
+    let (refuses_router, refuses_state) =
         router_with_material_under_a_withheld_root("taiyaku-test-grant-posture-refuses");
     for (pattern, posture) in &table {
         if !matches!(
@@ -1594,7 +1616,21 @@ async fn every_route_declares_its_grant_posture() {
         // the guard this loop means to prove. Driven in its own dedicated
         // block below instead, with the body and `If-Match` a correction
         // actually needs — both its `Refuses` half and its `Filters` half.
-        if *pattern == "/api/works/{work}/alignments" {
+        //
+        // **The four `library/{works,series,editions,members}` PATCH routes
+        // (I8) are `PATCH`-only for the identical reason**, and two of them
+        // share a path with an already-`Filters` `GET` — a `GET` against
+        // either answers from that *other* handler, proving nothing about
+        // the guard this loop means to check on the PATCH one. All four are
+        // driven with real `PATCH` requests just below instead.
+        if matches!(
+            *pattern,
+            "/api/works/{work}/alignments"
+                | "/api/library/works/{slug}"
+                | "/api/library/series/{id}"
+                | "/api/library/editions/{id}"
+                | "/api/library/members/{id}"
+        ) {
             continue;
         }
         let path = grant_proof_concrete(pattern);
@@ -1618,6 +1654,69 @@ async fn every_route_declares_its_grant_posture() {
             response.status()
         );
     }
+
+    // The four metadata PATCH routes' own `Refuses` proof (I8): the fixture's
+    // one work, its one edition and one member, and the series that work
+    // alone stands for, are all wholly hidden from the fixture account — a
+    // PATCH naming any of them must 404 exactly as a GET already does,
+    // rather than resolving through to a 200 that writes and re-projects the
+    // full document (the finding this closes).
+    let refuses_slug = refuses_state.works[0].id.clone();
+    let (refuses_edition_id, refuses_member_id): (i64, i64) = {
+        let conn = refuses_state.library.conn();
+        let edition_id = conn
+            .query_row("SELECT id FROM edition LIMIT 1", [], |row| row.get(0))
+            .expect("the fixture's one edition");
+        let member_id = conn
+            .query_row("SELECT id FROM member LIMIT 1", [], |row| row.get(0))
+            .expect("the fixture's one member");
+        (edition_id, member_id)
+    };
+    for (pattern, uri, body) in [
+        (
+            "/api/library/works/{slug}",
+            format!("/api/library/works/{refuses_slug}"),
+            serde_json::json!({ "title": "Should Not Land" }),
+        ),
+        (
+            "/api/library/series/{id}",
+            "/api/library/series/1".to_string(),
+            serde_json::json!({ "reading": "ltr" }),
+        ),
+        (
+            "/api/library/editions/{id}",
+            format!("/api/library/editions/{refuses_edition_id}"),
+            serde_json::json!({ "label": "Should Not Land" }),
+        ),
+        (
+            "/api/library/members/{id}",
+            format!("/api/library/members/{refuses_member_id}"),
+            serde_json::json!({ "chapter": 1.0 }),
+        ),
+    ] {
+        let response = refuses_router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(&uri)
+                    .header("authorization", &credential)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("router answers");
+        let status = response.status();
+        let response_body = crate::test_support::body_string(response).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "{pattern} is classified Refuses, but PATCH {uri} from an account \
+             granted a different root answered {status}: {response_body}"
+        );
+    }
+
     crate::test_support::cleanup("taiyaku-test-grant-posture-refuses");
 
     // ---- `Filters`: proven against two works, and — for `work_feed`, whose
@@ -1726,7 +1825,14 @@ async fn every_route_declares_its_grant_posture() {
         }
         // See the identical skip in the wholly-hidden-work loop above:
         // `PATCH`-only, body-addressed, driven separately below.
-        if *pattern == "/api/works/{work}/alignments" {
+        if matches!(
+            *pattern,
+            "/api/works/{work}/alignments"
+                | "/api/library/works/{slug}"
+                | "/api/library/series/{id}"
+                | "/api/library/editions/{id}"
+                | "/api/library/members/{id}"
+        ) {
             continue;
         }
         let path = pattern
@@ -1753,6 +1859,113 @@ async fn every_route_declares_its_grant_posture() {
              withheld half of a work that also has a granted half answered \
              {}",
             response.status()
+        );
+    }
+
+    // `patch_edition`/`patch_member`'s own split proof (I8): the finding's
+    // exact shape — an edition (and its one member) sharing a work with a
+    // granted sibling. `edition_owner`/`member_owner` check the edition/
+    // member's own root, not merely whether the work has *some* visible
+    // material, so a PATCH naming the withheld `raw` edition must still 404
+    // even though `patch_work`/`patch_series` against this same work would
+    // legitimately succeed (`en` keeps it visible) — which is exactly why
+    // this fixture cannot stand in for the wholly-hidden one above for those
+    // two routes, and does not try to.
+    let (raw_edition_id, raw_member_id): (i64, i64) = {
+        let conn = split_state.library.conn();
+        conn.query_row(
+            "SELECT edition.id, member.id
+               FROM edition JOIN member ON member.edition_id = edition.id
+              WHERE edition.key = 'raw'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the withheld edition and its one member")
+    };
+    for (pattern, uri, body) in [
+        (
+            "/api/library/editions/{id}",
+            format!("/api/library/editions/{raw_edition_id}"),
+            serde_json::json!({ "label": "Should Not Land" }),
+        ),
+        (
+            "/api/library/members/{id}",
+            format!("/api/library/members/{raw_member_id}"),
+            serde_json::json!({ "chapter": 1.0 }),
+        ),
+    ] {
+        let response = split_router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(&uri)
+                    .header("authorization", &credential)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("router answers");
+        let status = response.status();
+        let response_body = crate::test_support::body_string(response).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "{pattern} is classified Refuses, but PATCH {uri} against the \
+             withheld half of a work that also has a granted half answered \
+             {status}: {response_body}"
+        );
+    }
+
+    // The other half of the same proof: a restricted grant must still allow
+    // editing material it *does* cover, or the check above is not narrower
+    // than "deny everything". The granted `en` edition and its one member.
+    let (en_edition_id, en_member_id): (i64, i64) = {
+        let conn = split_state.library.conn();
+        conn.query_row(
+            "SELECT edition.id, member.id
+               FROM edition JOIN member ON member.edition_id = edition.id
+              WHERE edition.key = 'en'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the granted edition and its one member")
+    };
+    for (pattern, uri, body) in [
+        (
+            "/api/library/editions/{id}",
+            format!("/api/library/editions/{en_edition_id}"),
+            serde_json::json!({ "label": "Should Land" }),
+        ),
+        (
+            "/api/library/members/{id}",
+            format!("/api/library/members/{en_member_id}"),
+            serde_json::json!({ "chapter": 1.0 }),
+        ),
+    ] {
+        let response = split_router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(&uri)
+                    .header("authorization", &credential)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("router answers");
+        let status = response.status();
+        let response_body = crate::test_support::body_string(response).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{pattern} is classified Refuses, but PATCH {uri} against the \
+             *granted* half of a work with a withheld sibling answered \
+             {status} — the new check must refuse only what the grant \
+             actually hides: {response_body}"
         );
     }
 

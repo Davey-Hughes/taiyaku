@@ -18,13 +18,17 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
+import { MetadataEditor } from './MetadataEditor'
+import { patchWork } from './metadata'
 import { useBrowsePrefs } from './browseModule'
 import { useGate } from './gate'
 import { Cover } from './Cover'
 import {
   type AlignmentCard,
+  type EditionCard,
   oneSeries as fetchSeries,
   type SeriesCard,
+  unreadable,
   work as fetchWork,
   type WorkCard,
   editionDownload,
@@ -50,6 +54,14 @@ interface Loaded {
  * and not from volume 3, so the first volume to mention a key is not always
  * the first volume.
  */
+// `unreadable` — O62 — now lives in `library.ts`, not here: the whole-branch
+// review's I1 found it applied only inside `Table` below, while `browseModule`
+// makes the grid the *default* layout — so the grid rendered every reader link
+// and every per-edition download unguarded. `Library.tsx`'s Continue strip and
+// `SeriesGrid.tsx`'s unfiled works needed the identical guard, which is what
+// made it a shared pure function rather than a fourth copy. See its doc
+// comment in `library.ts` for the "every edition, not any" reasoning.
+
 function editionColumns(works: WorkCard[]): { key: string; label: string }[] {
   const seen = new Map<string, string>()
   for (const w of works) {
@@ -69,6 +81,15 @@ function editionColumns(works: WorkCard[]): { key: string; label: string }[] {
  * the same thing to a sighted reader and nothing at all to a screen reader,
  * hence the `aria-label` — §9's rule that this screen is testable in `jsdom`
  * cuts both ways: what is easy to assert is also what is easy to leave out.
+ *
+ * **"Missing" names two different facts below, deliberately kept apart by
+ * name.** `className="missing"` is this volume never *having* the column's
+ * edition at all — `held` is `undefined`, so there is nothing to have lost.
+ * `data-unreadable` is the opposite: the edition exists (`held` is `Some`),
+ * and some of the files that make it up are gone from disk since the last
+ * scan (`held.missing > 0`). Conflating the two in one class or one word
+ * would read a volume that never had a raw release the same as one whose raw
+ * release just vanished, which are different repairs.
  */
 function Table({
   works,
@@ -94,7 +115,23 @@ function Table({
         {works.map((w) => (
           <tr key={w.slug}>
             <td>
-              <Link to={`/read/${w.slug}`}>{w.title}</Link>
+              {unreadable(w) ? (
+                // **O62 — the link is the treatment, not a badge.** Spec C1
+                // §8 asks for a work whose members are gone to be "shown as
+                // unreadable rather than offered and then failing at the
+                // first page", and a mark beside a live link still sends a
+                // reader into a page that cannot load. The volume keeps its
+                // name: withholding that too would read as a library that
+                // has lost the work rather than one that cannot open it.
+                <>
+                  <span className="title">{w.title}</span>{' '}
+                  <span className="unreadable">
+                    files missing — cannot be opened
+                  </span>
+                </>
+              ) : (
+                <Link to={`/read/${w.slug}`}>{w.title}</Link>
+              )}
               {w.aligned && (
                 <span className="aligned" title="has an aligned edition">
                   {' '}
@@ -116,8 +153,21 @@ function Table({
                 // settled question; a row has neither. The number in the cell
                 // is already the per-edition fact, so linking it adds no
                 // element to the layout at all.
-                <td key={c.key}>
-                  {mayDownload ? (
+                <td
+                  key={c.key}
+                  // Per edition, because `missing` is: one edition of a
+                  // volume can have lost its files while another is intact,
+                  // and offering the intact one is right.
+                  {...(held.missing > 0
+                    ? {
+                        'data-unreadable': 'true',
+                        'aria-label': `${c.label}, ${held.missing} of ${held.members} files missing`,
+                      }
+                    : {})}
+                >
+                  {held.missing > 0 ? (
+                    held.pages
+                  ) : mayDownload ? (
                     <a
                       className="get"
                       href={editionDownload(w.slug, c.key)}
@@ -236,6 +286,35 @@ function AlignmentPanel({
   )
 }
 
+/**
+ * The cover, and the alignment mark on it — the part of a grid tile shared by
+ * a readable volume (inside a `<Link>`) and an unreadable one (inside a plain
+ * `<span>`, below). Factored out rather than written twice: a copy in each
+ * branch is exactly the kind of drift I1 found in `unreadable` itself, one
+ * level up.
+ */
+function VolumeCover({
+  w,
+  shown,
+}: {
+  w: WorkCard
+  shown: EditionCard | undefined
+}) {
+  return (
+    <span className="cover-box">
+      <Cover
+        src={workCover(w.slug, (shown ?? w.editions[0])?.key ?? '')}
+        title={w.title}
+      />
+      {w.aligned && (
+        <span className="aligned" title="has an aligned edition">
+          ⇄
+        </span>
+      )}
+    </span>
+  )
+}
+
 export function Series() {
   const { layout, editionSelector, panel } = useBrowsePrefs()
   // `undefined` where no gate sits above this screen, and `gate.ts`'s own
@@ -246,6 +325,10 @@ export function Series() {
   // reader to find out why, and there is nothing on this screen that can tell
   // them.
   const mayDownload = useGate()?.who.can_download === true
+  // **Admin, because every metadata PATCH route is** (`routes.rs`'s grant
+  // table). Rendering the affordance to a reader would invite a correction
+  // and then answer 403, which is worse than not offering it.
+  const mayEdit = useGate()?.who.admin === true
   const { id } = useParams()
   // **Parsed before the effect, not inside it.** `Number('not-a-number')` is
   // `NaN`, and `/api/library/series/NaN` is a request the server answers with
@@ -448,31 +531,44 @@ export function Series() {
                         : undefined
                     }
                   >
-                    <Link to={`/read/${w.slug}`}>
-                      <span className="cover-box">
-                        <Cover
-                          src={workCover(
-                            w.slug,
-                            (shown ?? w.editions[0])?.key ?? '',
-                          )}
-                          title={w.title}
-                        />
-                        {w.aligned && (
-                          <span
-                            className="aligned"
-                            title="has an aligned edition"
-                          >
-                            ⇄
-                          </span>
-                        )}
+                    {unreadable(w) ? (
+                      // **O62 — the link is the treatment, not a badge.**
+                      // I1 of the whole-branch review: this is the grid, the
+                      // *default* layout (`browseModule.defaults.layout` is
+                      // `'grid'`), so the guard `Table` already carries has
+                      // to be applied here too, not only there. Same rule as
+                      // `Table`'s cell: a work whose members are gone must
+                      // not offer a link that fails at the first page, and
+                      // the volume keeps its name — withholding that too
+                      // would read as a library that has lost the work
+                      // rather than one that cannot open it.
+                      <span className="tile-unreadable">
+                        <VolumeCover w={w} shown={shown} />
+                        <span className="title">{w.title}</span>{' '}
+                        <span className="unreadable">
+                          files missing — cannot be opened
+                        </span>
                       </span>
-                      <span className="title">{w.title}</span>
-                    </Link>
-                    {mayDownload && shown && (
-                      // **A sibling of the `<Link>` above, not a child.** A
+                    ) : (
+                      <Link to={`/read/${w.slug}`}>
+                        <VolumeCover w={w} shown={shown} />
+                        <span className="title">{w.title}</span>
+                      </Link>
+                    )}
+                    {mayDownload && shown && shown.missing === 0 && (
+                      // **A sibling of the tile above, not a child.** A
                       // nested anchor is invalid HTML and browsers reparent
                       // it; the `panel-open` button below is already a
                       // sibling for the same structural reason.
+                      //
+                      // `shown.missing === 0`, per edition rather than per
+                      // work: `shown` is whichever edition this tile is
+                      // currently displaying (the hub under `'all'`, or the
+                      // chosen key), and that can be the broken edition of an
+                      // otherwise-readable volume — a sibling edition keeps
+                      // the reader link above, but downloading files that
+                      // are not on disk is not an offer this control should
+                      // make either way.
                       //
                       // `download` is bare, with no value: the server sends
                       // `Content-Disposition` with an ASCII `filename=` and
@@ -519,6 +615,26 @@ export function Series() {
                       <AlignmentPanel
                         editionCount={w.editions.length}
                         state={detail[w.slug]}
+                      />
+                    )}
+                    {open === w.slug && mayEdit && (
+                      // **In the panel, not beside the title** — C3 §5's
+                      // "contextual, from the thing being corrected": the
+                      // correction is prompted by looking at a volume, and
+                      // this is the surface a volume already opens. There is
+                      // no metadata screen to navigate to, by design.
+                      //
+                      // The page's own `w.title` is not re-fetched after a
+                      // save; the editor shows the server's re-projected
+                      // title itself, so the corrected name is on screen
+                      // either way. Refreshing the whole series behind it is
+                      // a larger change than this task, and O67's own case —
+                      // a title wrong about its own contents — is answered
+                      // by the edit landing, not by the list re-sorting.
+                      <MetadataEditor
+                        slug={w.slug}
+                        title={w.title}
+                        onPatch={patchWork}
                       />
                     )}
                   </li>

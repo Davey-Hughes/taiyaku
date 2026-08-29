@@ -432,14 +432,28 @@ body {
   flex: 0 0 auto;
 }
 
-.continue a {
+/* `.tile-unreadable` is the same chip, offered to a work whose files have
+ * left the disk — O62, applied here for the reason I1 of the whole-branch
+ * review names this strip: the reader was mid-read when the files went, so
+ * this is the likeliest place to meet the gap. `color` is split from the
+ * shared box below because `.continue a`'s `LinkText` would otherwise paint
+ * a control that is deliberately not a link. */
+.continue a,
+.continue .tile-unreadable {
   display: block;
   border: 1px solid ButtonBorder;
   border-radius: 6px;
   padding: 0.5rem 0.75rem;
-  color: LinkText;
   text-decoration: none;
   white-space: nowrap;
+}
+
+.continue a {
+  color: LinkText;
+}
+
+.continue .tile-unreadable {
+  color: CanvasText;
 }
 
 .grid {
@@ -451,8 +465,17 @@ body {
   gap: 1rem;
 }
 
+/* `.tile-unreadable` alongside `a`, not instead of it: O62's grid and
+ * unfiled-work tiles render the identical cover/title box whether or not the
+ * volume is still readable — see `Series.tsx`'s `VolumeCover` and
+ * `SeriesGrid.tsx` — and the only difference is whether it sits inside a
+ * `<Link>` or a plain `<span>`. `color: inherit` was already the rule here
+ * rather than `LinkText`, so this needs no separate colour: the readable
+ * case already reads as plain text, not a blue link. */
 .grid li a,
-.volumes li a {
+.volumes li a,
+.grid li .tile-unreadable,
+.volumes li .tile-unreadable {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;

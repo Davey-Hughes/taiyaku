@@ -7,10 +7,19 @@
 //!
 //! **An absent fact is an absent element.** A `<Writer/>` with nothing in it
 //! claims the writer is unknown; leaving it out claims nothing. Most credit
-//! fields *are* absent today — `credit` has no writer until spec C3's metadata
-//! editing ships, which is O44 — so in practice a download carries series,
-//! number, title, page count and the edition label. Said here rather than
-//! discovered later.
+//! fields *are* absent for most works — nothing derives a writer, so a credit
+//! is present only where `librarydoc::apply`'s `apply_editions` has written
+//! one. That is not only `PATCH /api/library/editions/{id}` (spec C3 §5,
+//! shipped 2026-08-28): `migrate::apply_library` reaches the identical
+//! function on a work's first import, when a `.library.json` sitting beside
+//! a sidecar names a credit before the database has any row for it, and
+//! `derive::write_work`'s own read-back reaches it again for a scanned work
+//! whose `LIBRARY` marker is not yet armed. `import.rs`'s `replace_editions`
+//! is a fourth site that touches `credit` rows, but only to carry an existing
+//! one across its own wholesale delete-and-reinsert of an edition — it
+//! originates none. In practice a download carries series, number, title, page
+//! count and the edition label, and carries credits only for the editions
+//! somebody has curated, by whichever of these paths.
 //!
 //! **`LanguageISO` comes from `edition.language`**, a real column the rule
 //! engine's `set_language` writes and `import` preserves — not from the edition

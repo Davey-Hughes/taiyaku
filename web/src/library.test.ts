@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Unauthenticated } from './api'
 import {
+  type EditionCard,
   grid,
   home,
   matchesChip,
@@ -9,8 +10,30 @@ import {
   type SeriesCard,
   sorted,
   status,
+  unreadable,
   work,
+  type WorkCard,
 } from './library'
+
+const edition = (over: Partial<EditionCard> = {}): EditionCard => ({
+  key: 'raw',
+  label: 'Manga (RAW)',
+  members: 1,
+  pages: 180,
+  missing: 0,
+  ...over,
+})
+
+const workCard = (over: Partial<WorkCard> = {}): WorkCard => ({
+  id: 1,
+  slug: 'gotoubun-v01',
+  title: 'Go-Toubun no Hanayome v01',
+  volume: 1,
+  aligned: false,
+  pages: 180,
+  editions: [edition()],
+  ...over,
+})
 
 const card = (over: Partial<SeriesCard> = {}): SeriesCard => ({
   id: 1,
@@ -145,5 +168,44 @@ describe('the browse client', () => {
       card({ id: 2, title: 'apple' }),
     ]
     expect(sorted(input, 'title').map((s) => s.id)).toEqual([2, 1])
+  })
+
+  describe('unreadable', () => {
+    // O62's whole-branch-review finding: mutating `.every` to `.some` left
+    // the entire 1694-test web suite green, because the one existing test
+    // never built a volume with one broken edition and one intact. This is
+    // that fixture. Under `.every` -> `.some`, `unreadable` would answer
+    // `true` here (the broken edition alone satisfies `.some`), withdrawing
+    // a link from a volume that is still readable through its sibling — the
+    // wrong side of the doc comment's own "every edition, not any" rule.
+    it('keeps a volume readable when only one of its editions has lost its files', () => {
+      const w = workCard({
+        editions: [
+          edition({ key: 'raw', missing: 3 }),
+          edition({ key: 'en', missing: 0 }),
+        ],
+      })
+      expect(unreadable(w)).toBe(false)
+    })
+
+    it('marks a volume unreadable only once every edition it holds has lost its files', () => {
+      const w = workCard({
+        editions: [
+          edition({ key: 'raw', missing: 3 }),
+          edition({ key: 'en', missing: 1 }),
+        ],
+      })
+      expect(unreadable(w)).toBe(true)
+    })
+
+    // The other mutation the finding names: dropping `w.editions.length > 0
+    // &&` leaves `[].every(...)` — vacuously `true` on an empty array — as
+    // the whole answer. A work with no visible edition at all is a grant
+    // hiding everything, a different fact from missing files, and must not
+    // be reported as unreadable.
+    it('does not call a work with no visible editions unreadable — that is a grant hiding it, not missing files', () => {
+      const w = workCard({ editions: [] })
+      expect(unreadable(w)).toBe(false)
+    })
   })
 })

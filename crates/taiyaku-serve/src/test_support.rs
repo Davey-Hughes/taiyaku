@@ -726,6 +726,52 @@ fn router_over_a_scanned_tree(
     (router, state, fixture)
 }
 
+/// One scanned, single-volume work with a root of its own — the metadata
+/// PATCH routes' own fixture.
+///
+/// **Actually scanned**, unlike `router_over_a_scanned_work` above: that
+/// helper imports a hand-authored sidecar directly through
+/// `import::scanned`, which never runs a member through `scan::scan_root` and
+/// so never gives it a `root_id` — `hand::path_for` requires one (its own
+/// join on `member.root_id`), so a metadata edit applied against that
+/// fixture always answers `persisted: false` with no document ever reaching
+/// disk. Measured rather than assumed: `metadata::tests::
+/// patching_a_title_writes_the_row_and_the_document` failed with exactly
+/// that body the first time it ran against `router_over_a_scanned_work_in_a_series`.
+/// This fixture goes through the real walk instead, the same as
+/// `router_over_two_suffixed_series` and its neighbours, which is what gives
+/// it an address at all.
+pub(crate) fn router_over_a_single_scanned_work()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    router_over_a_scanned_tree("taiyaku-test-single-scanned-work", "", &["Scanned"])
+}
+
+/// [`router_over_a_single_scanned_work`], with the fixture account demoted to
+/// a reader — the same demotion `router_over_a_scanned_work_as_a_reader`
+/// applies to its own fixture and for the same reason: a router wrapped in
+/// [`authenticating`] still authenticates perfectly, and simply is not an
+/// administrator's.
+///
+/// # Panics
+///
+/// Panics if the demotion updates no row, which would leave the fixture an
+/// administrator with nothing saying so.
+pub(crate) fn router_over_a_single_scanned_work_as_a_reader()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let (router, state, fixture) = router_over_a_single_scanned_work();
+    {
+        let conn = state.library.conn();
+        let demoted = conn
+            .execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+            .expect("demotes the fixture account");
+        assert_eq!(
+            demoted, 1,
+            "the fixture account must actually stop being an administrator"
+        );
+    }
+    (router, state, fixture)
+}
+
 /// A base series and its colour edition, side by side at the root — the
 /// `edition-of` proposal `raise` was written for, and the one shape an accept
 /// can be carried all the way through.
@@ -763,6 +809,222 @@ pub(crate) fn router_over_a_shared_publisher_directory()
             "Kaguya-sama wa Kokurasetai",
         ],
     )
+}
+
+/// Two scanned volumes of **one** series — the shape `metadata::patch_series`
+/// needs a caller to exist over: `series`, `series_title` and `external_id`
+/// are shared across every work under a series (`librarydoc.rs`'s own module
+/// comment), so proving a series edit reaches every member work needs at
+/// least two works sharing one `series_id`.
+///
+/// Built the way every other scanned fixture in this module is — real files
+/// under a real root, `scan_root` then `derive` — rather than by hand-writing
+/// a second `work` row under a fixture's series the way
+/// `router_over_a_scanned_work_in_a_series` attaches its own one work: the
+/// default rules (`003_scanner.sql`) resolve a series name from the FIRST
+/// DIRECTORY under the root, so two volume directories under one title
+/// directory resolve to one series holding two works with no rule ever
+/// written by hand.
+///
+/// # Panics
+///
+/// Panics if the tree cannot be written, if the scan or the derive fails, or
+/// if the result is not exactly two works under one series — each of which
+/// means the fixture itself is broken.
+pub(crate) fn router_over_two_scanned_volumes_of_one_series()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let fixture = Fixture::new("taiyaku-test-two-volumes-one-series");
+    let title = "Go-Toubun no Hanayome";
+    for (pages, volume) in (2_usize..).zip(["v01", "v02"]) {
+        write_pages(
+            &fixture
+                .path()
+                .join(title)
+                .join(format!("{title} - {volume}")),
+            pages,
+        );
+    }
+
+    let library = library();
+    {
+        let conn = library.conn();
+        let root = taiyaku_library::scan::add_root(&conn, fixture.path()).expect("adds the root");
+        taiyaku_library::scan::scan_root(&conn, &root).expect("scans the tree");
+        taiyaku_library::derive::derive(&conn).expect("derives the library");
+    }
+    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    assert_eq!(
+        works.len(),
+        2,
+        "one series, two volumes: two works, not {}",
+        works.len()
+    );
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works,
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: fixture
+            .path()
+            .with_file_name("taiyaku-test-two-volumes-one-series-covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    let router = authenticating(crate::build_router(state.clone()));
+    (router, state, fixture)
+}
+
+/// Two scanned volumes of one series, each rooted under its own directory —
+/// the shape Task 6b's `patch_series` worst-case finding needs a caller to
+/// exist over: a series whose works span two roots (this codebase's own
+/// `auth/tests.rs` fixtures model a work or an edition split across two roots
+/// for the grant-posture proofs, but none of them attaches two *works* to one
+/// series, which is what a per-work document write failing independently of
+/// its siblings needs).
+///
+/// **`root_a`'s path comes back, not `root_b`'s — deliberately the volume
+/// `derive` writes (and so `works_in_series` lists) *first*.** `GroupKey`
+/// orders groups by `(series, volume, …)`, so `v01`/`root_a` gets the lower
+/// `work.id`, and `patch_series`'s own loop visits it before `v02`/`root_b`.
+/// A test proving "the worst case, not the last one" has to break the work
+/// that is *not* last, or a bug that only remembers the final iteration would
+/// pass anyway — the failure would coincide with the last answer by luck of
+/// the id order rather than being caught by the assertion. Made read-only
+/// with `taiyaku-library`'s own
+/// `hand::tests::a_root_that_cannot_be_written_still_arms_the_guard`
+/// technique, so exactly one work's `hand::save` fails while its sibling's
+/// still lands.
+///
+/// # Panics
+///
+/// Panics if either tree cannot be written, if either scan or the derive
+/// fails, or if the result is not exactly two works under one series — each
+/// of which means the fixture itself is broken.
+pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -> (
+    axum::Router,
+    std::sync::Arc<ServeState>,
+    Fixture,
+    std::path::PathBuf,
+) {
+    let fixture = Fixture::new("taiyaku-test-two-volumes-two-roots");
+    let title = "Go-Toubun no Hanayome";
+    let root_a = fixture.path().join("root-a");
+    let root_b = fixture.path().join("root-b");
+    write_pages(&root_a.join(title).join(format!("{title} - v01")), 2);
+    write_pages(&root_b.join(title).join(format!("{title} - v02")), 3);
+
+    let library = library();
+    {
+        let conn = library.conn();
+        let a = taiyaku_library::scan::add_root(&conn, &root_a).expect("adds root a");
+        taiyaku_library::scan::scan_root(&conn, &a).expect("scans root a");
+        let b = taiyaku_library::scan::add_root(&conn, &root_b).expect("adds root b");
+        taiyaku_library::scan::scan_root(&conn, &b).expect("scans root b");
+        taiyaku_library::derive::derive(&conn).expect("derives the library");
+    }
+    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    assert_eq!(
+        works.len(),
+        2,
+        "one series, two volumes, one on each root: two works, not {}",
+        works.len()
+    );
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works,
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: fixture
+            .path()
+            .with_file_name("taiyaku-test-two-volumes-two-roots-covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    let router = authenticating(crate::build_router(state.clone()));
+    (router, state, fixture, root_a)
+}
+
+/// [`router_over_two_scanned_volumes_of_one_series_across_two_roots`], with a
+/// third, entirely unrelated series scanned from a root of its own.
+///
+/// **Why the plain version cannot stand in for it.** That fixture holds
+/// exactly one series, so `metadata::series_of_work` returning the constant
+/// `Ok(Some(1))` instead of actually reading the row agrees with reality by
+/// coincidence — SQLite mints the one series it ever sees as id 1. A mutant
+/// that replaces `series_of_work`'s body with that constant survives every
+/// test built over that fixture. This one adds a second series, so the
+/// series a work moves *out of* is not id 1, and a caller trusting the
+/// constant reaches the wrong series' siblings entirely.
+///
+/// The unrelated series' title sorts before `"Go-Toubun no Hanayome"` —
+/// `derive::derive`'s own `groups: BTreeMap<GroupKey, _>` orders series by
+/// name, regardless of which root was scanned first — so it is the one
+/// series row minted first and the shared series is left holding a later
+/// id. Confirmed at the call site rather than trusted here: a fixture that
+/// silently drifted back to coincidence would be exactly the failure this
+/// exists to prevent.
+///
+/// # Panics
+///
+/// Panics if any tree cannot be written, if any scan or the derive fails, or
+/// if the result is not exactly three works — two under the shared series,
+/// one under the unrelated one — each of which means the fixture itself is
+/// broken.
+pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and_an_unrelated_series()
+-> (
+    axum::Router,
+    std::sync::Arc<ServeState>,
+    Fixture,
+    std::path::PathBuf,
+) {
+    let fixture = Fixture::new("taiyaku-test-two-volumes-plus-unrelated-series");
+    let title = "Go-Toubun no Hanayome";
+    let root_unrelated = fixture.path().join("root-unrelated");
+    let root_a = fixture.path().join("root-a");
+    let root_b = fixture.path().join("root-b");
+    write_pages(
+        &root_unrelated
+            .join("AAA Unrelated Series")
+            .join("AAA Unrelated Series - v01"),
+        2,
+    );
+    write_pages(&root_a.join(title).join(format!("{title} - v01")), 2);
+    write_pages(&root_b.join(title).join(format!("{title} - v02")), 3);
+
+    let library = library();
+    {
+        let conn = library.conn();
+        // Scanned *after* `root_a`/`root_b` below, deliberately: the ordering
+        // this fixture's own doc comment relies on comes from `derive`'s own
+        // `BTreeMap<GroupKey, _>`, not from scan order, and proving that is
+        // the point of scanning it out of title order here.
+        let a = taiyaku_library::scan::add_root(&conn, &root_a).expect("adds root a");
+        taiyaku_library::scan::scan_root(&conn, &a).expect("scans root a");
+        let b = taiyaku_library::scan::add_root(&conn, &root_b).expect("adds root b");
+        taiyaku_library::scan::scan_root(&conn, &b).expect("scans root b");
+        let unrelated = taiyaku_library::scan::add_root(&conn, &root_unrelated)
+            .expect("adds the unrelated root");
+        taiyaku_library::scan::scan_root(&conn, &unrelated).expect("scans the unrelated root");
+        taiyaku_library::derive::derive(&conn).expect("derives the library");
+    }
+    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    assert_eq!(
+        works.len(),
+        3,
+        "two volumes under the shared series, one under the unrelated one: \
+         three works, not {}",
+        works.len()
+    );
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works,
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: fixture
+            .path()
+            .with_file_name("taiyaku-test-two-volumes-plus-unrelated-series-covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+    });
+    let router = authenticating(crate::build_router(state.clone()));
+    (router, state, fixture, root_a)
 }
 
 /// A `GET` against `router`, driven with `oneshot` and no socket. Most

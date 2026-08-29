@@ -324,6 +324,48 @@ fn two_works_bridged_into_one_library_get_distinct_content_keys() {
     assert_eq!(rows, 2, "two works, two rows, however many writes");
 }
 
+/// **I3.** `row_id_for_document`'s `INSERT` named `title` but not
+/// `title_derived` — a column with no `NOT NULL` and no default, so a bridge
+/// row left it sitting at NULL. `librarydoc::apply`'s title write always
+/// runs, `title = COALESCE(?2, title_derived)`, and with no hand title set
+/// (every freshly bridged row) that resolves through to `title_derived`
+/// alone. On a bridged row that was NULL, so even applying a work's own
+/// untouched document straight back over itself raised SQLite's own
+/// `NOT NULL` constraint instead of leaving `title` exactly where it stood.
+#[test]
+fn a_bridged_works_own_untouched_document_can_be_applied_back_over_it() {
+    let library = taiyaku_library::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work = crate::Work::new(
+        "alpha".to_string(),
+        std::path::PathBuf::from("/corpus/alpha/taiyaku.json"),
+        fixture_doc(1, "aa"),
+    );
+    let work_id = crate::works::row_id_for_write(&conn, &work).expect("mints the bridge row");
+
+    let doc = taiyaku_library::librarydoc::of(&conn, work_id).expect("projecting");
+    assert_eq!(
+        doc.title, None,
+        "a freshly bridged row has no hand title, or this test proves nothing"
+    );
+    taiyaku_library::librarydoc::apply(&conn, work_id, &doc).unwrap_or_else(|e| {
+        panic!(
+            "applying a bridged work's own untouched document back over \
+             itself must not fail: {e}"
+        )
+    });
+
+    let title: String = conn
+        .query_row("SELECT title FROM work WHERE id = ?1", [work_id], |row| {
+            row.get(0)
+        })
+        .expect("reading the title back");
+    assert_eq!(
+        title, "Volume 1",
+        "the title `row_id_for_write` minted must survive unharmed"
+    );
+}
+
 /// **Whole-branch review 3, Minor 9.** `row_id_for_write` copies the sidecar's
 /// reading direction onto the bridge row through this module's own
 /// `direction_text`, and nothing observed the value: making it return `""` for

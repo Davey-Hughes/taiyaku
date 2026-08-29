@@ -94,10 +94,28 @@ async fn the_grid_carries_an_imported_work_in_the_unfiled_bucket() {
 async fn one_work_is_served_by_slug_and_a_missing_one_is_a_404() {
     let (router, state) = test_support::router_over_a_library().await;
     let slug = state.works[0].id.clone();
+    {
+        // O73/Task 7b: `EditionCard::missing` has to reach the client or
+        // nothing can render it. `browse::missing_members` counts a member
+        // missing once it has a root but no matching `scan_entry` row — the
+        // state `scan::forget_unseen` leaves behind — so giving the fixture's
+        // one member a root and no `scan_entry` at all reproduces that
+        // without running a second scan just to remove one row.
+        let conn = state.library.conn();
+        conn.execute("INSERT INTO root (id, path) VALUES (1, '/library/w')", [])
+            .expect("a root for the fixture's one member");
+        conn.execute("UPDATE member SET root_id = 1", [])
+            .expect("files the member under it");
+    }
 
     let body = get_json(&router, &format!("/api/library/works/{slug}")).await;
     assert_eq!(body["slug"], slug);
     assert_eq!(body["title"], "W");
+    assert_eq!(
+        body["editions"][0]["missing"], 1,
+        "the count `browse` computes must reach the client — nothing else \
+         forwards it"
+    );
 
     let missing = get(&router, "/api/library/works/no-such-work").await;
     assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);

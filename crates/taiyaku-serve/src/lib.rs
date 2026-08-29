@@ -22,6 +22,7 @@ mod cover;
 mod curation;
 pub(crate) mod download;
 pub mod library_api;
+mod metadata;
 /// A work's notes, beside its sidecar.
 ///
 /// Public where `progress` is private, and deliberately: `progress::load` and

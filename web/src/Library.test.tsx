@@ -36,7 +36,7 @@ const work = (over: Partial<library.WorkCard> = {}): library.WorkCard => ({
   volume: 1,
   aligned: true,
   pages: 180,
-  editions: [{ key: 'raw', label: 'Raw', members: 1, pages: 180 }],
+  editions: [{ key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 0 }],
   ...over,
 })
 
@@ -144,6 +144,46 @@ describe('the library screen', () => {
     expect(host.querySelector('a[href="/read/imported-01"]')).not.toBeNull()
   })
 
+  /**
+   * I1 of the whole-branch review: `SeriesGrid` draws `/`'s and `/search`'s
+   * unfiled works, and its reader link carried none of O62's guard either.
+   */
+  it('withholds an unfiled work’s reader link when every edition it holds has lost its files', async () => {
+    vi.mocked(library.grid).mockResolvedValue({
+      series: [],
+      unfiled: [
+        work({
+          slug: 'imported-01',
+          editions: [
+            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 2 },
+          ],
+        }),
+      ],
+    })
+    const host = await show()
+    expect(host.querySelector('a[href="/read/imported-01"]')).toBeNull()
+    // Still named, and still says why.
+    expect(host.textContent).toContain('A Series v01')
+    expect(host.querySelector('.unreadable')?.textContent).toBeTruthy()
+  })
+
+  it('keeps an unfiled work’s reader link when only one edition has lost its files', async () => {
+    vi.mocked(library.grid).mockResolvedValue({
+      series: [],
+      unfiled: [
+        work({
+          slug: 'imported-01',
+          editions: [
+            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 2 },
+            { key: 'en', label: 'En', members: 1, pages: 178, missing: 0 },
+          ],
+        }),
+      ],
+    })
+    const host = await show()
+    expect(host.querySelector('a[href="/read/imported-01"]')).not.toBeNull()
+  })
+
   it('the multi-edition chip keeps only the series with a second edition', async () => {
     vi.mocked(library.grid).mockResolvedValue({
       series: [
@@ -178,6 +218,54 @@ describe('the library screen', () => {
   it('draws no continue strip when nothing is half-read', async () => {
     const host = await show()
     expect(host.querySelector('[data-testid="continue"]')).toBeNull()
+  })
+
+  /**
+   * I1 of the whole-branch review: O62's guard (spec C1 §8) reached `Table`
+   * in `Series.tsx` and nowhere else. The Continue strip is named in the
+   * finding as "the likeliest place in the product to meet a work whose
+   * files just vanished, because the reader was mid-read when they went" —
+   * so an unguarded `<Link>` here is the worst place for the gap, not an
+   * incidental one.
+   */
+  it('withholds the continue-strip link for a work whose every edition has lost its files', async () => {
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [
+        work({
+          slug: 'half-read-v02',
+          editions: [
+            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 2 },
+          ],
+        }),
+      ],
+      added: [],
+      read: [],
+    })
+    const host = await show()
+    expect(host.querySelector('a[href="/read/half-read-v02"]')).toBeNull()
+    // Still named, and still says why — the same rule `Series.tsx`'s `Table`
+    // already follows: withholding the link must not withhold the work.
+    const strip = host.querySelector('[data-testid="continue"]')
+    expect(strip?.textContent).toContain('A Series v01')
+    expect(strip?.querySelector('.unreadable')?.textContent).toBeTruthy()
+  })
+
+  it('keeps the continue-strip link when only one edition of a work has lost its files', async () => {
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [
+        work({
+          slug: 'half-read-v02',
+          editions: [
+            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 2 },
+            { key: 'en', label: 'En', members: 1, pages: 178, missing: 0 },
+          ],
+        }),
+      ],
+      added: [],
+      read: [],
+    })
+    const host = await show()
+    expect(host.querySelector('a[href="/read/half-read-v02"]')).not.toBeNull()
   })
 
   it('a library with no roots is told so, rather than shown an empty grid', async () => {

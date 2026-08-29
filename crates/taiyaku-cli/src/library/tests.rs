@@ -1574,6 +1574,29 @@ fn derive_summary_names_a_work_left_standing_and_a_series_holding_no_work() {
     assert!(!quiet.contains("holding no work"), "{quiet}");
 }
 
+/// Task 5's read-back reports a hand document it could not read, parse or
+/// apply through `DeriveReport::unreadable_hand` rather than aborting the
+/// derive — `scan_summary`'s treatment of `unreadable_dirs` is the same
+/// shape: no separate counter, so the length of the `Vec` is the count, and
+/// the reasons travel with it because a bare count names nothing to fix.
+#[test]
+fn derive_summary_names_a_hand_document_it_could_not_read() {
+    let mut report = derive_report();
+    report.unreadable_hand = vec![
+        "/library/.taiyaku/abc123.library.json: invalid UTF-8".to_string(),
+        "/library/.taiyaku/def456.library.json: series_id must be an integer".to_string(),
+    ];
+    let line = derive_summary(&report, 0);
+    assert!(line.contains("2 hand document(s) unreadable"), "{line}");
+    assert!(line.contains("abc123.library.json"), "{line}");
+    assert!(
+        line.contains("def456.library.json"),
+        "all of them, not just the first: {line}"
+    );
+    let quiet = derive_summary(&derive_report(), 0);
+    assert!(!quiet.contains("hand document"), "{quiet}");
+}
+
 #[test]
 fn derive_summary_prints_unattached_and_unreadable_when_nonzero() {
     let mut report = derive_report();

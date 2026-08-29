@@ -31,6 +31,33 @@ fn a_work_with_two_editions(conn: &Connection) -> i64 {
     crate::import::sidecar(conn, &doc, Path::new("/x/taiyaku.json")).expect("import")
 }
 
+/// A work with one edition, `en-mono`, and a fresh, owned, migrated
+/// connection to go with it.
+///
+/// Built through `import::sidecar`, like [`a_work`] above — so
+/// `work.title_hand` and `edition.label_hand` are NULL, exactly as a plain
+/// import leaves them: nothing about importing a sidecar ever touches
+/// migration 010's two hand-fixed columns.
+///
+/// **Returns an owned `Connection` rather than borrowing one through
+/// `Library::open_in_memory`.** `Library::conn()` hands back a `MutexGuard`
+/// tied to the `Library`'s own lifetime, and a zero-argument helper has no
+/// `Library` left alive by the time it returns one to its caller — so this
+/// builds the connection directly, the same way `derive::tests` and
+/// `fold::tests` do for the same reason.
+fn a_work_with_one_edition() -> (Connection, i64) {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    let json = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{"en-mono":{"label":"R","members":[
+          {"path":"en/v01.cbz","sha256":"3f9a","pages":300}]}},
+        "hub":"en-mono","alignments":[]}"#;
+    let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+    let work_id =
+        crate::import::sidecar(&conn, &doc, Path::new("/x/taiyaku.json")).expect("import");
+    (conn, work_id)
+}
+
 /// Members are keyed by sha256, never by path — the convention
 /// `<stem>.truth.json` already uses (`core/truth.rs`, `RegionMember`), and what
 /// lets a chapter number survive a file being moved or renamed.
@@ -114,6 +141,7 @@ fn a_series_with_titles_and_no_reading_direction_is_not_empty() {
             reading: None,
         },
         volume: None,
+        title: None,
         editions: BTreeMap::new(),
         members: Vec::new(),
         tags: Vec::new(),
@@ -694,6 +722,385 @@ fn renaming_a_works_only_series_does_not_leave_the_old_one_behind() {
     assert_eq!(found, 1, "the new title is the one that answers now");
 }
 
+/// **Whole-branch review C1, first shape.** Before [`set_series_titles`]
+/// existed, a PATCH that corrected a series' only title with nothing left to
+/// match reached `apply_series` the ordinary way: no `series_title` row
+/// shared any text with the new title, so a brand-new `series` row was
+/// minted, and [`forget_orphaned_series`] then deleted the one the caller
+/// actually meant to edit. [`set_series_titles`] writes the id already in
+/// hand instead of resolving one by text, so this is the one case it exists
+/// to rule out.
+#[test]
+fn set_series_titles_keeps_the_same_series_id_even_when_no_old_title_matches() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work(&conn);
+    apply(
+        &conn,
+        work_id,
+        &LibraryDoc::from_json(FIXTURE).expect("parses"),
+    )
+    .expect("the work joins a series");
+    let series_id = series_of(&conn, work_id).expect("reads").expect("shelved");
+
+    let corrected = vec![SeriesTitle {
+        title: "Quintessential Quintuplets".to_string(),
+        kind: TitleKind::English,
+        primary: true,
+    }];
+    set_series_titles(&conn, series_id, &corrected).expect("replaces the title set");
+
+    assert_eq!(
+        series_of(&conn, work_id).expect("reads"),
+        Some(series_id),
+        "the id already in hand is the series edited — no new one minted, \
+         this one not deleted out from under the work still shelved on it"
+    );
+    assert_eq!(
+        series_rows(&conn, "Hanayome"),
+        (1, 1, 0),
+        "one series row, holding only the new title, and the old text is \
+         out of the search index"
+    );
+    let found: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM series_fts WHERE series_fts MATCH 'Quintuplets'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("fts query");
+    assert_eq!(found, 1, "the corrected title is the one that answers now");
+}
+
+/// **Whole-branch review C1, second shape.** Before [`set_series_titles`]
+/// existed, sending the full title array with one entry corrected reached
+/// `apply_series`'s *matched* branch instead — the unchanged native title
+/// still matched by text, so the series was not moved, but
+/// `INSERT OR REPLACE series_title` only ever adds or overwrites a row, never
+/// removes one absent from the new set. The corrected romaji landed *beside*
+/// the wrong one rather than instead of it, and `series_fts` answered on both
+/// forever. [`set_series_titles`] deletes the whole title set for this id
+/// before writing the new one, so a spelling the new set drops is actually
+/// gone.
+#[test]
+fn set_series_titles_removes_a_spelling_the_new_set_drops() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work(&conn);
+    let mut misspelled = LibraryDoc::from_json(FIXTURE).expect("parses");
+    misspelled.series.titles = vec![
+        SeriesTitle {
+            title: "五等分の花嫁".to_string(),
+            kind: TitleKind::Native,
+            primary: true,
+        },
+        SeriesTitle {
+            title: "Gotoubun no Hanayome".to_string(),
+            kind: TitleKind::Romaji,
+            primary: false,
+        },
+    ];
+    apply(&conn, work_id, &misspelled).expect("the work joins a misspelled series");
+    let series_id = series_of(&conn, work_id).expect("reads").expect("shelved");
+
+    let corrected = vec![
+        SeriesTitle {
+            title: "五等分の花嫁".to_string(),
+            kind: TitleKind::Native,
+            primary: true,
+        },
+        SeriesTitle {
+            title: "Go-Toubun no Hanayome".to_string(),
+            kind: TitleKind::Romaji,
+            primary: false,
+        },
+    ];
+    set_series_titles(&conn, series_id, &corrected).expect("corrects the spelling");
+
+    assert_eq!(
+        series_of(&conn, work_id).expect("reads"),
+        Some(series_id),
+        "membership is untouched"
+    );
+    let title_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM series_title WHERE series_id = ?1",
+            [series_id],
+            |r| r.get(0),
+        )
+        .expect("counting titles");
+    assert_eq!(title_count, 2, "two titles in, two titles out — not three");
+
+    let stale_hits: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM series_fts WHERE series_fts MATCH 'Gotoubun'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("fts query");
+    assert_eq!(
+        stale_hits, 0,
+        "the misspelling must not still answer a search alongside its correction"
+    );
+}
+
+/// A series left with no title at all is the membership-clearing,
+/// maybe-delete-the-series outcome `apply_series`'s own empty-titles branch
+/// exists to produce when a work leaves its series — not a thing
+/// [`set_series_titles`]'s caller ever asks for, and not reachable through
+/// it: it must refuse rather than silently emptying the row set.
+#[test]
+fn set_series_titles_refuses_an_empty_title_list() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work(&conn);
+    apply(
+        &conn,
+        work_id,
+        &LibraryDoc::from_json(FIXTURE).expect("parses"),
+    )
+    .expect("the work joins a series");
+    let series_id = series_of(&conn, work_id).expect("reads").expect("shelved");
+
+    let err = set_series_titles(&conn, series_id, &[]).expect_err("an empty title list is refused");
+    assert!(
+        err.contains("title"),
+        "the refusal names what was wrong: {err}"
+    );
+
+    assert_eq!(
+        series_rows(&conn, "Hanayome"),
+        (1, 2, 1),
+        "refused before anything was touched"
+    );
+}
+
+/// **Minor, delta review of the fix waves (`f133b3e..910b15a`).**
+/// `browse.rs`'s own `COALESCE(MAX(CASE WHEN st.is_primary = 1 THEN st.title
+/// END), s.sort_title)` picks whichever of more than one `is_primary` row
+/// sorts lexically greater — C1's second-shape symptom (a corrected spelling
+/// landing beside, not instead of, the one it replaced) by a different door.
+/// Not a regression: nothing produced this state before `set_series_titles`
+/// existed. But it is the one writer that could, so it is the natural place
+/// to refuse it.
+#[test]
+fn set_series_titles_refuses_more_than_one_primary_title() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work(&conn);
+    apply(
+        &conn,
+        work_id,
+        &LibraryDoc::from_json(FIXTURE).expect("parses"),
+    )
+    .expect("the work joins a series");
+    let series_id = series_of(&conn, work_id).expect("reads").expect("shelved");
+
+    let two_primaries = vec![
+        SeriesTitle {
+            title: "五等分の花嫁".to_string(),
+            kind: TitleKind::Native,
+            primary: true,
+        },
+        SeriesTitle {
+            title: "Go-Toubun no Hanayome".to_string(),
+            kind: TitleKind::Romaji,
+            primary: true,
+        },
+    ];
+    let err = set_series_titles(&conn, series_id, &two_primaries)
+        .expect_err("more than one primary title is refused");
+    assert!(
+        err.contains("primary"),
+        "the refusal names what was wrong: {err}"
+    );
+
+    assert_eq!(
+        series_rows(&conn, "Hanayome"),
+        (1, 2, 1),
+        "refused before anything was touched"
+    );
+}
+
+/// **Half two of the Critical the delta review of the fix waves
+/// (`f133b3e..910b15a`) found.** Before this refusal existed,
+/// [`set_series_titles`]'s own plain `INSERT` was the only writer anywhere in
+/// the workspace that could put the same title text on two different series
+/// at once (`derive::reconcile_series` resolves by `sort_title` first, and
+/// [`apply_series`] resolves by text — neither can manufacture the
+/// collision). Once it existed, [`find_series_by_title`]'s own un-`LIMIT`ed
+/// `SELECT` could answer either series for that text, and a caller resolving
+/// through it — `apply_series`, reached from `patch_series`'s own per-work
+/// loop before it called [`apply_with_series_id`] instead — could migrate
+/// every work in a series onto the wrong one and orphan the series the
+/// request actually named.
+#[test]
+fn set_series_titles_refuses_a_title_text_another_series_already_holds() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+
+    let work_a = a_work(&conn);
+    apply(
+        &conn,
+        work_a,
+        &LibraryDoc::from_json(FIXTURE).expect("parses"),
+    )
+    .expect("work a joins its series");
+    let series_a = series_of(&conn, work_a).expect("reads").expect("shelved");
+
+    let work_b = {
+        let json = r#"{"taiyaku":1,"work":{"title":"T2","reading":"rtl"},
+            "editions":{"raw-mono":{"label":"R","members":[
+              {"path":"raw/v02.cbz","sha256":"4b0c","pages":300}]}},
+            "hub":"raw-mono","alignments":[]}"#;
+        let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+        crate::import::sidecar(&conn, &doc, Path::new("/x/v02/taiyaku.json")).expect("import")
+    };
+    let mut unrelated = LibraryDoc::from_json(FIXTURE).expect("parses");
+    unrelated.series.titles = vec![SeriesTitle {
+        title: "AAA Unrelated Series".to_string(),
+        kind: TitleKind::Romaji,
+        primary: true,
+    }];
+    unrelated.external.clear();
+    apply(&conn, work_b, &unrelated).expect("work b joins an unrelated series");
+    let series_b = series_of(&conn, work_b).expect("reads").expect("shelved");
+    assert_ne!(
+        series_a, series_b,
+        "two distinct series, or this test proves nothing"
+    );
+
+    let colliding = vec![SeriesTitle {
+        title: "AAA Unrelated Series".to_string(),
+        kind: TitleKind::Romaji,
+        primary: true,
+    }];
+    let err = set_series_titles(&conn, series_a, &colliding)
+        .expect_err("a title text series b already holds must be refused, not written");
+    assert!(
+        err.contains("AAA Unrelated Series") && err.contains(&series_b.to_string()),
+        "the refusal should name the colliding text and the series that \
+         already holds it, so a caller can tell this refusal apart from any \
+         other: {err}"
+    );
+
+    let series_a_title_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM series_title WHERE series_id = ?1",
+            [series_a],
+            |r| r.get(0),
+        )
+        .expect("counting series a's own titles");
+    assert_eq!(
+        series_a_title_count, 2,
+        "refused before series a's own title set was touched at all"
+    );
+    let series_a_sort_title: String = conn
+        .query_row(
+            "SELECT sort_title FROM series WHERE id = ?1",
+            [series_a],
+            |r| r.get(0),
+        )
+        .expect("reading series a's own sort_title");
+    assert_eq!(
+        series_a_sort_title, "五等分の花嫁",
+        "a refused edit must not have touched series a's own sort_title either"
+    );
+    let series_b_title_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM series_title WHERE series_id = ?1",
+            [series_b],
+            |r| r.get(0),
+        )
+        .expect("counting series b's own titles");
+    assert_eq!(
+        series_b_title_count, 1,
+        "series b was never the target of this edit and must be untouched"
+    );
+}
+
+/// **Half one of the Critical the delta review of the fix waves
+/// (`f133b3e..910b15a`) found — proven independently of half two's refusal
+/// above.** This drives [`apply_with_series_id`] directly, bypassing
+/// [`set_series_titles`] entirely, so the collision exists in the database
+/// regardless of whether the refusal above is doing its job: the two halves
+/// must each hold on their own, and mutating away either one alone must fail
+/// a test. `metadata::tests::patching_a_series_title_to_text_another_series_already_holds_does_not_delete_it`
+/// (`taiyaku-serve`) is the route-level reproduction and cannot serve this
+/// role, because the refusal below aborts that request before its own loop
+/// ever reaches `apply_with_series_id` at all.
+#[test]
+fn apply_with_series_id_does_not_resolve_by_title_even_when_the_text_collides() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+
+    let work_a = a_work(&conn);
+    apply(
+        &conn,
+        work_a,
+        &LibraryDoc::from_json(FIXTURE).expect("parses"),
+    )
+    .expect("work a joins its series");
+    let series_a = series_of(&conn, work_a).expect("reads").expect("shelved");
+
+    let work_b = {
+        let json = r#"{"taiyaku":1,"work":{"title":"T2","reading":"rtl"},
+            "editions":{"raw-mono":{"label":"R","members":[
+              {"path":"raw/v02.cbz","sha256":"4b0c","pages":300}]}},
+            "hub":"raw-mono","alignments":[]}"#;
+        let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+        crate::import::sidecar(&conn, &doc, Path::new("/x/v02/taiyaku.json")).expect("import")
+    };
+    let mut unrelated = LibraryDoc::from_json(FIXTURE).expect("parses");
+    unrelated.series.titles = vec![SeriesTitle {
+        title: "AAA Unrelated Series".to_string(),
+        kind: TitleKind::Romaji,
+        primary: true,
+    }];
+    unrelated.external.clear();
+    apply(&conn, work_b, &unrelated).expect("work b joins an unrelated series");
+    let series_b = series_of(&conn, work_b).expect("reads").expect("shelved");
+    assert_ne!(
+        series_a, series_b,
+        "two distinct series, or this test proves nothing"
+    );
+
+    // The exact hazard: work a's own document names, verbatim, the title
+    // text series b already holds — regardless of whether anything upstream
+    // would ever have refused writing it there.
+    let mut colliding = LibraryDoc::from_json(FIXTURE).expect("parses");
+    colliding.series.titles = vec![SeriesTitle {
+        title: "AAA Unrelated Series".to_string(),
+        kind: TitleKind::Romaji,
+        primary: true,
+    }];
+    apply_with_series_id(&conn, work_a, Some(series_a), &colliding)
+        .expect("applies without resolving series identity");
+
+    assert_eq!(
+        series_of(&conn, work_a).expect("reads"),
+        Some(series_a),
+        "work a must stay filed under the series it was already on, not \
+         migrate onto series b because its document's title text collided"
+    );
+    let series_a_still_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM series WHERE id = ?1)",
+            [series_a],
+            |r| r.get(0),
+        )
+        .expect("checking series a");
+    assert!(
+        series_a_still_exists,
+        "series a must not have been deleted as an orphan"
+    );
+    assert_eq!(
+        series_of(&conn, work_b).expect("reads"),
+        Some(series_b),
+        "series b, and work b's membership in it, must be untouched"
+    );
+}
+
 /// `doc.editions` names an edition key this work does not have — a document
 /// written for a different sidecar, or one that has gone stale since. This
 /// must not silently write nothing; the mismatch is worth refusing.
@@ -726,6 +1133,7 @@ fn applying_external_ids_with_no_series_is_refused() {
         updated: "2026-08-14T11:03:22Z".to_string(),
         series: SeriesInfo::default(),
         volume: None,
+        title: None,
         editions: BTreeMap::new(),
         members: Vec::new(),
         tags: Vec::new(),
@@ -749,6 +1157,7 @@ fn a_chapter_number_for_content_not_present_is_a_silent_no_op() {
         updated: "2026-08-14T11:03:22Z".to_string(),
         series: SeriesInfo::default(),
         volume: None,
+        title: None,
         editions: BTreeMap::new(),
         members: vec![MemberMeta {
             sha256: "not-a-real-member".to_string(),
@@ -892,10 +1301,12 @@ fn every_remaining_closed_set_variant_round_trips_through_the_database() {
             reading: Some(Direction::LeftToRight),
         },
         volume: None,
+        title: None,
         editions: BTreeMap::from([
             (
                 "raw-mono".to_string(),
                 EditionMeta {
+                    label: None,
                     language: None,
                     kind: Some(EditionKind::Official),
                     credits: vec![
@@ -913,6 +1324,7 @@ fn every_remaining_closed_set_variant_round_trips_through_the_database() {
             (
                 "en-fan".to_string(),
                 EditionMeta {
+                    label: None,
                     language: None,
                     kind: Some(EditionKind::Fan),
                     credits: vec![
@@ -1219,4 +1631,180 @@ fn a_series_a_collection_still_lists_survives_its_last_work_leaving() {
         .query_row("SELECT COUNT(*) FROM collection_item", [], |r| r.get(0))
         .expect("counting collection items");
     assert_eq!(listed, 1, "and the reading list still holds its entry");
+}
+
+#[test]
+fn a_hand_set_title_and_label_round_trip_through_the_document() {
+    let (conn, work_id) = a_work_with_one_edition();
+
+    let mut doc = super::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Go-Toubun no Hanayome, volume 1".to_string());
+    doc.editions.insert(
+        "en-mono".to_string(),
+        super::EditionMeta {
+            label: Some("English, monochrome".to_string()),
+            ..Default::default()
+        },
+    );
+    super::apply(&conn, work_id, &doc).expect("applying");
+
+    let effective: String = conn
+        .query_row("SELECT title FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("reading work.title");
+    assert_eq!(
+        effective, "Go-Toubun no Hanayome, volume 1",
+        "apply writes the effective column, not only the provenance one"
+    );
+
+    let label: String = conn
+        .query_row(
+            "SELECT label FROM edition WHERE work_id = ?1 AND key = 'en-mono'",
+            [work_id],
+            |r| r.get(0),
+        )
+        .expect("reading edition.label");
+    assert_eq!(label, "English, monochrome");
+
+    let again = super::of(&conn, work_id).expect("re-projecting");
+    assert_eq!(
+        again.title.as_deref(),
+        Some("Go-Toubun no Hanayome, volume 1")
+    );
+    assert_eq!(
+        again.editions["en-mono"].label.as_deref(),
+        Some("English, monochrome")
+    );
+}
+
+#[test]
+fn a_derived_title_and_label_leave_the_document_empty() {
+    let (conn, work_id) = a_work_with_one_edition();
+
+    let doc = super::of(&conn, work_id).expect("projecting");
+
+    assert!(
+        doc.is_empty(),
+        "a work nobody has hand-edited must project to the empty document, or \
+         `migrate` and `export::work` both start believing every work in the \
+         library holds hand-fixed metadata: {doc:?}"
+    );
+}
+
+#[test]
+fn clearing_a_hand_set_title_restores_the_one_derivation_minted() {
+    let (conn, work_id) = a_work_with_one_edition();
+    let derived: String = conn
+        .query_row("SELECT title FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("reading the derived title");
+
+    let mut doc = super::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    super::apply(&conn, work_id, &doc).expect("applying");
+
+    let mut doc = super::of(&conn, work_id).expect("re-projecting");
+    doc.title = None;
+    super::apply(&conn, work_id, &doc).expect("clearing");
+
+    let after: String = conn
+        .query_row("SELECT title FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("reading the title back");
+    assert_eq!(
+        after, derived,
+        "withdrawing a hand title must restore what derivation minted. \
+         `COALESCE(?, title)` would leave `Hand Set` here forever, while \
+         `title_hand` read NULL — so `of` would report no hand edit, \
+         `export::work` would delete the document recording it, and a rescan \
+         would mint a title this database disagrees with"
+    );
+    assert!(
+        super::of(&conn, work_id).expect("projecting").is_empty(),
+        "and the document is empty again, which is what removes it from disk"
+    );
+}
+
+/// **Step 6c.** `apply_editions`'s blanket clear resets `label_hand` for every
+/// edition but used to leave `label` alone, so an edition *dropped from the
+/// document entirely* — the key absent, a different statement from
+/// `label: None` that takes the blanket-clear branch rather than the per-key
+/// one — kept its withdrawn hand label forever while `label_hand` read NULL.
+#[test]
+fn dropping_an_edition_from_the_document_restores_its_derived_label() {
+    let (conn, work_id) = a_work_with_one_edition();
+
+    let mut doc = super::of(&conn, work_id).expect("projecting");
+    doc.editions.insert(
+        "en-mono".to_string(),
+        super::EditionMeta {
+            label: Some("English, monochrome".to_string()),
+            ..Default::default()
+        },
+    );
+    super::apply(&conn, work_id, &doc).expect("applying");
+
+    // The key is absent entirely, which is a different statement from
+    // `label: None` and takes a different branch: the blanket clear, not the
+    // per-key update.
+    let mut doc = super::of(&conn, work_id).expect("re-projecting");
+    doc.editions.clear();
+    super::apply(&conn, work_id, &doc).expect("clearing");
+
+    let (label, label_hand, label_derived): (String, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT label, label_hand, label_derived FROM edition WHERE work_id = ?1 AND key = 'en-mono'",
+            [work_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("reading the label");
+    // `a_work_with_one_edition`'s sidecar declares this edition's label as
+    // `"R"` (`import.rs`'s `Scope::Document` writes the document's own label
+    // into `label_derived` at import time) — not the edition key. The plan's
+    // draft of this test asserted `"en-mono"`, which assumed a scan-derived
+    // label; corrected here to the value this fixture actually mints, since
+    // the fixture predates this test and is shared with others in this file.
+    assert_eq!(
+        label, "R",
+        "an edition dropped from the document must fall back to its derived \
+         label, not keep the withdrawn hand one while `label_hand` reads NULL"
+    );
+    assert_eq!(
+        label_hand, None,
+        "the withdrawn hand label must not linger in the provenance column either"
+    );
+    assert_eq!(
+        label_derived.as_deref(),
+        Some("R"),
+        "and label_derived must still hold derivation's own answer, not the \
+         hand text the safety net exists to fall back from"
+    );
+}
+
+#[test]
+fn editing_a_title_does_not_move_the_slug() {
+    let (conn, work_id) = a_work_with_one_edition();
+    let before: String = conn
+        .query_row("SELECT slug FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("reading slug");
+
+    let mut doc = super::of(&conn, work_id).expect("projecting");
+    doc.title = Some("A Completely Different Name".to_string());
+    super::apply(&conn, work_id, &doc).expect("applying");
+
+    let after: String = conn
+        .query_row("SELECT slug FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("reading slug");
+    assert_eq!(
+        before, after,
+        "a slug is an address and a title is a display name; progress, notes \
+         and truth all hang off the slug (O67)"
+    );
 }

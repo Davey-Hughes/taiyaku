@@ -402,6 +402,16 @@ pub(crate) fn row_id_for_write(conn: &rusqlite::Connection, work: &Work) -> Resu
 /// handed the document instead, which is the same `Arc` `sidecar()` would have
 /// returned, so this takes the three fields the insert needs directly.
 ///
+/// **`title_derived` is minted alongside `title`, from the same value** —
+/// `taiyaku_library::import::insert_work`'s own pattern for the identical
+/// reason: a bare `INSERT INTO work` naming `title` but not `title_derived`
+/// leaves the column NULL (it carries no `NOT NULL`, no default), and
+/// `librarydoc::apply`'s `title = COALESCE(?2, title_derived)` assumes every
+/// row already has one — this was the one production `INSERT` that did not
+/// (I3), and a work minted here that later had its hand title cleared through
+/// a PATCH surfaced SQLite's own `NOT NULL` error as a bare 409 rather than
+/// restoring anything.
+///
 /// # Errors
 ///
 /// Returns an error if SQLite fails.
@@ -415,8 +425,9 @@ pub(crate) fn row_id_for_document(
         return Ok(id);
     }
     conn.execute(
-        "INSERT OR IGNORE INTO work (content_key, slug, title, reading, hub, sidecar_path)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT OR IGNORE INTO work
+                (content_key, slug, title, title_derived, reading, hub, sidecar_path)
+         VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6)",
         rusqlite::params![
             format!("bridge:{slug}"),
             slug,

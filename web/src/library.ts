@@ -18,6 +18,12 @@ export interface EditionCard {
   label: string
   members: number
   pages: number
+  /**
+   * How many of `members` have left the disk since the last scan — O62,
+   * spec C1 §8's empty state. `0` on every edition until a file actually
+   * goes missing; never negative and never greater than `members`.
+   */
+  missing: number
 }
 
 /** One edition pair's alignment — only `work()` carries these. */
@@ -130,6 +136,37 @@ export const search = (q: string) =>
   getJson<SearchHits>(`/api/library/search?q=${encodeURIComponent(q)}`)
 
 export const status = () => getJson<LibraryStatus>('/api/library/status')
+
+/**
+ * Whether nothing this caller can see of `w` can still be opened — O62,
+ * spec C1 §8's last empty state.
+ *
+ * **Here, not on a component**, for the same reason `matchesChip` and
+ * `sorted` are below: every reader link in the browse screens is offered
+ * from a `WorkCard` a caller already holds, so this is a pure function over
+ * data already in memory rather than a fetch, and it is shared because four
+ * places now need to agree on it — `Series.tsx`'s grid and table, the
+ * per-edition download beside each, `Library.tsx`'s Continue strip, and
+ * `SeriesGrid.tsx`'s unfiled works. A copy in each would drift the moment one
+ * of them "simplified" the guard below without touching its siblings; a
+ * whole-branch review already found the guard undefended in the *one* place
+ * it lived, so five undefended copies is worse, not better.
+ *
+ * **Every edition, not any.** One edition losing its files while a sibling
+ * stays intact leaves the volume readable through the sibling, and
+ * withholding the link there would hide a work that still works. The
+ * narrower case this does not close: a volume whose *hub* edition is the
+ * broken one still offers the link, because `WorkCard` does not say which
+ * edition the reader opens. Closing that needs the hub's identity in the
+ * browse response, and is recorded as an open item rather than guessed at.
+ *
+ * A work with no visible edition at all is not unreadable-by-missing-files —
+ * it is a grant hiding everything, which is a different fact and already has
+ * its own treatment.
+ */
+export function unreadable(w: WorkCard): boolean {
+  return w.editions.length > 0 && w.editions.every((e) => e.missing > 0)
+}
 
 /** The grid's filter chips — §2. */
 export type Chip = 'all' | 'multi' | 'unread'

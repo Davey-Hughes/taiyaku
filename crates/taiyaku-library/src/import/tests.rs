@@ -1965,6 +1965,173 @@ fn a_document_still_names_its_own_editions_labels() {
     assert_eq!(label, "Raws (2019)");
 }
 
+/// **Step 6c.** `update_work`'s `Scope::Document` branch used to overwrite
+/// `title` from the sidecar on every reimport — routine, since `serve`
+/// reimports on every start — even though the sidecar's title is a derived
+/// value and a person may have since corrected it through `librarydoc::apply`.
+#[test]
+fn a_document_reimport_over_a_hand_set_title_preserves_its_provenance() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let path = Path::new("/x/taiyaku.json");
+    let first = authored_doc();
+    let id = sidecar(&conn, &first, path).expect("first import");
+
+    // A person corrects the work's title through `librarydoc::apply`.
+    let mut hand_doc = crate::librarydoc::of(&conn, id).expect("projecting");
+    hand_doc.title = Some("A Person's Correction".to_string());
+    crate::librarydoc::apply(&conn, id, &hand_doc).expect("applying");
+
+    // The sidecar itself is edited — an aligner re-titling it, say — and
+    // reimported. This must not overwrite the hand correction, and must still
+    // record what the sidecar now says as the derived answer.
+    let mut resolved = first.clone();
+    resolved.work.title = "A Different Derived Title".to_string();
+    sidecar(&conn, &resolved, path).expect("reimport");
+
+    let (title, title_hand, title_derived): (String, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT title, title_hand, title_derived FROM work WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("work row");
+
+    assert_eq!(
+        title, "A Person's Correction",
+        "the hand title must survive a routine reimport"
+    );
+    assert_eq!(
+        title_hand.as_deref(),
+        Some("A Person's Correction"),
+        "provenance must not be wiped by a routine reimport"
+    );
+    assert_eq!(
+        title_derived.as_deref(),
+        Some("A Different Derived Title"),
+        "title_derived must track the sidecar's own current title, not the \
+         hand text the safety net exists to fall back from"
+    );
+}
+
+/// **Task 2, closing review.** The rescan test below and the title-reimport
+/// test above each cover one half of `replace_editions`'s `Scope::Document`
+/// arm's neighbour; neither covers a hand-set **label** surviving a
+/// **document** reimport, the one combination `held.label_derived` could be
+/// substituted into `edition.label.clone()` in the `Scope::Document` match
+/// arm without any existing test noticing.
+#[test]
+fn a_document_reimport_over_a_hand_set_label_preserves_its_provenance() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let path = Path::new("/x/taiyaku.json");
+    let first = authored_doc();
+    let id = sidecar(&conn, &first, path).expect("first import");
+
+    // A person corrects the edition's label through `librarydoc::apply`.
+    let mut hand_doc = crate::librarydoc::of(&conn, id).expect("projecting");
+    hand_doc.editions.insert(
+        "raw".to_string(),
+        crate::librarydoc::EditionMeta {
+            label: Some("A Person's Correction".to_string()),
+            ..Default::default()
+        },
+    );
+    crate::librarydoc::apply(&conn, id, &hand_doc).expect("applying");
+
+    // The sidecar itself is edited — an aligner relabelling it, say — and
+    // reimported. This must not overwrite the hand correction, and must
+    // still record what the document now says as the derived answer.
+    let mut resolved = first.clone();
+    resolved
+        .editions
+        .get_mut("raw")
+        .expect("the hub edition")
+        .label = "A Different Derived Label".to_string();
+    sidecar(&conn, &resolved, path).expect("reimport");
+
+    let (label, label_hand, label_derived): (String, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT label, label_hand, label_derived FROM edition
+             WHERE work_id = ?1 AND key = 'raw'",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("edition row");
+
+    assert_eq!(
+        label, "A Person's Correction",
+        "the hand label must survive a routine document reimport"
+    );
+    assert_eq!(
+        label_hand.as_deref(),
+        Some("A Person's Correction"),
+        "provenance must not be wiped by a routine reimport"
+    );
+    assert_eq!(
+        label_derived.as_deref(),
+        Some("A Different Derived Label"),
+        "label_derived must track the document's own current label, not the \
+         hand text the safety net exists to fall back from, and not the \
+         label held from before this reimport either"
+    );
+}
+
+/// **Step 6c.** `held_edition_meta` used to select the effective `label`
+/// column and neither provenance column, and `replace_editions` bound that one
+/// value to both `label` and `label_derived` on the reinsert every scan
+/// performs. So a routine rescan over a hand-set label wiped `label_hand` to
+/// NULL *and* rebound `label_derived` to the hand text — the safety net
+/// overwritten with the very value it exists to fall back from.
+#[test]
+fn a_rescan_over_a_hand_set_label_preserves_its_provenance() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let authored = authored_doc();
+    let id = sidecar(&conn, &authored, Path::new("/x/taiyaku.json")).expect("import");
+
+    // A person corrects the edition's label through `librarydoc::apply`,
+    // which is the only production route onto `label_hand`.
+    let mut hand_doc = crate::librarydoc::of(&conn, id).expect("projecting");
+    hand_doc.editions.insert(
+        "raw".to_string(),
+        crate::librarydoc::EditionMeta {
+            label: Some("Hand-Set Raw".to_string()),
+            ..Default::default()
+        },
+    );
+    crate::librarydoc::apply(&conn, id, &hand_doc).expect("applying");
+
+    // A routine rescan follows — `serve` runs one on every start.
+    scanned(&conn, &as_scanned(&authored), None).expect("rescan");
+
+    let (label, label_hand, label_derived): (String, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT label, label_hand, label_derived FROM edition
+             WHERE work_id = ?1 AND key = 'raw'",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("edition row");
+
+    assert_eq!(
+        label, "Hand-Set Raw",
+        "the hand label must survive a rescan"
+    );
+    assert_eq!(
+        label_hand.as_deref(),
+        Some("Hand-Set Raw"),
+        "provenance must not be wiped by a routine rescan, a walk that has no \
+         display name of its own to give"
+    );
+    assert_eq!(
+        label_derived.as_deref(),
+        Some("Japanese raw"),
+        "label_derived must still hold what the document said, not the hand \
+         text the safety net exists to fall back from"
+    );
+}
+
 #[test]
 fn a_rescan_that_no_longer_names_an_edition_leaves_it_standing() {
     // "The scan never saw this edition" and "a rule edit removed it" are one

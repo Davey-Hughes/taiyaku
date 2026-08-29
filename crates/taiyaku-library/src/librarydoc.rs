@@ -54,6 +54,17 @@ pub struct LibraryDoc {
     pub series: SeriesInfo,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<f64>,
+    /// A hand-set work title, overriding the one derivation minted.
+    ///
+    /// `Option`, and projected from `work.title_hand` rather than from
+    /// `work.title` — see migration 010 for why the effective column cannot
+    /// be the one that appears here. **O67** is the defect: a work spanning
+    /// five editions is named after whichever file minted its row, so a
+    /// reader is shown "…Full Color Edition… — en-mono" for a monochrome
+    /// edition. `work.slug` is unaffected and deliberately so; it is an
+    /// address, and progress, notes and truth all hang off it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub editions: BTreeMap<String, EditionMeta>,
     /// Keyed by `sha256`, never by path — see this module's doc comment.
@@ -121,6 +132,10 @@ pub enum TitleKind {
 /// sidecar import never sets, since `taiyaku.json` carries neither.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct EditionMeta {
+    /// A hand-set edition label, overriding the one the import minted.
+    /// Projected from `edition.label_hand`, for migration 010's reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,8 +218,8 @@ impl LibraryDoc {
         serde_json::to_string_pretty(self).expect("library document is always serialisable")
     }
 
-    /// Every field at its default — no series, no volume, no edition or
-    /// member metadata, no tags, no external ids.
+    /// Every field at its default — no hand-set title, no series, no volume,
+    /// no edition or member metadata, no tags, no external ids.
     ///
     /// **What `migrate.rs` uses to tell "this work's hand-fixed metadata has
     /// never been applied" from "the work row is new".** `of` always answers
@@ -216,7 +231,8 @@ impl LibraryDoc {
     /// either one is a no-op, so treating them alike costs nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.series.is_empty()
+        self.title.is_none()
+            && self.series.is_empty()
             && self.volume.is_none()
             && self.editions.is_empty()
             && self.members.is_empty()
@@ -233,10 +249,20 @@ impl LibraryDoc {
 /// something read back (`state.rs`'s `truth`): this is a fresh projection,
 /// stamped with the time it was taken.
 ///
-/// An edition appears in `editions` only if it has hand-set `language`,
-/// `kind`, or at least one credit — an edition nobody has annotated is
-/// omitted rather than written out as `{}`, keeping the document limited to
-/// what a person actually set.
+/// An edition appears in `editions` only if `label_hand`, `language`, `kind`
+/// or at least one credit is non-empty — an edition nobody has touched at all
+/// is omitted rather than written out as `{}`.
+///
+/// **Only `label` is genuinely hand-set here — `language` and `kind` are not.**
+/// `label` is read from `edition.label_hand`, which is NULL until a person sets
+/// one. `language` and `kind` have no `_hand` counterpart (migration 010 only
+/// split `title`/`label`): they are read from the plain columns
+/// `derive::write_edition_metadata` also writes, under the same
+/// `migrate::absorbed(…, LIBRARY)` guard `librarydoc::apply` writes them
+/// behind. So a purely-derived edition — one a rule's `set_kind`/`set_language`
+/// classified and nobody has ever hand-corrected — still has a non-NULL `kind`
+/// or `language`, and this function cannot tell that apart from a hand
+/// correction: it appears in the document either way.
 ///
 /// # Errors
 ///
@@ -244,11 +270,11 @@ impl LibraryDoc {
 /// `chapter_source` is not one of the values [`apply`] ever writes, or if
 /// SQLite fails.
 pub fn of(conn: &Connection, work_id: i64) -> Result<LibraryDoc, String> {
-    let (volume, series_id): (Option<f64>, Option<i64>) = conn
+    let (volume, series_id, title): (Option<f64>, Option<i64>, Option<String>) = conn
         .query_row(
-            "SELECT volume, series_id FROM work WHERE id = ?1",
+            "SELECT volume, series_id, title_hand FROM work WHERE id = ?1",
             [work_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|e| format!("reading work {work_id}: {e}"))?;
 
@@ -269,6 +295,7 @@ pub fn of(conn: &Connection, work_id: i64) -> Result<LibraryDoc, String> {
         updated: now_rfc3339(conn)?,
         series,
         volume,
+        title,
         editions,
         members,
         tags,
@@ -329,7 +356,7 @@ fn editions_meta_of(
     work_id: i64,
 ) -> Result<BTreeMap<String, EditionMeta>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, key, language, kind FROM edition WHERE work_id = ?1")
+        .prepare("SELECT id, key, label_hand, language, kind FROM edition WHERE work_id = ?1")
         .map_err(|e| format!("preparing editions: {e}"))?;
     let rows = stmt
         .query_map([work_id], |row| {
@@ -338,6 +365,7 @@ fn editions_meta_of(
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         })
         .map_err(|e| format!("querying editions: {e}"))?
@@ -345,15 +373,16 @@ fn editions_meta_of(
         .map_err(|e| format!("reading editions: {e}"))?;
 
     let mut out = BTreeMap::new();
-    for (edition_id, key, language, kind) in rows {
+    for (edition_id, key, label, language, kind) in rows {
         let kind = kind.as_deref().map(parse_edition_kind).transpose()?;
         let credits = credits_of(conn, edition_id)?;
-        if language.is_none() && kind.is_none() && credits.is_empty() {
+        if label.is_none() && language.is_none() && kind.is_none() && credits.is_empty() {
             continue;
         }
         out.insert(
             key,
             EditionMeta {
+                label,
                 language,
                 kind,
                 credits,
@@ -472,7 +501,10 @@ fn external_of(conn: &Connection, series_id: i64) -> Result<BTreeMap<String, Str
 /// `member.chapter_declared`/`chapter_source`, `work_tag`) is replaced
 /// wholesale, the same way `state::put_notes` and `state::put_truth` replace
 /// their own document: metadata this document does not mention is cleared,
-/// not left behind from an earlier one.
+/// not left behind from an earlier one. `work.title` and `edition.label` are
+/// `NOT NULL`, so for them "cleared" means restored to the value derivation
+/// minted — `title_derived`/`label_derived`, migration 010's copies — rather
+/// than blanked, which a `NOT NULL` column cannot hold anyway.
 ///
 /// # Errors
 ///
@@ -493,17 +525,150 @@ pub fn apply(conn: &Connection, work_id: i64, doc: &LibraryDoc) -> Result<(), St
     // hand — otherwise every write below would silently no-op instead of
     // refusing, the one outcome this function's own doc comment promises
     // not to produce.
+    // `title` is written to two columns: `title_hand` is the provenance this
+    // document projects from, and `title` is what every reader of a work
+    // actually displays. **`COALESCE(?2, title_derived)`, never
+    // `COALESCE(?2, title)`** — falling back to the column being written
+    // leaves a withdrawn hand title in place forever, because the value
+    // derivation minted was destroyed by the first edit that overwrote it and
+    // nothing recomputes one. `title_derived` is migration 010's copy of it,
+    // so clearing a hand title restores derivation's own answer, which is the
+    // only sense in which "no hand title" can be written to a NOT NULL column.
+    //
+    // **Two arms, not three.** Every production writer of this row keeps
+    // `title_derived` populated: migration 010 backfills it for every row
+    // that existed, `import::insert_work` mints it alongside `title` for
+    // every row created since, `import::update_work`'s `Scope::Document`
+    // branch (Step 6c) refreshes it on every reimport, and `taiyaku-serve`'s
+    // `works::row_id_for_document` mints it alongside `title` for a work
+    // bridged in with no prior library row at all — a fourth writer, and the
+    // one that once did not (I3). `title_derived` carries no `NOT NULL` of
+    // its own, so nothing enforces this at the schema level: the claim above
+    // is only as good as `grep -rn 'INSERT.*INTO work'` across the workspace
+    // naming every production call site there is, re-checked here rather
+    // than trusted from the last time it was true. With that held, there is
+    // no row on which `title_derived` can read NULL for this `COALESCE` to
+    // need a third arm to step over. Keeping `title` as a defensive third arm
+    // would not be free: it would make exactly the invariant violation this migration
+    // exists to prevent (`title_derived` unexpectedly NULL) fail *silently*,
+    // by falling back to whatever `title` already held — a stale value rather
+    // than an error. Dropping it means that violation instead raises SQLite's
+    // own `NOT NULL` constraint the moment someone clears a hand title with no
+    // derived value to restore, which is the loud failure this codebase
+    // prefers (see `apply`'s own row-count guard, a few lines above).
     let updated = tx
         .execute(
-            "UPDATE work SET volume = ?1 WHERE id = ?2",
-            params![doc.volume, work_id],
+            "UPDATE work
+                SET volume     = ?1,
+                    title_hand = ?2,
+                    title      = COALESCE(?2, title_derived)
+              WHERE id = ?3",
+            params![doc.volume, doc.title, work_id],
         )
-        .map_err(|e| format!("writing volume for work {work_id}: {e}"))?;
+        .map_err(|e| format!("writing volume and title for work {work_id}: {e}"))?;
     if updated == 0 {
         return Err(format!("work {work_id} does not exist"));
     }
 
     let series_id = apply_series(&tx, work_id, &doc.series)?;
+    apply_external(&tx, series_id, &doc.external)?;
+    apply_editions(&tx, work_id, &doc.editions)?;
+    apply_members(&tx, work_id, &doc.members)?;
+    apply_tags(&tx, work_id, &doc.tags)?;
+
+    tx.commit()
+        .map_err(|e| format!("committing library metadata for work {work_id}: {e}"))
+}
+
+/// [`apply`], for a caller that has already resolved this work's series
+/// identity and does not want it re-resolved: `taiyaku_serve::metadata::patch_series`'s
+/// own per-work loop, once [`set_series_titles`] has already written the
+/// series named in its URL by id.
+///
+/// **Does not call [`apply_series`] — at all.** `apply_series`'s job is
+/// deciding series identity: resolving `doc.series.titles` by text through
+/// [`find_series_by_title`], possibly minting a new `series` row, possibly
+/// moving `work.series_id` onto a different one, possibly orphaning the one
+/// this work is leaving. None of that is safe to re-run once
+/// [`set_series_titles`] has already put the corrected text on the series
+/// the caller means: `find_series_by_title` resolves by text with no `LIMIT`
+/// and no notion of "the id already in hand", and `series_title`'s primary
+/// key is `(series_id, title)` — the same text can sit on two different
+/// series. If the corrected text happened to collide with a title some other
+/// series already held, `apply_series` would resolve there instead, every
+/// work in the loop would migrate onto it, and once the last one left,
+/// [`forget_orphaned_series`] would delete the series the caller actually
+/// named — cascading its titles and external ids with it. (Delta review of
+/// the fix waves, `f133b3e..910b15a`: the Critical, reproduced end to end
+/// against `patch_series` before this function existed.)
+///
+/// `series_id` is `work_id`'s series exactly as the caller already knows it —
+/// passed in rather than read back, since `work.series_id` has not changed
+/// under this code path and does not need re-reading to learn what the
+/// caller already has in hand. `doc.series.titles` itself is not written
+/// here at all: [`set_series_titles`] already wrote the whole set, once, for
+/// the whole series, before the caller's loop began.
+///
+/// **`doc.series.reading` is still written, directly onto `series_id`.**
+/// Unlike titles, a reading direction carries no identity to resolve —
+/// writing it is a plain `UPDATE … WHERE id = series_id`, the same shape
+/// [`set_series_titles`] already uses for `sort_title`, and no more unsafe to
+/// repeat on every work in a series-wide edit's loop than that one already
+/// is. `apply_series`'s own matched branch is the only other writer of this
+/// column, and this function does not reach it, so this is the one this
+/// function's own caller needs instead.
+///
+/// **Idempotent, for the same reason [`apply`] is.** Every sub-write this
+/// function performs — the reading-direction `UPDATE`, [`apply_external`],
+/// [`apply_editions`], [`apply_members`], [`apply_tags`] — is the identical
+/// idempotent building block [`apply`] itself calls or an equally plain
+/// `UPDATE … WHERE id = `; only the series-resolving step in between is
+/// missing here, and that step decided no persisted state this function
+/// depends on.
+///
+/// # Errors
+///
+/// Same as [`apply`], for the same reasons, minus anything to do with
+/// resolving `doc.series.titles`.
+pub fn apply_with_series_id(
+    conn: &Connection,
+    work_id: i64,
+    series_id: Option<i64>,
+    doc: &LibraryDoc,
+) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("starting library-metadata transaction: {e}"))?;
+
+    // Same row-count guard and the same `COALESCE(?2, title_derived)` choice
+    // as `apply`'s own — see that function's doc comment for why.
+    let updated = tx
+        .execute(
+            "UPDATE work
+                SET volume     = ?1,
+                    title_hand = ?2,
+                    title      = COALESCE(?2, title_derived)
+              WHERE id = ?3",
+            params![doc.volume, doc.title, work_id],
+        )
+        .map_err(|e| format!("writing volume and title for work {work_id}: {e}"))?;
+    if updated == 0 {
+        return Err(format!("work {work_id} does not exist"));
+    }
+
+    if let Some(series_id) = series_id {
+        // `apply_series`'s own matched branch is the only other writer of
+        // this column — see this function's own doc comment for why writing
+        // it here, directly by id, carries none of the hazard writing
+        // `series_title` by id-instead-of-text would.
+        let reading = doc.series.reading.map(direction_text);
+        tx.execute(
+            "UPDATE series SET reading = ?1 WHERE id = ?2",
+            params![reading, series_id],
+        )
+        .map_err(|e| format!("updating series {series_id}'s reading direction: {e}"))?;
+    }
+
     apply_external(&tx, series_id, &doc.external)?;
     apply_editions(&tx, work_id, &doc.editions)?;
     apply_members(&tx, work_id, &doc.members)?;
@@ -658,17 +823,36 @@ fn series_of(conn: &Connection, work_id: i64) -> Result<Option<i64>, String> {
 /// an *implicit* delete, which recursive_triggers is what gates — this
 /// `DELETE` is explicit and needs no such gate.
 ///
-/// **Nothing in the product reaches this with a series to forget yet, and that
-/// is recorded rather than fixed** (delta review M5). [`apply`]'s one
-/// production caller is `migrate::apply_library`, reached only through
-/// `Step::Apply`, which requires that no `migrated_document` row for `library`
-/// exists — and `work.series_id` is written only by [`apply_series`], which
-/// records that marker on success. So on the path the product takes today the
-/// `previous` handed here is always `None` and both call sites return at the
-/// first line. It is kept because `apply` is `pub` API and the second apply is
-/// the ordinary case the moment anything applies a hand-edited document twice
-/// — a CLI for it is the open question M8 names — and a guard written after
-/// that lands is a guard written after the shelves have already been dropped.
+/// **This used to be unreachable with a series to forget (delta review M5),
+/// and spec C3's PATCH routes changed that.** [`apply`] no longer has a single
+/// production caller: `crates/taiyaku-serve/src/metadata.rs`'s `edit_work_raw`
+/// reaches it from every one of the four PATCH routes, and
+/// `derive::write_work`'s own read-back reaches it too, both alongside the
+/// original `migrate::apply_library`. `patch_work`'s own `series` field is the
+/// one that can hand this function a real series to forget: it sets
+/// `doc.series` from the request body outright, so moving a work onto a
+/// different series or clearing its series entirely resolves `previous` (this
+/// work's series before the edit) to `Some`, and this function deletes that
+/// series once nothing else — no work, no `collection_item` — still holds it.
+///
+/// **`patch_series` does not reach this path — corrected, not merely
+/// restated.** An earlier version of this comment claimed `patch_series`
+/// never reaches here because `apply_series`'s resolved `series_id` always
+/// agreed with `previous`. That was false, and the delta review of the fix
+/// waves (`f133b3e..910b15a`) is why: `patch_series`'s per-work loop used to
+/// call the ordinary [`apply`], which reaches `apply_series`, and
+/// `apply_series` resolves by matching `doc.series.titles`' own *text* —
+/// nothing about that resolution guarantees agreement with `previous` at
+/// all. When [`set_series_titles`] had just written a title text some other
+/// series already held, `apply_series` resolved onto that other series
+/// instead, `previous` and the newly resolved `series_id` disagreed, and this
+/// function deleted the series the caller actually named. `patch_series`'s
+/// loop now calls [`apply_with_series_id`] instead, which does not reach
+/// `apply_series` — or this function — at all, so the true reason `patch_series`
+/// does not reach this path is structural: nothing in it calls the function
+/// that would. This function is kept as `pub` API regardless, since
+/// `patch_work`'s own `series` field still exercises it, moving a work onto a
+/// different series or clearing it entirely.
 fn forget_orphaned_series(conn: &Connection, series_id: Option<i64>) -> Result<(), String> {
     let Some(series_id) = series_id else {
         return Ok(());
@@ -710,6 +894,143 @@ fn find_series_by_title(conn: &Connection, titles: &[SeriesTitle]) -> Result<Opt
     Ok(None)
 }
 
+/// Overwrite `series_id`'s own title set, by the id already resolved — never
+/// by matching text through [`find_series_by_title`].
+///
+/// **What a PATCH to `/api/library/series/{id}` needs and [`apply_series`]
+/// cannot give it.** A PATCH already names its series by id; resolving its
+/// titles by text anyway can answer with a *different* series than the one
+/// the URL named. If no existing `series_title` row shares any of the
+/// corrected text, [`apply_series`] mints a brand new series for it and, once
+/// the last work has moved onto that new row, [`forget_orphaned_series`]
+/// deletes the one the URL actually asked to edit — its id, and everything
+/// else keyed on it, gone. If some of the text still matches (an unchanged
+/// title alongside a corrected one), [`apply_series`] upserts onto the
+/// existing row set rather than replacing it, so the corrected spelling lands
+/// *beside* the one it was meant to replace rather than instead of it. This
+/// function has neither failure available to it: it writes exactly
+/// `series_id`, and only that row's own title set, deciding no series
+/// identity along the way.
+///
+/// **Replaces, not upserts.** Every `series_title` row `series_id` held is
+/// gone (an explicit `DELETE`, so `series_title_ad`/`series_title_ai` keep
+/// `series_fts` in step with no `recursive_triggers` gate needed — see
+/// [`forget_orphaned_series`]'s own comment on why an explicit `DELETE`
+/// differs from the implicit one an `INSERT OR REPLACE` conflict performs)
+/// before `titles` is written back. `series.sort_title` is refreshed from
+/// whichever of `titles` is primary, or the first if none is — the same rule
+/// [`apply_series`]'s own matched branch applies.
+///
+/// **`work.series_id` and the `series` row itself are untouched.** Deciding
+/// which series a work belongs to — moving it, or clearing it — is
+/// [`apply_series`]'s job, reached through [`apply`] from `patch_work`'s own
+/// `series` field. This function never runs that decision, so it can neither
+/// mint a `series` row nor delete one.
+///
+/// **Refuses a title text some other series already holds.** This is the
+/// door the Critical the delta review of the fix waves (`f133b3e..910b15a`)
+/// found walks through: this function's own plain `INSERT` was the only
+/// writer anywhere in the workspace that could put the same title text on
+/// two different series at once — `derive::reconcile_series` resolves by
+/// `sort_title` first, and [`apply_series`] resolves by text, so neither can
+/// manufacture the collision this checks for. Once the ambiguous state
+/// existed, [`find_series_by_title`]'s own un-`LIMIT`ed `SELECT` could answer
+/// either series for the same text, and [`apply_series`] resolving onto the
+/// wrong one is what let the series this function was asked to edit be
+/// deleted out from under it. Checked before anything else here writes,
+/// against every title in `titles`, not only the primary — an `alt` or
+/// `native` entry colliding is exactly as hazardous as the sort title doing
+/// so, since [`find_series_by_title`] tries every one of a document's titles
+/// in turn.
+///
+/// **Refuses more than one title marked `primary`.** `browse.rs`'s own
+/// `COALESCE(MAX(CASE WHEN st.is_primary = 1 THEN st.title END), s.sort_title)`
+/// picks whichever of them sorts lexically greater when more than one row
+/// has the flag — C1's second-shape symptom (a corrected spelling landing
+/// beside the one it was meant to replace, so the reader-facing title
+/// depends on string order rather than on which one a person actually meant)
+/// by a different door, and this is the one writer that could let more than
+/// one ever exist for one series at once — `apply_series`'s own
+/// `INSERT OR REPLACE`, keyed on `(series_id, title)`, cannot: two distinct
+/// title *texts* upserted with `primary: true` simply overwrite the same
+/// row's flag in turn, one at a time, never coexisting.
+///
+/// # Errors
+///
+/// Returns an error if `titles` is empty. A series left with no title at all
+/// is exactly the membership-clearing, maybe-delete-the-series outcome
+/// [`apply_series`]'s own empty-titles branch exists to produce when a work
+/// leaves its series — not a thing this function's caller ever asks for, and
+/// not reachable through it. Returns an error if more than one of `titles`
+/// is marked `primary` — this function's own doc comment above has the
+/// reason. Returns an error if any of `titles` names text a *different*
+/// series already holds — this function's own doc comment above has the
+/// reason. Also returns an error if SQLite fails.
+pub fn set_series_titles(
+    conn: &Connection,
+    series_id: i64,
+    titles: &[SeriesTitle],
+) -> Result<(), String> {
+    let Some(primary) = titles.iter().find(|t| t.primary).or_else(|| titles.first()) else {
+        return Err("a series must keep at least one title".to_string());
+    };
+    if titles.iter().filter(|t| t.primary).count() > 1 {
+        return Err(format!(
+            "series {series_id} would have more than one primary title; \
+             a series must have at most one"
+        ));
+    }
+    let sort_title = primary.title.clone();
+
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("starting a series-title transaction: {e}"))?;
+
+    for title in titles {
+        let collision: Option<i64> = tx
+            .query_row(
+                "SELECT series_id FROM series_title WHERE title = ?1 AND series_id != ?2",
+                params![title.title, series_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("checking for a title collision on `{}`: {e}", title.title))?;
+        if let Some(other) = collision {
+            return Err(format!(
+                "title `{}` already belongs to series {other}; refusing to \
+                 give series {series_id} the same text",
+                title.title
+            ));
+        }
+    }
+
+    tx.execute(
+        "UPDATE series SET sort_title = ?1 WHERE id = ?2",
+        params![sort_title, series_id],
+    )
+    .map_err(|e| format!("updating series {series_id}: {e}"))?;
+
+    tx.execute("DELETE FROM series_title WHERE series_id = ?1", [series_id])
+        .map_err(|e| format!("clearing titles for series {series_id}: {e}"))?;
+
+    for title in titles {
+        tx.execute(
+            "INSERT INTO series_title (series_id, title, kind, is_primary)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                series_id,
+                title.title,
+                title_kind_text(title.kind),
+                title.primary
+            ],
+        )
+        .map_err(|e| format!("writing series title `{}`: {e}", title.title))?;
+    }
+
+    tx.commit()
+        .map_err(|e| format!("committing series titles for series {series_id}: {e}"))
+}
+
 fn apply_external(
     conn: &Connection,
     series_id: Option<i64>,
@@ -738,15 +1059,48 @@ fn apply_external(
 }
 
 /// Replace this work's edition-level metadata wholesale: every edition's
-/// `language`/`kind` reset before `doc.editions` is applied over them, and
-/// every edition-scoped `credit` row cleared and rewritten from scratch.
+/// `language`/`kind`/`label_hand` reset — and `label` restored to
+/// `label_derived` in that same statement, since it is `NOT NULL` and cannot
+/// simply be cleared — before `doc.editions` is applied over them, and every
+/// edition-scoped `credit` row cleared and rewritten from scratch.
 fn apply_editions(
     conn: &Connection,
     work_id: i64,
     editions: &BTreeMap<String, EditionMeta>,
 ) -> Result<(), String> {
+    // **`label` restored alongside the provenance it is cleared from.** An
+    // edition dropped from the document entirely — the key absent, a
+    // different statement from `label: None` that takes this branch rather
+    // than the per-key update below — must not keep its withdrawn hand label
+    // forever while `label_hand` reads NULL.
+    //
+    // **`COALESCE(label_derived, label)`, not a bare `label = label_derived`
+    // — but under the invariant the two are equivalent, not distinguished by
+    // any `NOT NULL` argument.** `label_derived` is never NULL on a row this
+    // statement can reach, the same as everywhere else this invariant is
+    // held, so both shapes restore the identical value here. That is *not*
+    // the same choice `apply`'s own title write makes above: that write
+    // deliberately dropped its own fallback-to-the-column-being-written arm,
+    // on the argument that a violated invariant (`title_derived` NULL) should
+    // fail loudly as a `NOT NULL` error rather than silently keep a stale
+    // title — and that argument applies here too, so it is not why this
+    // statement keeps the fallback instead of matching it. What does
+    // distinguish this statement is structural, not `NOT NULL`-related: it
+    // sweeps every edition of the work in one `UPDATE`, with no per-row
+    // existence check the way `apply`'s own row-count check and the per-key
+    // update's `edition_id` lookup below both have. Keeping `label` as the
+    // fallback costs nothing while the invariant holds, and only matters if
+    // some future writer ever violates it on a row this statement reaches —
+    // in which case this shape absorbs that quietly here, on whichever edition
+    // it was, rather than raising a constraint failure that names no edition
+    // at all.
     conn.execute(
-        "UPDATE edition SET language = NULL, kind = NULL WHERE work_id = ?1",
+        "UPDATE edition
+            SET label_hand = NULL,
+                label      = COALESCE(label_derived, label),
+                language   = NULL,
+                kind       = NULL
+          WHERE work_id = ?1",
         [work_id],
     )
     .map_err(|e| format!("clearing edition metadata for work {work_id}: {e}"))?;
@@ -772,9 +1126,34 @@ fn apply_editions(
             )
         })?;
 
+        // Same `COALESCE(?1, label_derived)` reasoning as `apply`'s own
+        // `title` write above: `label_hand` is this document's provenance,
+        // and clearing it must restore `label_derived` — migration 010's copy
+        // of what derivation or the document minted — not the effective
+        // `label` column being written, which would leave a withdrawn hand
+        // label in place forever.
+        //
+        // **Two arms, not three**, for the same reason as `apply`'s `title`
+        // write: `label_derived` is kept populated by every writer of this
+        // row — migration 010's backfill, `import::replace_editions`'s own
+        // INSERT for a brand-new edition, and its restore for one already
+        // held (Step 6c) — so there is no row on which it can read NULL here.
+        // A third arm falling back to `label` would turn that invariant's
+        // violation into a silently stale value instead of the loud
+        // `NOT NULL` constraint failure a violation should produce.
         conn.execute(
-            "UPDATE edition SET language = ?1, kind = ?2 WHERE id = ?3",
-            params![meta.language, meta.kind.map(edition_kind_text), edition_id],
+            "UPDATE edition
+                SET label_hand = ?1,
+                    label      = COALESCE(?1, label_derived),
+                    language   = ?2,
+                    kind       = ?3
+              WHERE id = ?4",
+            params![
+                meta.label,
+                meta.language,
+                meta.kind.map(edition_kind_text),
+                edition_id
+            ],
         )
         .map_err(|e| format!("writing metadata for edition `{key}`: {e}"))?;
 

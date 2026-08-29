@@ -32,6 +32,7 @@ import {
   matchesChip,
   type Sort,
   sorted,
+  unreadable,
 } from './library'
 import { SeriesGrid } from './SeriesGrid'
 import { useLibraryStatus } from './shell'
@@ -94,7 +95,23 @@ export function Library() {
           <ul>
             {home.continuing.map((w) => (
               <li key={w.slug}>
-                <Link to={`/read/${w.slug}`}>{w.title}</Link>
+                {unreadable(w) ? (
+                  // **O62 — the link is the treatment, not a badge.** I1 of
+                  // the whole-branch review names this strip as the
+                  // likeliest place to meet a work whose files just
+                  // vanished: the reader was mid-read when they went, so
+                  // this is exactly where an unguarded link would send them
+                  // back into a page that cannot load. The volume keeps its
+                  // name, same as `Series.tsx`'s `Table`.
+                  <span className="tile-unreadable">
+                    {w.title}{' '}
+                    <span className="unreadable">
+                      files missing — cannot be opened
+                    </span>
+                  </span>
+                ) : (
+                  <Link to={`/read/${w.slug}`}>{w.title}</Link>
+                )}
               </li>
             ))}
           </ul>

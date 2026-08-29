@@ -195,6 +195,25 @@ pub struct DeriveReport {
     /// In `superseded`'s own order, which is deterministic, so two runs over
     /// an unchanged library produce the same list.
     pub unfoldable: Vec<String>,
+    /// Hand documents that could not be read, parsed, or applied, each with
+    /// the reason and, ordinarily, the path.
+    ///
+    /// A `Vec` rather than a counter — `unfoldable`'s choice — because the
+    /// person has to be told *which* file to fix.
+    ///
+    /// **The path is prepended by the read-back, not inherited from the
+    /// error — except when `hand::load` fails before it has one to prepend.**
+    /// `hand::load`'s own read/parse failures carry the path, and
+    /// `librarydoc::apply`'s name a `work_id` and a `series_id` and never a
+    /// file, so the read-back prepends the path there — that is the exact gap
+    /// this field exists to close. But `hand::load` fails a third way, before
+    /// either: `hand::path_for`'s two errors (reading `work.content_key`, then
+    /// the hub edition's root) can only name the `work_id`, since SQLite
+    /// refused the very query that would have produced an address to name.
+    /// Those two propagate through `load` unprefixed, so this field is not
+    /// "each with the path" without exception — only whichever a path had
+    /// already been resolved by the time something failed.
+    pub unreadable_hand: Vec<String>,
     /// Reading positions written onto the target's matching edition by a
     /// fold — writes, not survivors, for the reason `fold::Moved::positions`
     /// states. [`Self::lost_positions`] is the exact number.
@@ -1043,6 +1062,12 @@ fn reconcile_series(conn: &Connection, sort_title: &str) -> Result<i64, String> 
 /// write the columns the document cannot carry — `work.series_id`,
 /// `work.volume` and, through [`write_chapters`], `member.chapter_declared`.
 ///
+/// It also reads back and applies a hand document sitting at this work's
+/// address when nothing has absorbed it yet — the whole `LibraryDoc`: title,
+/// volume, series row and titles, external ids, edition metadata, member
+/// chapters, tags — which is what closes the guard below for the rest of this
+/// call.
+///
 /// Returns the `work_id` it resolved — new or reconciled — so [`derive`] can
 /// collect the set of works this pass wrote and hand it to [`superseded`].
 fn write_work(
@@ -1155,6 +1180,38 @@ fn write_work(
     // therefore both simpler and exact.
     report.kept_editions += kept_editions(conn, work_id, &doc)?;
 
+    // **Moved ahead of the read-back below, and of both guards after it.**
+    // `write_roots` only issues `UPDATE member SET root_id = ?` from the
+    // group's own candidates, matched on `(edition key, ordinal)` —
+    // `import::scanned`, just above, is the only thing either depends on, so
+    // nothing here needs the guard or the read-back to have run first. The
+    // read-back does need this to have run first: on a work being minted for
+    // the first time, `member.root_id` is still NULL the moment
+    // `hand::load` calls `hand::path_for`, whose
+    // `JOIN root ON root.id = member.root_id` then matches nothing —
+    // `path_for` answers `None`, `hand::load` answers `Ok(None)`, and a
+    // correction sitting right beside the archives is silently skipped. A
+    // *second* derive recovers it, because by then this call has already run
+    // once. That is the store spec §4.4 claim broken: losing the database
+    // was supposed to cost one rescan, not two.
+    //
+    // **`write_chapters` stays below, unmoved, and that is not an
+    // oversight.** It looks like the same shape — another targeted update
+    // keyed on `(edition key, ordinal)` from `import::scanned`'s own rows —
+    // but it has a real ordering dependency the read-back's `apply` call
+    // creates: `librarydoc::apply`'s `apply_members` clears *every* member's
+    // chapter for this work unconditionally, then rewrites only the entries
+    // the hand document names, by `sha256`. Running `write_chapters` before
+    // that guard would have its scanner-derived chapters wiped right back to
+    // NULL for every member the document does not mention. Running it after,
+    // as it already does, lets it fill exactly those NULLs back in — its own
+    // per-candidate guard, `chapter_source IS NULL OR chapter_source =
+    // SCANNER_CHAPTER_SOURCE`, is what stops it from also overwriting a
+    // member the document *did* set. `write_roots` has no such
+    // interaction: nothing the guard or the read-back writes touches
+    // `member.root_id`.
+    write_roots(conn, work_id, group)?;
+
     // The `work` columns the sidecar format has no field for, which are also
     // the two the hub lookup above reads back — and, under the same guard and
     // for the same reason, `edition.kind` and `edition.language`, which the
@@ -1165,18 +1222,19 @@ fn write_work(
     //
     // **Skipped when a hand document has actually been applied to this
     // work (I7).** `librarydoc::apply` — reached through `migrate::work`,
-    // §4.4 — is the documented mechanism for setting `work.volume` and
-    // `work.series_id` by hand, and `<stem>.library.json` exists precisely
-    // so that hand metadata survives a re-derivation. Before this, `derive`
-    // wrote both unconditionally on every pass: a hand-set `volume = 4.5`
-    // came back as `1.0` after one derive, and a hand-renamed series minted
-    // a second row and moved the works to it, leaving the renamed one
-    // empty. `migrate::absorbed(…, LIBRARY)` is the exact question
-    // `migrate.rs` already answers for the same class of "has a hand
-    // document actually been applied here" decision — reused rather than a
-    // second implementation of it, and it is `true` only once
-    // `LibraryOutcome::Applied` has actually landed, never merely because a
-    // `.library.json` file happens to sit on disk.
+    // §4.4, or through the read-back below — is the documented mechanism for
+    // setting `work.volume` and `work.series_id` by hand, and
+    // `<stem>.library.json` exists precisely so that hand metadata survives a
+    // re-derivation. Before this, `derive` wrote both unconditionally on
+    // every pass: a hand-set `volume = 4.5` came back as `1.0` after one
+    // derive, and a hand-renamed series minted a second row and moved the
+    // works to it, leaving the renamed one empty. `migrate::absorbed(…,
+    // LIBRARY)` is the exact question `migrate.rs` already answers for the
+    // same class of "has a hand document actually been applied here"
+    // decision — reused rather than a second implementation of it. **This is
+    // no longer true of the marker alone**: the read-back below now arms it
+    // itself, precisely because a `.library.json` file sits on disk with
+    // nothing in `migrated_document` yet to say so.
     //
     // **Content matching still finds this row.** `import::scanned`'s own
     // `find_by_key` probes `content_key` before it ever falls back to the
@@ -1193,6 +1251,54 @@ fn write_work(
     // Everything else about hand-versus-derived metadata — a provenance
     // column, scoping this to works with no `sidecar_path`, and so on — is
     // still the design question I7 left open, and nothing here answers it.
+    //
+    // **The document on disk, read back before the guard is consulted.** A
+    // fresh database has no marker for a work it has just minted, so without
+    // this the guard below is open and derivation writes over a correction
+    // that is sitting right beside the archives. `migrate::work`'s
+    // `Step::Apply` cannot do this job — O53: `librarydoc::of` reads non-empty
+    // the moment a work has a derived volume or series, so that step is
+    // unreachable for any work a scan has touched. This is the "real but
+    // different path" O53's own entry names.
+    if !crate::migrate::absorbed(conn, work_id, crate::migrate::LIBRARY)? {
+        match crate::hand::load(conn, work_id) {
+            Ok(Some((path, doc))) => {
+                let empty = doc.is_empty();
+                match crate::librarydoc::apply(conn, work_id, &doc)
+                    .map_err(|e| format!("{}: {e}", path.display()))
+                {
+                    // `!empty`, matching `hand::save`'s own rule: a
+                    // hand-emptied document has nothing left to protect and
+                    // derivation should resume. Arming the marker for it would
+                    // freeze the cleared state permanently, since nothing calls
+                    // `save` on this work again.
+                    Ok(()) => crate::migrate::record_absorbed(
+                        conn,
+                        work_id,
+                        crate::migrate::LIBRARY,
+                        !empty,
+                    )?,
+                    Err(why) => report.unreadable_hand.push(why),
+                }
+            }
+            Ok(None) => {}
+            // **Reported, not raised.** `write_work` is called with `?` inside
+            // the group loop and `derive` holds no transaction of its own, so a
+            // `?` here would leave the library half-derived — works before this
+            // one written, works after it untouched, and `superseded`/
+            // `fold::absorb` and the proposals pass never reached — because one
+            // file in someone's library would not parse. This module states the
+            // opposite principle three times: *"one unmounted share or one
+            // truncated download must not leave a whole library underived"*,
+            // *"a scan that died because one work of thousands could not be
+            // folded would be worse than a scan that folds nothing"*, and
+            // `scan.rs`'s *"one unreadable file must not leave a library
+            // unscanned"*. On a fresh database every work is marker-less, so
+            // every document is read on that one pass — exactly when a single
+            // bad file is most likely to be met.
+            Err(why) => report.unreadable_hand.push(why),
+        }
+    }
     if !crate::migrate::absorbed(conn, work_id, crate::migrate::LIBRARY)? {
         conn.execute(
             "UPDATE work SET series_id = ?1, volume = ?2 WHERE id = ?3",
@@ -1202,7 +1308,6 @@ fn write_work(
         write_edition_metadata(conn, work_id, group, report)?;
     }
     write_chapters(conn, work_id, group)?;
-    write_roots(conn, work_id, group)?;
     report.works += 1;
     Ok(work_id)
 }
@@ -1639,13 +1744,21 @@ fn title_of(group: &Group, hub_key: &str) -> String {
 /// Write the chapter numbers the rules resolved onto the member rows
 /// `import::scanned` just wrote.
 ///
-/// **Cleared first, and scoped by `chapter_source`.** A rule edit that stops
-/// resolving a chapter must not leave the number a previous derive wrote
-/// standing — `replace_editions` carries `chapter_declared` across its own
-/// wholesale replace, so nothing else would remove it. The clear names
-/// [`SCANNER_CHAPTER_SOURCE`] rather than every row, because a number a person
-/// entered by hand is the one thing here no re-derive could recover, which is
-/// why `member.chapter_declared` is in migration 1 at all.
+/// **Cleared first, and scoped by `chapter_source` — and the write below is
+/// scoped the same way.** A rule edit that stops resolving a chapter must not
+/// leave the number a previous derive wrote standing — `replace_editions`
+/// carries `chapter_declared` across its own wholesale replace, so nothing
+/// else would remove it. The clear names [`SCANNER_CHAPTER_SOURCE`] rather
+/// than every row, because a number a person entered by hand, or one a
+/// `comicinfo` document supplied, is not this derive's to recover if it turns
+/// out wrong. **The write needs the identical guard and, until it had one,
+/// did not have it**: a member whose filename still parses — which is exactly
+/// the member someone corrects a chapter on, since `builtin-chapter` is a
+/// seeded rule — had its hand or `comicinfo` value silently reverted to the
+/// filename's answer on the very next re-derive, `chapter_source` included.
+/// So the write's own `WHERE` only lands on a row this derive already owns:
+/// one it just cleared (`NULL`) or one it wrote on a previous pass
+/// (`chapter_source = 'filename'`).
 ///
 /// Matched on `(edition key, ordinal)`, which is where the members this call
 /// just described actually landed: `replace_editions` inserts them in document
@@ -1669,7 +1782,8 @@ fn write_chapters(conn: &Connection, work_id: i64, group: &Group) -> Result<(), 
                     "UPDATE member SET chapter_declared = ?1, chapter_source = ?2
                       WHERE ordinal = ?3
                         AND edition_id = (SELECT id FROM edition
-                                           WHERE work_id = ?4 AND key = ?5)",
+                                           WHERE work_id = ?4 AND key = ?5)
+                        AND (chapter_source IS NULL OR chapter_source = ?2)",
                     rusqlite::params![chapter, SCANNER_CHAPTER_SOURCE, ordinal, work_id, key],
                 )
                 .map_err(|e| {

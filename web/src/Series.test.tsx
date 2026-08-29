@@ -21,6 +21,7 @@ const edition = (
   label: 'Manga (RAW)',
   members: 1,
   pages: 180,
+  missing: 0,
   ...over,
 })
 
@@ -270,6 +271,126 @@ describe('Series, grid layout', () => {
   })
 })
 
+/**
+ * I1 of the whole-branch review: O62's guard (`unreadable`, spec C1 §8) was
+ * applied only inside `Table`, and `browseModule.ts` makes `layout: 'grid'`
+ * the **default** — every fixture above this block passes `layout: 'table'`
+ * to exercise the guarded path, and `settle()`/`settleWith({})` below pass
+ * nothing, exactly the "one click from the shipped defaults" the finding
+ * itself describes. Before this fix, a reader met an unguarded
+ * `<Link to={/read/${w.slug}}>` and an unguarded per-edition download here.
+ */
+describe('Series, grid layout — the reader link and download withheld', () => {
+  it('withholds the reader link for a volume whose every edition has lost its files', async () => {
+    vi.mocked(library.oneSeries).mockResolvedValue({
+      series: card(),
+      works: [
+        work({
+          editions: [
+            edition({ key: 'raw', missing: 3 }),
+            edition({ key: 'en', missing: 1 }),
+          ],
+        }),
+      ],
+    })
+    const host = await settle()
+    expect(host.querySelector('.volumes a[href^="/read/"]')).toBeNull()
+    // Still named, and still says why — same rule `Table` already follows.
+    expect(host.querySelector('.volumes .title')?.textContent).toBe(
+      'Go-Toubun no Hanayome v01',
+    )
+    expect(host.querySelector('.volumes .unreadable')?.textContent).toBeTruthy()
+  })
+
+  it('keeps the reader link when only one edition of a volume has lost its files', async () => {
+    vi.mocked(library.oneSeries).mockResolvedValue({
+      series: card(),
+      works: [
+        work({
+          editions: [
+            edition({ key: 'raw', missing: 3 }),
+            edition({ key: 'en', missing: 0 }),
+          ],
+        }),
+      ],
+    })
+    const host = await settle()
+    expect(
+      host.querySelector('.volumes a[href="/read/gotoubun-v01"]'),
+    ).not.toBeNull()
+    expect(host.querySelector('.volumes .unreadable')).toBeNull()
+  })
+
+  it('withholds the per-tile download for the edition it would show, when that edition has lost its files, even though the volume itself stays readable', async () => {
+    vi.mocked(library.oneSeries).mockResolvedValue({
+      series: card(),
+      works: [
+        work({
+          editions: [
+            // `chosen === 'all'` shows `editions[0]` — the broken one —
+            // while `en` keeps the volume itself readable. Downloading
+            // files that are not on disk is not an offer this screen
+            // should make, independent of whether the volume opens.
+            edition({ key: 'raw', missing: 2 }),
+            edition({ key: 'en', missing: 0 }),
+          ],
+        }),
+      ],
+    })
+    const host = await settleWith({}, who())
+    expect(
+      host.querySelector('.volumes a[href="/read/gotoubun-v01"]'),
+    ).not.toBeNull()
+    expect(host.querySelector('.volumes a.get')).toBeNull()
+  })
+})
+
+describe('Series, the work-level editor', () => {
+  /**
+   * C3 §5: "contextual, from the thing being corrected" — a volume's detail
+   * panel edits work-level fields, and there is no separate metadata screen
+   * to navigate to. So the editor belongs where the panel already opens, and
+   * nowhere else.
+   */
+  it('offers the editor inside an open panel, for an administrator', async () => {
+    // Opening the panel fetches the work's detail; without this the mock
+    // answers `undefined` and `reveal`'s `.then` throws an uncaught
+    // TypeError. Vitest still reports the test itself as passing and fails
+    // the run — which is how this shipped green on a focused run.
+    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+    const host = await settleWith({ panel: 'button' }, who({ admin: true }))
+    expect(host.querySelector('.metadata-editor')).toBeNull()
+    const open = host.querySelector<HTMLButtonElement>('.panel-open')
+    await act(async () => {
+      open?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.metadata-editor')).not.toBeNull()
+    expect(
+      host.querySelector<HTMLInputElement>(
+        '.metadata-editor input[name="title"]',
+      )?.value,
+    ).toBe('Go-Toubun no Hanayome v01')
+  })
+
+  it('offers it to nobody else, because every PATCH route is admin-only', async () => {
+    // A control that answers 403 is worse than no control: it invites the
+    // correction and then refuses it. The routes are admin-gated in
+    // `routes.rs`, so the affordance has to be too.
+    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+    const host = await settleWith({ panel: 'button' }, who({ admin: false }))
+    const open = host.querySelector<HTMLButtonElement>('.panel-open')
+    await act(async () => {
+      open?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.alignment-panel')).not.toBeNull()
+    expect(host.querySelector('.metadata-editor')).toBeNull()
+  })
+})
+
 describe('Series, table layout', () => {
   beforeEach(() => {
     vi.mocked(library.oneSeries).mockResolvedValue({
@@ -393,6 +514,74 @@ describe('Series, table layout', () => {
     const host = await settleWith({ layout: 'table' })
     expect(host.querySelector('.edition-selector')).toBeNull()
     expect(host.querySelector('.panel-open')).toBeNull()
+  })
+
+  /**
+   * O62, and spec C1 §8's last empty state: a work whose members are gone
+   * from disk must be *shown as unreadable rather than offered and then
+   * failing at the first page*. The treatment that closes the trap is
+   * withholding the link — a badge beside a live link still sends a reader
+   * into a page that cannot load.
+   */
+  it('does not offer a download for an edition whose files have left the disk', async () => {
+    vi.mocked(library.oneSeries).mockResolvedValue({
+      series: card(),
+      works: [
+        work({
+          editions: [
+            edition({
+              key: 'raw',
+              label: 'Manga (RAW)',
+              pages: 180,
+              missing: 2,
+            }),
+            edition({ key: 'en', label: 'Manga', pages: 178 }),
+          ],
+        }),
+      ],
+    })
+    const host = await settleWith({ layout: 'table' }, who())
+    const cells = [
+      ...(host
+        .querySelectorAll('.editions tbody tr')[0]
+        ?.querySelectorAll('td') ?? []),
+    ]
+    const gone = cells[1]
+    const held = cells[2]
+    expect(gone?.getAttribute('data-unreadable')).toBe('true')
+    expect(gone?.querySelector('a')).toBeNull()
+    expect(gone?.getAttribute('aria-label')).toContain('2')
+    // The intact edition beside it is untouched, so this is the missing
+    // count doing the work rather than the whole row being suppressed.
+    expect(held?.getAttribute('data-unreadable')).toBeNull()
+    expect(held?.querySelector('a')).not.toBeNull()
+  })
+
+  it('does not link a volume into the reader when every edition it holds is gone', async () => {
+    vi.mocked(library.oneSeries).mockResolvedValue({
+      series: card(),
+      works: [
+        work({
+          editions: [
+            edition({
+              key: 'raw',
+              label: 'Manga (RAW)',
+              pages: 180,
+              missing: 1,
+            }),
+            edition({ key: 'en', label: 'Manga', pages: 178, missing: 3 }),
+          ],
+        }),
+      ],
+    })
+    const host = await settleWith({ layout: 'table' }, who())
+    const first = host.querySelectorAll('.editions tbody tr')[0]
+    expect(first?.querySelector('a[href^="/read/"]')).toBeNull()
+    // Still named, and still says why — withholding the link must not
+    // withhold the volume itself, which would read as a library that has
+    // lost the work rather than one that cannot open it.
+    expect(first?.textContent).toContain('Go-Toubun no Hanayome v01')
+    expect(first?.querySelector('.unreadable')?.textContent).toBeTruthy()
   })
 
   it('makes each held edition’s page count a download link', async () => {

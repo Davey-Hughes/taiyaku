@@ -14118,3 +14118,46 @@ Hardlinks throughout, and `find corpus -newermt '2026-08-27T16:07:40Z'`
 printed nothing once the whole run — plant, fold, assert, restart, clean up —
 was done. The scratch tree and database were removed with
 `rm -rf "${W:?}"`, `W=target/o73`, the colon form rather than a bare `"$W"`.
+
+## Spec C3 PR 2: metadata editing, its on-disk home, and O62 (2026-08-28)
+
+### O62's query plan, re-measured after migration 010
+
+`docs/status.md`'s O62 row rests on one line of a query plan, and that plan was
+measured on 2026-08-26 against a database built from `schema/001`–`008`. This
+branch adds **migration 010**, which puts two columns on `work` and two on
+`edition` — so the measurement was retaken rather than assumed to survive, by
+the task's implementer and independently by its reviewer, against a database
+built by applying all ten migrations to an empty file.
+
+Unrestricted — the form the design argument quotes:
+
+```
+QUERY PLAN
+|--SCAN m
+|--SEARCH r USING INTEGER PRIMARY KEY (rowid=?)
+`--SEARCH se USING COVERING INDEX sqlite_autoindex_scan_entry_1
+                                  (root_id=? AND rel_path=?) LEFT-JOIN
+```
+
+Unchanged. One pass over `member`, which is unavoidable because the question is
+asked about every member, and a covering-index probe per row. **The design
+claim survives the migration.**
+
+**The roots-restricted form was measured too, and neither report had covered
+it** — which matters, because that is the form the shipped code runs: Task 7b
+gave `missing_members` the caller's grant, so `AND m.root_id IN (?,?)` is
+appended in every restricted call. The `se` covering-index line is identical.
+What moves is `m`'s own access path: `sqlite_autoindex_member_1 (edition_id=?)`
+becomes `member_by_root (root_id=?)`, and `r` is scanned first by rowid. No
+correctness consequence, and no cost claim in `status.md` depends on it — but a
+plan nobody had looked at is now on the record rather than assumed to match the
+one that was.
+
+### What the branch's own numbers are
+
+`env -u TAIYAKU_CORPUS scripts/check-all.sh` at `d0050a7`: 1705 Rust tests
+(1671 at the branch point), and 1,694 in `web/` — 1,080 `node`, 614 `jsdom` —
+against 1,669 before. Both figures are the ones `docs/status.md` now states,
+and `scripts/status-test-count.mjs` checks the Rust one against the JUnit report
+at both of its two sites.

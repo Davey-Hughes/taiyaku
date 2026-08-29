@@ -20,6 +20,7 @@ pub mod export;
 // those name it in plain backticks now. Narrowing the door is a mitigation
 // rather than a guarantee, so `absorb` guards its own invariants regardless.
 mod fold;
+pub mod hand;
 pub mod identity;
 pub mod import;
 pub mod librarydoc;

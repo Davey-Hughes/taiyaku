@@ -49,6 +49,7 @@ fn work_json(w: &browse::WorkCard) -> serde_json::Value {
             "label": e.label,
             "members": e.members,
             "pages": e.pages,
+            "missing": e.missing,
         })).collect::<Vec<_>>(),
     })
 }

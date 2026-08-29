@@ -713,9 +713,18 @@ fn search_does_not_lose_a_visible_hit_to_the_cap() {
 /// 2026-08-20: the route test in `taiyaku-serve` exercised it, but nothing in
 /// this crate did, and the sweep runs a crate's own tests against its own
 /// mutations.
+///
+/// **O62, folded into this test rather than a parallel one**: this is the
+/// series page's own shape, and `missing` is a field on the same
+/// `EditionCard` `works[0].editions` already carries — a second test would
+/// duplicate this whole fixture to assert one more field on it. The `en`
+/// edition's `scan_entry` is deleted here to stand in for
+/// `scan::forget_unseen` finding the file gone on a real rescan, without
+/// running a second scan just to remove one row; `member` survives exactly as
+/// `forget_unseen` leaves it.
 #[test]
 fn one_series_returns_the_series_and_its_works() {
-    let (library, _, _, _en, _raw) = two_root_library();
+    let (library, en_id, _raw_id, _en, _raw) = two_root_library();
     let conn = library.conn();
     let series_id: i64 = conn
         .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
@@ -727,6 +736,33 @@ fn one_series_returns_the_series_and_its_works() {
     assert_eq!(card.id, series_id);
     assert_eq!(works.len(), 1, "its one volume");
     assert_eq!(works[0].editions.len(), 2, "both editions");
+    assert!(
+        works[0].editions.iter().all(|e| e.missing == 0),
+        "nothing has left disk yet"
+    );
+
+    conn.execute("DELETE FROM scan_entry WHERE root_id = ?1", [en_id])
+        .expect("simulates forget_unseen dropping the en root's scan_entry");
+
+    let (_card, works) = one_series(&conn, &[], 1, series_id)
+        .expect("reads")
+        .expect("still visible — the member row, and so the work, survives");
+    let en = works[0]
+        .editions
+        .iter()
+        .find(|e| e.key == "en")
+        .expect("the en edition");
+    let raw = works[0]
+        .editions
+        .iter()
+        .find(|e| e.key == "raw")
+        .expect("the raw edition");
+    assert_eq!(
+        en.missing, 1,
+        "its one member's scan_entry is gone, while the member row survives"
+    );
+    assert_eq!(en.members, 1, "the member row itself is untouched");
+    assert_eq!(raw.missing, 0, "the raw edition's file is still on disk");
 
     assert!(
         one_series(&conn, &[], 1, 9999).expect("reads").is_none(),
@@ -1578,5 +1614,88 @@ fn search_spans_the_whole_grant_rather_than_one_root() {
     assert_eq!(
         card.editions, 2,
         "and it carries both editions — search narrows to no single root"
+    );
+}
+
+/// O62. `scan::forget_unseen` deletes a `scan_entry` row for a file it no
+/// longer meets while the `member` row survives, so the difference between
+/// the two tables is the whole fact — no new column, no new state machine.
+///
+/// **Discriminates rather than degenerates.** `here.cbz` keeps its
+/// `scan_entry` and must NOT be counted; `gone.cbz` has none and must be. A
+/// query that counted every member (2), counted none (0), or whose
+/// `ltrim`/`substr` arithmetic failed to match `here.cbz` back to its
+/// `scan_entry` at all (which would also misfire as `here.cbz` being
+/// "missing", making the total 2) all disagree with the answer this asserts.
+///
+/// `scan_entry`'s `kind`, `size` and `mtime` are `NOT NULL` with no default —
+/// the measured plan's brief named only `root_id`/`rel_path`.
+#[test]
+fn an_edition_whose_file_has_left_the_disk_reports_it_missing() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    conn.execute_batch(
+        "INSERT INTO root (id, path) VALUES (1, '/library');
+         INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (1, 'k', 'w', 'W', 'rtl', 'en');
+         INSERT INTO edition (id, work_id, key, label) VALUES (1, 1, 'en', 'en');
+         INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, root_id)
+         VALUES (1, 1, 0, '/library/here.cbz', 'a', 10, 1),
+                (2, 1, 1, '/library/gone.cbz', 'b', 10, 1);
+         INSERT INTO scan_entry (root_id, rel_path, kind, size, mtime)
+         VALUES (1, 'here.cbz', 'file', 100, 0);",
+    )
+    .expect("seeding");
+
+    let missing = super::missing_members(&conn, &[], 1).expect("counting");
+
+    assert_eq!(
+        missing, 1,
+        "the scanner deletes `scan_entry` rows for files it no longer meets \
+         while `member` rows survive — that difference is the whole fact"
+    );
+}
+
+/// **O73/Task 7b: `missing_members` must take the caller's grant.** It was
+/// the only function in this module that did not, and `member_clause`'s own
+/// doc records that a merged edition — two roots with no `edition_key`,
+/// reachable in the default configuration rather than in a corner — is
+/// exactly the shape that leaked once already.
+///
+/// `merged_edition_library` gives one edition two members, one under each
+/// root. Both are made to look gone from disk the way
+/// `one_series_returns_the_series_and_its_works` simulates
+/// `scan::forget_unseen`: delete the `scan_entry` row, leave `member` alone.
+///
+/// **A grant test, not a count test.** A caller granted only root `a` must be
+/// told about **one** missing file — its own — never root `b`'s, which it
+/// cannot see at all. An empty grant is unrestricted (§5.1) and must still
+/// see both: `member_clause` returns an empty string for that case, so the
+/// query is unchanged, and asserting only the restricted half would not
+/// notice that path breaking.
+#[test]
+fn a_restricted_grant_counts_only_the_missing_members_it_may_see() {
+    let (library, a_id, b_id, _a, _b) = merged_edition_library();
+    let conn = library.conn();
+    let edition_id: i64 = conn
+        .query_row("SELECT id FROM edition LIMIT 1", [], |row| row.get(0))
+        .expect("the merged edition");
+
+    conn.execute("DELETE FROM scan_entry WHERE root_id = ?1", [a_id])
+        .expect("simulates forget_unseen dropping root a's file");
+    conn.execute("DELETE FROM scan_entry WHERE root_id = ?1", [b_id])
+        .expect("simulates forget_unseen dropping root b's file");
+
+    let unrestricted = missing_members(&conn, &[], edition_id).expect("counts");
+    assert_eq!(
+        unrestricted, 2,
+        "an empty grant is unrestricted and still sees both roots' missing members"
+    );
+
+    let restricted = missing_members(&conn, &[a_id], edition_id).expect("counts");
+    assert_eq!(
+        restricted, 1,
+        "a grant naming only root a is told about its one missing member, \
+         not root b's, which it cannot see at all"
     );
 }

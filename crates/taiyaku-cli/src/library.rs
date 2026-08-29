@@ -407,15 +407,16 @@ fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
 /// other. `unattached_chapter_dirs` and `unreadable` print only when
 /// non-zero, and so do `suppressed`, `rekeyed`, `kept_editions`, `merged`,
 /// `unrecognised_kinds`, `emptied_works` (with the counts of what its fold
-/// wrote, what stopped existing, and what it discarded), `unfolded_works` and
-/// `series_holding_no_work`:
+/// wrote, what stopped existing, and what it discarded), `unfolded_works`,
+/// `unreadable_hand` and `series_holding_no_work`:
 /// [`taiyaku_library::derive::DeriveReport`]'s own doc comment is explicit
 /// that each exists because a silent drop, a silent re-key, a silently
-/// orphaned edition, a silent merge or a silently refused edition kind is
-/// indistinguishable from an empty library, from growth, from a clean derive,
-/// from a work that genuinely holds one volume, or from a rule that never
-/// named a kind — a counter that never reaches this line is the failure
-/// they were added to prevent.
+/// orphaned edition, a silent merge, a silently refused edition kind or a
+/// hand document derivation could not read is indistinguishable from an empty
+/// library, from growth, from a clean derive, from a work that genuinely
+/// holds one volume, from a rule that never named a kind, or from a
+/// correction that was never written — a counter that never reaches this
+/// line is the failure they were added to prevent.
 ///
 /// **`emptied_works` is the sharpest of them**, being the only outcome in the
 /// project that deletes a `work` row: what moved with it, how many reading
@@ -506,6 +507,14 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
             ", {} superseded work(s) left standing: {}",
             report.unfolded_works,
             report.unfoldable.join("; ")
+        );
+    }
+    if !report.unreadable_hand.is_empty() {
+        let _ = write!(
+            line,
+            ", {} hand document(s) unreadable: {}",
+            report.unreadable_hand.len(),
+            report.unreadable_hand.join("; ")
         );
     }
     if report.series_holding_no_work > 0 {

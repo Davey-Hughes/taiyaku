@@ -1,6 +1,6 @@
 import { Link } from 'react-router'
 import { Cover } from './Cover'
-import type { SeriesCard, WorkCard } from './library'
+import { type SeriesCard, unreadable, type WorkCard } from './library'
 
 /**
  * The library's tiles: series, then the works that belong to none.
@@ -33,11 +33,25 @@ export function SeriesGrid({
       ))}
       {unfiled.map((w) => (
         <li key={w.slug}>
-          {/* An unfiled work has no series page — §5.4 — so it links
-              straight into the reader. */}
-          <Link to={`/read/${w.slug}`}>
-            <span className="title">{w.title}</span>
-          </Link>
+          {unreadable(w) ? (
+            // **O62 — the link is the treatment, not a badge.** I1 of the
+            // whole-branch review: this component draws `/`'s and
+            // `/search`'s unfiled works, and the reader link carried none
+            // of the guard `Series.tsx`'s `Table` already had. The volume
+            // keeps its name, same as there.
+            <span className="tile-unreadable">
+              <span className="title">{w.title}</span>{' '}
+              <span className="unreadable">
+                files missing — cannot be opened
+              </span>
+            </span>
+          ) : (
+            // An unfiled work has no series page — §5.4 — so it links
+            // straight into the reader.
+            <Link to={`/read/${w.slug}`}>
+              <span className="title">{w.title}</span>
+            </Link>
+          )}
         </li>
       ))}
     </ul>

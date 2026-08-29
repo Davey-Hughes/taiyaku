@@ -551,8 +551,16 @@ fn update_work(
     // and must leave a path an earlier `align --write` established. The reverse
     // — a real path replacing NULL — is the ordinary assignment and still
     // happens, since COALESCE takes the non-NULL argument.
+    //
+    // **`title` is written the same two-column way `librarydoc::apply` writes
+    // it.** The sidecar's own title is a derived value — this is a routine
+    // reimport, which happens on every `serve` start — so it is recorded into
+    // `title_derived` and the effective `title` falls back to it only when no
+    // person has set `title_hand`. Writing `title = ?2` unconditionally, as
+    // this used to, overwrote a hand correction on every reimport: Step 6c.
     conn.execute(
-        "UPDATE work SET content_key = ?1, title = ?2, reading = ?3, hub = ?4,
+        "UPDATE work SET content_key = ?1, title_derived = ?2,
+                title = COALESCE(title_hand, ?2), reading = ?3, hub = ?4,
                 sidecar_path = COALESCE(?5, sidecar_path)
          WHERE id = ?6",
         rusqlite::params![
@@ -576,8 +584,8 @@ fn insert_work(
 ) -> Result<i64, String> {
     let slug = unique_slug(conn, &doc.work.title)?;
     conn.execute(
-        "INSERT INTO work (content_key, slug, title, reading, hub, sidecar_path)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO work (content_key, slug, title, title_derived, reading, hub, sidecar_path)
+         VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6)",
         rusqlite::params![
             key,
             slug,
@@ -664,26 +672,44 @@ fn slugify(title: &str) -> String {
 /// person" of all four at once, and no one of those three is true of all
 /// four. Written out instead:
 ///
-/// - `edition.label` — this function alone, out of the document it is handed.
-///   That is the document's own value under [`Scope::Document`], which is
-///   where a `taiyaku.json` reaches it, and the *held* value under
-///   [`Scope::Scan`], which is the restore below. `derive::write_work` puts
+/// - `edition.label` — this function, out of the document it is handed, **and
+///   `librarydoc::apply_editions`**, which is the hand edit itself. This
+///   function's value is the document's own under [`Scope::Document`], which
+///   is where a `taiyaku.json` reaches it, and the *held* value under
+///   [`Scope::Scan`], which is the restore below — `derive::write_work` puts
 ///   `key.clone()` in the document a scan builds, and the restore is what
-///   keeps that from landing over a person's `Japanese raw`.
-/// - `edition.language`/`kind` — `librarydoc::apply`, and
-///   `derive::write_edition_metadata`, under the per-work guard that paragraph
-///   describes. **Nothing writes either from a `taiyaku.json`**: `project.rs`
+///   keeps that from landing over a person's `Japanese raw`. `apply_editions`
+///   writes it twice over: the blanket clear restores `label` from
+///   `label_derived` for an edition the document drops entirely, and the
+///   per-key update sets `label_hand = ?1, label = COALESCE(?1, label_derived)`
+///   for one it names.
+/// - `edition.language`/`kind` — `librarydoc::apply`, `derive::write_edition_metadata`
+///   under the per-work guard that paragraph describes, **and this function's
+///   own restore below**: the blanket delete-and-reinsert below would silently
+///   drop them from a row that survives a rescan, exactly as it would drop a
+///   credit, so they are read before the delete and copied onto the fresh row
+///   the same way. **Nothing writes either from a `taiyaku.json`**: `project.rs`
 ///   touches neither column, so the wide sentence named a writer that has
 ///   never existed, and `write_edition_metadata`'s own doc states the narrow
 ///   claim — the two files disagreed until this was corrected.
 /// - `credit` rows — `librarydoc::apply`, which deletes and reinserts them
 ///   per work, and this function's own restore below.
-/// - `member.chapter_declared`/`chapter_source` — `librarydoc::apply`, and
+/// - `member.chapter_declared`/`chapter_source` — `librarydoc::apply`,
 ///   `derive::write_chapters`, which clears only rows carrying
-///   `SCANNER_CHAPTER_SOURCE` so a hand-entered number survives.
+///   `SCANNER_CHAPTER_SOURCE` so a hand-entered number survives, **and this
+///   function's own restore below**, for the identical reason the two columns
+///   above need one: the member row is deleted and reinserted along with its
+///   edition, so a hand-set chapter that survived every rescan until now would
+///   not survive this one without it.
 ///
-/// `librarydoc::apply` is the only writer common to three of the four, and it
-/// does not write `edition.label` at all.
+/// **This function is itself a writer common to all four, alongside
+/// `librarydoc::apply`** — not the one exception the wholesale-replace design
+/// might suggest. `edition.label` is the one column it *originates* a value
+/// for (the document's own, under `Scope::Document`); the other three it only
+/// *restores* — copies the held value across its own delete-and-reinsert
+/// unchanged — but a restore still writes the column, and skipping it would
+/// silently lose a hand correction on the next routine rescan, which is
+/// exactly the failure this whole doc comment exists to rule out.
 ///
 /// **`edition.language`/`kind` have a second writer, and this restore is what
 /// hands the row over to it rather than being made redundant by it.**
@@ -774,29 +800,41 @@ fn replace_editions(
     }
 
     for (key, edition) in &doc.editions {
-        // **The label is not a scan's to write.** `derive::write_work` sets
-        // `label: key.clone()` because neither a root nor a rule carries a
-        // display name for an edition — there is no `set_label` column — so
-        // an import that took the incoming label at face value renamed a
-        // person's `Japanese raw` to `raw` on the next routine rescan.
-        // Measured through `import` + `scan` + `export --in-place`, over the
-        // reader's own document (whole-branch review, C2). Under
-        // `Scope::Document` the label *is* the document's, exactly as
-        // `work.title` is.
-        let label = match scope {
-            Scope::Scan => held_editions
-                .get(key)
-                .map_or(&edition.label, |held| &held.label),
-            Scope::Document => &edition.label,
+        // **The label is not a scan's to write, and neither is its
+        // provenance.** `derive::write_work` sets `label: key.clone()`
+        // because neither a root nor a rule carries a display name for an
+        // edition — there is no `set_label` column — so an import that took
+        // the incoming label at face value renamed a person's
+        // `Japanese raw` to `raw` on the next routine rescan. Measured
+        // through `import` + `scan` + `export --in-place`, over the reader's
+        // own document (whole-branch review, C2). Under `Scope::Document` the
+        // label *is* the document's, exactly as `work.title` is — so it is
+        // also that scope's `label_derived`. Under `Scope::Scan` a walk has
+        // no display name at all, so `label_derived` carries across the
+        // rescan unchanged from whatever it already was, and only
+        // `label_hand` — carried the same way — stands between a hand
+        // correction and this wholesale replace. Step 6c: a fresh
+        // `label_derived` had no `label_hand` counterpart at all here before,
+        // so a rescan bound the held effective value to both columns and
+        // wiped provenance in the process.
+        let held = held_editions.get(key);
+        let label_hand = held.and_then(|h| h.label_hand.clone());
+        let label_derived = match scope {
+            Scope::Document => edition.label.clone(),
+            Scope::Scan => held
+                .and_then(|h| h.label_derived.clone())
+                .unwrap_or_else(|| edition.label.clone()),
         };
+        let label = label_hand.clone().unwrap_or_else(|| label_derived.clone());
         conn.execute(
-            "INSERT INTO edition (work_id, key, label) VALUES (?1, ?2, ?3)",
-            rusqlite::params![work_id, key, label],
+            "INSERT INTO edition (work_id, key, label, label_hand, label_derived)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![work_id, key, label, label_hand, label_derived],
         )
         .map_err(|e| format!("inserting edition `{key}`: {e}"))?;
         let edition_id = conn.last_insert_rowid();
 
-        if let Some(held) = held_editions.get(key) {
+        if let Some(held) = held {
             conn.execute(
                 "UPDATE edition SET language = ?1, kind = ?2 WHERE id = ?3",
                 rusqlite::params![held.language, held.kind, edition_id],
@@ -933,10 +971,17 @@ fn held_page_flags(
 /// function only ever copies it back onto a fresh `credit` row, never reads
 /// it as anything else.
 struct HeldEdition {
-    /// The display name. Hand-entered in the only sense that matters here: it
-    /// arrives from a `taiyaku.json`, and a scan's document repeats the key
-    /// because a walk has no other name to give. See [`replace_editions`].
-    label: String,
+    /// What a person said, or `None` — `edition.label_hand`. Carried through
+    /// this struct rather than only the effective column: see
+    /// [`replace_editions`]'s Step 6c comment for why the effective value
+    /// alone is not enough for a wholesale delete-and-reinsert to restore the
+    /// invariant it must hold.
+    label_hand: Option<String>,
+    /// What derivation or the document said — `edition.label_derived`. A
+    /// scan's document repeats the key because a walk has no other name to
+    /// give, which is why a scan carries this forward unchanged rather than
+    /// minting it fresh from the incoming document. See [`replace_editions`].
+    label_derived: Option<String>,
     language: Option<String>,
     kind: Option<String>,
     /// `(person_id, role)` pairs — enough to reinsert each `credit` row
@@ -947,21 +992,33 @@ struct HeldEdition {
 /// Every edition's hand-entered metadata currently on `work_id`, keyed by
 /// `edition.key` — the identity `replace_editions` restores by, since the
 /// row ids are gone once its delete runs.
+///
+/// **Both provenance columns, not the effective `label`.** Before Step 6c
+/// this selected `label` alone, and `replace_editions` reinserted that one
+/// value into both `label` and `label_derived` — so a routine rescan wiped
+/// `label_hand` to NULL *and* rebound `label_derived` to whatever `label`
+/// currently held, which under `Scope::Scan` is the held, possibly hand-set,
+/// value: the safety net overwritten with the value it exists to fall back
+/// from.
 fn held_edition_meta(
     conn: &Connection,
     work_id: i64,
 ) -> Result<HashMap<String, HeldEdition>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, key, label, language, kind FROM edition WHERE work_id = ?1")
+        .prepare(
+            "SELECT id, key, label_hand, label_derived, language, kind
+             FROM edition WHERE work_id = ?1",
+        )
         .map_err(|e| format!("preparing held edition metadata: {e}"))?;
     let rows = stmt
         .query_map([work_id], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })
         .map_err(|e| format!("querying held edition metadata: {e}"))?
@@ -969,12 +1026,13 @@ fn held_edition_meta(
         .map_err(|e| format!("reading held edition metadata: {e}"))?;
 
     let mut out = HashMap::new();
-    for (edition_id, key, label, language, kind) in rows {
+    for (edition_id, key, label_hand, label_derived, language, kind) in rows {
         let credits = held_credits(conn, edition_id)?;
         out.insert(
             key,
             HeldEdition {
-                label,
+                label_hand,
+                label_derived,
                 language,
                 kind,
                 credits,

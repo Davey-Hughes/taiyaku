@@ -112,6 +112,9 @@ pub struct EditionCard {
     pub label: String,
     pub members: i64,
     pub pages: i64,
+    /// How many of `members` no longer exist on disk — spec C1 §8's empty
+    /// state. See [`missing_members`].
+    pub missing: usize,
 }
 
 /// One work, with only the editions this caller may see.
@@ -424,7 +427,7 @@ fn editions_of(conn: &Connection, roots: &[i64], work_id: i64) -> Result<Vec<Edi
     // Placeholders bind in text order, all anonymous: the join's roots, then
     // the EXISTS clause's roots, then `work_id`. See the module header.
     let sql = format!(
-        "SELECT e.key, e.label, COUNT(m.id), COALESCE(SUM(m.pages), 0)
+        "SELECT e.id, e.key, e.label, COUNT(m.id), COALESCE(SUM(m.pages), 0)
            FROM edition e
            LEFT JOIN member m ON m.edition_id = e.id{joined}
           WHERE 1 = 1{clause} AND e.work_id = ?
@@ -441,16 +444,85 @@ fn editions_of(conn: &Connection, roots: &[i64], work_id: i64) -> Result<Vec<Edi
         .map_err(|e| format!("preparing the edition listing: {e}"))?;
     let rows = stmt
         .query_map(params.as_slice(), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                EditionCard {
+                    key: row.get(1)?,
+                    label: row.get(2)?,
+                    members: row.get(3)?,
+                    pages: row.get(4)?,
+                    missing: 0,
+                },
+            ))
+        })
+        .map_err(|e| format!("listing editions of work {work_id}: {e}"))?
+        .collect::<rusqlite::Result<Vec<(i64, EditionCard)>>>()
+        .map_err(|e| format!("reading editions of work {work_id}: {e}"))?;
+
+    rows.into_iter()
+        .map(|(edition_id, card)| {
             Ok(EditionCard {
-                key: row.get(0)?,
-                label: row.get(1)?,
-                members: row.get(2)?,
-                pages: row.get(3)?,
+                missing: missing_members(conn, roots, edition_id)?,
+                ..card
             })
         })
-        .map_err(|e| format!("listing editions of work {work_id}: {e}"))?;
-    rows.collect::<rusqlite::Result<Vec<EditionCard>>>()
-        .map_err(|e| format!("reading editions of work {work_id}: {e}"))
+        .collect()
+}
+
+/// How many of this edition's members no longer exist on disk.
+///
+/// **O62.** The scanner deletes a `scan_entry` for a file it no longer meets
+/// (`scan::forget_unseen`) while the `member` row survives, so the difference
+/// between the two is the fact — no new column is needed, and C1 §5.5's
+/// framing of this as "what the store should record when a file vanishes" is
+/// answered *nothing further*.
+///
+/// **Joined on `(root_id, rel_path)`, `scan_entry`'s own `UNIQUE` index**,
+/// with the computed string on the *probing* side rather than the probed
+/// side — the same shape `proposals::edition_formats` already reads an
+/// edition's formats back out of `scan_entry` with, for a different reason.
+/// `ltrim` rather than `length(r.path) + 2`: a root stored with a trailing
+/// slash makes the fixed-offset arithmetic off by one, and `ltrim` is exact
+/// either way, matching how `derive` builds `member.path` as
+/// `root.path.join(rel_path)`.
+///
+/// A member with no root — an imported work's, by design, or one whose root
+/// was since removed (`ON DELETE SET NULL`) — never matches the `JOIN root`
+/// at all and so is excluded from the count entirely, neither present nor
+/// missing: nothing was ever walked for it, so there is no scan fact to read,
+/// the same reasoning `edition_formats` states for reporting no format.
+///
+/// **Task 7b: takes `roots` like every other function in this module.**
+/// Shipped without it, which is a grant leak `member_clause`'s own doc calls
+/// out as reachable in the default configuration: two roots added the
+/// ordinary way merge into one edition, and a caller granted only one of them
+/// was told a `missing` count covering material under the root they cannot
+/// see — a fact about material the grant hides. [`member_clause`] is the same
+/// clause `editions_of`'s member join already reads for the same reason.
+///
+/// # Errors
+///
+/// Returns an error if SQLite fails.
+pub fn missing_members(conn: &Connection, roots: &[i64], edition_id: i64) -> Result<usize, String> {
+    // Parameter order is text order (the module header, and `alignments_of`'s
+    // doc): `edition_id`'s `?` precedes `{members}`'s anonymous `?`s in the
+    // SQL text, matching the order `params` below pushes them in.
+    let members = member_clause(roots);
+    let sql = format!(
+        "SELECT COUNT(*)
+           FROM member m
+           JOIN root r ON r.id = m.root_id
+           LEFT JOIN scan_entry se
+                  ON se.root_id  = m.root_id
+                 AND se.rel_path = ltrim(substr(m.path, length(r.path) + 1), '/')
+          WHERE m.edition_id = ? AND se.rel_path IS NULL{members}"
+    );
+    let mut params: Vec<i64> = vec![edition_id];
+    params.extend(roots.iter().copied());
+
+    conn.query_row(&sql, params_from_iter(params), |row| row.get::<_, i64>(0))
+        .map(|n| usize::try_from(n).unwrap_or(0))
+        .map_err(|e| format!("counting missing members of edition {edition_id}: {e}"))
 }
 
 /// One work's alignments, with both sides restricted to the caller's roots.
@@ -948,10 +1020,12 @@ pub fn home(conn: &Connection, roots: &[i64], user_id: i64) -> Result<Home, Stri
 /// The work whose hub cover stands for this series.
 ///
 /// **A fallback, not a lookup.** `series.cover_work_id` exists in migration 1
-/// and nothing in this repository writes it — verified 2026-08-20 — so it is
-/// NULL for every series a scan has produced, which is all of them. C1 writes
-/// it at no point; C3's metadata editing is its writer, which is where choosing
-/// a cover belongs.
+/// and nothing in this repository writes it — verified 2026-08-20, and still
+/// true now that spec C3's metadata editing has shipped — so it is NULL for
+/// every series a scan has produced, which is all of them. C1 writes it at no
+/// point, and C3's `PATCH /api/library/series/{id}` has no field for it either
+/// — `SeriesEdit` covers titles, reading, tags and external ids, not a cover
+/// choice. Choosing a cover is still where this belongs; it remains undone.
 ///
 /// The fallback is the lowest-`volume` work this caller may see, `w.id` as the
 /// tiebreak so a series of volume-less works answers the same row every time

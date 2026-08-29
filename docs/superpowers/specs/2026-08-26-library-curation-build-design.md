@@ -50,6 +50,13 @@ carrying only it would be a branch carrying less than its own review costs.
 in C3 and is the least-used screen in it; it gets its own branch, keeping this
 one to a claim that can be stated in a sentence.
 
+> **Widened 2026-08-27, before implementation.** PR 2 also carries **series
+> membership** — §7's correction reverses that deferral — and **§12**, the
+> on-disk home a scanned work's hand metadata has never had. The claim in a
+> sentence is unchanged and now actually reachable: *the library stops
+> asserting things that are not true, and stops forgetting the corrections.*
+> The ComicInfo write-back is still out.
+
 The widening was the scope question, because it is the one part of PR 1 with no
 store layer beneath it. It stays in because §3 calls it *"the moment a person
 can answer 37 questions once instead of 37 times"*, and because §2 turns out to
@@ -243,6 +250,19 @@ routes are what make it reachable. `export::work` already writes
 `<stem>.library.json` through `librarydoc::of`, so C3 §5's *"every edit writes
 the file as well as the database"* reuses a path rather than adding one.
 
+> **Corrected 2026-08-27, before anything was built to it.** That sentence is
+> true of a work with a `sidecar_path` and false of a scanned one, which is
+> the kind this PR exists to fix. `import::scanned` leaves `sidecar_path`
+> NULL **by design** — one `taiyaku.json` per work directory cannot describe
+> fourteen volumes sitting beside each other (`derive.rs:535`) — and
+> `export::work` refuses such a work outright: *"has no sidecar_path on
+> record, so export has nowhere to write its documents; pass --dir to say
+> where"* (`export.rs:458`). Passing `--dir` is not the missing half: it sets
+> `in_place = false`, and the `record_absorbed` call that arms the guard in
+> §7's next correction runs **only** on the in-place path, so a `--dir`
+> export writes the document to a snapshot directory and leaves the edit
+> unprotected. There was no path to reuse. §12 designs the one this PR adds.
+
 **`LibraryDoc` cannot express three of the fields C3 §5 lists as editable.** It
 carries series titles, reading direction, tags and external ids; `volume`;
 per-edition `language`, `kind` and `credits`; and per-member `chapter` and
@@ -270,6 +290,41 @@ harmless only because O44 means nothing calls `apply`; **a PATCH route would
 activate it.** Moving a scanned work between series is a rule operation, which
 is what PR 1's accept path already is. An editor that works on imported works
 and silently reverts on scanned ones is worse than no editor.
+
+> **Corrected 2026-08-27: the premise was already false when this was
+> written, and the scope decision it produced is reversed.** `derive` has not
+> written those columns unconditionally since **#77 (`cec59e2`,
+> 2026-08-18)**, eight days before this document. `derive.rs:1197` guards the
+> `UPDATE work SET series_id = ?1, volume = ?2` — and, under the same `if`,
+> `write_edition_metadata`'s `edition.kind` and `edition.language` — behind
+> `!migrate::absorbed(conn, work_id, LIBRARY)`. That is I7's fix, and
+> `derive.rs`'s own comment states its purpose in these words: *"a hand-set
+> `volume = 4.5` came back as `1.0` after one derive, and a hand-renamed
+> series minted a second row and moved the works to it."*
+>
+> **What arms the guard is the marker, and the marker is set by the document
+> write this PR owes C3 §5 anyway** — `export::work` calls
+> `record_absorbed(conn, work_id, LIBRARY, true)` on every in-place write
+> (`export.rs:348`), and `migrate::migrate_library` calls
+> `record_settled(…, LIBRARY, true)` on `Applied`. So a PATCH route that
+> applies the document and then persists it does not need series membership
+> held back: apply, write, mark, and the next derive leaves the row alone.
+>
+> **The paragraph above is also inconsistent with itself, which is the part
+> that should have caught this.** `volume` is in the *same UPDATE statement*
+> as `series_id`. Every word of the collision argument applies to it
+> identically, yet C3 §5 lists volume as editable and this document does not
+> defer it. One of the two had to be wrong.
+>
+> **So work-level editing ships whole — title, volume and series membership.**
+> The cost is real and is stated rather than discovered later: the guard is
+> **whole-work and covers four columns**, so a hand edit to any one of them
+> freezes `series_id`, `volume`, `edition.kind` and `edition.language` out of
+> derivation for that work permanently. `derive.rs`'s comment already names
+> this as open — *"a provenance column, scoping this to works with no
+> `sidecar_path`, and so on — is still the design question I7 left open, and
+> nothing here answers it."* This PR makes that question **reachable** rather
+> than answering it, and opens an O-number for it.
 
 **How much of a real library that reverting half is has not been measured, and
 the tempting figure is the wrong one.** C3 §1 cites *"about 90% of the library
@@ -435,3 +490,92 @@ C3 §8's list, with the additions this design creates:
   moving 2.4× at a fixed row count with path length alone, which is why two
   records of it on this branch disagreed two-fold until they were reconciled.
 - **How long a ComicInfo stamp takes**, still, and now out of scope entirely.
+
+## 12. Where a scanned work's hand metadata lives on disk
+
+*Added 2026-08-27, when §7's first correction found that the path this document
+said it would reuse does not exist for the works this PR is about.*
+
+C3 §5's *"every edit writes `<stem>.library.json` as well as the database"*
+carries the whole durability claim — the store spec §4.4's *"losing the
+database costs a rescan rather than costing the organizational work, which is
+the part nothing can re-derive."* A scanned work has no `<stem>` and no
+directory of its own, so that sentence has no referent for it. Three quarters
+of the fields this PR makes editable belong to scanned works.
+
+### The address
+
+```
+<root>/.taiyaku/<content_key>.library.json
+```
+
+**A dotted directory, so the scanner never has to be taught to ignore it.**
+`scan.rs:679` skips every entry whose name begins with `.`, and `watch.rs`'s
+own probe file already relies on that — the document is invisible to the fact
+walk and to change detection for free, rather than by an exclusion list that
+can drift.
+
+**Inside a root rather than beside the database or under `$XDG_DATA_HOME`.**
+The claim being kept is that the organisational work survives losing the
+database. A file that lives with the machine rather than with the library does
+not keep it; a file inside the root travels with the library exactly as the
+archives do, which is what makes a rescan able to recover the work.
+
+**Keyed by `content_key`, not by slug and not by path.** §4.1's rule — identity
+is content, path is a hint. `identity::content_key` is a sha256 over the **hub
+edition's** members' `sha256`s in order, and its own doc comment records that
+the hub is fixed when the work is created *specifically* so that adding an
+edition does not change a work's identity. So the address survives every file
+in the work being renamed, the library being remounted at a different
+mountpoint, and editions being added — the three things that actually happen.
+`import::scanned`'s `find_by_key` already probes `content_key` before it falls
+back to an address, so the read-back is an exact lookup with no path arithmetic
+on either side.
+
+**Which root, for a work that spans several.** The root of the hub edition's
+first member — `member.root_id`, migration 6. A `Group` collects entries across
+every root, so root is single-valued only at member level; this is the same
+reasoning `member.root_id`'s own comment gives for existing at all.
+
+### What reads it back
+
+`derive::write_work`, at the point the I7 guard already stands. When
+`migrate::absorbed(work_id, LIBRARY)` is false and a document exists at this
+work's hand path, apply it and record the marker; the guard below then leaves
+the four derived columns alone on this pass and every later one.
+
+**This is the arm O53 says is missing.** That item records that
+`migrate::work`'s `Step::Apply` is unreachable for any work a scan has touched,
+because `librarydoc::of` reads non-empty the moment a work has a derived volume
+or series. This path does not go through `Step::Apply` at all, and O53's own
+entry already predicted this shape: *"The I7 fix works through the marker
+`export::work` sets, a real but different path."*
+
+### Not `export::work`
+
+That function writes five documents, removes the stale ones, takes a `user_id`
+and reasons per-user about whose state it is overwriting. A metadata PATCH
+wants one document written and one marker set. Routing it through `export::work`
+would make a title correction rewrite `taiyaku.json` and **delete**
+`taiyaku.progress.json` and `taiyaku.truth.json` when the database happens to
+hold no position and no truth for that work. A new `hand.rs` owns the address,
+the write and the read-back; `export::work` keeps the sidecar case it already
+handles.
+
+### Three consequences, stated rather than found later
+
+- **This writes into the user's library**, which C3 §6 makes a great deal of
+  being the ComicInfo stamp's exclusive property. The distinction holds and is
+  worth being explicit about: the stamp rewrites *the user's archives* and
+  changes their `sha256`; this adds a taiyaku-owned dotfile and touches nothing
+  that was already there. C3 §9's *"writes only files taiyaku owns"* covers it.
+- **A read-only root cannot take the document.** The edit must not fail for it:
+  the row is written and the marker is recorded either way — so derive still
+  leaves the edit alone — and the response reports that the document could not
+  be persisted. A library on read-only media stays editable, and honestly
+  labelled as not durable.
+- **A hub edition whose own files change strands the document.** Its
+  `content_key` moves and the old document is no longer found. It is not
+  deleted, and an exact key match still finds it if the content comes back.
+  This is narrow — adding editions, renaming files and remounting all leave the
+  key alone — but it is real, and gets an O-number rather than a sentence here.

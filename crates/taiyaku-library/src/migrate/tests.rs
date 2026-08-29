@@ -627,6 +627,7 @@ fn library_metadata_already_held_is_not_overwritten_by_the_file() {
         updated: "2026-08-15T00:00:00Z".to_string(),
         series: librarydoc::SeriesInfo::default(),
         volume: Some(9.0),
+        title: None,
         editions: BTreeMap::new(),
         members: Vec::new(),
         tags: Vec::new(),

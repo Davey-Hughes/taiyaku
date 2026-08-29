@@ -1861,6 +1861,34 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             "/api/library/proposals/{id}/dismiss",
             axum::routing::post(crate::curation::dismiss),
         ),
+        // **Spec C3 §5's metadata-editing routes, closing O44.** Merged onto
+        // the same two paths `library_api::work`/`one_series` already
+        // registered above (a `GET` and a `PATCH` on one path merge into one
+        // `MethodRouter`, they do not conflict — see `axum::Router::route`'s
+        // own doc), which is why `/api/library/works/{slug}` and
+        // `/api/library/series/{id}` appear a second time here rather than
+        // gaining a second row where their `GET` already sits: this is the
+        // curation block's own reasoning restated — a route that write
+        // cannot afford to land in `open_routes`, and its posture belongs
+        // beside the other write routes, not beside the read one sharing its
+        // path. `metadata::tests::every_metadata_route_refuses_a_reader`
+        // drives all four for a 403.
+        (
+            "/api/library/works/{slug}",
+            axum::routing::patch(crate::metadata::patch_work),
+        ),
+        (
+            "/api/library/series/{id}",
+            axum::routing::patch(crate::metadata::patch_series),
+        ),
+        (
+            "/api/library/editions/{id}",
+            axum::routing::patch(crate::metadata::patch_edition),
+        ),
+        (
+            "/api/library/members/{id}",
+            axum::routing::patch(crate::metadata::patch_member),
+        ),
     ]);
     routes.extend(crate::opds::routes());
     routes
@@ -2147,6 +2175,28 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
                           and no grant narrows which ones exist",
             },
         ),
+        // **Spec C3 §5's metadata-editing routes — `Refuses`, not
+        // `GrantIndependent` (I8, whole-branch review).** These four were
+        // first classified `GrantIndependent` on the argument the comment
+        // used to make here: a title, a series' titles, an edition's label
+        // or a member's chapter number is a fact about the library's
+        // organisation, not about what any one account may see — true of
+        // *who may act on the answer* (still admin-only, unconditionally),
+        // false of *which rows an administrator's own restricted grant
+        // resolves through*. `library_api::work`/`one_series` already
+        // resolve their slug/id through `principal.roots`, so a hidden work
+        // was a 404 on `GET` and 200 — with the full re-projected document,
+        // series titles, tags, external ids, credits, chapter numbers
+        // included — on `PATCH` of the identical id. `metadata::work_by_slug`,
+        // `edition_owner`, `member_owner` and `works_in_series` now take
+        // `roots` and answer the same 404 a `GET` already does; membership
+        // in an administrator's *account* (`Role::Admin`) is unconditional
+        // and orthogonal to `Principal.roots`, which is why "admin-only" and
+        // "resolves through the grant" are not in tension.
+        ("/api/library/works/{slug}", Refuses),
+        ("/api/library/series/{id}", Refuses),
+        ("/api/library/editions/{id}", Refuses),
+        ("/api/library/members/{id}", Refuses),
         (
             "/opds/v1.2/catalog",
             GrantIndependent {

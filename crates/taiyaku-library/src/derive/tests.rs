@@ -515,6 +515,84 @@ fn a_hand_set_chapter_number_outlives_a_re_derive_that_no_longer_resolves_one() 
 }
 
 #[test]
+fn a_hand_set_chapter_number_survives_a_re_derive_that_still_resolves_one() {
+    // The clear above is scoped to `chapter_source = 'filename'`, so a hand
+    // value survives it — but the write beneath it carried no predicate at
+    // all, and `builtin-chapter` is a seeded rule, so the very re-derive a
+    // person runs right after correcting a chapter is the one that reverts
+    // it, silently, whenever the filename still parses.
+    let tree = chaptered();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first");
+
+    conn.execute(
+        "UPDATE member SET chapter_declared = 99.0, chapter_source = 'hand' WHERE ordinal = 0",
+        [],
+    )
+    .expect("a person disagrees with the filename");
+
+    derive::derive(&conn).expect("second");
+
+    let chapters: Vec<(Option<f64>, Option<String>)> = conn
+        .prepare("SELECT chapter_declared, chapter_source FROM member ORDER BY ordinal")
+        .expect("prepare")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert_eq!(
+        chapters,
+        vec![
+            (Some(99.0), Some("hand".to_string())),
+            (Some(10.0), Some("filename".to_string())),
+        ],
+        "the hand answer should survive even though the filename still parses"
+    );
+}
+
+#[test]
+fn a_comicinfo_chapter_number_survives_a_re_derive_that_still_resolves_one() {
+    // `comicinfo` survives the clear today, which is scoped by
+    // `chapter_source` exactly as `hand` is — the write beneath it is not
+    // scoped at all, and overwrites it on the next scan of a member whose
+    // filename happens to parse. The same defect as the hand case, and
+    // pre-existing from the scanner branch.
+    let tree = chaptered();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first");
+
+    conn.execute(
+        "UPDATE member SET chapter_declared = 5.0, chapter_source = 'comicinfo' WHERE ordinal = 0",
+        [],
+    )
+    .expect("a comicinfo document disagrees with the filename");
+
+    derive::derive(&conn).expect("second");
+
+    let chapters: Vec<(Option<f64>, Option<String>)> = conn
+        .prepare("SELECT chapter_declared, chapter_source FROM member ORDER BY ordinal")
+        .expect("prepare")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert_eq!(
+        chapters,
+        vec![
+            (Some(5.0), Some("comicinfo".to_string())),
+            (Some(10.0), Some("filename".to_string())),
+        ],
+        "the comicinfo answer should survive even though the filename still parses"
+    );
+}
+
+#[test]
 fn a_derived_series_is_findable_by_title_so_a_document_does_not_mint_a_second_one() {
     // `series.sort_title` is not what anything looks a series up by:
     // `librarydoc::find_series_by_title` reads `series_title`, and
@@ -676,6 +754,410 @@ fn a_hand_set_volume_outlives_a_re_derive_once_a_library_document_is_absorbed() 
         volume_after, 4.5,
         "the hand-set volume must survive a re-derive rather than reverting to what the \
          rules resolve"
+    );
+}
+
+/// O53's arm, and the regression net for the read-back Task 5 wires into
+/// `write_work`. **Through the real `crate::hand::save`**, unlike the test
+/// above, which arms the guard with a direct `migrate::record_absorbed` call:
+/// `save` is what a real hand edit calls, and it both writes
+/// `<content_key>.library.json` beside the root *and* records the marker in
+/// the same operation. So by the time the second `derive` below runs, the
+/// marker this test's own connection already holds is exactly what a real
+/// edit would have left — this does not yet exercise `hand::load` being
+/// consulted by a *fresh* database with no marker of its own (that is
+/// `hand::tests::a_rescan_with_no_database_recovers_the_hand_set_title`,
+/// across two separate connections); it pins that wiring the read-back into
+/// `write_work` did not disturb the guard's existing, already-armed case.
+#[test]
+fn a_hand_document_beside_the_library_survives_the_next_derive() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+
+    let work_id: i64 = conn
+        .query_row(
+            "SELECT w.id FROM work w JOIN series s ON w.series_id = s.id \
+             WHERE s.sort_title = 'Go-Toubun no Hanayome' AND w.volume = 1.0",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the volume 1 work");
+
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.volume = Some(4.5);
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    crate::hand::save(&conn, work_id).expect("saving");
+
+    derive::derive(&conn).expect("second derive");
+
+    let volume: Option<f64> = conn
+        .query_row("SELECT volume FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("reading volume");
+    assert_eq!(
+        volume,
+        Some(4.5),
+        "`derive.rs`'s own comment: a hand-set `volume = 4.5` came back as \
+         `1.0` after one derive before the I7 guard"
+    );
+}
+
+/// The condition the test above cannot reach, because it calls `hand::save`
+/// first — which arms the marker itself, so `!absorbed` is `false` and
+/// `hand::load` is never called. Deleting the whole read-back block in
+/// `write_work` leaves that test green; it pins the #77 guard, not the
+/// read-back Task 5 adds.
+///
+/// **Renamed from `a_derive_applies_a_hand_document_this_database_has_never_
+/// seen`.** That name claimed the case this module's header now calls out as
+/// the actual merge blocker — a work this database has never derived at all,
+/// so its `member.root_id` is still NULL when the read-back's `hand::load`
+/// calls `hand::path_for` — and does not build it: `work_id` and its
+/// `root_id` are minted by the *first* `derive::derive` call above and never
+/// touched again, so by the time `DELETE FROM migrated_document` runs, the
+/// row this test clears the marker on already exists, `root_id` included.
+/// What this test actually pins is a *different*, also-real case: a marker
+/// cleared on a work the database already has, which is what
+/// `migrate::work`'s own migration path can produce. The genuinely fresh
+/// case — a work minted for the first time, in a database that has never
+/// seen this root before — is
+/// [`a_fresh_database_recovers_a_hand_set_title_on_its_first_derive`], across
+/// two separate connections rather than one connection with a table cleared.
+#[test]
+fn a_derive_applies_a_hand_document_whose_marker_was_cleared_on_an_existing_work() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+
+    let work_id: i64 = conn
+        .query_row(
+            "SELECT w.id FROM work w JOIN series s ON w.series_id = s.id \
+             WHERE s.sort_title = 'Go-Toubun no Hanayome' AND w.volume = 1.0",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the volume 1 work");
+
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.volume = Some(4.5);
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    crate::hand::save(&conn, work_id).expect("saving");
+
+    // What a rebuilt database looks like: the file is still there, but this
+    // database has no memory of ever having read it, and the row it left
+    // behind is back to what the rules alone would derive.
+    conn.execute("DELETE FROM migrated_document", [])
+        .expect("clearing the markers");
+    conn.execute("UPDATE work SET volume = 1.0 WHERE id = ?1", [work_id])
+        .expect("returning the row to its derived state");
+
+    derive::derive(&conn).expect("second derive");
+
+    let volume: Option<f64> = conn
+        .query_row("SELECT volume FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("reading volume");
+    assert_eq!(
+        volume,
+        Some(4.5),
+        "a hand document this database has never seen must be applied by the \
+         read-back; without it the guard is open and derivation writes over a \
+         correction sitting beside the archives"
+    );
+}
+
+/// **The merge blocker, reproduced.** Losing the database was supposed to
+/// cost one rescan (store spec §4.4) and, as shipped, costs two: a work
+/// scanned for the first time by a brand-new database has `member.root_id`
+/// still NULL at the moment `write_work`'s read-back consults
+/// `hand::load` — `import::scanned` has just minted the row and nothing has
+/// written a root onto its members yet — so `hand::path_for`'s
+/// `JOIN root ON root.id = member.root_id` matches nothing, `path_for`
+/// answers `None`, `hand::load` answers `Ok(None)`, and the correction
+/// sitting right beside the archives is silently skipped. A *second* derive
+/// against the same, now-populated database recovers it, which is exactly
+/// the extra rescan this test exists to refuse.
+///
+/// **Two separate connections, not one connection with a table cleared.**
+/// [`a_derive_applies_a_hand_document_whose_marker_was_cleared_on_an_existing_work`]
+/// clears `migrated_document` on a connection that has already derived this
+/// work once, so `work_id` and its `root_id` already exist by the time the
+/// second `derive::derive` runs — the case `migrate::work`'s own migration
+/// path produces. Here the second database has never seen this root at all:
+/// `work_id` does not exist yet when its own `derive::derive` starts, so its
+/// `member.root_id` genuinely starts NULL, which is the only way to meet the
+/// guard the way a rebuilt database actually meets it.
+#[test]
+fn a_fresh_database_recovers_a_hand_set_title_on_its_first_derive() {
+    let tree = fixture();
+
+    // First database: scan, derive, and correct the volume 1 work's title by
+    // hand — `PATCH /api/library/works/{slug}` in miniature, landing at
+    // `<root>/.taiyaku/<content_key>.library.json` through the same
+    // `librarydoc::apply` + `hand::save` pair the route calls.
+    {
+        let first = Library::open_in_memory().expect("open");
+        let conn = first.conn();
+        let root = scan::add_root(&conn, &tree.path).expect("add");
+        scan::scan_root(&conn, &root).expect("scan");
+        derive::derive(&conn).expect("first derive");
+
+        let work_id: i64 = conn
+            .query_row(
+                "SELECT w.id FROM work w JOIN series s ON w.series_id = s.id \
+                 WHERE s.sort_title = 'Go-Toubun no Hanayome' AND w.volume = 1.0",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the volume 1 work");
+
+        let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+        doc.title = Some("Go-Toubun no Hanayome, volume 1".to_string());
+        crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+        let saved = crate::hand::save(&conn, work_id).expect("saving");
+        assert!(
+            saved.persisted,
+            "the correction must actually reach disk, or losing the database \
+             below proves nothing"
+        );
+    }
+
+    // The database above is gone — genuinely, by never having existed past
+    // this point, rather than simulated by clearing a table on the same
+    // connection. A second, empty database is built from scratch and pointed
+    // at the very same root: what a rebuilt database actually looks like.
+    let second = Library::open_in_memory().expect("open");
+    let conn = second.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect(
+        "one derive, against a database that has never scanned or derived this root before",
+    );
+
+    let title: String = conn
+        .query_row(
+            "SELECT w.title FROM work w JOIN series s ON w.series_id = s.id \
+             WHERE s.sort_title = 'Go-Toubun no Hanayome' AND w.volume = 1.0",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the volume 1 work");
+
+    assert_eq!(
+        title, "Go-Toubun no Hanayome, volume 1",
+        "one derive against a database that has never seen this root before must \
+         recover the hand-set title — losing the database must cost one rescan \
+         (store spec §4.4), not two"
+    );
+}
+
+/// **I2.** The read-back's own inline comment states the rule — `!empty`,
+/// matching `hand::save`'s identical rule, since a hand-emptied document has
+/// nothing left to protect and arming the marker for it would freeze the
+/// cleared state in permanently — and nothing pinned it: mutating that
+/// `!empty` to `true` leaves every other test in this file green, since none
+/// of them ever hands the read-back a document with nothing in it.
+///
+/// `crate::hand::load` parses the *file's* content directly
+/// (`LibraryDoc::from_json`), independent of whatever the row currently
+/// holds — so an empty document is written straight to the address rather
+/// than through `librarydoc::apply`/`hand::save`, which would have left
+/// nothing on disk to read back at all (`hand::save`'s own empty-document
+/// branch removes the file rather than writing one).
+#[test]
+fn an_empty_hand_document_this_database_has_never_seen_leaves_the_guard_open() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+
+    let work_id: i64 = conn
+        .query_row(
+            "SELECT w.id FROM work w JOIN series s ON w.series_id = s.id \
+             WHERE s.sort_title = 'Go-Toubun no Hanayome' AND w.volume = 1.0",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the volume 1 work");
+
+    let empty_doc = crate::librarydoc::LibraryDoc {
+        taiyaku_library: crate::librarydoc::VERSION,
+        updated: "2026-08-29T00:00:00Z".to_string(),
+        series: crate::librarydoc::SeriesInfo::default(),
+        volume: None,
+        title: None,
+        editions: std::collections::BTreeMap::new(),
+        members: Vec::new(),
+        tags: Vec::new(),
+        external: std::collections::BTreeMap::new(),
+    };
+    assert!(
+        empty_doc.is_empty(),
+        "this test's own fixture document must actually be empty, or it \
+         proves nothing"
+    );
+    let path = crate::hand::path_for(&conn, work_id)
+        .expect("resolving")
+        .expect("a scanned work has an address");
+    std::fs::create_dir_all(path.parent().expect("a directory")).expect("mkdir");
+    std::fs::write(&path, empty_doc.to_json()).expect("writing the empty document");
+
+    // What a rebuilt database looks like, exactly as the sibling test above —
+    // no memory of ever having read this file, and the row moved somewhere
+    // derivation alone would never have put it, so a second derive that
+    // leaves it there (rather than correcting it) proves the guard armed
+    // when the document gave it nothing to protect.
+    conn.execute("DELETE FROM migrated_document", [])
+        .expect("clearing the markers");
+    conn.execute("UPDATE work SET volume = 99.0 WHERE id = ?1", [work_id])
+        .expect("moving the row away from what derivation would produce");
+
+    derive::derive(&conn).expect("second derive");
+
+    let volume: Option<f64> = conn
+        .query_row("SELECT volume FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("reading volume");
+    assert_eq!(
+        volume,
+        Some(1.0),
+        "an empty hand document has nothing to protect, so the read-back must \
+         leave the guard open and let derivation resume — arming it here \
+         would freeze the wrong value in permanently, with no route able to \
+         clear a field back out (I2)"
+    );
+}
+
+/// Step 6b2. The previous round's whole point — a user's file cannot abort a
+/// derive — was reached by no test: `write_work`'s two
+/// `report.unreadable_hand.push(why)` arms had zero coverage, and the only
+/// test naming the field builds a `DeriveReport` by hand and calls
+/// `derive_summary` directly, which exercises string formatting and nothing
+/// else.
+///
+/// **`fixture()`'s own two volumes**, so "the scan went on" is a claim about
+/// the second work rather than about a counter that never saw one — a count
+/// that only ever sees one work cannot distinguish "the scan continued" from
+/// "the scan stopped after the one work it had".
+#[test]
+fn a_hand_document_that_will_not_parse_is_reported_and_the_scan_goes_on() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    let first = derive::derive(&conn).expect("first derive");
+    assert_eq!(
+        first.works, 2,
+        "fixture() carries two volumes, each its own work — the shape this test \
+         needs to tell a continued scan from a stopped one"
+    );
+
+    let work_id: i64 = conn
+        .query_row(
+            "SELECT w.id FROM work w JOIN series s ON w.series_id = s.id \
+             WHERE s.sort_title = 'Go-Toubun no Hanayome' AND w.volume = 1.0",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the volume 1 work");
+
+    // A hand document at the first work's own address, holding text that is
+    // not a library document at all.
+    let path = crate::hand::path_for(&conn, work_id)
+        .expect("resolving")
+        .expect("a scanned work has an address");
+    std::fs::create_dir_all(path.parent().expect("a directory")).expect("mkdir");
+    std::fs::write(&path, b"{ not a document").expect("writing the bad file");
+
+    conn.execute("DELETE FROM migrated_document", [])
+        .expect("clearing the markers");
+
+    let report = derive::derive(&conn).expect(
+        "one unparseable file must not fail the derive — write_work is called with `?` \
+         inside the group loop, so raising here would leave every later work underived",
+    );
+
+    assert_eq!(report.unreadable_hand.len(), 1);
+    assert!(
+        report.unreadable_hand[0].contains(&path.display().to_string()),
+        "the message must name the file to fix: {:?}",
+        report.unreadable_hand
+    );
+    assert_eq!(
+        report.works, 2,
+        "the second work must still have been derived"
+    );
+}
+
+/// The arm Finding 1 actually fixed. `librarydoc::apply`'s own errors name a
+/// `work_id` and a `series_id`, never a file — unlike the parse failure above,
+/// this is the case whose message needed the path prepended by the read-back
+/// rather than inherited from the error, since there is nothing to inherit.
+#[test]
+fn a_hand_document_naming_an_edition_the_work_does_not_have_is_reported_and_the_scan_goes_on() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+
+    let work_id: i64 = conn
+        .query_row(
+            "SELECT w.id FROM work w JOIN series s ON w.series_id = s.id \
+             WHERE s.sort_title = 'Go-Toubun no Hanayome' AND w.volume = 1.0",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the volume 1 work");
+
+    // A document that parses fine but names an edition this work does not
+    // have. `apply_editions` refuses it by name, and the refusal it builds
+    // names a `work_id`, never a path.
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.editions.insert(
+        "nonexistent-edition".to_string(),
+        crate::librarydoc::EditionMeta::default(),
+    );
+    let path = crate::hand::path_for(&conn, work_id)
+        .expect("resolving")
+        .expect("a scanned work has an address");
+    std::fs::create_dir_all(path.parent().expect("a directory")).expect("mkdir");
+    std::fs::write(&path, doc.to_json()).expect("writing the bad document");
+
+    conn.execute("DELETE FROM migrated_document", [])
+        .expect("clearing the markers");
+
+    let report = derive::derive(&conn).expect("an apply failure must not fail the derive either");
+
+    assert_eq!(report.unreadable_hand.len(), 1);
+    assert!(
+        report.unreadable_hand[0].contains(&path.display().to_string()),
+        "the path must be prepended by the read-back, since `librarydoc::apply`'s own \
+         message never names one: {:?}",
+        report.unreadable_hand
+    );
+    assert!(
+        report.unreadable_hand[0].contains("nonexistent-edition"),
+        "apply_editions's own message names the edition it refused: {:?}",
+        report.unreadable_hand
+    );
+    assert_eq!(
+        report.works, 2,
+        "the second work must still have been derived"
     );
 }
 
