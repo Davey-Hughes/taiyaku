@@ -37,6 +37,7 @@ const work = (over: Partial<library.WorkCard> = {}): library.WorkCard => ({
   aligned: true,
   pages: 180,
   editions: [{ key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 0 }],
+  opens: 'raw',
   ...over,
 })
 
@@ -167,12 +168,13 @@ describe('the library screen', () => {
     expect(host.querySelector('.unreadable')?.textContent).toBeTruthy()
   })
 
-  it('keeps an unfiled work’s reader link when only one edition has lost its files', async () => {
+  it('keeps an unfiled work’s reader link when the edition it opens is the intact one', async () => {
     vi.mocked(library.grid).mockResolvedValue({
       series: [],
       unfiled: [
         work({
           slug: 'imported-01',
+          opens: 'en',
           editions: [
             { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 2 },
             { key: 'en', label: 'En', members: 1, pages: 178, missing: 0 },
@@ -182,6 +184,31 @@ describe('the library screen', () => {
     })
     const host = await show()
     expect(host.querySelector('a[href="/read/imported-01"]')).not.toBeNull()
+  })
+
+  /**
+   * **O84, and the reason `opens` is the caller's edition rather than the
+   * hub.** A work whose opening edition has lost its files is not readable,
+   * even though a sibling is intact — the link would fail at the first page,
+   * which is spec C1 §8's exact prohibition. The mirror of the test above.
+   */
+  it('withholds the continue-strip link when the edition it opens has lost its files', async () => {
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [
+        work({
+          slug: 'half-read-v02',
+          opens: 'raw',
+          editions: [
+            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 2 },
+            { key: 'en', label: 'En', members: 1, pages: 178, missing: 0 },
+          ],
+        }),
+      ],
+      added: [],
+      read: [],
+    })
+    const host = await show()
+    expect(host.querySelector('a[href="/read/half-read-v02"]')).toBeNull()
   })
 
   it('the multi-edition chip keeps only the series with a second edition', async () => {
@@ -250,11 +277,12 @@ describe('the library screen', () => {
     expect(strip?.querySelector('.unreadable')?.textContent).toBeTruthy()
   })
 
-  it('keeps the continue-strip link when only one edition of a work has lost its files', async () => {
+  it('keeps the continue-strip link when the edition it opens is the intact one', async () => {
     vi.mocked(library.home).mockResolvedValue({
       continuing: [
         work({
           slug: 'half-read-v02',
+          opens: 'en',
           editions: [
             { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 2 },
             { key: 'en', label: 'En', members: 1, pages: 178, missing: 0 },

@@ -562,7 +562,7 @@ fn visible_editions_or_refuse(
         return Ok(None);
     }
     let conn = state.library.conn();
-    match taiyaku_library::browse::work(&conn, &principal.roots, slug) {
+    match taiyaku_library::browse::work(&conn, &principal.roots, principal.user_id, slug) {
         Ok(Some(detail)) => Ok(Some(
             detail.card.editions.into_iter().map(|e| e.key).collect(),
         )),

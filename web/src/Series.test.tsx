@@ -33,6 +33,7 @@ const work = (over: Partial<library.WorkCard> = {}): library.WorkCard => ({
   aligned: false,
   pages: 180,
   editions: [edition()],
+  opens: 'raw',
   ...over,
 })
 
@@ -302,11 +303,12 @@ describe('Series, grid layout — the reader link and download withheld', () => 
     expect(host.querySelector('.volumes .unreadable')?.textContent).toBeTruthy()
   })
 
-  it('keeps the reader link when only one edition of a volume has lost its files', async () => {
+  it('keeps the reader link when the edition it opens is the intact one', async () => {
     vi.mocked(library.oneSeries).mockResolvedValue({
       series: card(),
       works: [
         work({
+          opens: 'en',
           editions: [
             edition({ key: 'raw', missing: 3 }),
             edition({ key: 'en', missing: 0 }),
@@ -326,11 +328,15 @@ describe('Series, grid layout — the reader link and download withheld', () => 
       series: card(),
       works: [
         work({
+          // **`opens: 'en'` is what keeps this test about the download.**
+          // `chosen === 'all'` shows `editions[0]` — the broken one — while
+          // the volume itself opens `en` and stays readable. Downloading
+          // files that are not on disk is not an offer this screen should
+          // make, independent of whether the volume opens; leaving `opens`
+          // at the broken edition would withhold the reader link too and the
+          // test could no longer tell the two guards apart.
+          opens: 'en',
           editions: [
-            // `chosen === 'all'` shows `editions[0]` — the broken one —
-            // while `en` keeps the volume itself readable. Downloading
-            // files that are not on disk is not an offer this screen
-            // should make, independent of whether the volume opens.
             edition({ key: 'raw', missing: 2 }),
             edition({ key: 'en', missing: 0 }),
           ],

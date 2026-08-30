@@ -44,6 +44,10 @@ fn work_json(w: &browse::WorkCard) -> serde_json::Value {
         "volume": w.volume,
         "aligned": w.aligned,
         "pages": w.pages,
+        // **O84.** The edition this caller's reader will open, which is not
+        // always the hub — see `browse::WorkCard::opens`. `library.ts`'s
+        // `unreadable` asks about this edition rather than about all of them.
+        "opens": w.opens,
         "editions": w.editions.iter().map(|e| serde_json::json!({
             "key": e.key,
             "label": e.label,
@@ -111,7 +115,7 @@ pub(crate) async fn series(
     // empties it in SQL, from §5.1's own NULL-excludes-itself rule: an
     // imported member sits under no root, and asking for a root asks for what
     // is under it. Whole-branch review, 2026-08-21.
-    let unfiled = match browse::unfiled(&conn, &principal.roots, query.root) {
+    let unfiled = match browse::unfiled(&conn, &principal.roots, principal.user_id, query.root) {
         Ok(unfiled) => unfiled,
         Err(why) => return failed("the unfiled works", &why),
     };
@@ -151,7 +155,7 @@ pub(crate) async fn work(
     AxPath(slug): AxPath<String>,
 ) -> Response {
     let conn = state.library.conn();
-    match browse::work(&conn, &principal.roots, &slug) {
+    match browse::work(&conn, &principal.roots, principal.user_id, &slug) {
         Ok(Some(detail)) => {
             let mut body = work_json(&detail.card);
             body["alignments"] = serde_json::json!(

@@ -287,7 +287,8 @@ async fn work_feed(
     // case), `Some` carrying only the editions that survive otherwise —
     // `WorkCard::editions`'s own contract. Reused rather than reimplemented,
     // and cheap for the one work this route addresses: `works_of`'s row plus
-    // one `editions_of` call, not one query per edition.
+    // one `editions_by_work` call, not one query per edition — and since O85
+    // that call answers the whole set rather than one work at a time.
     // **Absent means "may download"**, which is the same reading the grant
     // filter just below gives an absent principal: `opds::tests`' own
     // `feed_router` builds this feed without the guard, and a missing
@@ -302,7 +303,7 @@ async fn work_feed(
         Some(principal) if !principal.roots.is_empty() => {
             let detail = {
                 let conn = state.library.conn();
-                taiyaku_library::browse::work(&conn, &principal.roots, &id)
+                taiyaku_library::browse::work(&conn, &principal.roots, principal.user_id, &id)
             };
             match detail {
                 Ok(None) => return missing(format!("no work `{id}`")),

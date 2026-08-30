@@ -164,7 +164,7 @@ pub struct EditionCard {
     pub members: i64,
     pub pages: i64,
     /// How many of `members` no longer exist on disk — spec C1 §8's empty
-    /// state. See [`missing_members`].
+    /// state. See [`missing_by_edition`].
     pub missing: usize,
 }
 
@@ -183,6 +183,29 @@ pub struct WorkCard {
     /// asked as one bit. They were separate pieces of SQL and disagreed.
     pub aligned: bool,
     pub pages: i64,
+    /// **The edition this caller's reader will actually open — O84.**
+    ///
+    /// Not the hub, and the difference is the whole item. `startup.ts` calls
+    /// `reading::restore(progress, hub, resolver)`, which opens the *stored
+    /// position's* edition when there is one the resolver knows and the hub
+    /// otherwise; `api.ts::getProgress` takes the head of a newest-first list,
+    /// because a position became per-edition in migration 9. So the edition
+    /// that opens is the caller's newest position **if the grant still shows
+    /// it**, and `work.hub` in every other case — a progress row naming an
+    /// edition this caller cannot see is one `resolver.slotCount` answers
+    /// `undefined` for, which is exactly `restore`'s hub fallback.
+    ///
+    /// **This is what makes `WorkCard` per-caller.** It was user-independent
+    /// until O84, and `works_of` took no `user_id`; a work whose hub has lost
+    /// its files while a sibling has not is readable for one reader and not
+    /// for another, so no user-independent field can answer it. Withholding on
+    /// the *hub* alone was the cheaper answer and drops a work out of
+    /// `Library.tsx`'s Continue strip while its reader is part-way through the
+    /// intact sibling — O62's over-withholding, in a narrower form.
+    ///
+    /// Always a key of one of `editions` while the grant shows the hub. See
+    /// [`opens_by_work`].
+    pub opens: String,
 }
 
 /// One edition pair's alignment, as §3's panel shows it.
@@ -714,6 +737,7 @@ fn alignments_of(
 fn works_of(
     conn: &Connection,
     roots: &[i64],
+    user_id: i64,
     predicate: &str,
     extra: &[&dyn rusqlite::ToSql],
     order: &str,
@@ -725,7 +749,7 @@ fn works_of(
     // `extra`. No `only` group interleaves here — see this function's doc.
     // See the module header.
     let sql = format!(
-        "SELECT DISTINCT w.id, w.slug, w.title, w.volume, {aligned}
+        "SELECT DISTINCT w.id, w.slug, w.title, w.volume, w.hub, {aligned}
            FROM work w
            JOIN edition e ON e.work_id = w.id{clause}
           WHERE {predicate}
@@ -738,7 +762,7 @@ fn works_of(
     params.extend_from_slice(extra);
 
     let mut stmt = prepare(conn, &sql).map_err(|e| format!("preparing the work listing: {e}"))?;
-    let rows: Vec<(i64, String, String, Option<f64>, bool)> = stmt
+    let rows: Vec<(i64, String, String, Option<f64>, String, bool)> = stmt
         .query_map(params.as_slice(), |row| {
             Ok((
                 row.get(0)?,
@@ -746,6 +770,7 @@ fn works_of(
                 row.get(2)?,
                 row.get(3)?,
                 row.get(4)?,
+                row.get(5)?,
             ))
         })
         .map_err(|e| format!("listing works: {e}"))?
@@ -757,12 +782,33 @@ fn works_of(
     // more per edition of each.
     let ids: Vec<i64> = rows.iter().map(|(id, ..)| *id).collect();
     let mut editions = editions_by_work(conn, roots, &ids)?;
+    let positions = opens_by_work(conn, user_id, &ids)?;
 
     Ok(rows
         .into_iter()
-        .map(|(id, slug, title, volume, aligned)| {
+        .map(|(id, slug, title, volume, hub, aligned)| {
             let editions = editions.remove(&id).unwrap_or_default();
             let pages = editions.iter().map(|e| e.pages).max().unwrap_or(0);
+            // **O84.** `restore`'s rule, server-side: the stored position's
+            // edition when the grant still shows it, the hub otherwise.
+            let named = positions
+                .get(&id)
+                .filter(|edition| editions.iter().any(|e| &&e.key == edition))
+                .map_or(hub, Clone::clone);
+            // **And `routes::filter_sidecar_editions`' rule after it, which a
+            // hidden hub makes load-bearing.** That function substitutes a hub
+            // the grant hides with the first surviving edition in key order,
+            // so the reader never opens the hidden one — and `opens` naming it
+            // anyway would point this guard at an edition that is not on the
+            // screen and never opens, which reads as "not unreadable" whatever
+            // the real one has lost. `editions_by_work` returns each work's
+            // editions in key order, the same order that function's
+            // `BTreeMap::keys().next()` takes.
+            let opens = if editions.iter().any(|e| e.key == named) {
+                named
+            } else {
+                editions.first().map_or(named, |e| e.key.clone())
+            };
             WorkCard {
                 id,
                 slug,
@@ -771,9 +817,61 @@ fn works_of(
                 editions,
                 aligned,
                 pages,
+                opens,
             }
         })
         .collect())
+}
+
+/// The edition each of `work_ids` holds this reader's **newest** position in.
+///
+/// **One statement for the whole set**, like [`editions_by_work`] beside it and
+/// for O85's reason. A work with no position at all has no key here, and the
+/// caller reads that absence as "the hub".
+///
+/// **Newest, and ties broken by edition key.** `api.ts::getProgress` answers
+/// every edition's position newest-first and the reader resumes into the head,
+/// so the newest is the one that opens. `ORDER BY … updated DESC, edition`
+/// makes the head deterministic where two positions share a timestamp —
+/// `progress` has second granularity and two editions touched in the same
+/// second is reachable, at which point "whichever SQLite returned first" is a
+/// listing that disagrees with itself between calls.
+///
+/// Placeholders bind in text order: `user_id`, then `work_ids`.
+fn opens_by_work(
+    conn: &Connection,
+    user_id: i64,
+    work_ids: &[i64],
+) -> Result<HashMap<i64, String>, String> {
+    if work_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let wanted = holes(work_ids.len());
+    let sql = format!(
+        "SELECT p.work_id, p.edition
+           FROM progress p
+          WHERE p.user_id = ? AND p.work_id IN ({wanted})
+          ORDER BY p.work_id, p.updated DESC, p.edition"
+    );
+    let mut params: Vec<i64> = vec![user_id];
+    params.extend(work_ids.iter().copied());
+
+    let mut stmt =
+        prepare(conn, &sql).map_err(|e| format!("preparing the position listing: {e}"))?;
+    let rows = stmt
+        .query_map(params_from_iter(params), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| format!("listing positions: {e}"))?
+        .collect::<rusqlite::Result<Vec<(i64, String)>>>()
+        .map_err(|e| format!("reading positions: {e}"))?;
+
+    // The first row per work is its newest, the `ORDER BY` having said so.
+    let mut out: HashMap<i64, String> = HashMap::new();
+    for (work_id, edition) in rows {
+        out.entry(work_id).or_insert(edition);
+    }
+    Ok(out)
 }
 
 /// One series and its works, or `None` if this caller cannot see it.
@@ -793,7 +891,14 @@ pub fn one_series(
     else {
         return Ok(None);
     };
-    let works = works_of(conn, roots, "w.series_id = ?", &[&id], "w.volume, w.id")?;
+    let works = works_of(
+        conn,
+        roots,
+        user_id,
+        "w.series_id = ?",
+        &[&id],
+        "w.volume, w.id",
+    )?;
     Ok(Some((card, works)))
 }
 
@@ -806,8 +911,13 @@ pub fn one_series(
 /// # Errors
 ///
 /// Returns an error if the query fails.
-pub fn work(conn: &Connection, roots: &[i64], slug: &str) -> Result<Option<WorkDetail>, String> {
-    let Some(card) = works_of(conn, roots, "w.slug = ?", &[&slug], "w.id")?
+pub fn work(
+    conn: &Connection,
+    roots: &[i64],
+    user_id: i64,
+    slug: &str,
+) -> Result<Option<WorkDetail>, String> {
+    let Some(card) = works_of(conn, roots, user_id, "w.slug = ?", &[&slug], "w.id")?
         .into_iter()
         .next()
     else {
@@ -843,6 +953,7 @@ pub fn work(conn: &Connection, roots: &[i64], slug: &str) -> Result<Option<WorkD
 pub fn unfiled(
     conn: &Connection,
     roots: &[i64],
+    user_id: i64,
     only: Option<i64>,
 ) -> Result<Vec<WorkCard>, String> {
     // The narrowing rides in the predicate rather than in a parameter of its
@@ -857,6 +968,7 @@ pub fn unfiled(
     works_of(
         conn,
         roots,
+        user_id,
         &format!("w.series_id IS NULL{narrowed}"),
         &extra,
         "w.title COLLATE NOCASE, w.id",
@@ -965,7 +1077,7 @@ pub fn search(
         .collect();
 
     let unfiled_ids = matching_unfiled_works(conn, &matcher, trimmed)?;
-    let unfiled_hits = unfiled(conn, roots, None)?
+    let unfiled_hits = unfiled(conn, roots, user_id, None)?
         .into_iter()
         .filter(|w| unfiled_ids.contains(&w.id))
         .take(cap)
@@ -1106,6 +1218,7 @@ pub fn home(conn: &Connection, roots: &[i64], user_id: i64) -> Result<Home, Stri
     let continuing = works_of(
         conn,
         roots,
+        user_id,
         "w.id IN (SELECT work_id FROM progress
                    WHERE user_id = ? AND completed_at IS NULL)",
         &[&user_id, &user_id],
@@ -1114,6 +1227,7 @@ pub fn home(conn: &Connection, roots: &[i64], user_id: i64) -> Result<Home, Stri
     let read = works_of(
         conn,
         roots,
+        user_id,
         "w.id IN (SELECT work_id FROM progress
                    WHERE user_id = ? AND completed_at IS NOT NULL)
          AND w.id NOT IN (SELECT work_id FROM progress
@@ -1129,7 +1243,7 @@ pub fn home(conn: &Connection, roots: &[i64], user_id: i64) -> Result<Home, Stri
     // one statement for the whole set, which removes the per-row cost but not
     // this bound's reason**: it keeps the rows read proportional to what the
     // route returns rather than to the size of the library.
-    let added = works_of(conn, roots, "1 = 1", &[], "w.id DESC LIMIT 20")?;
+    let added = works_of(conn, roots, user_id, "1 = 1", &[], "w.id DESC LIMIT 20")?;
 
     let cap = usize::try_from(LIST_CAP).unwrap_or(usize::MAX);
     Ok(Home {

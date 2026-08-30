@@ -149,12 +149,12 @@ fn an_imported_work_is_unfiled_rather_than_a_series_of_its_own() {
         "an import creates no series, so the grid still holds one"
     );
     assert_eq!(
-        unfiled(&conn, &[], None).expect("lists").len(),
+        unfiled(&conn, &[], 1, None).expect("lists").len(),
         1,
         "unrestricted sees the imported work in the unfiled bucket"
     );
     assert!(
-        unfiled(&conn, &[en_id], None).expect("lists").is_empty(),
+        unfiled(&conn, &[en_id], 1, None).expect("lists").is_empty(),
         "a restricted account sees no work that sits under no root"
     );
 }
@@ -186,11 +186,11 @@ fn a_reimport_over_a_scanned_work_keeps_its_roots_grant() {
     // The baseline this test's failure would otherwise be mistaken for: both
     // roots see the work before any reimport touches it.
     assert!(
-        work(&conn, &[en_id], &slug).expect("reads").is_some(),
+        work(&conn, &[en_id], 1, &slug).expect("reads").is_some(),
         "the en root sees the work before the reimport"
     );
     assert!(
-        work(&conn, &[raw_id], &slug).expect("reads").is_some(),
+        work(&conn, &[raw_id], 1, &slug).expect("reads").is_some(),
         "the raw root sees the work before the reimport"
     );
 
@@ -203,11 +203,11 @@ fn a_reimport_over_a_scanned_work_keeps_its_roots_grant() {
         .expect("reimports");
 
     assert!(
-        work(&conn, &[en_id], &slug).expect("reads").is_some(),
+        work(&conn, &[en_id], 1, &slug).expect("reads").is_some(),
         "the en root's grant must still see a work its own scan stamped"
     );
     assert!(
-        work(&conn, &[raw_id], &slug).expect("reads").is_some(),
+        work(&conn, &[raw_id], 1, &slug).expect("reads").is_some(),
         "the raw root's grant must still see a work its own scan stamped"
     );
 }
@@ -219,9 +219,9 @@ fn a_work_is_found_by_slug_within_the_grant() {
     let slug: String = conn
         .query_row("SELECT slug FROM work LIMIT 1", [], |row| row.get(0))
         .expect("reads a slug");
-    assert!(work(&conn, &[], &slug).expect("reads").is_some());
-    assert!(work(&conn, &[en_id], &slug).expect("reads").is_some());
-    assert!(work(&conn, &[raw_id], &slug).expect("reads").is_some());
+    assert!(work(&conn, &[], 1, &slug).expect("reads").is_some());
+    assert!(work(&conn, &[en_id], 1, &slug).expect("reads").is_some());
+    assert!(work(&conn, &[raw_id], 1, &slug).expect("reads").is_some());
 }
 
 /// A work whose every edition sits outside the grant is `None`, which is the
@@ -236,9 +236,9 @@ fn a_work_entirely_outside_the_grant_is_none() {
             row.get(0)
         })
         .expect("reads the imported slug");
-    assert!(work(&conn, &[], &slug).expect("reads").is_some());
+    assert!(work(&conn, &[], 1, &slug).expect("reads").is_some());
     assert!(
-        work(&conn, &[en_id], &slug).expect("reads").is_none(),
+        work(&conn, &[en_id], 1, &slug).expect("reads").is_none(),
         "a restricted account cannot reach a work under no root"
     );
 }
@@ -559,12 +559,12 @@ fn a_merged_edition_counts_only_the_members_the_grant_allows() {
         .query_row("SELECT slug FROM work LIMIT 1", [], |row| row.get(0))
         .expect("reads a slug");
 
-    let unrestricted = work(&conn, &[], &slug).expect("reads").expect("visible");
+    let unrestricted = work(&conn, &[], 1, &slug).expect("reads").expect("visible");
     let total: i64 = unrestricted.card.editions.iter().map(|e| e.members).sum();
     assert_eq!(total, 2, "both roots' members");
 
     for (root, label) in [(a_id, "a"), (b_id, "b")] {
-        let seen = work(&conn, &[root], &slug)
+        let seen = work(&conn, &[root], 1, &slug)
             .expect("reads")
             .expect("visible");
         let members: i64 = seen.card.editions.iter().map(|e| e.members).sum();
@@ -959,7 +959,7 @@ fn a_work_carries_the_verdict_and_paired_count_of_each_pair() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &[], "series---v01")
+    let detail = work(&conn, &[], 1, "series---v01")
         .expect("reads the work")
         .expect("a work with that slug");
     assert_eq!(detail.alignments.len(), 1);
@@ -980,7 +980,7 @@ fn an_alignment_naming_a_hidden_edition_is_not_listed() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &[en_id], "series---v01")
+    let detail = work(&conn, &[en_id], 1, "series---v01")
         .expect("reads the work")
         .expect("the work survives on its English edition");
     assert_eq!(detail.card.editions.len(), 1, "only the English edition");
@@ -1003,7 +1003,7 @@ fn a_grant_naming_both_sides_of_a_pair_returns_the_alignment() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &[en_id, raw_id], "series---v01")
+    let detail = work(&conn, &[en_id, raw_id], 1, "series---v01")
         .expect("reads the work")
         .expect("the work survives on both editions");
     assert_eq!(
@@ -1032,7 +1032,7 @@ fn an_alignment_naming_a_hidden_edition_is_counted_by_neither_the_work_nor_the_g
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &[en_id], "series---v01")
+    let detail = work(&conn, &[en_id], 1, "series---v01")
         .expect("reads the work")
         .expect("the work survives on its English edition");
     assert!(
@@ -1061,7 +1061,7 @@ fn an_alignment_wholly_inside_the_grant_is_counted_by_both() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &[en_id, raw_id], "series---v01")
+    let detail = work(&conn, &[en_id, raw_id], 1, "series---v01")
         .expect("reads the work")
         .expect("the work survives on both editions");
     assert!(detail.card.aligned, "both sides are held");
@@ -1081,7 +1081,7 @@ fn an_empty_grant_counts_the_alignment_as_it_always_did() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &[], "series---v01")
+    let detail = work(&conn, &[], 1, "series---v01")
         .expect("reads the work")
         .expect("the work");
     assert!(detail.card.aligned, "unrestricted sees both sides");
@@ -1191,19 +1191,21 @@ fn asking_for_a_root_leaves_the_unfiled_bucket_empty() {
 
     let conn = library.conn();
     assert_eq!(
-        unfiled(&conn, &[], None).expect("lists").len(),
+        unfiled(&conn, &[], 1, None).expect("lists").len(),
         1,
         "the whole library still carries it"
     );
     assert!(
-        unfiled(&conn, &[], Some(en_id)).expect("lists").is_empty(),
+        unfiled(&conn, &[], 1, Some(en_id))
+            .expect("lists")
+            .is_empty(),
         "a work under no root is not under this one"
     );
     // A grant *and* a narrowing, which is the shape that binds every group
     // this statement has: three of roots and then `only`. A miscount here is
     // a hard refusal from `rusqlite` rather than a wrong answer.
     assert!(
-        unfiled(&conn, &[en_id], Some(en_id))
+        unfiled(&conn, &[en_id], 1, Some(en_id))
             .expect("lists")
             .is_empty(),
         "and the same when the caller is restricted as well"
@@ -1819,4 +1821,127 @@ fn a_restricted_grant_hides_its_edition_in_every_work_of_a_series() {
             work.slug
         );
     }
+}
+
+/// **O84: `opens` is the edition the reader will actually open, not the hub.**
+///
+/// `startup.ts` calls `reading::restore(progress, hub, resolver)`, which takes
+/// the stored position's edition when the resolver knows it and the hub
+/// otherwise, and `api.ts::getProgress` hands it the head of a newest-first
+/// list. This is that rule, server-side, and the three cases are the three
+/// branches of it.
+///
+/// The hub is read out of the row rather than written here as `"en"`: which
+/// edition derivation picks is `derive`'s business, and a test asserting the
+/// letter of it would fail for the wrong reason the day that changes.
+#[test]
+fn opens_names_the_stored_position_and_falls_back_to_the_hub() {
+    let (library, _en, _raw) = library_with_volumes(1);
+    let conn = library.conn();
+    let work_id: i64 = conn
+        .query_row("SELECT id FROM work LIMIT 1", [], |row| row.get(0))
+        .expect("the work");
+    let hub: String = conn
+        .query_row("SELECT hub FROM work LIMIT 1", [], |row| row.get(0))
+        .expect("its hub");
+    let other = if hub == "en" { "raw" } else { "en" };
+    let series_id: i64 = conn
+        .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
+        .expect("the series");
+    let read = |roots: &[i64]| {
+        one_series(&conn, roots, 1, series_id)
+            .expect("reads")
+            .expect("visible")
+            .1
+            .remove(0)
+            .opens
+    };
+
+    assert_eq!(read(&[]), hub, "no position at all opens the hub");
+
+    state::put_progress(
+        &conn,
+        work_id,
+        1,
+        &Progress {
+            edition: other.into(),
+            slot: 0,
+        },
+    )
+    .expect("a position in the non-hub edition");
+    assert_eq!(
+        read(&[]),
+        other,
+        "a stored position opens its own edition, not the hub — this is the \
+         whole of O84, and the case a hub-only field cannot express"
+    );
+
+    // The grant that hides the edition the position names. `restore` answers
+    // the hub there because `resolver.slotCount` answers `undefined`, and this
+    // must agree with it.
+    let hub_root: i64 = conn
+        .query_row(
+            "SELECT id FROM root WHERE edition_key = ?1",
+            [&hub],
+            |row| row.get(0),
+        )
+        .expect("the hub's root");
+    assert_eq!(
+        read(&[hub_root]),
+        hub,
+        "a position naming an edition this grant hides falls back to the hub, \
+         exactly as `restore` does when the resolver does not know it"
+    );
+}
+
+/// **A grant that hides the hub substitutes, and `opens` has to substitute the
+/// same way.**
+///
+/// `routes::filter_sidecar_editions` replaces a hidden hub with the first
+/// surviving edition in key order before the reader ever sees the document —
+/// its own doc says so, and `browse::cover_target` names the same trap for a
+/// series cover. So the reader opens that substitute, and an `opens` still
+/// naming the hidden hub would point `library.ts`'s `unreadable` at an edition
+/// that is neither on the screen nor ever opened: `find` answers `undefined`,
+/// the guard answers "readable", and whatever the substitute has actually lost
+/// goes unasked. The first version of `opens` did exactly that.
+#[test]
+fn opens_substitutes_the_first_visible_edition_when_the_grant_hides_the_hub() {
+    let (library, _en, _raw) = library_with_volumes(1);
+    let conn = library.conn();
+    let hub: String = conn
+        .query_row("SELECT hub FROM work LIMIT 1", [], |row| row.get(0))
+        .expect("its hub");
+    let other = if hub == "en" { "raw" } else { "en" };
+    let other_root: i64 = conn
+        .query_row(
+            "SELECT id FROM root WHERE edition_key = ?1",
+            [other],
+            |row| row.get(0),
+        )
+        .expect("the non-hub root");
+    let series_id: i64 = conn
+        .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
+        .expect("the series");
+
+    let card = one_series(&conn, &[other_root], 1, series_id)
+        .expect("reads")
+        .expect("visible")
+        .1
+        .remove(0);
+
+    assert_eq!(
+        card.editions
+            .iter()
+            .map(|e| e.key.as_str())
+            .collect::<Vec<_>>(),
+        vec![other],
+        "the grant leaves only the non-hub edition"
+    );
+    assert_eq!(
+        card.opens, other,
+        "`opens` must name an edition this caller can actually see — the hub \
+         is hidden here, and `filter_sidecar_editions` will hand the reader \
+         this one instead"
+    );
 }

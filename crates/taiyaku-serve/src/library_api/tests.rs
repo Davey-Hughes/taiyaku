@@ -96,7 +96,7 @@ async fn one_work_is_served_by_slug_and_a_missing_one_is_a_404() {
     let slug = state.works[0].id.clone();
     {
         // O73/Task 7b: `EditionCard::missing` has to reach the client or
-        // nothing can render it. `browse::missing_members` counts a member
+        // nothing can render it. `browse::missing_by_edition` counts a member
         // missing once it has a root but no matching `scan_entry` row — the
         // state `scan::forget_unseen` leaves behind — so giving the fixture's
         // one member a root and no `scan_entry` at all reproduces that

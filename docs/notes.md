@@ -14317,3 +14317,81 @@ least 200,000** parameters bind without complaint. A library would need that
 many works in one listing to reach it, so this is recorded on
 `editions_by_work` rather than guarded — a guard would be code no library can
 execute.
+
+### O84: which edition the reader actually opens, and why the item's own answer was the wrong one
+
+O84's entry proposed carrying **the hub's identity** in the browse response.
+Reading the client first says that is not the question the guard needs answered.
+
+`startup.ts` builds its state with `reading::restore(progress, hub, resolver)`,
+and `restore` has three branches: no stored position at all opens the **hub**;
+a position whose edition the resolver knows opens **that edition**; a position
+naming an edition the resolver does *not* know falls back to the **hub**.
+`api.ts::getProgress` supplies that position as the head of a newest-first
+list — "the server answers every edition's position, newest first… the reader
+resumes into the head", which has been true since a position became per-edition
+in migration 9.
+
+**So the edition that opens is caller-dependent, and a hub-only field cannot
+express it.** The case that decides it is `Library.tsx`'s Continue strip: a
+reader part-way through the intact sibling of a work whose hub has lost its
+files is exactly who the strip exists to bring back, and a hub-only guard would
+withhold that link. That is O62's over-withholding — the failure the `every`
+form was written to avoid — reintroduced in a narrower place. The item's own
+proposal would have traded one wrong answer for another.
+
+`WorkCard.opens` is therefore `restore`'s rule computed server-side: the newest
+position's edition **if the grant still shows it**, and `work.hub` otherwise.
+The grant check is not decoration — a progress row naming a hidden edition is
+precisely one `resolver.slotCount` answers `undefined` for, so agreeing with
+`restore` requires it.
+
+**The cost, taken deliberately: `WorkCard` is per-caller from here.** It was
+user-independent, and `works_of` took no `user_id`; it now does, threaded
+through `work`, `unfiled` and `search` and four `taiyaku-serve` call sites.
+No user-independent field can answer "is this readable", because the same work
+is readable for one reader and not for another.
+
+**Four component tests had to change their answer, and that is the fix
+working.** `Library.test.tsx` and `Series.test.tsx` each built a volume with
+one broken edition and one intact and asserted the link was kept — correct
+under `every`, and under-specified afterwards, because the answer now depends on
+which of the two opens. Each names `opens` explicitly, and the mirror case is
+asserted beside it rather than left implied. The download test in
+`Series.test.tsx` needed the same treatment for a different reason: it is about
+the *download* being withheld for a broken tile while the volume stays
+readable, so its `opens` has to name the intact edition or the reader link
+disappears too and the test can no longer tell its two guards apart.
+
+### The defect that was not there, and the one that was
+
+**This branch first reported that a grant hiding the *hub* breaks the reader
+outright** — reasoning that `session.ts::orderedEditions` prepends the hub
+whether or not the caller can see it, `restore` returns it, and the resolver
+holds no slots for an edition it was never sent. **That is wrong**, and it is
+written down rather than quietly dropped because of how it was got wrong: the
+client was read without the route that feeds it.
+`routes::filter_sidecar_editions` already substitutes a hidden hub with the
+first surviving edition in key order, and its own doc comment says so in as
+many words — *"`hub` is checked too, and substituted rather than left
+dangling"* — citing `browse::cover_target` for the same trap on a series cover.
+
+**The substitution being real is what made the fix wrong.** `opens` returned
+`work.hub` whenever no visible position named an edition, hidden hub included.
+So for a caller whose grant hides the hub, `opens` named an edition that is not
+in `editions`, `unreadable`'s `find` answered `undefined`, the guard answered
+"readable" — and whatever the edition the reader *actually* opens had lost went
+unasked. That is O84's own defect, reintroduced by O84's fix, in the one case
+the fix did not think about.
+
+`opens` now falls through to the first visible edition in key order when the
+named one is not visible. `editions_by_work` returns each work's editions in
+key order, which is the same order `filter_sidecar_editions` takes with
+`BTreeMap::keys().next()`, so the two agree by construction rather than by
+coincidence. `opens_substitutes_the_first_visible_edition_when_the_grant_hides_the_hub`
+fails against the version without it.
+
+**The lesson is the cheap one and it was nearly skipped.** The claim was going
+to be filed as an open item on the strength of reading two client functions.
+Reading the third — the server route between them — took five minutes and
+turned a defect that did not exist into one that did.

@@ -43,6 +43,15 @@ export interface WorkCard {
   aligned: boolean
   pages: number
   editions: EditionCard[]
+  /**
+   * The edition this caller's reader will open — O84, and **not** the hub.
+   *
+   * `startup.ts` restores the stored position's edition when the resolver
+   * knows it and the hub otherwise, so the server computes the same rule and
+   * sends the answer rather than the ingredients. It is a key of one of
+   * `editions` whenever the grant shows that edition; see `unreadable`.
+   */
+  opens: string
 }
 
 export interface WorkDetail extends WorkCard {
@@ -152,20 +161,29 @@ export const status = () => getJson<LibraryStatus>('/api/library/status')
  * whole-branch review already found the guard undefended in the *one* place
  * it lived, so five undefended copies is worse, not better.
  *
- * **Every edition, not any.** One edition losing its files while a sibling
- * stays intact leaves the volume readable through the sibling, and
- * withholding the link there would hide a work that still works. The
- * narrower case this does not close: a volume whose *hub* edition is the
- * broken one still offers the link, because `WorkCard` does not say which
- * edition the reader opens. Closing that needs the hub's identity in the
- * browse response, and is recorded as an open item rather than guessed at.
+ * **The edition that opens, not every edition — O84.** This asked
+ * `editions.every(missing > 0)` until then, which is right about the case it
+ * was written for (one edition loses its files, a sibling stays intact, the
+ * volume is still readable through the sibling) and wrong about the volume
+ * whose *own* opening edition is the broken one. `w.opens` is the server's
+ * answer to "which edition will this caller's reader open", computed from the
+ * same rule `reading.ts::restore` applies — the stored position's edition, or
+ * the hub. So the guard can ask the only question that matters.
  *
- * A work with no visible edition at all is not unreadable-by-missing-files —
- * it is a grant hiding everything, which is a different fact and already has
- * its own treatment.
+ * **Asking the hub instead would have been cheaper and wrong**, and the
+ * Continue strip is where it shows: a reader part-way through the intact
+ * sibling of a work whose hub has lost its files would find it gone from the
+ * one list that exists to bring them back to it.
+ *
+ * **An `opens` naming no edition here is not unreadable-by-missing-files.**
+ * That happens when the grant hides the hub itself, which leaves the reader
+ * broken for an unrelated reason — the resolver has no slots for an edition
+ * it was never sent — and is neither this guard's question nor a regression
+ * from the `every` form, which offered that work too.
  */
 export function unreadable(w: WorkCard): boolean {
-  return w.editions.length > 0 && w.editions.every((e) => e.missing > 0)
+  const opening = w.editions.find((e) => e.key === w.opens)
+  return opening !== undefined && opening.missing > 0
 }
 
 /** The grid's filter chips — §2. */

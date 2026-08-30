@@ -32,6 +32,7 @@ const workCard = (over: Partial<WorkCard> = {}): WorkCard => ({
   aligned: false,
   pages: 180,
   editions: [edition()],
+  opens: 'raw',
   ...over,
 })
 
@@ -173,13 +174,16 @@ describe('the browse client', () => {
   describe('unreadable', () => {
     // O62's whole-branch-review finding: mutating `.every` to `.some` left
     // the entire 1694-test web suite green, because the one existing test
-    // never built a volume with one broken edition and one intact. This is
-    // that fixture. Under `.every` -> `.some`, `unreadable` would answer
-    // `true` here (the broken edition alone satisfies `.some`), withdrawing
-    // a link from a volume that is still readable through its sibling — the
-    // wrong side of the doc comment's own "every edition, not any" rule.
-    it('keeps a volume readable when only one of its editions has lost its files', () => {
+    // never built a volume with one broken edition and one intact. That
+    // fixture is kept below — **and O84 changed which answer it must give.**
+    // The guard asked `editions.every(missing > 0)` then; it asks about the
+    // one edition `opens` names now, so the same two editions mean different
+    // things depending on which of them the reader will open. Both directions
+    // are asserted, because a guard that only ever sees one of them is the
+    // shape the O62 finding was about.
+    it('keeps a volume readable when the edition it opens is the intact one', () => {
       const w = workCard({
+        opens: 'en',
         editions: [
           edition({ key: 'raw', missing: 3 }),
           edition({ key: 'en', missing: 0 }),
@@ -188,8 +192,23 @@ describe('the browse client', () => {
       expect(unreadable(w)).toBe(false)
     })
 
-    it('marks a volume unreadable only once every edition it holds has lost its files', () => {
+    // **O84 itself.** The same volume, opened at its broken edition. Under
+    // the `every` rule this answered `false` and the reader was handed a link
+    // that fails at the first page — spec C1 §8's exact prohibition.
+    it('marks a volume unreadable when the edition it opens has lost its files, even though a sibling is intact', () => {
       const w = workCard({
+        opens: 'raw',
+        editions: [
+          edition({ key: 'raw', missing: 3 }),
+          edition({ key: 'en', missing: 0 }),
+        ],
+      })
+      expect(unreadable(w)).toBe(true)
+    })
+
+    it('marks a volume unreadable when every edition it holds has lost its files', () => {
+      const w = workCard({
+        opens: 'raw',
         editions: [
           edition({ key: 'raw', missing: 3 }),
           edition({ key: 'en', missing: 1 }),
@@ -198,13 +217,25 @@ describe('the browse client', () => {
       expect(unreadable(w)).toBe(true)
     })
 
-    // The other mutation the finding names: dropping `w.editions.length > 0
-    // &&` leaves `[].every(...)` — vacuously `true` on an empty array — as
-    // the whole answer. A work with no visible edition at all is a grant
-    // hiding everything, a different fact from missing files, and must not
-    // be reported as unreadable.
+    // The other mutation the O62 finding names: dropping the emptiness guard
+    // left `[].every(...)` — vacuously `true` — as the whole answer. The
+    // `find` form answers `undefined` instead, so the shape is different and
+    // the requirement is not: a work with no visible edition at all is a
+    // grant hiding everything, a different fact from missing files.
     it('does not call a work with no visible editions unreadable — that is a grant hiding it, not missing files', () => {
       const w = workCard({ editions: [] })
+      expect(unreadable(w)).toBe(false)
+    })
+
+    // `opens` names an edition this caller cannot see, which happens when the
+    // grant hides the hub. The reader is broken there for an unrelated reason
+    // — the resolver is never sent that edition — and reporting it as
+    // missing-files would be a different wrong answer, not a fix.
+    it('does not call a work unreadable when `opens` names no edition it can see', () => {
+      const w = workCard({
+        opens: 'nothing-here',
+        editions: [edition({ key: 'raw', missing: 0 })],
+      })
       expect(unreadable(w)).toBe(false)
     })
   })
