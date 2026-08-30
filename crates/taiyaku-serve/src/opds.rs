@@ -11,6 +11,13 @@
 //! small and fixed, and the only hard part is escaping — which has its own
 //! test, because this corpus holds titles with `&` and `♡` in them.
 
+// **Imported rather than written `std::collections::` inline, and that is
+// load-bearing for the mutation harness — O88.** `cargo-mutants` replaces a
+// function body with a literal it generates and emits the SHORT type name, so
+// a function *returning* a fully-qualified collection has whole-body mutants
+// that fail to compile and are reported `unviable` — never run, and invisible
+// in the survivor list, because an unviable mutant is not a survivor.
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -131,7 +138,7 @@ async fn catalog() -> Response {
 fn visible_editions_by_work(
     state: &ServeState,
     extensions: &axum::http::Extensions,
-) -> Result<Option<std::collections::HashMap<String, std::collections::HashSet<String>>>, String> {
+) -> Result<Option<HashMap<String, HashSet<String>>>, String> {
     let Some(principal) = extensions.get::<crate::auth::Principal>() else {
         return Ok(None);
     };
@@ -190,7 +197,7 @@ async fn works(
         // no encoding, but encoding it anyway costs nothing and does not
         // depend on a guarantee made in another module.
         let href_id = escape(&percent_encode(&work.id));
-        let count = editions.map_or(sidecar.editions.len(), std::collections::HashSet::len);
+        let count = editions.map_or(sidecar.editions.len(), HashSet::len);
         let _ = writeln!(
             entries,
             r#"  <entry>
@@ -297,9 +304,8 @@ async fn work_feed(
         .get::<crate::auth::Principal>()
         .is_none_or(|principal| principal.can_download);
 
-    let visible_editions: Option<std::collections::HashSet<String>> = match extensions
-        .get::<crate::auth::Principal>(
-    ) {
+    let visible_editions: Option<HashSet<String>> = match extensions.get::<crate::auth::Principal>()
+    {
         Some(principal) if !principal.roots.is_empty() => {
             let detail = {
                 let conn = state.library.conn();

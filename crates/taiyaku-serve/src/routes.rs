@@ -1,5 +1,12 @@
 //! HTTP. Everything interesting happens below this file.
 
+// **Imported rather than written `std::collections::` inline, and that is
+// load-bearing for the mutation harness — O88.** `cargo-mutants` replaces a
+// function body with a literal it generates and emits the SHORT type name, so
+// a function *returning* a fully-qualified collection has whole-body mutants
+// that fail to compile and are reported `unviable` — never run, and invisible
+// in the survivor list, because an unviable mutant is not a survivor.
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -554,7 +561,7 @@ fn visible_editions_or_refuse(
     state: &Arc<ServeState>,
     extensions: &axum::http::Extensions,
     slug: &str,
-) -> Result<Option<std::collections::HashSet<String>>, Response> {
+) -> Result<Option<HashSet<String>>, Response> {
     let Some(principal) = extensions.get::<crate::auth::Principal>() else {
         return Ok(None);
     };
@@ -593,7 +600,7 @@ fn visible_editions_or_refuse(
 /// finds a fallback when it needs one.
 fn filter_sidecar_editions(
     sidecar: &taiyaku_core::Sidecar,
-    visible: &std::collections::HashSet<String>,
+    visible: &HashSet<String>,
 ) -> taiyaku_core::Sidecar {
     let mut filtered = sidecar.clone();
     filtered.editions.retain(|key, _| visible.contains(key));

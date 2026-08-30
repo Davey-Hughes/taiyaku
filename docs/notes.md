@@ -14274,10 +14274,15 @@ tests, with this verification as their reason.
 **Two different failures, one shared consequence.** O87 makes a *caught* mutant
 read as MISSED. O88 makes an *untested* function read as a compile artefact.
 The first inflates the survivor list, the second empties it — and the second is
-the more dangerous, because a clean run reads as a result. **37 files in this
-workspace still spell those paths out in full.** `proposals.rs` is one, at 41
-and 42 unviable across its two logged sweeps; how many of those are this has
-not been separated.
+the more dangerous, because a clean run reads as a result.
+
+*This section first said "37 files in this workspace still spell those paths
+out in full", naming `proposals.rs` at 41 and 42 unviable as the worst case.
+**That figure was wrong and is corrected below** — it counted files
+*mentioning* `std::collections::` rather than functions *returning* one, and
+only a return type can produce the uncompilable mutant. Measured the same day:
+two functions, and `proposals.rs` has none of them. Kept as written because the
+wrong measurement is the point — see "O88's scope, measured" below.*
 
 ### The grant test that could not tell right from wrong, and the id collision that hid it
 
@@ -14395,3 +14400,37 @@ fails against the version without it.
 to be filed as an open item on the strength of reading two client functions.
 Reading the third — the server route between them — took five minutes and
 turned a defect that did not exist into one that did.
+
+
+### O88's scope, measured — two functions, not thirty-seven files
+
+The claim above was sized by `grep -rl 'std::collections::'` and that is the
+wrong instrument. `cargo-mutants` replaces a function **body** with a generated
+literal, so the only way the short-name problem can bite is a function whose
+**return type** is a fully-qualified collection. A local or a parameter written
+out in full costs nothing at all.
+
+**`proposals.rs` is the counter-example, and it was the claim's own headline.**
+42 unviable, `std::collections::BTreeSet` written sixteen times, and **zero** of
+the 42 from this cause — all sixteen are locals or parameters. Swept 2026-08-29,
+206 mutants, 156 caught:
+
+| cause of the 42 unviable | count |
+| --- | --- |
+| `Ok(Default::default())` and variants, against types deriving no `Default` | 18 |
+| `cargo-mutants` guessing a constructor for a custom type (`Offer::new`, `Offer::from`) | 24 |
+| the fully-qualified path | **0** |
+
+Workspace-wide the right grep — a return type, not a mention — finds **two**
+functions: `opds::visible_editions_by_work` and
+`routes::visible_editions_or_refuse`, against **41** files that mention the
+path. Two `use` lines: their twelve whole-body mutants went from `unviable` to
+viable and **all twelve are caught**, 0 missed, 0 unviable, and no new survivor
+surfaced. Nothing in the workspace returns a fully-qualified collection now.
+
+**So the cause that looked like a branch of its own was two lines, and the one
+filed as a footnote is the real one.** 18 of `proposals.rs`' 42 are the missing
+`Default` derive, and 24 are cargo-mutants guessing at a constructor, which
+nothing here can fix. How many functions the derive cause hides workspace-wide
+has not been counted; that is the measurement that says whether adding
+`derive(Default)` to public types for a test tool's benefit is worth it.
