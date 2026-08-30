@@ -7,7 +7,7 @@ use taiyaku_library::credential;
 use tower::ServiceExt as _;
 
 use crate::ServeState;
-use crate::auth::{Cidr, client_address, client_of};
+use crate::auth::{Cidr, Principal, Role, client_address, client_of};
 use crate::routes::{build_router, guarded_routes};
 
 /// A `Basic` header value for this name and secret.
@@ -1139,6 +1139,12 @@ fn router_with_material_under_a_withheld_root(dir: &str) -> (axum::Router, Arc<S
         .expect("two roots");
         conn.execute("UPDATE member SET root_id = 2", [])
             .expect("files every member under the withheld root");
+        // **O86: a grant only restricts a non-admin.** `Principal::from_account`
+        // drops an administrator's roots, so a grant test whose holder is the
+        // seeded admin measures nothing — it would pass against a filter that
+        // had been deleted.
+        conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+            .expect("a grant restricts a user, never an admin");
         conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
             .expect("grants the fixture account the other root");
 
@@ -1244,6 +1250,12 @@ fn two_works_one_withheld(dir: &str) -> (axum::Router, Arc<ServeState>) {
             [hidden_id],
         )
         .expect("files the hidden work under the hidden root");
+        // **O86: a grant only restricts a non-admin.** `Principal::from_account`
+        // drops an administrator's roots, so a grant test whose holder is the
+        // seeded admin measures nothing — it would pass against a filter that
+        // had been deleted.
+        conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+            .expect("a grant restricts a user, never an admin");
         conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
             .expect("grants only the visible root");
     }
@@ -1347,6 +1359,12 @@ fn one_work_two_editions_split_across_roots(dir: &str) -> (axum::Router, Arc<Ser
             [work_id],
         )
         .expect("files en under the visible root");
+        // **O86: a grant only restricts a non-admin.** `Principal::from_account`
+        // drops an administrator's roots, so a grant test whose holder is the
+        // seeded admin measures nothing — it would pass against a filter that
+        // had been deleted.
+        conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+            .expect("a grant restricts a user, never an admin");
         conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
             .expect("grants only the visible root");
 
@@ -1481,6 +1499,12 @@ fn one_work_three_editions_hub_withheld(dir: &str) -> (axum::Router, Arc<ServeSt
             [work_id],
         )
         .expect("files raw — the hub — under the hidden root");
+        // **O86: a grant only restricts a non-admin.** `Principal::from_account`
+        // drops an administrator's roots, so a grant test whose holder is the
+        // seeded admin measures nothing — it would pass against a filter that
+        // had been deleted.
+        conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+            .expect("a grant restricts a user, never an admin");
         conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
             .expect("grants only the visible root");
     }
@@ -1575,23 +1599,28 @@ async fn every_route_declares_its_grant_posture() {
         })
         .count();
     assert_eq!(
-        driven, 23,
-        "23 of the 38 guarded routes must be classified Refuses, Filters or \
+        driven, 19,
+        "19 of the 38 guarded routes must be classified Refuses, Filters or \
          RefusesAndFilters and driven by the proofs below — a route's \
          posture changed without this count moving to match, so a route \
-         this suite believes it proves may no longer be one it does. Raised \
-         from 19 when I8 reclassified spec C3 §5's four metadata routes from \
-         `GrantIndependent` to `Refuses`: `library_api::work`/`one_series` \
-         already resolved a slug/id through `principal.roots`, and these \
-         four did not, so a hidden work answered 404 on GET and 200 on PATCH"
+         this suite believes it proves may no longer be one it does. It was \
+         19; I8 raised it to 23 by reclassifying spec C3 §5's four metadata \
+         routes from `GrantIndependent` to `Refuses`, because a hidden work \
+         answered 404 on GET and 200 on PATCH; **O86 returned them and the \
+         count with them.** Those four are admin-only and an administrator's \
+         root grant is now dropped where the principal is built, so no caller \
+         of them holds a grant to refuse against. I8's 404 was driven by a \
+         fixture granting a root to the seeded *admin* — the combination O86 \
+         made unrepresentable — so the proof is void rather than lost"
     );
     assert_eq!(
         table.len() - driven,
-        15,
-        "the remaining 15 guarded routes must be GrantIndependent or \
-         KnownGap — see the `driven == 23` assertion just above, which this \
-         one is the other half of. Was 19 before I8 moved the same four \
-         routes out of this half"
+        19,
+        "the remaining 19 guarded routes must be GrantIndependent or \
+         KnownGap — see the `driven == 19` assertion just above, which this \
+         one is the other half of. Was 19, then 15 while I8 held the four \
+         metadata routes in the driven half, and 19 again now O86 has \
+         returned them"
     );
 
     let credential = crate::test_support::fixture_authorization();
@@ -1655,12 +1684,24 @@ async fn every_route_declares_its_grant_posture() {
         );
     }
 
-    // The four metadata PATCH routes' own `Refuses` proof (I8): the fixture's
-    // one work, its one edition and one member, and the series that work
-    // alone stands for, are all wholly hidden from the fixture account — a
-    // PATCH naming any of them must 404 exactly as a GET already does,
-    // rather than resolving through to a 200 that writes and re-projects the
-    // full document (the finding this closes).
+    // **The four metadata PATCH routes, and what now protects them — O86.**
+    //
+    // This block was I8's `Refuses` proof: the fixture's work, edition, member
+    // and series are wholly hidden from the fixture account, so a PATCH naming
+    // any of them had to 404 exactly as a GET does rather than resolving
+    // through to a 200 that writes and re-projects the whole document.
+    //
+    // **That proof is void, not weakened.** It required an account holding a
+    // root grant *and* the admin role these routes demand, and
+    // `Principal::from_account` no longer produces one: an administrator's
+    // grant is dropped, so nothing is hidden from any caller these routes
+    // admit. The fixture above demotes the grant holder to `user` precisely so
+    // its grant is live, which makes that same account inadmissible here.
+    //
+    // So the block keeps driving all four routes and asserts the guard that is
+    // now load-bearing for them: **the role gate refuses first**. Deleting it
+    // outright would leave the four with no driven proof at all, which is how
+    // a reclassification quietly becomes a hole.
     let refuses_slug = refuses_state.works[0].id.clone();
     let (refuses_edition_id, refuses_member_id): (i64, i64) = {
         let conn = refuses_state.library.conn();
@@ -1711,9 +1752,11 @@ async fn every_route_declares_its_grant_posture() {
         let response_body = crate::test_support::body_string(response).await;
         assert_eq!(
             status,
-            StatusCode::NOT_FOUND,
-            "{pattern} is classified Refuses, but PATCH {uri} from an account \
-             granted a different root answered {status}: {response_body}"
+            StatusCode::FORBIDDEN,
+            "{pattern} is admin-only, so PATCH {uri} from the non-admin this \
+             fixture's live grant requires must be refused by the role gate \
+             before any grant question is reached — answered {status}: \
+             {response_body}"
         );
     }
 
@@ -1866,11 +1909,18 @@ async fn every_route_declares_its_grant_posture() {
     // exact shape — an edition (and its one member) sharing a work with a
     // granted sibling. `edition_owner`/`member_owner` check the edition/
     // member's own root, not merely whether the work has *some* visible
-    // material, so a PATCH naming the withheld `raw` edition must still 404
-    // even though `patch_work`/`patch_series` against this same work would
-    // legitimately succeed (`en` keeps it visible) — which is exactly why
-    // this fixture cannot stand in for the wholly-hidden one above for those
-    // two routes, and does not try to.
+    // material, so a PATCH naming the withheld `raw` edition had to 404 even
+    // though `patch_work`/`patch_series` against this same work would
+    // legitimately succeed (`en` keeps it visible).
+    //
+    // **Void for the same reason as the block above — O86.** The caller that
+    // makes this fixture's grant live is a non-admin, and these routes admit
+    // only admins, whose grant is dropped. `edition_owner` and `member_owner`
+    // still ask the edition's own root and that is deliberately kept: it is
+    // the correct answer for any caller holding a grant, and the day the role
+    // rule changes it is the difference between a leak and none. It is simply
+    // unreachable through these routes today, so what is asserted here is the
+    // gate that does the refusing.
     let (raw_edition_id, raw_member_id): (i64, i64) = {
         let conn = split_state.library.conn();
         conn.query_row(
@@ -1911,16 +1961,31 @@ async fn every_route_declares_its_grant_posture() {
         let response_body = crate::test_support::body_string(response).await;
         assert_eq!(
             status,
-            StatusCode::NOT_FOUND,
+            StatusCode::FORBIDDEN,
             "{pattern} is classified Refuses, but PATCH {uri} against the \
              withheld half of a work that also has a granted half answered \
              {status}: {response_body}"
         );
     }
 
-    // The other half of the same proof: a restricted grant must still allow
-    // editing material it *does* cover, or the check above is not narrower
-    // than "deny everything". The granted `en` edition and its one member.
+    // **The other half of the pair, restored to meaning something under O86.**
+    //
+    // It used to be: a restricted grant must still allow editing material it
+    // *does* cover, or the check above is not narrower than "deny everything".
+    // With the grant no longer reaching these routes, asserting 403 here too
+    // would collapse the pair into one assertion made twice — which looks like
+    // coverage and is not.
+    //
+    // So the account is promoted back for this half. The pair now reads
+    // non-admin → 403, admin → 200, which is the property that actually holds:
+    // **the role gate refuses exactly non-admins and nothing else.** The
+    // material is unchanged between the two halves, so the status difference
+    // is attributable to the role alone.
+    {
+        let conn = split_state.library.conn();
+        conn.execute("UPDATE user SET role = 'admin' WHERE id = 1", [])
+            .expect("promotes for the positive half");
+    }
     let (en_edition_id, en_member_id): (i64, i64) = {
         let conn = split_state.library.conn();
         conn.query_row(
@@ -1962,11 +2027,23 @@ async fn every_route_declares_its_grant_posture() {
         assert_eq!(
             status,
             StatusCode::OK,
-            "{pattern} is classified Refuses, but PATCH {uri} against the \
-             *granted* half of a work with a withheld sibling answered \
-             {status} — the new check must refuse only what the grant \
-             actually hides: {response_body}"
+            "{pattern} is admin-only, so PATCH {uri} from an administrator \
+             must land — the role gate refuses exactly non-admins, and the \
+             half above proves the other direction against the same \
+             material: {response_body}"
         );
+    }
+
+    // **Demoted again, because the promotion above is scoped to that pair and
+    // nothing else.** The OPDS proofs below need a caller whose grant is live,
+    // and an admin's is dropped (O86) — leaving the account promoted here made
+    // `/opds/v1.2/works/{work}` name an edition outside the grant, which is
+    // the filter being unreachable rather than broken. The state is shared
+    // across the blocks of this test, so the role has to be put back.
+    {
+        let conn = split_state.library.conn();
+        conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+            .expect("restores the restricted caller for the proofs below");
     }
 
     // `Filters`, split. `/opds/v1.2/works/{work}` was already proven this
@@ -2758,4 +2835,68 @@ async fn a_correction_naming_the_withheld_edition_on_the_from_side_is_still_refu
     );
 
     crate::test_support::cleanup("taiyaku-test-grant-posture-triple-from-guard");
+}
+
+/// **O86: an administrator is unrestricted in every dimension, and the grant
+/// is dropped where the principal is built.**
+///
+/// `role`, `roots`, `can_download` and `can_stream` are four independent
+/// columns, and spec A2 lists them side by side without saying whether they
+/// compose. They do not: **role dominates.** An administrator edits rows no
+/// grant can scope — `series_title` is keyed `(series_id, title)` and has no
+/// per-work column to filter on — so an admin who can see only part of a
+/// series can rename it for the whole library while only the works they can
+/// see get their cached `.library.json` refreshed. That was O86, and this rule
+/// is why it cannot happen rather than why it is refused.
+///
+/// **Here rather than at `taiyaku library user grant-root`**: all three
+/// resolvers (API key, HTTP Basic, session cookie) build through
+/// `from_account`, so this cannot be forgotten by a route, and it covers a
+/// grant that already exists — including one held by an account promoted to
+/// admin after it was granted.
+#[test]
+fn an_administrator_is_unrestricted_whatever_the_row_says() {
+    let granted = taiyaku_library::account::Account {
+        id: 7,
+        name: "curator".into(),
+        role: "admin".into(),
+        can_download: false,
+        can_stream: false,
+    };
+    let principal = Principal::from_account(&granted, vec![1, 2]);
+
+    assert_eq!(principal.role, Role::Admin);
+    assert!(
+        principal.roots.is_empty(),
+        "an admin's root grant is dropped — empty is what `browse` reads as \
+         unrestricted, so this is the existing meaning rather than a new one"
+    );
+    assert!(principal.can_download, "and the capability flags follow it");
+    assert!(principal.can_stream, "and the capability flags follow it");
+}
+
+/// The other half, and the one that fails if the rule is written as
+/// "always unrestricted" rather than "unrestricted when admin".
+#[test]
+fn a_users_grant_and_capabilities_are_left_exactly_as_the_row_holds_them() {
+    let granted = taiyaku_library::account::Account {
+        id: 8,
+        name: "reader".into(),
+        role: "user".into(),
+        can_download: false,
+        can_stream: true,
+    };
+    let principal = Principal::from_account(&granted, vec![1, 2]);
+
+    assert_eq!(principal.role, Role::User);
+    assert_eq!(
+        principal.roots,
+        vec![1, 2],
+        "a user's grant still restricts"
+    );
+    assert!(
+        !principal.can_download,
+        "and their flags are still their own"
+    );
+    assert!(principal.can_stream);
 }

@@ -935,46 +935,43 @@ pub(crate) async fn patch_series(
         // reach.
         //
         // **"The current membership" is `works_in_series`'s own answer —
-        // `principal.roots`-filtered (I8) — not the series' true membership,
-        // and for a restricted grant those two can differ permanently, not
-        // only mid-retry.** `set_series_titles` above writes `series_title`
-        // for the whole series regardless of `principal.roots`, since
-        // `series_title` has no per-work grant to check; this loop then
-        // re-saves only the works `works_in_series` returned. A work under
-        // this same series but outside `principal.roots` is never in that
-        // list, on this request or any later one from this same principal —
-        // so a restricted administrator's retry heals every not-yet-reached
-        // work *this principal can see* and cannot reach a hidden sibling's
-        // document at all. That document is not corrupted — its own row data
-        // is untouched, only its cached JSON copy of the series block goes
-        // stale — and a principal whose grant does cover it (or an
-        // unrestricted admin) heals it the same way: by saving that work's
-        // document once, through this route or a rescan.
+        // `principal.roots`-filtered (I8) — not the series' true membership.
+        // O86 was the gap between those two, and it is closed by the
+        // permission model rather than by anything here.**
         //
-        // **Assessed against this same delta review's Critical fix, and NOT
-        // reduced by it.** The stale document's own hazard is that some later,
-        // independent rebuild re-applies it — `derive::write_work`'s own
-        // read-back runs `librarydoc::apply` (never `apply_with_series_id`)
-        // over every work with no `LIBRARY` marker yet, which every work has
-        // on a database rebuilt from scratch — and `apply` still reaches
-        // `apply_series`'s ordinary resolve-by-title matching, deliberately
-        // left untouched here for the reason this module's own doc comment on
-        // `patch_series` gives: the import path needs it. A stale document's
-        // title text not matching whatever the fresh scan just derived for
-        // this series is exactly the general case `apply_series` was always
-        // built to handle by minting or moving — the same mechanism, not a
-        // new one this fix introduced or closed. So neither half of the
-        // Critical's fix touches this: `set_series_titles`'s refusal only
-        // runs inside *this* request, against titles *this* request is
-        // writing, and a stale document's own rebuild happens in a
-        // completely different one; `apply_with_series_id` only replaces
-        // what this loop itself would have called, not what the read-back
-        // calls. Left open as O86 (`docs/status.md`) rather than restricting
-        // this write to the grant — the latter would mean either refusing a
-        // straddling series' whole title edit outright, or leaving `series_title`
-        // itself only partially updated, and choosing between those is a
-        // product decision this fix round does not have the standing to make
-        // unilaterally.
+        // `set_series_titles` above writes `series_title` for the whole series
+        // regardless of `principal.roots`, since that table is keyed
+        // `(series_id, title)` and has no per-work column a grant could filter
+        // on; this loop then re-saves only the works `works_in_series`
+        // returned. So an administrator who could see part of a series once
+        // renamed it for the whole library and left every hidden sibling
+        // holding a stale cached copy of the series block — not corrupt, the
+        // row data being untouched, but never healed either, because no later
+        // request from that same principal reaches those works.
+        //
+        // **There is no such administrator now.** `auth::Principal::from_account`
+        // drops an admin's `roots` outright — role dominates the other three
+        // permission columns, which spec A2 listed side by side without
+        // deciding — and these routes admit nobody else. `works_in_series`
+        // therefore always answers the series' true membership here, and the
+        // two can no longer differ. The alternative considered and declined
+        // was refusing a `titles` edit whenever a series straddled the grant,
+        // which buys the same safety at the price of a rule every future
+        // shared-row edit would have to remember; the entry's other suggestion,
+        // leaving `series_title` partially updated, cannot be done at all,
+        // there being no per-work dimension in that table to leave partial.
+        //
+        // **The hazard that made a stale document matter, kept because it
+        // explains why this was worth closing rather than tolerating.** A
+        // later, independent rebuild re-applies such a document —
+        // `derive::write_work`'s read-back runs `librarydoc::apply` (never
+        // `apply_with_series_id`) over every work with no `LIBRARY` marker,
+        // which is every work on a database rebuilt from scratch — and `apply`
+        // reaches `apply_series`'s ordinary resolve-by-title matching,
+        // deliberately left untouched for the import path. A stale title not
+        // matching what the fresh scan derived is exactly the case
+        // `apply_series` handles by minting or moving, so the document was
+        // never lost, only silently re-homed.
         let mut last_doc = None;
         let mut saves = Vec::new();
         for work_id in works {

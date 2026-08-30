@@ -376,8 +376,7 @@ async fn a_restricted_reader_is_refused_the_pages_of_a_root_they_do_not_hold() {
         // is NOT granted.
         conn.execute("UPDATE member SET root_id = 2", [])
             .expect("files the material under the withheld root");
-        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
-            .expect("grants the fixture account the other root");
+        crate::test_support::grant_root(&conn, 1);
     }
 
     for path in [
@@ -422,8 +421,7 @@ async fn the_same_reader_granted_the_right_root_is_not_refused() {
             .expect("one root");
         conn.execute("UPDATE member SET root_id = 1", [])
             .expect("files the material under it");
-        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
-            .expect("grants it");
+        crate::test_support::grant_root(&conn, 1);
     }
 
     let response = get(&router, &format!("/api/works/{slug}")).await;

@@ -739,10 +739,20 @@ async fn the_acquisition_link_declares_the_type_the_route_will_send() {
 async fn the_acquisition_link_follows_can_download_in_both_directions() {
     async fn feed_for(dir: &str, may_download: bool) -> String {
         let state = Arc::new(crate::test_support::state(dir));
-        if !may_download {
+        {
             let conn = state.library.conn();
-            conn.execute("UPDATE user SET can_download = 0", [])
-                .expect("withholds the capability");
+            // **Demoted in BOTH arms, which is the point.** An administrator's
+            // capabilities are unconditionally true (O86), so withholding one
+            // from the seeded admin withholds nothing — but demoting only the
+            // withheld arm would vary the role *and* the capability between
+            // the two feeds, and this test exists to attribute the difference
+            // to `can_download` alone.
+            conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+                .expect("a capability is withheld from a user, never an admin");
+            if !may_download {
+                conn.execute("UPDATE user SET can_download = 0", [])
+                    .expect("withholds the capability");
+            }
         }
         let router = crate::test_support::authenticating(crate::build_router(state));
         let response = crate::test_support::get(&router, "/opds/v1.2/works/t").await;
@@ -783,6 +793,12 @@ async fn the_acquisition_link_follows_can_download_in_both_directions() {
     let state = Arc::new(crate::test_support::state("taiyaku-test-opds-acq-fetch"));
     {
         let conn = state.library.conn();
+        // Demoted first, as in `feed_for` above: an administrator's
+        // capabilities are unconditionally true (O86), so this block would
+        // otherwise fetch the *download* link and prove nothing about the
+        // fallback it exists to prove is alive.
+        conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+            .expect("a capability is withheld from a user, never an admin");
         conn.execute("UPDATE user SET can_download = 0", [])
             .expect("withholds the capability");
     }
@@ -1020,8 +1036,7 @@ fn router_with_a_real_page_under_a_withheld_root(
         // reader is NOT granted.
         conn.execute("UPDATE member SET root_id = 2", [])
             .expect("files the material under the withheld root");
-        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
-            .expect("grants the fixture account the other root");
+        crate::test_support::grant_root(&conn, 1);
     }
     let works = crate::works::from_library(&library).expect("projects the imported work");
     let state = std::sync::Arc::new(ServeState {
@@ -1089,8 +1104,7 @@ fn router_with_two_editions_split_across_roots(
             [work_id],
         )
         .expect("files en under the held root");
-        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
-            .expect("grants only the held root");
+        crate::test_support::grant_root(&conn, 1);
     }
     let works = crate::works::from_library(&library).expect("projects the imported work");
     let state = std::sync::Arc::new(ServeState {
@@ -1170,8 +1184,7 @@ fn router_with_two_works_one_withheld(dir: &str) -> (axum::Router, std::sync::Ar
             [hidden_id],
         )
         .expect("files the hidden work under the withheld root");
-        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
-            .expect("grants only the held root");
+        crate::test_support::grant_root(&conn, 1);
     }
     let works = crate::works::from_library(&library).expect("projects the imported works");
     let state = std::sync::Arc::new(ServeState {

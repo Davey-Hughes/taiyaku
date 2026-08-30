@@ -1188,6 +1188,29 @@ pub(crate) fn fixture_authorization() -> String {
 }
 
 #[cfg(test)]
+/// Grant the fixture account a root, **demoting it to `user` first**.
+///
+/// **O86: a grant restricts a user, never an administrator.**
+/// `auth::Principal::from_account` drops an admin's roots outright — role
+/// dominates the other three permission columns — so granting a root to the
+/// seeded account, which is an admin, restricts nothing. A grant test written
+/// that way measures nothing at all: it would pass just as well against a
+/// filter that had been deleted, which is the exact failure O62's
+/// whole-branch review found in `unreadable` and the reason this is one
+/// function rather than a line copied into eleven fixtures.
+///
+/// The demotion is the *point* of the helper, not an incidental step, which is
+/// why granting and demoting are not offered separately.
+pub(crate) fn grant_root(conn: &rusqlite::Connection, root_id: i64) {
+    conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+        .expect("a grant restricts a user, never an admin");
+    conn.execute(
+        "INSERT INTO user_root (user_id, root_id) VALUES (1, ?1)",
+        [root_id],
+    )
+    .expect("grants the fixture account a root");
+}
+
 mod pinned {
     /// The pinned hash and the password beside it must stay one pair.
     ///

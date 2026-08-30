@@ -628,22 +628,64 @@ fn the_unrooted_note_appears_only_when_members_carry_no_root() {
 /// `!= 1` survived inside the `println!`, which would have warned about being
 /// "restricted to that one root" on the *second* grant and stayed silent on
 /// the first — the one that actually narrows the account.
+///
+/// **It also takes the role since O86**, because an administrator is not
+/// narrowed by anything: printing both notes told the operator the grant
+/// "does nothing while it stays one" and that the account "is now restricted
+/// to that one root", in that order, which is a direct contradiction. The role
+/// is decided inside this function rather than by an `if` around the
+/// `println!`, for the same reason the count is.
 #[test]
-fn the_narrowing_note_appears_only_on_the_first_grant() {
+fn the_narrowing_note_appears_only_on_a_users_first_grant() {
     assert_eq!(
-        narrowed_note(0),
+        narrowed_note("user", 0),
         None,
         "`!=` warns about a restriction on an account that holds no grant at all"
     );
-    let first = narrowed_note(1).expect("the first grant narrows the account");
+    let first = narrowed_note("user", 1).expect("the first grant narrows the account");
     assert!(first.contains("restricted"), "{first}");
     assert!(
         first.contains("no grants at all sees every root"),
         "it states the rule that makes this counter-intuitive: {first}"
     );
     assert_eq!(
-        narrowed_note(2),
+        narrowed_note("user", 2),
         None,
         "`!=` warns on every later grant, which widen rather than narrow"
+    );
+    assert_eq!(
+        narrowed_note("admin", 1),
+        None,
+        "an administrator is narrowed by nothing — `admin_note` says the grant \
+         is inert, and saying it also restricts them contradicts that in the \
+         very next line"
+    );
+}
+
+/// **O86: a grant on an administrator is recorded and inert, and the command
+/// has to say so.**
+///
+/// `auth::Principal::from_account` drops an admin's roots where the principal
+/// is built — role dominates the other three permission columns — so
+/// `grant-root` against an admin writes a row that changes nothing about what
+/// that account sees. The row is kept rather than refused, because a later
+/// demotion makes it live; an operator who is not told that has been given a
+/// result indistinguishable from a working grant.
+///
+/// Extracted as a pure function for the same reason `narrowed_note` and
+/// `unrooted_note` were: a comparison inside a `println!` survives mutation,
+/// because nothing can see what a command printed.
+#[test]
+fn the_admin_note_appears_only_for_an_administrator() {
+    assert_eq!(
+        admin_note("user"),
+        None,
+        "an ordinary account's grant restricts it, and needs no warning"
+    );
+    let note = admin_note("admin").expect("an admin's grant is inert and must say so");
+    assert!(
+        note.contains("administrator") && note.contains("demot"),
+        "the note has to say both that it does nothing now and what would \
+         make it matter later, or it reads as a refusal: {note}"
     );
 }

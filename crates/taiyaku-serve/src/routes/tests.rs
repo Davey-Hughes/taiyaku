@@ -2973,8 +2973,7 @@ fn router_with_two_works_one_withheld(dir: &str) -> (axum::Router, Arc<ServeStat
             [hidden_id],
         )
         .expect("files the hidden work under the withheld root");
-        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
-            .expect("grants only the held root");
+        crate::test_support::grant_root(&conn, 1);
     }
     let works = crate::works::from_library(&library).expect("projects the imported works");
     let state = Arc::new(ServeState {
@@ -3089,8 +3088,7 @@ fn router_over_a_scanned_work_under_a_withheld_root(dir: &str) -> (axum::Router,
         .expect("two roots");
         conn.execute("UPDATE member SET root_id = 2", [])
             .expect("files every member under the withheld root");
-        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
-            .expect("grants the fixture account the other root");
+        crate::test_support::grant_root(&conn, 1);
     }
     let works = crate::works::from_library(&library).expect("projects the imported work");
     let state = Arc::new(ServeState {

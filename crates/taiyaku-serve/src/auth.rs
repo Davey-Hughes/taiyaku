@@ -276,7 +276,16 @@ pub struct Principal {
     /// deliberate: `user_root` had no writer before spec C1, so every account
     /// in every existing library holds an empty grant, and any other reading
     /// would have emptied every library the day migration 6 applied. The first
-    /// grant an account receives is the moment it stops seeing everything.
+    /// grant a **non-admin** account receives is the moment it stops seeing
+    /// everything.
+    ///
+    /// **Always empty for an administrator, whatever `user_root` holds —
+    /// O86.** [`Principal::from_account`] drops the grant there rather than
+    /// here, so nothing downstream has to ask about the role: this field alone
+    /// is the answer, and it already means "unrestricted" when empty. The row
+    /// is untouched and becomes live on demotion. Before that rule, an admin
+    /// could hold a grant and see half a series while editing shared rows for
+    /// all of it, which is what O86 was.
     ///
     /// Read by `library_api`, which passes it to every
     /// `taiyaku_library::browse` query so the filter is applied in SQL rather
@@ -291,20 +300,52 @@ pub struct Principal {
 }
 
 impl Principal {
+    /// **An administrator is unrestricted in every dimension, whatever the
+    /// rows say — O86.**
+    ///
+    /// `role`, `user_root`, `can_download` and `can_stream` are four
+    /// independent columns and spec A2 lists them side by side without saying
+    /// whether they compose. They do not: **role dominates the other three**,
+    /// and this is the one place that is decided.
+    ///
+    /// The reason is not tidiness. An administrator edits rows that no grant
+    /// can scope: `series_title` is keyed `(series_id, title)` with no
+    /// per-work column to filter on, so `metadata::patch_series` writes it for
+    /// the whole series while its own loop refreshes only the works the grant
+    /// shows. A half-sighted admin could therefore rename a series for the
+    /// entire library and leave the works they cannot see holding a stale
+    /// cached document — O86. **This rule is why that cannot happen, rather
+    /// than a refusal explaining why it must not.** The alternative was to
+    /// reject a title edit whenever a series straddled the grant, which trades
+    /// a coherent permission model for a rule every future shared-row edit
+    /// would have to remember.
+    ///
+    /// **Dropped here rather than refused by `taiyaku library user
+    /// grant-root`.** All three resolvers — API key, HTTP Basic, session
+    /// cookie — build through this function, so no route can be forgotten;
+    /// and a CLI refusal would leave an existing grant live, including one on
+    /// an account promoted to admin after it was granted. The row is kept
+    /// rather than deleted, so a demotion restores the grant it always held.
+    ///
+    /// An empty `roots` is what `taiyaku_library::browse` already reads as
+    /// unrestricted (see [`Principal::roots`]), so this reuses the existing
+    /// meaning instead of introducing a second one.
     pub(crate) fn from_account(
         account: &taiyaku_library::account::Account,
         roots: Vec<i64>,
     ) -> Self {
+        let role = if account.role == "admin" {
+            Role::Admin
+        } else {
+            Role::User
+        };
+        let admin = role == Role::Admin;
         Self {
             user_id: account.id,
-            role: if account.role == "admin" {
-                Role::Admin
-            } else {
-                Role::User
-            },
-            can_download: account.can_download,
-            can_stream: account.can_stream,
-            roots,
+            role,
+            can_download: admin || account.can_download,
+            can_stream: admin || account.can_stream,
+            roots: if admin { Vec::new() } else { roots },
         }
     }
 }

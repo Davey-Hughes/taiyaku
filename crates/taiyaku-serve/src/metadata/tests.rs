@@ -1383,3 +1383,72 @@ async fn a_closure_that_panicked_is_a_500_naming_what_was_running() {
         "it names what was running, not just that something did: {body}"
     );
 }
+
+/// **The grant clause still filters, proved at the function rather than
+/// through a route — O86.**
+///
+/// O86 made an administrator unrestricted, and these four resolvers are
+/// reachable only from admin-only routes. They are still *called* on every
+/// edit — a sweep catches every whole-body mutant of all four — but the
+/// `roots` slice they receive is now always empty, so **the clause's
+/// restrictive effect became untestable through any route**, and
+/// `root_grant_clause -> String::new()` survived a mutation sweep the day the
+/// rule landed. Deleting the entire grant filter passed every test.
+///
+/// That survivor is what this test kills. The functions take `roots` and
+/// filter on it deliberately — it is correct for any caller holding a grant,
+/// and if the role rule is ever revisited it is the difference between a leak
+/// and none — so the contract is asserted directly, with a non-empty slice no
+/// route can currently supply. **A guard nothing exercises is a guard nobody
+/// can trust**, and "kept for defence in depth" is a claim, not a property,
+/// until something proves it.
+#[test]
+fn the_grant_clause_still_filters_even_though_no_route_can_supply_a_grant() {
+    let library = test_support::library();
+    let conn = library.conn();
+    conn.execute_batch(
+        "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/withheld');
+         INSERT INTO series (id, sort_title) VALUES (1, 'Series');
+         INSERT INTO work (id, content_key, slug, series_id, title, reading, hub)
+         VALUES (1, 'k', 'held-v01', 1, 'Held', 'rtl', 'raw');
+         INSERT INTO edition (id, work_id, key, label) VALUES (1, 1, 'raw', 'Raw');
+         INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, root_id)
+         VALUES (1, 1, 0, '/withheld/a.cbz', 'a', 1, 2);",
+    )
+    .expect("one work, wholly under the withheld root");
+
+    assert_eq!(
+        super::work_by_slug(&conn, &[], "held-v01").expect("an empty grant is unrestricted"),
+        1,
+        "an empty grant sees the work — the case every route now takes"
+    );
+    assert!(
+        matches!(
+            super::work_by_slug(&conn, &[1], "held-v01"),
+            Err(super::NoAnswer::Missing)
+        ),
+        "a grant naming only the root this work is NOT under must answer \
+         Missing, exactly as `browse::work` answers None (I8)"
+    );
+    assert_eq!(
+        super::work_by_slug(&conn, &[2], "held-v01").expect("the granting root resolves it"),
+        1,
+        "and a grant that does cover it still resolves"
+    );
+
+    assert_eq!(
+        super::works_in_series(&conn, &[], 1).expect("unrestricted"),
+        vec![1],
+        "the same three answers for the series listing"
+    );
+    assert!(
+        super::works_in_series(&conn, &[1], 1)
+            .expect("a grant is not an error")
+            .is_empty(),
+        "a grant covering none of a series' works lists none of them"
+    );
+    assert_eq!(
+        super::works_in_series(&conn, &[2], 1).expect("the granting root"),
+        vec![1]
+    );
+}

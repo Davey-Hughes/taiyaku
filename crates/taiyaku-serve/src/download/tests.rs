@@ -552,6 +552,10 @@ async fn a_withheld_download_capability_refuses_with_403() {
     let state = std::sync::Arc::new(crate::test_support::state("download-withheld"));
     {
         let conn = state.library.conn();
+        // Demoted first — see `withhold` below for why an admin cannot have a
+        // capability withheld (O86).
+        conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+            .expect("a capability is withheld from a user, never from an admin");
         conn.execute("UPDATE user SET can_download = 0", [])
             .expect("withholds the capability");
     }
@@ -734,8 +738,15 @@ async fn a_withheld_download_capability_refuses_a_member_download_too() {
 /// second test below needs to prove `can_stream` really leaves it alone.
 /// `state`'s fixture work `t`/`raw` (`test_support.rs:14`) writes real `.cbz`
 /// members to disk, which is what a passthrough download needs to succeed.
+/// **The account is demoted first — O86.** `Principal::from_account` reads
+/// `can_download` and `can_stream` as unconditionally true for an
+/// administrator, on the same rule that drops an admin's root grant, so
+/// withholding a capability from the seeded admin withholds nothing and the
+/// test would pass against a guard that had been deleted.
 fn withhold(state: &crate::ServeState, column: &str) {
     let conn = state.library.conn();
+    conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+        .expect("a capability is withheld from a user, never from an admin");
     conn.execute(&format!("UPDATE user SET {column} = 0"), [])
         .expect("withholds the capability");
 }

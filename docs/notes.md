@@ -14434,3 +14434,108 @@ filed as a footnote is the real one.** 18 of `proposals.rs`' 42 are the missing
 nothing here can fix. How many functions the derive cause hides workspace-wide
 has not been counted; that is the measurement that says whether adding
 `derive(Default)` to public types for a test tool's benefit is worth it.
+### O86: fixing the permission model rather than the handler, and the eleven fixtures that had been proving nothing
+
+O86 was a stale cache: `patch_series` writes `series_title` for the whole
+series — that table is keyed `(series_id, title)` and has no per-work column a
+grant could filter on — while its per-work loop refreshes `.library.json` only
+for the works `works_in_series` returns, which *is* grant-filtered. A
+restricted administrator therefore renamed a series library-wide and left every
+work outside their grant holding an old cached copy.
+
+**The entry's two options were not two.** "Refuse the edit when the series
+straddles the grant" or "leave `series_title` partially updated" — and the
+second cannot be done at all, there being no per-work dimension in that table
+to leave partial. So the real choice was refusal, or removing the state that
+makes the question askable.
+
+**Measured before choosing.** This library holds two accounts, `davey` (admin)
+and `alex` (user), and **both hold zero grants** — an empty grant is
+unrestricted. No account was in the O86 shape, and nothing but the CLI can
+create one. So the change was free of live consequence, which is what made
+changing the model the cheaper option rather than the braver one.
+
+**The rule: role dominates.** `Principal::from_account` drops an
+administrator's roots and reads `can_download`/`can_stream` as true. Spec A2
+lists the four permission columns side by side and never says whether they
+compose; they do not, and one function now decides it. It is done where the
+principal is built rather than by refusing the CLI grant, because all three
+resolvers — API key, HTTP Basic, session cookie — pass through it, and a CLI
+refusal would leave an existing row live, including on an account promoted to
+admin after being granted. The row is kept rather than deleted, so a demotion
+restores the grant it always held, and `grant-root` says so.
+
+### The eleven fixtures, and why this is the O62 shape again
+
+Making the rule true broke eleven test fixtures, and **that is the finding
+worth recording**: every one of them granted a root — or withheld a
+capability — from the *seeded admin*, then asserted the restriction held.
+
+Under the new rule those assertions cannot fail. But the point is that they
+were already weak: they were measuring a filter through an account the model
+had never decided should be filtered, and a reviewer reading them would have
+believed the filter proven. This is the same shape O62's whole-branch review
+found in `unreadable` — *"mutating `.every` to `.some` left the entire
+1694-test web suite green"* — and the same shape as O84's grant test, which
+passed against a deliberately broken build because the fixture's root ids and
+work ids collided. **Three instances now, all of them a fixture that cannot
+distinguish the code from its negation.**
+
+They route through one helper, `test_support::grant_root`, which demotes before
+granting. One place holds the rule instead of eleven.
+
+### Three driven proofs, reclassified rather than repaired
+
+The four admin-only metadata PATCH routes were classified `Refuses` and driven,
+asserting 404 for a hidden work. **That proof is void, not weakened**: it
+required an account holding both a live grant and the admin role those routes
+demand, and no such account can exist now. They move back to
+`GrantIndependent` — where I8 found them — and their blocks keep driving all
+four, asserting the guard that is actually load-bearing: the role gate refuses
+first. Deleting the blocks would have left four routes with no driven proof at
+all, which is how a reclassification quietly becomes a hole.
+
+**The positive control needed the most care.** I8's pair was "the withheld half
+404s, the granted half still 200s", proving the check was narrower than "deny
+everything". Asserting 403 in both halves would have collapsed it into one
+assertion made twice — which looks like coverage and is not. The account is
+promoted for that half only, so the pair now reads **non-admin → 403, admin →
+200 against identical material**, and the difference is attributable to the
+role alone. The promotion is scoped and reversed immediately after, because the
+OPDS proofs further down the same test need a caller whose grant is live.
+
+### The guard the rule quietly stopped testing
+
+`work_by_slug`, `edition_owner`, `member_owner` and `works_in_series` still
+take `roots` and still filter on it, kept deliberately: correct for any caller
+with a non-empty grant, and the difference between a leak and none if the role
+rule is ever revisited.
+
+**This was first written as "unreachable through those four routes", and that
+is wrong.** They are reached on every single edit — a sweep catches all
+nineteen whole-body mutants of the four. What no longer reaches them is a
+*non-empty* `roots`, so the clause is always a no-op there. The distinction
+looked like pedantry until the sweep produced the consequence:
+
+```
+metadata.rs:379:5: replace root_grant_clause -> String with String::new()   MISSED
+```
+
+**Deleting the entire grant filter passed every test in the workspace.** The
+I8 proofs that used to exercise it drove a restricted *administrator*, which
+is exactly the account O86 made unrepresentable — so the rule that closed O86
+took that guard's only coverage with it, silently, and the sweep is the only
+thing that said so.
+
+`metadata::tests::the_grant_clause_still_filters_even_though_no_route_can_supply_a_grant`
+asserts the contract at the function instead of through a route, with a slice
+no route can currently supply, and fails against that mutation. Verified by
+hand-applying it.
+
+**The general lesson is the one this session keeps meeting from a new angle.**
+Three times today a test could not distinguish the code from its negation —
+O62's `unreadable`, O84's colliding fixture ids, O86's eleven admin fixtures.
+This is the fourth and the nastiest, because nothing was *wrong* with the test
+suite before or after: a rule change moved a guard out of every test's reach
+without touching a line of the guard or a line of any test. Only a sweep sees
+that, and only if the unviable count is read alongside the survivor list.

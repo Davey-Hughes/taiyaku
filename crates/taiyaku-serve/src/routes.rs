@@ -2200,10 +2200,61 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         // in an administrator's *account* (`Role::Admin`) is unconditional
         // and orthogonal to `Principal.roots`, which is why "admin-only" and
         // "resolves through the grant" are not in tension.
-        ("/api/library/works/{slug}", Refuses),
-        ("/api/library/series/{id}", Refuses),
-        ("/api/library/editions/{id}", Refuses),
-        ("/api/library/members/{id}", Refuses),
+        //
+        // **That last sentence stopped being true with O86, and these four
+        // entries moved from `Refuses` to `GrantIndependent` because of it.**
+        // The two are no longer orthogonal: `Principal::from_account` drops an
+        // administrator's grant outright, so every caller these routes admit
+        // holds an empty — unrestricted — one, and there is no hidden work for
+        // them to refuse. The 404 the entries used to assert was driven by a
+        // fixture that granted a root to the seeded *admin*, which is exactly
+        // the combination O86 made unrepresentable. **The check is void rather
+        // than lost**: it proved the answer for a state the model no longer
+        // has.
+        //
+        // `work_by_slug`, `edition_owner`, `member_owner` and `works_in_series`
+        // still take `roots` and still filter on it, kept deliberately: it is
+        // correct for any caller with a non-empty grant, and the day the role
+        // rule changes it is the difference between a leak and none.
+        //
+        // **Not "unreachable" — they run on every edit.** What no longer
+        // reaches them through these routes is a *non-empty* `roots`, so the
+        // clause is always a no-op here. The distinction is not pedantry: a
+        // sweep the day this landed reported `metadata::root_grant_clause ->
+        // String::new()` as a **survivor**, because deleting the entire grant
+        // filter passed every test. `metadata::tests::
+        // the_grant_clause_still_filters_even_though_no_route_can_supply_a_grant`
+        // asserts the contract directly with a slice no route can supply, and
+        // fails against that mutation. A guard nothing exercises is a guard
+        // nobody can trust.
+        (
+            "/api/library/works/{slug}",
+            GrantIndependent {
+                reason: "admin-only, and O86 drops an admin's root grant, so \
+                         no caller of this route holds one to refuse against",
+            },
+        ),
+        (
+            "/api/library/series/{id}",
+            GrantIndependent {
+                reason: "admin-only, and O86 drops an admin's root grant, so \
+                         no caller of this route holds one to refuse against",
+            },
+        ),
+        (
+            "/api/library/editions/{id}",
+            GrantIndependent {
+                reason: "admin-only, and O86 drops an admin's root grant, so \
+                         no caller of this route holds one to refuse against",
+            },
+        ),
+        (
+            "/api/library/members/{id}",
+            GrantIndependent {
+                reason: "admin-only, and O86 drops an admin's root grant, so \
+                         no caller of this route holds one to refuse against",
+            },
+        ),
         (
             "/opds/v1.2/catalog",
             GrantIndependent {

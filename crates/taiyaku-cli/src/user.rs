@@ -434,7 +434,15 @@ fn grant_root(args: &[String]) -> Result<(), String> {
     } else {
         println!("that account could already see {path}; nothing to do");
     }
-    if let Some(note) = narrowed_note(held.len()) {
+    let role: String = conn
+        .query_row("SELECT role FROM user WHERE id = ?1", [user_id], |row| {
+            row.get(0)
+        })
+        .map_err(|e| format!("reading the account's role: {e}"))?;
+    if let Some(note) = admin_note(&role) {
+        println!("  {note}");
+    }
+    if let Some(note) = narrowed_note(&role, held.len()) {
         println!("  {note}");
     }
     // **A grant over a library nothing has re-derived shows an empty shelf**,
@@ -470,10 +478,44 @@ fn grant_root(args: &[String]) -> Result<(), String> {
 /// Extracted for the same reason as [`unrooted_note`] and
 /// [`sessions_ended_note`]: `== 1` inside a `println!` survives as `!= 1`,
 /// because nothing can see what a command printed.
-fn narrowed_note(held: usize) -> Option<String> {
-    (held == 1).then(|| {
+///
+/// **Takes the role since O86.** An administrator is narrowed by nothing —
+/// their grant is dropped where the principal is built — so printing this
+/// beside [`admin_note`] told the operator the grant "does nothing while it
+/// stays one" and that the account "is now restricted to that one root", one
+/// line apart. The role is decided here rather than by an `if` around the
+/// `println!`, for the same reason the count is.
+fn narrowed_note(role: &str, held: usize) -> Option<String> {
+    (role != "admin" && held == 1).then(|| {
         "That account is now restricted to that one root. \
          An account with no grants at all sees every root."
+            .to_string()
+    })
+}
+
+/// The warning a grant carries when its target is an administrator — O86.
+///
+/// **An admin's grant is recorded and inert.** `auth::Principal::from_account`
+/// drops an administrator's roots where the principal is built, because role
+/// dominates the other three permission columns: an admin edits shared rows no
+/// grant can scope (`series_title` is keyed `(series_id, title)` and has no
+/// per-work column to filter on), so a half-sighted one could rename a series
+/// for the whole library and leave the works it cannot see holding a stale
+/// cached document. That was O86.
+///
+/// **Said rather than refused.** The row is real and becomes live the moment
+/// the account is demoted, so refusing the command would lose a legitimate
+/// intent; printing nothing would hand back a result indistinguishable from a
+/// working grant.
+///
+/// Extracted for the same reason as [`narrowed_note`] and [`unrooted_note`]: a
+/// comparison inside a `println!` survives mutation, because nothing can see
+/// what a command printed.
+fn admin_note(role: &str) -> Option<String> {
+    (role == "admin").then(|| {
+        "That account is an administrator, so this grant does nothing while it \
+         stays one — an administrator always sees every root. The grant is \
+         recorded, and takes effect if the account is ever demoted."
             .to_string()
     })
 }

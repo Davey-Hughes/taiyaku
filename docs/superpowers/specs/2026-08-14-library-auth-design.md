@@ -285,6 +285,17 @@ Deliberately **not** Komga's full model: no age ratings, no content
 restrictions, no per-label filters. Those exist for libraries shared with
 children and were declined.
 
+*Corrected 2026-08-30, O86: **these four do not compose — `role` dominates the
+other three.** This sentence lists them side by side and says nothing about
+what happens when an account holds an admin role *and* a root grant, which left
+the combination representable and undecided until it caused a defect: an
+administrator edits rows no grant can scope — `series_title` is keyed
+`(series_id, title)` with no per-work column to filter on — so a half-sighted
+one renamed a series for the whole library while only the works it could see
+had their cached documents refreshed. `auth::Principal::from_account` now drops
+an administrator's roots and reads both capability flags as true, which is
+where that is decided.*
+
 **Filtering by root needs a column spec A does not have.** In spec A works
 arrive by `taiyaku library import`, not by a scan, so no work belongs to a root;
 `work.root_id` is scanner-derived and belongs in **spec B**, which lands *after*
