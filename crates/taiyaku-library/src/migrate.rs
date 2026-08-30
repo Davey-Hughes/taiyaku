@@ -57,7 +57,7 @@
 //!
 //! | Document | "Already holds state" means | Checked with |
 //! | --- | --- | --- |
-//! | `.progress.json` | a `progress` row exists for this work and [`crate::user_id`] | [`crate::state::progress`] is non-empty |
+//! | `.progress.json` | a `progress` row exists for this work and that user | [`crate::state::progress`] is non-empty |
 //! | `.notes.json` | at least one `note` row exists for this work and that user | [`crate::state::notes`]`.notes` is non-empty |
 //! | `.truth.json` | at least one `truth_page` or `truth_member` row exists for this work | [`crate::state::truth`] is `Some` |
 //! | `.library.json` | any hand-fixed metadata is recorded for this work | ![`LibraryDoc::is_empty`] |

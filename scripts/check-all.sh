@@ -149,6 +149,19 @@ fi
 run cargo fmt --all -- --check
 run cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+# **`broken_intra_doc_links` specifically, not `-D warnings` — the difference is
+# the whole reason this can be a gate.** A `[`name`]` that resolves to nothing
+# is always a defect: the reader is sent to a symbol that does not exist, and a
+# rename is how it happens. `browse.rs` carried one from a rename in #92 through
+# that branch's gate, its CI, and a mutation sweep, and it was found by hand.
+# `private_intra_doc_links` is a different thing entirely and must stay a
+# warning: linking a public item's doc to the private helper it delegates to is
+# this workspace's own convention — 79 of them, against the 2 unresolved links
+# that existed when this was added — so `-D warnings` here would fail on day one
+# and be deleted by the end of the week.
+run env RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
+  cargo doc --workspace --no-deps
+
 # Advisory and non-blocking — the `|| true` is the point, not an oversight, and
 # it mirrors `continue-on-error: true` on the same step in ci.yml. See
 # docs/ci.md, "The pedantic lints, and why they are advisory": pedantic stays

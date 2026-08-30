@@ -1791,7 +1791,7 @@ pub struct Side {
     /// `None` where they sit under several roots or under none.
     ///
     /// Taken from the same [`crate::derive::rel_paths_for_series`] rows
-    /// [`Self::path`] is built from rather than from `member.root_id`, so
+    /// [`Self::directories`] is built from rather than from `member.root_id`, so
     /// the two can never name different roots — and so a side whose material
     /// produced no `member` rows at all, a chapter-organised directory being
     /// exactly that, still says where it is.

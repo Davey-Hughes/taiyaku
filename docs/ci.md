@@ -7,7 +7,7 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 
 | Job | Runs |
 | --- | ---- |
-| `lint` | `cargo fmt --check`, `cargo clippy -D warnings` |
+| `lint` | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc -D rustdoc::broken_intra_doc_links` |
 | `test` | `cargo llvm-cov nextest --workspace` — runs the tests under nextest's per-test timeout *and* gates their aggregate coverage — then installs node and runs `scripts/coverage-floor.mjs` over a re-rendered JSON report for the per-file half |
 | `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown`, builds the browser package with `wasm-pack`, and runs `scripts/smoke-wasm.mjs` against the compiled module |
 | `web` | `pnpm install --frozen-lockfile`, `biome check` (formatting **and** lint), `tsc -b` typecheck, `vitest run --coverage` in `web/`, then `scripts/coverage-floor.mjs` for the per-file half |
@@ -23,6 +23,32 @@ native shell, and that property is easy to destroy accidentally — a single
 dependency that assumes threads or links a native library will do it. Without a
 gate, the breakage stays invisible until the reader is being built, by which
 point the offending dependency is load-bearing.
+
+### The doc-link check, and why it denies one lint rather than warnings
+
+**`RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc --workspace
+--no-deps`**, in the `lint` job and in `check-all.sh` beside it.
+
+An unresolved `[`name`]` sends the reader to a symbol that does not exist, and
+**a rename is how it happens**. One shipped: #92 renamed `missing_members` to
+`missing_by_edition` and left `EditionCard::missing`'s own `See
+[`missing_members`]` behind, which survived that branch's gate, its CI *and* a
+mutation sweep and was found by reading. Adding this also turned up two more
+unresolved links and two ambiguous ones — `[`derive`]`, which is both this
+module's function and the built-in attribute macro, and so resolved to neither
+until it was written `[`fn@derive`]`.
+
+**`-D warnings` here would be wrong and would not survive.** The other rustdoc
+lint that fires in this workspace is `private_intra_doc_links`, and linking a
+public item's doc to the private helper it delegates to is this codebase's own
+convention: `browse::unfiled` names `only_clause`, `home` names `LIST_CAP`,
+`search` names `TRIGRAM_MIN`. There were **79** of those against the **4**
+genuine link errors when this was added, so denying warnings wholesale would
+have failed on the first run and been deleted by the end of the week. One rule,
+denied precisely.
+
+**It is cheap because `--no-deps` is doing the work**: documenting the
+workspace's own crates and nothing they depend on.
 
 ### The one workflow that is not a job
 

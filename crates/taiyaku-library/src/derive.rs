@@ -67,7 +67,7 @@ const DEFAULT_EDITION_KEY: &str = "raw";
 /// precisely so a re-derive cannot reach one.
 const SCANNER_CHAPTER_SOURCE: &str = "filename";
 
-/// What one [`derive`] call turned the facts into.
+/// What one [`fn@derive`] call turned the facts into.
 ///
 /// `unreadable` counts every entry derivation could make no structure out of
 /// for want of readable bytes, which is four situations and not one: a format
@@ -280,7 +280,7 @@ pub struct DeriveReport {
     /// standing fact, for [`Self::kept_editions`]' reason.
     ///
     /// **So a fold is not the only way in, and the name says so since
-    /// 2026-08-27.** [`derive`] mints a series row for every series a rule or
+    /// 2026-08-27.** [`fn@derive`] mints a series row for every series a rule or
     /// a directory names, including one holding nothing but unattached chapter
     /// directories — an ordinary shape in this project's corpus — so a first
     /// scan of a library that has never folded anything reports one of these.
