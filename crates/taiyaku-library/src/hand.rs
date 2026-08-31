@@ -118,9 +118,18 @@ pub struct Saved {
 ///
 /// **The marker is recorded whether or not the file lands, and that is
 /// deliberate — including when there is no address to land it at.** It is the
-/// same marker `derive::write_work`'s own read-back arms, and what that
-/// function consults before overwriting `work.series_id`, `work.volume`,
-/// `edition.kind` and `edition.language` (I7's fix). An edit made against a
+/// same marker `derive::write_work`'s own read-back arms, and it means one
+/// thing only: **this work's document has been read back from disk, so do not
+/// read it again.**
+///
+/// *It used to mean a second thing — "do not overwrite `work.series_id`,
+/// `work.volume`, `edition.kind` and `edition.language`" — and conflating the
+/// two is what O80 was: a title-only Save armed it and froze three columns
+/// nobody had touched. Migration 011 answers that per field with a `_hand`
+/// column each, and `derive` writes `COALESCE(<hand>, <derived>)`, so the
+/// marker carries none of it now.*
+///
+/// An edit made against a
 /// read-only root is still an edit the next scan must not revert; so is one
 /// made against an imported work, whose sidecar leaves [`path_for`] answering
 /// `None` — [`Saved::path`] is `None` too, there and only there, but the

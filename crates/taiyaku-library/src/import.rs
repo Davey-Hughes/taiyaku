@@ -836,8 +836,20 @@ fn replace_editions(
 
         if let Some(held) = held {
             conn.execute(
-                "UPDATE edition SET language = ?1, kind = ?2 WHERE id = ?3",
-                rusqlite::params![held.language, held.kind, edition_id],
+                // The provenance columns restored beside the effective
+                // ones (O80, migration 011): `derive` consults the first pair
+                // and would otherwise overwrite a hand choice on the next pass.
+                "UPDATE edition
+                    SET language = ?1, kind = ?2,
+                        language_hand = ?3, kind_hand = ?4
+                  WHERE id = ?5",
+                rusqlite::params![
+                    held.language,
+                    held.kind,
+                    held.language_hand,
+                    held.kind_hand,
+                    edition_id
+                ],
             )
             .map_err(|e| format!("restoring metadata on edition `{key}`: {e}"))?;
             for (person_id, role) in &held.credits {
@@ -984,6 +996,14 @@ struct HeldEdition {
     label_derived: Option<String>,
     language: Option<String>,
     kind: Option<String>,
+    /// **The provenance halves of the two above — O80, migration 011.**
+    /// Carried for exactly the reason `label_hand` is: `derive` writes
+    /// `COALESCE(<hand>, <derived>)` now, so a delete-and-reinsert that
+    /// restored only the effective columns would leave a hand-chosen kind or
+    /// language in place for one pass and lose it on the next, when
+    /// derivation found nothing standing in its way.
+    language_hand: Option<String>,
+    kind_hand: Option<String>,
     /// `(person_id, role)` pairs — enough to reinsert each `credit` row
     /// verbatim without re-resolving the person by name.
     credits: Vec<(i64, String)>,
@@ -1006,7 +1026,8 @@ fn held_edition_meta(
 ) -> Result<HashMap<String, HeldEdition>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, key, label_hand, label_derived, language, kind
+            "SELECT id, key, label_hand, label_derived, language, kind,
+                    language_hand, kind_hand
              FROM edition WHERE work_id = ?1",
         )
         .map_err(|e| format!("preparing held edition metadata: {e}"))?;
@@ -1019,6 +1040,8 @@ fn held_edition_meta(
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
             ))
         })
         .map_err(|e| format!("querying held edition metadata: {e}"))?
@@ -1026,7 +1049,9 @@ fn held_edition_meta(
         .map_err(|e| format!("reading held edition metadata: {e}"))?;
 
     let mut out = HashMap::new();
-    for (edition_id, key, label_hand, label_derived, language, kind) in rows {
+    for (edition_id, key, label_hand, label_derived, language, kind, language_hand, kind_hand) in
+        rows
+    {
         let credits = held_credits(conn, edition_id)?;
         out.insert(
             key,
@@ -1035,6 +1060,8 @@ fn held_edition_meta(
                 label_derived,
                 language,
                 kind,
+                language_hand,
+                kind_hand,
                 credits,
             },
         );

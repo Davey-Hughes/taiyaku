@@ -759,8 +759,8 @@ fn migration_6_adds_member_root_id_leaving_existing_members_null() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_ten() {
-    assert_eq!(SCHEMA_VERSION, 10);
+fn the_schema_version_is_eleven() {
+    assert_eq!(SCHEMA_VERSION, 11);
 }
 
 /// **I5.** The row this test used to seed was inserted *after* `migrate()`

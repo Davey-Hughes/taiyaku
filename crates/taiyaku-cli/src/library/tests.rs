@@ -657,8 +657,14 @@ fn export_all_into_one_dir_keeps_every_work_rather_than_overwriting() {
     {
         let library = Library::open(&db).expect("reopens");
         let conn = library.conn();
-        conn.execute("UPDATE work SET volume = 2.0 WHERE slug = 'beta'", [])
-            .expect("the reader files Beta as volume 2");
+        // `volume_hand` too — a *reader's* filing is a hand value, and since
+        // O80 / migration 011 that is what `librarydoc::of` projects and what
+        // makes `export` write a `taiyaku.library.json` at all.
+        conn.execute(
+            "UPDATE work SET volume_hand = 2.0, volume = 2.0 WHERE slug = 'beta'",
+            [],
+        )
+        .expect("the reader files Beta as volume 2");
     }
 
     let args = [

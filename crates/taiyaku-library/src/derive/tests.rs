@@ -738,10 +738,19 @@ fn a_hand_set_volume_outlives_a_re_derive_once_a_library_document_is_absorbed() 
         )
         .expect("the volume 1 work");
 
-    crate::migrate::record_absorbed(&conn, work_id, crate::migrate::LIBRARY, true)
-        .expect("marks this work's library metadata as this library's own");
-    conn.execute("UPDATE work SET volume = 4.5 WHERE id = ?1", [work_id])
-        .expect("a person hand-sets the volume");
+    // **`volume_hand`, not `volume` — O80, migration 011.** A hand-set
+    // volume lives in its own provenance column now; the `library` marker no
+    // longer protects anything, having been what let a title-only Save freeze
+    // three columns nobody touched. Writing the effective column and arming
+    // the marker was how this was expressed before, and it would now assert
+    // nothing: `derive` writes `COALESCE(volume_hand, <derived>)`, so a value
+    // parked in `volume` alone is exactly what a re-derive is supposed to
+    // replace.
+    conn.execute(
+        "UPDATE work SET volume_hand = 4.5, volume = 4.5 WHERE id = ?1",
+        [work_id],
+    )
+    .expect("a person hand-sets the volume");
 
     derive::derive(&conn).expect("second derive, over the same unchanged files");
 
@@ -1349,7 +1358,12 @@ fn a_hand_applied_library_documents_edition_kind_outlives_a_re_derive() {
     crate::migrate::record_absorbed(&conn, hand, crate::migrate::LIBRARY, true)
         .expect("marks this work's library metadata as this library's own");
     conn.execute(
-        "UPDATE edition SET kind = 'fan', language = 'English' WHERE work_id = ?1",
+        // The provenance columns, for the reason the volume test above
+        // gives (O80, migration 011).
+        "UPDATE edition
+            SET kind_hand = 'fan', kind = 'fan',
+                language_hand = 'English', language = 'English'
+          WHERE work_id = ?1",
         [hand],
     )
     .expect("what the document said");
@@ -3250,5 +3264,76 @@ fn deriving_leaves_a_work_standing_when_the_fold_is_refused_and_names_it() {
         (note_work, note_edition.as_str()),
         (colour, "the-key-a-rule-edit-dropped"),
         "and the note nobody could map is exactly where the reader left it"
+    );
+}
+
+/// **O80: a title-only edit must not claim the volume and series derivation
+/// computed.**
+///
+/// `librarydoc::of` projects `title_hand` — migration 010 gave title a
+/// provenance column for exactly this reason — but plain `volume` and plain
+/// `series_id`, which are whatever the last derive wrote. So the document
+/// every save writes claims a *derived* volume as though a person had chosen
+/// it, `hand::save` arms the `LIBRARY` marker on any non-empty document, and
+/// `write_work`'s guard then stops derivation ever touching `work.volume`,
+/// `work.series_id`, `edition.kind` or `edition.language` again.
+///
+/// `MetadataEditor.tsx` sends `{ title }` unconditionally on Save, and title
+/// is the only field the shipped UI edits — so pressing Save, even with no
+/// change at all, was enough. The state left no way back: no route can clear
+/// a field, because `#[serde(default)] Option<T>` makes an absent key and an
+/// explicit `null` identical on the wire.
+///
+/// This asserts the root cause rather than the symptom: a document describing
+/// a work nobody has edited must be empty of the four guarded fields.
+#[test]
+fn a_title_only_edit_claims_no_volume_and_no_series() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+
+    let work_id: i64 = conn
+        .query_row(
+            "SELECT w.id FROM work w JOIN series s ON w.series_id = s.id \
+             WHERE s.sort_title = 'Go-Toubun no Hanayome' AND w.volume = 1.0",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the volume 1 work");
+
+    let fresh = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    assert_eq!(
+        fresh.volume, None,
+        "a work nobody has edited must project no hand volume — this claimed \
+         derivation's own answer, which is what froze it"
+    );
+    assert!(
+        fresh.series.titles.is_empty(),
+        "and no hand series: {:?}",
+        fresh.series
+    );
+    assert!(
+        fresh.is_empty(),
+        "so the whole document is empty, and `hand::save` arms no marker for it"
+    );
+
+    // The edit the shipped UI actually performs.
+    let mut doc = fresh;
+    doc.title = Some("Corrected Title".into());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    crate::hand::save(&conn, work_id).expect("saving");
+
+    let after = crate::librarydoc::of(&conn, work_id).expect("re-projecting");
+    assert_eq!(
+        after.title.as_deref(),
+        Some("Corrected Title"),
+        "the title edit is recorded"
+    );
+    assert_eq!(
+        after.volume, None,
+        "and it still claims no volume — a title correction withdraws nothing"
     );
 }

@@ -71,8 +71,15 @@ fn a_work_with_notes_and_progress(conn: &rusqlite::Connection, dir: &TempDir) ->
     let path = dir.path().join("taiyaku.json");
     let id = crate::import::sidecar(conn, &doc("T", "aa"), &path).expect("import");
 
-    conn.execute("UPDATE work SET volume = 1.0 WHERE id = ?1", [id])
-        .expect("a hand-set volume");
+    // **`volume_hand` — a *hand-set* volume, which is what the comment says
+    // and what the effective column stopped meaning at O80 / migration 011.**
+    // `volume` alone is what derivation writes for every work in the library,
+    // and a document is not written for that.
+    conn.execute(
+        "UPDATE work SET volume_hand = 1.0, volume = 1.0 WHERE id = ?1",
+        [id],
+    )
+    .expect("a hand-set volume");
 
     crate::state::put_notes(
         conn,
@@ -644,8 +651,15 @@ fn hand_fixed_metadata_is_written_and_clearing_it_removes_the_document() {
     let id = a_bare_work(&conn, &dir);
     let metadata_path = dir.path().join("taiyaku.library.json");
 
-    conn.execute("UPDATE work SET volume = 3.0 WHERE id = ?1", [id])
-        .expect("the reader files this directory as volume 3");
+    // `volume_hand`: a document records what a *person* set, and `of`
+    // projects the provenance rather than the effective column since O80 /
+    // migration 011. Writing `volume` alone is what derivation does, and a
+    // document is not written for that.
+    conn.execute(
+        "UPDATE work SET volume_hand = 3.0, volume = 3.0 WHERE id = ?1",
+        [id],
+    )
+    .expect("the reader files this directory as volume 3");
     let written = work(&conn, id, THE_READER, None).expect("export").written;
     assert!(
         written.contains(&metadata_path),
@@ -654,7 +668,9 @@ fn hand_fixed_metadata_is_written_and_clearing_it_removes_the_document() {
     let text = std::fs::read_to_string(&metadata_path).expect("reads");
     assert!(text.contains("\"volume\""), "{text}");
 
-    conn.execute("UPDATE work SET volume = NULL WHERE id = ?1", [id])
+    // Clearing the provenance is what withdraws the correction (O80).
+    // `volume` itself is derivation's to write on the next scan.
+    conn.execute("UPDATE work SET volume_hand = NULL WHERE id = ?1", [id])
         .expect("and then changes their mind");
     let second = work(&conn, id, THE_READER, None).expect("second export");
     assert_eq!(

@@ -1245,12 +1245,17 @@ fn write_work(
     // same row by its content, exactly as an ordinary rescan is; only the
     // two columns below are left alone.
     //
-    // **Still narrow.** `edition.kind` and `edition.language` joined this
-    // guard because the same question settles them — `librarydoc::apply` is
-    // the other writer of both, exactly as it is of the two columns above.
-    // Everything else about hand-versus-derived metadata — a provenance
+    // **That design question is answered, and this guard no longer holds the
+    // answer — O80, migration 011.** This paragraph used to end "a provenance
     // column, scoping this to works with no `sidecar_path`, and so on — is
-    // still the design question I7 left open, and nothing here answers it.
+    // still the design question I7 left open, and nothing here answers it".
+    // The provenance column is what shipped: `volume_hand`, `series_id_hand`,
+    // `language_hand`, `kind_hand`, `series_title.hand` and
+    // `series.reading_hand`, with every writer below using
+    // `COALESCE(<hand>, <what this pass derived>)`. So the marker no longer
+    // decides whether these columns may be written — only whether the
+    // document has already been read back, which is the block immediately
+    // following.
     //
     // **The document on disk, read back before the guard is consulted.** A
     // fresh database has no marker for a work it has just minted, so without
@@ -1299,14 +1304,29 @@ fn write_work(
             Err(why) => report.unreadable_hand.push(why),
         }
     }
-    if !crate::migrate::absorbed(conn, work_id, crate::migrate::LIBRARY)? {
-        conn.execute(
-            "UPDATE work SET series_id = ?1, volume = ?2 WHERE id = ?3",
-            rusqlite::params![series_id, group.volume, work_id],
-        )
-        .map_err(|e| format!("attaching work {work_id} to series {series_id}: {e}"))?;
-        write_edition_metadata(conn, work_id, group, report)?;
-    }
+    // **No `absorbed` guard here since O80 — the provenance columns answer
+    // it per field instead.** That guard did two jobs: "this document has been
+    // read back from disk, do not read it again" (the block above, which keeps
+    // it) and "do not overwrite these four columns". Conflating them is what
+    // let a title-only Save freeze `volume`, `series_id`, `kind` and
+    // `language` for a work nobody had edited that way — `librarydoc::of`
+    // projected the *effective* values, so every document claimed derivation's
+    // own answers as a person's.
+    //
+    // Migration 011 gave each of the four a `_hand` column, so this pass can
+    // write what it derived unconditionally and let `COALESCE` decide. A hand
+    // value wins; everything else re-derives, every scan, exactly as it did
+    // before anyone edited anything. This is the provenance column I7 left
+    // open and `derive.rs` has carried a comment about since #77.
+    conn.execute(
+        "UPDATE work
+            SET series_id = COALESCE(series_id_hand, ?1),
+                volume    = COALESCE(volume_hand, ?2)
+          WHERE id = ?3",
+        rusqlite::params![series_id, group.volume, work_id],
+    )
+    .map_err(|e| format!("attaching work {work_id} to series {series_id}: {e}"))?;
+    write_edition_metadata(conn, work_id, group, report)?;
     write_chapters(conn, work_id, group)?;
     report.works += 1;
     Ok(work_id)
@@ -1938,7 +1958,12 @@ fn write_edition_metadata(
             None => None,
         };
         conn.execute(
-            "UPDATE edition SET kind = ?1, language = ?2 WHERE work_id = ?3 AND key = ?4",
+            // `COALESCE(<hand>, <derived>)` — O80, migration 011. See
+            // `write_work`'s note where the `absorbed` guard used to stand.
+            "UPDATE edition
+                SET kind     = COALESCE(kind_hand, ?1),
+                    language = COALESCE(language_hand, ?2)
+              WHERE work_id = ?3 AND key = ?4",
             rusqlite::params![kind, language, work_id, key],
         )
         .map_err(|e| {

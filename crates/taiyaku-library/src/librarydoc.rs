@@ -91,11 +91,28 @@ pub struct SeriesInfo {
     pub titles: Vec<SeriesTitle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reading: Option<Direction>,
+    /// **Whether a person put this work on this shelf — O80.**
+    ///
+    /// The rest of this struct is the *series'* own metadata, which is
+    /// series-level data replicated into every member work's document. This
+    /// one field is about *this work*: it says the attachment was chosen
+    /// rather than derived, and it is what `apply_series` consults before
+    /// recording `work.series_id_hand`.
+    ///
+    /// **Without it, a document carrying hand-set titles would re-assert a
+    /// derived attachment as a person's** on the next apply, because
+    /// `apply_series` resolves by title text and cannot tell why the block is
+    /// there. That is O80's freeze moved rather than fixed.
+    ///
+    /// Absent in the JSON when false, so a document that only corrects a
+    /// series' titles says nothing about attachment at all.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chosen: bool,
 }
 
 impl SeriesInfo {
     fn is_empty(&self) -> bool {
-        self.titles.is_empty() && self.reading.is_none()
+        self.titles.is_empty() && self.reading.is_none() && !self.chosen
     }
 }
 
@@ -270,22 +287,42 @@ impl LibraryDoc {
 /// `chapter_source` is not one of the values [`apply`] ever writes, or if
 /// SQLite fails.
 pub fn of(conn: &Connection, work_id: i64) -> Result<LibraryDoc, String> {
-    let (volume, series_id, title): (Option<f64>, Option<i64>, Option<String>) = conn
+    let (volume, series_id, title, effective_series): (
+        Option<f64>,
+        Option<i64>,
+        Option<String>,
+        Option<i64>,
+    ) = conn
         .query_row(
-            "SELECT volume, series_id, title_hand FROM work WHERE id = ?1",
+            // **The hand columns, never the effective ones — O80.** Projecting
+            // plain `volume`/`series_id` made every document claim whatever the
+            // last derive wrote, so a title-only Save recorded derivation's own
+            // answers as a person's and `write_work` froze them. Migration 011
+            // gave these two the provenance `title_hand` has had since 010.
+            "SELECT volume_hand, series_id_hand, title_hand, series_id \
+             FROM work WHERE id = ?1",
             [work_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .map_err(|e| format!("reading work {work_id}: {e}"))?;
 
-    let series = match series_id {
-        Some(id) => series_info_of(conn, id)?,
+    // **The series block is projected from the *effective* id, and says so
+    // separately — O80.** A work whose attachment is derived can still belong
+    // to a series a person has renamed, and that correction has to reach the
+    // document; `series_info_of` returns only the hand-set titles and reading,
+    // so a series nobody has touched contributes nothing. `chosen` carries the
+    // one fact that is about this work rather than the series.
+    let series = match effective_series {
+        Some(id) => SeriesInfo {
+            chosen: series_id.is_some(),
+            ..series_info_of(conn, id)?
+        },
         None => SeriesInfo::default(),
     };
     let editions = editions_meta_of(conn, work_id)?;
     let members = members_meta_of(conn, work_id)?;
     let tags = tags_of(conn, work_id)?;
-    let external = match series_id {
+    let external = match effective_series {
         Some(id) => external_of(conn, id)?,
         None => BTreeMap::new(),
     };
@@ -313,7 +350,9 @@ fn now_rfc3339(conn: &Connection) -> Result<String, String> {
 fn series_info_of(conn: &Connection, series_id: i64) -> Result<SeriesInfo, String> {
     let reading: Option<String> = conn
         .query_row(
-            "SELECT reading FROM series WHERE id = ?1",
+            // `reading_hand`: derivation's own reading is not a correction
+            // and must not appear in a document (O80).
+            "SELECT reading_hand FROM series WHERE id = ?1",
             [series_id],
             |row| row.get(0),
         )
@@ -322,7 +361,12 @@ fn series_info_of(conn: &Connection, series_id: i64) -> Result<SeriesInfo, Strin
 
     let mut stmt = conn
         .prepare(
-            "SELECT title, kind, is_primary FROM series_title WHERE series_id = ?1 ORDER BY rowid",
+            // `hand = 1` only — derivation inserts an `is_primary` row for
+            // every series it mints, and projecting those made every scanned
+            // work's document non-empty (O53's recorded consequence, and the
+            // same defect as O80 one level up).
+            "SELECT title, kind, is_primary FROM series_title \
+             WHERE series_id = ?1 AND hand = 1 ORDER BY rowid",
         )
         .map_err(|e| format!("preparing series titles: {e}"))?;
     let rows = stmt
@@ -348,7 +392,13 @@ fn series_info_of(conn: &Connection, series_id: i64) -> Result<SeriesInfo, Strin
         })
         .collect::<Result<Vec<_>, String>>()?;
 
-    Ok(SeriesInfo { titles, reading })
+    // `chosen` is `of`'s to set: it is a fact about a work, and this function
+    // is given only a series.
+    Ok(SeriesInfo {
+        titles,
+        reading,
+        chosen: false,
+    })
 }
 
 fn editions_meta_of(
@@ -356,7 +406,11 @@ fn editions_meta_of(
     work_id: i64,
 ) -> Result<BTreeMap<String, EditionMeta>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, key, label_hand, language, kind FROM edition WHERE work_id = ?1")
+        // Hand columns only, for the reason `of` gives above (O80).
+        .prepare(
+            "SELECT id, key, label_hand, language_hand, kind_hand \
+             FROM edition WHERE work_id = ?1",
+        )
         .map_err(|e| format!("preparing editions: {e}"))?;
     let rows = stmt
         .query_map([work_id], |row| {
@@ -558,10 +612,17 @@ pub fn apply(conn: &Connection, work_id: i64, doc: &LibraryDoc) -> Result<(), St
     // prefers (see `apply`'s own row-count guard, a few lines above).
     let updated = tx
         .execute(
+            // **`volume_hand` is the provenance, `volume` the effective
+            // value — O80, migration 011.** `COALESCE(?1, volume)` rather
+            // than `COALESCE(?1, volume_derived)`: unlike `title`, this
+            // column is recomputed by `derive::write_work` on every pass, so
+            // there is no derived copy to keep, and clearing restores
+            // derivation's answer on the next scan rather than instantly.
             "UPDATE work
-                SET volume     = ?1,
-                    title_hand = ?2,
-                    title      = COALESCE(?2, title_derived)
+                SET volume_hand = ?1,
+                    volume      = COALESCE(?1, volume),
+                    title_hand  = ?2,
+                    title       = COALESCE(?2, title_derived)
               WHERE id = ?3",
             params![doc.volume, doc.title, work_id],
         )
@@ -644,10 +705,17 @@ pub fn apply_with_series_id(
     // as `apply`'s own — see that function's doc comment for why.
     let updated = tx
         .execute(
+            // **`volume_hand` is the provenance, `volume` the effective
+            // value — O80, migration 011.** `COALESCE(?1, volume)` rather
+            // than `COALESCE(?1, volume_derived)`: unlike `title`, this
+            // column is recomputed by `derive::write_work` on every pass, so
+            // there is no derived copy to keep, and clearing restores
+            // derivation's answer on the next scan rather than instantly.
             "UPDATE work
-                SET volume     = ?1,
-                    title_hand = ?2,
-                    title      = COALESCE(?2, title_derived)
+                SET volume_hand = ?1,
+                    volume      = COALESCE(?1, volume),
+                    title_hand  = ?2,
+                    title       = COALESCE(?2, title_derived)
               WHERE id = ?3",
             params![doc.volume, doc.title, work_id],
         )
@@ -663,7 +731,12 @@ pub fn apply_with_series_id(
         // `series_title` by id-instead-of-text would.
         let reading = doc.series.reading.map(direction_text);
         tx.execute(
-            "UPDATE series SET reading = ?1 WHERE id = ?2",
+            // `reading_hand` beside it — this is a person's PATCH, and `of`
+            // projects the provenance (O80, migration 011).
+            "UPDATE series
+                SET reading_hand = ?1,
+                    reading      = COALESCE(?1, reading)
+              WHERE id = ?2",
             params![reading, series_id],
         )
         .map_err(|e| format!("updating series {series_id}'s reading direction: {e}"))?;
@@ -697,8 +770,27 @@ fn apply_series(
 ) -> Result<Option<i64>, String> {
     let previous = series_of(conn, work_id)?;
     if series.titles.is_empty() {
-        conn.execute("UPDATE work SET series_id = NULL WHERE id = ?1", [work_id])
-            .map_err(|e| format!("clearing series for work {work_id}: {e}"))?;
+        // Only the provenance is cleared; `derive` re-attaches the work to
+        // whatever series the next pass resolves (O80, migration 011).
+        conn.execute(
+            // **The hand attachment is withdrawn; the effective one goes only
+            // if that is what it was — O80.** An empty series block no longer
+            // means "take this work off the shelf": since `of` projects only
+            // *hand-set* titles it means "nobody has corrected this series",
+            // which is true of nearly every work in a scanned library, and
+            // clearing `series_id` unconditionally detached all of them on the
+            // first apply. A work a person *placed* is a different case: the
+            // document withdrawing that placement really is asking for it
+            // back, and `derive` re-attaches on the next pass if the files say
+            // so.
+            "UPDATE work
+                SET series_id = CASE WHEN series_id_hand IS NULL
+                                     THEN series_id ELSE NULL END,
+                    series_id_hand = NULL
+              WHERE id = ?1",
+            [work_id],
+        )
+        .map_err(|e| format!("clearing series for work {work_id}: {e}"))?;
         forget_orphaned_series(conn, previous)?;
         return Ok(None);
     }
@@ -715,7 +807,11 @@ fn apply_series(
     let series_id = match find_series_by_title(conn, &series.titles)? {
         Some(id) => {
             conn.execute(
-                "UPDATE series SET sort_title = ?1, reading = ?2 WHERE id = ?3",
+                "UPDATE series
+                    SET sort_title   = ?1,
+                        reading_hand = ?2,
+                        reading      = COALESCE(?2, reading)
+                  WHERE id = ?3",
                 params![sort_title, reading, id],
             )
             .map_err(|e| format!("updating series {id}: {e}"))?;
@@ -723,7 +819,7 @@ fn apply_series(
         }
         None => {
             conn.execute(
-                "INSERT INTO series (sort_title, reading) VALUES (?1, ?2)",
+                "INSERT INTO series (sort_title, reading, reading_hand) VALUES (?1, ?2, ?2)",
                 params![sort_title, reading],
             )
             .map_err(|e| format!("inserting series: {e}"))?;
@@ -745,8 +841,11 @@ fn apply_series(
         // sets for exactly this reason. A connection opened any other way
         // would leave a phantom row in `series_fts` here, silently.
         conn.execute(
-            "INSERT OR REPLACE INTO series_title (series_id, title, kind, is_primary)
-             VALUES (?1, ?2, ?3, ?4)",
+            // `hand = 1`: a title arriving in a document is a person's, and
+            // `of` projects only those (O80). Derivation's own `is_primary`
+            // row keeps the default 0 and stays out of every document.
+            "INSERT OR REPLACE INTO series_title (series_id, title, kind, is_primary, hand)
+             VALUES (?1, ?2, ?3, ?4, 1)",
             params![
                 series_id,
                 title.title,
@@ -757,9 +856,20 @@ fn apply_series(
         .map_err(|e| format!("writing series title `{}`: {e}", title.title))?;
     }
 
+    // **The attachment is recorded as a person's only when the document says
+    // it is — O80, `SeriesInfo::chosen`.** The effective column is written
+    // either way: resolving by title is how a document reaches a database
+    // that has never seen this library, and that resolution has to land the
+    // work somewhere. What it must not do is claim the landing was chosen,
+    // because a document that only corrects a series' *titles* would then
+    // freeze every member work's attachment — O80's defect moved one table
+    // across rather than fixed.
     conn.execute(
-        "UPDATE work SET series_id = ?1 WHERE id = ?2",
-        params![series_id, work_id],
+        "UPDATE work
+            SET series_id_hand = CASE WHEN ?3 THEN ?1 ELSE series_id_hand END,
+                series_id      = ?1
+          WHERE id = ?2",
+        params![series_id, work_id, series.chosen],
     )
     .map_err(|e| format!("attaching work {work_id} to series {series_id}: {e}"))?;
 
@@ -1015,8 +1125,10 @@ pub fn set_series_titles(
 
     for title in titles {
         tx.execute(
-            "INSERT INTO series_title (series_id, title, kind, is_primary)
-             VALUES (?1, ?2, ?3, ?4)",
+            // `hand = 1`: this function exists for `PATCH /api/library/series`,
+            // so every row it writes is a person's (O80).
+            "INSERT INTO series_title (series_id, title, kind, is_primary, hand)
+             VALUES (?1, ?2, ?3, ?4, 1)",
             params![
                 series_id,
                 title.title,
@@ -1095,11 +1207,21 @@ fn apply_editions(
     // it was, rather than raising a constraint failure that names no edition
     // at all.
     conn.execute(
+        // **Both halves cleared, effective included.** The provenance is
+        // what `derive` consults (O80, migration 011), but leaving the
+        // effective column populated would show a withdrawn hand value until
+        // the next scan, and `a_second_apply_without_an_edition_entry_clears_
+        // its_previous_metadata` is the test that says so. `write_edition_metadata`
+        // re-derives both on the next pass, so nothing is lost by blanking
+        // them now — unlike `label`, which has no derivation to restore it and
+        // therefore falls back to `label_derived`.
         "UPDATE edition
-            SET label_hand = NULL,
-                label      = COALESCE(label_derived, label),
-                language   = NULL,
-                kind       = NULL
+            SET label_hand    = NULL,
+                label         = COALESCE(label_derived, label),
+                language_hand = NULL,
+                language      = NULL,
+                kind_hand     = NULL,
+                kind          = NULL
           WHERE work_id = ?1",
         [work_id],
     )
@@ -1143,10 +1265,12 @@ fn apply_editions(
         // `NOT NULL` constraint failure a violation should produce.
         conn.execute(
             "UPDATE edition
-                SET label_hand = ?1,
-                    label      = COALESCE(?1, label_derived),
-                    language   = ?2,
-                    kind       = ?3
+                SET label_hand    = ?1,
+                    label         = COALESCE(?1, label_derived),
+                    language_hand = ?2,
+                    language      = ?2,
+                    kind_hand     = ?3,
+                    kind          = ?3
               WHERE id = ?4",
             params![
                 meta.label,

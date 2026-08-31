@@ -74,6 +74,7 @@ const FIXTURE: &str = r#"{
   "taiyaku_library": 1,
   "updated": "2026-08-14T11:03:22Z",
   "series": {
+    "chosen": true,
     "titles": [
       { "title": "五等分の花嫁", "kind": "native", "primary": true },
       { "title": "Go-Toubun no Hanayome", "kind": "romaji" }
@@ -138,6 +139,7 @@ fn a_series_with_titles_and_no_reading_direction_is_not_empty() {
                 kind: TitleKind::English,
                 primary: true,
             }],
+            chosen: false,
             reading: None,
         },
         volume: None,
@@ -170,6 +172,7 @@ fn a_series_with_titles_and_no_reading_direction_is_not_empty() {
     let reading_only = LibraryDoc {
         series: SeriesInfo {
             titles: Vec::new(),
+            chosen: false,
             reading: Some(Direction::LeftToRight),
         },
         ..titles_only
@@ -1298,6 +1301,7 @@ fn every_remaining_closed_set_variant_round_trips_through_the_database() {
                     primary: false,
                 },
             ],
+            chosen: false,
             reading: Some(Direction::LeftToRight),
         },
         volume: None,
@@ -1398,13 +1402,19 @@ fn an_invalid_stored_reading_direction_is_refused() {
     let conn = library.conn();
     let work_id = a_work(&conn);
     conn.execute(
-        "INSERT INTO series (sort_title, reading) VALUES ('x', 'diagonal')",
+        // `reading_hand`: `of` projects provenance, not the effective
+        // column (O80, migration 011).
+        "INSERT INTO series (sort_title, reading, reading_hand)
+         VALUES ('x', 'diagonal', 'diagonal')",
         [],
     )
     .expect("series");
     let series_id = conn.last_insert_rowid();
     conn.execute(
-        "UPDATE work SET series_id = ?1 WHERE id = ?2",
+        // `series_id_hand` too: `of` projects the provenance, not the
+        // effective column (O80, migration 011), so attaching by `series_id`
+        // alone now projects no series at all and there is nothing to refuse.
+        "UPDATE work SET series_id_hand = ?1, series_id = ?1 WHERE id = ?2",
         params![series_id, work_id],
     )
     .expect("attach");
@@ -1425,12 +1435,17 @@ fn an_invalid_stored_series_title_kind_is_refused() {
         .expect("series");
     let series_id = conn.last_insert_rowid();
     conn.execute(
-        "UPDATE work SET series_id = ?1 WHERE id = ?2",
+        // `series_id_hand` too: `of` projects the provenance, not the
+        // effective column (O80, migration 011), so attaching by `series_id`
+        // alone now projects no series at all and there is nothing to refuse.
+        "UPDATE work SET series_id_hand = ?1, series_id = ?1 WHERE id = ?2",
         params![series_id, work_id],
     )
     .expect("attach");
     conn.execute(
-        "INSERT INTO series_title (series_id, title, kind) VALUES (?1, 'T', 'mystery')",
+        // `hand = 1`: `of` projects only a person's titles now (O80).
+        "INSERT INTO series_title (series_id, title, kind, hand)
+         VALUES (?1, 'T', 'mystery', 1)",
         params![series_id],
     )
     .expect("title");
@@ -1445,7 +1460,9 @@ fn an_invalid_stored_edition_kind_is_refused() {
     let conn = library.conn();
     let work_id = a_work(&conn);
     conn.execute(
-        "UPDATE edition SET kind = 'bootleg' WHERE work_id = ?1",
+        // `kind_hand`: `of` projects provenance, not the effective column
+        // (O80, migration 011).
+        "UPDATE edition SET kind_hand = 'bootleg' WHERE work_id = ?1",
         [work_id],
     )
     .expect("edition");
@@ -1806,5 +1823,61 @@ fn editing_a_title_does_not_move_the_slug() {
         before, after,
         "a slug is an address and a title is a display name; progress, notes \
          and truth all hang off the slug (O67)"
+    );
+}
+
+/// **`chosen` reports the attachment, and nothing asserted it — O80.**
+///
+/// The field exists so a document can tell "a person put this work in this
+/// series" from "here are this series' corrected titles". A mutation sweep
+/// deleted `chosen` from `of`'s own `SeriesInfo` expression and the whole
+/// suite still passed: the fact the field was added to carry was never read
+/// back. Found by `scripts/mutants.sh --since main` on the branch that added
+/// it, which is the case that discipline exists for.
+///
+/// Both directions, because a constant `true` and a constant `false` are each
+/// half right and a single assertion cannot tell them apart.
+#[test]
+fn chosen_reports_whether_a_person_placed_this_work_on_this_shelf() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work(&conn);
+    conn.execute(
+        "INSERT INTO series (id, sort_title) VALUES (1, 'A Shelf')",
+        [],
+    )
+    .expect("a series");
+    conn.execute(
+        "INSERT INTO series_title (series_id, title, kind, hand) \
+         VALUES (1, 'A Shelf', 'alt', 1)",
+        [],
+    )
+    .expect("a hand-set title, so the block is projected at all");
+
+    // Derivation's own answer: attached, but nobody chose it.
+    conn.execute("UPDATE work SET series_id = 1 WHERE id = ?1", [work_id])
+        .expect("derivation shelves it");
+    let derived = of(&conn, work_id).expect("projects");
+    assert!(
+        !derived.series.titles.is_empty(),
+        "the hand title is projected, or this test cannot see `chosen` at all"
+    );
+    assert!(
+        !derived.series.chosen,
+        "a derived attachment is not a person's choice, and a document saying \
+         it was would freeze it on the next apply — which is O80"
+    );
+
+    // The same shelf, this time chosen.
+    conn.execute(
+        "UPDATE work SET series_id_hand = 1 WHERE id = ?1",
+        [work_id],
+    )
+    .expect("a person places it");
+    let placed = of(&conn, work_id).expect("projects");
+    assert!(
+        placed.series.chosen,
+        "a hand attachment must be recorded, or a rebuild re-derives the work \
+         onto whatever shelf the files suggest and the placement is lost"
     );
 }

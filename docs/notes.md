@@ -14539,3 +14539,78 @@ This is the fourth and the nastiest, because nothing was *wrong* with the test
 suite before or after: a rule change moved a guard out of every test's reach
 without touching a line of the guard or a line of any test. Only a sweep sees
 that, and only if the unviable count is read alongside the survivor list.
+
+### O80: one asymmetry, six fields, and the fact a series block could not express
+
+O80 read as "a hand edit withdraws four columns permanently". The cause was
+narrower and worse than that: **`librarydoc::of` projected the *hand* value for
+two fields and the *effective* value for the rest.**
+
+Migration 010 gave `work.title` and `edition.label` a `_hand` column precisely
+so a document would carry only what a person set. It stopped there. `volume`,
+`series_id`, `edition.language`, `edition.kind` and every `series_title` row —
+including the `is_primary` one `derive` mints for each series it discovers —
+were projected at their effective value. So the document every save wrote
+claimed derivation's own answers as a person's, `hand::save` armed the marker
+on any non-empty document, and `write_work` read that marker as *never touch
+these four columns again*.
+
+**The marker was doing two jobs**, and that is the part worth keeping: *"this
+document has been read back from disk, do not read it again"* and *"do not
+overwrite these columns"*. A title-only edit legitimately satisfies the first
+and has nothing to do with the second. Migration 011 answers the second per
+field, and the guard keeps only the first.
+
+**One column each, where 010 needed two.** 010 added `title_derived` because
+nothing recomputes a title after `import::insert_work`'s INSERT, so the first
+hand edit destroyed the derived value and clearing had nothing to restore.
+These six are recomputed by `derive` every pass, so `COALESCE(<hand>, <what
+this pass derived>)` needs no second copy and clearing restores derivation's
+answer on the next scan.
+
+### The fact a series block could not express
+
+`LibraryDoc.series` carries two different things: the **series'** titles and
+reading direction — series-level data replicated into every member work's
+document — and **this work's** attachment to it.
+
+Nothing distinguished them, so a document that corrected only a series' titles
+was indistinguishable from one that said "a person put this work here". Under
+per-field provenance that ambiguity is fatal: `apply_series` would record the
+derived attachment as hand-chosen on the next apply, which is O80 moved one
+table across rather than fixed. `SeriesInfo::chosen` is that missing fact, and
+it is absent from the JSON when false, so a titles-only correction says nothing
+about attachment at all.
+
+`apply_series` still resolves by title text. That is deliberate and load-bearing:
+a document arriving at a database that has never seen this library has nothing
+else to resolve against, which is the import path spec A's round trip depends
+on. What changed is only whether the resolution is recorded as a choice.
+
+### What the existing tests caught that a reading would not have
+
+**An empty series block used to mean "take this work off the shelf."** After
+this change it means "nobody has corrected this series" — true of nearly every
+work in a scanned library — so clearing `series_id` unconditionally detached
+all of them on the first apply. `the_last_work_leaving_a_series_takes_the_shelf_with_it`
+is what said so. Withdrawal now removes the effective attachment only where it
+was hand-chosen, and `derive` re-attaches on the next pass.
+
+**Clear-versus-keep differs per field, and each answer has a reason.**
+`language` and `kind` clear immediately, because `write_edition_metadata`
+re-derives both on the next pass. `label` falls back to `label_derived`,
+because nothing recomputes a label. `volume` keeps its value until the next
+scan, because blanking it would empty a working row for no gain. Three
+different answers in one function, each one a test.
+
+### The thing this does not fix, and the three items it explains
+
+The series' own metadata is **series-level data stored per work**. That is why
+editing a series loops over every work (O85's N+1 inside an N+1), why the loop
+covering only granted works left hidden siblings stale (O86), and why the block
+needed `chosen` at all.
+
+A series-level document — exported once, with its own provenance — would
+dissolve all three rather than handling each. It is a change to the document
+set, `export`, `import` and `apply_series`, which is a design round rather than
+a defect fix, and nothing here attempts it.
