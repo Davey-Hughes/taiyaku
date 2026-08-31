@@ -14614,3 +14614,123 @@ A series-level document — exported once, with its own provenance — would
 dissolve all three rather than handling each. It is a change to the document
 set, `export`, `import` and `apply_series`, which is a design round rather than
 a defect fix, and nothing here attempts it.
+
+## O81 and O82, measured against real archives — 2026-08-31
+
+Both were tabled as decisions on 2026-08-28 with no number against either.
+This is the number: **three of five works lost or reverted a hand-set title
+when the database was rebuilt from the same root.** That is the store spec
+§4.4 claim — *losing the database costs a rescan, not the organisational
+work* — failing on the two most routine events a library sees.
+
+### The library
+
+Five `.cbz` files out of `corpus/` into one root under `target/`, **copied
+rather than hardlinked**: three of the events below rewrite an archive, and a
+hardlink would have rewritten the corpus's own copy. Three series, five works,
+five editions, five members, every work carrying a volume number — so
+`import::scanned`'s `(series_id, volume)` address probe applies to all of
+them, and the work rows are expected to survive events the `content_key` does
+not.
+
+Each work was then given a hand-set title through `PATCH
+/api/library/works/{slug}` — the real route, driven with a session cookie, not
+an `INSERT` — and all five answered `persisted: true` with a document under
+`<root>/.taiyaku/`.
+
+### The events, and what each did to the address
+
+| work | event | `content_key` | document |
+| ---- | ----- | ------------- | -------- |
+| 1 | repacked the archive, same pages | `a39071e5` → `a1d0626c` | orphaned |
+| 2 | one page added | `8e600729` → `ece7d7ec` | orphaned |
+| 3 | file renamed | unchanged | reachable |
+| 4 | untouched | unchanged | reachable |
+| 5 | edited while the root was read-only | unchanged | **stale** |
+
+One rescan reported `1 added, 3 updated, 1 gone` and `2 rekeyed`, with all
+five work rows standing. The two moved keys left two files under `.taiyaku`
+that no work addresses any more, and two works whose address holds no file —
+O81's orphan and O82's gap, one of each per event.
+
+**The controls hold.** A rename moved nothing: work 3 kept `909e7fc7` and its
+document stayed reachable, which is what the entry claims and what
+`content_key` hashing member digests rather than paths predicts.
+
+### The rebuild is the measurement
+
+A rescan alone loses nothing. `title_hand` survived every event above, because
+migration 011's `_hand` columns hold it and `derive` writes `COALESCE(<hand>,
+<derived>)`. What the stranding costs is only visible by doing what the
+durability claim is about — deleting the database and scanning the same root
+again:
+
+| work | live database | rebuilt from the same root |
+| ---- | ------------- | -------------------------- |
+| 1 | `HAND …v01-cbz` | `Go-Toubun no Hanayome - v01.cbz` |
+| 2 | `HAND …v03-cbz` | `Go-Toubun no Hanayome - v03.cbz` |
+| 3 | `HAND …v08-cbz` | `HAND …v08-cbz` |
+| 4 | `HAND …kaguya…` | `HAND …kaguya…` |
+| 5 | `READONLY EDIT kobayashi` | `HAND …kobayashi…` |
+
+Works 1 and 2 come back as their derived filenames with `title_hand` NULL, the
+orphaned documents sitting in `.taiyaku` holding the corrections nothing reads.
+Work 5 comes back **at its previous correction**, not at the one the live
+database holds.
+
+### What O81's entry gets wrong
+
+The entry reads *"derivation simply re-derives over the work"*. It does not,
+and has not since O80 closed on 2026-08-30: the four columns migration 011
+gave `_hand` copies to are re-applied by `COALESCE` on every pass whether or
+not the document is reachable, and `title_hand` came through all three
+key-moving events intact. **The passage is left in place and marked**, because
+the wrong reasoning is why the item was filed as the narrow remainder.
+
+What is actually lost is the durability half alone — which is smaller than the
+entry claims and larger than "silent": 2 of 5 works here, from repacking an
+archive and adding a page to one.
+
+### The state neither entry names: a document that disagrees
+
+O82 describes a work whose marker is set and whose document is **absent**.
+Work 5 produced a third state instead. The edit was made while the root was
+read-only, so `hand::save` answered honestly —
+
+```
+persisted: false
+why: […]/3086fd50….library.json: staging a temporary beside it:
+     Permission denied (os error 13)
+```
+
+— and the file at that address **still existed**, holding the correction from
+before. So there is no gap to find and no orphan to find: a reconciliation
+pass counting only presence calls this work reachable and moves on, and the
+rebuild above reads the older title back as though nothing had happened. A
+silent revert to a superseded correction is a worse outcome than the absence
+the entry describes, because it looks like it worked.
+
+**Nothing retries.** Write permission was restored and a full scan and derive
+run over the root; the document still held the superseded title afterwards.
+That is the entry's own claim, driven end to end rather than read off the code.
+
+### One query answers both directions
+
+The marker table is the register of works that owe a document:
+
+```sql
+SELECT work_id FROM migrated_document
+ WHERE document = 'library' AND absorbed = 1
+```
+
+Resolved against `hand::path_for`'s address and the files actually under each
+root's `.taiyaku`, one listing gives all three states — a marked work with no
+file (O82's gap), a file matching no work's `content_key` (O81's orphan), and,
+with the document's own `updated` compared against the row, the stale case
+above. There is no second pass to write: the two items are one reconciliation.
+
+### The corpus, untouched
+
+`find corpus -newermt` against a timestamp taken before any of this returned
+nothing. The archives were copies, so the isolation held by construction
+rather than by care.
