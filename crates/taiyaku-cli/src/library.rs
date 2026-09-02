@@ -544,12 +544,31 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
         // Path **and** title: the filename is a `content_key` naming content
         // that no longer exists, so the path alone gives a person nothing to
         // act on.
+        //
+        // **A fold's target is appended, not substituted.** The path and
+        // title stay exactly as they were for every other orphan, and a
+        // person who reads "here is a hash and a title" still gets that;
+        // when a fold is why the document is stranded, `absorbed_into` gives
+        // them a second, better thing to act on — the slug to go and look
+        // at, and the title to recognise it by. See
+        // `taiyaku_library::hand::Orphan::absorbed_into` for why this names
+        // the target rather than moving the document there.
         let named: Vec<String> = report
             .orphan_documents
             .iter()
-            .map(|orphan| match &orphan.title {
-                Some(title) => format!("{} (`{title}`)", orphan.path.display()),
-                None => orphan.path.display().to_string(),
+            .map(|orphan| {
+                let mut text = match &orphan.title {
+                    Some(title) => format!("{} (`{title}`)", orphan.path.display()),
+                    None => orphan.path.display().to_string(),
+                };
+                if let Some(absorbed) = &orphan.absorbed_into {
+                    let _ = write!(
+                        text,
+                        ", now held as an edition of `{}` (`{}`)",
+                        absorbed.slug, absorbed.title
+                    );
+                }
+                text
             })
             .collect();
         let _ = write!(

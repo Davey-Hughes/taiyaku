@@ -3489,6 +3489,129 @@ fn folding_a_work_away_orphans_its_hand_document_on_the_same_pass() {
         Some("Hand Set"),
         "naming the folded-away work's own document"
     );
+
+    // Exactly one work survives the fold — `colour` is gone, and it was the
+    // only other one the fixture ever had — so this is the same target
+    // `fold::absorb` folded into, read back the same way a person would:
+    // by querying the row rather than trusting a value threaded through the
+    // test's own setup.
+    let (target_slug, target_title): (String, String) = conn
+        .query_row("SELECT slug, title FROM work", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .expect("exactly one work remains once the fold has run");
+    let absorbed = second.orphan_documents[0].absorbed_into.as_ref().expect(
+        "a document stranded by a fold must name the work that absorbed \
+             it, not merely that it is now orphaned",
+    );
+    assert_eq!(
+        (absorbed.slug.as_str(), absorbed.title.as_str()),
+        (target_slug.as_str(), target_title.as_str()),
+        "the orphan must point at the work the fold actually moved the \
+         reader's material onto, not merely at *some* work"
+    );
+}
+
+/// **Two orphans in one pass, only one of which came from a fold** — the gap
+/// the test above cannot close on its own. With a single orphan and a single
+/// `absorbed_into` entry, a correlation keyed on the orphan's own path
+/// (`absorbed_into.get(&orphan.path)`) and one that just grabs *an* entry
+/// (`absorbed_into.values().next().cloned()`) read identically: there is
+/// only one path and only one value, so either implementation hands the one
+/// orphan the one entry. This fixture forces them apart by adding a second
+/// orphan that no fold ever touched — a document planted directly under the
+/// root's `.taiyaku`, naming no work this library has ever held, never
+/// reachable through `superseded` at all (a real rekey does not do it: see
+/// `a_rekeyed_digest_takes_its_document_with_it`, where `rename_for_rekey`
+/// carries the document to its new address before `reconcile` ever sees a
+/// gap). Under the keyed lookup the planted orphan's path is not in the map,
+/// so it reads `None`; under `.values().next()` it would be handed colour's
+/// entry anyway, because a one-entry map hands out the same value regardless
+/// of which orphan is asking.
+///
+/// Hand-applying `absorbed_into.values().next().cloned()` in place of the
+/// `.get(&orphan.path)` call and rerunning turns the `is_none()` assertion
+/// below red while leaving the rest of this module green — confirmed, then
+/// reverted, per O88's own verification step.
+#[test]
+fn two_orphans_in_one_pass_only_one_from_a_fold() {
+    let tree = crate::tests::tempdir("derive-two-orphans-one-fold");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let colour = two_works_before_the_fold(&tree, &conn);
+
+    // colour's own hand document — the one the fold below is about to
+    // strand.
+    let mut doc = crate::librarydoc::of(&conn, colour).expect("projecting");
+    doc.title = Some("Colour's Own Title".to_string());
+    crate::librarydoc::apply(&conn, colour, &doc).expect("applying");
+    let saved = crate::hand::save(&conn, colour).expect("saving");
+    assert!(
+        saved.persisted,
+        "the document has to actually be on disk for the fold to strand it: {saved:?}"
+    );
+
+    // A second document, planted directly under the same root's `.taiyaku`,
+    // addressing no work this library has ever derived — stranded from the
+    // moment it is written, never through a fold or a rekey.
+    let taiyaku_dir = tree.path.join(".taiyaku");
+    std::fs::create_dir_all(&taiyaku_dir).expect("creating .taiyaku");
+    std::fs::write(
+        taiyaku_dir.join("never-addressed.library.json"),
+        br#"{"taiyaku_library":1,"updated":"x","title":"Stranded From The Start"}"#,
+    )
+    .expect("planting an unaddressed document");
+
+    write_the_fold_rule(&conn);
+
+    let second = derive::derive(&conn).expect("second derive");
+    assert_eq!(
+        second.emptied_works, 1,
+        "only colour folds away; the planted document names no work at all: {second:?}"
+    );
+    assert_eq!(
+        second.orphan_documents.len(),
+        2,
+        "colour's document orphaned by the fold, and the planted one that \
+         was never addressed to begin with: {second:?}"
+    );
+
+    let folded = second
+        .orphan_documents
+        .iter()
+        .find(|o| o.title.as_deref() == Some("Colour's Own Title"))
+        .expect("colour's own orphan");
+    let planted = second
+        .orphan_documents
+        .iter()
+        .find(|o| o.title.as_deref() == Some("Stranded From The Start"))
+        .expect("the planted orphan");
+
+    // Exactly one work survives the fold — `colour` is gone, and the fixture
+    // never had a third work — so this is the same target `fold::absorb`
+    // folded into, read back rather than trusted through the test's own
+    // setup.
+    let (target_slug, target_title): (String, String) = conn
+        .query_row("SELECT slug, title FROM work", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .expect("exactly one work remains once the fold has run");
+    let absorbed = folded
+        .absorbed_into
+        .as_ref()
+        .expect("a document stranded by a fold must name the work that absorbed it");
+    assert_eq!(
+        (absorbed.slug.as_str(), absorbed.title.as_str()),
+        (target_slug.as_str(), target_title.as_str()),
+        "the orphan must point at the actual fold target, not merely *some* work"
+    );
+
+    assert!(
+        planted.absorbed_into.is_none(),
+        "nothing ever folded the planted document's non-existent work into \
+         anything — this must stay `None` rather than borrowing colour's \
+         own entry out of `absorbed_into`: {planted:?}"
+    );
 }
 
 /// **Store spec §4.4 stated as a test:** *losing the database costs a rescan,

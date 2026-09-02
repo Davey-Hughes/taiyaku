@@ -1630,10 +1630,12 @@ fn derive_summary_names_a_stranded_document_and_its_title() {
     report.orphan_documents.push(taiyaku_library::hand::Orphan {
         path: PathBuf::from("/library/.taiyaku/abc123.library.json"),
         title: Some("Go-Toubun no Hanayome".to_string()),
+        absorbed_into: None,
     });
     report.orphan_documents.push(taiyaku_library::hand::Orphan {
         path: PathBuf::from("/library/.taiyaku/fed789.library.json"),
         title: Some("Kaguya-sama wa Kokurasetai".to_string()),
+        absorbed_into: None,
     });
 
     let line = derive_summary(&report, 0);
@@ -1675,11 +1677,96 @@ fn derive_summary_names_a_titleless_orphan_without_empty_backticks() {
     report.orphan_documents.push(taiyaku_library::hand::Orphan {
         path: PathBuf::from("/library/.taiyaku/def456.library.json"),
         title: None,
+        absorbed_into: None,
     });
 
     let line = derive_summary(&report, 0);
 
     assert!(line.contains("def456.library.json"), "{line}");
+    assert!(!line.contains("(``)"), "no empty title parens: {line}");
+}
+
+/// A document orphaned by a fold names the work that absorbed it —
+/// `taiyaku_library::hand::Orphan::absorbed_into` — and this is what pins
+/// that the CLI actually prints it rather than only carrying it in the
+/// report struct.
+///
+/// **One orphan with a target and one without, in the same fixture.** A
+/// mutation that prints the `, now held as an edition of …` clause
+/// unconditionally, or never prints it at all, needs a fixture with one of
+/// each to be caught by anything — a fixture of only-absorbed or
+/// only-plain orphans cannot tell "always" or "never" apart from "correctly
+/// conditional". `repaired_documents` (7) and the orphan count (2) are kept
+/// distinct, this file's own convention.
+#[test]
+fn derive_summary_names_the_work_a_folded_documents_orphan_was_absorbed_into() {
+    let mut report = derive_report();
+    report.repaired_documents = 7;
+    report.orphan_documents.push(taiyaku_library::hand::Orphan {
+        path: PathBuf::from("/library/.taiyaku/aaa111.library.json"),
+        title: Some("Colour Edition".to_string()),
+        absorbed_into: Some(taiyaku_library::hand::Absorbed {
+            slug: "one-piece".to_string(),
+            title: "One Piece".to_string(),
+        }),
+    });
+    report.orphan_documents.push(taiyaku_library::hand::Orphan {
+        path: PathBuf::from("/library/.taiyaku/bbb222.library.json"),
+        title: Some("Plain Orphan".to_string()),
+        absorbed_into: None,
+    });
+
+    let line = derive_summary(&report, 0);
+
+    assert!(line.contains("2 document(s) no work addresses"), "{line}");
+    assert!(
+        line.contains(
+            "aaa111.library.json (`Colour Edition`), now held as an edition of \
+             `one-piece` (`One Piece`)"
+        ),
+        "the fold's target must be named alongside the stranded document: {line}"
+    );
+    assert!(
+        line.contains("bbb222.library.json (`Plain Orphan`)"),
+        "{line}"
+    );
+    assert!(
+        !line.contains("bbb222.library.json (`Plain Orphan`), now held"),
+        "an orphan with no fold behind it must not gain a target: {line}"
+    );
+}
+
+/// **`title: None` alongside `absorbed_into: Some(..)` is reachable and
+/// untested until now.** `Orphan::title` is `None` for a document correcting
+/// only a series or an edition label — no title to carry — and nothing stops
+/// a fold from stranding exactly that kind of document. Traced by hand it
+/// renders correctly: the titled branch's `(`title`)` clause is skipped
+/// entirely (see `derive_summary_names_a_titleless_orphan_without_empty_backticks`
+/// for that half alone), but the absorbed clause is still appended after it,
+/// so the line reads `path, now held as an edition of \`slug\` (\`title\`)`
+/// with no empty backticks anywhere. `repaired_documents` (4) and the orphan
+/// count (1) are kept distinct, this file's own convention.
+#[test]
+fn derive_summary_names_a_titleless_orphans_fold_target() {
+    let mut report = derive_report();
+    report.repaired_documents = 4;
+    report.orphan_documents.push(taiyaku_library::hand::Orphan {
+        path: PathBuf::from("/library/.taiyaku/ccc333.library.json"),
+        title: None,
+        absorbed_into: Some(taiyaku_library::hand::Absorbed {
+            slug: "one-piece".to_string(),
+            title: "One Piece".to_string(),
+        }),
+    });
+
+    let line = derive_summary(&report, 0);
+
+    assert!(line.contains("4 document(s) written"), "{line}");
+    assert!(line.contains("1 document(s) no work addresses"), "{line}");
+    assert!(
+        line.contains("ccc333.library.json, now held as an edition of `one-piece` (`One Piece`)"),
+        "no title clause, but the fold's target still follows the bare path: {line}"
+    );
     assert!(!line.contains("(``)"), "no empty title parens: {line}");
 }
 

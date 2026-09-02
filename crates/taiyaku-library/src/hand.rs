@@ -308,6 +308,32 @@ pub struct Orphan {
     /// series or an edition label. Reported anyway: the file is still
     /// somebody's work and still unreachable.
     pub title: Option<String>,
+    /// The work that absorbed the one this document belonged to, when a fold
+    /// is why it is orphaned.
+    ///
+    /// **Named, never moved.** `fold::absorb` could instead have carried the
+    /// orphaned document itself onto the target — but the target work may
+    /// already hold its own hand document, and a fold has no basis for
+    /// deciding whose correction is right; `fold::absorb`'s own doc comment
+    /// refuses a colliding note id for the identical reason, "the id is one
+    /// the reader's own sidecar names, and rewriting it silently is worse
+    /// than declining." A hand-set title is the same kind of thing. So this
+    /// carries only where to look — `reconcile` cannot fill it in, because it
+    /// runs per root and never sees a fold; only [`crate::derive::derive`]
+    /// watches both the fold and the sweep, and it is what sets this field.
+    pub absorbed_into: Option<Absorbed>,
+}
+
+/// The work an orphaned document's own work folded into — see
+/// [`Orphan::absorbed_into`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Absorbed {
+    /// What a person types to go and look: `work.slug`, which is stable
+    /// across a rescan the way the folded work's own `content_key` was not.
+    pub slug: String,
+    /// What a person recognises: `work.title`, printed alongside the slug
+    /// because a slug alone does not say which volume this was.
+    pub title: String,
 }
 
 /// What one root's `.taiyaku` directory and the works that owe it documents
@@ -508,7 +534,17 @@ pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconcil
                     .ok()
                     .and_then(|text| crate::librarydoc::LibraryDoc::from_json(&text).ok())
                     .and_then(|doc| doc.title);
-                found.orphans.push(Orphan { path, title });
+                // **Always `None` here.** This function runs per root and
+                // never sees a fold — [`crate::derive::derive`] is the only
+                // place both the fold and this sweep are in view, and it
+                // fills the field in afterwards. Changing that would mean
+                // `reconcile` learning about folds, which its own signature
+                // is not allowed to.
+                found.orphans.push(Orphan {
+                    path,
+                    title,
+                    absorbed_into: None,
+                });
             }
         }
         Err(e)

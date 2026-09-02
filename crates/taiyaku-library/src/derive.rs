@@ -37,7 +37,8 @@
 //! is the one column nothing but a walk can know. `series` and `series_title`
 //! have no importer at all and are written here outright.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension};
 use taiyaku_core::{Direction, Edition, Member, Sidecar, Work};
@@ -489,7 +490,36 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
     // rather than being dropped for the count beside it: it already names the
     // work and the keys, and a count alone leaves an operator with "1
     // superseded work left standing" over a library of thousands.
+    // **Which work absorbed the one whose document is about to become an
+    // orphan** — read here, before `absorb` runs, because `absorb`'s own
+    // `DELETE FROM work` removes the `from_work` row itself: `hand::path_for`
+    // joins through `work`, `edition`, `member` and `root` to resolve an
+    // address (it never reads `migrated_document`), and once that row is gone
+    // there is nothing left for it to join through. Captured after the
+    // delete instead, `path_for` would find no `from_work` to query at all.
+    //
+    // `migrated_document`'s own `ON DELETE CASCADE` is a separate mechanism,
+    // not this one: it is what makes the file an orphan in the first place,
+    // by taking `from_work`'s marker row with it so `reconcile`'s `owed`
+    // query stops naming it — see the "After everything" comment below,
+    // where that cascade is the reason this whole loop must run after the
+    // fold rather than before it.
+    //
+    // This does not move, copy or merge the document itself — see
+    // [`crate::hand::Absorbed`] for why a fold is not allowed to decide that
+    // on its own — it only remembers where to point a person who reads the
+    // orphan report.
+    let mut absorbed_into: HashMap<PathBuf, crate::hand::Absorbed> = HashMap::new();
     for (from_work, into_work) in superseded(conn, &written, &written_editions)? {
+        let document_path = crate::hand::path_for(conn, from_work)?;
+        let target: Option<(String, String)> = conn
+            .query_row(
+                "SELECT slug, title FROM work WHERE id = ?1",
+                [into_work],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| format!("reading the absorbing work {into_work}: {e}"))?;
         match crate::fold::absorb(conn, from_work, into_work)? {
             crate::fold::Outcome::Folded(moved) => {
                 report.emptied_works += 1;
@@ -499,6 +529,17 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
                 report.moved_truth_pages += moved.truth_pages;
                 report.moved_truth_collisions += moved.collisions;
                 report.discarded_rows += moved.discarded;
+                // Only a completed fold orphans anything — a refused one
+                // deletes nothing, per `Outcome::Refused`'s own doc. A path
+                // of `None` means `from_work` had no document to strand
+                // (an imported work, or one nobody ever hand-edited); a
+                // target of `None` cannot happen for a work `superseded`
+                // just named as a fold target, but is handled rather than
+                // asserted away, matching this function's own rule against
+                // returning `Err` for anything this task touches.
+                if let (Some(path), Some((slug, title))) = (document_path, target) {
+                    absorbed_into.insert(path, crate::hand::Absorbed { slug, title });
+                }
             }
             crate::fold::Outcome::Refused(why) => {
                 report.unfolded_works += 1;
@@ -564,6 +605,19 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
         report.unwritable_documents.extend(found.unwritable);
         report.orphan_documents.extend(found.orphans);
         report.stale_documents.extend(found.stale);
+    }
+
+    // **Correlated here, not inside `reconcile`.** `reconcile` is a pure
+    // per-root function that never sees a fold; `derive` is the one place
+    // that watches both the sweep just above and the fold loop before it, so
+    // it is the only place this join can be made at all. A path captured in
+    // `absorbed_into` that matches no orphan is the ordinary case, not a
+    // gap: a work nobody ever hand-edited has no document to strand, so most
+    // folds add nothing here.
+    for orphan in &mut report.orphan_documents {
+        if let Some(absorbed) = absorbed_into.get(&orphan.path) {
+            orphan.absorbed_into = Some(absorbed.clone());
+        }
     }
 
     Ok(report)
