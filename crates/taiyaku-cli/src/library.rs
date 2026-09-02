@@ -72,12 +72,14 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
         Some("proposals") => proposals(&args[1..]),
         Some("user") => crate::user::command(&args[1..]),
         Some("key") => crate::user::key_command(&args[1..]),
+        Some("root") => root_command(&args[1..]),
         Some(other) => Err(format!(
             "library has no subcommand `{other}`; it has import, export, scan, rules, \
-             proposals, user and key"
+             proposals, user, key and root"
         )),
         None => Err(
-            "library needs a subcommand: import, export, scan, rules, proposals, user or key"
+            "library needs a subcommand: import, export, scan, rules, proposals, user, key or \
+             root"
                 .to_string(),
         ),
     }
@@ -375,6 +377,144 @@ fn select_roots(
     Ok(roots)
 }
 
+const DOCUMENTS_USAGE: &str = "usage: taiyaku library root documents <path> on|off [--db PATH]";
+
+/// Dispatch `library root`.
+///
+/// **One subcommand today, dispatched the same shape
+/// [`crate::user::command`] uses for `library user`'s six** — a `root`
+/// group rather than a bare `library documents` command, because spec C4's
+/// eventual root editor will need a home for this library's other
+/// per-root settings too (`edition_key`, `default_kind`,
+/// `default_language`, `scan_interval_secs`), and this is the one place a
+/// second root-scoped command joins without reshaping the dispatch again.
+///
+/// # Errors
+///
+/// Returns an error naming the subcommand if none matches, or whatever the
+/// subcommand itself returns.
+fn root_command(args: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        Some("documents") => root_documents(&args[1..]),
+        Some(other) => Err(format!(
+            "library root has no subcommand `{other}`; it has documents"
+        )),
+        None => Err("library root needs a subcommand: documents".to_string()),
+    }
+}
+
+/// `taiyaku library root documents <PATH> on|off [--db PATH]`: flip
+/// `root.keeps_documents` — migration 012's column, off by default since
+/// `docs/superpowers/specs/2026-09-02-hand-documents-off-by-default-design.md`
+/// — for the one root `PATH` names, and nothing else.
+///
+/// **Changes one column and stops.** It does not scan, does not derive, and
+/// does not write, move or delete a single document. Turning documents on
+/// gets them written by the next `taiyaku library scan`'s `hand::reconcile`
+/// pass — the mechanism the reconciliation design already built for exactly
+/// this — rather than by a second write path minted here. See
+/// [`documents_state_line`] for why the printed line says so in full: the
+/// reasonable reading of "now keeps documents" is that a file just
+/// appeared, and it has not.
+///
+/// # Errors
+///
+/// Returns an error for an unknown flag, for anything other than exactly one
+/// path and one of `on`/`off`, if `PATH` cannot be canonicalised or names no
+/// root of this library (see [`root_named`]), or if the database cannot be
+/// opened.
+fn root_documents(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags("library root documents", args, &["--db"])?;
+    let positional: Vec<&String> = args.iter().take_while(|a| !a.starts_with("--")).collect();
+    let [path, state] = positional.as_slice() else {
+        return Err(DOCUMENTS_USAGE.to_string());
+    };
+    let on = match state.as_str() {
+        "on" => true,
+        "off" => false,
+        other => return Err(format!("`{other}` is not `on` or `off`")),
+    };
+    let db = resolve_db_path(option_value(args, "--db", "a path")?)?;
+    let library = Library::open(&db).map_err(|e| format!("opening the library: {e}"))?;
+    let conn = library.conn();
+    let root = root_named(&conn, path)?;
+    conn.execute(
+        "UPDATE root SET keeps_documents = ?1 WHERE id = ?2",
+        rusqlite::params![on, root.id],
+    )
+    .map_err(|e| format!("setting keeps_documents for {}: {e}", root.path.display()))?;
+    println!("{}", documents_state_line(&root.path, on));
+    Ok(())
+}
+
+/// The one root of this library whose canonicalised path is `given` —
+/// resolved the same way [`select_roots`] resolves `scan --root`, so
+/// `./library` and its absolute spelling name the same row here too.
+///
+/// **Does not fall back to a stored, uncanonicalisable path**, unlike
+/// `library user grant-root`'s own resolver (`crate::user::root_by_path`): a
+/// grant can usefully be withdrawn from a root whose disk is gone, but there
+/// is nothing for `hand::reconcile` to write into on a root that cannot be
+/// found, so this command's requirement is exactly `--root`'s.
+///
+/// # Errors
+///
+/// Returns an error naming `given` if it cannot be canonicalised (the path
+/// must exist), or if no known root's stored path matches it.
+fn root_named(
+    conn: &rusqlite::Connection,
+    given: &str,
+) -> Result<taiyaku_library::scan::Root, String> {
+    let canonical = Path::new(given)
+        .canonicalize()
+        .map_err(|e| format!("{given}: {e}"))?;
+    taiyaku_library::scan::roots(conn)?
+        .into_iter()
+        .find(|root| root.path == canonical)
+        .ok_or_else(|| {
+            format!(
+                "no known root at {}; `taiyaku library scan --add {}` would add it first",
+                canonical.display(),
+                canonical.display()
+            )
+        })
+}
+
+/// What [`root_documents`] prints once the column is set — pulled into a
+/// pure function for the reason `crate::user::sessions_ended_note` and its
+/// siblings already established: a branch inside a `println!` is invisible
+/// to any test, and this codebase's mutation sweep has found exactly that
+/// shape survive more than once.
+///
+/// **States what the flag means, not only what changed.** `on`/`off` alone
+/// tells a reader nothing unless they already know what `keeps_documents`
+/// governs; the second sentence is the fact a person actually wants — whether
+/// a hand correction now has a copy that outlives the database, or lives in
+/// the database alone.
+///
+/// **States plainly that nothing was just written.** The reasonable reading
+/// of "this root now keeps documents" is that a file appeared, and it has
+/// not — `root_documents` changes this one column and nothing else; the
+/// document itself is `hand::reconcile`'s to write, the next time
+/// `taiyaku library scan` runs it.
+fn documents_state_line(path: &Path, on: bool) -> String {
+    if on {
+        format!(
+            "{} now keeps documents: a hand edit is written beside the archives, at \
+             <root>/.taiyaku/, and survives losing the database. Nothing is written yet — \
+             the next `taiyaku library scan` writes it, through `hand::reconcile`, the same \
+             as any other scan",
+            path.display()
+        )
+    } else {
+        format!(
+            "{} no longer keeps documents: corrections live in the database only. Any \
+             document already on disk is left exactly where it is — this does not delete it",
+            path.display()
+        )
+    }
+}
+
 /// The counts one [`taiyaku_library::scan::scan_root`] call produced, beside
 /// [`taiyaku_library::watch::report_line`]'s own line — the two together are
 /// §8's report for one root.
@@ -409,7 +549,8 @@ fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
 /// `unrecognised_kinds`, `emptied_works` (with the counts of what its fold
 /// wrote, what stopped existing, and what it discarded), `unfolded_works`,
 /// `unreadable_hand`, `series_holding_no_work`, `repaired_documents`,
-/// `unwritable_documents`, `orphan_documents` and `stale_documents`:
+/// `unwritable_documents`, `orphan_documents`, `declined_documents` and
+/// `stale_documents`:
 /// [`taiyaku_library::derive::DeriveReport`]'s own doc comment is explicit
 /// that each exists because a silent drop, a silent re-key, a silently
 /// orphaned edition, a silent merge, a silently refused edition kind or a
@@ -528,7 +669,7 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
     if report.repaired_documents > 0 {
         let _ = write!(
             line,
-            ", {} document(s) written that a failed save had left missing",
+            ", {} document(s) written that were not on disk",
             report.repaired_documents
         );
     }
@@ -544,6 +685,16 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
         // Path **and** title: the filename is a `content_key` naming content
         // that no longer exists, so the path alone gives a person nothing to
         // act on.
+        //
+        // **"No work owes it" here means what it says: nothing addresses
+        // it.** A document a live work still addresses, whose root has
+        // simply declined to keep it, is reported below under
+        // `declined_documents` instead — folding the two together here was
+        // the Critical `taiyaku_library::hand::Orphan`'s own doc comment
+        // records: a person turning documents off used to read, on every
+        // scan, that *every* hand document in the library was stranded and
+        // owed to nothing, sending them hunting for (or deleting) works that
+        // were perfectly fine.
         //
         // **A fold's target is appended, not substituted.** The path and
         // title stay exactly as they were for every other orphan, and a
@@ -573,7 +724,32 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
             .collect();
         let _ = write!(
             line,
-            ", {} document(s) no work addresses: {}",
+            ", {} document(s) no work owes: {}",
+            named.len(),
+            named.join("; ")
+        );
+    }
+    if !report.declined_documents.is_empty() {
+        // **Worded so it reads as a standing fact about this root, not a
+        // loss.** "No work owes" — the orphan clause above — says a document
+        // is stranded and invites a person to act on it; a declined document
+        // is neither, and printing it the same way is the exact Critical
+        // this clause exists to not repeat. "This root no longer keeps"
+        // names what actually happened: someone (or migration 012, by
+        // default) turned `keeps_documents` off, and the file at a
+        // perfectly good address is simply outside what this root
+        // maintains any more.
+        let named: Vec<String> = report
+            .declined_documents
+            .iter()
+            .map(|declined| match &declined.title {
+                Some(title) => format!("{} (`{title}`)", declined.path.display()),
+                None => declined.path.display().to_string(),
+            })
+            .collect();
+        let _ = write!(
+            line,
+            ", {} document(s) this root no longer keeps: {}",
             named.len(),
             named.join("; ")
         );

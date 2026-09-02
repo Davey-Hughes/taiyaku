@@ -215,8 +215,15 @@ pub struct DeriveReport {
     /// "each with the path" without exception — only whichever a path had
     /// already been resolved by the time something failed.
     pub unreadable_hand: Vec<String>,
-    /// Documents written on this pass that a failed `hand::save` had left
-    /// missing — O82's retry.
+    /// Documents written on this pass that were not on disk — O82's retry.
+    ///
+    /// **Deliberately not "that a failed save had left missing", which this
+    /// said until 2026-09-02.** A failed write is one cause and no longer the
+    /// only one: a root whose `keeps_documents` was off when the edit was
+    /// made, and has since been turned on, arrives here with its marker armed
+    /// and no file — the ordinary path for anyone opting a root back in, and
+    /// the one a person is most likely to be watching. Naming a cause the
+    /// count cannot know is how a report starts lying about the common case.
     ///
     /// **A field rather than a silence, under the same rule as
     /// [`Self::suppressed`] and [`Self::rekeyed`]:** any derivation outcome
@@ -231,12 +238,38 @@ pub struct DeriveReport {
     /// permanently read-only root reports the same list every scan, which is
     /// honest rather than noisy — the condition really is still true.
     pub unwritable_documents: Vec<String>,
-    /// Documents under a root's `.taiyaku` that no work addresses — O81.
+    /// Documents under a root's `.taiyaku` that nothing in the library
+    /// addresses — O81.
+    ///
+    /// **Never a document a live work still addresses.** A root that has
+    /// declined to keep documents reports those under
+    /// [`Self::declined_documents`] instead — see [`crate::hand::Orphan`]'s
+    /// own doc comment for the Critical that folding the two together was:
+    /// migration 012 defaults every existing root's `keeps_documents` off,
+    /// so a report that called an addressed file an orphan named *every*
+    /// hand document in the library as stranded on the first derive after
+    /// upgrading.
     ///
     /// Each carries the title out of the file, because the filename is the
     /// `content_key` the document was written under and names content that no
     /// longer exists. See [`crate::hand::Orphan`].
     pub orphan_documents: Vec<crate::hand::Orphan>,
+    /// Documents at a work's own address whose root has declined to keep
+    /// them: `root.keeps_documents` is off, so nothing is owed, but a live
+    /// work still addresses the file — see [`crate::hand::Declined`].
+    ///
+    /// **A field rather than a silence, under the same rule as
+    /// [`Self::suppressed`] and [`Self::rekeyed`]: any derivation outcome
+    /// that changes what a person sees and cannot be inferred from the other
+    /// counts gets one.** Before this field existed, `hand::reconcile` folded
+    /// this case into [`Self::orphan_documents`], so every derive after
+    /// migration 012 (which turns `keeps_documents` off for every existing
+    /// root) reported every hand document in the library as stranded — on
+    /// the very pass that `hand::load` read each one's title back into the
+    /// database. This name is what lets a person read the difference between
+    /// "act on this, it is stranded" and "this root simply no longer keeps
+    /// what is here."
+    pub declined_documents: Vec<crate::hand::Declined>,
     /// Documents at a work's own address that disagree with the database.
     ///
     /// **Reported and resolved by nothing**, deliberately: O44 records this as
@@ -604,6 +637,7 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
         report.repaired_documents += found.repaired;
         report.unwritable_documents.extend(found.unwritable);
         report.orphan_documents.extend(found.orphans);
+        report.declined_documents.extend(found.declined);
         report.stale_documents.extend(found.stale);
     }
 

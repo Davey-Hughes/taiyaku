@@ -62,19 +62,28 @@ fn the_address_is_a_dotfile_directory_under_the_hub_editions_root() {
     );
 }
 
-#[test]
-fn a_work_with_no_rooted_member_has_no_address() {
-    let conn = Connection::open_in_memory().expect("in-memory database");
-    crate::schema::migrate(&conn).expect("migrating");
+/// A work whose hub edition has no rooted member at all — an imported/sidecar
+/// work, whose `sidecar_path` is NULL by design and which therefore has
+/// nowhere else to put the document. Extracted so the tests that need this
+/// shape share one copy of it rather than each seeding a second.
+fn a_work_with_no_rooted_member(conn: &Connection) -> i64 {
+    crate::schema::migrate(conn).expect("migrating");
     conn.execute_batch(
         "INSERT INTO work (id, content_key, slug, title, reading, hub)
          VALUES (1, 'abc123', 'w', 'Derived', 'rtl', 'en');
          INSERT INTO edition (id, work_id, key, label) VALUES (1, 1, 'en', 'en');",
     )
     .expect("seeding");
+    1
+}
+
+#[test]
+fn a_work_with_no_rooted_member_has_no_address() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_work_with_no_rooted_member(&conn);
 
     assert_eq!(
-        super::path_for(&conn, 1).expect("resolving"),
+        super::path_for(&conn, work_id).expect("resolving"),
         None,
         "an imported work keeps its sidecar's directory and does not want this \
          address; only a scanned work, whose `sidecar_path` is NULL by design, \
@@ -106,12 +115,29 @@ fn a_scanned_work_rooted_at(conn: &Connection, root: &str) -> i64 {
     1
 }
 
+/// [`a_scanned_work_rooted_at`], with the root's `keeps_documents` turned on.
+///
+/// Migration 012 defaults that column off, and `a_scanned_work_rooted_at`
+/// seeds a `root` row directly — so a caller of *that* fixture gets the
+/// off default, which is exactly the case
+/// `a_root_that_keeps_no_documents_gets_no_file_and_reports_success` exists to
+/// exercise. Every test below this line is about a document that actually
+/// lands on disk, not about the setting that decides whether one does, so
+/// each opts in through this wrapper rather than repeating the `UPDATE`
+/// inline at every call site.
+fn a_scanned_work_rooted_at_that_keeps_documents(conn: &Connection, root: &str) -> i64 {
+    let work_id = a_scanned_work_rooted_at(conn, root);
+    conn.execute("UPDATE root SET keeps_documents = 1", [])
+        .expect("turning documents on");
+    work_id
+}
+
 #[test]
 fn saving_writes_the_document_and_records_the_marker() {
     let dir = crate::tests::tempdir("hand-save");
     let root = dir.path.to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
     let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
     doc.title = Some("Hand Set".to_string());
@@ -145,7 +171,7 @@ fn an_unedited_work_has_nothing_to_remove_and_that_is_not_a_failure() {
     let dir = crate::tests::tempdir("hand-save-no-file");
     let root = dir.path.to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
     let saved = super::save(&conn, work_id).expect("saving");
 
@@ -184,7 +210,7 @@ fn a_hand_document_withdrawn_removes_the_file_it_left_behind() {
     let dir = crate::tests::tempdir("hand-save-withdraw");
     let root = dir.path.to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
     let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
     doc.title = Some("Hand Set".to_string());
@@ -235,7 +261,7 @@ fn a_removal_failure_that_is_not_notfound_is_reported_not_swallowed() {
     let dir = crate::tests::tempdir("hand-save-remove-fails");
     let root = dir.path.to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
     let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
     doc.title = Some("Hand Set".to_string());
@@ -292,7 +318,7 @@ fn a_root_that_cannot_take_the_document_still_arms_the_guard() {
     let root = dir.path.join("unwritable");
     std::fs::create_dir(&root).expect("creating the root");
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root.to_string_lossy());
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root.to_string_lossy());
 
     // Without an actual edit, `librarydoc::of` projects empty and `save`
     // takes its remove-file branch instead of its write branch — recording
@@ -392,7 +418,7 @@ fn a_rescan_with_no_database_recovers_the_hand_set_title() {
 
     // First database: a person corrects the title, and it is saved.
     let first = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&first, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&first, &root);
     let mut doc = crate::librarydoc::of(&first, work_id).expect("projecting");
     doc.title = Some("Go-Toubun no Hanayome, volume 1".to_string());
     crate::librarydoc::apply(&first, work_id, &doc).expect("applying");
@@ -441,7 +467,7 @@ fn a_document_no_work_addresses_is_an_orphan_named_with_its_title() {
     let dir = crate::tests::tempdir("hand-reconcile-orphan");
     let root = dir.path.to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
     let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
     doc.title = Some("Hand Set".to_string());
@@ -507,7 +533,7 @@ fn a_gap_is_written_on_the_next_pass() {
     let root = dir.path.join("root");
     std::fs::create_dir(&root).expect("creating the root");
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root.to_string_lossy());
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root.to_string_lossy());
 
     // **A file where the directory must go, not `set_readonly`.** CI runs as
     // root and ignores the write bit; this fails for any uid. See
@@ -555,7 +581,7 @@ fn a_gap_whose_document_projects_empty_is_not_counted_as_repaired() {
     let dir = crate::tests::tempdir("hand-reconcile-empty-gap");
     let root = dir.path.to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
     // Armed directly, without ever calling `save` — the marker alone, with
     // nothing behind it.
@@ -577,6 +603,69 @@ fn a_gap_whose_document_projects_empty_is_not_counted_as_repaired() {
     );
 }
 
+/// **`repaired` is counted off what `save` actually decided, never off the
+/// `root` snapshot this loop is gated on.** `derive()` reads `scan::roots`
+/// once, near the top of the call, and hands the same snapshot to every
+/// `reconcile` seconds later; `save` re-reads `root.keeps_documents` itself,
+/// live, off the same row. Unreachable through the public API today —
+/// nothing but raw SQL moves the column outside a test — but constructible
+/// directly here: this test hands `reconcile` a `Root` that still says
+/// `keeps_documents: true` while the database row underneath it has already
+/// been turned off, which is exactly what a PATCH landing mid-derive would
+/// produce once spec C4 gives the column a control. Before the fix, the
+/// outer gate admitted the loop on the strength of the stale `true`, `save`
+/// then read the live `false` and refused the write, and `saved.persisted`
+/// alone was enough to count it — printing "1 document(s) written" for a
+/// pass that wrote nothing, the identical false claim the outer gate's own
+/// comment already exists to prevent, one layer further down.
+#[test]
+fn repaired_is_counted_off_the_live_answer_not_the_stale_snapshot() {
+    let dir = crate::tests::tempdir("hand-reconcile-race");
+    let root = dir.path.to_string_lossy().to_string();
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
+
+    // A marked work whose document exists, then loses its file — reopening
+    // the gap `save` had just closed, so this loop has something to do.
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    let saved = super::save(&conn, work_id).expect("saving");
+    let path = saved.path.expect("an on root has an address");
+    std::fs::remove_file(&path).expect("reopening the gap");
+
+    // The setting is turned off live, between when `derive()` would have
+    // snapshotted `root` and when `reconcile` actually runs — simulated
+    // directly, since a real race is not reproducible on demand and nothing
+    // but raw SQL can reach the column at all today.
+    conn.execute("UPDATE root SET keeps_documents = 0", [])
+        .expect("off, live");
+    let mut stale_snapshot = crate::scan::roots(&conn).expect("reading roots").remove(0);
+    assert!(
+        !stale_snapshot.keeps_documents,
+        "the live row really is off before this test overrides the snapshot"
+    );
+    stale_snapshot.keeps_documents = true;
+
+    let found = super::reconcile(&conn, &stale_snapshot).expect("reconciling");
+
+    assert_eq!(
+        found.repaired, 0,
+        "the live root declined the write, so nothing was actually \
+         repaired even though the stale snapshot admitted the loop: {found:?}"
+    );
+    assert_eq!(
+        found.unwritable.len(),
+        0,
+        "and it is not a failure either — `save` answered `persisted: true` \
+         for a root that owed nothing: {found:?}"
+    );
+    assert!(
+        !path.is_file(),
+        "no document was written behind the setting's back: {found:?}"
+    );
+}
+
 /// A root that stays unwritable reports the same failure every pass, naming
 /// the path. Reported, never raised: a scan must not die because one root of
 /// several cannot take a document.
@@ -586,7 +675,7 @@ fn a_gap_that_cannot_be_written_is_named_and_does_not_fail_the_pass() {
     let root = dir.path.join("root");
     std::fs::create_dir(&root).expect("creating the root");
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root.to_string_lossy());
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root.to_string_lossy());
 
     std::fs::write(root.join(".taiyaku"), b"not a directory")
         .expect("planting a file where the directory must go");
@@ -617,7 +706,7 @@ fn a_library_with_nothing_wrong_reports_nothing() {
     let dir = crate::tests::tempdir("hand-reconcile-clean");
     let root = dir.path.to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
     let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
     doc.title = Some("Hand Set".to_string());
@@ -643,7 +732,7 @@ fn a_document_that_disagrees_with_the_database_is_stale_and_is_not_rewritten() {
     let dir = crate::tests::tempdir("hand-reconcile-stale");
     let root = dir.path.to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
     let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
     doc.title = Some("First Correction".to_string());
@@ -684,7 +773,7 @@ fn a_document_that_agrees_is_not_stale_despite_a_newer_updated_stamp() {
     let dir = crate::tests::tempdir("hand-reconcile-agrees");
     let root = dir.path.to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
     let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
     doc.title = Some("Hand Set".to_string());
@@ -729,7 +818,7 @@ fn an_unparseable_document_is_neither_stale_nor_an_orphan() {
     let dir = crate::tests::tempdir("hand-reconcile-unparseable");
     let root = dir.path.to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
     let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
     doc.title = Some("Hand Set".to_string());
@@ -787,7 +876,7 @@ fn a_document_that_cannot_be_read_is_not_reported_stale() {
     let dir = crate::tests::tempdir("hand-reconcile-unreadable");
     let root = dir.path.to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
     let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
     doc.title = Some("Hand Set".to_string());
@@ -828,7 +917,7 @@ fn a_new_filename_chapter_does_not_make_a_hand_edit_stale() {
     let dir = crate::tests::tempdir("hand-reconcile-new-chapter");
     let root = dir.path.to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
     let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
     doc.title = Some("Hand Set".to_string());
@@ -863,7 +952,7 @@ fn a_rekey_never_overwrites_a_document_already_at_the_new_address() {
     let dir = crate::tests::tempdir("hand-rekey-collision");
     let root = dir.path.to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
     let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
     doc.title = Some("Old".to_string());
@@ -897,5 +986,373 @@ fn a_rekey_never_overwrites_a_document_already_at_the_new_address() {
     assert!(
         dir.path.join(".taiyaku/abc123.library.json").is_file(),
         "and kept the old document for a person to read"
+    );
+}
+
+/// **The change's headline: an off root gets no file.** Not an error, not a
+/// failed write — nothing was owed, so nothing is missing and `persisted`
+/// says so.
+#[test]
+fn a_root_that_keeps_no_documents_gets_no_file_and_reports_success() {
+    let dir = crate::tests::tempdir("hand-save-documents-off");
+    let root = dir.path.to_string_lossy().to_string();
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    // `a_scanned_work_rooted_at` seeds the root directly, so the column takes
+    // migration 012's default of 0 — which is the case under test.
+
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+
+    let saved = super::save(&conn, work_id).expect("saving must not fail");
+
+    assert!(
+        saved.persisted,
+        "nothing was owed, so nothing is missing: {saved:?}"
+    );
+    assert_eq!(saved.why, None, "and there is no failure to name");
+    assert_eq!(
+        saved.keeps_documents,
+        Some(false),
+        "the root declined, which is not the same as having no root: {saved:?}"
+    );
+    assert!(
+        !dir.path.join(".taiyaku").exists(),
+        "and the directory a person objected to was never created"
+    );
+    assert!(
+        crate::migrate::absorbed(&conn, work_id, crate::migrate::LIBRARY)
+            .expect("reading the marker"),
+        "the marker is still armed: it means the document has been absorbed, \
+         which stays true when there was never one to absorb, and \
+         `derive::write_work`'s read-back guard reads it before deciding \
+         whether to call `load`"
+    );
+}
+
+/// **Nothing is ever deleted by the off branch — the case the headline test
+/// above cannot reach.** That test's root never keeps a document in the first
+/// place, so it cannot tell "nothing was owed" apart from "something was
+/// owed and got destroyed." This one turns the setting off *after* a document
+/// already reached disk, then empties the projection on the very save that
+/// follows — the save that, on an on root, would take the remove-file branch.
+///
+/// Narrowing `save`'s guard to `if keeps_documents == Some(false) &&
+/// !doc.is_empty()` passes every other test in this file — including the
+/// headline one, whose document never existed to delete — while deleting the
+/// file this test plants. Checked by hand: applying that narrowing here fails
+/// this test (`left: false` on the final `is_file` assertion) and nothing
+/// else; reverting restores green.
+#[test]
+fn an_off_root_never_deletes_a_document_already_on_disk() {
+    let dir = crate::tests::tempdir("hand-save-documents-off-keeps-existing");
+    let root = dir.path.to_string_lossy().to_string();
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
+
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    let first = super::save(&conn, work_id).expect("saving while the root keeps documents");
+    let path = first.path.expect("an on root has an address");
+    assert!(
+        path.is_file(),
+        "the document must actually land, or turning the setting off below \
+         proves nothing"
+    );
+
+    // The person turns the setting off, and clears their own edit in the same
+    // stroke — exactly the person this test exists for, per the brief: "a
+    // person who has just turned the setting off is exactly the person with a
+    // file on disk and edits still to clear."
+    conn.execute("UPDATE root SET keeps_documents = 0", [])
+        .expect("turning documents off");
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = None;
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying the withdrawal");
+    assert!(
+        crate::librarydoc::of(&conn, work_id)
+            .expect("projecting")
+            .is_empty(),
+        "the document must actually be empty, or this does not reach the \
+         case under test"
+    );
+
+    let second = super::save(&conn, work_id).expect("saving after the root declines");
+
+    assert!(
+        second.persisted,
+        "nothing is owed once the root has declined: {second:?}"
+    );
+    assert!(
+        path.is_file(),
+        "the off branch must never delete: it returns before `save`'s \
+         remove-file branch is ever reached, and an existing document is not \
+         nothing to remove just because the setting changed underneath it"
+    );
+    assert!(
+        !crate::migrate::absorbed(&conn, work_id, crate::migrate::LIBRARY)
+            .expect("reading the marker"),
+        "an emptied projection disarms the marker even here, so derivation \
+         resumes — passing `true` unconditionally would freeze it out of a \
+         withdrawn edit permanently, and nothing else in the suite says so"
+    );
+}
+
+/// The setting is a setting, not a removal. Without this the whole feature
+/// could be hard-coded off and every other test here would still pass.
+#[test]
+fn a_root_that_keeps_documents_still_writes_one() {
+    let dir = crate::tests::tempdir("hand-save-documents-on");
+    let root = dir.path.to_string_lossy().to_string();
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_scanned_work_rooted_at(&conn, &root);
+    conn.execute("UPDATE root SET keeps_documents = 1", [])
+        .expect("turning documents on");
+
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+
+    let saved = super::save(&conn, work_id).expect("saving");
+
+    assert!(saved.persisted, "{saved:?}");
+    assert_eq!(saved.keeps_documents, Some(true), "{saved:?}");
+    let path = saved.path.expect("an on root has an address");
+    assert!(
+        path.is_file(),
+        "and the document is at it: {}",
+        path.display()
+    );
+}
+
+/// **`None` is not `Some(false)`.** A work with no rooted member has no root
+/// to ask, which is a different thing from a root that declined — the
+/// distinction the field exists to carry, and the one a plain `bool` would
+/// have lost.
+#[test]
+fn a_work_with_no_rooted_member_has_no_root_to_ask() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_work_with_no_rooted_member(&conn);
+
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+
+    let saved = super::save(&conn, work_id).expect("saving");
+
+    assert_eq!(
+        saved.keeps_documents, None,
+        "there was no root to ask, which is not the same as one that said no: \
+         {saved:?}"
+    );
+    assert_eq!(saved.path, None, "and no address either");
+}
+
+/// **The one way this change can fail silently.** A marked work whose address
+/// holds no file is a gap, and `reconcile` repairs a gap by writing the file.
+/// In a root that keeps no documents every marked work looks exactly like
+/// that — so without the branch under test, the next scan would recreate
+/// every document the setting exists to prevent, and the setting would appear
+/// to work and then quietly undo itself.
+#[test]
+fn an_off_root_is_never_repaired_into_growing_documents() {
+    let dir = crate::tests::tempdir("hand-reconcile-off-no-repair");
+    let root = dir.path.to_string_lossy().to_string();
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_scanned_work_rooted_at(&conn, &root);
+
+    // A marked work with no file: exactly the shape of a gap.
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    super::save(&conn, work_id).expect("saving");
+    assert!(
+        crate::migrate::absorbed(&conn, work_id, crate::migrate::LIBRARY)
+            .expect("reading the marker"),
+        "the fixture only means anything if the marker is armed"
+    );
+
+    let root_row = crate::scan::roots(&conn).expect("reading roots").remove(0);
+    assert!(!root_row.keeps_documents, "the fixture's root is off");
+    let found = super::reconcile(&conn, &root_row).expect("reconciling");
+
+    assert_eq!(found.repaired, 0, "nothing was repaired: {found:?}");
+    assert_eq!(
+        found.unwritable.len(),
+        0,
+        "and nothing was attempted: {found:?}"
+    );
+    assert!(
+        !dir.path.join(".taiyaku").exists(),
+        "and no document was written behind the setting's back"
+    );
+}
+
+/// **The Critical.** A document at a work's own, correct address — a live
+/// work still addresses it — whose root has simply turned `keeps_documents`
+/// off must be reported as [`super::Declined`], never folded into
+/// [`super::Orphan`]. An earlier `reconcile` gated the whole comparison
+/// branch on `root.keeps_documents` rather than branching on
+/// `expected.get(&path)`, so every such file fell straight through to
+/// `found.orphans` — meaning migration 012, which defaults every existing
+/// root's `keeps_documents` off, made the first derive after upgrading
+/// report *every* hand document in the library as stranded, on the very
+/// pass that `hand::load` (deliberately not gated on `keeps_documents`) read
+/// each one's title back into the database. A person reading "no work owes
+/// this" for a file that had just supplied their database's title had every
+/// reason to delete what they were told was surplus — this test is what
+/// stands between that and a green suite.
+///
+/// **Hand-applying the regression confirms the fixture bites.** Folding the
+/// `expected.contains_key(&path)` arm in `reconcile` back into
+/// `found.orphans.push(..)` (restoring the old behaviour) turns this test's
+/// `found.declined.len() == 1` assertion red while every other test in this
+/// module still passes — checked by hand during this fix, then reverted.
+#[test]
+fn an_off_root_reports_an_addressed_document_as_declined_not_orphaned() {
+    let dir = crate::tests::tempdir("hand-reconcile-off-declined");
+    let root = dir.path.to_string_lossy().to_string();
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_scanned_work_rooted_at(&conn, &root);
+
+    // Written while the root kept documents, then the setting is turned off
+    // — the work itself is untouched, so it still addresses this exact file.
+    conn.execute("UPDATE root SET keeps_documents = 1", [])
+        .expect("on");
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    let saved = super::save(&conn, work_id).expect("saving");
+    let path = saved.path.expect("an on root has an address");
+    assert!(
+        path.is_file(),
+        "the document exists before the setting changes"
+    );
+    conn.execute("UPDATE root SET keeps_documents = 0", [])
+        .expect("off");
+
+    let root_row = crate::scan::roots(&conn).expect("reading roots").remove(0);
+    let found = super::reconcile(&conn, &root_row).expect("reconciling");
+
+    assert_eq!(
+        found.declined.len(),
+        1,
+        "addressed by a live work, so declined rather than orphaned: {found:?}"
+    );
+    assert_eq!(
+        found.declined[0].title.as_deref(),
+        Some("Hand Set"),
+        "with the title, because the filename is a hash"
+    );
+    assert_eq!(
+        found.orphans.len(),
+        0,
+        "a live work still addresses this file — it must not also appear \
+         here, or a person reading 'no work owes this' would have every \
+         reason to delete the only copy of their own correction: {found:?}"
+    );
+    assert!(
+        path.is_file(),
+        "and it is still on disk — nothing is deleted"
+    );
+    assert_eq!(
+        found.stale.len(),
+        0,
+        "the walk's staleness comparison is gated on `keeps_documents`, so \
+         an off root never compares this file against the database — it is \
+         graded declined instead, never both: {found:?}"
+    );
+}
+
+/// **The other half of the branch.** A document under an off root's
+/// `.taiyaku` that a live work does *not* address — its work was rekeyed
+/// out from under it — is still genuinely stranded, and turning documents
+/// off must not stop that from being reported. Without this, a fix for the
+/// Critical above that simply routed every off-root file to `declined`
+/// instead of `orphans` (rather than actually branching on
+/// `expected.get(&path)`) would pass every other test in this module and
+/// still be wrong.
+#[test]
+fn an_off_root_still_reports_a_document_nothing_addresses() {
+    let dir = crate::tests::tempdir("hand-reconcile-off-orphan");
+    let root = dir.path.to_string_lossy().to_string();
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_scanned_work_rooted_at(&conn, &root);
+
+    conn.execute("UPDATE root SET keeps_documents = 1", [])
+        .expect("on");
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    let saved = super::save(&conn, work_id).expect("saving");
+    let path = saved.path.expect("an on root has an address");
+
+    // The volume's bytes changed under it — a repack — so nothing addresses
+    // the file at its old address any more. Then the setting is turned off,
+    // same as the declined case above.
+    conn.execute(
+        "UPDATE work SET content_key = 'moved' WHERE id = ?1",
+        [work_id],
+    )
+    .expect("rekeying the work");
+    conn.execute("UPDATE root SET keeps_documents = 0", [])
+        .expect("off");
+
+    let root_row = crate::scan::roots(&conn).expect("reading roots").remove(0);
+    let found = super::reconcile(&conn, &root_row).expect("reconciling");
+
+    assert_eq!(
+        found.orphans.len(),
+        1,
+        "nothing addresses the file at its old address: {found:?}"
+    );
+    assert_eq!(
+        found.orphans[0].title.as_deref(),
+        Some("Hand Set"),
+        "with the title, because the filename is a hash"
+    );
+    assert_eq!(
+        found.declined.len(),
+        0,
+        "nothing addresses it, so it is orphaned rather than merely \
+         declined: {found:?}"
+    );
+    assert!(
+        path.is_file(),
+        "and it is still on disk — nothing is deleted"
+    );
+}
+
+/// **The spec claims `rename_for_rekey` needs no change in an off root; this
+/// is what makes that a checked claim rather than a reading.** It looks for a
+/// file at the old address and finds none, so it answers `false` and touches
+/// nothing — no new branch, no new failure mode, and in particular it does
+/// not create the address it was asked to move a document to.
+#[test]
+fn a_rekey_in_an_off_root_moves_nothing_and_creates_nothing() {
+    let dir = crate::tests::tempdir("hand-rekey-documents-off");
+    let root = dir.path.to_string_lossy().to_string();
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_scanned_work_rooted_at(&conn, &root);
+
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    super::save(&conn, work_id).expect("saving writes nothing here");
+
+    conn.execute(
+        "UPDATE work SET content_key = 'moved' WHERE id = ?1",
+        [work_id],
+    )
+    .expect("rekeying");
+
+    let moved = super::rename_for_rekey(&conn, work_id, "abc123").expect("renaming");
+
+    assert!(!moved, "there was no document to move: {moved}");
+    assert!(
+        !dir.path.join(".taiyaku").exists(),
+        "and asking to move one did not create the directory"
     );
 }

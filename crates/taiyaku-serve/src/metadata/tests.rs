@@ -195,6 +195,73 @@ async fn patching_a_title_writes_the_row_and_the_document() {
     );
 }
 
+/// A save against a root that keeps no documents reports success and says so,
+/// so a client has something to key off other than the absence of a failure.
+/// `persisted: false` keeps meaning "a write was attempted and failed" rather
+/// than becoming permanent furniture on every default install.
+#[tokio::test]
+async fn patching_a_work_in_a_root_that_keeps_no_documents_says_so() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let slug = state.works[0].id.clone();
+    // The fixture keeps documents so the rest of this file can assert on the
+    // file; this test is about the other case, so it says so.
+    state
+        .library
+        .conn()
+        .execute("UPDATE root SET keeps_documents = 0", [])
+        .expect("the root keeps no documents");
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/works/{slug}"),
+        &serde_json::json!({ "title": "Hand Set" }),
+    )
+    .await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
+
+    assert_eq!(body["title"], "Hand Set", "{body}");
+    assert_eq!(body["persisted"], true, "nothing was owed: {body}");
+    assert_eq!(
+        body["keeps_documents"], false,
+        "and the answer says why: {body}"
+    );
+    assert!(body.get("why").is_none(), "no failure to name: {body}");
+    assert!(
+        !the_hand_document_path(&state).exists(),
+        "and no document was written"
+    );
+}
+
+/// And a root that keeps them does not carry the field at all — absent means
+/// the ordinary case, the same rule `why` follows and the same one
+/// `a_clean_edit_omits_why_entirely_rather_than_sending_an_empty_array` pins
+/// for its own field.
+#[tokio::test]
+async fn patching_a_work_in_a_root_that_keeps_documents_omits_the_field() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let slug = state.works[0].id.clone();
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/works/{slug}"),
+        &serde_json::json!({ "title": "Hand Set" }),
+    )
+    .await;
+    let text = test_support::body_string(response).await;
+    let body: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
+
+    assert_eq!(body["persisted"], true, "{body}");
+    assert!(
+        body.get("keeps_documents").is_none(),
+        "absent unless the root declined: {body}"
+    );
+}
+
 /// `patch_edition` had appeared only in `every_metadata_route_refuses_a_reader`'s
 /// 403 loop before this: one of the four shipped routes with no success-path
 /// test at all, so `doc.editions.entry(key).or_default()` and the
@@ -595,6 +662,101 @@ async fn patch_series_answers_the_worst_case_across_its_works() {
         !why.is_empty(),
         "Task 4's review is the reason `why` exists at all; dropping it here \
          would recreate the finding it closed: {body}"
+    );
+}
+
+/// `worst_case`'s AND-fold over `keeps_documents`: `Some(false)` only if
+/// **every** save reported it. A series spanning an on root and an off root
+/// is not wholly document-less, so the answer must omit the field entirely —
+/// the same "no rooted member to ask" shape a single unrooted work gets —
+/// rather than claim a decline the fold cannot support.
+///
+/// **Root a stays on; its sibling under root b is the one turned off —
+/// deliberately not the other way round.** `router_over_two_scanned_volumes_
+/// of_one_series_across_two_roots`'s own doc comment establishes that root
+/// a's work is visited *first* by `patch_series`'s loop and root b's *last*,
+/// so `saves.last()` here is root b's own `Saved`. A mutant that folds
+/// `keeps_documents` down to `saves.last().and_then(|s| s.keeps_documents)`
+/// would read that last save's `Some(false)` and answer exactly what a
+/// constant `Some(false)` would; turning off the *last*-visited root rather
+/// than the first is what makes both shortcuts disagree with the real
+/// fold's `None` here, and so is what tells either apart from it.
+#[tokio::test]
+async fn patch_series_omits_keeps_documents_when_its_works_roots_disagree() {
+    let (router, state, _fixture, root_a) =
+        test_support::router_over_two_scanned_volumes_of_one_series_across_two_roots();
+    let series_id = the_fixture_series_id(&state);
+
+    let canonical_root_a = root_a.canonicalize().expect("root a exists on disk");
+    let turned_off = state
+        .library
+        .conn()
+        .execute(
+            "UPDATE root SET keeps_documents = 0 WHERE path != ?1",
+            [canonical_root_a.to_string_lossy()],
+        )
+        .expect("turning off the sibling root's documents");
+    assert_eq!(
+        turned_off, 1,
+        "exactly the sibling root must be turned off, not root a"
+    );
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/series/{series_id}"),
+        &serde_json::json!({
+            "titles": [{ "title": "五等分の花嫁", "kind": "native", "primary": true }]
+        }),
+    )
+    .await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
+
+    assert_eq!(body["persisted"], true, "{body}");
+    assert!(
+        body.get("keeps_documents").is_none(),
+        "one sibling's root keeps documents and the other declined; the \
+         series is not wholly document-less, so the fold must not claim it \
+         is: {body}"
+    );
+}
+
+/// [`patch_series_omits_keeps_documents_when_its_works_roots_disagree`]'s
+/// other half — every root actually declining, the one case the field may
+/// carry `false` at all.
+#[tokio::test]
+async fn patch_series_answers_keeps_documents_false_when_every_root_declines() {
+    let (router, state, _fixture, _root_a) =
+        test_support::router_over_two_scanned_volumes_of_one_series_across_two_roots();
+    let series_id = the_fixture_series_id(&state);
+
+    state
+        .library
+        .conn()
+        .execute("UPDATE root SET keeps_documents = 0", [])
+        .expect("turning off every root's documents");
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/series/{series_id}"),
+        &serde_json::json!({
+            "titles": [{ "title": "五等分の花嫁", "kind": "native", "primary": true }]
+        }),
+    )
+    .await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
+
+    assert_eq!(body["persisted"], true, "nothing was owed: {body}");
+    assert_eq!(
+        body["keeps_documents"], false,
+        "every sibling's root declined, so the fold may finally say so: {body}"
     );
 }
 

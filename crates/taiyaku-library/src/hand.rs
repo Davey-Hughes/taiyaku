@@ -90,13 +90,49 @@ pub fn path_for(conn: &Connection, work_id: i64) -> Result<Option<PathBuf>, Stri
     }))
 }
 
+/// Whether the root this work's hub edition sits under keeps documents.
+///
+/// `None` when no member of the hub edition names a root — the same condition
+/// [`path_for`] answers `None` for, and for the same reason: there is no root
+/// to ask. Resolved by the same "first member by ordinal that still names a
+/// root" rule, so the two functions cannot disagree about which root a work
+/// belongs to.
+///
+/// **A second query rather than widening [`path_for`]'s return type**, which
+/// would have moved every one of its call sites to answer a question only
+/// `save` asks: `reconcile` already holds a `Root` and reads
+/// `Root::keeps_documents` off it directly.
+///
+/// # Errors
+///
+/// Returns an error if SQLite fails.
+pub fn root_keeps_documents(conn: &Connection, work_id: i64) -> Result<Option<bool>, String> {
+    conn.query_row(
+        "SELECT root.keeps_documents
+           FROM member
+           JOIN edition ON edition.id = member.edition_id
+           JOIN work    ON work.id    = edition.work_id
+           JOIN root    ON root.id    = member.root_id
+          WHERE work.id = ?1 AND edition.key = work.hub
+          ORDER BY member.ordinal
+          LIMIT 1",
+        [work_id],
+        |row| row.get::<_, bool>(0),
+    )
+    .optional()
+    .map_err(|e| format!("reading whether work {work_id}'s root keeps documents: {e}"))
+}
+
 /// What [`save`] did.
 ///
-/// `path` is `None` for a work with no address at all — an imported work,
-/// whose document belongs beside its sidecar and is written by
-/// [`crate::export::work`]. `persisted` is `false` when an address existed and
-/// the write did not land, which is a read-only root and not an error: see
-/// [`save`].
+/// `path` is `None` for either of two unrelated reasons — see
+/// [`Self::keeps_documents`] for how a caller tells them apart. One is a work
+/// with no address at all: an imported work, whose document belongs beside
+/// its sidecar and is written by [`crate::export::work`]. The other is a
+/// scanned work whose root has declined to keep documents at all — there is
+/// an address `path_for` could name, but nothing is owed at it. `persisted`
+/// is `false` when an address existed and the write did not land, which is a
+/// read-only root and not an error: see [`save`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Saved {
     pub path: Option<PathBuf>,
@@ -111,10 +147,24 @@ pub struct Saved {
     /// caller could act on. Not failing the edit is what a read-only root
     /// requires — discarding the reason is not.
     pub why: Option<String>,
+    /// Whether the root this work sits under keeps documents at all —
+    /// **three states, and the third is why this is not a `bool`.**
+    ///
+    /// `Some(true)` is a root that keeps them; `Some(false)` is one that
+    /// declined, so nothing was owed and [`Self::persisted`] is `true` with
+    /// no [`Self::why`]; `None` is a work with no rooted member, an imported
+    /// work whose document belongs beside its sidecar and whose [`Self::path`]
+    /// is `None` for that entirely different reason.
+    ///
+    /// A plain `bool` would have made the third case read as the first, which
+    /// is the conflation `path`'s own `None` already carries two of.
+    pub keeps_documents: Option<bool>,
 }
 
 /// Project this work's hand-fixed metadata and write it to
-/// [`path_for`]'s address, then record the `LIBRARY` marker.
+/// [`path_for`]'s address — unless the root that address sits under has
+/// declined to keep documents, in which case nothing is written — then
+/// record the `LIBRARY` marker either way.
 ///
 /// **The marker is recorded whether or not the file lands, and that is
 /// deliberate — including when there is no address to land it at.** It is the
@@ -132,10 +182,17 @@ pub struct Saved {
 /// An edit made against a
 /// read-only root is still an edit the next scan must not revert; so is one
 /// made against an imported work, whose sidecar leaves [`path_for`] answering
-/// `None` — [`Saved::path`] is `None` too, there and only there, but the
-/// marker is recorded regardless. What is lost in both cases is durability,
-/// and [`Saved::persisted`] is how a caller reports that rather than
-/// discovering it later.
+/// `None` — [`Saved::path`] is `None` there too, but the marker is recorded
+/// regardless. What is lost in both cases is durability, and
+/// [`Saved::persisted`] is how a caller reports that rather than discovering
+/// it later.
+///
+/// A root that has declined to keep documents produces a third `None` path,
+/// for a reason neither of those two share: nothing was owed, so nothing is
+/// lost, and [`Saved::persisted`] is `true` rather than reporting a
+/// durability failure that never happened — see the branch below and
+/// [`Saved::keeps_documents`] for why a caller can still tell it apart from
+/// the other two.
 ///
 /// A document that projects empty removes the file instead of writing an empty
 /// one, matching `export::work`'s own write-or-remove decision. There is
@@ -149,8 +206,37 @@ pub struct Saved {
 /// fails, or if recording the marker fails. **Not** if the write fails: that
 /// is `persisted: false`.
 pub fn save(conn: &Connection, work_id: i64) -> Result<Saved, String> {
-    let path = path_for(conn, work_id)?;
+    let keeps_documents = root_keeps_documents(conn, work_id)?;
     let doc = crate::librarydoc::of(conn, work_id)?;
+
+    // **A root that keeps no documents is not a failed write.** Nothing was
+    // owed, so nothing is missing: `persisted` is `true` and `why` is `None`,
+    // and the caller tells this apart from a write that landed by
+    // `keeps_documents` rather than by guessing from `path`. Reporting
+    // `persisted: false` here was the alternative — literally true, since
+    // there is no file — and it was rejected because it makes every save on a
+    // default install carry the "not durable" note, turning a real signal
+    // into permanent furniture.
+    //
+    // The marker below is still recorded. It means "this work's document has
+    // been absorbed", which stays true when there was never one to absorb,
+    // and `derive::write_work`'s read-back guard reads it before deciding
+    // whether to call `load` at all.
+    //
+    // `path_for` is resolved below this return, not above it: a default
+    // install takes this branch on every save, and an address this branch
+    // never reads is wasted work, not caution.
+    if keeps_documents == Some(false) {
+        crate::migrate::record_absorbed(conn, work_id, crate::migrate::LIBRARY, !doc.is_empty())?;
+        return Ok(Saved {
+            path: None,
+            persisted: true,
+            why: None,
+            keeps_documents,
+        });
+    }
+
+    let path = path_for(conn, work_id)?;
 
     let (persisted, why) = match &path {
         // No address to write to at all — an imported work, whose document
@@ -205,6 +291,7 @@ pub fn save(conn: &Connection, work_id: i64) -> Result<Saved, String> {
         path,
         persisted,
         why,
+        keeps_documents,
     })
 }
 
@@ -290,7 +377,33 @@ pub fn rename_for_rekey(conn: &Connection, work_id: i64, old_key: &str) -> Resul
     Ok(std::fs::rename(&old_path, &new_path).is_ok())
 }
 
-/// A document under `<root>/.taiyaku` that no work in the library addresses.
+/// A document under `<root>/.taiyaku` that **nothing in the library
+/// addresses**: a rekey left it behind at the old `content_key`, or a fold
+/// absorbed the work it belonged to.
+///
+/// **Not** a document a live work still addresses whose root has simply
+/// declined to keep it — that is [`Declined`], and conflating the two here
+/// was a Critical. `expected.get(&path)` answers `Some` for exactly that
+/// case: a work stays marked `absorbed = 1` after its root's
+/// `keeps_documents` is turned off, so the file is still addressed by a real
+/// `work_id`, and it is the file `hand::load` — deliberately not gated on
+/// `keeps_documents`, so a rebuilt database can still read it back — reads
+/// its title from on the very same pass. An earlier version of `reconcile`
+/// gated the whole comparison on `root.keeps_documents` rather than
+/// branching on it, so an off root's addressed files fell straight through
+/// to here regardless, and this type's own doc comment argued that was
+/// honest: "the classification is unchanged — it is still an orphan […]
+/// only the reason given for it now covers both causes." It does not, and
+/// migration 012 is why that stopped being a corner case: it defaults every
+/// existing root's `keeps_documents` off, so the first derive after
+/// upgrading reported *every* hand document in the library as an orphan —
+/// on the same pass that just recovered each one's title into the database.
+/// "No work owes it" reads as "stranded, act on it" in a project where an
+/// orphan means exactly that, and the plausible action is deleting the only
+/// copy of a person's organisational work outside the database. `reconcile`
+/// now branches on `expected.get(&path)` instead of gating the lookup on
+/// `root.keeps_documents`, so a file something still addresses can never
+/// reach this arm merely because its root opted out.
 ///
 /// **The title travels with the path because the path is a hash.** The
 /// filename is the `content_key` the document was written under, which names
@@ -336,13 +449,28 @@ pub struct Absorbed {
     pub title: String,
 }
 
+/// A document at a work's own, correct address, whose root has simply
+/// declined to keep it — `root.keeps_documents` is off, so nothing is owed
+/// here, but a live work still addresses the file. Distinct from an
+/// [`Orphan`]: nothing here is stranded, unreachable, or disagreeing with the
+/// database — the address is exactly right, and the only thing wrong is that
+/// this root no longer keeps what lives at it. See [`Orphan`]'s own doc
+/// comment for why folding this into that one was a Critical.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Declined {
+    pub path: PathBuf,
+    /// `None` for a document that carries no title — see [`Orphan::title`]
+    /// for why it is still worth reporting without one.
+    pub title: Option<String>,
+}
+
 /// What one root's `.taiyaku` directory and the works that owe it documents
 /// had to say about each other.
 ///
-/// Three states, three answers, and only one of them is a repair — see the
+/// Four states, four answers, and only one of them is a repair — see the
 /// design's §2 for why the stale case resolves to nothing. `repaired` and
-/// `unwritable` partition the gaps; `orphans` and `stale` are reported and
-/// touched by nothing.
+/// `unwritable` partition the gaps; `orphans`, `declined` and `stale` are
+/// reported and touched by nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Reconciled {
     /// Gaps closed on this pass: a marked work whose document was missing and
@@ -357,13 +485,32 @@ pub struct Reconciled {
     /// leave a library whose corrections are not durable looking like one
     /// whose corrections are.
     pub unwritable: Vec<String>,
-    /// Documents no work addresses. See [`Orphan`] for why each carries a
-    /// title.
+    /// Documents nothing in the library addresses. See [`Orphan`] for the two
+    /// ways that happens and why each still carries a title.
+    ///
+    /// **Never a document a live work still addresses.** That is
+    /// [`Self::declined`], and keeping the two apart is the point — see
+    /// [`Orphan`]'s own doc comment for the Critical that conflating them
+    /// was.
     pub orphans: Vec<Orphan>,
+    /// Documents at a work's own address whose root has declined to keep
+    /// them. See [`Declined`].
+    pub declined: Vec<Declined>,
     /// Documents that exist at a work's address and disagree with the
     /// database. **Reported and not resolved**: the database is not
     /// automatically right, since O44 records this as the one document this
     /// project designs for hand-editing.
+    ///
+    /// **Always empty for a root that keeps no documents.** Computing
+    /// "stale" means comparing a file against the database, and the walk
+    /// below only makes that comparison on the branch gated by
+    /// `root.keeps_documents` — an off root's addressed files fall to
+    /// [`Self::declined`] instead, and its unaddressed files to
+    /// [`Self::orphans`]. That is not a gap in coverage: a file nothing
+    /// maintains cannot disagree with anything, and grading it stale as well
+    /// would say the same file is two contradictory things at once. See
+    /// `an_off_root_reports_an_addressed_document_as_declined_not_orphaned`
+    /// for the pinned assertion.
     pub stale: Vec<String>,
 }
 
@@ -451,7 +598,25 @@ pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconcil
                     continue;
                 }
                 present.insert(path.clone());
-                if let Some(&work_id) = expected.get(&path) {
+                // **Gated on `root.keeps_documents`, and that gate decides
+                // only whether this file is *compared*, never whether it is
+                // *addressed*.** `expected.get(&path)` answers that on its
+                // own merits just below, regardless of this gate — the two
+                // used to be the same `if`, which was the Critical
+                // [`Orphan`]'s own doc comment records: a work stays marked
+                // `absorbed = 1` after its root's `keeps_documents` is turned
+                // off, so `expected` still maps this path to a real
+                // `work_id`, and folding that answer into the gate reported
+                // every such file as stranded rather than merely declined.
+                // What this gate alone protects is the comparison against
+                // the database below: an off root's document is not
+                // maintained, so nothing about it can meaningfully "agree"
+                // or "disagree" with anything, and running the comparison
+                // anyway would manufacture staleness out of a setting rather
+                // than a person's edit.
+                if root.keeps_documents
+                    && let Some(&work_id) = expected.get(&path)
+                {
                     // Present and addressed. The remaining question is
                     // whether it agrees with the database.
                     //
@@ -527,13 +692,31 @@ pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconcil
                     }
                     continue;
                 }
-                // Unreachable. Read the title out of it if we can; a
-                // document we cannot parse is still an orphan, just one
-                // with less to say.
+                // Reached for every file the branch above did not `continue`
+                // out of: either the root does not keep documents, or it
+                // does and this path simply addresses no marked work. Read
+                // the title out of it if we can either way; a document we
+                // cannot parse still has to be reported, just with less to
+                // say.
                 let title = std::fs::read_to_string(&path)
                     .ok()
                     .and_then(|text| crate::librarydoc::LibraryDoc::from_json(&text).ok())
                     .and_then(|doc| doc.title);
+                // **Branch on `expected`, not on `root.keeps_documents`
+                // again.** This is the fix for the Critical [`Orphan`]'s doc
+                // comment describes: a path `expected` still names is
+                // addressed by a live work no matter what this root has
+                // decided about keeping documents, so it cannot be stranded
+                // — an off root reports it as [`Declined`] instead, and only
+                // a path `expected` does not name at all falls through to
+                // [`Self::orphans`] below.
+                if expected.contains_key(&path) {
+                    // Addressed, but declined: a live work owes nothing
+                    // here, yet nothing is stranded either — see
+                    // [`Declined`].
+                    found.declined.push(Declined { path, title });
+                    continue;
+                }
                 // **Always `None` here.** This function runs per root and
                 // never sees a fold — [`crate::derive::derive`] is the only
                 // place both the fold and this sweep are in view, and it
@@ -555,59 +738,111 @@ pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconcil
         Err(e) => return Err(format!("{}: {e}", dir.display())),
     }
 
-    for (path, work_id) in &expected {
-        if present.contains(path) {
-            continue;
-        }
-        // **A gap, and this is the retry O82 says does not exist.** Written
-        // through `save` rather than a second writer, so the marker, the
-        // empty-document removal and the failure shape are all the ones the
-        // PATCH routes already produce.
-        let saved = save(conn, *work_id)?;
-        if saved.persisted {
-            // **`persisted` alone is not "written".** `save`'s remove-file
-            // branch answers `persisted: true` for `ErrorKind::NotFound` too
-            // — "nothing there is the ordinary case, not a failure", by that
-            // branch's own doc comment — and a marked work whose projection
-            // has since gone empty takes exactly that branch here: this loop
-            // only runs for a `path` absent from `present`, so there was
-            // never a file for `remove_file` to find, and `persisted: true`
-            // reports a no-op rather than a write. Counting it as a repair
-            // would print "N document(s) written" for a pass that wrote
-            // none — a false claim in a feature whose whole point is honest
-            // reporting.
-            //
-            // Re-projecting is the narrowest correct check: `save`'s
-            // internal `match` only reaches its write arm for a non-empty
-            // document, so `!doc.is_empty()` is exactly the condition that
-            // arm already required. Checking `path.is_file()` after the
-            // fact was the alternative and would answer the same question
-            // less directly — through a second filesystem read of
-            // something this function already knows from the database.
-            if !crate::librarydoc::of(conn, *work_id)?.is_empty() {
-                found.repaired += 1;
+    // **This guard does not stop a write — `save` already refuses one, one
+    // layer down, for a declined root** (see the branch at the top of
+    // `save` gated on `keeps_documents == Some(false)`). Deleting this guard
+    // was checked by mutation: the result was `repaired: 1` and **no
+    // `.taiyaku` directory** — proof that no file reaches disk either way.
+    // What this guard actually prevents is a false count: without it, every
+    // gap in `expected` is still handed to `save`, which writes nothing and
+    // answers `persisted: true`, and the loop below counts that as a repair
+    // — printing "N document(s) written" for a pass that wrote none, every
+    // scan, forever.
+    //
+    // **Two independent refusals, and that is deliberate:** this one and
+    // `save`'s. Neither is redundant with the other — this one keeps the
+    // report honest, `save`'s keeps the disk honest — so that removing
+    // either one alone does not start writing files. The failure mode this
+    // guards against is someone relaxing one of the two while believing the
+    // other is still the backstop.
+    //
+    // **A wrapped loop, not an early return.** An early return here also
+    // skipped the sort below, and `orphans` and `declined` are the two lists
+    // that can be non-empty for an off root (the walk above still runs
+    // regardless of this gate). `read_dir` order is stable for an unchanged
+    // directory, so skipping the sort was invisible until the first
+    // insertion — on exactly the list a repeated, unchanged scan is meant to
+    // print identically for years.
+    if root.keeps_documents {
+        for (path, work_id) in &expected {
+            if present.contains(path) {
+                continue;
             }
-        } else {
-            found.unwritable.push(
-                saved
-                    .why
-                    .unwrap_or_else(|| format!("{}: could not be written", path.display())),
-            );
+            // **A gap, and this is the retry O82 says does not exist.**
+            // Written through `save` rather than a second writer, so the
+            // marker, the empty-document removal and the failure shape are
+            // all the ones the PATCH routes already produce.
+            let saved = save(conn, *work_id)?;
+            // **Counted against `saved.keeps_documents`, the live answer —
+            // never against the `root.keeps_documents` this loop is already
+            // gated on, which is a snapshot.** `roots` is read once, near the
+            // top of `derive()`, before this function is ever called; `save`
+            // re-reads `root.keeps_documents` itself, off the same row,
+            // seconds later. Nothing but raw SQL can move that column today,
+            // so the two cannot yet disagree — but spec C4's configuration
+            // screen is what makes them reachable apart, and a PATCH landing
+            // mid-derive is exactly when a background scan is running this
+            // loop. If the column goes from on to off in that gap, the outer
+            // gate above (already read as `true`) still admits this
+            // iteration, `save` sees the new value and refuses the write —
+            // `persisted: true`, `keeps_documents: Some(false)` — and
+            // counting that `persisted` as a repair would be the identical
+            // false claim the outer gate's own comment already guards
+            // against, one layer further down: a person told "N document(s)
+            // written" for a pass that wrote none.
+            if saved.persisted && saved.keeps_documents != Some(false) {
+                // **`persisted` alone is not "written".** `save`'s
+                // remove-file branch answers `persisted: true` for
+                // `ErrorKind::NotFound` too — "nothing there is the ordinary
+                // case, not a failure", by that branch's own doc comment —
+                // and a marked work whose projection has since gone empty
+                // takes exactly that branch here: this loop only runs for a
+                // `path` absent from `present`, so there was never a file
+                // for `remove_file` to find, and `persisted: true` reports a
+                // no-op rather than a write. Counting it as a repair would
+                // print "N document(s) written" for a pass that wrote
+                // none — a false claim in a feature whose whole point is
+                // honest reporting.
+                //
+                // Re-projecting is the narrowest correct check: `save`'s
+                // internal `match` only reaches its write arm for a
+                // non-empty document, so `!doc.is_empty()` is exactly the
+                // condition that arm already required. Checking
+                // `path.is_file()` after the fact was the alternative and
+                // would answer the same question less directly — through a
+                // second filesystem read of something this function already
+                // knows from the database.
+                if !crate::librarydoc::of(conn, *work_id)?.is_empty() {
+                    found.repaired += 1;
+                }
+            } else if !saved.persisted {
+                found.unwritable.push(
+                    saved
+                        .why
+                        .unwrap_or_else(|| format!("{}: could not be written", path.display())),
+                );
+            }
+            // else: `saved.persisted && saved.keeps_documents == Some(false)`
+            // — the race above. Nothing was owed by the time `save` actually
+            // ran, so nothing was written and nothing failed; not a repair,
+            // not a failure, and correctly silent.
         }
     }
 
-    // **Sorted, all three, before this returns.** `expected` is a `HashMap`,
+    // **Sorted, all four, before this returns.** `expected` is a `HashMap`,
     // and Rust reseeds its SipHash key every process start, so `unwritable` —
     // built by iterating `&expected` above — printed a root's gaps in a
     // different order on every scan, even one where nothing had changed.
-    // `orphans` and `stale` already come out in `read_dir`'s order, which is
-    // arbitrary but stable for an unchanged directory; sorting them too costs
-    // one comparison per entry against a pass that is already hashing
-    // archives, and it is what the one thing a person actually does with two
-    // scans — diff their output — needs: identical text for an unchanged
-    // library, rather than a reordering that reads as a change nothing made.
+    // `orphans`, `declined` and `stale` already come out in `read_dir`'s
+    // order, which is arbitrary but stable for an unchanged directory;
+    // sorting them too costs one comparison per entry against a pass that is
+    // already hashing archives, and it is what the one thing a person
+    // actually does with two scans — diff their output — needs: identical
+    // text for an unchanged library, rather than a reordering that reads as
+    // a change nothing made.
     found.unwritable.sort();
     found.orphans.sort_by(|a, b| a.path.cmp(&b.path));
+    found.declined.sort_by(|a, b| a.path.cmp(&b.path));
     found.stale.sort();
 
     Ok(found)

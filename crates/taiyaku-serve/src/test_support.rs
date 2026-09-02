@@ -707,6 +707,17 @@ fn router_over_a_scanned_tree(
     {
         let conn = library.conn();
         let root = taiyaku_library::scan::add_root(&conn, fixture.path()).expect("adds the root");
+        // **These fixtures are about the document, so they keep documents.**
+        // Migration 012 made `keeps_documents` default off, which is right for
+        // a person's library and wrong for a fixture whose whole subject is
+        // the file — `patching_a_title_writes_the_row_and_the_document` and
+        // twelve assertions like it read it off disk. A fixture that wants the
+        // off case turns it off explicitly, which is the rarer thing to say.
+        conn.execute(
+            "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+            [root.id],
+        )
+        .expect("the fixture keeps documents");
         taiyaku_library::scan::scan_root(&conn, &root).expect("scans the tree");
         taiyaku_library::derive::derive(&conn).expect("derives the library");
     }
@@ -849,6 +860,17 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
     {
         let conn = library.conn();
         let root = taiyaku_library::scan::add_root(&conn, fixture.path()).expect("adds the root");
+        // **These fixtures are about the document, so they keep documents.**
+        // Migration 012 made `keeps_documents` default off, which is right for
+        // a person's library and wrong for a fixture whose whole subject is
+        // the file — `patching_a_title_writes_the_row_and_the_document` and
+        // twelve assertions like it read it off disk. A fixture that wants the
+        // off case turns it off explicitly, which is the rarer thing to say.
+        conn.execute(
+            "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+            [root.id],
+        )
+        .expect("the fixture keeps documents");
         taiyaku_library::scan::scan_root(&conn, &root).expect("scans the tree");
         taiyaku_library::derive::derive(&conn).expect("derives the library");
     }
@@ -916,8 +938,18 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
     {
         let conn = library.conn();
         let a = taiyaku_library::scan::add_root(&conn, &root_a).expect("adds root a");
+        // **These fixtures are about the document, so they keep documents.**
+        // Migration 012 made `keeps_documents` default off, which is right for
+        // a person's library and wrong for a fixture whose whole subject is
+        // the file — `patching_a_title_writes_the_row_and_the_document` and
+        // twelve assertions like it read it off disk. A fixture that wants the
+        // off case turns it off explicitly, which is the rarer thing to say.
+        conn.execute("UPDATE root SET keeps_documents = 1 WHERE id = ?1", [a.id])
+            .expect("the fixture keeps documents");
         taiyaku_library::scan::scan_root(&conn, &a).expect("scans root a");
         let b = taiyaku_library::scan::add_root(&conn, &root_b).expect("adds root b");
+        conn.execute("UPDATE root SET keeps_documents = 1 WHERE id = ?1", [b.id])
+            .expect("the fixture keeps documents");
         taiyaku_library::scan::scan_root(&conn, &b).expect("scans root b");
         taiyaku_library::derive::derive(&conn).expect("derives the library");
     }
@@ -997,11 +1029,26 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         // `BTreeMap<GroupKey, _>`, not from scan order, and proving that is
         // the point of scanning it out of title order here.
         let a = taiyaku_library::scan::add_root(&conn, &root_a).expect("adds root a");
+        // **These fixtures are about the document, so they keep documents.**
+        // Migration 012 made `keeps_documents` default off, which is right for
+        // a person's library and wrong for a fixture whose whole subject is
+        // the file — `patching_a_title_writes_the_row_and_the_document` and
+        // twelve assertions like it read it off disk. A fixture that wants the
+        // off case turns it off explicitly, which is the rarer thing to say.
+        conn.execute("UPDATE root SET keeps_documents = 1 WHERE id = ?1", [a.id])
+            .expect("the fixture keeps documents");
         taiyaku_library::scan::scan_root(&conn, &a).expect("scans root a");
         let b = taiyaku_library::scan::add_root(&conn, &root_b).expect("adds root b");
+        conn.execute("UPDATE root SET keeps_documents = 1 WHERE id = ?1", [b.id])
+            .expect("the fixture keeps documents");
         taiyaku_library::scan::scan_root(&conn, &b).expect("scans root b");
         let unrelated = taiyaku_library::scan::add_root(&conn, &root_unrelated)
             .expect("adds the unrelated root");
+        conn.execute(
+            "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+            [unrelated.id],
+        )
+        .expect("the fixture keeps documents");
         taiyaku_library::scan::scan_root(&conn, &unrelated).expect("scans the unrelated root");
         taiyaku_library::derive::derive(&conn).expect("derives the library");
     }

@@ -101,6 +101,43 @@ describe('MetadataEditor', () => {
     expect(host.textContent).not.toMatch(/could not be saved/i)
   })
 
+  /**
+   * The claim is stronger than "no particular wording appears": a response
+   * with `keeps_documents: false` must render **exactly** what an ordinary
+   * successful save renders — nothing at all keyed off that field, not even
+   * a new note this test's own pinned string would not know to look for.
+   * Pinning one wording (`/could not be saved beside your library/i`, this
+   * test's own shape until now) would catch a regression that reuses that
+   * exact note but wave through a new alarm element keyed off
+   * `keeps_documents` with different wording; comparing two full renders
+   * catches either.
+   */
+  it('renders exactly what an ordinary successful save renders when keeps_documents is false', async () => {
+    const ordinary = mount(
+      <MetadataEditor
+        slug="w"
+        title="old"
+        onPatch={vi.fn().mockResolvedValue({ title: 'old', persisted: true })}
+      />,
+    )
+    await click(submitButton(ordinary))
+
+    const declined = mount(
+      <MetadataEditor
+        slug="w"
+        title="old"
+        onPatch={vi.fn().mockResolvedValue({
+          title: 'old',
+          persisted: true,
+          keeps_documents: false,
+        })}
+      />,
+    )
+    await click(submitButton(declined))
+
+    expect(declined.innerHTML).toBe(ordinary.innerHTML)
+  })
+
   it('names every reason a fanned-out edit could not all reach disk', async () => {
     const patch = vi.fn().mockResolvedValue({
       title: 'old',

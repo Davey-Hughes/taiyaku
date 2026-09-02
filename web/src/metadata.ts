@@ -160,6 +160,16 @@ export interface LibraryDoc {
 export interface PatchResult extends LibraryDoc {
   persisted: boolean
   why?: string[]
+  /**
+   * Present, and `false`, only when the work's root keeps no documents at
+   * all — absent means the ordinary case, the same rule `why` follows.
+   *
+   * The editor needs no branch for it: a root that keeps no documents answers
+   * `persisted: true`, and the "not durable" note already keys off
+   * `persisted`. It is here so a future screen can say *this library keeps its
+   * corrections in the database only* without re-deriving that from a silence.
+   */
+  keeps_documents?: boolean
 }
 
 /**

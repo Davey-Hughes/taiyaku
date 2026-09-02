@@ -1649,7 +1649,7 @@ fn derive_summary_names_a_stranded_document_and_its_title() {
     // `derive_summary_names_unwritable_and_stale_documents_distinctly` exists
     // to catch, left open for this clause until now — which is why the count
     // here (2) differs from `repaired_documents` above.
-    assert!(line.contains("2 document(s) no work addresses"), "{line}");
+    assert!(line.contains("2 document(s) no work owes"), "{line}");
     assert!(line.contains("abc123.library.json"), "{line}");
     assert!(
         line.contains("Go-Toubun no Hanayome"),
@@ -1718,7 +1718,7 @@ fn derive_summary_names_the_work_a_folded_documents_orphan_was_absorbed_into() {
 
     let line = derive_summary(&report, 0);
 
-    assert!(line.contains("2 document(s) no work addresses"), "{line}");
+    assert!(line.contains("2 document(s) no work owes"), "{line}");
     assert!(
         line.contains(
             "aaa111.library.json (`Colour Edition`), now held as an edition of \
@@ -1762,7 +1762,7 @@ fn derive_summary_names_a_titleless_orphans_fold_target() {
     let line = derive_summary(&report, 0);
 
     assert!(line.contains("4 document(s) written"), "{line}");
-    assert!(line.contains("1 document(s) no work addresses"), "{line}");
+    assert!(line.contains("1 document(s) no work owes"), "{line}");
     assert!(
         line.contains("ccc333.library.json, now held as an edition of `one-piece` (`One Piece`)"),
         "no title clause, but the fold's target still follows the bare path: {line}"
@@ -1770,7 +1770,59 @@ fn derive_summary_names_a_titleless_orphans_fold_target() {
     assert!(!line.contains("(``)"), "no empty title parens: {line}");
 }
 
-/// The three silent-outcome lists stay out of the line entirely when empty —
+/// **The fix for the review's Critical, from the printing side.** A document
+/// a live work still addresses, whose root has simply declined to keep it,
+/// must print under its own clause — worded so it reads as a standing fact
+/// about this root ("no longer keeps"), not as "no work owes it", which is
+/// the orphan clause's wording and invites exactly the wrong reaction: before
+/// the fix behind `taiyaku_library::hand::Declined`, this case printed
+/// through the orphan clause instead, so migration 012's default-off upgrade
+/// told every person with a hand-edited library that every one of their
+/// corrections was stranded, on the very derive that had just read each
+/// title back into the database.
+///
+/// **Two entries, deliberately** — `join("; ")` needs more than one to prove
+/// the separator, the same reason `derive_summary_names_a_stranded_document_
+/// and_its_title` gives for its own two orphans.
+#[test]
+fn derive_summary_names_documents_a_root_has_declined_to_keep() {
+    let mut report = derive_report();
+    report
+        .declined_documents
+        .push(taiyaku_library::hand::Declined {
+            path: PathBuf::from("/library/.taiyaku/aaa111.library.json"),
+            title: Some("Go-Toubun no Hanayome".to_string()),
+        });
+    report
+        .declined_documents
+        .push(taiyaku_library::hand::Declined {
+            path: PathBuf::from("/library/.taiyaku/bbb222.library.json"),
+            title: None,
+        });
+
+    let line = derive_summary(&report, 0);
+
+    assert!(
+        line.contains("2 document(s) this root no longer keeps"),
+        "{line}"
+    );
+    assert!(
+        line.contains("aaa111.library.json (`Go-Toubun no Hanayome`)"),
+        "{line}"
+    );
+    assert!(
+        line.contains("bbb222.library.json"),
+        "the titleless entry is still named: {line}"
+    );
+    assert!(!line.contains("(``)"), "no empty title parens: {line}");
+    assert!(
+        !line.contains("no work owes"),
+        "declined is not orphaned, and must not print the orphan clause's \
+         own wording: {line}"
+    );
+}
+
+/// The four silent-outcome lists stay out of the line entirely when empty —
 /// the same shape `scan_summary_omits_unreadable_directories_when_none` pins.
 #[test]
 fn derive_summary_omits_the_document_clauses_when_there_is_nothing_to_say() {
@@ -1817,6 +1869,7 @@ fn a_root(id: i64, path: &Path) -> taiyaku_library::scan::Root {
         default_kind: None,
         default_language: None,
         scan_interval_secs: None,
+        keeps_documents: false,
     }
 }
 
@@ -2141,6 +2194,160 @@ fn a_refused_root_does_not_stop_the_scan_of_the_others() {
         good_has_new, 1,
         "the good root must still have been scanned, despite the command's own failing exit"
     );
+}
+
+// -- root documents: the message is pure, the command hits a real database --
+
+#[test]
+fn documents_state_line_says_what_on_and_off_each_mean() {
+    let path = Path::new("/some/root");
+
+    let on = documents_state_line(path, true);
+    assert!(on.contains("/some/root"), "{on}");
+    assert!(on.contains("now keeps documents"), "{on}");
+    assert!(
+        on.contains("survives losing the database"),
+        "says what `on` means: {on}"
+    );
+    assert!(
+        on.contains("Nothing is written yet"),
+        "says a scan is still needed, not that a file just appeared: {on}"
+    );
+
+    let off = documents_state_line(path, false);
+    assert!(off.contains("/some/root"), "{off}");
+    assert!(off.contains("no longer keeps documents"), "{off}");
+    assert!(
+        off.contains("database only"),
+        "says what `off` means: {off}"
+    );
+    assert!(
+        off.contains("does not delete"),
+        "says an existing document on disk is left alone: {off}"
+    );
+}
+
+/// A root this library already knows, by way of `scan --add` — the same
+/// resolution `root_documents` itself relies on, so a test fixture and the
+/// code under test agree on what "a known root" is.
+fn a_scanned_root(name: &str) -> (PathBuf, PathBuf) {
+    let dir = scratch(name);
+    let root_dir = dir.join("shelf");
+    std::fs::create_dir_all(&root_dir).expect("mkdir");
+    let db = dir.join("library.db");
+    command(&[
+        "scan".into(),
+        "--add".into(),
+        root_dir.display().to_string(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("adds the root");
+    (root_dir, db)
+}
+
+fn root_keeps_documents(db: &Path) -> bool {
+    let library = taiyaku_library::Library::open(db).expect("open");
+    let conn = library.conn();
+    conn.query_row("SELECT keeps_documents FROM root", [], |r| r.get(0))
+        .expect("reads the column")
+}
+
+#[test]
+fn turning_documents_on_sets_the_column() {
+    let (root_dir, db) = a_scanned_root("root-documents-on");
+    assert!(
+        !root_keeps_documents(&db),
+        "migration 012's own default: off until asked"
+    );
+
+    command(&[
+        "root".into(),
+        "documents".into(),
+        root_dir.display().to_string(),
+        "on".into(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("turns documents on");
+
+    assert!(root_keeps_documents(&db), "the column is now set");
+}
+
+#[test]
+fn turning_documents_off_again_sets_it_back() {
+    let (root_dir, db) = a_scanned_root("root-documents-off");
+    command(&[
+        "root".into(),
+        "documents".into(),
+        root_dir.display().to_string(),
+        "on".into(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("turns documents on first");
+    assert!(root_keeps_documents(&db), "on before it is off again");
+
+    command(&[
+        "root".into(),
+        "documents".into(),
+        root_dir.display().to_string(),
+        "off".into(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("turns documents off again");
+
+    assert!(!root_keeps_documents(&db), "the column is set back");
+}
+
+#[test]
+fn a_path_matching_no_known_root_is_an_error_naming_the_path() {
+    let dir = scratch("root-documents-unknown");
+    let db = dir.join("library.db");
+    let elsewhere = dir.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("mkdir");
+
+    let err = command(&[
+        "root".into(),
+        "documents".into(),
+        elsewhere.display().to_string(),
+        "on".into(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .unwrap_err();
+    assert!(
+        err.contains(&elsewhere.canonicalize().unwrap().display().to_string()),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_path_that_does_not_exist_is_refused_naming_it_exactly_as_typed() {
+    let dir = scratch("root-documents-nonexistent");
+    let db = dir.join("library.db");
+
+    let err = command(&[
+        "root".into(),
+        "documents".into(),
+        "/does/not/exist".into(),
+        "on".into(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .unwrap_err();
+    assert!(err.contains("/does/not/exist"), "{err}");
+}
+
+#[test]
+fn root_with_no_subcommand_or_an_unknown_one_lists_documents() {
+    let err = command(&["root".to_string()]).unwrap_err();
+    assert!(err.contains("documents"), "{err}");
+
+    let err = command(&["root".to_string(), "bogus".to_string()]).unwrap_err();
+    assert!(err.contains("`bogus`"), "{err}");
+    assert!(err.contains("documents"), "{err}");
 }
 
 // -- rules: --export / --import, tested directly like import/export above --

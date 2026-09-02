@@ -784,6 +784,16 @@ fn a_hand_document_beside_the_library_survives_the_next_derive() {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let root = scan::add_root(&conn, &tree.path).expect("add");
+    // Migration 012 defaults `keeps_documents` off; this test's name and its
+    // own doc comment both say the document lands *beside the root*, which an
+    // off root would make false without ever failing an assertion — `save`
+    // would still record the marker, and `volume` would still come back 4.5
+    // through `COALESCE(volume_hand, …)` alone. So it opts in.
+    conn.execute(
+        "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+        [root.id],
+    )
+    .expect("the fixture keeps documents");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
 
@@ -800,6 +810,13 @@ fn a_hand_document_beside_the_library_survives_the_next_derive() {
     doc.volume = Some(4.5);
     crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
     crate::hand::save(&conn, work_id).expect("saving");
+    assert!(
+        crate::hand::path_for(&conn, work_id)
+            .expect("addressing")
+            .expect("an opted-in root has an address")
+            .is_file(),
+        "the name of this test is a claim about a file, so it checks one"
+    );
 
     derive::derive(&conn).expect("second derive");
 
@@ -843,6 +860,16 @@ fn a_derive_applies_a_hand_document_whose_marker_was_cleared_on_an_existing_work
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let root = scan::add_root(&conn, &tree.path).expect("add");
+    // Migration 012 defaults `keeps_documents` off; this test exists to pin
+    // the read-back reading a file off disk, and an off root leaves
+    // `hand::save` below writing no file at all — `hand::load` would then
+    // answer `Ok(None)` and the assertion below would pass for a reason that
+    // has nothing to do with the read-back. So it opts in.
+    conn.execute(
+        "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+        [root.id],
+    )
+    .expect("the fixture keeps documents");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
 
@@ -863,10 +890,21 @@ fn a_derive_applies_a_hand_document_whose_marker_was_cleared_on_an_existing_work
     // What a rebuilt database looks like: the file is still there, but this
     // database has no memory of ever having read it, and the row it left
     // behind is back to what the rules alone would derive.
+    //
+    // **`volume_hand` is cleared too, not just `volume`.** O80's `COALESCE
+    // (volume_hand, <derived>)` means leaving `volume_hand = 4.5` in place
+    // would carry the value across the second derive on its own, whether or
+    // not the read-back below ever ran — exactly the vacuous pass this test
+    // exists to refuse. Clearing it makes `volume` depend on the read-back
+    // applying the document, the same as a database that never set the
+    // provenance column in the first place.
     conn.execute("DELETE FROM migrated_document", [])
         .expect("clearing the markers");
-    conn.execute("UPDATE work SET volume = 1.0 WHERE id = ?1", [work_id])
-        .expect("returning the row to its derived state");
+    conn.execute(
+        "UPDATE work SET volume = 1.0, volume_hand = NULL WHERE id = ?1",
+        [work_id],
+    )
+    .expect("returning the row to its derived state");
 
     derive::derive(&conn).expect("second derive");
 
@@ -917,6 +955,13 @@ fn a_fresh_database_recovers_a_hand_set_title_on_its_first_derive() {
         let first = Library::open_in_memory().expect("open");
         let conn = first.conn();
         let root = scan::add_root(&conn, &tree.path).expect("add");
+        // Migration 012 defaults `keeps_documents` off; this test is about
+        // the document surviving the database being lost, so it opts in.
+        conn.execute(
+            "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+            [root.id],
+        )
+        .expect("the fixture keeps documents");
         scan::scan_root(&conn, &root).expect("scan");
         derive::derive(&conn).expect("first derive");
 
@@ -2971,6 +3016,15 @@ fn two_works_before_the_fold(tree: &crate::tests::TempDir, conn: &Connection) ->
         12,
     );
     let root = scan::add_root(conn, &tree.path).expect("add");
+    // Migration 012 defaults `keeps_documents` off; two of the four tests
+    // built on this fixture hand-edit the colour work and need its document
+    // to actually reach disk, so this opts in — harmless for the other two,
+    // which never call `hand::save`.
+    conn.execute(
+        "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+        [root.id],
+    )
+    .expect("the fixture keeps documents");
     scan::scan_root(conn, &root).expect("scan");
 
     let first = derive::derive(conn).expect("first derive");
@@ -3363,6 +3417,13 @@ fn a_rekeyed_digest_takes_its_document_with_it() {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let root = scan::add_root(&conn, &dir.path).expect("add");
+    // Migration 012 defaults `keeps_documents` off; this test is about the
+    // document surviving a rekey, so it opts in.
+    conn.execute(
+        "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+        [root.id],
+    )
+    .expect("the fixture keeps documents");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
 
@@ -3647,6 +3708,13 @@ fn a_repacked_volume_takes_its_document_with_it() {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let root = scan::add_root(&conn, &dir.path).expect("add");
+    // Migration 012 defaults `keeps_documents` off; this test is about the
+    // document following a repack, so it opts in.
+    conn.execute(
+        "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+        [root.id],
+    )
+    .expect("the fixture keeps documents");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("deriving");
 
@@ -3716,6 +3784,14 @@ fn a_correction_survives_a_page_being_added_and_then_losing_the_database() {
         let library = Library::open_in_memory().expect("open");
         let conn = library.conn();
         let root = scan::add_root(&conn, &dir.path).expect("add");
+        // Migration 012 defaults `keeps_documents` off; this test is about
+        // the document surviving a rekey and then losing the database, so it
+        // opts in.
+        conn.execute(
+            "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+            [root.id],
+        )
+        .expect("the fixture keeps documents");
         scan::scan_root(&conn, &root).expect("scan");
         derive::derive(&conn).expect("deriving");
 
@@ -3760,6 +3836,13 @@ fn correct_the_first_work(dir: &crate::tests::TempDir) {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let root = scan::add_root(&conn, &dir.path).expect("add");
+    // Migration 012 defaults `keeps_documents` off; this fixture's whole
+    // point is a document that survives losing the database, so it opts in.
+    conn.execute(
+        "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+        [root.id],
+    )
+    .expect("the fixture keeps documents");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("deriving");
 

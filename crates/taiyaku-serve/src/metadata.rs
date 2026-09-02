@@ -317,13 +317,19 @@ fn edit_work(
     // `patch_work`'s fan-out: one `Saved` folded through it is a `why` array
     // of at most one element, which is what keeps this route's shape the same
     // as every other route's rather than growing a second, string-shaped one.
-    merge_worst_case(&mut body, saved.persisted, saved.why.into_iter().collect());
+    merge_worst_case(
+        &mut body,
+        saved.persisted,
+        saved.why.into_iter().collect(),
+        saved.keeps_documents,
+    );
     Ok(body)
 }
 
 /// Fold more than one [`hand::Saved`] into the one answer a caller gets:
 /// `persisted` false if **any** document did not land, `why` carrying every
-/// reason that occurred — not only the last one.
+/// reason that occurred — not only the last one — and `keeps_documents` of
+/// `Some(false)` only if **every** save reported it, `None` otherwise.
 ///
 /// **What [`patch_series`] and [`patch_work`]'s own `series` field both need,
 /// and used to lack.** `patch_series` kept only its loop's last iteration, so
@@ -331,16 +337,45 @@ fn edit_work(
 /// fail while the answer read `persisted: true` with no `why` — the exact
 /// finding Task 4's review closed once already, this time reopened by a loop
 /// throwing away every result but one.
-fn worst_case(saves: impl IntoIterator<Item = hand::Saved>) -> (bool, Vec<String>) {
+///
+/// **`keeps_documents` is not a plain `&=` the way `persisted` is,** because
+/// its identity element differs from `persisted`'s: a fan-out across siblings
+/// that span an on root and an off root is not wholly document-less, and
+/// answering `Some(false)` for it would be a claim the answer cannot support
+/// — so anything short of every save agreeing collapses to `None`, the same
+/// "no rooted member to ask" case a single work with no root gets.
+///
+/// **`saves` must not be empty.** The fold's identity element for
+/// `keeps_documents` is `true` — vacuously "every save (of zero) declined" —
+/// so an empty `saves` would answer `Some(false)` for a request that saved
+/// nothing at all, which is not a claim an empty fold can support any more
+/// than a mixed one can. Nothing reaches this today: [`patch_work`] always
+/// seeds `saves` with `vec![saved]` before its own fan-out loop runs, and
+/// [`patch_series`] returns [`NoAnswer::Missing`] on `works.is_empty()`
+/// before it ever builds a `saves` vector to fold. The `debug_assert!` below
+/// is what keeps a future caller from silently inheriting the vacuous case
+/// instead of one of those two guards.
+///
+/// # Panics
+///
+/// Panics if `saves` is empty, but only in a build with `debug_assertions`
+/// enabled — the check is a `debug_assert!` and does not fire in release,
+/// which is the profile `check-all.sh` runs the corpus checks under.
+fn worst_case(saves: impl IntoIterator<Item = hand::Saved>) -> (bool, Vec<String>, Option<bool>) {
     let mut persisted = true;
     let mut why = Vec::new();
+    let mut declined_everywhere = true;
+    let mut saw_any = false;
     for saved in saves {
+        saw_any = true;
         persisted &= saved.persisted;
         if let Some(reason) = saved.why {
             why.push(reason);
         }
+        declined_everywhere &= saved.keeps_documents == Some(false);
     }
-    (persisted, why)
+    debug_assert!(saw_any, "worst_case folded an empty `saves`");
+    (persisted, why, declined_everywhere.then_some(false))
 }
 
 /// Merge a [`worst_case`] fold into a response body — [`patch_series`]'s own
@@ -355,11 +390,23 @@ fn worst_case(saves: impl IntoIterator<Item = hand::Saved>) -> (bool, Vec<String
 /// document has at most one reason to report, but answers with the same
 /// shape — an array of nought or one — rather than a second, string-shaped
 /// `why` a client would have to special-case.
-fn merge_worst_case(body: &mut serde_json::Value, persisted: bool, why: Vec<String>) {
+fn merge_worst_case(
+    body: &mut serde_json::Value,
+    persisted: bool,
+    why: Vec<String>,
+    keeps_documents: Option<bool>,
+) {
     body["persisted"] = serde_json::Value::Bool(persisted);
     if !why.is_empty() {
         body["why"] =
             serde_json::Value::Array(why.into_iter().map(serde_json::Value::String).collect());
+    }
+    // **Emitted only when a root declined**, absent otherwise — the rule
+    // `why` above already follows. `Some(true)` is the ordinary case and says
+    // nothing; `None` is a work with no rooted member, which `path`'s own
+    // `None` has always covered and which this field does not re-report.
+    if keeps_documents == Some(false) {
+        body["keeps_documents"] = serde_json::Value::Bool(false);
     }
 }
 
@@ -597,7 +644,12 @@ pub(crate) async fn patch_work(
         })?;
 
         if !touches_series {
-            merge_worst_case(&mut body, saved.persisted, saved.why.into_iter().collect());
+            merge_worst_case(
+                &mut body,
+                saved.persisted,
+                saved.why.into_iter().collect(),
+                saved.keeps_documents,
+            );
             return Ok(body);
         }
 
@@ -644,8 +696,8 @@ pub(crate) async fn patch_work(
                 saves.push(hand::save(&conn, sibling).map_err(NoAnswer::Refused)?);
             }
         }
-        let (persisted, why) = worst_case(saves);
-        merge_worst_case(&mut body, persisted, why);
+        let (persisted, why, keeps_documents) = worst_case(saves);
+        merge_worst_case(&mut body, persisted, why, keeps_documents);
         Ok(body)
     })
     .await;
@@ -981,8 +1033,8 @@ pub(crate) async fn patch_series(
             last_doc = Some(doc);
         }
         let mut body = last_doc.expect("checked works.is_empty() above");
-        let (persisted, why) = worst_case(saves);
-        merge_worst_case(&mut body, persisted, why);
+        let (persisted, why, keeps_documents) = worst_case(saves);
+        merge_worst_case(&mut body, persisted, why, keeps_documents);
         Ok(body)
     })
     .await;

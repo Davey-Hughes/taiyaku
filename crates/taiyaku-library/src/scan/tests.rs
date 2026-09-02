@@ -668,3 +668,48 @@ fn a_files_modification_time_reaches_its_scan_entry() {
          `unchanged` compares (size, mtime)"
     );
 }
+
+/// **The default is off, and that is the whole point of migration 012.**
+/// `<root>/.taiyaku/` appeared in a person's media tree without their asking;
+/// a root now says so or gets nothing. A root added by `add_root` takes the
+/// column's default, so this pins the default rather than any call site.
+#[test]
+fn a_new_root_keeps_no_documents_by_default() {
+    let dir = crate::tests::tempdir("scan-keeps-documents-default");
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+
+    let root = super::add_root(&conn, &dir.path).expect("adding the root");
+    assert!(
+        !root.keeps_documents,
+        "a root added without being asked keeps no documents: {root:?}"
+    );
+
+    let listed = super::roots(&conn).expect("listing roots");
+    assert_eq!(listed.len(), 1);
+    assert!(
+        !listed[0].keeps_documents,
+        "and `roots` reads the same answer back off the column, rather than \
+         defaulting in Rust where the schema would not agree: {:?}",
+        listed[0]
+    );
+}
+
+/// A root told to keep documents keeps them. Without this the setting could
+/// be hard-coded off and every other test in this plan would still pass.
+#[test]
+fn a_root_can_be_told_to_keep_documents() {
+    let dir = crate::tests::tempdir("scan-keeps-documents-on");
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    let root = super::add_root(&conn, &dir.path).expect("adding the root");
+
+    conn.execute(
+        "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+        [root.id],
+    )
+    .expect("turning documents on");
+
+    let listed = super::roots(&conn).expect("listing roots");
+    assert!(listed[0].keeps_documents, "{:?}", listed[0]);
+}

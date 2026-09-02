@@ -1,0 +1,30 @@
+-- **Whether this root keeps `<root>/.taiyaku/<content_key>.library.json` at
+-- all, and it does not unless asked.**
+--
+-- The document is a projection, not a source: `hand::save` writes what
+-- `librarydoc::of` reads out of the `_hand` columns the database already
+-- holds, and nothing reads it back while the `library` marker is armed. Its
+-- whole purpose is store spec §4.4 — losing the database costs a rescan
+-- rather than costing the organisational work — and it earns that purpose in
+-- exactly one circumstance: the database is lost or rebuilt.
+--
+-- So it is insurance, and a deployment whose database sits in a backed-up
+-- application-data directory has already bought it. Off is the default
+-- because the cost of the file is paid by everyone, in their own media tree,
+-- while the benefit is paid out only to someone who loses a database they did
+-- not back up.
+--
+-- **On `root` rather than in a settings table, and that is the cheaper
+-- choice, not the more flexible one.** `root` already carries `edition_key`,
+-- `default_kind`, `default_language`, `exclude_globs` and
+-- `scan_interval_secs`; `hand::path_for` already reads that row to resolve an
+-- address, so the value arrives where it is needed with no new query. A
+-- `setting` table would have been new schema, a new accessor and a new cache,
+-- to hold strictly less. That it also lets a portable disk keep documents
+-- while a backed-up NAS does not is a side effect rather than the reason.
+--
+-- Existing rows take the default, which changes behaviour for any library
+-- already writing documents: it stops writing new ones. Nothing on disk is
+-- touched, and `hand::reconcile` reports what is already there as orphans so
+-- it is not discovered years later.
+ALTER TABLE root ADD COLUMN keeps_documents INTEGER NOT NULL DEFAULT 0;

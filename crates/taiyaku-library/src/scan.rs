@@ -53,6 +53,13 @@ pub struct Root {
     pub default_kind: Option<String>,
     pub default_language: Option<String>,
     pub scan_interval_secs: Option<i64>,
+    /// Whether this root keeps `<root>/.taiyaku/<content_key>.library.json`.
+    ///
+    /// **Off unless asked** — migration 012's own comment carries the
+    /// reasoning. Read here rather than queried per work because `reconcile`
+    /// already holds a `Root` and `hand::save` is the only caller that does
+    /// not.
+    pub keeps_documents: bool,
 }
 
 /// Every scan root this library knows about, oldest first.
@@ -63,7 +70,8 @@ pub struct Root {
 pub fn roots(conn: &Connection) -> Result<Vec<Root>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, path, edition_key, default_kind, default_language, scan_interval_secs \
+            "SELECT id, path, edition_key, default_kind, default_language, scan_interval_secs, \
+             keeps_documents \
              FROM root ORDER BY id",
         )
         .map_err(|e| format!("listing roots: {e}"))?;
@@ -76,6 +84,7 @@ pub fn roots(conn: &Connection) -> Result<Vec<Root>, String> {
                 default_kind: r.get(3)?,
                 default_language: r.get(4)?,
                 scan_interval_secs: r.get(5)?,
+                keeps_documents: r.get(6)?,
             })
         })
         .map_err(|e| format!("listing roots: {e}"))?;
@@ -105,13 +114,24 @@ pub fn add_root(conn: &Connection, path: &Path) -> Result<Root, String> {
         rusqlite::params![canonical.to_string_lossy()],
     )
     .map_err(|e| format!("adding root {}: {e}", canonical.display()))?;
+    let id = conn.last_insert_rowid();
+    // Read back rather than hard-coded, so the column's default — migration
+    // 012's `DEFAULT 0` — stays the one place that decides it.
+    let keeps_documents = conn
+        .query_row(
+            "SELECT keeps_documents FROM root WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("reading root {}: {e}", canonical.display()))?;
     Ok(Root {
-        id: conn.last_insert_rowid(),
+        id,
         path: canonical,
         edition_key: None,
         default_kind: None,
         default_language: None,
         scan_interval_secs: None,
+        keeps_documents,
     })
 }
 

@@ -531,6 +531,19 @@ Collections are **not** in this file. A collection spans works and has no single
 sidecar to sit beside; it lives in the database and is covered by §13's backup
 rather than by export.
 
+**Off by default as of 2026-09-02, and it is this document's address, not this
+section's format, that changed.** `<root>/.taiyaku/<content_key>.library.json`,
+the address a scanned work with no sidecar uses for this same document, is
+not written unless the work's root opts in via `root.keeps_documents`
+(migration 012), which defaults to off for every root — designed in
+`docs/superpowers/specs/2026-09-02-hand-documents-off-by-default-design.md`.
+For a root that keeps no documents the claim above no longer holds: losing
+the database without a backup loses the organizational work along with it,
+not merely the rescan. `<stem>.library.json` beside a sidecar, the file the
+rest of this section describes, is unaffected, because it is written only
+when a person asks for it by running `export`, never on a schedule and never
+by default.
+
 ### 4.5 Export
 
 `taiyaku library export <work>|--all [--dir DIR|--in-place] [--db PATH]`

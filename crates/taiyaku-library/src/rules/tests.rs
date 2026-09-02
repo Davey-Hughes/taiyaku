@@ -51,6 +51,7 @@ fn root() -> Root {
         default_kind: None,
         default_language: None,
         scan_interval_secs: None,
+        keeps_documents: false,
     }
 }
 
