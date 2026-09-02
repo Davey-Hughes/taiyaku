@@ -1224,9 +1224,18 @@ fn write_work(
     // here rather than returned from `import` — a sha256 over a handful of
     // hex digests, against leaving `import::scanned`'s signature answering two
     // questions instead of one.
+    //
+    // **`rekeyed_from` is captured in the same breath, for
+    // [`crate::hand::rename_for_rekey`] near the end of this function.**
+    // `held_key` is this row's `content_key` before `import::scanned`
+    // overwrites it — the only place that value is still readable — so it is
+    // saved here rather than re-derived from `work.content_key` after the
+    // fact, which is what a caller with no memory of `held` would have to do.
+    let mut rekeyed_from = None;
     if let Some((_, _, held_key)) = &held {
         if *held_key != crate::identity::content_key(&doc)? {
             report.rekeyed += 1;
+            rekeyed_from = Some(held_key.clone());
         }
     }
     // The second identity probe: this work's address, for a work that has no
@@ -1273,6 +1282,34 @@ fn write_work(
     // interaction: nothing the guard or the read-back writes touches
     // `member.root_id`.
     write_roots(conn, work_id, group)?;
+
+    // **The document follows the row here, after `write_roots` and after
+    // `import::scanned`'s own transaction has already committed — never
+    // inside it.** A rollback that left the file renamed would strand it
+    // under a key the database never adopted: this module's own defect,
+    // inverted, and harder to see, because `hand::reconcile` would then read
+    // every root as clean.
+    //
+    // **Why here and not in `import_with`, where an earlier version of this
+    // change placed it.** `hand::path_for` resolves a work's address through
+    // `member.root_id`, and for the one member whose bytes just changed —
+    // which, for a single-file volume, is every member the hub edition has —
+    // `replace_editions`' delete-and-reinsert leaves that column NULL:
+    // `held_member_meta` restores it by matching the old and new rows on
+    // `sha256`, and a repacked archive's hash is exactly what changed.
+    // `write_roots`, just above, is what restores it, by `(edition key,
+    // ordinal)` instead — and it runs *after* `import::scanned` returns, so it
+    // cannot have run yet at any point inside `import_with`. Calling the
+    // rename there, as the first version of this change did, found
+    // `path_for` answering `None` for `archived_volumes`' own fixture — a
+    // work with exactly one member — and left the document exactly where
+    // `a_repacked_volume_takes_its_document_with_it` catches it: unmoved,
+    // reported as an orphan. Waiting until here is what lets one derive do
+    // what the store spec §4.4 asks of it, rather than needing a second pass
+    // the way a brand-new work's hand document already does, above.
+    if let Some(old_key) = rekeyed_from {
+        crate::hand::rename_for_rekey(conn, work_id, &old_key)?;
+    }
 
     // The `work` columns the sidecar format has no field for, which are also
     // the two the hub lookup above reads back — and, under the same guard and

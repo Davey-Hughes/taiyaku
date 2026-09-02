@@ -61,10 +61,23 @@ No series, no volume, no member digests. Nothing to match a work by.
 This was verified against the five documents the measurement left on disk, not
 reasoned about, and it is worth stating because it inverts the obvious build
 order. **The rename at rekey time is not the cheaper of two fixes — it is the
-only moment the link between file and work is knowable.** Both keys are in
-hand for exactly the length of one `import_with` call. After that transaction
-commits, the old key is gone from the database and the file is unattributable
-except by a person opening it and reading the title.
+only moment the link between file and work is knowable.** After
+`import::scanned`'s transaction commits, the old key is gone from the database
+and the file is unattributable except by a person opening it and reading the
+title.
+
+**"Both keys are in hand for exactly the length of one `import_with` call" was
+wrong, and it is corrected where the code it describes actually runs (§5, §9).**
+The rename does not happen inside that call at all: it runs from
+`derive::write_work`, after `write_roots`, because `member.root_id` is still
+NULL immediately after `import_with` returns for a single-member work's
+repack, and `path_for` cannot resolve an address without it. The old key
+survives past the commit regardless, carried in a local (`rekeyed_from`)
+rather than read back from the row, so it is still in hand once `write_roots`
+makes the new address resolvable. The larger point this paragraph makes is
+unaffected: an orphaned document cannot be re-adopted, so the rename has to
+happen at whichever single moment both keys are knowable — only *where* that
+moment falls moved, not the fact that there is exactly one.
 
 It also fixes what the reporting half owes: an orphan report that names only a
 path is useless, because the path is a hash. It must carry the **title the
@@ -169,6 +182,11 @@ true.
 
 Prevention, at the one moment the link exists.
 
+**This section originally placed the call in `import_with`, right after
+`tx.commit()`. That placement cannot work — the paragraph below explains why,
+and `derive.rs`'s own comment at the actual call site has the fullest
+account.**
+
 `import_with`'s probe resolves `existing` from content first and from `known`
 — the `(series_id, volume)` address — on a miss. **A hit on the second is
 exactly a rekey**: the row's current `content_key` is still readable, and
@@ -176,13 +194,25 @@ exactly a rekey**: the row's current `content_key` is still readable, and
 that matters; the document-backed path addresses its document by
 `sidecar_path` and is out of scope (§7).
 
+**The call actually sits in `derive::write_work`, immediately after
+`write_roots`.** `hand::path_for` resolves a work's address through
+`member.root_id`, and for a single-member work a repack changes that member's
+`sha256` — so `import::replace_editions`'s delete-and-reinsert leaves
+`root_id` NULL there, because `held_member_meta` restores it keyed on
+`sha256`, exactly what changed. Calling the rename inside `import_with`, as
+this section first proposed, finds `path_for` answering `None` and leaves the
+document unmoved. `write_roots` restores `root_id` by `(edition key,
+ordinal)` instead and runs after `import::scanned` returns, so
+`derive::write_work` is the earliest point at which the rename can resolve an
+address at all.
+
 Two rules, both load-bearing:
 
-**The rename runs after `tx.commit()`, never inside it.** A rollback that left
-the file renamed would strand it under a key the database never adopted —
-this defect, inverted, and harder to see because the report would show
-everything reconciled. The old and new keys travel out of the transaction to
-be applied after it.
+**The rename runs after `import::scanned`'s transaction has committed, never
+inside it.** A rollback that left the file renamed would strand it under a
+key the database never adopted — this defect, inverted, and harder to see
+because the report would show everything reconciled. The old key travels past
+the commit, in `rekeyed_from`, to be applied once `write_roots` has run.
 
 **An existing file at the target address is never overwritten.** Two works
 cannot legitimately share an address, so a collision means something this
@@ -276,9 +306,10 @@ makes every existing stranded document visible, including the ones a library
 already holds today, and because it is the half that does not touch the import
 path.
 
-**PR 2 — prevention.** `rename_for_rekey` in `import_with`, after the commit.
-Smaller, and it lands second so that if the rename is wrong the reporting is
-already there to say so.
+**PR 2 — prevention.** `rename_for_rekey`, called from `derive::write_work`
+after `write_roots` (§5 records why that moved from the `import_with`
+placement this once said). Smaller, and it lands second so that if the rename
+is wrong the reporting is already there to say so.
 
 Both are `taiyaku-library` only. Neither adds a route, a screen or a CLI
 subcommand: the sweep runs where the walk already runs, and its results print

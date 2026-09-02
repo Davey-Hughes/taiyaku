@@ -3344,8 +3344,21 @@ fn a_title_only_edit_claims_no_volume_and_no_series() {
 /// Before that point `member.root_id` is still NULL on a freshly minted work,
 /// `path_for`'s `JOIN root` matches nothing, and every work in a new library
 /// would report as having no address at all.
+///
+/// **What this test asserted before task 7, and what it asserts now.** This
+/// reaches the identical rekey `a_repacked_volume_takes_its_document_with_it`
+/// exercises through a real archive rewrite, but by corrupting the digest a
+/// layer lower instead — see the comment at the `UPDATE scan_entry` below for
+/// why that is needed to get past `import::scanned`'s own self-healing.
+/// Before `hand::rename_for_rekey` existed this asserted the strand:
+/// `reconcile` correctly reported the document orphaned, because nothing yet
+/// moved it — hence the name. Now the document is carried to its new address
+/// before `reconcile` ever sees a gap, and a second technique reaching the
+/// same rekey is worth keeping alongside the archive-rewrite test: a fix that
+/// works for one route to a changed digest and not the other is exactly the
+/// shape a single fixture would hide.
 #[test]
-fn a_derive_reports_a_stranded_document() {
+fn a_rekeyed_digest_takes_its_document_with_it() {
     let dir = archived_volumes();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -3397,15 +3410,21 @@ fn a_derive_reports_a_stranded_document() {
 
     let report = derive::derive(&conn).expect("second derive");
 
+    assert_eq!(report.rekeyed, 1, "the work followed its files: {report:?}");
     assert_eq!(
         report.orphan_documents.len(),
-        1,
-        "the stranded document is reported by the pass that stranded it: {report:?}"
+        0,
+        "rename_for_rekey carried the document to its new address, rather \
+         than leaving it stranded under the old key: {report:?}"
     );
-    assert_eq!(
-        report.orphan_documents[0].title.as_deref(),
-        Some("Hand Set"),
-        "with the title, because the filename is a hash"
+
+    let path = crate::hand::path_for(&conn, work_id)
+        .expect("addressing")
+        .expect("a rooted work has an address");
+    assert!(
+        path.is_file(),
+        "the document is at the new address: {}",
+        path.display()
     );
 }
 
@@ -3440,8 +3459,8 @@ fn folding_a_work_away_orphans_its_hand_document_on_the_same_pass() {
 
     // A hand correction on the work about to be folded away — through
     // `librarydoc::apply` + `hand::save`, the real route, not a row inserted
-    // by hand: `a_derive_reports_a_stranded_document`'s own choice, for the
-    // same reason.
+    // by hand: `a_rekeyed_digest_takes_its_document_with_it`'s own choice,
+    // for the same reason.
     let mut doc = crate::librarydoc::of(&conn, colour).expect("projecting");
     doc.title = Some("Hand Set".to_string());
     crate::librarydoc::apply(&conn, colour, &doc).expect("applying");
@@ -3491,6 +3510,123 @@ fn a_correction_survives_losing_the_database() {
         "Hand Set",
         "one rescan restores the correction — the whole point of writing the \
          document into the library rather than only into the database"
+    );
+}
+
+/// **O81, prevented.** Repacking an archive moves the work's `content_key`;
+/// the document must follow, because after this pass commits the old key is
+/// gone from the database and the file is unattributable except by a person
+/// opening it. Measured on 2026-08-31: without this, the correction is lost on
+/// the next database rebuild.
+#[test]
+fn a_repacked_volume_takes_its_document_with_it() {
+    let dir = archived_volumes();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &dir.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("deriving");
+
+    let work_id: i64 = conn
+        .query_row("SELECT id FROM work ORDER BY id LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .expect("a work was derived");
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    crate::hand::save(&conn, work_id).expect("saving");
+
+    // **One page added — one of the two events the measurement used, and it
+    // needs no new helper.** `write_archive` is deterministic and each page's
+    // bytes name the archive holding them, so rewriting v01 with four pages
+    // instead of three changes the member digest, and with it the work's
+    // `content_key`. v02 already holds four pages and does not collide,
+    // because the label differs — `write_archive`'s own comment says why it
+    // is built that way.
+    write_archive(
+        &dir.path.join("Series").join("v01").join("Series v01.cbz"),
+        4,
+    );
+
+    scan::scan_root(&conn, &root).expect("rescanning");
+    let report = derive::derive(&conn).expect("rederiving");
+
+    assert_eq!(report.rekeyed, 1, "the work followed its files: {report:?}");
+    assert_eq!(
+        report.orphan_documents.len(),
+        0,
+        "and its document followed the work: {report:?}"
+    );
+
+    let path = crate::hand::path_for(&conn, work_id)
+        .expect("addressing")
+        .expect("a rooted work has an address");
+    assert!(
+        path.is_file(),
+        "the document is at the new address: {}",
+        path.display()
+    );
+}
+
+/// **The measured failure, as an assertion.** Task 5's baseline never moves
+/// the `content_key`, so it passed before any of this existed. Here the volume
+/// gains a page **while a database is watching**, which is what took two of
+/// five works' corrections on 2026-08-31, and it is the transition
+/// `rename_for_rekey` exists to carry the document across.
+///
+/// **The `orphan_documents` assertion inside the scope block is the one that
+/// actually tests `rename_for_rekey`; the title assertion at the end does
+/// not.** Delete the rename and this test would still pass at the end:
+/// `hand::reconcile`'s gap repair re-projects the surviving `work` row and
+/// writes a fresh document at the new address on the very next derive, so
+/// the title comes back regardless. The final assertion is kept anyway
+/// because it documents the end-to-end promise — store spec §4.4 — that
+/// this whole feature exists to keep; `orphan_documents == 0` is what
+/// actually goes red if the rename is removed.
+#[test]
+fn a_correction_survives_a_page_being_added_and_then_losing_the_database() {
+    let dir = archived_volumes();
+    let v01 = dir.path.join("Series").join("v01").join("Series v01.cbz");
+
+    {
+        let library = Library::open_in_memory().expect("open");
+        let conn = library.conn();
+        let root = scan::add_root(&conn, &dir.path).expect("add");
+        scan::scan_root(&conn, &root).expect("scan");
+        derive::derive(&conn).expect("deriving");
+
+        let work_id: i64 = conn
+            .query_row("SELECT id FROM work ORDER BY id LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .expect("a work was derived");
+        let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+        doc.title = Some("Hand Set".to_string());
+        crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+        crate::hand::save(&conn, work_id).expect("saving");
+
+        // **One page added, and a scan that sees it.** The document moves
+        // between the old and new addresses on the `derive` call below —
+        // from `derive::write_work`, after `write_roots`, per that call
+        // site's own comment — or it never moves at all.
+        write_archive(&v01, 4);
+        scan::scan_root(&conn, &root).expect("rescanning");
+        let report = derive::derive(&conn).expect("rederiving");
+        assert_eq!(report.rekeyed, 1, "the work followed its files: {report:?}");
+        assert_eq!(
+            report.orphan_documents.len(),
+            0,
+            "and its document followed the work: {report:?}"
+        );
+    }
+
+    // Only now is the database gone, and only the root remains.
+    assert_eq!(
+        title_after_rebuilding(&dir),
+        "Hand Set",
+        "the document was carried to the new address while a scan could still \
+         see both, so one rescan restores the correction — store spec §4.4"
     );
 }
 

@@ -854,3 +854,48 @@ fn a_new_filename_chapter_does_not_make_a_hand_edit_stale() {
          person's disagreement: {found:?}"
     );
 }
+
+/// A file already at the target address is never overwritten: two works cannot
+/// legitimately share one, so a collision means something unpredicted, and the
+/// correction under the old key is kept for a person to read.
+#[test]
+fn a_rekey_never_overwrites_a_document_already_at_the_new_address() {
+    let dir = crate::tests::tempdir("hand-rekey-collision");
+    let root = dir.path.to_string_lossy().to_string();
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_scanned_work_rooted_at(&conn, &root);
+
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Old".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    super::save(&conn, work_id).expect("saving");
+
+    conn.execute(
+        "UPDATE work SET content_key = 'new' WHERE id = ?1",
+        [work_id],
+    )
+    .expect("rekeying");
+    let occupied = super::path_for(&conn, work_id)
+        .expect("addressing")
+        .expect("an address");
+    std::fs::create_dir_all(occupied.parent().expect("a directory")).expect("creating");
+    std::fs::write(
+        &occupied,
+        br#"{"taiyaku_library":1,"updated":"x","title":"Squatter"}"#,
+    )
+    .expect("planting a document at the new address");
+
+    let moved = super::rename_for_rekey(&conn, work_id, "abc123").expect("renaming");
+
+    assert!(!moved, "the rename refused");
+    assert!(
+        std::fs::read_to_string(&occupied)
+            .expect("reading")
+            .contains("Squatter"),
+        "and left what was already there untouched"
+    );
+    assert!(
+        dir.path.join(".taiyaku/abc123.library.json").is_file(),
+        "and kept the old document for a person to read"
+    );
+}

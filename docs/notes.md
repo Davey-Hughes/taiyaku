@@ -14758,3 +14758,41 @@ dominate instead.
 
 Design §6 is corrected against this measurement rather than left to say
 "nothing beside hashing archives."
+
+### After the fix, driven again on real archives
+
+`hand::rename_for_rekey` is this branch's prevention half. It was driven on
+the same two events as the measurement above, to confirm the files-changing
+cause is closed rather than argued closed.
+
+Three `.cbz` files out of `corpus/` into one root under `target/` —
+**copied rather than hardlinked**, since two of the three get rewritten:
+`gotoubun-v01/raw-mono`, `gotoubun-v03/raw-mono`, `kobayashi-v03/en-mono`.
+The scan derived 2 series, 3 works, 3 editions, 3 members.
+
+Each work was given a hand-set title through `PATCH
+/api/library/works/{slug}` with a session cookie — the real route, not an
+`INSERT`. All three answered `persisted: true`.
+
+`Go-Toubun no Hanayome - v01.cbz` was repacked, same pages, `ZIP_STORED`;
+`- v03.cbz` gained one page. Both moved their member digest: `86c82cea…` →
+`43d0d892…`, and `641a19a8…` → `a6ccb859…`.
+
+The rescan reported `0 added, 3 updated, 0 gone` and `2 rekeyed`, **with no
+orphan clause in the summary at all**, and exactly three documents under
+`.taiyaku/`, each sitting at its work's new key — the old addresses hold
+nothing. The documents were moved, not copied.
+
+Rebuilding the database from the same root returned **all three**
+corrections. The identical shape, run the morning before this fix, cost two
+of five (above). That is the whole difference this branch makes, measured
+rather than argued.
+
+`find corpus -newermt` against a timestamp taken before any of this returned
+nothing.
+
+**What this does and does not prove.** It exercises the rekey path end to
+end, on real archives, with a repack and an added page both landing. It does
+not exercise the fold path — `fold::absorb`'s stranding is untouched by this
+branch — and it does not exercise the read-only-root retry that O82's stale
+case still lacks.

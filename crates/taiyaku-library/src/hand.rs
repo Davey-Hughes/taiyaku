@@ -245,6 +245,51 @@ pub fn load(
     Ok(Some((path, doc)))
 }
 
+/// Move this work's document from the address it had under `old_key` to the
+/// one it has now.
+///
+/// **Called from `derive::write_work`, immediately after `write_roots`.** An
+/// earlier version called this from `import_with`, right after `tx.commit()`
+/// — the moment that looks like it should work, since the old `content_key`
+/// is still readable from the row just replaced. It cannot: for a
+/// single-member work a repack changes the member's `sha256`, and
+/// `import::replace_editions`'s delete-and-reinsert leaves that member's
+/// `root_id` NULL there, because `held_member_meta` restores it keyed on
+/// `sha256` — exactly what changed — so the lookup misses. [`path_for`] then
+/// answers `None` and the rename is silently skipped. `write_roots` restores
+/// `root_id` by `(edition key, ordinal)` instead, and runs after
+/// `import::scanned` returns — so the call from `derive::write_work`, after
+/// `write_roots`, is the first point at which this can resolve an address at
+/// all. Once `import::scanned` commits, the old key is gone from the row, and
+/// since O80 closed a title-only document carries no series, no volume and no
+/// member digests either — so nothing can match the file to a work once it
+/// strands. See `derive.rs`'s own comment at the call site for the full
+/// account, and see [`Orphan`] for what a stranded document then looks like.
+///
+/// **Never overwrites.** Two works cannot legitimately share an address, so a
+/// file already at the target means something this was not designed for;
+/// `false` comes back, the correction under the old key survives, and
+/// [`reconcile`] reports it as an orphan for a person to read.
+///
+/// # Errors
+///
+/// Returns an error if SQLite fails resolving the new address. **Not** if the
+/// rename fails: a root that cannot take the move leaves the document where it
+/// is, which [`reconcile`] then reports.
+pub fn rename_for_rekey(conn: &Connection, work_id: i64, old_key: &str) -> Result<bool, String> {
+    let Some(new_path) = path_for(conn, work_id)? else {
+        return Ok(false);
+    };
+    let Some(dir) = new_path.parent() else {
+        return Ok(false);
+    };
+    let old_path = dir.join(format!("{old_key}.library.json"));
+    if !old_path.is_file() || new_path.exists() {
+        return Ok(false);
+    }
+    Ok(std::fs::rename(&old_path, &new_path).is_ok())
+}
+
 /// A document under `<root>/.taiyaku` that no work in the library addresses.
 ///
 /// **The title travels with the path because the path is a hash.** The
