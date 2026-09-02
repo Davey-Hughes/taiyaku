@@ -14796,3 +14796,126 @@ end, on real archives, with a repack and an added page both landing. It does
 not exercise the fold path — `fold::absorb`'s stranding is untouched by this
 branch — and it does not exercise the read-only-root retry that O82's stale
 case still lacks.
+
+## The scanner against a real library — 2026-09-01
+
+Everything before this ran against `corpus/`, which was assembled to test
+things. This is the first time derivation met a library somebody actually
+keeps: 128 series, 1915 archives, 490 GB, copied local off an NFS share.
+Two defects came out of it that no corpus produced, and one cost measurement
+that closes a question the reconciliation design left open.
+
+### The library, and how it was run
+
+`/mnt/daveynet/nfs/media 1/Manga/Volumes` copied to local disk with `rsync
+-rlt` — deliberately not `-a`, because the source is `root:root 755` and the
+copy has to be writable to exercise anything. 1915 archives in, 1915 archives
+out. One root, no `edition_key`, which is what a person configuring this for
+the first time would do.
+
+Scanned and derived to **130 series, 1858 works, 1858 editions, 1883
+members**, with `1 unattached chapter directories, 13 unreadable, 25 merged, 1
+series holding no work` and 29 proposals raised.
+
+### Two releases of one volume, merged into one edition
+
+**25 works across three series hold two members each, and the two members are
+different releases of the same volume.** `[Oshi no Ko]` 12, `Death Note` 9,
+`Yu Yu Hakusho` 4. A reader opening `[Oshi no Ko]` volume 1 gets the fan
+translation followed by the official 2023 release as one page sequence.
+
+The mechanism is exact, and it is about where the distinguishing text sits:
+
+```
+separate series:
+  Monster - The Perfect Edition/Monster - The Perfect Edition - v01.cbz
+merged into one edition:
+  [Oshi no Ko] - Fan Translated/[Oshi no Ko] - v01.cbz
+  [Oshi no Ko]/[Oshi no Ko] - v01 (2023).cbz
+  Death Note (Colored Council)/Death Note - v01 (Colored Council).cbz
+  Death Note/Death Note - v01 (2005).cbz
+```
+
+Series resolves from the text **before the volume marker**. `Monster - The
+Perfect Edition` carries its distinction there and survives as its own series,
+which is why `proposals::raise` then offers it as an `edition-of` — the
+machinery works, on the cases that reach it. A distinction living only in the
+directory name, or in a parenthetical *after* the marker, never reaches it:
+both files resolve to one series, `(series, volume)` groups them, and
+`import::scanned` writes them as two members of one edition.
+
+**The count exists and the attribution does not.** `DeriveReport::merged` is
+the field built for exactly this — "entries that joined an edition another
+entry had already opened, which is right for the chapters of a volume and
+wrong for anything else" — and it reported 25. What it cannot say is *which*
+25, or that their members came from different directories, which is the half a
+person would need to act. That is O89.
+
+### Twelve volumes that cannot be opened
+
+Twelve files named `.cbz` are RAR archives. `taiyaku_read::sniff` gets this
+right from the first 512 bytes and records `scan_entry.format = 'rar'` — the
+half of `docs/sidecar.md`'s "a zip named `.cbr` and a RAR named `.cbz` are both
+routine" that works. `derive::is_readable` then admits only `Dir` and `Zip`, so
+all twelve are counted in `DeriveReport::unreadable` and never become members.
+One series, invisible. That is O90.
+
+The thirteenth `unreadable` is the counter's other site: a member whose bytes
+could not be hashed, not a format that cannot be read. One field, two causes.
+
+### What a derive costs when there is nothing left to hash
+
+**8.4 seconds**, wall clock, for 1858 works and 1883 members over 130 series —
+walk, derive, proposals and `hand::reconcile` together, on local NVMe.
+
+That closes the question §6 of the reconciliation design left open. The
+concern was that `reconcile` is paid unconditionally on every derive where the
+read-back beside it is gated on `!absorbed`. At real scale the whole derive is
+8.4 s and `reconcile` is not visible in it. The synthetic figure taken on
+2026-08-31 — 105 ms at 2000 works and 4 roots, in-memory SQLite on tmpfs — was
+the right order and pessimistic about the surrounding cost, not optimistic.
+
+Two measurement hazards found on the way, both worth not repeating:
+
+- **The debug binary hashes about fourteen times slower.** 0.21 archives/sec
+  against 2.9 in release, measured on the same files: 141 archives in eleven
+  minutes, then 130 in forty-five seconds after `cargo build --release`.
+  sha256 is what derivation spends its time on, and it is exactly the code an
+  unoptimised build ruins. Any timing this project has taken with
+  `target/debug/taiyaku` is an order of magnitude pessimistic on hashing.
+- **An interrupted derive resumes.** The first run was killed mid-hash; the
+  141 digests it had written to `scan_entry` were still there and the restart
+  picked up from 141 rather than from zero. That is `derive` opening no file
+  except to hash a member nothing has hashed yet, working as designed — and it
+  means a first scan of a large library is safely interruptible, which nothing
+  had checked.
+
+### The walk over NFS, which is why the library was copied
+
+Scanning the share in place, `--no-derive`, no hashing at all: **2 hours 50
+minutes** for 6003 entries, at **0% CPU**. About 1.7 seconds per entry, all of
+it round-trip latency. The same walk over the local copy is seconds, and
+`rsync` pulled the 490 GB off the same mount at ~105 MB/s — so the link is
+fine and it is per-file metadata that is not.
+
+Not tracked as an item: the deployment target is a server with the library
+local to it, so this measures the mount rather than the product. Recorded
+because the number is surprising and somebody will otherwise re-derive it.
+
+### One thing that worked, and one that will not on a read-only share
+
+`proposals::raise` offered **29** suggestions on first contact, and the
+scoring separated them correctly: `Full Color Edition`, `The Perfect Edition`
+and `Digital Colored Comics` scored 2.0 against the edition vocabulary, while
+`Gaiden`, `Side Story` and `Anthology Comic` scored 0.0 — the second group
+being different works rather than editions, which is the judgement the score
+exists to make.
+
+The share itself is mounted `rw` but its directories are `root:root 755`
+against uid 1000, so `watch::probe` was refused, named the refusal, and fell
+back from 24-hour to 15-minute polling rather than failing the scan —
+`watch.rs`'s "a write that fails is not an error return" under a condition no
+test stages. On a library mounted that way `<root>/.taiyaku/` can never be
+created and every correction answers `persisted: false`, which is O82's
+read-only case as the ordinary case rather than the corner one. Not tracked
+here either: the server that will run this owns its storage.
