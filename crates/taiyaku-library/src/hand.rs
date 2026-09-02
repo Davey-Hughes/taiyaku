@@ -245,5 +245,292 @@ pub fn load(
     Ok(Some((path, doc)))
 }
 
+/// A document under `<root>/.taiyaku` that no work in the library addresses.
+///
+/// **The title travels with the path because the path is a hash.** The
+/// filename is the `content_key` the document was written under, which names
+/// content that no longer exists; and since O80 closed (#97, *the document
+/// projects only what a person set*) a title-only document — the common case,
+/// and the one the metadata editor's single control produces — carries no
+/// series, no volume and no member digests either. So there is no route back
+/// to a work from the file's contents, and a report naming only the path
+/// leaves a person nothing to act on. The title is the one actionable thing
+/// in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Orphan {
+    pub path: PathBuf,
+    /// `None` for a document that carries no title — one correcting only a
+    /// series or an edition label. Reported anyway: the file is still
+    /// somebody's work and still unreachable.
+    pub title: Option<String>,
+}
+
+/// What one root's `.taiyaku` directory and the works that owe it documents
+/// had to say about each other.
+///
+/// Three states, three answers, and only one of them is a repair — see the
+/// design's §2 for why the stale case resolves to nothing. `repaired` and
+/// `unwritable` partition the gaps; `orphans` and `stale` are reported and
+/// touched by nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reconciled {
+    /// Gaps closed on this pass: a marked work whose document was missing and
+    /// has now been written.
+    pub repaired: usize,
+    /// Gaps that could not be closed, each carrying the `io::Error`'s own
+    /// message naming the path — [`Saved::why`]'s shape, for the same reason.
+    ///
+    /// **A permanently read-only root reports the same list every scan, and
+    /// that is correct rather than noisy**: the condition really is still
+    /// true, and the alternative — reporting it once and going quiet — would
+    /// leave a library whose corrections are not durable looking like one
+    /// whose corrections are.
+    pub unwritable: Vec<String>,
+    /// Documents no work addresses. See [`Orphan`] for why each carries a
+    /// title.
+    pub orphans: Vec<Orphan>,
+    /// Documents that exist at a work's address and disagree with the
+    /// database. **Reported and not resolved**: the database is not
+    /// automatically right, since O44 records this as the one document this
+    /// project designs for hand-editing.
+    pub stale: Vec<String>,
+}
+
+/// Reconcile one root's `.taiyaku` directory against the works that owe it a
+/// document.
+///
+/// **One `read_dir` per root, and it runs inside `derive`** — which already
+/// walks every work and already calls [`load`] per work, so this adds one
+/// directory listing to a pass that is hashing archives.
+///
+/// **`absorbed = 1` is the register of works that owe a document**, not the
+/// presence of a file: `save` records the marker whether or not the write
+/// landed, which is exactly what makes a gap detectable at all.
+///
+/// # Errors
+///
+/// Returns an error if the root's directory cannot be listed for a reason
+/// other than its absence or a non-directory occupying its name, or if SQLite
+/// fails. **Not** if a document cannot be written — that is
+/// [`Reconciled::unwritable`].
+pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconciled, String> {
+    let mut found = Reconciled::default();
+    let dir = root.path.join(DIR);
+
+    // Every work that owes a document, with the address it owes it at.
+    // Addresses outside this root belong to another root's pass — a work
+    // spans roots by design, and `path_for` answers with exactly one of them.
+    let mut expected: std::collections::HashMap<PathBuf, i64> = std::collections::HashMap::new();
+    let mut owed: Vec<i64> = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT work_id FROM migrated_document
+                  WHERE document = ?1 AND absorbed = 1
+                  ORDER BY work_id",
+            )
+            .map_err(|e| format!("preparing the marked-work query: {e}"))?;
+        let rows = stmt
+            .query_map([crate::migrate::LIBRARY], |row| row.get::<_, i64>(0))
+            .map_err(|e| format!("reading marked works: {e}"))?;
+        for row in rows {
+            owed.push(row.map_err(|e| format!("reading a marked work: {e}"))?);
+        }
+    }
+    for work_id in owed {
+        let Some(path) = path_for(conn, work_id)? else {
+            // No address at all — a sidecar-imported work, whose document
+            // lives beside its sidecar and is `export::work`'s to write. Out
+            // of scope by design; see the design's §7.
+            continue;
+        };
+        if path.parent() == Some(dir.as_path()) {
+            expected.insert(path, work_id);
+        }
+    }
+
+    // What is actually on disk under `.taiyaku`, and the orphans among it.
+    //
+    // **`NotFound` and `NotADirectory` both mean "nothing is listable here,"
+    // not "reconcile cannot proceed" — so both fall through to the
+    // gap-repair loop below with `present` left empty, rather than an early
+    // return** (the brief's own sketch of this function returned early on
+    // `NotFound` alone, which is what the note on the `read_dir` early
+    // return flagged as possibly not typechecking; doing so also skips the
+    // gap-repair loop entirely, which is wrong for a root whose obstruction
+    // has just been cleared — see `a_gap_is_written_on_the_next_pass`). A
+    // root that has never taken a hand edit has no `.taiyaku` at all — the
+    // ordinary case, since `save` creates it on first write. A plain file
+    // occupying that name — this module's own fixture for a root that
+    // cannot take a document, per this task's constraint against
+    // `set_readonly` — cannot contain a document either, by construction:
+    // nothing was ever able to write beneath a name that is not a
+    // directory. It is `save`'s own attempt below, not this listing, that
+    // discovers and names the real failure for that case. Any other error
+    // (permission denied, and so on) is genuinely unexpected and is not
+    // folded in the same way: swallowing it would let the loop below
+    // "repair" — overwrite — a document this listing merely failed to see.
+    let mut present: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    match std::fs::read_dir(&dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
+                let path = entry.path();
+                if !path.to_string_lossy().ends_with(".library.json") {
+                    continue;
+                }
+                present.insert(path.clone());
+                if let Some(&work_id) = expected.get(&path) {
+                    // Present and addressed. The remaining question is
+                    // whether it agrees with the database.
+                    //
+                    // **`updated` is normalised before the comparison, and
+                    // must be.** `librarydoc::of`'s own doc comment records
+                    // that it is stamped with the time the projection was
+                    // taken and that nothing in the schema holds it — so
+                    // comparing it would call every reachable document
+                    // stale, including one written a moment ago.
+                    //
+                    // A file that cannot be read or parsed is **not**
+                    // stale: it is already `DeriveReport::unreadable_hand`'s,
+                    // which the read-back populates and this does not
+                    // duplicate.
+                    let Ok(text) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    let Ok(mut on_disk) = crate::librarydoc::LibraryDoc::from_json(&text) else {
+                        continue;
+                    };
+                    let mut projected = crate::librarydoc::of(conn, work_id)?;
+                    on_disk.updated.clone_from(&projected.updated);
+
+                    // **`members` excludes `ChapterSource::Filename` before
+                    // the comparison, or every scan would manufacture a
+                    // false disagreement.** `derive::write_chapters`'s own
+                    // UPDATE is scoped `WHERE chapter_source = 'filename'`
+                    // (its own doc comment names that clause) — it writes a
+                    // fresh `Filename` chapter from every member's name on
+                    // every scan, and never touches a `Hand` or `Comicinfo`
+                    // row. Comparing an unfiltered `Filename` chapter would
+                    // report that routine derivation — a work simply gaining
+                    // a chapter, or having its filename-derived numbering
+                    // shift — as a person's disagreement, on the most
+                    // ordinary thing a library does.
+                    //
+                    // `Hand` and `Comicinfo` both stay in the comparison:
+                    // a re-derive is scoped never to overwrite either one —
+                    // `taiyaku-serve/src/metadata.rs` states this directly,
+                    // "'hand' and 'comicinfo' are the ones a re-derive is
+                    // scoped never to overwrite" — so neither can churn the
+                    // way `Filename` does. Excluding `Comicinfo` too was the
+                    // filter's first shape, and it was wrong: a person can
+                    // hand-write `"chapter_source": "comicinfo"` into the
+                    // document directly — precisely the hand-editing this
+                    // module exists to serve — and that would have left it
+                    // diverging from the database with nothing ever reporting
+                    // it stale.
+                    //
+                    // Excluding `Filename`, not dropping `members` outright:
+                    // dropping the `members` block from the comparison
+                    // entirely was the other option, and it loses the one
+                    // case this module exists to catch — a hand-set chapter
+                    // that really was overwritten must still be reported, not
+                    // silently lost.
+                    //
+                    // This narrows the comparison; it does not fix the
+                    // cause. That `of` projects derived chapters into the
+                    // document at all is unfinished business left open when
+                    // O80 closed (#97, "the document projects only what a
+                    // person set"), and is deliberately not addressed here.
+                    let not_filename = |m: &crate::librarydoc::MemberMeta| {
+                        !matches!(
+                            m.chapter_source,
+                            Some(crate::librarydoc::ChapterSource::Filename)
+                        )
+                    };
+                    on_disk.members.retain(not_filename);
+                    projected.members.retain(not_filename);
+
+                    if on_disk != projected {
+                        found.stale.push(path.display().to_string());
+                    }
+                    continue;
+                }
+                // Unreachable. Read the title out of it if we can; a
+                // document we cannot parse is still an orphan, just one
+                // with less to say.
+                let title = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|text| crate::librarydoc::LibraryDoc::from_json(&text).ok())
+                    .and_then(|doc| doc.title);
+                found.orphans.push(Orphan { path, title });
+            }
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) => {}
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    }
+
+    for (path, work_id) in &expected {
+        if present.contains(path) {
+            continue;
+        }
+        // **A gap, and this is the retry O82 says does not exist.** Written
+        // through `save` rather than a second writer, so the marker, the
+        // empty-document removal and the failure shape are all the ones the
+        // PATCH routes already produce.
+        let saved = save(conn, *work_id)?;
+        if saved.persisted {
+            // **`persisted` alone is not "written".** `save`'s remove-file
+            // branch answers `persisted: true` for `ErrorKind::NotFound` too
+            // — "nothing there is the ordinary case, not a failure", by that
+            // branch's own doc comment — and a marked work whose projection
+            // has since gone empty takes exactly that branch here: this loop
+            // only runs for a `path` absent from `present`, so there was
+            // never a file for `remove_file` to find, and `persisted: true`
+            // reports a no-op rather than a write. Counting it as a repair
+            // would print "N document(s) written" for a pass that wrote
+            // none — a false claim in a feature whose whole point is honest
+            // reporting.
+            //
+            // Re-projecting is the narrowest correct check: `save`'s
+            // internal `match` only reaches its write arm for a non-empty
+            // document, so `!doc.is_empty()` is exactly the condition that
+            // arm already required. Checking `path.is_file()` after the
+            // fact was the alternative and would answer the same question
+            // less directly — through a second filesystem read of
+            // something this function already knows from the database.
+            if !crate::librarydoc::of(conn, *work_id)?.is_empty() {
+                found.repaired += 1;
+            }
+        } else {
+            found.unwritable.push(
+                saved
+                    .why
+                    .unwrap_or_else(|| format!("{}: could not be written", path.display())),
+            );
+        }
+    }
+
+    // **Sorted, all three, before this returns.** `expected` is a `HashMap`,
+    // and Rust reseeds its SipHash key every process start, so `unwritable` —
+    // built by iterating `&expected` above — printed a root's gaps in a
+    // different order on every scan, even one where nothing had changed.
+    // `orphans` and `stale` already come out in `read_dir`'s order, which is
+    // arbitrary but stable for an unchanged directory; sorting them too costs
+    // one comparison per entry against a pass that is already hashing
+    // archives, and it is what the one thing a person actually does with two
+    // scans — diff their output — needs: identical text for an unchanged
+    // library, rather than a reordering that reads as a change nothing made.
+    found.unwritable.sort();
+    found.orphans.sort_by(|a, b| a.path.cmp(&b.path));
+    found.stale.sort();
+
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests;

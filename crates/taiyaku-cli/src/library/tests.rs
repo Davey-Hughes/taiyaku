@@ -1613,6 +1613,113 @@ fn derive_summary_prints_unattached_and_unreadable_when_nonzero() {
     assert!(line.contains("7 unreadable"), "{line}");
 }
 
+/// The filename is a `content_key` naming content that no longer exists, so a
+/// line naming only the path gives a person nothing to act on. The title is
+/// the actionable half, and this is what pins it into the output.
+///
+/// **Two orphans, deliberately** — this clause's `join("; ")` had no fixture
+/// with more than one entry to exercise it, so a mutation dropping the
+/// separator or joining on the wrong string would have survived undetected.
+/// `repaired_documents` (5) and the orphan count (2) are kept distinct, this
+/// file's own convention: a fixture that reused a number once already let a
+/// wrong-field mutation survive, per the comment below.
+#[test]
+fn derive_summary_names_a_stranded_document_and_its_title() {
+    let mut report = derive_report();
+    report.repaired_documents = 5;
+    report.orphan_documents.push(taiyaku_library::hand::Orphan {
+        path: PathBuf::from("/library/.taiyaku/abc123.library.json"),
+        title: Some("Go-Toubun no Hanayome".to_string()),
+    });
+    report.orphan_documents.push(taiyaku_library::hand::Orphan {
+        path: PathBuf::from("/library/.taiyaku/fed789.library.json"),
+        title: Some("Kaguya-sama wa Kokurasetai".to_string()),
+    });
+
+    let line = derive_summary(&report, 0);
+
+    assert!(line.contains("5 document(s) written"), "{line}");
+    // **The orphan clause's own count, not just its text.** Without this a
+    // mutation printing `repaired_documents` or `stale_documents.len()` where
+    // `named.len()` belongs survives: the joined path/title text the
+    // assertions below check is untouched by it, and only the leading number
+    // is wrong. The same adjacent-field swap
+    // `derive_summary_names_unwritable_and_stale_documents_distinctly` exists
+    // to catch, left open for this clause until now — which is why the count
+    // here (2) differs from `repaired_documents` above.
+    assert!(line.contains("2 document(s) no work addresses"), "{line}");
+    assert!(line.contains("abc123.library.json"), "{line}");
+    assert!(
+        line.contains("Go-Toubun no Hanayome"),
+        "the title is the actionable half — the filename is a hash: {line}"
+    );
+    // **The separator itself, not just both entries somewhere in the line.**
+    // Asserting the exact joined substring is what would catch `join("")` or
+    // `join(", ")` where `join("; ")` belongs — checking for each entry
+    // independently, as above, would pass either mutation.
+    assert!(
+        line.contains(
+            "abc123.library.json (`Go-Toubun no Hanayome`); \
+             /library/.taiyaku/fed789.library.json (`Kaguya-sama wa Kokurasetai`)"
+        ),
+        "{line}"
+    );
+}
+
+/// An orphan with no title — a document correcting only a series or an
+/// edition label — is still reported, and must not print an empty pair of
+/// backticks where a title would go.
+#[test]
+fn derive_summary_names_a_titleless_orphan_without_empty_backticks() {
+    let mut report = derive_report();
+    report.orphan_documents.push(taiyaku_library::hand::Orphan {
+        path: PathBuf::from("/library/.taiyaku/def456.library.json"),
+        title: None,
+    });
+
+    let line = derive_summary(&report, 0);
+
+    assert!(line.contains("def456.library.json"), "{line}");
+    assert!(!line.contains("(``)"), "no empty title parens: {line}");
+}
+
+/// The three silent-outcome lists stay out of the line entirely when empty —
+/// the same shape `scan_summary_omits_unreadable_directories_when_none` pins.
+#[test]
+fn derive_summary_omits_the_document_clauses_when_there_is_nothing_to_say() {
+    let line = derive_summary(&derive_report(), 0);
+    assert!(!line.contains("document(s)"), "{line}");
+}
+
+/// Neither `unwritable_documents` nor `stale_documents` is touched by the
+/// task's own three tests above, so a mutation printing one field's count or
+/// joined text where the other belongs passed the whole suite — confirmed by
+/// deliberately introducing exactly that mutation (`unwritable_documents`'s
+/// clause printing `stale_documents.len()`) and rerunning before this test
+/// existed. Distinct counts (1 and 2) and distinct entries pin both fields to
+/// their own clause.
+#[test]
+fn derive_summary_names_unwritable_and_stale_documents_distinctly() {
+    let mut report = derive_report();
+    report.unwritable_documents =
+        vec!["/library/.taiyaku/aaa111.library.json: disk full".to_string()];
+    report.stale_documents = vec![
+        "/library/.taiyaku/bbb222.library.json".to_string(),
+        "/library/.taiyaku/ccc333.library.json".to_string(),
+    ];
+
+    let line = derive_summary(&report, 0);
+
+    assert!(line.contains("1 document(s) still not durable"), "{line}");
+    assert!(line.contains("aaa111.library.json: disk full"), "{line}");
+    assert!(
+        line.contains("2 document(s) disagree with the database"),
+        "{line}"
+    );
+    assert!(line.contains("bbb222.library.json"), "{line}");
+    assert!(line.contains("ccc333.library.json"), "{line}");
+}
+
 // -- select_roots: pure, so every branch is testable -------------------------
 
 fn a_root(id: i64, path: &Path) -> taiyaku_library::scan::Root {

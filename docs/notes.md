@@ -14734,3 +14734,27 @@ above. There is no second pass to write: the two items are one reconciliation.
 `find corpus -newermt` against a timestamp taken before any of this returned
 nothing. The archives were copies, so the isolation held by construction
 rather than by care.
+
+### Reconciliation's own cost, measured
+
+The whole-branch reviewer measured what design §6 had only asserted: that
+"one `read_dir` per root is nothing beside hashing archives." It is not —
+`reconcile` also pays `hand::path_for` for every marked work, run once per
+root (the `owed` query is global rather than root-scoped, so this is roots ×
+works point lookups, not works alone), plus a file read, a JSON parse and a
+full `librarydoc::of` projection for every present, addressed document — the
+stale check. All of it runs unconditionally on every `derive`, unlike the
+read-back beside it, which `!absorbed` gates.
+
+**2000 works across 4 roots cost 105 ms; 5000 works across 10 roots cost
+573 ms** — release build, in-memory database, tmpfs. Neither figure
+includes archive hashing, which `derive` pays separately and which this
+measurement did not isolate.
+
+It is not an N+1 inside an N+1 the way O85's own was: this is roots × works
+point lookups against SQLite, flat rather than compounding, and on a NAS the
+file reads it pays per present document — not the SQL — are expected to
+dominate instead.
+
+Design §6 is corrected against this measurement rather than left to say
+"nothing beside hashing archives."

@@ -408,7 +408,8 @@ fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
 /// non-zero, and so do `suppressed`, `rekeyed`, `kept_editions`, `merged`,
 /// `unrecognised_kinds`, `emptied_works` (with the counts of what its fold
 /// wrote, what stopped existing, and what it discarded), `unfolded_works`,
-/// `unreadable_hand` and `series_holding_no_work`:
+/// `unreadable_hand`, `series_holding_no_work`, `repaired_documents`,
+/// `unwritable_documents`, `orphan_documents` and `stale_documents`:
 /// [`taiyaku_library::derive::DeriveReport`]'s own doc comment is explicit
 /// that each exists because a silent drop, a silent re-key, a silently
 /// orphaned edition, a silent merge, a silently refused edition kind or a
@@ -522,6 +523,48 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
             line,
             ", {} series holding no work",
             report.series_holding_no_work
+        );
+    }
+    if report.repaired_documents > 0 {
+        let _ = write!(
+            line,
+            ", {} document(s) written that a failed save had left missing",
+            report.repaired_documents
+        );
+    }
+    if !report.unwritable_documents.is_empty() {
+        let _ = write!(
+            line,
+            ", {} document(s) still not durable: {}",
+            report.unwritable_documents.len(),
+            report.unwritable_documents.join("; ")
+        );
+    }
+    if !report.orphan_documents.is_empty() {
+        // Path **and** title: the filename is a `content_key` naming content
+        // that no longer exists, so the path alone gives a person nothing to
+        // act on.
+        let named: Vec<String> = report
+            .orphan_documents
+            .iter()
+            .map(|orphan| match &orphan.title {
+                Some(title) => format!("{} (`{title}`)", orphan.path.display()),
+                None => orphan.path.display().to_string(),
+            })
+            .collect();
+        let _ = write!(
+            line,
+            ", {} document(s) no work addresses: {}",
+            named.len(),
+            named.join("; ")
+        );
+    }
+    if !report.stale_documents.is_empty() {
+        let _ = write!(
+            line,
+            ", {} document(s) disagree with the database: {}",
+            report.stale_documents.len(),
+            report.stale_documents.join("; ")
         );
     }
     let _ = write!(line, "; {raised} proposal(s) raised");

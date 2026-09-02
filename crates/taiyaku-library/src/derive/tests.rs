@@ -3337,3 +3337,195 @@ fn a_title_only_edit_claims_no_volume_and_no_series() {
         "and it still claims no volume — a title correction withdraws nothing"
     );
 }
+
+/// **Where the sweep runs, and the ordering that makes it work.** `derive`
+/// already walks every work and already calls `hand::load` per work; the
+/// reconciliation runs at the end of the same pass, after `write_roots`.
+/// Before that point `member.root_id` is still NULL on a freshly minted work,
+/// `path_for`'s `JOIN root` matches nothing, and every work in a new library
+/// would report as having no address at all.
+#[test]
+fn a_derive_reports_a_stranded_document() {
+    let dir = archived_volumes();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &dir.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+
+    let work_id: i64 = conn
+        .query_row("SELECT id FROM work ORDER BY id LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .expect("a work was derived");
+
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    crate::hand::save(&conn, work_id).expect("saving");
+
+    // The volume's bytes change under it: a repack. `digest` (in this same
+    // module) trusts a non-NULL `scan_entry.sha256` unconditionally rather
+    // than re-hashing the file — the laziness the module doc describes — so
+    // corrupting `work.content_key` directly would just be undone by
+    // `import::scanned`'s own address-based recovery on the very next
+    // derive, which resolves this row by `(series_id, volume)` and writes
+    // its freshly (and, since the file is untouched, identically) computed
+    // key straight back — self-healing before `reconcile` ever runs.
+    // Corrupting the digest a level lower reaches past that recovery: the
+    // second derive computes a genuinely different `content_key` from it,
+    // the row is rekeyed to that new value, and the document saved under the
+    // old one is addressed by nothing.
+    let member_path: String = conn
+        .query_row(
+            "SELECT member.path FROM member
+               JOIN edition ON edition.id = member.edition_id
+              WHERE edition.work_id = ?1",
+            [work_id],
+            |row| row.get(0),
+        )
+        .expect("the work's one member");
+    let rel_path = member_path
+        .strip_prefix(&format!("{}/", dir.path.to_string_lossy()))
+        .expect("the member sits under the root")
+        .to_string();
+    conn.execute(
+        "UPDATE scan_entry SET sha256 = 'moved' WHERE root_id = ?1 AND rel_path = ?2",
+        rusqlite::params![root.id, rel_path],
+    )
+    .expect("rekeying");
+
+    let report = derive::derive(&conn).expect("second derive");
+
+    assert_eq!(
+        report.orphan_documents.len(),
+        1,
+        "the stranded document is reported by the pass that stranded it: {report:?}"
+    );
+    assert_eq!(
+        report.orphan_documents[0].title.as_deref(),
+        Some("Hand Set"),
+        "with the title, because the filename is a hash"
+    );
+}
+
+/// **The undocumented reason the `hand::reconcile` loop sits last** —
+/// after the fold, not merely after `write_roots`.
+///
+/// `migrated_document.work_id` is `ON DELETE CASCADE`, and `fold::absorb`'s
+/// own `DELETE FROM work` is the only place this project ever takes that
+/// cascade. The moment `colour` below is folded away, its `migrated_document`
+/// row goes with it — so `hand::reconcile`'s `owed` query, which reads that
+/// table, stops naming `colour` at all. Its `.library.json` file is
+/// untouched by the fold (nothing in `fold::absorb` deletes a file), so it is
+/// still sitting on disk, and it is now a document that nothing in the
+/// library addresses: exactly [`crate::hand::Orphan`].
+///
+/// **Reconciling before the fold would miss it.** Moved earlier, the loop
+/// would run while `colour` still has its row, so its address is still in
+/// `expected`, the file is still `present`, the two match, and nothing is
+/// reported — the orphan surfaces only on some *later* pass, after something
+/// else disturbs the work it was folded into. Moving the `reconcile` loop up
+/// to just after the `for group in groups.into_values()` loop — still after
+/// `write_roots`, which is the *other* reason this loop is last — was
+/// hand-verified to turn this test's `orphan_documents` assertion red while
+/// leaving every other test in this module green, including the one just
+/// above.
+#[test]
+fn folding_a_work_away_orphans_its_hand_document_on_the_same_pass() {
+    let tree = crate::tests::tempdir("derive-fold-orphans-hand-document");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let colour = two_works_before_the_fold(&tree, &conn);
+
+    // A hand correction on the work about to be folded away — through
+    // `librarydoc::apply` + `hand::save`, the real route, not a row inserted
+    // by hand: `a_derive_reports_a_stranded_document`'s own choice, for the
+    // same reason.
+    let mut doc = crate::librarydoc::of(&conn, colour).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, colour, &doc).expect("applying");
+    let saved = crate::hand::save(&conn, colour).expect("saving");
+    assert!(
+        saved.persisted,
+        "the document has to actually be on disk for the fold to strand it: {saved:?}"
+    );
+
+    write_the_fold_rule(&conn);
+
+    let second = derive::derive(&conn).expect("second derive");
+    assert_eq!(
+        second.emptied_works, 1,
+        "the fixture only means something if the colour work is actually \
+         folded away on this pass: {second:?}"
+    );
+    assert_eq!(
+        second.orphan_documents.len(),
+        1,
+        "the folded work's document must be reported orphaned on the very \
+         pass that folded it, not a later one: {second:?}"
+    );
+    assert_eq!(
+        second.orphan_documents[0].title.as_deref(),
+        Some("Hand Set"),
+        "naming the folded-away work's own document"
+    );
+}
+
+/// **Store spec §4.4 stated as a test:** *losing the database costs a rescan,
+/// not the organisational work.* Measured failing on 2026-08-31 — three of
+/// five works lost or reverted a hand-set title — and this is the assertion
+/// that keeps it fixed.
+///
+/// A second, empty database over the **same root** is what a lost database
+/// actually means. Nothing here shares a connection with the first.
+#[test]
+fn a_correction_survives_losing_the_database() {
+    let dir = archived_volumes();
+    correct_the_first_work(&dir);
+
+    // The database is gone. Only the root remains — which is what losing it
+    // actually means.
+    assert_eq!(
+        title_after_rebuilding(&dir),
+        "Hand Set",
+        "one rescan restores the correction — the whole point of writing the \
+         document into the library rather than only into the database"
+    );
+}
+
+/// Scan `dir` into a fresh database, hand-set the first work's title to
+/// `Hand Set`, save the document beside the archives, and drop the database.
+/// What is left on disk is a library and its documents, and nothing else.
+fn correct_the_first_work(dir: &crate::tests::TempDir) {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &dir.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("deriving");
+
+    let work_id: i64 = conn
+        .query_row("SELECT id FROM work ORDER BY id LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .expect("a work was derived");
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    let saved = crate::hand::save(&conn, work_id).expect("saving");
+    assert!(saved.persisted, "the document reached the disk: {saved:?}");
+}
+
+/// Build a second, empty database over the same root and answer what the
+/// first work's title is once the scan and derive have run.
+fn title_after_rebuilding(dir: &crate::tests::TempDir) -> String {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &dir.path).expect("add");
+    scan::scan_root(&conn, &root).expect("rescanning");
+    derive::derive(&conn).expect("rederiving");
+    conn.query_row("SELECT title FROM work ORDER BY id LIMIT 1", [], |row| {
+        row.get(0)
+    })
+    .expect("the work came back")
+}

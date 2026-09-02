@@ -214,6 +214,35 @@ pub struct DeriveReport {
     /// "each with the path" without exception — only whichever a path had
     /// already been resolved by the time something failed.
     pub unreadable_hand: Vec<String>,
+    /// Documents written on this pass that a failed `hand::save` had left
+    /// missing — O82's retry.
+    ///
+    /// **A field rather than a silence, under the same rule as
+    /// [`Self::suppressed`] and [`Self::rekeyed`]:** any derivation outcome
+    /// that changes what a person sees and cannot be inferred from the other
+    /// counts gets one. A correction becoming durable is exactly that.
+    pub repaired_documents: usize,
+    /// Documents that still could not be written, each naming the path and the
+    /// `io::Error` — `hand::Saved::why`'s own shape.
+    ///
+    /// A `Vec` rather than a counter, for [`Self::unreadable_hand`]'s reason:
+    /// the person has to be told *which* root cannot take its documents. A
+    /// permanently read-only root reports the same list every scan, which is
+    /// honest rather than noisy — the condition really is still true.
+    pub unwritable_documents: Vec<String>,
+    /// Documents under a root's `.taiyaku` that no work addresses — O81.
+    ///
+    /// Each carries the title out of the file, because the filename is the
+    /// `content_key` the document was written under and names content that no
+    /// longer exists. See [`crate::hand::Orphan`].
+    pub orphan_documents: Vec<crate::hand::Orphan>,
+    /// Documents at a work's own address that disagree with the database.
+    ///
+    /// **Reported and resolved by nothing**, deliberately: O44 records this as
+    /// the one document this project designs for hand-editing, so the database
+    /// is not automatically right. The design's §2 records the alternatives
+    /// and what would earn a resolution rule.
+    pub stale_documents: Vec<String>,
     /// Reading positions written onto the target's matching edition by a
     /// fold — writes, not survivors, for the reason `fold::Moved::positions`
     /// states. [`Self::lost_positions`] is the exact number.
@@ -503,6 +532,39 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
     // `INSERT OR IGNORE` reports zero new rows for every one of them. See
     // `DeriveReport::raised`.
     report.raised = proposals::raise(conn)?;
+
+    // **After everything — which is two different constraints, not one.**
+    //
+    // The first is `write_roots`, above: `hand::path_for` resolves an address
+    // through `member.root_id`, which is still NULL on a work this pass has
+    // just minted until `write_roots` has run for it — the same ordering the
+    // read-back's own comment records, and getting it wrong here would report
+    // every work in a new library as having no address rather than as
+    // reconciled.
+    //
+    // **The second is the fold above, and it is not about addressing at
+    // all.** `migrated_document.work_id` is `ON DELETE CASCADE`, and
+    // `fold::absorb`'s `DELETE FROM work` — reached through `superseded` just
+    // above — is the only place this project ever takes that cascade: the
+    // instant a work folds away, its `migrated_document` row goes with it, so
+    // `reconcile`'s `owed` query (which reads that table) stops naming it.
+    // Run this loop *before* the fold instead, and the folded work's row is
+    // still there: its address is still in `expected`, its file is still
+    // `present`, the two agree, and nothing is reported — the document only
+    // surfaces as an orphan on some later pass, whenever something else next
+    // disturbs the work it was folded into. Run after, as below, and the same
+    // pass that deletes the row is the pass that reports the document
+    // address-less. `folding_a_work_away_orphans_its_hand_document_on_the_same_pass`
+    // pins this: moving this loop up to just after the `for group in
+    // groups.into_values()` write loop — still after `write_roots` — turns
+    // that assertion red while leaving every other test in this module green.
+    for root in &roots {
+        let found = crate::hand::reconcile(conn, root)?;
+        report.repaired_documents += found.repaired;
+        report.unwritable_documents.extend(found.unwritable);
+        report.orphan_documents.extend(found.orphans);
+        report.stale_documents.extend(found.stale);
+    }
 
     Ok(report)
 }
