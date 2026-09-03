@@ -384,6 +384,7 @@ async fn a_single_member_edition_is_served_byte_for_byte() {
         cache_dir: fixture.path().join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = crate::test_support::authenticating(crate::build_router(state));
 
@@ -693,6 +694,7 @@ async fn a_directory_member_is_refused_not_streamed() {
         cache_dir: root.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = crate::test_support::authenticating(crate::build_router(state));
 
@@ -980,6 +982,7 @@ async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
         cache_dir: root.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = crate::test_support::authenticating(crate::build_router(state));
 
@@ -1184,6 +1187,7 @@ async fn a_single_member_directory_edition_is_generated_not_passed_through() {
         cache_dir: root.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = crate::test_support::authenticating(crate::build_router(state));
 

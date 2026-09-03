@@ -238,7 +238,7 @@ pub fn raise(conn: &Connection) -> Result<usize, String> {
     newly_open += raise_edition_of(conn, &series)?;
     newly_open += raise_same_series(conn, &series)?;
     newly_open += raise_attach_chapters(conn)?;
-    newly_open += reopen_orphaned_accepts(conn)?;
+    newly_open += reopen_orphaned_accepts(conn)?.len();
     Ok(newly_open)
 }
 
@@ -423,6 +423,62 @@ pub fn counts_by_kind(
         counts.insert(kind, usize::try_from(n).unwrap_or(0));
     }
     Ok(counts)
+}
+
+/// Every proposal's state, keyed by id.
+///
+/// **[`crate::preview::preview`]'s snapshot type, the same idea as
+/// [`crate::preview::Grouping`] applied to `proposal` instead of `member`.**
+/// A derivation reaches exactly one proposal writer — [`raise`], which only
+/// ever inserts a row or flips an `accepted` one back to `open`
+/// ([`reopen_orphaned_accepts`]) — so a plain open-count taken before and
+/// after cannot tell those two apart, and can only ever go up. Keying by id
+/// and reading state back is what lets [`reopened`] tell a rule's
+/// disappearance from a proposal nobody had judged yet.
+pub type States = BTreeMap<i64, String>;
+
+/// Snapshot every proposal's current state — see [`States`].
+///
+/// **`pub(crate)`, not `pub`.** Its only callers are [`crate::preview::preview`]
+/// and this crate's own `preview/tests.rs`, the same narrowing
+/// [`crate::rules::replace_all`] got last round: a function nothing outside
+/// the crate calls is a `pub` surface nobody uses and nobody has decided to
+/// support.
+///
+/// # Errors
+///
+/// Returns an error if the query against `proposal` fails.
+pub(crate) fn states(conn: &Connection) -> Result<States, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, state FROM proposal")
+        .map_err(|e| format!("preparing the proposal-state query: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|e| format!("reading proposal states: {e}"))?;
+    let mut out = States::new();
+    for row in rows {
+        let (id, state) = row.map_err(|e| format!("reading a proposal state: {e}"))?;
+        out.insert(id, state);
+    }
+    Ok(out)
+}
+
+/// How many proposals were `accepted` in `before` and are `open` in `after`
+/// — [`crate::preview::Impact::proposals_reopened`]'s one definition, shared
+/// by [`crate::preview::preview`] and by `preview/tests.rs` for the same
+/// reason `preview`'s own private `diff` function is: two ways of computing
+/// what "reopened" means is how they come to disagree.
+///
+/// **`pub(crate)`, not `pub`**, for the same reason [`states`] just above is
+/// — its only callers are inside this crate.
+#[must_use]
+pub(crate) fn reopened(before: &States, after: &States) -> usize {
+    after
+        .iter()
+        .filter(|(id, state)| {
+            state.as_str() == STATE_OPEN && before.get(*id).is_some_and(|was| was == STATE_ACCEPTED)
+        })
+        .count()
 }
 
 /// Every open proposal scoring at least `min_score`, highest score first.
@@ -2620,12 +2676,30 @@ fn raise_attach_chapters(conn: &Connection) -> Result<usize, String> {
 /// hold different schema text from one already on disk, which is exactly what
 /// `schema.rs`'s "append, never edit" exists to prevent. The correction lives
 /// here instead, where a reader following that comment arrives.
-fn reopen_orphaned_accepts(conn: &Connection) -> Result<usize, String> {
+///
+/// **Returns every id it reopened, ascending —
+/// [`crate::rules::Deleted::reopened_proposals`]'s own shape, not a bare
+/// count.** [`crate::rules::import_json`] calls this directly (whole-branch
+/// review, Important 3): it replaces the whole rule set through
+/// `replace_all`'s own `DELETE FROM rule`, which orphans exactly as many
+/// `created_rule_id`s as [`crate::rules::delete`] deletes one at a time, and
+/// its own HTTP route reports the ids the identical way `delete_rule`
+/// already does — a route that only ever handed back a count could not.
+pub(crate) fn reopen_orphaned_accepts(conn: &Connection) -> Result<Vec<i64>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id FROM proposal WHERE state = ?1 AND created_rule_id IS NULL")
+        .map_err(|e| format!("looking up accepted proposals whose rule has gone: {e}"))?;
+    let reopened: Vec<i64> = stmt
+        .query_map([STATE_ACCEPTED], |r| r.get(0))
+        .map_err(|e| format!("looking up accepted proposals whose rule has gone: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("reading accepted proposals whose rule has gone: {e}"))?;
     conn.execute(
         "UPDATE proposal SET state = ?1 WHERE state = ?2 AND created_rule_id IS NULL",
         rusqlite::params![STATE_OPEN, STATE_ACCEPTED],
     )
-    .map_err(|e| format!("reopening accepted proposals whose rule has gone: {e}"))
+    .map_err(|e| format!("reopening accepted proposals whose rule has gone: {e}"))?;
+    Ok(reopened)
 }
 
 #[cfg(test)]

@@ -106,6 +106,23 @@ pub enum Field {
 /// no entry at all, which means nothing decided the field.
 const ROOT_FALLBACK: i64 = 0;
 
+/// Whether `id` is [`ROOT_FALLBACK`] — the question a caller outside this
+/// module asks instead of comparing against the literal `0` itself.
+///
+/// **`ROOT_FALLBACK` stays private; this is the only way in.**
+/// `crate::preview`'s matched-files table has to tell "the root's own column
+/// decided this" apart from "a rule decided this" on the way out to a wire
+/// format, and the sentinel that distinguishes them here is an implementation
+/// detail of a `BTreeMap<Field, i64>` — not a rule id, and not something a
+/// client should ever have to know to special-case. Exporting the constant
+/// itself would leave every caller writing `id == rules::ROOT_FALLBACK`, one
+/// `==` away from the literal `0` reappearing at the boundary this function
+/// exists to keep it off.
+#[must_use]
+pub fn is_root_fallback(id: i64) -> bool {
+    id == ROOT_FALLBACK
+}
+
 /// The four shapes a `rule` row's `kind` column takes.
 ///
 /// `Field` is a different enum — this one is the *kind of rule*, not a
@@ -135,6 +152,20 @@ impl FromStr for RuleKind {
             "builtin-chapter" => Ok(Self::BuiltinChapter),
             other => Err(format!("unknown rule kind {other:?}")),
         }
+    }
+}
+
+impl std::fmt::Display for RuleKind {
+    /// The exact inverse of [`FromStr::from_str`] above, kept beside it so
+    /// the two cannot drift — [`replace_all`] writes this back to the same
+    /// `rule.kind` column [`read`] parses it from.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Prefix => "prefix",
+            Self::Regex => "regex",
+            Self::BuiltinVolume => "builtin-volume",
+            Self::BuiltinChapter => "builtin-chapter",
+        })
     }
 }
 
@@ -169,6 +200,18 @@ impl FromStr for MatchOn {
             "parent" => Ok(Self::Parent),
             other => Err(format!("unknown match_on {other:?}")),
         }
+    }
+}
+
+impl std::fmt::Display for MatchOn {
+    /// The exact inverse of [`FromStr::from_str`] above, for the same reason
+    /// [`RuleKind`]'s own `Display` sits beside its `FromStr`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Path => "path",
+            Self::Name => "name",
+            Self::Parent => "parent",
+        })
     }
 }
 
@@ -372,38 +415,81 @@ impl Engine {
                 continue;
             }
             let target = match_target(rule.match_on, rel_path);
-            match rule.kind {
-                RuleKind::Prefix => {
-                    if target.starts_with(rule.pattern.as_str()) {
-                        apply_set_columns(rule, &mut resolved);
-                    }
-                }
+            // Whether this rule matched `target` at all, per its own kind,
+            // and — for `Regex` only — the captures that match produced.
+            // Applying them is deferred to below the match, alongside the
+            // literal `set_*` columns, so the two apply in the same order
+            // `apply_set_columns` then `apply_captures` this function has
+            // always used: a named capture must still be able to override a
+            // literal `set_series` on the same rule, not the other way
+            // round.
+            let (matched, captures) = match rule.kind {
+                RuleKind::Prefix => (target.starts_with(rule.pattern.as_str()), None),
                 RuleKind::Regex => {
                     let Some(regex) = &compiled.regex else {
                         // Did not compile — `Engine::compile` already
                         // complained about it. Matches nothing.
                         continue;
                     };
-                    if let Some(caps) = regex.captures(target) {
-                        apply_set_columns(rule, &mut resolved);
-                        apply_captures(rule, &caps, &mut resolved);
+                    match regex.captures(target) {
+                        Some(caps) => (true, Some(caps)),
+                        None => (false, None),
                     }
                 }
-                RuleKind::BuiltinVolume => {
-                    if let Some(v) = taiyaku_read::volume_number_marked(target) {
+                RuleKind::BuiltinVolume => match taiyaku_read::volume_number_marked(target) {
+                    Some(v) => {
                         resolved.set_number(Field::Volume, rule.id, v);
+                        (true, None)
                     }
-                }
-                RuleKind::BuiltinChapter => {
-                    if let Some(c) = taiyaku_read::chapter_number(target) {
+                    None => (false, None),
+                },
+                RuleKind::BuiltinChapter => match taiyaku_read::chapter_number(target) {
+                    Some(c) => {
                         resolved.set_number(Field::Chapter, rule.id, c);
+                        (true, None)
                     }
-                }
+                    None => (false, None),
+                },
+            };
+            // The literal `set_*` columns first, so a `Regex` rule's own
+            // named capture (applied next) still gets the final word on any
+            // field both provide — see the comment above.
+            if matched && kind_applies_set_columns(rule.kind) {
+                apply_set_columns(rule, &mut resolved);
+            }
+            if let Some(caps) = captures {
+                apply_captures(rule, &caps, &mut resolved);
             }
         }
         apply_root_fallback(root, &mut resolved);
         resolved
     }
+}
+
+/// Whether [`Engine::resolve`] ever applies a rule's four literal `set_*`
+/// columns for a rule of this `kind` — true for [`RuleKind::Prefix`] and
+/// [`RuleKind::Regex`], false for [`RuleKind::BuiltinVolume`] and
+/// [`RuleKind::BuiltinChapter`], which never look at `set_series`,
+/// `set_edition_key`, `set_kind` or `set_language` no matter what a row
+/// happens to carry in those columns — the schema has no `CHECK` forbidding
+/// a builtin rule from carrying one, and `import_json` does not reject one
+/// either.
+///
+/// **The one place `resolve` and [`fields_settable_by`] both ask this
+/// question, so the two cannot silently disagree about it.** `resolve` gates
+/// its own call to [`apply_set_columns`] on this function's answer;
+/// `fields_settable_by` gates whether it reports any of the four `set_*`
+/// fields at all on the same call. Before this existed, `fields_settable_by`
+/// checked `rule.set_*.is_some()` unconditionally, so a `BuiltinVolume` rule
+/// carrying a stray `set_series` was reported as able to decide `Series` —
+/// a field `resolve` can never actually set for that kind — which made
+/// `crate::preview::rows_for`'s near-miss check demand `Series` be undecided
+/// or root-decided before it would call a genuine `Volume` miss a near-miss
+/// at all, excluding rows the tab exists to show. If `resolve` ever starts
+/// or stops applying `set_*` for a kind, this function's arms must move with
+/// it — one function to update rather than two lists that can drift.
+fn kind_applies_set_columns(kind: RuleKind) -> bool {
+    matches!(kind, RuleKind::Prefix | RuleKind::Regex)
 }
 
 /// Every rule in the database, in `ordinal, id` order, with the complaints
@@ -575,6 +661,76 @@ fn apply_captures(rule: &Rule, caps: &regex::Captures<'_>, resolved: &mut Resolv
     }
 }
 
+/// Every [`Field`] `rule` could possibly decide, independent of whether it
+/// actually matches any particular `rel_path` — the static half of what
+/// [`Engine::resolve`] computes dynamically through [`apply_set_columns`] and
+/// [`apply_captures`].
+///
+/// **For `crate::preview`'s near-miss definition**, which has to ask "did
+/// this rule miss this entry, or did it simply have nothing to say about it
+/// at all" — and answering that needs to know what the rule was even trying
+/// to set, not only what it happened to set on the entries it matched.
+///
+/// A [`RuleKind::Regex`] pattern that fails to compile contributes only its
+/// static `set_*` columns: [`Engine::compile`] already turns a bad pattern
+/// into a rule that matches nothing, and there is no capture list to ask a
+/// pattern that never parsed for.
+///
+/// **Must report only what `resolve` would actually apply for this rule's
+/// `kind`, or the near-miss check built on it is wrong by construction.**
+/// [`Engine::resolve`] only ever applies a rule's literal `set_*` columns for
+/// [`RuleKind::Prefix`] and [`RuleKind::Regex`] — never for either builtin
+/// kind — so this function gates those four checks on
+/// [`kind_applies_set_columns`], the exact same predicate `resolve` gates its
+/// own [`apply_set_columns`] call on. See that function's doc comment for
+/// what goes wrong when the two disagree, and why they are kept as one
+/// function rather than two hand-maintained lists of kinds.
+#[must_use]
+pub(crate) fn fields_settable_by(rule: &Rule) -> std::collections::BTreeSet<Field> {
+    let mut fields = std::collections::BTreeSet::new();
+    if kind_applies_set_columns(rule.kind) {
+        if rule.set_series.is_some() {
+            fields.insert(Field::Series);
+        }
+        if rule.set_edition_key.is_some() {
+            fields.insert(Field::EditionKey);
+        }
+        if rule.set_kind.is_some() {
+            fields.insert(Field::Kind);
+        }
+        if rule.set_language.is_some() {
+            fields.insert(Field::Language);
+        }
+    }
+    match rule.kind {
+        RuleKind::Regex => {
+            if let Ok(re) = Regex::new(&rule.pattern) {
+                for name in re.capture_names().flatten() {
+                    let field = match name {
+                        "series" => Some(Field::Series),
+                        "edition" => Some(Field::EditionKey),
+                        "title" => Some(Field::Title),
+                        "volume" => Some(Field::Volume),
+                        "chapter" => Some(Field::Chapter),
+                        _ => None,
+                    };
+                    if let Some(field) = field {
+                        fields.insert(field);
+                    }
+                }
+            }
+        }
+        RuleKind::BuiltinVolume => {
+            fields.insert(Field::Volume);
+        }
+        RuleKind::BuiltinChapter => {
+            fields.insert(Field::Chapter);
+        }
+        RuleKind::Prefix => {}
+    }
+    fields
+}
+
 /// Fields no rule decided fall back to `root`'s own `edition_key`,
 /// `default_kind` and `default_language` columns — §3 of the store spec:
 /// "what this root's material becomes by default; B's rules layer over
@@ -602,6 +758,324 @@ fn apply_root_fallback(root: &Root, resolved: &mut Resolved) {
     }
 }
 
+// --- single-row CRUD: create, patch, delete ------------------------------
+//
+// [`replace_all`], below, is what the CLI and JSON import need: hand it the
+// whole rule list, get the whole list back written. C4's editor works a row
+// at a time instead — add one rule, patch one field, flip `enabled`, drag an
+// ordinal past its neighbour, delete one — and driving each of those through
+// a read-modify-`replace_all` round trip would ship the *entire* list back
+// to the database for a one-field edit, racing every other row against
+// whatever else touched the table in between. The three functions below
+// write only the row (for [`delete`], the rule and, where one wrote it, the
+// proposal it undoes) each operation actually changes.
+
+/// A rule not yet written — everything [`create`] needs to insert one row.
+///
+/// **`ordinal: None` appends past the current maximum rather than defaulting
+/// to `0`.** [`read`] and [`Engine::compile`] both sort `(ordinal, id)`, so a
+/// rule minted at `0` would jump to the front of the layering order the
+/// moment nobody names one — silently overriding every rule already there —
+/// rather than landing harmlessly at the end, which is what "I typed a new
+/// rule into the editor and never dragged it anywhere" has to mean. See
+/// [`create`]'s own doc comment for how that maximum is found, and for the
+/// overflow hazard this crate has already measured once
+/// (`crate::tests::LAST_WORD_ORDINAL`'s own doc comment) guarded against.
+#[derive(Debug, Clone)]
+pub struct NewRule {
+    pub ordinal: Option<i64>,
+    pub enabled: bool,
+    pub root_id: Option<i64>,
+    pub kind: RuleKind,
+    pub pattern: String,
+    pub match_on: MatchOn,
+    pub set_edition_key: Option<String>,
+    pub set_kind: Option<String>,
+    pub set_language: Option<String>,
+    pub set_series: Option<String>,
+    pub note: Option<String>,
+}
+
+/// A change to one existing rule — everything [`update`] needs to patch a
+/// row without touching the columns nobody named.
+///
+/// `Default`-derived, so a caller names only what it changes:
+/// `RulePatch { enabled: Some(false), ..Default::default() }` flips one
+/// column and leaves the other ten exactly as they were.
+///
+/// **`root_id`, `note` and the four `set_*` columns are `Option<Option<_>>`,
+/// not `Option<_>`.** Every one of those six is nullable in
+/// `schema/003_scanner.sql`, and a patch has to be able to say two different
+/// things about a nullable column: "leave it" and "clear it to NULL" — the
+/// outer `None` is the first, `Some(None)` the second. A single-layer
+/// `Option<String>` cannot carry that distinction: there would be no way to
+/// spell `Some(None)` at all, and clearing a `set_series` back to NULL — how
+/// a rule stops setting a field it used to set — would become inexpressible
+/// through this type. The other five columns (`ordinal`, `enabled`, `kind`,
+/// `pattern`, `match_on`) are `NOT NULL` in the schema, so a caller can
+/// replace their value or leave it alone but never clear it, exactly what a
+/// single-layer `Option` already says.
+#[derive(Debug, Clone, Default)]
+pub struct RulePatch {
+    pub ordinal: Option<i64>,
+    pub enabled: Option<bool>,
+    pub root_id: Option<Option<i64>>,
+    pub kind: Option<RuleKind>,
+    pub pattern: Option<String>,
+    pub match_on: Option<MatchOn>,
+    pub set_edition_key: Option<Option<String>>,
+    pub set_kind: Option<Option<String>>,
+    pub set_language: Option<Option<String>>,
+    pub set_series: Option<Option<String>>,
+    pub note: Option<Option<String>>,
+}
+
+/// Insert one new rule and report the id SQLite minted for it.
+///
+/// **Defaults `ordinal` to one past the current maximum, computed in Rust
+/// rather than folded into the `INSERT` as SQL arithmetic.** A bare
+/// `COALESCE(MAX(ordinal), 4) + 1` —
+/// [`crate::proposals::accept_with`]'s own version of this exact
+/// computation — overflows the moment any rule holds `i64::MAX`: measured
+/// for real, once, by a fixture that gave a rule exactly that ordinal to
+/// guarantee it always sorted last
+/// (`crate::tests::LAST_WORD_ORDINAL`'s own doc comment tells the story, and
+/// why that fixture no longer uses `i64::MAX` either). This function reads
+/// `MAX(ordinal)` and adds one with [`i64::saturating_add`] instead of a
+/// bare `+`, so a rule already sitting at `i64::MAX` gives the new one
+/// `i64::MAX` too, rather than panicking (a debug build) or silently
+/// wrapping to `i64::MIN` (a release one) — either of which would make
+/// "append" mean "prepend." A tie at the ceiling still reads back in the
+/// right order regardless: [`read`] breaks a tied `ordinal` on `id`, and
+/// this function's own `INSERT` always mints a fresh id higher than
+/// anything already in the table, so the newly created rule still sorts
+/// after the one it tied with.
+///
+/// An empty table — nothing to take a maximum of at all — defaults to
+/// ordinal `0`: there is no "past the maximum" to be one past, and `0` is no
+/// different from any other number when it is the only rule in the table.
+///
+/// # Errors
+///
+/// Returns an error if SQLite refuses reading the current maximum ordinal or
+/// refuses the insert — a foreign key violation on `root_id` among them.
+pub fn create(conn: &Connection, new: &NewRule) -> Result<i64, String> {
+    let ordinal = match new.ordinal {
+        Some(ordinal) => ordinal,
+        None => {
+            let max: Option<i64> = conn
+                .query_row("SELECT MAX(ordinal) FROM rule", [], |r| r.get(0))
+                .map_err(|e| format!("reading the current maximum ordinal: {e}"))?;
+            max.map_or(0, |m| m.saturating_add(1))
+        }
+    };
+    conn.execute(
+        "INSERT INTO rule (ordinal, enabled, root_id, kind, pattern, match_on, \
+         set_edition_key, set_kind, set_language, set_series, note) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        rusqlite::params![
+            ordinal,
+            new.enabled,
+            new.root_id,
+            new.kind.to_string(),
+            new.pattern,
+            new.match_on.to_string(),
+            new.set_edition_key,
+            new.set_kind,
+            new.set_language,
+            new.set_series,
+            new.note,
+        ],
+    )
+    .map_err(|e| format!("creating a rule: {e}"))?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Patch rule `id` from whichever fields of `patch` are `Some`, and report
+/// whether `id` named a row at all.
+///
+/// **Builds one `UPDATE` naming only the patched columns** — the same
+/// variable-clause shape [`crate::proposals::list`] already builds its
+/// `WHERE` from for [`Filter`](crate::proposals::Filter) — a placeholder and
+/// a positional parameter per field actually present in `patch`, nothing
+/// written for a field left `None`. The alternative — always writing every
+/// column, refilling whatever the caller didn't patch from a fresh read — is
+/// the bug this exists to avoid: `RulePatch { enabled: Some(false),
+/// ..Default::default() }` must flip `enabled` alone, not silently clear
+/// every `set_*` column back to whatever that extra read happened to find.
+///
+/// **Reports whether a row existed to patch, not whether any value on it
+/// actually differed.** A patch naming nothing at all (`sets` ends up empty)
+/// is its own case: there is no valid `UPDATE ... SET` with an empty list,
+/// so this asks for `id`'s existence directly instead of issuing a
+/// statement that would be a syntax error.
+///
+/// # Errors
+///
+/// Only if SQLite refuses the read or the write — a foreign key violation on
+/// a patched `root_id` among them. An `id` naming no rule is `Ok(false)`,
+/// not an error, and patches nothing.
+pub fn update(conn: &Connection, id: i64, patch: &RulePatch) -> Result<bool, String> {
+    let mut sets: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(v) = patch.ordinal {
+        params.push(Box::new(v));
+        sets.push(format!("ordinal = ?{}", params.len()));
+    }
+    if let Some(v) = patch.enabled {
+        params.push(Box::new(v));
+        sets.push(format!("enabled = ?{}", params.len()));
+    }
+    if let Some(v) = patch.root_id {
+        params.push(Box::new(v));
+        sets.push(format!("root_id = ?{}", params.len()));
+    }
+    if let Some(v) = &patch.kind {
+        params.push(Box::new(v.to_string()));
+        sets.push(format!("kind = ?{}", params.len()));
+    }
+    if let Some(v) = &patch.pattern {
+        params.push(Box::new(v.clone()));
+        sets.push(format!("pattern = ?{}", params.len()));
+    }
+    if let Some(v) = &patch.match_on {
+        params.push(Box::new(v.to_string()));
+        sets.push(format!("match_on = ?{}", params.len()));
+    }
+    if let Some(v) = &patch.set_edition_key {
+        params.push(Box::new(v.clone()));
+        sets.push(format!("set_edition_key = ?{}", params.len()));
+    }
+    if let Some(v) = &patch.set_kind {
+        params.push(Box::new(v.clone()));
+        sets.push(format!("set_kind = ?{}", params.len()));
+    }
+    if let Some(v) = &patch.set_language {
+        params.push(Box::new(v.clone()));
+        sets.push(format!("set_language = ?{}", params.len()));
+    }
+    if let Some(v) = &patch.set_series {
+        params.push(Box::new(v.clone()));
+        sets.push(format!("set_series = ?{}", params.len()));
+    }
+    if let Some(v) = &patch.note {
+        params.push(Box::new(v.clone()));
+        sets.push(format!("note = ?{}", params.len()));
+    }
+
+    if sets.is_empty() {
+        return conn
+            .query_row("SELECT 1 FROM rule WHERE id = ?1", [id], |_| Ok(()))
+            .optional()
+            .map(|found| found.is_some())
+            .map_err(|e| format!("checking whether rule {id} exists: {e}"));
+    }
+
+    params.push(Box::new(id));
+    let sql = format!(
+        "UPDATE rule SET {} WHERE id = ?{}",
+        sets.join(", "),
+        params.len()
+    );
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(AsRef::as_ref).collect();
+    let changed = conn
+        .execute(&sql, refs.as_slice())
+        .map_err(|e| format!("updating rule {id}: {e}"))?;
+    Ok(changed == 1)
+}
+
+/// What [`delete`] did: whether `id` named a row at all, and — when that row
+/// was one an accepted proposal wrote — every proposal it reopened as a
+/// result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deleted {
+    pub existed: bool,
+    /// Every proposal [`delete`] reopened because `id` was its
+    /// `created_rule_id`, ordered by `id` — empty if no proposal ever
+    /// pointed at this rule (one created by hand or by import, never by an
+    /// accept).
+    ///
+    /// **A `Vec`, not an `Option<i64>` naming one proposal — one rule
+    /// answering several is the ordinary case here, not a corner.**
+    /// [`crate::proposals::accept_with`]'s group write can record the *same*
+    /// rule against more than one proposal at once — a widened rule
+    /// answering several, its own doc comment's "resolves 6 more" — and that
+    /// path is reachable through a live HTTP route
+    /// (`taiyaku-serve`'s curation endpoints), not just a test. `unaccept`
+    /// is keyed on the rule rather than on the one proposal id it is handed,
+    /// so it always reopens every proposal that rule answered regardless of
+    /// what this field reports — an `Option<i64>` version of this field
+    /// reported one of seven reopened proposals and left the other six
+    /// unaccounted for to whichever caller reads this struct, which is the
+    /// same under-reporting `proposals_resolved` was replaced for two
+    /// commits before this one.
+    pub reopened_proposals: Vec<i64>,
+}
+
+/// Delete rule `id`, reopening whichever proposal(s) it answered — the other
+/// end of an accept, C3 §3's `proposal.created_rule_id` closing the loop
+/// C4's editor opens.
+///
+/// **Reuses [`crate::proposals::unaccept`] rather than shipping a second
+/// version of the same state change.** `proposals::accept_with` writes a
+/// rule and records its id in the accepting proposal's `created_rule_id` —
+/// and, for a widened rule, in every other proposal its group write also
+/// answers (`also_resolves`); `unaccept` is already the undo of exactly
+/// that — one transaction that deletes the rule *and* reopens every
+/// proposal `created_rule_id` pointed at it. A rule this table holds because
+/// C4's editor created it by hand, rather than because some proposal was
+/// accepted, has no proposal to reopen — `unaccept` is never reached for it,
+/// and this function deletes the row itself instead, the one write
+/// `unaccept` would otherwise also have made.
+///
+/// **The lookup runs before anything is deleted, and has to.**
+/// `proposal.created_rule_id REFERENCES rule(id) ON DELETE SET NULL`
+/// (`schema/003_scanner.sql`) clears the column the instant the row is gone,
+/// so a lookup keyed on `created_rule_id = id` finds nothing once the delete
+/// has already happened — `unaccept`'s own doc comment makes the identical
+/// argument about reading `created_rule_id` before its own `DELETE FROM
+/// rule`; this is that same ordering applied one level up, before
+/// `unaccept` is even called.
+///
+/// **Calls `unaccept` once, with the lowest-numbered id — it reopens the
+/// rest by rule id, not by the one id it is handed.** The lookup already
+/// orders by `id`, and `unaccept`'s own `UPDATE ... WHERE created_rule_id =
+/// ?2` (keyed on the rule, not the proposal) reopens every proposal that
+/// shares this rule regardless of which one is named — so one call is
+/// enough, and [`Deleted::reopened_proposals`] reports every id the lookup
+/// found rather than only the one passed to `unaccept`.
+///
+/// # Errors
+///
+/// Only if SQLite refuses the lookup, the delete, or — through `unaccept` —
+/// the reopen. An `id` naming no rule at all is `Ok(Deleted { existed:
+/// false, reopened_proposals: vec![] })`, not an error.
+pub fn delete(conn: &Connection, id: i64) -> Result<Deleted, String> {
+    let mut stmt = conn
+        .prepare("SELECT id FROM proposal WHERE created_rule_id = ?1 ORDER BY id")
+        .map_err(|e| format!("looking up the proposals rule {id} came from: {e}"))?;
+    let reopened_proposals: Vec<i64> = stmt
+        .query_map([id], |r| r.get(0))
+        .map_err(|e| format!("looking up the proposals rule {id} came from: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("reading the proposals rule {id} came from: {e}"))?;
+
+    let existed = if let Some(&first) = reopened_proposals.first() {
+        crate::proposals::unaccept(conn, first)?;
+        true
+    } else {
+        conn.execute("DELETE FROM rule WHERE id = ?1", [id])
+            .map_err(|e| format!("deleting rule {id}: {e}"))?
+            == 1
+    };
+
+    Ok(Deleted {
+        existed,
+        reopened_proposals,
+    })
+}
+
 // --- export / import: rules as JSON, so a layout scheme can travel --------
 //
 // §4: "Rules export and import as JSON, so a layout scheme can be shared or
@@ -616,7 +1090,7 @@ fn apply_root_fallback(root: &Root, resolved: &mut Resolved) {
 /// once a rule set moves to a different host — [`import_json`] mints fresh
 /// `rule` rows rather than trying to carry `id` across that boundary, and a
 /// `root_id` carried the same way is worse than meaningless: `root.id` is
-/// enforced by a foreign key on every connection (`Library::from_connection`),
+/// enforced by a foreign key on every connection (`Library::configure`),
 /// so an import naming a `root_id` this database happens not to have fails
 /// with an opaque constraint error, and one it happens to have but that
 /// names a *different* tree silently scopes the rule to the wrong root. A
@@ -698,36 +1172,262 @@ pub fn export_json(conn: &Connection) -> Result<String, String> {
     serde_json::to_string_pretty(&rows).map_err(|e| format!("serialising rules: {e}"))
 }
 
+/// Replace the whole rule table with `rules`, and report the id every
+/// element of `rules` ended up written under, in `rules`' own order.
+///
+/// **The returned `Vec` is positional, not sorted by id or `ordinal` — its
+/// element `i` is always the id `rules[i]` was written under**, whether that
+/// row was kept at the id it already carried or freshly minted for a `rules[i]`
+/// that came in as `id: 0`. [`crate::preview::preview_with_rows`] is why this
+/// exists: a rule the caller has not saved yet always carries `id: 0` (`NEW`,
+/// below) — indistinguishable from a second unsaved rule in the same call,
+/// and from [`ROOT_FALLBACK`] the moment the rule's own root sets a default —
+/// so nothing past this function may go on using `Rule::id` to name "the rule
+/// the caller meant." This function is the one place every `0` in `rules`
+/// becomes a real, minted, mutually distinct `rule.id`; returning them in
+/// `rules`' own order is what lets a caller that already has a position in
+/// `rules` — an index into the exact list it just sent — recover the id that
+/// position now names, without minting a second sentinel of its own.
+///
+/// **Position in `rules` decides nothing about where a row reads back —
+/// `rule.ordinal` does.** [`read`]
+/// and [`Engine::load`] both read the table back `ORDER BY ordinal, id`, so
+/// where a rule sits in the slice this function is handed has no bearing on
+/// where it reads back. Where two rules tie on `ordinal`, `id` breaks it,
+/// and that tie-break changed under this function's own fix: a kept row
+/// keeps the low id it already had, while a freshly minted row is always
+/// minted higher (SQLite mints `INTEGER PRIMARY KEY` rowids upward), so a
+/// tie on `ordinal` now always sorts a kept rule ahead of a new one,
+/// regardless of list position — where the old delete-and-reinsert design
+/// minted every id in list order, so a tie broke in list order instead.
+/// Measured: the four seeded rules plus a new rule at `ordinal: 1`, placed
+/// *first* in the proposed list, reads back as `[(1,1,"^(?<series>[^/]+)/"),
+/// (5,1,"brand-new"), ...]` — the kept rule first despite the new one
+/// leading the list, where the old code put `brand-new` first.
+///
+/// **Atomic on its own**, unlike [`crate::import::replace_alignments`], the
+/// precedent this copies its shape from: that function still leans on both
+/// its callers already holding a transaction, but this one is `pub(crate)`
+/// across more callers than `replace_alignments` has, one of them a bare
+/// connection in a test (`preview/tests.rs`), so trusting every present and
+/// future caller to wrap it is exactly the "correct only while nobody
+/// forgets" shape this crate otherwise avoids (see, for the same reasoning
+/// applied to a pragma rather than a function, [`crate::Library`]'s own
+/// `configure` comment on `TransactionBehavior::Immediate`). It opens its own
+/// [`crate::Nested`] scope — a real transaction where nothing is open yet, a
+/// nested `SAVEPOINT` where a caller already holds one, such as
+/// [`import_json`]'s own transaction or [`crate::preview::preview`]'s
+/// rollback — so the delete, the updates and the inserts below are atomic in
+/// both contexts, and still roll back together with an outer transaction
+/// where one is open.
+///
+/// `Rule::id` decides whether a row keeps its identity or is freshly minted
+/// — and a kept row is never deleted, only updated in place.
+///
+/// **`0` means "no id yet" — write a fresh one.** `Rule` doesn't carry an
+/// `Option<i64>` for this: every construction site in this crate that builds
+/// an unsaved rule already spells it `id: 0` ([`import_json`], below, and
+/// this crate's own fixtures), and `0` is safe as the sentinel because
+/// SQLite mints `INTEGER PRIMARY KEY` rowids upward from `1` — no row this
+/// function ever writes under a minted id can hold `0` for real, so "this
+/// rule already exists" and "this rule is new" can never collide on it.
+///
+/// **A kept row's identity survives because its `DELETE` never happens —
+/// not because a `DELETE`-then-reinsert happens to land on the same id.**
+/// The obvious-looking alternative — delete every row and reinsert every
+/// rule, nonzero ids included — does not work: `proposal.created_rule_id
+/// REFERENCES rule(id) ON DELETE SET NULL` (`schema/003_scanner.sql`) fires
+/// the moment a row is deleted, and reinserting a different row under the
+/// same id afterward does not retroactively relink it — SQLite does not
+/// re-evaluate a foreign key against a row that did not exist at the moment
+/// the referencing column was cleared. So this function only ever deletes
+/// the rows for ids that do not appear in `rules` at all — a rule someone
+/// actually removed through C4's editor — and updates every kept row's other
+/// columns by `id` instead of touching its identity. That is what lets
+/// [`crate::preview::preview`] and a real save tell a genuine edit from a
+/// no-op one: previewing (or saving) the exact list already in the database
+/// leaves every accepted proposal's `created_rule_id` exactly as it was,
+/// and [`crate::proposals::raise`]'s own orphan check reopens nothing.
+/// Before this, every call reset every id regardless, which reopened every
+/// accepted proposal on *any* call at all, whether or not its rule actually
+/// left the list — measured by previewing the library's own unchanged rule
+/// list back at itself and getting `proposals_reopened: 1` for a proposal
+/// nothing about the preview touched.
+///
+/// **A nonzero id must already name a row this table holds, or this
+/// refuses.** A rule editor only ever hands back a real id for a rule that
+/// already exists — a brand new one is `id: 0` — so a nonzero id naming no
+/// current row is a caller bug, not a legitimate "adopt this identity"
+/// request: silently inserting a fresh row under a caller-chosen id would
+/// resurrect whatever that id used to mean (a proposal's own
+/// `created_rule_id`, say, from before that row was genuinely deleted) under
+/// content that has nothing to do with it. Two rules sharing one nonzero id
+/// is refused for the same reason — not SQLite's own primary key constraint,
+/// since nothing here inserts a second row under an id already present, but
+/// a check this function makes before writing anything, so the whole call
+/// fails atomically rather than applying one of the two and silently
+/// dropping the other.
+///
+/// # Errors
+///
+/// If a rule's nonzero id names no row currently in `rule`, if two rules
+/// share one nonzero id, if SQLite refuses to open its scope, refuses a
+/// delete, an update or an insert, or refuses committing that scope.
+pub(crate) fn replace_all(conn: &Connection, rules: &[Rule]) -> Result<Vec<i64>, String> {
+    /// The `Rule::id` sentinel meaning "not written yet" — see this
+    /// function's own doc comment for why `0` is safe to use for it.
+    const NEW: i64 = 0;
+
+    let scope = crate::Nested::open(conn, "rules_replace_all")
+        .map_err(|e| format!("starting the rule replace scope: {e}"))?;
+
+    // The ids this table holds right now — read before anything changes, so
+    // a nonzero id in `rules` can be checked against what it could possibly
+    // mean to "keep" rather than trusted outright.
+    let existing_ids: std::collections::BTreeSet<i64> = {
+        let mut stmt = scope
+            .prepare("SELECT id FROM rule")
+            .map_err(|e| format!("reading the current rule ids: {e}"))?;
+        stmt.query_map([], |r| r.get::<_, i64>(0))
+            .map_err(|e| format!("reading the current rule ids: {e}"))?
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("reading the current rule ids: {e}"))?
+    };
+
+    let mut kept_ids = std::collections::BTreeSet::new();
+    for rule in rules.iter().filter(|r| r.id != NEW) {
+        if !existing_ids.contains(&rule.id) {
+            return Err(format!(
+                "rule {}: no such rule exists to keep — a genuinely new rule must carry id 0, \
+                 not a caller-chosen one",
+                rule.id
+            ));
+        }
+        if !kept_ids.insert(rule.id) {
+            return Err(format!(
+                "rule {}: named more than once in the same replace",
+                rule.id
+            ));
+        }
+    }
+
+    // Only the ids genuinely dropped from `rules` are deleted — everything
+    // kept is updated in place below, its row never touched by a `DELETE` at
+    // all, which is the whole of what makes this function's fix work.
+    for id in existing_ids.difference(&kept_ids) {
+        scope
+            .execute("DELETE FROM rule WHERE id = ?1", [id])
+            .map_err(|e| format!("dropping rule {id}: {e}"))?;
+    }
+
+    for rule in rules.iter().filter(|r| r.id != NEW) {
+        scope
+            .execute(
+                "UPDATE rule SET ordinal = ?1, enabled = ?2, root_id = ?3, kind = ?4, \
+                 pattern = ?5, match_on = ?6, set_edition_key = ?7, set_kind = ?8, \
+                 set_language = ?9, set_series = ?10, note = ?11 \
+                 WHERE id = ?12",
+                rusqlite::params![
+                    rule.ordinal,
+                    rule.enabled,
+                    rule.root_id,
+                    rule.kind.to_string(),
+                    rule.pattern,
+                    rule.match_on.to_string(),
+                    rule.set_edition_key,
+                    rule.set_kind,
+                    rule.set_language,
+                    rule.set_series,
+                    rule.note,
+                    rule.id,
+                ],
+            )
+            .map_err(|e| format!("updating rule {}: {e}", rule.id))?;
+    }
+    // The id `rules[i]` is written under, for every `i` — a kept row's id is
+    // already known (copied straight from `rules` itself, `NEW` included as
+    // a placeholder); the loop below overwrites each `NEW` with the rowid
+    // SQLite actually mints for it, in the same relative order those rows
+    // appear in `rules`, which is exactly the order `Iterator::enumerate`
+    // preserves under a `filter`.
+    let mut written_ids: Vec<i64> = rules.iter().map(|rule| rule.id).collect();
+    for (index, rule) in rules.iter().enumerate().filter(|(_, r)| r.id == NEW) {
+        scope
+            .execute(
+                "INSERT INTO rule (ordinal, enabled, root_id, kind, pattern, match_on, \
+                 set_edition_key, set_kind, set_language, set_series, note) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                rusqlite::params![
+                    rule.ordinal,
+                    rule.enabled,
+                    rule.root_id,
+                    rule.kind.to_string(),
+                    rule.pattern,
+                    rule.match_on.to_string(),
+                    rule.set_edition_key,
+                    rule.set_kind,
+                    rule.set_language,
+                    rule.set_series,
+                    rule.note,
+                ],
+            )
+            .map_err(|e| format!("writing a new rule: {e}"))?;
+        written_ids[index] = scope.last_insert_rowid();
+    }
+    scope
+        .commit()
+        .map_err(|e| format!("committing the rule replace: {e}"))?;
+    Ok(written_ids)
+}
+
 /// Replace every rule this library holds with the ones `json` describes.
 ///
 /// **Replaces the rule set rather than appending to it.** An import that
 /// layered a second copy of every rule over the first would be harmless the
 /// moment nobody has edited a default, and a duplicated, drifting rule set
 /// the moment someone has — importing is "this is now the layout scheme", not
-/// "add these rules too".
+/// "add these rules too". [`replace_all`] is what actually clears and
+/// rewrites `rule`; this function's own job is turning a `RuleJson` list into
+/// the `Rule`s that call needs, `root_path` resolved to this library's own
+/// `root_id` along the way.
 ///
 /// **Atomic, and in that order.** `json` is parsed before anything in `rule`
-/// is touched, and every delete, lookup and insert after that happens inside
+/// is touched, and every root lookup and the write after it happens inside
 /// one transaction — so a document that does not parse, that names a root
-/// this library does not have, or a write that fails partway through, leaves
+/// this library does not have, that names a `kind` or `match_on` string
+/// `rules.rs` does not know, or a write that fails partway through, leaves
 /// the existing rule set exactly as it was rather than emptied or half
 /// replaced.
+///
+/// **Returns every proposal this import reopened — whole-branch review,
+/// Important 3.** [`replace_all`]'s own `DELETE FROM rule` orphans
+/// `created_rule_id` (`ON DELETE SET NULL`) on every proposal an accepted
+/// rule this import just dropped had answered, exactly as [`delete`] does
+/// for one rule at a time — but nothing on this path ever called `derive`,
+/// so nothing ever reached [`crate::proposals::raise`]'s own repair for that
+/// (`reopen_orphaned_accepts`), and an import through `taiyaku-serve`'s
+/// `POST /api/library/rules/import` route left every such proposal reading
+/// `accepted` with a `created_rule_id` of `None` — an acceptance nothing any
+/// longer decides — until whatever scan happened to run next. Calling the
+/// same repair here, inside this function's own transaction, closes the gap
+/// for every caller at once rather than only the one route that noticed it.
 ///
 /// # Errors
 ///
 /// Returns an error if `json` does not parse as the shape [`export_json`]
-/// produces, if a rule's `root_path` matches no `root.path` in this library
-/// — named by ordinal, since it has no `id` until it is written — or if
-/// clearing or writing `rule` fails.
-pub fn import_json(conn: &Connection, json: &str) -> Result<(), String> {
-    let rules: Vec<RuleJson> =
+/// produces, if a rule's `root_path` matches no `root.path` in this library,
+/// if a rule's `kind` or `match_on` is not one of the values [`RuleKind`] or
+/// [`MatchOn`] parses — both named by ordinal, since a row that fails either
+/// check has no `id` yet — or if [`replace_all`] fails.
+pub fn import_json(conn: &Connection, json: &str) -> Result<Vec<i64>, String> {
+    let parsed: Vec<RuleJson> =
         serde_json::from_str(json).map_err(|e| format!("parsing rule JSON: {e}"))?;
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("starting the rule import transaction: {e}"))?;
-    tx.execute("DELETE FROM rule", [])
-        .map_err(|e| format!("clearing the existing rule set: {e}"))?;
-    for rule in &rules {
+
+    let mut rules = Vec::with_capacity(parsed.len());
+    for rule in &parsed {
         // A path resolved to *this* library's own root id, never a bare
         // number carried across from wherever the document was exported —
         // see `RuleJson`'s own doc comment for why a raw `root_id` would be
@@ -748,29 +1448,37 @@ pub fn import_json(conn: &Connection, json: &str) -> Result<(), String> {
             ),
             None => None,
         };
-        tx.execute(
-            "INSERT INTO rule (ordinal, enabled, root_id, kind, pattern, match_on, \
-             set_edition_key, set_kind, set_language, set_series, note) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            rusqlite::params![
-                rule.ordinal,
-                rule.enabled,
-                root_id,
-                rule.kind,
-                rule.pattern,
-                rule.match_on,
-                rule.set_edition_key,
-                rule.set_kind,
-                rule.set_language,
-                rule.set_series,
-                rule.note,
-            ],
-        )
-        .map_err(|e| format!("writing rule: {e}"))?;
+        rules.push(Rule {
+            id: 0, // The "mint a fresh id" sentinel `replace_all` reads — see its own doc comment.
+            ordinal: rule.ordinal,
+            enabled: rule.enabled,
+            root_id,
+            kind: rule
+                .kind
+                .parse()
+                .map_err(|e| format!("rule at ordinal {}: {e}", rule.ordinal))?,
+            pattern: rule.pattern.clone(),
+            match_on: rule
+                .match_on
+                .parse()
+                .map_err(|e| format!("rule at ordinal {}: {e}", rule.ordinal))?,
+            set_edition_key: rule.set_edition_key.clone(),
+            set_kind: rule.set_kind.clone(),
+            set_language: rule.set_language.clone(),
+            set_series: rule.set_series.clone(),
+            note: rule.note.clone(),
+        });
     }
+
+    // The written ids `replace_all` reports are for a caller that still holds
+    // a position in the list it sent — `crate::preview::preview_with_rows`,
+    // not an import that has already handed every rule away.
+    replace_all(&tx, &rules)?;
+    let reopened = crate::proposals::reopen_orphaned_accepts(&tx)?;
+
     tx.commit()
         .map_err(|e| format!("committing the rule import: {e}"))?;
-    Ok(())
+    Ok(reopened)
 }
 
 #[cfg(test)]

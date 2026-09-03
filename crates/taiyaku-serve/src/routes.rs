@@ -1896,6 +1896,58 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             "/api/library/members/{id}",
             axum::routing::patch(crate::metadata::patch_member),
         ),
+        // **Spec C4 §6's rule-editor routes, task 8 of the branch plan.**
+        // Admin-gated the same way the curation and metadata blocks above
+        // are, and for the identical reason stated on each of theirs: a
+        // route that writes cannot afford to land in `open_routes`.
+        // `config_api::tests::every_config_api_route_refuses_a_reader`
+        // drives all six for a 403.
+        (
+            "/api/library/rules",
+            get(crate::config_api::list_rules).post(crate::config_api::create_rule),
+        ),
+        (
+            "/api/library/rules/{id}",
+            axum::routing::patch(crate::config_api::patch_rule)
+                .delete(crate::config_api::delete_rule),
+        ),
+        (
+            "/api/library/rules/preview",
+            axum::routing::post(crate::config_api::preview_rules),
+        ),
+        (
+            "/api/library/rules/import",
+            axum::routing::post(crate::config_api::import_rules),
+        ),
+        // **Spec C4 §2's roots routes, task 11 of the branch plan.**
+        // Admin-gated the same way the rules block above is, and for the
+        // identical reason stated on each of theirs: a route that adds,
+        // edits or destroys a scan root cannot afford to land in
+        // `open_routes`. `config_api::tests::every_config_api_route_refuses
+        // _a_reader` (task 8's own hand-typed list, not an enumeration — see
+        // its own doc comment) is extended to drive all four of these too.
+        (
+            "/api/library/roots",
+            get(crate::config_api::list_roots).post(crate::config_api::create_root),
+        ),
+        (
+            "/api/library/roots/{id}",
+            axum::routing::patch(crate::config_api::patch_root)
+                .delete(crate::config_api::delete_root),
+        ),
+        // **Spec C4 §3's scan-control route, task 12 of the branch plan.**
+        // Admin-gated like every other route in this block, and for the
+        // identical reason: the server has never scanned before this task,
+        // and the trigger that lets it start one is exactly as destructive a
+        // capability as adding or removing a root above. `POST` starts a scan
+        // — refusing a second one already running against the same root,
+        // 409, rather than queuing it — and `GET` reads the registry
+        // `ServeState.scans` holds for it: live progress while the spawned
+        // task is still walking, the finished report once it is done.
+        (
+            "/api/library/roots/{id}/scan",
+            get(crate::config_api::scan_status).post(crate::config_api::start_scan),
+        ),
     ]);
     routes.extend(crate::opds::routes());
     routes
@@ -2253,6 +2305,82 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
             GrantIndependent {
                 reason: "admin-only, and O86 drops an admin's root grant, so \
                          no caller of this route holds one to refuse against",
+            },
+        ),
+        // Spec C4 §6's rule editor. Every entry states its own reason rather
+        // than inheriting a shared one, the same rule the proposals block
+        // above holds this table to — and here too they genuinely differ:
+        // one lists the whole set, one writes a rule, one edits or removes
+        // one, one derives from a hypothetical set that was never saved.
+        (
+            "/api/library/rules",
+            GrantIndependent {
+                reason: "admin-only and about how the library is organised, \
+                          not about what any one account may see: a rule is \
+                          a property of the scan, and an administrator's \
+                          roots are not filtered — the same standing \
+                          /api/library/proposals holds above",
+            },
+        ),
+        (
+            "/api/library/rules/{id}",
+            GrantIndependent {
+                reason: "edits or removes one rule; a rule decides series \
+                          and edition keys for the whole library rather than \
+                          for the account that wrote it, so there is no \
+                          grant that could scope either write",
+            },
+        ),
+        (
+            "/api/library/rules/preview",
+            GrantIndependent {
+                reason: "derives against the whole proposed rule list over \
+                          every scan_entry in the library and writes nothing \
+                          — the answer is what the library-wide structure \
+                          would become, which a root grant has no part of \
+                          narrowing",
+            },
+        ),
+        (
+            "/api/library/rules/import",
+            GrantIndependent {
+                reason: "replaces the whole rule set from an uploaded \
+                          document — the same library-wide write \
+                          /api/library/rules itself is, over every rule at \
+                          once instead of one",
+            },
+        ),
+        // Spec C4 §2's roots routes, task 11 of the branch plan. Every entry
+        // states its own reason rather than inheriting a shared one, the
+        // same rule the rules block above holds this table to.
+        (
+            "/api/library/roots",
+            GrantIndependent {
+                reason: "admin-only; lists and adds scan roots, which are a \
+                          property of the scan itself rather than of any \
+                          one account's access to it — the same standing \
+                          the rules block above holds",
+            },
+        ),
+        (
+            "/api/library/roots/{id}",
+            GrantIndependent {
+                reason: "edits or removes one root; both are library-wide \
+                          writes with no account-scoped meaning to filter \
+                          against, the identical reasoning \
+                          /api/library/rules/{id} states for a rule",
+            },
+        ),
+        // Spec C4 §3's scan-control route, task 12 of the branch plan.
+        (
+            "/api/library/roots/{id}/scan",
+            GrantIndependent {
+                reason: "starts or reports on a scan of one root, a \
+                          library-wide operation with no account-scoped \
+                          meaning to filter against — the identical standing \
+                          /api/library/roots/{id} holds for a root's own \
+                          edit or removal, one step earlier in this same \
+                          table",
             },
         ),
         (

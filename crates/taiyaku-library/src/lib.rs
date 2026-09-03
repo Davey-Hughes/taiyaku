@@ -25,6 +25,10 @@ pub mod identity;
 pub mod import;
 pub mod librarydoc;
 pub mod migrate;
+/// What a proposed rule list would do to the whole library, without doing it.
+/// See `docs/superpowers/specs/2026-09-02-library-configuration-build-design.md`,
+/// §2.
+pub mod preview;
 pub mod progressdoc;
 pub mod project;
 pub mod proposals;
@@ -34,7 +38,7 @@ pub mod schema;
 pub mod state;
 pub mod watch;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -243,14 +247,52 @@ fn set_wal_within(conn: &Connection, budget: Duration) -> Result<(), String> {
 /// **That argument is about one process.** Contention *between* processes is
 /// real and expected — `serve` and `library import` share one default
 /// database — and is handled where it has to be, on the connection: see the
-/// busy timeout and transaction behaviour in [`Library::from_connection`].
+/// busy timeout and transaction behaviour in [`Library::configure`].
 #[derive(Debug)]
 pub struct Library {
     conn: Mutex<Connection>,
+    /// Where this library was opened from, or `None` for `:memory:`.
+    ///
+    /// Held so [`Self::working`] can open a *second* connection to the same
+    /// file rather than handing a long job the mutex every request needs. An
+    /// in-memory database has no such file — a second connection to
+    /// `:memory:` is a different, empty database — which is why [`Working`]
+    /// has two shapes rather than this being an `Option<Connection>` that
+    /// every caller of `working` would have to branch on for itself.
+    path: Option<PathBuf>,
 }
 
 impl Library {
     /// Open the library at `path`, creating and migrating it if needed.
+    ///
+    /// The stored path is canonicalised — resolved to an absolute path with
+    /// symlinks and `.`/`..` collapsed — rather than kept as given.
+    /// [`Self::working`]'s whole guarantee is a *second* connection to the
+    /// *same* file; a relative path stored verbatim would instead follow
+    /// whatever the process's current directory happens to be when
+    /// `working` is later called, which is not necessarily the directory it
+    /// was in when `open` ran. Nothing in this repository calls
+    /// `std::env::set_current_dir` today, so this is dormant — but
+    /// `taiyaku-cli`'s `--db` flag reaches `open` with no absolute-path
+    /// check the way its own `$XDG_DATA_HOME`/`$HOME` fallbacks have, so a
+    /// relative path is reachable, and canonicalising here is cheaper than
+    /// trusting every future caller to check.
+    ///
+    /// Canonicalising must happen *after* `Connection::open` succeeds, not
+    /// before: `Connection::open` creates the file when it is missing, and a
+    /// path to a file that does not exist yet cannot be canonicalised — the
+    /// call would fail on the exact case (a brand new library) this is
+    /// meant to handle.
+    ///
+    /// If canonicalising still fails once the file exists — a permission
+    /// refusal on an ancestor directory, or the file being removed out from
+    /// under this call between opening and canonicalising — this falls back
+    /// to the path as given rather than turning a successful open into an
+    /// error over a problem that is about to matter only if [`Self::working`]
+    /// is ever called: `open` alone never opens a second connection, so
+    /// there is no correctness reason to refuse here. The fallback is a
+    /// `path.to_path_buf()` clone rather than a silent branch precisely so
+    /// this comment has somewhere to explain it.
     ///
     /// # Errors
     ///
@@ -259,7 +301,8 @@ impl Library {
     /// or if applying the schema fails.
     pub fn open(path: &Path) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        Self::from_connection(conn)
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        Self::from_connection(conn, Some(canonical))
     }
 
     /// An in-memory library, for tests.
@@ -270,10 +313,27 @@ impl Library {
     /// to apply.
     pub fn open_in_memory() -> Result<Self, String> {
         let conn = Connection::open_in_memory().map_err(|e| format!("in memory: {e}"))?;
-        Self::from_connection(conn)
+        Self::from_connection(conn, None)
     }
 
-    fn from_connection(mut conn: Connection) -> Result<Self, String> {
+    fn from_connection(mut conn: Connection, path: Option<PathBuf>) -> Result<Self, String> {
+        Self::configure(&mut conn)?;
+        schema::migrate(&conn)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+            path,
+        })
+    }
+
+    /// Everything a fresh connection needs before any query can safely touch
+    /// it, short of applying the schema.
+    ///
+    /// Shared by [`Self::from_connection`], which follows this with
+    /// [`schema::migrate`], and [`Self::working`], which does not: a second
+    /// connection to an already-migrated file has nothing to migrate, and
+    /// running `schema::migrate` again on a live database is not a risk
+    /// worth taking just to keep one function's shape simpler.
+    fn configure(conn: &mut Connection) -> Result<(), String> {
         // Per connection, not per database, and off by default. See the test
         // in this module's `tests.rs`.
         conn.pragma_update(None, "foreign_keys", "ON")
@@ -287,7 +347,7 @@ impl Library {
             i64::try_from(BUSY_TIMEOUT.as_millis()).unwrap_or(i64::MAX),
         )
         .map_err(|e| format!("setting the busy timeout: {e}"))?;
-        set_wal(&conn)?;
+        set_wal(conn)?;
         // Also per connection, and also off by default. Without it, the
         // implicit DELETE that `INSERT OR REPLACE` performs to resolve a
         // conflict does not fire DELETE triggers — so a REPLACE on
@@ -324,27 +384,28 @@ impl Library {
         // `recursive_triggers` is a pragma rather than a rule for callers:
         // all seven are writes, and a store that is only correct while every
         // future writer remembers to pass a behaviour is not correct, it is
-        // lucky. `schema.rs`'s migration transaction, two lines below, is an
-        // eighth `unchecked_transaction` and gets this same `Immediate`
-        // behaviour too — it opens after this line, on this same connection
-        // — but it sits outside the count above because it is not a call
-        // site future code could add or forget: it runs once, here, inside
-        // `from_connection`, before any caller has a `Connection` to write
-        // through at all. The concurrent writers `schema.rs:159-161`'s own
-        // comment depends on `Immediate` for are real and measured, not
-        // hypothetical — `status.md`'s record of review 3's I1: 14 failures
-        // in 48 concurrent first opens, each its own process racing this
-        // exact migration, none in 40 runs after this connection-wide
-        // setting closed it.
+        // lucky. `schema.rs`'s migration transaction is an eighth
+        // `unchecked_transaction` and gets this same `Immediate` behaviour
+        // too, when this connection is the one [`Self::from_connection`] is
+        // building: `schema::migrate` runs after `configure` returns, on
+        // this same connection, before any caller has it to write through at
+        // all. It sits outside the count above because it is not a call site
+        // future code could add or forget. [`Self::working`]'s second
+        // connection never runs a migration at all — the file it opens is
+        // already migrated — but still gets `Immediate` here, because it is a
+        // writer too and the same promotion deadlock applies to it. The
+        // concurrent writers `schema.rs:159-161`'s own comment depends on
+        // `Immediate` for are real and measured, not hypothetical —
+        // `status.md`'s record of review 3's I1: 14 failures in 48 concurrent
+        // first opens, each its own process racing this exact migration, none
+        // in 40 runs after this connection-wide setting closed it.
         // The cost is that a read-only `unchecked_transaction` would also take
         // the write lock; there is none, and one would be the wrong shape here
-        // anyway — `Library` hands out one connection behind a `Mutex`.
+        // anyway — `Library` hands out one connection behind a `Mutex`, and
+        // `working`'s second connection is used by exactly one long job at a
+        // time.
         conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
-        require_fts5(&conn)?;
-        schema::migrate(&conn)?;
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
+        require_fts5(conn)
     }
 
     /// The connection, exclusively.
@@ -361,6 +422,254 @@ impl Library {
         match self.conn.lock() {
             Ok(held) => held,
             Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// Where this library lives, or `None` if it is in memory.
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// A connection for a job long enough that holding [`Self::conn`] would
+    /// stall every request the server serves meanwhile — a rule preview that
+    /// derives the whole library and rolls it back, or a scan that walks a
+    /// filesystem tree.
+    ///
+    /// A file-backed library opens a genuine second connection to the same
+    /// file, run through [`Self::configure`] but not `schema::migrate` — the
+    /// file is already migrated by the time anyone asks for a working
+    /// connection, and re-applying the schema is not a no-op worth risking
+    /// here. An in-memory library has no file to open a second time — a
+    /// second connection to `:memory:` is a different, empty database — so
+    /// its "second" connection is the shared one, [`Self::conn`], the only
+    /// connection such a library has ever had.
+    ///
+    /// Under WAL a second connection's write transaction leaves readers on
+    /// the first reading the pre-transaction snapshot, and `busy_timeout`
+    /// (set in [`Self::configure`]) governs a collision with a real writer.
+    ///
+    /// # Errors
+    ///
+    /// If a second connection cannot be opened against the file — the
+    /// message names the path — or if opening succeeds but [`Self::configure`]
+    /// fails on it, which fails the same way and for the same reasons a first
+    /// open of that file would.
+    pub fn working(&self) -> Result<Working<'_>, String> {
+        match &self.path {
+            Some(path) => {
+                let mut conn = Connection::open(path).map_err(|e| {
+                    format!("opening a second connection to {}: {e}", path.display())
+                })?;
+                Self::configure(&mut conn)?;
+                Ok(Working::Owned(conn))
+            }
+            None => Ok(Working::Shared(self.conn())),
+        }
+    }
+}
+
+/// A connection to run a long job on: a fresh one where [`Library`] has a
+/// file to open a second connection against, the same shared one where it
+/// does not.
+///
+/// **One accessor, two shapes, so no caller of [`Library::working`] carries
+/// two code paths.** The alternative was `Library::working` returning
+/// `Option<Connection>` and leaving each caller to fall back to
+/// `library.conn()` for itself — two behaviours written out at every call
+/// site rather than once here, which is the arrangement this codebase keeps
+/// finding drifts (see `Working`'s sibling reasoning on `path`, above).
+#[derive(Debug)]
+pub enum Working<'a> {
+    Owned(Connection),
+    Shared(MutexGuard<'a, Connection>),
+}
+
+impl std::ops::Deref for Working<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        match self {
+            Self::Owned(conn) => conn,
+            Self::Shared(held) => held,
+        }
+    }
+}
+
+/// [`rusqlite::Transaction`]'s own shape — `Deref` to [`Connection`],
+/// `commit`, rollback on drop — open exactly as `Connection::
+/// unchecked_transaction` already does wherever nothing is open yet, and as
+/// a nested `SAVEPOINT` wherever something already is.
+///
+/// **Why this type exists at all.** A bare `BEGIN` — what
+/// `unchecked_transaction` sends — is refused outright the moment SQLite
+/// already holds an open transaction; `derive.rs`'s own doc records exactly
+/// this, on why [`crate::derive::derive`] holds no transaction of its own.
+/// That made [`crate::import::scanned`] (through `import_with`, called once
+/// per work) and [`crate::fold::absorb`] (once per fold), each of which
+/// opens one of its own, uncomposable with a caller that wraps a whole
+/// derivation in a transaction to roll it all back at once —
+/// [`crate::preview::preview`]'s entire mechanism, and the reason this type
+/// was added: every existing call to `unchecked_transaction` inside a
+/// derive pass failed on the spot with "cannot start a transaction within a
+/// transaction" the moment a preview wrapped it, on any library holding at
+/// least one work.
+///
+/// **Why not always open a `SAVEPOINT`, and skip the branch.** `SAVEPOINT`
+/// nests unconditionally, so that alone would fix the failure above — but at
+/// the cost of a real regression for every *existing* caller, which reaches
+/// this with nothing open yet. A `SAVEPOINT` that starts a transaction
+/// implicitly (nothing open) takes SQLite's own `BEGIN DEFERRED` locking —
+/// no lock until the first write — where every connection this crate hands
+/// out is configured `TransactionBehavior::Immediate` for the opposite
+/// reason: [`Library::configure`]'s own comment records 14 failures in 48
+/// concurrent first opens, a promotion deadlock `busy_timeout` cannot help
+/// with, closed by taking the write lock at `BEGIN` rather than several
+/// statements later. Reintroducing deferred locking under a name that looks
+/// like a drop-in replacement would undo that with nothing to catch it. So
+/// the choice is read off what the connection is already doing —
+/// [`Connection::is_autocommit`] is false only when something has already
+/// opened a transaction this one must nest inside instead of colliding
+/// with, which today is only ever [`crate::preview::preview`] — and every
+/// other call site keeps the exact `BEGIN`/lock behaviour it always had.
+///
+/// **The cost `preview` pays for that outer transaction is real and
+/// undocumented anywhere else.** Because `preview` holds a `BEGIN IMMEDIATE`
+/// for a whole library-wide derivation rather than per work, every `Nested`
+/// scope opened underneath it — one per `import::scanned` call and one per
+/// `fold::absorb` call — takes the `SAVEPOINT` branch, and the write lock the
+/// outer `BEGIN IMMEDIATE` holds stays taken for as long as that entire
+/// derivation runs: exactly the span `Library::working`'s second connection
+/// exists to let a long job occupy without starving every other request.
+/// See [`crate::preview::preview`]'s own doc for why that trade is made on
+/// purpose.
+pub(crate) struct Nested<'a> {
+    conn: &'a Connection,
+    label: &'static str,
+    /// `Some` for the ordinary, unnested case: a real
+    /// [`rusqlite::Transaction`], whose own `Drop` already rolls back an
+    /// early return exactly as every caller of `unchecked_transaction`
+    /// already relied on. Taken with `Option::take` in [`Self::commit`]
+    /// rather than moved out by a pattern match, which this type's own
+    /// `Drop` impl below would refuse to compile.
+    ///
+    /// **Not what `Drop` below checks.** `commit` takes this to `None` on
+    /// *both* branches — the real-transaction case takes it to run the real
+    /// `COMMIT`, and it was already `None` on the `SAVEPOINT` case — so
+    /// `tx.is_none()` is true at drop time regardless of which branch this
+    /// scope took. `savepoint_open`, not this field, is what tells `drop`
+    /// whether a `SAVEPOINT` named `label` actually exists to undo.
+    tx: Option<rusqlite::Transaction<'a>>,
+    /// Set in [`Self::open`]'s `SAVEPOINT` branch and never after: whether
+    /// this scope actually opened `SAVEPOINT {label}` and therefore owns one
+    /// to release or roll back. `false` for the ordinary, unnested case,
+    /// where [`Self::commit`]'s real `COMMIT` and `rusqlite::Transaction`'s
+    /// own `Drop` already do the whole job and there is no savepoint of this
+    /// name for [`Self::drop`] to touch.
+    savepoint_open: bool,
+    /// Only meaningful while `savepoint_open` is `true`: `false` until
+    /// [`Self::commit`] releases it — checked by [`Self::drop`] so an early
+    /// return rolls back only this scope, not the caller's.
+    savepoint_committed: bool,
+}
+
+impl<'a> Nested<'a> {
+    /// Open a nested scope named `label` — a name for the `SAVEPOINT` case's
+    /// SQL and for the messages below, not a uniqueness SQLite enforces on
+    /// its own. Distinct call sites should still pass distinct labels: two
+    /// unrelated scopes sharing one name would make a stray `ROLLBACK TO` or
+    /// `RELEASE` from a fixture bug ambiguous about which one it meant.
+    ///
+    /// # Errors
+    ///
+    /// If SQLite refuses the `BEGIN` or the `SAVEPOINT`.
+    pub(crate) fn open(conn: &'a Connection, label: &'static str) -> rusqlite::Result<Self> {
+        if conn.is_autocommit() {
+            let tx = conn.unchecked_transaction()?;
+            Ok(Self {
+                conn,
+                label,
+                tx: Some(tx),
+                savepoint_open: false,
+                savepoint_committed: false,
+            })
+        } else {
+            conn.execute_batch(&format!("SAVEPOINT {label}"))?;
+            Ok(Self {
+                conn,
+                label,
+                tx: None,
+                savepoint_open: true,
+                savepoint_committed: false,
+            })
+        }
+    }
+
+    /// Commit this scope: a real `COMMIT` where nothing else was open, a
+    /// `RELEASE SAVEPOINT` — folding this scope's writes into the caller's
+    /// still-open transaction, not onto disk — where something was.
+    ///
+    /// # Errors
+    ///
+    /// If SQLite refuses the commit or the release.
+    pub(crate) fn commit(mut self) -> rusqlite::Result<()> {
+        if let Some(tx) = self.tx.take() {
+            tx.commit()
+        } else {
+            self.conn
+                .execute_batch(&format!("RELEASE SAVEPOINT {}", self.label))?;
+            self.savepoint_committed = true;
+            Ok(())
+        }
+    }
+}
+
+impl std::ops::Deref for Nested<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.conn
+    }
+}
+
+impl Drop for Nested<'_> {
+    /// The real-transaction case needs nothing here: `commit`'s `Some(tx)`
+    /// arm hands the `Transaction` to its own `commit`, which runs a real
+    /// `COMMIT` and consumes it outright, and an uncommitted `Transaction`
+    /// left in `self.tx` at drop time rolls back on its own — through that
+    /// value's own `Drop`, which fires on this struct's other fields
+    /// immediately after this method returns, exactly what every caller of
+    /// `unchecked_transaction` already depended on before this type existed.
+    /// Only the `SAVEPOINT` case — `savepoint_open` true — is this type's own
+    /// to undo. Checking `savepoint_open` rather than `self.tx.is_none()` is
+    /// the point: `commit` takes `tx` to `None` on *both* branches, so
+    /// `tx.is_none()` alone cannot tell a committed real transaction apart
+    /// from an open savepoint, and reading it that way used to run
+    /// `ROLLBACK TO SAVEPOINT` against a connection with no such savepoint
+    /// after every ordinary commit — review measured 744 of these in one
+    /// suite run, each swallowed by the `let _ =` below and each a wasted
+    /// parse-and-step, one per work imported and per fold.
+    ///
+    /// Both statements together, best-effort: a `ROLLBACK TO` leaves the
+    /// savepoint itself still open (unlike a transaction's plain `ROLLBACK`,
+    /// which ends it — [`rusqlite::Savepoint`]'s own doc notes the same
+    /// asymmetry), so the `RELEASE` after it is what actually closes this
+    /// scope. A `Drop` cannot propagate an error, the same constraint
+    /// `rusqlite::Transaction`'s own `Drop` accepts — and unlike the stale
+    /// invariant this replaced, `savepoint_open` being accurate now means
+    /// this statement is only ever attempted where a savepoint of this name
+    /// genuinely exists, so a failure here is a sign this type's own
+    /// bookkeeping broke, not a routine result of an ordinary commit. Kept as
+    /// `let _ =` rather than a `debug_assert!` on the result: a `Drop` runs
+    /// during unwinding too, and panicking a second time there aborts the
+    /// process instead of reporting the first panic — see
+    /// `tests.rs`'s `committing_the_real_transaction_branch_sends_no_savepoint_statement`,
+    /// which pins this by watching the SQL itself rather than by making a
+    /// failure here fatal.
+    fn drop(&mut self) {
+        if self.savepoint_open && !self.savepoint_committed {
+            let _ = self.conn.execute_batch(&format!(
+                "ROLLBACK TO SAVEPOINT {0}; RELEASE SAVEPOINT {0}",
+                self.label
+            ));
         }
     }
 }

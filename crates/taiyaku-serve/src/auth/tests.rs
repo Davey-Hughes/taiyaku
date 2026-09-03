@@ -107,6 +107,25 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/library/series/{id}",
         "/api/library/editions/{id}",
         "/api/library/members/{id}",
+        // Spec C4 §6's rule editor, task 8 of the branch plan — admin-gated
+        // *inside* each handler, the identical reasoning the proposals and
+        // metadata comments above give for why it matters doubly that these
+        // are guarded here first.
+        "/api/library/rules",
+        "/api/library/rules/{id}",
+        "/api/library/rules/preview",
+        "/api/library/rules/import",
+        // Spec C4 §2's roots routes, task 11 of the branch plan —
+        // admin-gated *inside* each handler, the identical reasoning the
+        // rules comment just above gives for why it matters doubly that
+        // these are guarded here first.
+        "/api/library/roots",
+        "/api/library/roots/{id}",
+        // Spec C4 §3's scan-control route, task 12 of the branch plan —
+        // admin-gated *inside* the handler, the identical reasoning the
+        // roots comment just above gives for why it matters doubly that it
+        // is guarded here first.
+        "/api/library/roots/{id}/scan",
         "/opds/v1.2/catalog",
         "/opds/v1.2/works",
         "/opds/v1.2/works/{work}",
@@ -1173,6 +1192,7 @@ fn router_with_material_under_a_withheld_root(dir: &str) -> (axum::Router, Arc<S
         cache_dir: root.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     (build_router(state.clone()), state)
 }
@@ -1267,6 +1287,7 @@ fn two_works_one_withheld(dir: &str) -> (axum::Router, Arc<ServeState>) {
         cache_dir: root.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     (build_router(state.clone()), state)
 }
@@ -1396,6 +1417,7 @@ fn one_work_two_editions_split_across_roots(dir: &str) -> (axum::Router, Arc<Ser
         cache_dir: root.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     (build_router(state.clone()), state)
 }
@@ -1516,6 +1538,7 @@ fn one_work_three_editions_hub_withheld(dir: &str) -> (axum::Router, Arc<ServeSt
         cache_dir: root.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     (build_router(state.clone()), state)
 }
@@ -1600,7 +1623,7 @@ async fn every_route_declares_its_grant_posture() {
         .count();
     assert_eq!(
         driven, 19,
-        "19 of the 38 guarded routes must be classified Refuses, Filters or \
+        "19 of the 45 guarded routes must be classified Refuses, Filters or \
          RefusesAndFilters and driven by the proofs below — a route's \
          posture changed without this count moving to match, so a route \
          this suite believes it proves may no longer be one it does. It was \
@@ -1611,16 +1634,21 @@ async fn every_route_declares_its_grant_posture() {
          root grant is now dropped where the principal is built, so no caller \
          of them holds a grant to refuse against. I8's 404 was driven by a \
          fixture granting a root to the seeded *admin* — the combination O86 \
-         made unrepresentable — so the proof is void rather than lost"
+         made unrepresentable — so the proof is void rather than lost. Tasks \
+         8, 11 and 12 all only ever added `GrantIndependent` routes, so none \
+         of the three moved this count"
     );
     assert_eq!(
         table.len() - driven,
-        19,
-        "the remaining 19 guarded routes must be GrantIndependent or \
+        26,
+        "the remaining 26 guarded routes must be GrantIndependent or \
          KnownGap — see the `driven == 19` assertion just above, which this \
          one is the other half of. Was 19, then 15 while I8 held the four \
-         metadata routes in the driven half, and 19 again now O86 has \
-         returned them"
+         metadata routes in the driven half, 19 again once O86 returned \
+         them, 23 once task 8 added spec C4 §6's four rule-editor routes, \
+         25 once task 11 added spec C4 §2's two roots routes, and 26 now \
+         task 12 added spec C4 §3's one scan-control route — every one of \
+         the seven, GrantIndependent"
     );
 
     let credential = crate::test_support::fixture_authorization();

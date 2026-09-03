@@ -570,8 +570,15 @@ fn external_of(conn: &Connection, series_id: i64) -> Result<BTreeMap<String, Str
 /// this work is not an error: the content it names may simply no longer be
 /// present, and there is nothing to attach a stale chapter number to.
 pub fn apply(conn: &Connection, work_id: i64, doc: &LibraryDoc) -> Result<(), String> {
-    let tx = conn
-        .unchecked_transaction()
+    // `crate::Nested`, not `unchecked_transaction` directly: `derive::write_work`
+    // reaches this through `librarydoc::apply` while `preview::preview_with_rows`
+    // holds the whole derivation in a transaction of its own — a plain `BEGIN`
+    // here refuses outright the moment that outer transaction is open, and the
+    // refusal used to be swallowed into `DeriveReport::unreadable_hand` rather
+    // than surfaced (whole-branch review, Critical 1). See `Nested`'s own doc
+    // for why a `SAVEPOINT` cannot simply replace `unchecked_transaction`
+    // everywhere instead.
+    let tx = crate::Nested::open(conn, "librarydoc_apply")
         .map_err(|e| format!("starting library-metadata transaction: {e}"))?;
 
     // A plain `UPDATE ... WHERE id = ?` affects zero rows for a work_id that
@@ -697,8 +704,11 @@ pub fn apply_with_series_id(
     series_id: Option<i64>,
     doc: &LibraryDoc,
 ) -> Result<(), String> {
-    let tx = conn
-        .unchecked_transaction()
+    // `crate::Nested`, not `unchecked_transaction` directly — same reason as
+    // `apply`'s own, above: this function is reached from the same
+    // `derive::write_work` path a wrapping preview transaction can already
+    // have open.
+    let tx = crate::Nested::open(conn, "librarydoc_apply_with_series_id")
         .map_err(|e| format!("starting library-metadata transaction: {e}"))?;
 
     // Same row-count guard and the same `COALESCE(?2, title_derived)` choice
@@ -837,7 +847,7 @@ fn apply_series(
         // conflict by deleting the old row and inserting a new one with a
         // fresh rowid. That implicit delete only reaches `series_title_ad`
         // — the trigger keeping `series_fts` current — when
-        // `PRAGMA recursive_triggers` is on, which `Library::from_connection`
+        // `PRAGMA recursive_triggers` is on, which `Library::configure`
         // sets for exactly this reason. A connection opened any other way
         // would leave a phantom row in `series_fts` here, silently.
         conn.execute(
@@ -1092,8 +1102,15 @@ pub fn set_series_titles(
     }
     let sort_title = primary.title.clone();
 
-    let tx = conn
-        .unchecked_transaction()
+    // `crate::Nested`, not `unchecked_transaction` directly. No production
+    // caller today reaches this function with a transaction already open on
+    // `conn` — `metadata::patch_series` calls it on `Library::conn()` before
+    // its own per-work loop, never underneath a derivation — but it is the
+    // same `apply`-family shape as `apply` and `apply_with_series_id` just
+    // above, opened on the same kind of connection a preview can hold open,
+    // so it is converted for the same reason rather than left as the one
+    // survivor of this class of bug.
+    let tx = crate::Nested::open(conn, "librarydoc_set_series_titles")
         .map_err(|e| format!("starting a series-title transaction: {e}"))?;
 
     for title in titles {

@@ -626,6 +626,101 @@ fn library_proposals_lists_and_accepts_over_real_stdout() {
     assert_eq!(rules, 1, "the accept must have written a real rule");
 }
 
+/// **`if !reopened.is_empty()`, not `if reopened.is_empty()`.** An import
+/// that orphans an accepted proposal's rule must say so; `library.rs`'s own
+/// unit tests call `rules` directly and this crate has no stdout-capturing
+/// helper (deliberately, per the note above), so the only place this line
+/// is reachable at all is through the real binary.
+///
+/// Builds the same one-proposal fixture
+/// `library_proposals_lists_and_accepts_over_real_stdout` does, accepts it —
+/// which writes a fifth rule, ordinal 5, beside the four seeded defaults —
+/// then re-imports a rule document with that fifth rule stripped back out,
+/// exactly as replacing the whole set with something that no longer mentions
+/// it would leave behind. `import_json`'s own `reopen_orphaned_accepts` must
+/// then find the accepted proposal's `created_rule_id` pointing at a row
+/// that no longer exists and reopen it — and the CLI must print that it did.
+#[test]
+fn library_rules_import_reports_a_proposal_that_lost_its_accepted_rule() {
+    let dir = std::env::temp_dir().join("taiyaku-cli-test-rules-reopen");
+    let _ = std::fs::remove_dir_all(&dir);
+    let base = dir
+        .join("Go-Toubun no Hanayome")
+        .join("Go-Toubun no Hanayome - v01");
+    let colour = dir
+        .join("Go-Toubun no Hanayome - Full Color Edition")
+        .join("Go-Toubun no Hanayome - Full Color Edition - v01");
+    std::fs::create_dir_all(&base).expect("mkdir base");
+    std::fs::create_dir_all(&colour).expect("mkdir colour");
+    std::fs::write(base.join("000.jpg"), b"page").expect("write base page");
+    std::fs::write(colour.join("000.jpg"), b"page").expect("write colour page");
+    let db = db_path("rules-import-reopen");
+
+    let scan_out = taiyaku_output(&[
+        "library",
+        "scan",
+        "--add",
+        dir.to_str().unwrap(),
+        "--db",
+        &db,
+    ]);
+    assert!(
+        scan_out.contains("; 1 proposal(s) raised"),
+        "the scan must have raised the one proposal this test accepts: {scan_out}"
+    );
+
+    let list_out = taiyaku_output(&["library", "proposals", "--db", &db]);
+    let id: &str = list_out
+        .split_whitespace()
+        .next()
+        .expect("the listing's first token is the proposal id");
+
+    let accept_out = taiyaku_output(&["library", "proposals", "--accept", id, "--db", &db]);
+    assert!(accept_out.contains("accepted proposal"), "{accept_out}");
+
+    // Stdout alone, like the note test above: mixing in stderr's "library
+    // database at …" line would break the JSON this is fed straight back
+    // into.
+    let exported = String::from_utf8_lossy(
+        &taiyaku()
+            .args(["library", "rules", "--db", &db])
+            .output()
+            .expect("the binary runs")
+            .stdout,
+    )
+    .into_owned();
+    let mut rules: Vec<serde_json::Value> =
+        serde_json::from_str(&exported).expect("a JSON array of rules");
+    let before = rules.len();
+    rules.retain(|rule| rule["ordinal"].as_i64().is_some_and(|o| o <= 4));
+    assert!(
+        rules.len() < before,
+        "the accept above must have added a fifth rule for this filter to drop: {exported}"
+    );
+    let path = std::env::temp_dir().join(format!(
+        "taiyaku-cli-test-rules-reopen-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(&path, serde_json::to_string(&rules).expect("serialises"))
+        .expect("write the trimmed rule document");
+
+    let out = taiyaku_output(&[
+        "library",
+        "rules",
+        "--import",
+        path.to_str().unwrap(),
+        "--db",
+        &db,
+    ]);
+    assert!(
+        out.contains(&format!(
+            "1 accepted proposal(s) lost the rule they were accepted by and are open again: \
+             [{id}]"
+        )),
+        "the accepted proposal must be reported reopened, not left unmentioned: {out}"
+    );
+}
+
 /// **Whole-branch review 3's I2, `main.rs`'s call site.** The identical loop
 /// is duplicated in `serve_work` — `taiyaku serve <sidecar>...` imports every
 /// path it is given the same way `library import` does, this module's own

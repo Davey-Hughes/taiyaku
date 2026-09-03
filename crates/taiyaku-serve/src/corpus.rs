@@ -113,6 +113,7 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
         cache_dir: std::env::temp_dir().join("taiyaku-corpus-covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     };
     let work = &state.works[0];
     let sidecar = work.sidecar();
@@ -405,6 +406,7 @@ fn a_corpus_edition_with_members(
                 cache_dir: std::env::temp_dir().join("taiyaku-corpus-download-covers"),
                 log: None,
                 auth: crate::session::AuthConfig::default(),
+                scans: Default::default(),
             });
             let router = crate::test_support::authenticating(crate::build_router(state));
             return (router, slug, key, pages);
@@ -451,6 +453,7 @@ fn a_corpus_edition_of_one_file(root: &Path) -> (axum::Router, String, String, P
                 cache_dir: std::env::temp_dir().join("taiyaku-corpus-download-covers"),
                 log: None,
                 auth: crate::session::AuthConfig::default(),
+                scans: Default::default(),
             });
             let router = crate::test_support::authenticating(crate::build_router(state));
             return (router, slug, key, path);

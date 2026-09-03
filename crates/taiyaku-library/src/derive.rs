@@ -155,10 +155,13 @@ pub struct DeriveReport {
     /// **Counted for the reason [`Self::kept_editions`] is, and more so.** A
     /// store that silently deleted a work would be worse than the duplication
     /// (O73) it fixes, and a number nobody prints is a change nobody can see.
-    /// This is the only `DELETE FROM work` in the project, so it is the last
-    /// thing that should do its job quietly — which is why the four counters
-    /// below travel with it rather than leaving "1 work folded away" to stand
-    /// for whatever happened inside.
+    /// This is the only `DELETE FROM work` `derive` itself reaches — a
+    /// second exists in `scan::apply_removal`, deleting the works a removed
+    /// root alone accounted for, before that function calls into
+    /// `derive_with` in turn — so it is the last thing that should do its
+    /// job quietly — which is why the four counters below travel with it
+    /// rather than leaving "1 work folded away" to stand for whatever
+    /// happened inside.
     pub emptied_works: usize,
     /// Superseded works left standing because the fold was refused.
     ///
@@ -396,6 +399,63 @@ pub struct DeriveReport {
     /// raiser's own count, carried out through the report rather than
     /// re-derived by a second call.
     pub raised: usize,
+    /// Members whose root was deleted by a concurrent [`crate::scan::remove_root`]
+    /// while this derive was already running, between the group this pass
+    /// built in memory and [`write_roots`] writing it back.
+    ///
+    /// **Whole-branch review, Important 1.** `derive_with` holds no
+    /// transaction of its own (see this module's own doc on
+    /// [`fn@derive_with`]), so under WAL a root removal that commits mid-pass
+    /// leaves a member's `Candidate::root_id` naming a row that is already
+    /// gone — `write_roots`'s own `UPDATE` used to let SQLite's foreign key
+    /// on `member.root_id` refuse that outright, failing the whole derive
+    /// with a bare "FOREIGN KEY constraint failed" over a race nobody could
+    /// see coming. `write_roots` now catches exactly that constraint,
+    /// clears the column to `NULL` instead — the identical state
+    /// `schema/006_member_root.sql`'s own `ON DELETE SET NULL` already gave
+    /// every other member of the removed root — and counts it here rather
+    /// than either crashing the pass or losing the event, for
+    /// [`Self::suppressed`]'s reason. A member counted here is not stranded:
+    /// it reads exactly as an imported member with no root on record does
+    /// (O54), and the next scan that finds it under a surviving root
+    /// recovers it the ordinary way.
+    pub root_removed_mid_derive: usize,
+}
+
+/// Whether a derivation reconciles `<root>/.taiyaku/` or leaves the tree
+/// alone.
+///
+/// **Two call sites, and both of them write.** `derive` calls
+/// [`crate::hand::reconcile`] per root, which writes a missing document back
+/// where the root keeps them, and `write_work` calls
+/// [`crate::hand::rename_for_rekey`], which renames a document when a work's
+/// `content_key` moves and is gated on nothing at all — a rekey stranding a
+/// document is the defect it exists to prevent (#101).
+///
+/// **[`Documents::Skip`] suppresses writes, never reads.** `hand::load` stays
+/// on: a hand-set title is part of the structure a preview claims to predict,
+/// and loading it is what makes the preview's answer the same answer a save
+/// would produce. Skipping the read instead would make the preview lie about
+/// every work anyone has ever corrected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Documents {
+    /// Reconcile `<root>/.taiyaku/` as a real derivation does.
+    Reconcile,
+    /// Touch no file under any root. Reads stay on.
+    Skip,
+}
+
+/// [`derive_with`] under [`Documents::Reconcile`] — what a real derivation is.
+///
+/// Kept as its own function rather than a defaulted parameter because 133 call
+/// sites read it, all but a handful of them tests, and none of them has an
+/// opinion about documents.
+///
+/// # Errors
+///
+/// As [`derive_with`].
+pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
+    derive_with(conn, Documents::Reconcile)
 }
 
 /// Turn every `scan_entry` this library holds into series, works, editions and
@@ -405,12 +465,29 @@ pub struct DeriveReport {
 /// on `(series_id, volume)`, so running this twice over unchanged facts writes
 /// the same rows a second time rather than a second set of rows.
 ///
-/// **No transaction of its own.** [`crate::import::scanned`] opens one per
-/// work, and `unchecked_transaction` issues a plain `BEGIN`, which SQLite
-/// refuses inside an open transaction — the same constraint
-/// [`crate::import::replace_alignments`] records. A derive is therefore atomic
-/// per work and not across the library, which is the right grain anyway: a
+/// **No transaction of its own — but everything under it can still be
+/// wrapped in one.** [`crate::import::scanned`] opens one per work and
+/// [`crate::fold::absorb`] opens one per fold, and both do it through
+/// [`crate::Nested`] rather than `unchecked_transaction` directly: a plain
+/// `BEGIN` — the same constraint [`crate::import::replace_alignments`]
+/// records — is refused outright inside an already-open transaction, where
+/// `Nested` instead nests as a `SAVEPOINT`. Called plainly, as every caller
+/// but [`crate::preview::preview`] calls it, nothing is open yet, so `Nested`
+/// takes the real-`BEGIN` branch at both sites and a derive is atomic per
+/// work and not across the library — the right grain for that case: a
 /// library that half-derives has half its works current, not none of them.
+///
+/// **`preview` is the one caller that needs the library-wide grain, and gets
+/// it without this function changing at all.** It wraps a whole `derive_with`
+/// pass in a transaction of its own, so it can roll every write back
+/// together; the per-work and per-fold `Nested` scopes above then take the
+/// `SAVEPOINT` branch instead, nesting inside that outer transaction rather
+/// than refusing it. See that type's own doc.
+///
+/// `documents` governs whether this pass writes under `<root>/.taiyaku/` at
+/// all — see [`Documents`]. [`fn@derive`] is this function under
+/// [`Documents::Reconcile`], which is what every caller but the rule-editor
+/// preview wants.
 ///
 /// # Errors
 ///
@@ -420,7 +497,7 @@ pub struct DeriveReport {
 /// returns it as a complaint and the rule matches nothing, so one malformed
 /// pattern cannot leave a library underived. Neither is a file that has gone
 /// or a container that will not open; see [`DeriveReport`].
-pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
+pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveReport, String> {
     // Once, for the whole library. `Engine::compile` is where every regex in
     // the rule set is compiled, and compiling per entry would recompile the
     // same handful of patterns for every file in a library of thousands.
@@ -506,18 +583,21 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
         let series_id = *series_ids
             .get(&group.series)
             .ok_or_else(|| format!("no series row was reconciled for `{}`", group.series))?;
-        let work_id = write_work(conn, series_id, &group, &mut report)?;
+        let work_id = write_work(conn, series_id, &group, documents, &mut report)?;
         written_editions.extend(group.editions.keys().cloned().map(|key| (work_id, key)));
         written.insert(work_id);
     }
 
-    // **The only place in this project that reaches a `DELETE FROM work`.**
-    // `superseded` decides *which* work the fold takes and `fold::absorb`
-    // decides whether it can be taken safely — the reader's rows moving onto
-    // the target first, in one transaction, with the delete last. A pair it
-    // refuses is counted (`DeriveReport::unfolded_works`) and left standing,
-    // never propagated: a scan that died because one work of thousands could
-    // not be folded would be worse than a scan that folds nothing.
+    // **The only place `derive` itself reaches a `DELETE FROM work`** — the
+    // other is `scan::apply_removal`'s, which deletes the works a removed
+    // root alone accounted for before it calls back into this same
+    // `derive_with`. `superseded` decides *which* work the fold takes and
+    // `fold::absorb` decides whether it can be taken safely — the reader's
+    // rows moving onto the target first, in one transaction, with the delete
+    // last. A pair it refuses is counted (`DeriveReport::unfolded_works`) and
+    // left standing, never propagated: a scan that died because one work of
+    // thousands could not be folded would be worse than a scan that folds
+    // nothing.
     //
     // The refusal's own message travels out in `DeriveReport::unfoldable`
     // rather than being dropped for the count beside it: it already names the
@@ -619,9 +699,12 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
     // **The second is the fold above, and it is not about addressing at
     // all.** `migrated_document.work_id` is `ON DELETE CASCADE`, and
     // `fold::absorb`'s `DELETE FROM work` — reached through `superseded` just
-    // above — is the only place this project ever takes that cascade: the
-    // instant a work folds away, its `migrated_document` row goes with it, so
-    // `reconcile`'s `owed` query (which reads that table) stops naming it.
+    // above — is one of two places this project ever takes that cascade; the
+    // other is `scan::apply_removal`'s own `DELETE FROM work`, which fires it
+    // just the same whenever a doomed work carries a `migrated_document` row.
+    // Either way — folded away here, or deleted with its root there — the
+    // instant the work's row goes, its `migrated_document` row goes with it,
+    // so `reconcile`'s `owed` query (which reads that table) stops naming it.
     // Run this loop *before* the fold instead, and the folded work's row is
     // still there: its address is still in `expected`, its file is still
     // `present`, the two agree, and nothing is reported — the document only
@@ -632,13 +715,18 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
     // pins this: moving this loop up to just after the `for group in
     // groups.into_values()` write loop — still after `write_roots` — turns
     // that assertion red while leaving every other test in this module green.
-    for root in &roots {
-        let found = crate::hand::reconcile(conn, root)?;
-        report.repaired_documents += found.repaired;
-        report.unwritable_documents.extend(found.unwritable);
-        report.orphan_documents.extend(found.orphans);
-        report.declined_documents.extend(found.declined);
-        report.stale_documents.extend(found.stale);
+    // **Skipped whole, not per-root.** `reconcile` writes (gap repair), renames
+    // and reports; a preview wants none of the three, and the report fields it
+    // populates would be artefacts of a derivation nobody asked to keep.
+    if documents == Documents::Reconcile {
+        for root in &roots {
+            let found = crate::hand::reconcile(conn, root)?;
+            report.repaired_documents += found.repaired;
+            report.unwritable_documents.extend(found.unwritable);
+            report.orphan_documents.extend(found.orphans);
+            report.declined_documents.extend(found.declined);
+            report.stale_documents.extend(found.stale);
+        }
     }
 
     // **Correlated here, not inside `reconcile`.** `reconcile` is a pure
@@ -1224,6 +1312,7 @@ fn write_work(
     conn: &Connection,
     series_id: i64,
     group: &Group,
+    documents: Documents,
     report: &mut DeriveReport,
 ) -> Result<i64, String> {
     let mut editions = BTreeMap::new();
@@ -1369,7 +1458,7 @@ fn write_work(
     // member the document *did* set. `write_roots` has no such
     // interaction: nothing the guard or the read-back writes touches
     // `member.root_id`.
-    write_roots(conn, work_id, group)?;
+    write_roots(conn, work_id, group, report)?;
 
     // **The document follows the row here, after `write_roots` and after
     // `import::scanned`'s own transaction has already committed — never
@@ -1396,7 +1485,9 @@ fn write_work(
     // what the store spec §4.4 asks of it, rather than needing a second pass
     // the way a brand-new work's hand document already does, above.
     if let Some(old_key) = rekeyed_from {
-        crate::hand::rename_for_rekey(conn, work_id, &old_key)?;
+        if documents == Documents::Reconcile {
+            crate::hand::rename_for_rekey(conn, work_id, &old_key)?;
+        }
     }
 
     // The `work` columns the sidecar format has no field for, which are also
@@ -2021,23 +2112,75 @@ fn write_chapters(conn: &Connection, work_id: i64, group: &Group) -> Result<(), 
 /// just described actually landed: `replace_editions` inserts them in
 /// document order counting from 0, and `project.rs` reads them back
 /// `ORDER BY ordinal`.
-fn write_roots(conn: &Connection, work_id: i64, group: &Group) -> Result<(), String> {
+///
+/// **A member whose root vanished between `group` being built and this write
+/// running does not fail the derive.** `group`'s `Candidate::root_id` values
+/// were read before this call, and `derive_with` holds no transaction of its
+/// own (see that function's own doc) — so a concurrent
+/// [`crate::scan::remove_root`] committing in that window deletes the `root`
+/// row this `UPDATE` is about to write, and the `member.root_id` foreign key
+/// refuses it. Caught specifically — [`is_foreign_key_violation`] — and
+/// turned into the same `NULL` `schema/006_member_root.sql`'s own `ON DELETE
+/// SET NULL` already wrote for every other member of that root, rather than
+/// propagated: see [`DeriveReport::root_removed_mid_derive`] for why this is
+/// safe to treat as ordinary rather than as a hard failure. Any other error
+/// this statement can return — a locked database, a genuinely malformed
+/// statement — still propagates unchanged.
+fn write_roots(
+    conn: &Connection,
+    work_id: i64,
+    group: &Group,
+    report: &mut DeriveReport,
+) -> Result<(), String> {
     for (key, candidates) in &group.editions {
         let ordered = in_page_order(candidates);
         for (ordinal, candidate) in (0_i64..).zip(ordered) {
-            conn.execute(
+            let result = conn.execute(
                 "UPDATE member SET root_id = ?1
                   WHERE ordinal = ?2
                     AND edition_id = (SELECT id FROM edition
                                        WHERE work_id = ?3 AND key = ?4)",
                 rusqlite::params![candidate.root_id, ordinal, work_id, key],
-            )
-            .map_err(|e| {
-                format!("recording the root of `{key}` member {ordinal} on work {work_id}: {e}")
-            })?;
+            );
+            match result {
+                Ok(_) => {}
+                Err(e) if is_foreign_key_violation(&e) => {
+                    conn.execute(
+                        "UPDATE member SET root_id = NULL
+                          WHERE ordinal = ?1
+                            AND edition_id = (SELECT id FROM edition
+                                               WHERE work_id = ?2 AND key = ?3)",
+                        rusqlite::params![ordinal, work_id, key],
+                    )
+                    .map_err(|e| {
+                        format!(
+                            "clearing the vanished root of `{key}` member {ordinal} \
+                             on work {work_id}: {e}"
+                        )
+                    })?;
+                    report.root_removed_mid_derive += 1;
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "recording the root of `{key}` member {ordinal} on work {work_id}: {e}"
+                    ));
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// Whether SQLite refused a statement because it would have written a value
+/// with no matching row on the other end of a foreign key — [`write_roots`]'s
+/// own use is the only one today: a root deleted out from under an in-flight
+/// derive.
+fn is_foreign_key_violation(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(err, _)
+            if err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY
+    )
 }
 
 /// One edition's candidates in page order.

@@ -488,6 +488,7 @@ async fn a_percent_encoded_edition_key_in_the_feed_routes_back_to_the_same_editi
             .join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let app = feed_router().with_state(state);
 
@@ -842,6 +843,7 @@ async fn the_cover_cache_key_follows_locate_past_a_pageless_first_member() {
         cache_dir: dir.clone(),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let app = feed_router().with_state(state);
 
@@ -1046,6 +1048,7 @@ fn router_with_a_real_page_under_a_withheld_root(
         cache_dir: root.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = crate::test_support::authenticating(crate::build_router(state.clone()));
     (router, state)
@@ -1114,6 +1117,7 @@ fn router_with_two_editions_split_across_roots(
         cache_dir: root.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = crate::test_support::authenticating(crate::build_router(state.clone()));
     (router, state)
@@ -1194,6 +1198,7 @@ fn router_with_two_works_one_withheld(dir: &str) -> (axum::Router, std::sync::Ar
         cache_dir: root.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = crate::test_support::authenticating(crate::build_router(state.clone()));
     (router, state)

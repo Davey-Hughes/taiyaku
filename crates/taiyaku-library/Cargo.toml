@@ -47,3 +47,12 @@ taiyaku-read = { path = "../taiyaku-read" }
 
 [lints]
 workspace = true
+
+# `trace` is enabled for the test build alone, never for the shipped library.
+# One test asserts that `Nested`'s `Drop` issues no statement after an ordinary
+# commit, and the only way to observe "what SQL actually reached SQLite" is
+# `trace_v2`. Cargo unions features across the two tables for the test target
+# and leaves the lib build with `backup` only, so tracing costs nothing in the
+# binary that serves pages.
+[dev-dependencies]
+rusqlite = { version = "0.38", features = ["trace"] }

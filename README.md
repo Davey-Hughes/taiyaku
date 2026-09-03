@@ -201,6 +201,23 @@ taiyaku library proposals --accept 3
 taiyaku library proposals --dismiss 4
 ```
 
+**The rules and the roots are also reachable over HTTP now**, admin-only, under
+`/api/library/rules` and `/api/library/roots`. Two of those routes do something
+the CLI cannot: `POST /api/library/rules/preview` answers *what a proposed rule
+list would do to the whole library* — series merged, works re-homed, works
+orphaned, proposals raised, which files each rule matched and which it missed —
+by running the real derivation against it and rolling back, so nothing is
+written; and `POST /api/library/roots/{id}/scan` starts a scan in the server
+rather than at a terminal, with `GET` on the same path reporting it. Removing a
+root can state what it will take — works, reading positions, notes — before it
+takes them, if the caller asks first: `DELETE .../roots/{id}?dry_run=true` runs
+the identical count and rolls back, so a client can render it before sending
+the plain `DELETE` that actually removes anything; sent without `?dry_run=true`,
+a `DELETE` reports those same counts as it takes them, in one step.
+
+The screens that use them are not built yet; the routes are what spec C4's
+configuration UI is being assembled on.
+
 To read in the browser, build the WebAssembly binding first, then run the reader
 against `serve --db`. The browser opens on a **library** now, not a single work —
 a grid of series with a continue strip above it, `react-router` resolving four

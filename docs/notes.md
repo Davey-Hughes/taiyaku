@@ -14919,3 +14919,65 @@ test stages. On a library mounted that way `<root>/.taiyaku/` can never be
 created and every correction answers `persisted: false`, which is O82's
 read-only case as the ordinary case rather than the corner one. Not tracked
 here either: the server that will run this owns its storage.
+
+## What a rule preview costs on a real library — 2026-09-03
+
+Spec C4 §11 marks its mockup's "34 ms" as **an illustration and not a
+measurement**, and says so honestly: when that spec was written there was no
+store, no scanner and no library to re-derive. This is the measurement it
+asked for, and it changes one thing about the screen.
+
+Measured on the local copy of the real library — **130 series, 1858 works,
+1858 editions, 1883 members, 2044 scan entries, 4 rules** — with a `--release`
+build, ten runs each, through `preview::preview`. The harness is
+`preview_cost_on_a_real_library`, an `#[ignore]`d test pointed at a database
+by `TAIYAKU_PREVIEW_DB`, the same shape the corpus tests use for
+`TAIYAKU_CORPUS`. It was run against a **copy**: the preview writes nothing,
+but that is not a reason to point a new code path at the only real library on
+this machine.
+
+| what | median | best | worst |
+| --- | --- | --- | --- |
+| preview of the library's own unchanged rule list | **281 ms** | 279 ms | 286 ms |
+| preview of that list with one rule appended | **495 ms** | 489 ms | 510 ms |
+| `grouping` alone, 1883 members | **1.3 ms** | — | — |
+
+**The diff is free and the derivation is the whole cost.** `grouping` is 1.3
+ms of the 281, so the remaining ~280 ms is `replace_all`, `derive_with` and
+the rollback — that is, re-deriving 1858 works. Nothing here is worth
+optimising by making the diff cheaper.
+
+**So the preview is not affordable on every keystroke, and C4 §6's
+"debounced" is not enough.** §6 says the route "writes nothing and is safe to
+call on every keystroke, debounced". Safe, yes. Affordable, no: at 281 ms a
+keystroke-driven preview is one derivation per typed character on a 130-series
+library, and this library is *small* against the 156 series C4 §1's mockup
+assumed and far smaller than the thousands §11 names as the unknown case.
+
+**The screen previews on demand.** C4 §11 predicted this exact outcome and
+pre-approved the remedy — *"if it is not, the fix is to debounce harder or
+preview on demand, and neither changes this design"* — so this is a settled
+question rather than a new one. The rule editor gets an explicit control
+rather than a keystroke hook. Reordering by drag stays a preview trigger,
+since a drag is one gesture rather than a stream of them.
+
+**The second row is also the first evidence the mechanism works on real
+data.** The appended rule is a bare `(?<series>.+)` capture over the whole
+path, which is the degenerate case: it gives all but one work its own series,
+and the preview reports `series_after: 1881, works_rehomed: 1880,
+proposals_raised: 343` — 343 new proposals a person would face after saving.
+That is the Impact tab earning its place. A screen that let someone save that
+rule and *then* discover 343 proposals is the screen this one replaces.
+
+**The write lock is held for the duration.** `preview` opens `BEGIN
+IMMEDIATE` and holds it across the derivation, so a preview blocks any writer
+for 0.3–0.5 s on this library — including a scan on the second connection
+`Library::working` hands out. Not a defect and not tracked as an item: the
+alternative is deriving outside a transaction, which is the thing the whole
+design exists to avoid. Recorded because a person previewing rules while a
+scan runs is an ordinary thing to do, and this is the number that says what
+happens.
+
+**Not measured:** a library of thousands of series, which §11 names and
+nothing here answers; and the cost with conflict detection running alongside,
+which is quadratic in rules and was measured on four.

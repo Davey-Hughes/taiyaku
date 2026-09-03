@@ -2983,6 +2983,7 @@ fn router_with_two_works_one_withheld(dir: &str) -> (axum::Router, Arc<ServeStat
         cache_dir: root.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = build_router(state.clone());
     (router, state)
@@ -3098,6 +3099,7 @@ fn router_over_a_scanned_work_under_a_withheld_root(dir: &str) -> (axum::Router,
         cache_dir: fixture_root.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = build_router(state.clone());
     (router, state)

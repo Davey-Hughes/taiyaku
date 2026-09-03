@@ -792,7 +792,12 @@ fn rules(args: &[String]) -> Result<(), String> {
 
     if let Some(path) = import_path {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-        taiyaku_library::rules::import_json(&conn, &text)
+        // The return value is every accepted proposal `import_json` itself
+        // just reopened, because the rule it had accepted did not survive
+        // the replace — whole-branch review, Important 3. Named here rather
+        // than only inside the library, the same discipline the paragraph
+        // below already applies to "nothing has been re-derived yet".
+        let reopened = taiyaku_library::rules::import_json(&conn, &text)
             .map_err(|e| format!("importing rules from {path}: {e}"))?;
         // **An import replaces the rule set and derives nothing.** The whole
         // claim rules make is that editing one re-derives the library without
@@ -807,6 +812,13 @@ fn rules(args: &[String]) -> Result<(), String> {
              the rules are stored; nothing has been re-derived from them yet — \
              run `taiyaku library scan` to apply them"
         );
+        if !reopened.is_empty() {
+            println!(
+                "  {} accepted proposal(s) lost the rule they were accepted by and are open \
+                 again: {reopened:?}",
+                reopened.len()
+            );
+        }
         return Ok(());
     }
 

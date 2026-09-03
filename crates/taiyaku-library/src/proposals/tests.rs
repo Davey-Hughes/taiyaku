@@ -867,6 +867,58 @@ fn raise_reopens_an_accepted_proposal_whose_rule_has_gone() {
     assert!(open[0].created_rule_id.is_none());
 }
 
+/// **Important 3, second bullet.** `reopened`'s predicate — `after` reads
+/// `open` and `before` read `accepted` — survives three separate weakenings,
+/// two of which a fixture routed through a real [`crate::preview::preview`]
+/// still cannot tell apart from the correct behaviour even now that
+/// `crate::rules::replace_all` only deletes the ids a proposed list
+/// genuinely drops: [`crate::proposals::raise`], the one place a derivation
+/// ever writes to `proposal`, only ever inserts a fresh `open` row or flips
+/// an orphaned `accepted` one back to `open` — never `dismissed → open` (id
+/// `3` below) or `open → dismissed` (id `4`), neither of which any real
+/// derive can produce no matter what rule list it is handed. A second
+/// accepted proposal genuinely *surviving* into `after` (id `2`) is
+/// reachable through a real `preview` now —
+/// `crate::preview::tests::a_preview_that_drops_one_of_two_accepts_leaves_the_surviving_one_accepted`
+/// pins it that way — but `3` and `4` still want a hand-built pair of
+/// [`proposals::States`], which is what this test stays for.
+///
+/// Four ids, each ruling out one wrong predicate:
+///
+/// - `1`: `accepted` → `open`. The only genuine reopen, and the only id every
+///   version below must count.
+/// - `2`: `accepted` → `accepted`, unchanged. Dropping the `state ==
+///   STATE_OPEN` half of the predicate counts this one too, since it only
+///   ever looks at `before` — `Series B`'s own shape, the one a real preview
+///   cannot produce.
+/// - `3`: `dismissed` → `open`. Widening `was == STATE_ACCEPTED` to `was !=
+///   STATE_OPEN` counts this one too, since a proposal that was never
+///   accepted at all still satisfies "wasn't open before".
+/// - `4`: `open` → `dismissed`. Replacing the whole predicate with "any state
+///   change" counts this one too, even though it moved the wrong direction
+///   entirely.
+#[test]
+fn reopened_counts_only_a_proposal_that_moved_from_accepted_to_open() {
+    let mut before = proposals::States::new();
+    before.insert(1, "accepted".to_string());
+    before.insert(2, "accepted".to_string());
+    before.insert(3, "dismissed".to_string());
+    before.insert(4, "open".to_string());
+
+    let mut after = proposals::States::new();
+    after.insert(1, "open".to_string());
+    after.insert(2, "accepted".to_string());
+    after.insert(3, "open".to_string());
+    after.insert(4, "dismissed".to_string());
+
+    assert_eq!(
+        proposals::reopened(&before, &after),
+        1,
+        "only id 1 — accepted before, open after — is a reopen; 2 stayed accepted, 3 was never \
+         accepted, and 4 moved the other way"
+    );
+}
+
 #[test]
 fn accept_derives_the_pattern_from_scan_entry_not_the_subject_title() {
     // Review finding 1, reproducing the exact scenario measured: an earlier

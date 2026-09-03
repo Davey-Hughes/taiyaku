@@ -864,6 +864,57 @@ it mutates only changed code and takes minutes.
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
 
+### `crates/taiyaku-library/src/preview.rs`
+
+- `crates/taiyaku-library/src/preview.rs:690:34: replace - with / in conflicts`
+  **An equivalent mutant, verified rather than assumed.** The expression is
+  `i64::MAX - (proposed.len() as i64) + index as i64`, computed once per
+  unsaved (`id == 0`) rule in `proposed`, `index` its own position. The
+  relabelled id it produces is never read back by anything outside this
+  function — `conflicts` uses it only as the second half of the sort key
+  `(relabelled[i].ordinal, relabelled[i].id)` that decides resolution order,
+  never as a value compared against a real row id or against
+  `crate::rules::ROOT_FALLBACK` the way `preview::rows_for`'s own `decided`
+  does. So the only two properties that matter are: does it stay injective
+  across `index`, and does it stay clear of every id a real row could hold.
+
+  Mutated to `i64::MAX / (proposed.len() as i64) + index as i64`, both still
+  hold. Only the first operator changed — the trailing `+ index as i64` is
+  untouched — so it is still strictly increasing in `index` by exactly `1`
+  per step, the same spacing the correct formula gives, just built on a
+  different, smaller huge constant — so it stays injective and preserves
+  the exact same relative order between any two rules, including two
+  sharing one ordinal; nothing about which rule resolves before another,
+  and so which one wins a tie, changes. Colliding with a real row's small
+  id, or with `ROOT_FALLBACK` (`0`), would need `i64::MAX / proposed.len()`
+  itself to be small — on the order of a few thousand — which needs
+  `proposed.len()` on the order of `i64::MAX / 1000`, roughly 9.2×10¹⁵. A
+  `Vec<Rule>` that long cannot be built by any real caller: each `Rule` is
+  well over one hundred bytes, so the vector alone would need several
+  hundred petabytes, long before this crate's own `taiyaku-serve` bound of
+  200 (`MAX_PROPOSED_RULES`) is ever reached by the one HTTP route that
+  calls this function at all.
+
+  **The two mutants this expression's other operator produces are not
+  equivalent, and are not filed here** — both are killed by
+  `preview::tests::two_same_ordinal_unsaved_rules_break_their_tie_in_proposed_order`,
+  which gives two unsaved rules the same ordinal and checks that the one
+  listed *later* in `proposed` wins their tie, the same rule a real save
+  would mint the higher id for. `replace + with -` gives
+  `i64::MAX - len - index`, decreasing as `index` increases instead of
+  increasing. `replace + with *` gives `i64::MAX - len * index` — `*` binds
+  tighter than the leading `-`, so this is `i64::MAX - (len * index)`, not
+  `(i64::MAX - len) * index`, verified against `cargo mutants --diff` rather
+  than assumed from the source text alone — which is *also* decreasing as
+  `index` increases, just at a different rate. Both silently reverse which
+  of two same-ordinal unsaved rules resolves last and so wins their tie;
+  neither is a change in scale alone the way `- with /` is.
+
+  It stops being equivalent the day anything downstream starts reading the
+  relabelled id itself rather than only its ordering, or the day a caller
+  can reach `conflicts` with a `proposed` list long enough to shrink
+  `i64::MAX / proposed.len()` into the range a real row id occupies.
+
 ### `crates/taiyaku-library/src/proposals.rs`
 
 - `crates/taiyaku-library/src/proposals.rs:170:26: replace * with /`

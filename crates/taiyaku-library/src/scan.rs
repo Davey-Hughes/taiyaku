@@ -37,8 +37,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension as _};
 
 // --- roots ---------------------------------------------------------------
 
@@ -135,6 +136,544 @@ pub fn add_root(conn: &Connection, path: &Path) -> Result<Root, String> {
     })
 }
 
+/// How long [`add_root_checked`] waits for its own watch probe's event to
+/// arrive before deciding a root cannot be watched.
+///
+/// The CLI's `scan` command (`taiyaku-cli/src/library.rs`) defines its own
+/// `PROBE_TIMEOUT` at this same two seconds, for this same reason —
+/// `watch::report_line`'s own doc comment states the trade this figure
+/// makes once, and there is no second reasoning to give here. A library
+/// crate cannot depend on its CLI to reuse that constant (the dependency
+/// runs the other way), so this restates the value rather than inventing a
+/// different one; the two are meant to drift together; if the CLI's figure
+/// ever changes, this one should change with it.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// What [`add_root_checked`] built: the row [`add_root`] inserted, the watch
+/// experiment run against it immediately, and the interval that experiment
+/// implies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Added {
+    pub root: Root,
+    pub probe: crate::watch::Probe,
+    pub interval: Duration,
+}
+
+/// Why [`add_root_checked`] could not add a root.
+///
+/// **Two shapes, not the bare `String` this module's other fallible
+/// functions still return**, so a caller can tell which happened rather
+/// than re-parsing a message meant for a person. Every other checked write
+/// this codebase exposes over HTTP already keeps that split at the
+/// handler — `taiyaku-serve`'s `create_rule`/`patch_rule` pre-check their
+/// own caller-fault cases before ever writing, and reserve a 500 for the
+/// store call itself. `add_root_checked` could offer no such split before
+/// this type existed: all three of its own checks (exists, readable,
+/// overlaps) run *inside* this function, not in the handler that calls it,
+/// so a caller had nothing of its own to pre-check against and
+/// `taiyaku-serve`'s `create_root` was left folding every failure this
+/// function could produce — a bad path and a database gone read-only
+/// alike — into the same 400.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddRootError {
+    /// `path` itself: it does not exist, this process cannot read it, or it
+    /// overlaps a root already held, nested in either direction. The
+    /// message already names which, and for an overlap, the colliding root
+    /// by path and id.
+    Unusable(String),
+    /// The store itself failed: [`roots`] (the overlap check's own read),
+    /// the insert inside [`add_root`], or the post-insert [`update_root`]
+    /// write that records the watch probe's interval.
+    Failed(String),
+}
+
+impl std::fmt::Display for AddRootError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unusable(why) | Self::Failed(why) => write!(f, "{why}"),
+        }
+    }
+}
+
+impl std::error::Error for AddRootError {}
+
+/// Add a new scan root at `path`, having run C4 §2's three validations that
+/// [`add_root`] itself does not — "because the failures are silent
+/// otherwise."
+///
+/// 1. **Readable, by this process, not merely present.** `path.canonicalize`
+///    answers "does it exist" and nothing else: it succeeds against a
+///    directory that exists but that this process cannot open. So once
+///    canonicalised, this calls [`std::fs::read_dir`] against the canonical
+///    path and reports its refusal as a distinct failure, naming what it
+///    was — "readable by the server process" is a different question from
+///    "exists", and on a containerised deployment it is exactly the
+///    question that differs.
+/// 2. **Not nested inside, or around, any root already held — checked both
+///    directions**, against every existing root's own canonical path.
+///    [`Path::starts_with`] compares whole path components rather than
+///    bytes, so `/srv/manga2` is never mistaken for something inside
+///    `/srv/manga`; comparing the *canonical* form on both sides (this
+///    function's own candidate and every stored [`Root::path`], which
+///    [`add_root`] canonicalises before it ever reaches a row) is what
+///    keeps a symlink or a `..` from slipping a nested path past a raw
+///    string comparison. Overlapping roots double-count every file beneath
+///    the overlap, and the symptom — duplicate works — looks nothing like
+///    the cause, so the refusal names the existing root it overlaps with
+///    rather than only saying "nested."
+/// 3. **The watcher probe, run now rather than left for the first scan.**
+///    [`crate::watch::probe`] answers whether this root can be watched at
+///    all — spec B §8's experiment — run at the moment a root is added
+///    rather than discovered the first time [`scan_root`] or
+///    [`fn@crate::derive::derive`] runs against a root nobody has probed
+///    yet. The interval [`crate::watch::interval_for`] derives from that
+///    answer is written to `scan_interval_secs` immediately, not left at
+///    the column default until some later call happens to set it.
+///
+/// [`add_root`] itself is unchanged and still validates nothing: `import`
+/// and a great many fixtures call it directly, and a validation that runs
+/// inside every fixture is a validation nobody can test the absence of.
+/// This is the checked path a person — or the HTTP API, on their behalf —
+/// takes when adding a root they have not already vetted by hand.
+///
+/// # Errors
+///
+/// Returns [`AddRootError::Unusable`] if `path` cannot be canonicalised (it
+/// must exist), if the canonical path cannot be read as a directory, or if
+/// it is inside or contains a root already held — every one of those is
+/// this caller's own mistake, an `error` a person can act on. The
+/// exact-duplicate case is intercepted by the nesting check (a path
+/// trivially contains itself) and produces an "is inside existing root"
+/// message, not a separate duplicate-path error.
+///
+/// Returns [`AddRootError::Failed`] if the store itself refuses along the
+/// way — the overlap check's own read ([`roots`]), the insert
+/// ([`add_root`]), or the write that records the watch probe's interval
+/// ([`update_root`]) — none of which is this caller's mistake to fix.
+pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRootError> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| AddRootError::Unusable(format!("{}: {e}", path.display())))?;
+
+    std::fs::read_dir(&canonical).map_err(|e| {
+        AddRootError::Unusable(format!("{}: cannot be read: {e}", canonical.display()))
+    })?;
+
+    for existing in roots(conn).map_err(AddRootError::Failed)? {
+        if canonical.starts_with(&existing.path) {
+            return Err(AddRootError::Unusable(format!(
+                "{} is inside existing root {} (id {})",
+                canonical.display(),
+                existing.path.display(),
+                existing.id
+            )));
+        }
+        if existing.path.starts_with(&canonical) {
+            return Err(AddRootError::Unusable(format!(
+                "{} contains existing root {} (id {})",
+                canonical.display(),
+                existing.path.display(),
+                existing.id
+            )));
+        }
+    }
+
+    let root = add_root(conn, &canonical).map_err(AddRootError::Failed)?;
+
+    let probe = crate::watch::probe(&canonical, PROBE_TIMEOUT);
+    let interval = crate::watch::interval_for(&probe);
+    let interval_secs = interval.as_secs() as i64;
+    update_root(
+        conn,
+        root.id,
+        &RootPatch {
+            scan_interval_secs: Some(Some(interval_secs)),
+            ..Default::default()
+        },
+    )
+    .map_err(AddRootError::Failed)?;
+
+    Ok(Added {
+        root: Root {
+            scan_interval_secs: Some(interval_secs),
+            ..root
+        },
+        probe,
+        interval,
+    })
+}
+
+// --- root update -------------------------------------------------------
+
+/// A change to one existing root — everything [`update_root`] needs to patch
+/// a row without touching the columns nobody named.
+///
+/// `Default`-derived. The five nullable columns are `Option<Option<_>>` for
+/// `RulePatch`'s reason (`rules.rs`): clearing `edition_key` back to "no
+/// default" is a different request from not mentioning it, and a
+/// single-layer `Option<String>` cannot spell the first without spelling the
+/// second too — there would be no way to write `Some(None)` at all. The one
+/// `NOT NULL` column, `keeps_documents`, takes a plain `Option<bool>` for the
+/// same reason `rules::RulePatch`'s five non-nullable columns do: a caller
+/// can replace it or leave it alone, never clear it.
+#[derive(Debug, Clone, Default)]
+pub struct RootPatch {
+    pub edition_key: Option<Option<String>>,
+    pub default_kind: Option<Option<String>>,
+    pub default_language: Option<Option<String>>,
+    pub exclude_globs: Option<Option<String>>,
+    pub scan_interval_secs: Option<Option<i64>>,
+    pub keeps_documents: Option<bool>,
+}
+
+/// Patch root `id` from whichever fields of `patch` are `Some`, and report
+/// whether `id` named a row at all.
+///
+/// **Builds one `UPDATE` naming only the patched columns** —
+/// [`crate::rules::update`]'s own shape, copied rather than reinvented: a
+/// placeholder and a positional parameter per field actually present in
+/// `patch`, nothing written for a field left `None`. The alternative —
+/// always writing every column, refilling whatever the caller did not patch
+/// from a fresh read — is the bug this exists to avoid: a patch that only
+/// means to flip `keeps_documents` must not silently clear `edition_key`
+/// back to NULL along with it.
+///
+/// **Reports whether a row existed to patch, not whether any value on it
+/// actually differed** — [`crate::rules::update`]'s own empty-`SET`-list
+/// case, handled the same way: a patch naming nothing at all has no valid
+/// `UPDATE … SET` to issue, so this asks for `id`'s existence directly.
+///
+/// # Errors
+///
+/// Returns an error if SQLite refuses the read or the write. An `id` naming
+/// no root is `Ok(false)`, not an error, and patches nothing.
+pub fn update_root(conn: &Connection, id: i64, patch: &RootPatch) -> Result<bool, String> {
+    let mut sets: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(v) = &patch.edition_key {
+        params.push(Box::new(v.clone()));
+        sets.push(format!("edition_key = ?{}", params.len()));
+    }
+    if let Some(v) = &patch.default_kind {
+        params.push(Box::new(v.clone()));
+        sets.push(format!("default_kind = ?{}", params.len()));
+    }
+    if let Some(v) = &patch.default_language {
+        params.push(Box::new(v.clone()));
+        sets.push(format!("default_language = ?{}", params.len()));
+    }
+    if let Some(v) = &patch.exclude_globs {
+        params.push(Box::new(v.clone()));
+        sets.push(format!("exclude_globs = ?{}", params.len()));
+    }
+    if let Some(v) = patch.scan_interval_secs {
+        params.push(Box::new(v));
+        sets.push(format!("scan_interval_secs = ?{}", params.len()));
+    }
+    if let Some(v) = patch.keeps_documents {
+        params.push(Box::new(v));
+        sets.push(format!("keeps_documents = ?{}", params.len()));
+    }
+
+    if sets.is_empty() {
+        return conn
+            .query_row("SELECT 1 FROM root WHERE id = ?1", [id], |_| Ok(()))
+            .optional()
+            .map(|found| found.is_some())
+            .map_err(|e| format!("checking whether root {id} exists: {e}"));
+    }
+
+    params.push(Box::new(id));
+    let sql = format!(
+        "UPDATE root SET {} WHERE id = ?{}",
+        sets.join(", "),
+        params.len()
+    );
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(AsRef::as_ref).collect();
+    let changed = conn
+        .execute(&sql, refs.as_slice())
+        .map_err(|e| format!("updating root {id}: {e}"))?;
+    Ok(changed == 1)
+}
+
+// --- removal -----------------------------------------------------------
+
+/// What removing a root costs — the works that go with it, and the reading
+/// positions and notes that go with *them*.
+///
+/// C4 §2 calls removal "the most destructive action in the product, and it
+/// does not look like it," and requires the counts stated before it acts:
+/// "This removes 412 works, 3 in-progress positions and 27 notes." This
+/// struct is that sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Removal {
+    pub works: usize,
+    pub positions: usize,
+    pub notes: usize,
+}
+
+/// Every work whose *every* member sits under root `?1` — the works
+/// [`apply_removal`] deletes, and what [`Removal::works`] counts.
+///
+/// **A subquery, reused by parameter rather than materialised into a
+/// `Vec<i64>` and an `IN (?, ?, …)` built for it.** Three of
+/// [`apply_removal`]'s statements need this exact set — the work count, the
+/// positions it holds, the notes it holds — and a fourth, the delete, needs
+/// it a fourth time; passing `id` as `?1` to each is simpler than binding a
+/// list of a size decided at runtime, and there is only ever one definition
+/// of "the works this root alone accounts for" to keep in step.
+///
+/// **A work is "under" `?1` when every one of its members is, checked
+/// against every *other* member of the same work — not merely "this work has
+/// a member under `?1`."** A work with one member on `?1` and another member
+/// on some other, surviving root (`a_work_spanning_two_roots_gives_each_member_its_own_root`,
+/// `derive/tests.rs`) still has material once `?1` is gone; only the work
+/// whose material is entirely `?1`'s is a work removing `?1` actually
+/// destroys.
+///
+/// **A member whose `root_id` is `NULL` excludes its work from this list
+/// too**, on either side of the comparison. `NULL` means an imported work —
+/// `schema/006_member_root.sql`'s own reading — or, in principle, a
+/// scan-derived member from before its first derive since that migration;
+/// neither is evidence that a work lives under `?1`, and a work is kept
+/// standing rather than guessed away.
+///
+/// **Computed before `?1`'s own `root` row is deleted, and it has to be.**
+/// `member.root_id` is the only record of which root a member came from, and
+/// `schema/006_member_root.sql`'s `ON DELETE SET NULL` erases exactly that
+/// the instant the `root` row goes — the same column O54 records as the one
+/// that excludes a member from every root grant once it reads `NULL`.
+/// [`apply_removal`] reads this before it deletes anything.
+const DOOMED_WORKS: &str = "
+    SELECT DISTINCT e.work_id
+      FROM member m
+      JOIN edition e ON e.id = m.edition_id
+     WHERE m.root_id = ?1
+       AND NOT EXISTS (
+             SELECT 1 FROM member m2
+             JOIN edition e2 ON e2.id = m2.edition_id
+            WHERE e2.work_id = e.work_id
+              AND (m2.root_id IS NULL OR m2.root_id != ?1)
+           )";
+
+/// Delete root `id`, every work that lived entirely under it, and re-derive
+/// — the mechanism [`removal_cost`] runs and rolls back, and [`remove_root`]
+/// runs and commits.
+///
+/// **Delete-plus-derive, not a bare `DELETE FROM root`.** `scan_entry`,
+/// `dir_state`, `rule` and `user_root` all cascade with the root
+/// (`schema/003_scanner.sql`, `schema/004_auth.sql`), but `work`, `edition`,
+/// `member`, `progress` and `note` do not follow — `progress` and `note` are
+/// keyed on `work_id` and carry no root at all, and `member.root_id` is `ON
+/// DELETE SET NULL`, not `CASCADE`, precisely so an ordinary rescan finding a
+/// root briefly missing cannot delete a library's pages
+/// (`schema/006_member_root.sql`). A bare delete would leave every work,
+/// edition, member, note and reading position standing with `member.root_id`
+/// quietly `NULL` — invisible to every grant (O54) — asserting evidence that
+/// is gone. This function does the rest of the job: [`DOOMED_WORKS`] names
+/// what `?1` alone accounts for, deleted explicitly and before the `root` row
+/// goes, and `derive_with` re-derives everything else — `series`,
+/// `kept_editions` on a work that only partly depended on `?1`, and
+/// `crate::proposals::raise` for whatever the loss changes.
+///
+/// **A member `DOOMED_WORKS` excluded, on a work that survives on some other
+/// root, is deleted here too — explicitly, not left to strand.** Once its
+/// own work is spared the delete above, that member's `root_id` still names
+/// `?1`, and the `root` row this function is about to delete would otherwise
+/// leave it `NULL` through `schema/006_member_root.sql`'s own `ON DELETE SET
+/// NULL` — the exact O54 shape, on a smaller scale, that this whole function
+/// exists to rule out. The work stays, since it has material elsewhere; the
+/// one member that does not is taken with the root that supplied it.
+///
+/// **Always derives under [`crate::derive::Documents::Skip`], never
+/// `Reconcile` — whole-branch review, Important 2.** This function's own
+/// writes run inside a transaction that belongs to its caller — committed by
+/// [`remove_root`], rolled back by [`removal_cost`] — and `Reconcile` writes
+/// and renames hand-metadata documents under `<root>/.taiyaku/` while that
+/// transaction is still open. `write_work`'s own doc comment states the
+/// invariant this would break: a document is renamed only after its
+/// database transaction "has already committed — never inside it. A
+/// rollback that left the file renamed would strand it under a key the
+/// database never adopted." Before this fix, `remove_root` passed `Reconcile`
+/// here, so a document deleted just before a removal was found present
+/// again immediately after it — written mid-transaction, and left in place
+/// even had the removal then failed and rolled back. [`remove_root`] now
+/// runs the real, `Reconcile`-mode pass itself, after its own transaction
+/// commits — see that function's own doc.
+///
+/// # Errors
+///
+/// Returns an error if any statement here or in `derive_with` is refused.
+fn apply_removal(
+    conn: &Connection,
+    id: i64,
+) -> Result<(Removal, crate::derive::DeriveReport), String> {
+    let works: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM ({DOOMED_WORKS})"),
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("counting the works root {id} alone accounts for: {e}"))?;
+    let positions: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM progress WHERE work_id IN ({DOOMED_WORKS})"),
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("counting the reading positions root {id} would take: {e}"))?;
+    let notes: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM note WHERE work_id IN ({DOOMED_WORKS})"),
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("counting the notes root {id} would take: {e}"))?;
+
+    conn.execute(
+        &format!("DELETE FROM work WHERE id IN ({DOOMED_WORKS})"),
+        [id],
+    )
+    .map_err(|e| format!("deleting the works root {id} alone accounts for: {e}"))?;
+    conn.execute("DELETE FROM member WHERE root_id = ?1", [id])
+        .map_err(|e| {
+            format!("clearing what root {id} alone still held on a work that survives it: {e}")
+        })?;
+    conn.execute("DELETE FROM root WHERE id = ?1", [id])
+        .map_err(|e| format!("removing root {id}: {e}"))?;
+
+    let derived = crate::derive::derive_with(conn, crate::derive::Documents::Skip)?;
+
+    Ok((
+        Removal {
+            works: usize::try_from(works).unwrap_or(usize::MAX),
+            positions: usize::try_from(positions).unwrap_or(usize::MAX),
+            notes: usize::try_from(notes).unwrap_or(usize::MAX),
+        },
+        derived,
+    ))
+}
+
+/// What removing root `id` would cost, found by actually doing it — inside a
+/// transaction this function rolls back before returning.
+///
+/// [`crate::preview::preview`]'s own shape, reused rather than a second
+/// mechanism for "what would this change do": open a transaction, make the
+/// change, derive for real, read the result, roll back. [`apply_removal`]
+/// always derives under [`crate::derive::Documents::Skip`], for
+/// [`crate::preview::preview`]'s own reason — a real derivation writes and
+/// renames hand-metadata documents under `<root>/.taiyaku/`, and a
+/// `ROLLBACK` does not undo a filesystem write. A cost estimate that renamed
+/// files in someone's library would be worse than the bug it exists to
+/// prevent.
+///
+/// **The [`crate::derive::DeriveReport`] returned alongside [`Removal`] is a
+/// prediction, not a promise.** It is what `Skip`-mode derivation found while
+/// this transaction was still open, rolled back the same as everything else
+/// this function touched — so a caller can show "this removal would also
+/// leave 1 hand document unreadable" before anyone commits to it, but the
+/// fields only [`crate::derive::Documents::Reconcile`] fills in
+/// (`repaired_documents`, `orphan_documents`, and the rest — see
+/// [`remove_root`]'s own doc) are never populated here, because this pass
+/// never runs that far.
+///
+/// **[`crate::Nested`], not `unchecked_transaction` directly** — Task 11 puts
+/// an HTTP route over this function and [`remove_root`] both, and while that
+/// route calls each on a fresh connection today, `preview::preview` already
+/// proves the alternative breaks the moment that stops being true: it wraps
+/// a whole `derive_with` pass in one `BEGIN IMMEDIATE`, and every plain
+/// `unchecked_transaction` opened underneath it — `import::scanned`,
+/// `fold::absorb` — refused outright on the very first work, which is what
+/// `Nested` exists to fix. Rolled back rather than committed by simply never
+/// calling [`crate::Nested::commit`] and letting this scope drop: `Nested`'s
+/// own `Drop` then undoes exactly what `apply_removal` just did, a real
+/// `ROLLBACK` if nothing else was open or a `ROLLBACK TO SAVEPOINT` folded
+/// back into a caller's own already-open transaction if something was — see
+/// that type's own doc. Either way this function takes nothing, whether it
+/// is called standalone or nested inside another transaction.
+///
+/// # Errors
+///
+/// Returns an error if SQLite refuses the transaction or if [`apply_removal`]
+/// fails.
+pub fn removal_cost(
+    conn: &Connection,
+    id: i64,
+) -> Result<(Removal, crate::derive::DeriveReport), String> {
+    let tx = crate::Nested::open(conn, "removal_cost")
+        .map_err(|e| format!("starting the removal-cost transaction: {e}"))?;
+    let removal = apply_removal(&tx, id)?;
+    // Deliberately not `tx.commit()` — see this function's own doc for why
+    // dropping `tx` here, uncommitted, is the rollback.
+    drop(tx);
+    Ok(removal)
+}
+
+/// Remove root `id` for real: delete it, delete every work that lived
+/// entirely under it, re-derive, and reconcile `<root>/.taiyaku/` on every
+/// root that remains — the works just deleted are exactly the ones whose
+/// documents become orphans, and reporting that back is
+/// [`crate::hand::reconcile`]'s job, run here the same way
+/// [`fn@crate::derive::derive`] runs it on every other call site.
+///
+/// **Two derive passes, not one — whole-branch review, Important 2.**
+/// [`apply_removal`] always derives under [`crate::derive::Documents::Skip`]
+/// (see that function's own doc), so the deletes and the SQL-only
+/// re-derivation they need commit as one atomic unit with nothing written to
+/// disk while that transaction is open. The real, `Documents::Reconcile`
+/// pass — the one that writes and renames hand-metadata documents — runs
+/// here, second, on `conn` directly, only *after* the transaction above has
+/// committed. `derive_with`'s own doc states this is safe to run twice:
+/// "idempotent by construction... running this twice over unchanged facts
+/// writes the same rows a second time rather than a second set of rows," so
+/// the cost is one redundant SQL pass, not a correctness risk. Before this
+/// split, the `Reconcile` pass ran *inside* the transaction `Nested` opens
+/// below, which `write_work`'s own doc comment states the exact invariant
+/// this broke: a document is renamed only "after `import::scanned`'s own
+/// transaction has already committed — never inside it. A rollback that left
+/// the file renamed would strand it under a key the database never
+/// adopted." Verified: a document deleted just before a removal was found
+/// present again immediately afterward, written while the removal's own
+/// transaction was still open — any `Err` after that rename would have
+/// rolled the database back while leaving the filesystem moved.
+///
+/// The returned [`crate::derive::DeriveReport`] is this second, real pass's
+/// own — the one whose findings actually reached the library, unlike
+/// [`apply_removal`]'s own `Skip`-mode report from inside the transaction,
+/// which this function does not return: every field the read-back into
+/// `librarydoc::apply` can populate (`unreadable_hand` among them) does not
+/// depend on `documents` and so agrees between the two passes; every field
+/// that does depend on it — `repaired_documents`, `unwritable_documents`,
+/// `orphan_documents`, `declined_documents`, `stale_documents` — is `Skip`'s
+/// own report, and reporting it dropped and reporting nothing would say
+/// the removal reconciled documents. See M5 of the whole-branch review for
+/// why [`apply_removal`]'s own report is not simply discarded either way.
+///
+/// **[`crate::Nested`], not `unchecked_transaction` directly** — see
+/// [`removal_cost`]'s own doc for why: the same composability this function
+/// needs for Task 11's HTTP route.
+///
+/// # Errors
+///
+/// Returns an error if SQLite refuses the transaction, if [`apply_removal`]
+/// fails, if the commit itself is refused, or if the post-commit derive
+/// fails — in which case the removal itself has already committed and only
+/// the reconciliation pass over its aftermath did not complete.
+pub fn remove_root(
+    conn: &Connection,
+    id: i64,
+) -> Result<(Removal, crate::derive::DeriveReport), String> {
+    let tx = crate::Nested::open(conn, "remove_root")
+        .map_err(|e| format!("starting the root-removal transaction: {e}"))?;
+    let (removal, _predicted) = apply_removal(&tx, id)?;
+    tx.commit()
+        .map_err(|e| format!("committing the removal of root {id}: {e}"))?;
+    let derived = crate::derive::derive(conn)
+        .map_err(|e| format!("reconciling documents after removing root {id}: {e}"))?;
+    Ok((removal, derived))
+}
+
 // --- the scan --------------------------------------------------------------
 
 /// What one [`scan_root`] call found and did.
@@ -178,12 +717,37 @@ impl ScanReport {
 }
 
 /// Walk `root` and bring `scan_entry` and `dir_state` up to date with what is
-/// on disk.
+/// on disk, then record how it went on `root` itself — `last_scan_at` and
+/// `last_scan_status`, whichever of the three outcomes below actually
+/// happened.
 ///
 /// Nothing about a series, a work or an edition is decided here — see the
 /// module doc. A root that scanned empty while the library already holds
 /// entries for it is refused rather than applied (§8.1); the returned report
 /// says so through `refused` and the database is left exactly as it was.
+///
+/// **`last_scan_at`/`last_scan_status` are written here, on every path out —
+/// including the refusal — because this is the one function `taiyaku-cli`'s
+/// `library scan` and `taiyaku-serve`'s `POST /api/library/roots/{id}/scan`
+/// both call.** Neither column had ever been written before Task 12, though
+/// both have existed since migration 1 and C4 §3's regime line quotes both.
+/// Putting the write inside this function rather than in either caller is
+/// what keeps the CLI and the route from ever disagreeing about what "the
+/// last scan" means for a root — there is exactly one place this fact is
+/// decided, and both front ends read the same row afterward. `last_scan_at`
+/// is `datetime('now')`, SQLite's own clock rather than this process's, so a
+/// scan run from a container with a skewed clock still agrees with every
+/// other timestamp the same database already keeps that way. `last_scan_status`
+/// is one of three words: `"ok"` (recorded and applied), `"refused"` (§8.1 —
+/// nothing was applied, and this call still says so rather than leaving the
+/// column to read as "never scanned"), or `"failed"` (an `Err` below — a
+/// permission refusal on the root's own directory, a symlink cycle past
+/// [`MAX_DEPTH`], or a database statement failing outright). The write itself
+/// is a plain, separate statement, issued after whatever transaction the scan
+/// itself opened has already committed or rolled back — never inside it —
+/// so a scan that failed and rolled back still leaves a truthful `"failed"`
+/// behind rather than losing the write along with everything else the
+/// transaction undid.
 ///
 /// # Errors
 ///
@@ -196,8 +760,72 @@ impl ScanReport {
 /// refuses to list is not one of these errors — it is skipped, counted and
 /// named in [`ScanReport::unreadable_dirs`] instead, the same "one unreadable
 /// thing must not leave a library unscanned" trade [`pages_of`] already makes
-/// for a container that will not open.
+/// for a container that will not open. Every one of these failures is still
+/// recorded as `last_scan_status = 'failed'` before it propagates — the one
+/// case this function tries hardest not to leave silent, since it is the
+/// one nobody chose.
 pub fn scan_root(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
+    let result = scan_root_inner(conn, root);
+    let status = match &result {
+        Ok(report) if report.refused.is_some() => "refused",
+        Ok(_) => "ok",
+        Err(_) => "failed",
+    };
+    // Best-effort in the sense that a failure here is not folded into
+    // `result` — a scan that genuinely succeeded (or was genuinely refused)
+    // must not be reported as failed merely because this bookkeeping write
+    // could not land, and a scan that already failed has nothing worse to
+    // become. In practice this statement fails only when `result` itself
+    // already carries a store fault, since both run against the same
+    // connection.
+    let _ = conn.execute(
+        "UPDATE root SET last_scan_at = datetime('now'), last_scan_status = ?2 WHERE id = ?1",
+        rusqlite::params![root.id, status],
+    );
+    result
+}
+
+/// Correct `last_scan_status` to `"failed"` after a walk this function had
+/// nothing to do with has already recorded `"ok"`.
+///
+/// **The one caller this exists for**: `taiyaku-serve`'s `POST
+/// /api/library/roots/{id}/scan` runs [`scan_root`] and then
+/// [`fn@crate::derive::derive`] immediately after, one root at a time, and
+/// folds both into the one report C4 §3's screen shows. [`scan_root`] itself
+/// only ever sees the walk — it writes `"ok"` the moment that commits, before
+/// the derive half of the job has even started — so a derive that then fails
+/// left that `"ok"` standing: the walk genuinely succeeded, but the library
+/// it now describes may be only partly derived (whole-branch review,
+/// Important 1). `taiyaku-cli`'s own `library scan` does not need this: it
+/// derives once after every root in the batch, not per root, so there is no
+/// single root row whose status a derive failure there would need to correct
+/// — an `Err` simply fails the whole command.
+///
+/// Kept here, not in `taiyaku-serve`, for the reason [`scan_root`]'s own doc
+/// comment states about `last_scan_at`/`last_scan_status`: there is exactly
+/// one module that writes either column, so nothing outside it can disagree
+/// about what they mean.
+///
+/// Best-effort, [`scan_root`]'s own way: a caller correcting a status after
+/// its own derive already failed has a real error to report regardless, and
+/// this write failing too must not replace that error with a bookkeeping one.
+///
+/// # Errors
+///
+/// Returns an error only if the `UPDATE` itself is refused.
+pub fn mark_derive_failed(conn: &Connection, id: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE root SET last_scan_status = 'failed' WHERE id = ?1",
+        [id],
+    )
+    .map_err(|e| format!("recording that root {id}'s post-scan derive failed: {e}"))?;
+    Ok(())
+}
+
+/// The walk itself — see [`scan_root`], which wraps this to record the
+/// outcome on `root.last_scan_at`/`last_scan_status` regardless of which of
+/// the three ways out below this function takes.
+fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
     let (measured, unreadable_dirs) = measure(&root.path, 0)?;
     let seen = flatten(&measured);
 

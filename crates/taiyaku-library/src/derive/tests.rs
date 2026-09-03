@@ -3573,6 +3573,90 @@ fn folding_a_work_away_orphans_its_hand_document_on_the_same_pass() {
     );
 }
 
+/// **`report.repaired_documents += found.repaired` accumulates once per root
+/// inside the reconcile loop above — every test in this module that opens a
+/// gap at all does it under a single root, so a mutation collapsing that
+/// accumulator still passed the whole suite.** `-=` starting from `0` gives a
+/// negative count no existing assertion reads, and `*=` starting from `0`
+/// pins the field at `0` forever, since zero times anything is zero. This is
+/// the one test with two roots each needing their own document repaired on
+/// the same pass, which only a genuine `+=` gets right.
+///
+/// **The gap is opened by deleting the settled `.library.json` file
+/// directly, not by rekeying.** `a_rekeyed_digest_takes_its_document_with_it`'s
+/// own comment records why a rekey does not open a gap through a real
+/// derive at all: `rename_for_rekey` carries the document to its new
+/// address in the same pass, before `reconcile` ever sees anything missing.
+/// Deleting the file after it has settled — the same move
+/// `preview::tests::a_preview_leaves_the_library_tree_byte_identical` uses,
+/// credited there to `hand/tests.rs`'s `a_gap_is_written_on_the_next_pass` —
+/// is what actually reopens the gap `reconcile`'s repair exists to close.
+#[test]
+fn repaired_documents_accumulates_across_every_root_that_needed_one() {
+    let dir = crate::tests::tempdir("derive-repaired-documents-two-roots");
+    let root_a_dir = dir.path.join("root-a");
+    write_archive(&root_a_dir.join("Alpha").join("Alpha - v01.cbz"), 3);
+    let root_b_dir = dir.path.join("root-b");
+    write_archive(&root_b_dir.join("Beta").join("Beta - v01.cbz"), 3);
+
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root_a = scan::add_root(&conn, &root_a_dir).expect("adding root a");
+    scan::scan_root(&conn, &root_a).expect("scanning root a");
+    let root_b = scan::add_root(&conn, &root_b_dir).expect("adding root b");
+    scan::scan_root(&conn, &root_b).expect("scanning root b");
+    conn.execute("UPDATE root SET keeps_documents = 1", [])
+        .expect("opting both roots into hand documents");
+    derive::derive(&conn).expect("the first derive");
+
+    let work_ids: Vec<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM work ORDER BY id")
+            .expect("preparing the work id query");
+        stmt.query_map([], |r| r.get(0))
+            .expect("querying the work ids")
+            .collect::<Result<_, _>>()
+            .expect("reading the work ids")
+    };
+    assert_eq!(
+        work_ids.len(),
+        2,
+        "one work per root — the fixture this test's own reasoning depends on"
+    );
+
+    let mut addresses = Vec::new();
+    for &work_id in &work_ids {
+        let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+        doc.title = Some(format!("Hand Set {work_id}"));
+        crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+        crate::hand::save(&conn, work_id).expect("saving");
+        addresses.push(
+            crate::hand::path_for(&conn, work_id)
+                .expect("addressing")
+                .expect("a rooted work has an address"),
+        );
+    }
+    // Settles both documents and arms `migrated_document`'s marker for each
+    // — `crate::tests::library_with_a_kept_document`'s own second-derive
+    // step, over two roots instead of one.
+    derive::derive(&conn).expect("settling derive");
+
+    for address in &addresses {
+        assert!(
+            address.is_file(),
+            "the document must be on disk before the gap is opened: {address:?}"
+        );
+        std::fs::remove_file(address).expect("reopening the gap on purpose");
+    }
+
+    let report = derive::derive(&conn).expect("the gap-repair derive");
+    assert_eq!(
+        report.repaired_documents, 2,
+        "both roots' own gaps must be counted, not just the first root's, and not left at 0 or \
+         negative: {report:?}"
+    );
+}
+
 /// **Two orphans in one pass, only one of which came from a fold** — the gap
 /// the test above cannot close on its own. With a single orphan and a single
 /// `absorbed_into` entry, a correlation keyed on the orphan's own path
@@ -3870,4 +3954,309 @@ fn title_after_rebuilding(dir: &crate::tests::TempDir) -> String {
         row.get(0)
     })
     .expect("the work came back")
+}
+
+/// A preview derivation must not rename, write or delete anything under
+/// `<root>/.taiyaku/`. `hand::rename_for_rekey` is gated on nothing — a rekey
+/// stranding a document is the defect it exists to prevent — so without a
+/// documents policy a rule preview would rename files in someone's library and
+/// the database rollback would not undo it.
+#[test]
+fn skipping_documents_leaves_the_library_tree_byte_identical() {
+    let fixture = crate::tests::library_with_a_kept_document();
+    let conn = fixture.conn();
+
+    // Move the work's content_key: repack the archive so a rekey is what the
+    // next derivation sees. Taken after the repack and rescan, not before:
+    // `before` pins what `derive_with` itself must not disturb, and the
+    // repack — a setup step standing in for a scan that already ran — has
+    // already changed the archive's bytes by this point on purpose.
+    crate::tests::add_a_page(&fixture, "Series - v01.cbz");
+    crate::scan::scan_root(&conn, &crate::scan::roots(&conn).unwrap()[0]).unwrap();
+    let before = crate::tests::tree_snapshot(fixture.root_path());
+
+    crate::derive::derive_with(&conn, crate::derive::Documents::Skip).unwrap();
+
+    assert_eq!(
+        crate::tests::tree_snapshot(fixture.root_path()),
+        before,
+        "a Skip derivation wrote, renamed or removed a file under the root"
+    );
+}
+
+/// The default policy is unchanged behaviour: `derive` still reconciles.
+///
+/// **Location on disk, not the report's own counters, is what has to pin the
+/// delegation.** `report.rekeyed` increments before either policy's guard
+/// runs, so it is identical whichever policy `derive` actually calls, and
+/// `report.orphan_documents` is populated only inside the reconcile loop —
+/// it reads empty both when `rename_for_rekey` genuinely carried the
+/// document across *and* when a `Skip`-delegating `derive` never populated
+/// it at all, because nothing else in this module writes to it. Neither
+/// counter tells the two apart. The filesystem does: under a correct
+/// `derive` the document ends up at the new `content_key` address and the
+/// old one is gone; under a `Skip`-delegating `derive` neither the rename
+/// nor the reconcile loop's gap repair runs, so the old-key file is still
+/// standing and the new-key file was never written. Confirmed with a direct
+/// mutation — rewiring `derive` to call `derive_with(conn, Documents::Skip)`
+/// left every assertion this test had before this one green.
+#[test]
+fn reconciling_documents_is_what_plain_derive_does() {
+    let fixture = crate::tests::library_with_a_kept_document();
+    let conn = fixture.conn();
+    crate::tests::add_a_page(&fixture, "Series - v01.cbz");
+    crate::scan::scan_root(&conn, &crate::scan::roots(&conn).unwrap()[0]).unwrap();
+
+    let work_id: i64 = conn
+        .query_row("SELECT id FROM work", [], |r| r.get(0))
+        .expect("the one work the fixture derived");
+    let old_path = crate::hand::path_for(&conn, work_id)
+        .expect("addressing")
+        .expect("a rooted work has an address");
+
+    let report = crate::derive::derive(&conn).unwrap();
+
+    assert_eq!(
+        report.rekeyed, 1,
+        "the repack should have moved content_key"
+    );
+    assert!(
+        report.orphan_documents.is_empty(),
+        "rename_for_rekey should have carried the document across: {:?}",
+        report.orphan_documents
+    );
+
+    let new_path = crate::hand::path_for(&conn, work_id)
+        .expect("addressing")
+        .expect("a rooted work has an address");
+    assert_ne!(
+        old_path, new_path,
+        "the rekey must actually move the address, or the two checks below \
+         prove nothing"
+    );
+    assert!(
+        !old_path.is_file(),
+        "the old-key document must be gone once a real derive has reconciled \
+         it: {}",
+        old_path.display()
+    );
+    assert!(
+        new_path.is_file(),
+        "the document must stand at the new address: {}",
+        new_path.display()
+    );
+}
+
+/// **Whole-branch review, Important 1.** `write_roots` writes `member.root_id`
+/// from a [`super::Group`] built earlier in the same derive pass — and
+/// `derive_with` holds no transaction of its own, so under WAL a concurrent
+/// [`crate::scan::remove_root`] can commit a root's deletion in the window
+/// between that group being built and this write running. The `UPDATE`
+/// then names a `root_id` the `root` table no longer holds, and the column's
+/// own foreign key used to refuse it outright — failing the *whole* derive
+/// over a race nobody watching the walk's own `report.error` could see
+/// coming, while `root.last_scan_status` still read `"ok"` (the walk itself
+/// had succeeded).
+///
+/// **Reproduced deterministically here, not through real threads.** A
+/// [`super::Group`] naming a `root_id` the `root` table has *already* lost by
+/// the time `write_roots` runs is exactly what that race leaves behind at
+/// the one call this finding names — constructing it by hand after deleting
+/// the root pins the fix without a timing-dependent test that could pass or
+/// fail depending on how two threads happen to interleave.
+#[test]
+fn write_roots_survives_a_root_deleted_after_its_own_group_was_built() {
+    let dir = crate::tests::tempdir("derive-write-roots-vanished-root");
+    write_pages(&dir.path.join("Series").join("Series - v01"), 2);
+
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &dir.path).expect("adding the root");
+    scan::scan_root(&conn, &root).expect("scanning the root");
+    derive::derive(&conn).expect("the first derive, which assigns member.root_id for real");
+
+    let work_id: i64 = conn
+        .query_row("SELECT id FROM work", [], |r| r.get(0))
+        .expect("the fixture's one work");
+    let edition_key: String = conn
+        .query_row(
+            "SELECT key FROM edition WHERE work_id = ?1",
+            [work_id],
+            |r| r.get(0),
+        )
+        .expect("the fixture's one edition");
+    let member_root_id: i64 = conn
+        .query_row(
+            "SELECT m.root_id FROM member m
+               JOIN edition e ON e.id = m.edition_id
+              WHERE e.work_id = ?1",
+            [work_id],
+            |r| r.get(0),
+        )
+        .expect("the member the first derive assigned a real root to");
+    assert_eq!(
+        member_root_id, root.id,
+        "sanity: the member must carry the root this test is about to delete"
+    );
+
+    // The race: `root` is gone — as a concurrent `remove_root` would leave
+    // it — while `group`, below, still names its id, exactly as a `Group`
+    // built moments before that commit would.
+    conn.execute("DELETE FROM root WHERE id = ?1", [root.id])
+        .expect("deleting the root out from under the in-flight group");
+    let stranded: Option<i64> = conn
+        .query_row(
+            "SELECT root_id FROM member m JOIN edition e ON e.id = m.edition_id \
+             WHERE e.work_id = ?1",
+            [work_id],
+            |r| r.get(0),
+        )
+        .expect("reading the member back");
+    assert_eq!(
+        stranded, None,
+        "sanity: schema/006_member_root.sql's own ON DELETE SET NULL must already have cleared \
+         this — the point of this test is what write_roots then does when it tries to write \
+         the stale id straight back"
+    );
+
+    let mut group = super::Group {
+        series: "Series".to_string(),
+        volume: Some(1.0),
+        editions: std::collections::BTreeMap::new(),
+    };
+    group.editions.insert(
+        edition_key,
+        vec![super::Candidate {
+            path: dir
+                .path
+                .join("Series")
+                .join("Series - v01")
+                .join("000.png")
+                .to_string_lossy()
+                .into_owned(),
+            rel_path: "Series/Series - v01/000.png".to_string(),
+            root_id: root.id,
+            sha256: "0".repeat(64),
+            pages: 1,
+            chapter: None,
+            title: None,
+            kind: None,
+            language: None,
+        }],
+    );
+    let mut report = derive::DeriveReport::default();
+
+    super::write_roots(&conn, work_id, &group, &mut report)
+        .expect("a vanished root must not fail write_roots outright");
+
+    assert_eq!(
+        report.root_removed_mid_derive, 1,
+        "the race must be counted, not merely swallowed"
+    );
+    let after: Option<i64> = conn
+        .query_row(
+            "SELECT root_id FROM member m JOIN edition e ON e.id = m.edition_id \
+             WHERE e.work_id = ?1",
+            [work_id],
+            |r| r.get(0),
+        )
+        .expect("reading the member back");
+    assert_eq!(
+        after, None,
+        "the member must read no root at all — the same state an ordinary ON DELETE SET NULL \
+         already gives every other member of a removed root, not stranded on an id nothing \
+         holds"
+    );
+}
+
+/// **`is_foreign_key_violation`'s narrowness is what makes the recovery
+/// above safe, and nothing above tests the narrowness itself.** Widen the
+/// guard to match any error at all — `replace match guard
+/// is_foreign_key_violation(&e) with true`, or make the function itself
+/// always answer `true` — and the test above still passes, because a
+/// deleted root really does raise a foreign-key violation and either
+/// mutation happens to agree with the real guard on that one case.
+///
+/// Reached with a `BEFORE UPDATE` trigger rather than another deleted root,
+/// so the error `write_roots`'s first `UPDATE` receives is unambiguously
+/// *not* a foreign-key violation: the trigger only fires while the root row
+/// it names is still live, still referenced, still exactly what
+/// `member.root_id`'s own foreign key is satisfied by. A locked database or
+/// a malformed statement — the two examples `write_roots`'s own doc comment
+/// gives for "still propagates unchanged" — could not be staged
+/// deterministically, so this stands in for them: some other, non-FK error
+/// on that exact statement.
+#[test]
+fn write_roots_propagates_a_non_foreign_key_error_rather_than_treating_it_as_a_vanished_root() {
+    let dir = crate::tests::tempdir("derive-write-roots-non-fk-error");
+    write_pages(&dir.path.join("Series").join("Series - v01"), 2);
+
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &dir.path).expect("adding the root");
+    scan::scan_root(&conn, &root).expect("scanning the root");
+    derive::derive(&conn).expect("the first derive, which assigns member.root_id for real");
+
+    let work_id: i64 = conn
+        .query_row("SELECT id FROM work", [], |r| r.get(0))
+        .expect("the fixture's one work");
+    let edition_key: String = conn
+        .query_row(
+            "SELECT key FROM edition WHERE work_id = ?1",
+            [work_id],
+            |r| r.get(0),
+        )
+        .expect("the fixture's one edition");
+
+    // The stand-in store fault: firing only on the exact write write_roots
+    // is about to make (root_id set back to the still-live root this member
+    // already carries), so there is no ambiguity about why it failed — the
+    // root row it names is right there, unremoved.
+    conn.execute_batch(&format!(
+        "CREATE TRIGGER simulate_store_fault BEFORE UPDATE OF root_id ON member \
+         WHEN NEW.root_id = {} \
+         BEGIN SELECT RAISE(ABORT, 'not a foreign key violation'); END;",
+        root.id
+    ))
+    .expect("installing the trigger");
+
+    let mut group = super::Group {
+        series: "Series".to_string(),
+        volume: Some(1.0),
+        editions: std::collections::BTreeMap::new(),
+    };
+    group.editions.insert(
+        edition_key,
+        vec![super::Candidate {
+            path: dir
+                .path
+                .join("Series")
+                .join("Series - v01")
+                .join("000.png")
+                .to_string_lossy()
+                .into_owned(),
+            rel_path: "Series/Series - v01/000.png".to_string(),
+            root_id: root.id,
+            sha256: "0".repeat(64),
+            pages: 1,
+            chapter: None,
+            title: None,
+            kind: None,
+            language: None,
+        }],
+    );
+    let mut report = derive::DeriveReport::default();
+
+    let err = super::write_roots(&conn, work_id, &group, &mut report).expect_err(
+        "a non-foreign-key error on the same statement must fail the derive, not be \
+         swallowed as a vanished root",
+    );
+    assert!(
+        err.contains("not a foreign key violation"),
+        "the propagated error must be the store fault itself, not a generic message: {err}"
+    );
+    assert_eq!(
+        report.root_removed_mid_derive, 0,
+        "a store fault is not a vanished root and must not be counted as one"
+    );
 }

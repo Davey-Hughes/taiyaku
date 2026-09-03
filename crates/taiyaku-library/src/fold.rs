@@ -656,8 +656,14 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
     // computed outside the transaction would be a decision about a state the
     // transaction never saw. Rolled back by `Transaction`'s own `Drop` on
     // every early return, which is what makes the refusal arm cost nothing.
-    let tx = conn
-        .unchecked_transaction()
+    //
+    // `crate::Nested`, not `unchecked_transaction` directly, for
+    // `preview::preview`'s sake — see that type's own doc. `derive` calls
+    // this once per fold `superseded` finds, and a preview wraps a whole
+    // `derive_with` pass in a transaction of its own so the whole thing
+    // rolls back together; a plain `BEGIN` here would refuse the moment that
+    // outer transaction is already open.
+    let tx = crate::Nested::open(conn, "fold_absorb")
         .map_err(|e| format!("starting the fold transaction for work {from_work}: {e}"))?;
 
     let map = edition_map(&tx, from_work, into_work)?;

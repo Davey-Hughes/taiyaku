@@ -1104,6 +1104,72 @@ fn apply_with_series_id_does_not_resolve_by_title_even_when_the_text_collides() 
     );
 }
 
+/// **A no-op `apply_with_series_id` still passes the test above.** That test
+/// only reads back `work_a`'s series membership, which a version of this
+/// function that wrote nothing at all would also leave untouched — so it
+/// proves the refusal to resolve by title without proving the function
+/// applies the document it was handed. This drives it with `series_id: None`
+/// — the shape [`crate::import::sidecar`]'s own callers use least, but the
+/// one this function's own doc comment says still writes everything but
+/// series identity and the reading direction — and reads back the same
+/// fields `applying_the_fixture_writes_series_editions_members_tags_and_external`
+/// checks for [`apply`]: `work.volume`, `edition.language`/`kind`,
+/// `member.chapter_declared`/`chapter_source`, and `work_tag`. `doc.external`
+/// is cleared first, the same way the collision test above clears it,
+/// because an external id with no series to attach to is refused rather than
+/// silently dropped, and this test passes `None`.
+#[test]
+fn apply_with_series_id_writes_editions_members_and_tags_like_apply_does() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work(&conn);
+    let mut doc = LibraryDoc::from_json(FIXTURE).expect("parses");
+    doc.external.clear();
+
+    apply_with_series_id(&conn, work_id, None, &doc).expect("apply_with_series_id");
+
+    let volume: Option<f64> = conn
+        .query_row("SELECT volume FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("volume");
+    assert_eq!(
+        volume,
+        Some(1.0),
+        "work.volume must be written, not left at its pre-apply default"
+    );
+
+    let (language, kind): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT language, kind FROM edition WHERE work_id = ?1 AND key = 'raw-mono'",
+            [work_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("edition row");
+    assert_eq!(language.as_deref(), Some("ja"));
+    assert_eq!(kind.as_deref(), Some("raw"));
+
+    let (chapter, chapter_source): (Option<f64>, Option<String>) = conn
+        .query_row(
+            "SELECT chapter_declared, chapter_source FROM member WHERE sha256 = '3f9a'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("member row");
+    assert_eq!(chapter, Some(1.0));
+    assert_eq!(chapter_source.as_deref(), Some("hand"));
+
+    let tag: String = conn
+        .query_row(
+            "SELECT tag.name FROM work_tag JOIN tag ON tag.id = work_tag.tag_id
+             WHERE work_tag.work_id = ?1",
+            [work_id],
+            |r| r.get(0),
+        )
+        .expect("tag row");
+    assert_eq!(tag, "romance");
+}
+
 /// `doc.editions` names an edition key this work does not have — a document
 /// written for a different sidecar, or one that has gone stale since. This
 /// must not silently write nothing; the mismatch is worth refusing.

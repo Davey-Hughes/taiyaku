@@ -10,6 +10,12 @@ mod cache_root;
 mod cbz;
 mod comicinfo;
 mod composite;
+/// Spec C4 §6's rule-editor routes: the admin-only CRUD, preview and import
+/// over [`taiyaku_library::rules`] and [`taiyaku_library::preview`].
+///
+/// Private, for the reason `curation`'s own doc comment gives: every handler
+/// here is reached through [`build_router`] and nothing else.
+mod config_api;
 #[cfg(test)]
 mod corpus;
 mod cover;
@@ -83,6 +89,25 @@ pub struct ServeState {
     /// the *same* database a later `taiyaku library import` reconciles
     /// against, rather than one that vanishes with the process.
     pub library: Arc<taiyaku_library::Library>,
+    /// The works this process serves through `/api/works` and the reader —
+    /// built once, at startup (`taiyaku-cli`'s `serve` calls
+    /// [`from_library`]/[`load_works`] before this struct is ever
+    /// constructed).
+    ///
+    /// **A startup snapshot, and Task 12's scan trigger is what makes that
+    /// consequence live rather than theoretical.** Every `/api/library/*`
+    /// route (`config_api.rs`, `library_api.rs`) reads `self.library`
+    /// directly, so it is current the instant a scan finishes — but
+    /// `/api/works` and the reader read this field instead, and nothing a
+    /// scan does updates it. A root scanned through
+    /// `POST /api/library/roots/{id}/scan` is fully reflected in every
+    /// `/api/library/*` answer and in `root.last_scan_at`/`last_scan_status`
+    /// the moment `GET` on that same route reports it done — but a brand
+    /// new work that scan just derived will not appear in `/api/works`, and
+    /// an existing one's sidecar will not pick up a rescan's changes, until
+    /// this process restarts. `config_api::finished_scan_json`'s own `note`
+    /// field says so in the response itself, so a caller does not have to
+    /// find this comment to learn it.
     pub works: Vec<Work>,
     pub source: Arc<dyn PageSource>,
     /// Where generated covers are kept between runs.
@@ -95,6 +120,59 @@ pub struct ServeState {
     /// Spec A2 §6 and §5. Small because §11 puts TLS in a reverse proxy, so
     /// none of that is here.
     pub auth: crate::session::AuthConfig,
+    /// Every root scan currently running or just finished, by root id — Task
+    /// 12's registry for `POST`/`GET /api/library/roots/{id}/scan`.
+    ///
+    /// **In-process only, and deliberately.** Nothing here survives a
+    /// restart: a process that died mid-scan left no lock behind, and the
+    /// next scan is a full one regardless of what the last one reached, so
+    /// there is nothing a persisted entry would buy that a fresh `HashMap`
+    /// does not already give for free. The registry's whole job is refusing
+    /// a *second* start against a root already scanning in *this* process —
+    /// C4 §3 — not remembering a scan across runs; `root.last_scan_at`/
+    /// `last_scan_status` (`taiyaku_library::scan::scan_root`) are the
+    /// durable record, written on every outcome including the refusal.
+    ///
+    /// A `Mutex<HashMap>` rather than a `DashMap` or similar: entries are
+    /// read and written under a lock held only long enough to check, insert
+    /// or replace one key, never across the scan itself — `start_scan` drops
+    /// the guard before `tokio::task::spawn_blocking` ever begins walking a
+    /// filesystem, and the spawned task reacquires it only to write its
+    /// finished report back. A crate this size gains nothing from a
+    /// lock-free map for that shape of access.
+    pub scans: Arc<std::sync::Mutex<std::collections::HashMap<i64, ScanProgress>>>,
+}
+
+/// One root's scan, as the registry in [`ServeState::scans`] tracks it —
+/// [`crate::config_api::scan_status`]'s own source of truth while a scan is
+/// still running, and the last word on how it went once `done` flips.
+///
+/// **Survives exactly as long as the process does, and exactly one scan per
+/// root at a time** — see [`ServeState::scans`]'s own doc comment for why
+/// neither is a shortcoming here.
+#[derive(Debug)]
+pub struct ScanProgress {
+    /// When this scan was started — [`std::time::Instant`], not a wall-clock
+    /// timestamp, since the only thing anything reads this for is "how long
+    /// has this been running," never "what time did it start." Wall-clock
+    /// time already has a durable home: `root.last_scan_at`, written by
+    /// `scan_root` itself once the scan finishes.
+    pub started: std::time::Instant,
+    /// Whether the spawned task has finished — successfully, or by failing —
+    /// and written [`Self::report`]. A caller polling
+    /// `GET /api/library/roots/{id}/scan` reads this to know whether what it
+    /// is looking at is a live-progress snapshot or the finished answer.
+    pub done: bool,
+    /// The rendered report, once `done` is true — `null`/`None` while a scan
+    /// is still running, since there is nothing to report yet beyond the
+    /// fact that one is in flight.
+    ///
+    /// Whole [`taiyaku_library::scan::ScanReport`] and
+    /// [`taiyaku_library::derive::DeriveReport`] structures, rendered with
+    /// every field present — including the empty collections — per C4 §3's
+    /// discipline that a scan names what it did not do rather than only what
+    /// it did; see [`crate::config_api::scan_status`]'s own doc comment.
+    pub report: Option<serde_json::Value>,
 }
 
 impl ServeState {
@@ -342,6 +420,7 @@ pub async fn serve(
         cache_dir: resolved.covers(),
         log,
         auth,
+        scans: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
     // §4's other half: expired sessions are deleted lazily on lookup, and swept

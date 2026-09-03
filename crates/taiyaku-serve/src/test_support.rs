@@ -94,6 +94,7 @@ pub(crate) fn state(dir: &str) -> ServeState {
         cache_dir: std::env::temp_dir().join(dir).join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     }
 }
 
@@ -279,6 +280,7 @@ pub(crate) fn state_with_real_pages() -> (std::sync::Arc<ServeState>, Fixture) {
         cache_dir: fixture.path().join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     (state, fixture)
 }
@@ -426,6 +428,7 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
             .join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()));
     (router, state)
@@ -489,6 +492,7 @@ pub(crate) fn router_over_a_library_with_two_editions()
         cache_dir: fixture.path().join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()));
     (router, state, work_id, fixture)
@@ -575,6 +579,7 @@ pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<Serv
             .join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     // `authenticating`, because `library()` seeds a claimed account and every
     // route is behind the guard since spec A2 — the same wrapper
@@ -732,6 +737,7 @@ fn router_over_a_scanned_tree(
         source: std::sync::Arc::new(crate::LocalLibrary),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()));
     (router, state, fixture)
@@ -822,6 +828,108 @@ pub(crate) fn router_over_a_shared_publisher_directory()
     )
 }
 
+/// Two scanned roots, each holding an unrelated, single-volume series — the
+/// fixture the roots routes' own tests need: a first root to leave standing,
+/// and a second whose id names a real row to patch or remove, with a real
+/// work under it whose removal costs something nonzero to report.
+///
+/// **Two independent series, not one split across two roots** — unlike
+/// [`router_over_two_scanned_volumes_of_one_series_across_two_roots`] above,
+/// deliberately: removing the second root here must delete a whole work
+/// (`scan.rs`'s own `DOOMED_WORKS`, "a work this root alone accounts for"),
+/// not merely orphan one edition of a work that survives on the other root —
+/// a removal test wants a nonzero work count it can assert on without also
+/// asserting the *other* root came through unscathed.
+///
+/// The fixture account keeps its seeded `admin` role — every route under
+/// `/api/library/roots` is admin-gated (C4's opening line), and every test
+/// built over this fixture is about that gate passing, not about O86's
+/// grant-dropping.
+pub(crate) fn state_with_two_scanned_roots() -> (axum::Router, std::sync::Arc<ServeState>, Fixture)
+{
+    let fixture = Fixture::new("taiyaku-test-two-scanned-roots");
+    let root_a = fixture.path().join("root-a");
+    let root_b = fixture.path().join("root-b");
+    write_pages(&root_a.join("Series A").join("Series A - v01"), 2);
+    write_pages(&root_b.join("Series B").join("Series B - v01"), 2);
+
+    let library = library();
+    {
+        let conn = library.conn();
+        let a = taiyaku_library::scan::add_root(&conn, &root_a).expect("adds root a");
+        taiyaku_library::scan::scan_root(&conn, &a).expect("scans root a");
+        let b = taiyaku_library::scan::add_root(&conn, &root_b).expect("adds root b");
+        taiyaku_library::scan::scan_root(&conn, &b).expect("scans root b");
+        taiyaku_library::derive::derive(&conn).expect("derives the library");
+    }
+    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    assert_eq!(
+        works.len(),
+        2,
+        "two unrelated series, one work each: two works, not {}",
+        works.len()
+    );
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works,
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: fixture
+            .path()
+            .with_file_name("taiyaku-test-two-scanned-roots-covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
+    });
+    let router = authenticating(crate::build_router(state.clone()));
+    (router, state, fixture)
+}
+
+/// The ids of every root [`state_with_two_scanned_roots`] built, ascending —
+/// `scan::roots`'s own order, and the order the two `add_root` calls above
+/// wrote them in.
+fn root_ids(state: &ServeState) -> Vec<i64> {
+    let conn = state.library.conn();
+    let mut stmt = conn
+        .prepare("SELECT id FROM root ORDER BY id")
+        .expect("prepares the root id query");
+    stmt.query_map([], |r| r.get(0))
+        .expect("queries the root ids")
+        .collect::<Result<Vec<i64>, _>>()
+        .expect("reads the root ids")
+}
+
+/// The second root [`state_with_two_scanned_roots`] added — the one its own
+/// removal test acts against, leaving the first standing so a test can
+/// assert on what survived as well as on what did not.
+pub(crate) fn second_root_id(state: &ServeState) -> i64 {
+    let ids = root_ids(state);
+    assert_eq!(
+        ids.len(),
+        2,
+        "the two-root fixture must hold exactly two roots, not {}",
+        ids.len()
+    );
+    ids[1]
+}
+
+/// A real, existing directory under [`state_with_two_scanned_roots`]'s first
+/// root.
+///
+/// `scan::add_root_checked` canonicalises and lists whatever path it is
+/// given before it ever checks for an overlap, so a nesting refusal can only
+/// be proven against a path that genuinely exists on disk — a made-up
+/// subdirectory would be refused for not existing, which proves nothing
+/// about the nesting check this fixture exists for.
+pub(crate) fn a_path_inside_the_first_root(state: &ServeState) -> String {
+    let conn = state.library.conn();
+    let root_path: String = conn
+        .query_row("SELECT path FROM root ORDER BY id LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .expect("the fixture's first root");
+    format!("{root_path}/Series A")
+}
+
 /// Two scanned volumes of **one** series — the shape `metadata::patch_series`
 /// needs a caller to exist over: `series`, `series_title` and `external_id`
 /// are shared across every work under a series (`librarydoc.rs`'s own module
@@ -890,6 +998,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
             .with_file_name("taiyaku-test-two-volumes-one-series-covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()));
     (router, state, fixture)
@@ -969,6 +1078,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
             .with_file_name("taiyaku-test-two-volumes-two-roots-covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()));
     (router, state, fixture, root_a)
@@ -1069,6 +1179,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
             .with_file_name("taiyaku-test-two-volumes-plus-unrelated-series-covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()));
     (router, state, fixture, root_a)
@@ -1134,6 +1245,36 @@ pub(crate) async fn send_json(
     method: axum::http::Method,
     uri: &str,
     body: &serde_json::Value,
+) -> axum::http::Response<axum::body::Body> {
+    use tower::ServiceExt;
+    router
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// A request carrying a **raw** body — what `config_api::import_rules` wants
+/// tested against, since a rule-export document is sent as the literal bytes
+/// [`taiyaku_library::rules::export_json`] produced rather than re-parsed
+/// through a `serde_json::Value` first, the way a real client resending an
+/// exported file would send it. [`send_json`] above always re-serialises its
+/// `Value` argument, which loses nothing a JSON parser cares about but is not
+/// this route's own round trip.
+///
+/// Sets no `Authorization` header, for the reason [`get`] states.
+pub(crate) async fn send_raw(
+    router: &axum::Router,
+    method: axum::http::Method,
+    uri: &str,
+    body: &str,
 ) -> axum::http::Response<axum::body::Body> {
     use tower::ServiceExt;
     router

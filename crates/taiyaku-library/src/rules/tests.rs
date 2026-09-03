@@ -554,6 +554,46 @@ fn a_roots_default_does_not_overwrite_a_field_a_rule_decided() {
     assert_eq!(resolved.provenance[&Field::Language], 1);
 }
 
+/// **Important 1's reproduction.** `fields_settable_by` used to check its
+/// four `set_*` columns unconditionally, before the kind-gated `match`
+/// underneath them — so a `BuiltinVolume` row carrying a stray `set_series`
+/// (nothing stops one: the schema has no `CHECK` on that column, and
+/// `import_json` does not reject one either) was reported as able to decide
+/// `Field::Series`, a field [`Engine::resolve`] can never actually set for
+/// that kind — its own `match rule.kind` only ever calls `apply_set_columns`
+/// for `Prefix` and `Regex`. Fixed by gating those four checks on
+/// [`kind_applies_set_columns`], the identical predicate `resolve` now gates
+/// its own `apply_set_columns` call on, so the two cannot drift apart again.
+#[test]
+fn fields_settable_by_ignores_a_stray_set_column_a_builtin_rules_kind_can_never_apply() {
+    let mut stray_volume_rule = rule(1, "builtin-volume", "", "name");
+    stray_volume_rule.set_series = Some("stray".to_string());
+
+    let fields = fields_settable_by(&stray_volume_rule);
+
+    assert_eq!(
+        fields,
+        std::collections::BTreeSet::from([Field::Volume]),
+        "a BuiltinVolume rule can only ever decide Volume — its stray set_series column must \
+         not be reported as settable, or `preview::rows_for`'s near-miss check would demand \
+         Series be undecided or root-decided before calling a genuine Volume miss a near-miss \
+         at all: {fields:?}"
+    );
+
+    // The other builtin kind, same defect, same fix.
+    let mut stray_chapter_rule = rule(1, "builtin-chapter", "", "name");
+    stray_chapter_rule.set_kind = Some("stray".to_string());
+
+    let fields = fields_settable_by(&stray_chapter_rule);
+
+    assert_eq!(
+        fields,
+        std::collections::BTreeSet::from([Field::Chapter]),
+        "a BuiltinChapter rule can only ever decide Chapter — its stray set_kind column must \
+         not be reported as settable: {fields:?}"
+    );
+}
+
 /// A `regex` rule's `edition` and `title` captures, and the rule that a
 /// capture which will not parse as a number sets nothing rather than
 /// erroring.
@@ -575,6 +615,46 @@ fn a_regex_rule_sets_edition_and_title_captures_and_ignores_a_capture_that_will_
         "the volume capture matched `abc`, which does not parse as a number"
     );
     assert!(!resolved.provenance.contains_key(&Field::Volume));
+}
+
+/// **`fields_settable_by`'s own `RuleKind::Regex` arm names each of the five
+/// recognised captures by hand — `apply_captures`'s own five, one call to
+/// `resolved.set`/`set_number` apiece — and nothing above ever calls
+/// `fields_settable_by` itself with a pattern naming `series`, `volume` or
+/// `chapter`.** The test just above drives `edition`/`title` only, and only
+/// through `Engine::resolve`, which runs `apply_captures` directly and never
+/// touches this function at all — the two are independent implementations of
+/// the same five names, one dynamic and one static, and nothing before this
+/// test compared them. Deleting any one arm of `fields_settable_by`'s own
+/// `match name { .. }` — `"series"` through `"chapter"` — left the whole
+/// suite green: the field it named would then never be reported settable,
+/// which is what lets `preview::rows_for`'s near-miss check demand that field
+/// be undecided (or root-decided) before it will call a genuine miss a
+/// near-miss at all, for a rule that could never have decided it in the
+/// first place.
+#[test]
+fn fields_settable_by_names_every_capture_a_regex_rule_recognises() {
+    let names_every_field = rule(
+        1,
+        "regex",
+        r"(?<series>a)(?<edition>b)(?<title>c)(?<volume>d)(?<chapter>e)",
+        "name",
+    );
+
+    let fields = fields_settable_by(&names_every_field);
+
+    assert_eq!(
+        fields,
+        std::collections::BTreeSet::from([
+            Field::Series,
+            Field::EditionKey,
+            Field::Title,
+            Field::Volume,
+            Field::Chapter,
+        ]),
+        "a regex rule naming all five recognised captures must report all five as settable: \
+         {fields:?}"
+    );
 }
 
 #[test]
@@ -849,4 +929,1040 @@ fn importing_a_rule_scoped_to_an_unknown_root_refuses_and_leaves_the_rule_set_un
         before,
         "a rule naming an unknown root must not touch the existing rule set at all"
     );
+}
+
+/// **Minor 5.** `replace_all`'s own doc claims atomicity — "the delete and
+/// the inserts are atomic ... roll back together with an outer transaction
+/// where one is open" — and nothing had tested it before this: every test
+/// above reaches `replace_all` only through `import_json`, which refuses a
+/// rule scoped to an unknown root *before* ever calling it (a root-path
+/// lookup, not a SQL failure), so the property this test pins was
+/// unexercised by anything in this file. Reverting `replace_all`'s `Nested`
+/// scope to bare `conn.execute` calls with no commit leaves every other test
+/// in this suite green, because none of them ever makes an insert partway
+/// through the list fail.
+///
+/// **`root_id: Some(9999)` is the failure.** No such root exists, and every
+/// connection this crate hands out enforces foreign keys
+/// (`every_connection_enforces_foreign_keys`, `lib.rs`), so the `INSERT` for
+/// that one new rule refuses. Where it sits in the proposed list does not
+/// matter: `replace_all`'s three-pass structure runs every `DELETE`, then
+/// every `UPDATE`, then every `INSERT`, so the one insert this test makes
+/// always runs last regardless of list position — placing it "in the
+/// middle" was only ever a fact about the `Vec`, never about execution
+/// order.
+///
+/// **The list also genuinely drops the last seeded rule**, not only adds the
+/// bad one — `replace_all` no longer deletes every row on every call (that
+/// was the defect this same round's other fix removed), so a proposed list
+/// that only *adds* a rule never issues a real `DELETE` at all, and a probe
+/// confirmed reverting `Nested::open`'s wrapping still left this test green
+/// in that shape: every write it makes is either a harmless same-value
+/// `UPDATE` or the one `INSERT` that fails, so there is nothing for a broken
+/// rollback to leave half-applied. Dropping a rule for real gives the
+/// `DELETE` something to do — without the atomic scope, that `DELETE` and
+/// every `UPDATE`, both of which run ahead of the `INSERT` pass, would
+/// already have landed by the time the bad `INSERT` fails, leaving `rule`
+/// short one seeded row and without the new one either — neither the old
+/// set nor the new one.
+///
+/// The bare-connection case: nothing else is open, so `replace_all`'s own
+/// `Nested` scope takes the real-transaction branch.
+#[test]
+fn replace_all_leaves_the_rule_set_untouched_when_an_insert_mid_list_is_refused() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let original = read(&conn).expect("reading the seeded rules").0;
+    assert!(
+        original.len() >= 2,
+        "the seeded defaults, so there is a real middle to insert into"
+    );
+
+    // Drops the last seeded rule for real, and adds a doomed new one in the
+    // middle of what remains — see the doc comment above for why both
+    // matter to what this test actually proves.
+    let mut proposed = original[..original.len() - 1].to_vec();
+    proposed.insert(
+        proposed.len() / 2,
+        Rule {
+            id: 0,
+            root_id: Some(9999),
+            ..rule(50, "prefix", "", "path")
+        },
+    );
+
+    let err = replace_all(&conn, &proposed).expect_err("root 9999 does not exist");
+    assert!(err.contains("FOREIGN KEY"), "{err}");
+
+    assert_eq!(
+        read(&conn).expect("reading after the refusal").0,
+        original,
+        "a refused write partway through the list must leave `rule` byte-identical to what it \
+         held before — not the seeded rows minus the one this call meant to drop, and not a \
+         half-applied mix of the kept rows and the new one that landed before the bad one"
+    );
+}
+
+/// The other branch of the same property: called with an outer transaction
+/// already open — exactly how [`crate::preview::preview`] calls it, nested
+/// inside its own rollback — `replace_all`'s scope takes the `SAVEPOINT` arm
+/// instead, and a mid-list refusal there must roll back no further than this
+/// call's own writes, leaving both the outer transaction usable and the rule
+/// set as this call found it.
+///
+/// Drops the last seeded rule for real, same as the bare-connection test
+/// above and for the same reason: with nothing genuinely deleted, every
+/// write this call makes ahead of the bad `INSERT` is a same-value `UPDATE`,
+/// which leaves nothing for a broken `SAVEPOINT` rollback to prove itself
+/// against.
+#[test]
+fn replace_all_leaves_the_rule_set_untouched_when_an_insert_mid_list_is_refused_inside_a_transaction()
+ {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let original = read(&conn).expect("reading the seeded rules").0;
+
+    let mut proposed = original[..original.len() - 1].to_vec();
+    proposed.insert(
+        proposed.len() / 2,
+        Rule {
+            id: 0,
+            root_id: Some(9999),
+            ..rule(50, "prefix", "", "path")
+        },
+    );
+
+    let outer = conn.unchecked_transaction().expect(
+        "opening an outer transaction, so replace_all's own scope takes the SAVEPOINT \
+                 branch rather than the real-transaction one",
+    );
+    let err = replace_all(&outer, &proposed).expect_err("root 9999 does not exist");
+    assert!(err.contains("FOREIGN KEY"), "{err}");
+    outer
+        .query_row("SELECT 1", [], |r| r.get::<_, i64>(0))
+        .expect("the outer transaction must still be open and usable after the nested refusal");
+    outer
+        .commit()
+        .expect("committing the outer transaction, which held no write of its own");
+
+    assert_eq!(
+        read(&conn).expect("reading after the refusal").0,
+        original,
+        "a refused write partway through the list must leave `rule` byte-identical to what it \
+         held before, even nested inside a transaction that itself went on to commit"
+    );
+}
+
+/// **A kept row's own `UPDATE` actually has to run.** Every existing test
+/// that checks a kept rule's columns after a replace proposes that rule back
+/// *unchanged* — `replace_all_preserves_the_ids_it_is_given_and_mints_only_for_the_rest`
+/// included, just below — so `kept[&1] == &rule_1` there is satisfied whether
+/// or not the `UPDATE … WHERE id = ?12` loop runs at all: the row already
+/// held those values before this call. Filtering that loop on `r.id == NEW`
+/// instead of `r.id != NEW` — new rules only, kept rules never — still
+/// passes every one of them, because a no-op `UPDATE` on a row already
+/// holding the proposed values is indistinguishable from a skipped one. This
+/// proposes a *changed* field for a kept row and reads it back, which the
+/// no-op case cannot satisfy by accident.
+#[test]
+fn replace_all_writes_a_kept_rules_changed_field_not_only_its_unchanged_id() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let seeded = read(&conn).expect("reading the seeded rules").0;
+
+    let mut changed = seeded.clone();
+    changed[0].pattern = "changed-by-this-test".to_string();
+
+    replace_all(&conn, &changed).expect("replace_all over a list with one changed field");
+
+    let after = read(&conn).expect("reading after the replace").0;
+    let kept = after
+        .iter()
+        .find(|r| r.id == seeded[0].id)
+        .expect("the kept row still exists under its own id");
+    assert_eq!(
+        kept.pattern, "changed-by-this-test",
+        "a kept row's own UPDATE must actually run — the row continuing to exist under the same \
+         id is not proof its columns were rewritten: {kept:?}"
+    );
+}
+
+/// The id contract itself, over a real save rather than a hand-built
+/// `States` map: a rule carrying a real id keeps exactly that id, a rule
+/// carrying `0` is minted a fresh one, and a rule dropped from the list —
+/// present before, absent from `rules` — loses its row entirely.
+///
+/// **Also the exact interleaving [`replace_all`]'s own doc comment argues
+/// about**, though for a different reason than the old two-pass `INSERT`
+/// design it once had: two kept rules (`1` and `4`, the seeded first and
+/// last) sit either side of a brand new one in the proposed list, so a
+/// version of this function that minted ids by list position rather than by
+/// `id == 0` would still pass a version of this test that put every new rule
+/// at the end. Seeded rule `2` is dropped entirely, to also pin the third
+/// outcome — gone, not merely un-kept.
+#[test]
+fn replace_all_preserves_the_ids_it_is_given_and_mints_only_for_the_rest() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let seeded = read(&conn).expect("reading the seeded rules").0;
+    assert_eq!(
+        seeded.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![1, 2, 3, 4],
+        "the four seeded defaults, by id — the fixture this test's own reasoning depends on"
+    );
+
+    let rule_1 = seeded[0].clone();
+    let rule_4 = seeded[3].clone();
+    let new_rule = Rule {
+        id: 0,
+        ..rule(50, "prefix", "brand-new", "path")
+    };
+    let proposed = vec![rule_1.clone(), new_rule, rule_4.clone()];
+
+    replace_all(&conn, &proposed).expect("replace_all over a valid list");
+
+    let after = read(&conn).expect("reading after the replace").0;
+    assert_eq!(
+        after.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![1, 4, 5],
+        "rule 1 and rule 4 must keep exactly the ids they came in with, the new rule must be \
+         minted the next id after the highest one this call was told to keep, and rule 2, \
+         dropped from the list entirely, must be gone rather than merely unmatched"
+    );
+
+    let kept: std::collections::BTreeMap<i64, &Rule> = after.iter().map(|r| (r.id, r)).collect();
+    assert_eq!(
+        kept[&1], &rule_1,
+        "rule 1's own columns must be exactly what was proposed for it, not merely its id"
+    );
+    assert_eq!(
+        kept[&4], &rule_4,
+        "rule 4's own columns must be exactly what was proposed for it, not merely its id"
+    );
+    assert_eq!(
+        kept[&5].pattern, "brand-new",
+        "the minted rule must hold the new rule's own content"
+    );
+}
+
+/// A kept row's identity is not just its final id matching — it must never
+/// have been deleted at all, or `ON DELETE SET NULL` already fired and
+/// re-inserting under the same id cannot undo it. Exercised through
+/// `proposal.created_rule_id` directly, one level below
+/// `preview::tests::a_preview_of_the_librarys_own_unchanged_rules_reports_no_reopens`,
+/// which pins the same property through [`crate::preview::preview`]'s own
+/// `Impact` instead.
+#[test]
+fn replace_all_over_an_unchanged_rule_never_nulls_a_proposals_created_rule_id() {
+    use crate::scan;
+
+    let dir = crate::tests::tempdir("replace-all-keeps-created-rule-id");
+    scan::tests::write_archive(
+        &dir.path
+            .join("Go-Toubun no Hanayome")
+            .join("Go-Toubun no Hanayome - v01.cbz"),
+        3,
+    );
+    scan::tests::write_archive(
+        &dir.path
+            .join("Go-Toubun no Hanayome - Full Color Edition")
+            .join("Go-Toubun no Hanayome - Full Color Edition - v01.cbz"),
+        3,
+    );
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &dir.path).expect("adding the root");
+    scan::scan_root(&conn, &root).expect("scanning the root");
+    crate::derive::derive(&conn).expect("the first derive, which raises the edition-of proposal");
+    let proposal = crate::proposals::open(&conn, 0.0)
+        .expect("reading open proposals")
+        .into_iter()
+        .find(|p| p.kind == "edition-of")
+        .expect("the fixture's two titles raise exactly one edition-of proposal");
+    crate::proposals::accept(&conn, proposal.id).expect("accepting the proposal");
+
+    let created_rule_id: Option<i64> = conn
+        .query_row(
+            "SELECT created_rule_id FROM proposal WHERE id = ?1",
+            [proposal.id],
+            |r| r.get(0),
+        )
+        .expect("reading the proposal's created_rule_id");
+    assert!(
+        created_rule_id.is_some(),
+        "accept must have recorded the rule it wrote"
+    );
+
+    // Exactly what a save through C4's editor sends when nobody touched
+    // anything: the library's own current rule list, read back and handed
+    // straight to `replace_all`.
+    let current = read(&conn).expect("reading the current rules").0;
+    replace_all(&conn, &current).expect("replace_all over an unchanged list");
+
+    let created_rule_id_after: Option<i64> = conn
+        .query_row(
+            "SELECT created_rule_id FROM proposal WHERE id = ?1",
+            [proposal.id],
+            |r| r.get(0),
+        )
+        .expect("reading created_rule_id after the no-op replace");
+    assert_eq!(
+        created_rule_id_after, created_rule_id,
+        "replacing the rule set with the exact list already in the database must not clear the \
+         accepted proposal's created_rule_id — its rule's row must never have been deleted at \
+         all"
+    );
+    assert_eq!(
+        crate::proposals::states(&conn).expect("reading proposal states")[&proposal.id],
+        "accepted",
+        "and the proposal itself must still read accepted, not reopened"
+    );
+}
+
+/// **Whole-branch review, Important 3.** `import_json` replaces the whole
+/// rule set through `replace_all`'s own `DELETE FROM rule`, which orphans
+/// `created_rule_id` (`ON DELETE SET NULL`) on any proposal an accepted,
+/// now-dropped rule had answered — and nothing on this path ever calls
+/// `derive`, so nothing ever reached `proposals::raise`'s own repair for
+/// that. Before this fix, an import of a document that simply predates an
+/// accept left that proposal reading `accepted` with `created_rule_id`
+/// `NULL` — an acceptance nothing any longer decided — until whatever scan
+/// happened to run next. `import_json` now runs the identical repair
+/// `delete_rule` already does, inside its own transaction, and reports the
+/// ids it reopened rather than silently dropping them.
+#[test]
+fn importing_a_rule_set_that_drops_an_accepted_rule_reopens_its_proposal() {
+    use crate::scan;
+
+    let dir = crate::tests::tempdir("import-json-reopens-orphaned-accept");
+    scan::tests::write_archive(
+        &dir.path
+            .join("Go-Toubun no Hanayome")
+            .join("Go-Toubun no Hanayome - v01.cbz"),
+        3,
+    );
+    scan::tests::write_archive(
+        &dir.path
+            .join("Go-Toubun no Hanayome - Full Color Edition")
+            .join("Go-Toubun no Hanayome - Full Color Edition - v01.cbz"),
+        3,
+    );
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &dir.path).expect("adding the root");
+    scan::scan_root(&conn, &root).expect("scanning the root");
+    crate::derive::derive(&conn).expect("the first derive, which raises the edition-of proposal");
+
+    // The rule set exactly as it stood before the accept below — the
+    // document `import_json` will be handed to reproduce "importing this
+    // now drops the rule the accept minted."
+    let pre_accept_json = export_json(&conn).expect("exporting the pre-accept rule set");
+
+    let proposal = crate::proposals::open(&conn, 0.0)
+        .expect("reading open proposals")
+        .into_iter()
+        .find(|p| p.kind == "edition-of")
+        .expect("the fixture's two titles raise exactly one edition-of proposal");
+    crate::proposals::accept(&conn, proposal.id).expect("accepting the proposal");
+    assert_eq!(
+        crate::proposals::states(&conn).expect("reading proposal states")[&proposal.id],
+        "accepted",
+        "the accept itself must have landed, or this test proves nothing"
+    );
+
+    let reopened = import_json(&conn, &pre_accept_json).expect("importing the pre-accept rule set");
+
+    assert_eq!(
+        reopened,
+        vec![proposal.id],
+        "import_json must report the exact proposal its own import just reopened"
+    );
+    assert_eq!(
+        crate::proposals::states(&conn).expect("reading proposal states")[&proposal.id],
+        "open",
+        "the proposal must read open again, not stranded as accepted with nothing deciding it"
+    );
+    let created_rule_id: Option<i64> = conn
+        .query_row(
+            "SELECT created_rule_id FROM proposal WHERE id = ?1",
+            [proposal.id],
+            |r| r.get(0),
+        )
+        .expect("reading the proposal's created_rule_id");
+    assert_eq!(
+        created_rule_id, None,
+        "the rule the accept minted is genuinely gone — reimporting an older document must not \
+         resurrect it under the old id"
+    );
+}
+
+/// **Important 1, first refusal.** A nonzero id naming no row this table
+/// currently holds must be refused — a caller bug, per this function's own
+/// doc comment, not a legitimate "adopt this identity" request. Reverting
+/// the guard loop above to a bare `kept_ids.insert(rule.id);` leaves both
+/// this test and the one below unwritten territory: nothing before them
+/// ever handed `replace_all` an id it did not itself mint or read back, so
+/// the whole crate's suite stayed at 613 passed, 0 failed with the guard
+/// gone entirely. Measured with it gone: the four seeded rules plus
+/// `Rule { id: 77, .. }` returns `Ok(())`, and the table still holds exactly
+/// the four seeded rows — the `UPDATE ... WHERE id = 77` this function
+/// issues for it matches no row, its rows-affected count silently
+/// discarded, so the caller's rule is dropped on the floor rather than
+/// refused. Nothing reachable through `preview` or `import_json` today ever
+/// exercises this; C4's save path handing back an id from a stale editor is
+/// exactly what it exists to catch.
+#[test]
+fn replace_all_refuses_a_nonzero_id_that_names_no_existing_row() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let original = read(&conn).expect("reading the seeded rules").0;
+
+    let mut proposed = original.clone();
+    proposed.push(Rule {
+        id: 77,
+        ..rule(50, "prefix", "", "path")
+    });
+
+    let err = replace_all(&conn, &proposed).expect_err("id 77 names no existing rule");
+    assert!(err.contains('7'), "{err}");
+    assert!(err.contains("no such rule exists to keep"), "{err}");
+
+    assert_eq!(
+        read(&conn).expect("reading after the refusal").0,
+        original,
+        "a refused replace must leave `rule` exactly as it found it — not silently applying \
+         every rule that was fine and dropping only the one naming an unknown id"
+    );
+}
+
+/// **Important 1, second refusal.** Two rules sharing one nonzero id must be
+/// refused atomically, not resolved by silent last-write-wins — exactly the
+/// outcome this function's own doc comment says it refuses. With the guard
+/// loop reverted to a bare `kept_ids.insert(rule.id);`, the four seeded
+/// rules plus a second copy of rule 1 — same id, `pattern: "second-copy"` —
+/// returns `Ok(())`, the table still holds exactly four rows, and rule 1's
+/// pattern now reads `"second-copy"`, silently overwritten by whichever of
+/// the two copies its `UPDATE` happened to run last.
+#[test]
+fn replace_all_refuses_two_rules_sharing_one_nonzero_id() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let original = read(&conn).expect("reading the seeded rules").0;
+    let rule_1 = original[0].clone();
+    assert_eq!(
+        rule_1.id, 1,
+        "the fixture this test's own reasoning depends on"
+    );
+
+    let mut proposed = original.clone();
+    proposed.push(Rule {
+        pattern: "second-copy".to_string(),
+        ..rule_1.clone()
+    });
+
+    let err = replace_all(&conn, &proposed).expect_err("rule 1 is named twice");
+    assert!(err.contains('1'), "{err}");
+    assert!(err.contains("named more than once"), "{err}");
+
+    assert_eq!(
+        read(&conn).expect("reading after the refusal").0,
+        original,
+        "a refused replace must leave `rule` exactly as it found it — rule 1's pattern must not \
+         have become \"second-copy\", the silent last-write-wins this guard exists to prevent"
+    );
+}
+
+// --- `create`, `update`, `delete`: task 7's single-row CRUD ---------------
+
+/// A rule with every column that can hold a non-default value set to one —
+/// `root_id`, `set_kind` and `set_language` included.
+///
+/// **Review found this exact gap.** `library_with_two_competing_rules`'s
+/// pair, which every `update` test before this one reused, leaves `root_id`,
+/// `set_kind` and `set_language` all `None` — so a version of `update` whose
+/// guard on any of those three is unconditional (always writing
+/// `patch.<field>.unwrap_or(None)` whether `patch` named it or not) writes
+/// `None` over `None`, indistinguishable from correct. A fixture rule has to
+/// hold a real value on each of them before a test can tell "left alone"
+/// from "silently rewritten" apart.
+fn fully_specified_rule(conn: &Connection) -> Rule {
+    let dir = crate::tests::tempdir("rules-fully-specified");
+    let root = crate::scan::add_root(conn, &dir.path).expect("adding a root for root_id");
+    let id = create(
+        conn,
+        &NewRule {
+            ordinal: Some(10),
+            enabled: true,
+            root_id: Some(root.id),
+            kind: RuleKind::Regex,
+            pattern: "^(?<series>.+)/".to_string(),
+            match_on: MatchOn::Path,
+            set_edition_key: Some("raw".to_string()),
+            set_kind: Some("manga".to_string()),
+            set_language: Some("ja".to_string()),
+            set_series: Some("Series".to_string()),
+            note: Some("every column set, for the patch-leaves-it-alone tests".to_string()),
+        },
+    )
+    .expect("creating the fully specified fixture rule");
+    read(conn)
+        .expect("reading the fixture rule back")
+        .0
+        .into_iter()
+        .find(|r| r.id == id)
+        .expect("the just-created rule")
+}
+
+/// **Important 2.** The reviewer mutation-tested `update` rather than
+/// reading it: making `root_id`'s guard (`rules.rs`) unconditional —
+/// `patch.root_id.unwrap_or(None)`, always pushed instead of only when
+/// `patch.root_id` is `Some` — left all 643 tests in this crate green,
+/// because no fixture any `update` test used ever gave a rule a non-`None`
+/// `root_id` to lose. Reverting `set_kind`'s guard the same way survives for
+/// the identical reason, and `set_language` has the same shape.
+/// [`fully_specified_rule`] gives a rule real values on all three, so a
+/// patch naming a different field has something to actually preserve.
+///
+/// Making the `root_id`, `set_kind` or `set_language` guard unconditional —
+/// each on its own — must turn this test red: the field goes back to `NULL`
+/// even though the patch never named it.
+#[test]
+fn updating_one_field_leaves_root_id_set_kind_and_set_language_alone() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let before = fully_specified_rule(&conn);
+
+    update(
+        &conn,
+        before.id,
+        &RulePatch {
+            pattern: Some("changed/".to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let after = read(&conn)
+        .unwrap()
+        .0
+        .into_iter()
+        .find(|r| r.id == before.id)
+        .unwrap();
+    assert_eq!(after.pattern, "changed/", "the one field the patch named");
+    assert_eq!(
+        after.root_id, before.root_id,
+        "root_id must survive an unrelated patch"
+    );
+    assert_eq!(
+        after.set_kind, before.set_kind,
+        "set_kind must survive an unrelated patch"
+    );
+    assert_eq!(
+        after.set_language, before.set_language,
+        "set_language must survive an unrelated patch"
+    );
+    // The remaining columns, to the same standard — review called these
+    // "weaker versions of the same gap", covered before only indirectly.
+    assert_eq!(after.kind, before.kind);
+    assert_eq!(after.match_on, before.match_on);
+    assert_eq!(after.note, before.note);
+    assert_eq!(after.ordinal, before.ordinal);
+    assert_eq!(after.set_edition_key, before.set_edition_key);
+    assert_eq!(after.set_series, before.set_series);
+    assert_eq!(after.enabled, before.enabled);
+}
+
+/// The `Option<Option<T>>` trap, exercised on a second nullable column.
+/// `clearing_a_nullable_column_sets_it_to_null_rather_than_leaving_it_alone`,
+/// below, only ever clears `set_series` — a `String` column — and a version
+/// of `update` that always writes `Some(Some(_))`-shaped values reads
+/// identically to a correct one on that one field alone. `root_id` is an
+/// `i64` column instead, so this confirms the same `Option<Option<_>>`
+/// plumbing clears a non-string nullable column too, and leaves an unrelated
+/// one alone while doing it.
+#[test]
+fn clearing_root_id_sets_it_to_null_and_leaves_set_kind_alone() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let before = fully_specified_rule(&conn);
+    assert!(
+        before.root_id.is_some(),
+        "the fixture must give root_id a real value to clear"
+    );
+
+    update(
+        &conn,
+        before.id,
+        &RulePatch {
+            root_id: Some(None),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let after = read(&conn)
+        .unwrap()
+        .0
+        .into_iter()
+        .find(|r| r.id == before.id)
+        .unwrap();
+    assert_eq!(after.root_id, None);
+    assert_eq!(
+        after.set_kind, before.set_kind,
+        "a patch clearing root_id must leave a different nullable column, set_kind, alone"
+    );
+}
+
+/// C4 §1: a rule written by an accepted proposal is marked as such, and
+/// deleting it reopens the proposal it came from — the other end of C3 §3's
+/// `proposal.created_rule_id`. Without this the two screens each hold half of
+/// a reversible action and neither can complete it.
+///
+/// `list`'s items are [`crate::proposals::ListedProposal`], which wraps
+/// `.proposal` rather than exposing `state`/`created_rule_id` at the top
+/// level — the plan this test started from assumed a flatter shape, and
+/// `crate::proposals::Filter` has no `Default` impl either, so the filter
+/// is spelled out by hand below.
+#[test]
+fn deleting_a_proposal_written_rule_reopens_its_proposal() {
+    let (fixture, _base_rules) = crate::tests::library_with_an_accepted_proposal();
+    let conn = fixture.conn();
+    let accepted = crate::proposals::list(
+        &conn,
+        &crate::proposals::Filter {
+            state: Some("accepted".to_string()),
+            kind: None,
+            min_score: 0.0,
+        },
+    )
+    .unwrap()
+    .into_iter()
+    .map(|listed| listed.proposal)
+    .next()
+    .expect("the fixture accepted one proposal");
+    let rule_id = accepted.created_rule_id.expect("acceptance wrote a rule");
+
+    let deleted = delete(&conn, rule_id).unwrap();
+
+    assert!(deleted.existed);
+    assert_eq!(deleted.reopened_proposals, vec![accepted.id]);
+    let after = crate::proposals::lookup(&conn, accepted.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.state, "open");
+}
+
+/// A rule nothing ever accepted has no proposal to reopen — `delete` must
+/// still remove it, and must report `reopened_proposals: vec![]` rather
+/// than inventing one.
+#[test]
+fn deleting_a_rule_no_proposal_ever_wrote_removes_it_without_reopening_anything() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let id = read(&conn).unwrap().0[0].id;
+
+    let deleted = delete(&conn, id).unwrap();
+
+    assert!(deleted.existed);
+    assert_eq!(deleted.reopened_proposals, Vec::<i64>::new());
+    assert!(
+        read(&conn).unwrap().0.iter().all(|r| r.id != id),
+        "the deleted rule must actually be gone"
+    );
+}
+
+/// An id naming no rule at all is `existed: false`, not an error — the same
+/// "report it rather than pretend" contract [`update`] makes for a patch.
+#[test]
+fn deleting_an_absent_rule_reports_it_rather_than_erroring() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+
+    let deleted = delete(&conn, 9_999).unwrap();
+
+    assert!(!deleted.existed);
+    assert_eq!(deleted.reopened_proposals, Vec::<i64>::new());
+}
+
+/// **Important 1.** `proposals::accept_with` can write one rule that answers
+/// several proposals at once — a widened rule, its own doc comment's
+/// "resolves 6 more" — and `unaccept` reopens every one of them, keyed on
+/// the rule rather than on any single proposal id. `delete` has to report
+/// all of them, not just the lowest-numbered one: a caller told
+/// `reopened_proposals: [5]` when the rule actually answered `[5, 9]` would
+/// tell a person deleting a widened rule that they reopened one question
+/// when they reopened two.
+///
+/// Reverting `delete` to report only the first id it finds — the
+/// `Option<i64>` this field used to be — leaves this test red: the second
+/// proposal's id is missing from `deleted.reopened_proposals`, and the
+/// second proposal itself is still `accepted` afterward rather than `open`.
+#[test]
+fn deleting_a_widened_rule_reports_and_reopens_every_proposal_it_answered() {
+    let dir = crate::tests::tempdir("rules-widened-accept");
+    crate::scan::tests::write_archive(
+        &dir.path
+            .join("Go-Toubun no Hanayome")
+            .join("Go-Toubun no Hanayome - v01.cbz"),
+        3,
+    );
+    crate::scan::tests::write_archive(
+        &dir.path
+            .join("Go-Toubun no Hanayome - Full Color Edition")
+            .join("Go-Toubun no Hanayome - Full Color Edition - v01.cbz"),
+        3,
+    );
+    crate::scan::tests::write_archive(
+        &dir.path
+            .join("Kaguya-sama wa Kokurasetai")
+            .join("Kaguya-sama wa Kokurasetai - v01.cbz"),
+        3,
+    );
+    crate::scan::tests::write_archive(
+        &dir.path
+            .join("Kaguya-sama wa Kokurasetai - Full Color Edition")
+            .join("Kaguya-sama wa Kokurasetai - Full Color Edition - v01.cbz"),
+        3,
+    );
+
+    let db = Library::open_in_memory().expect("open");
+    let conn = db.conn();
+    let root = crate::scan::add_root(&conn, &dir.path).expect("adding the root");
+    crate::scan::scan_root(&conn, &root).expect("scanning the root");
+    crate::derive::derive(&conn).expect("the first derive, which raises both edition-of proposals");
+
+    let open = crate::proposals::open(&conn, 0.0)
+        .expect("reading open proposals")
+        .into_iter()
+        .filter(|p| p.kind == "edition-of")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        open.len(),
+        2,
+        "the fixture's two titles each raise one edition-of proposal: {open:?}"
+    );
+    let first = &open[0];
+    let mut rule = crate::proposals::preview(&conn, first.id).expect("preview");
+    rule.kind = "regex".to_string();
+    rule.pattern = "^(?<series>.+) - Full Color Edition/".to_string();
+    rule.root_id = None;
+
+    let rule_id =
+        crate::proposals::accept_with(&conn, first.id, &rule).expect("the widened accept");
+    let accepted_ids: Vec<i64> = conn
+        .prepare("SELECT id FROM proposal WHERE created_rule_id = ?1 ORDER BY id")
+        .unwrap()
+        .query_map([rule_id], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        accepted_ids.len(),
+        2,
+        "both edition-of proposals point at the one widened rule"
+    );
+
+    let deleted = delete(&conn, rule_id).unwrap();
+
+    assert!(deleted.existed);
+    assert_eq!(
+        deleted.reopened_proposals, accepted_ids,
+        "every proposal the widened rule answered, not only the first"
+    );
+    for id in accepted_ids {
+        let after = crate::proposals::lookup(&conn, id).unwrap().unwrap();
+        assert_eq!(after.state, "open", "proposal {id} must be reopened too");
+    }
+}
+
+/// Reordering is a patch of `ordinal`, and it changes what derivation
+/// produces — per-field layering asserted, not assumed.
+#[test]
+fn swapping_two_rules_ordinals_changes_the_derived_structure() {
+    let fixture = crate::tests::library_with_two_competing_rules();
+    let conn = fixture.conn();
+    let rules = read(&conn).unwrap().0;
+    let before = crate::preview::grouping(&conn).unwrap();
+
+    update(
+        &conn,
+        rules[0].id,
+        &RulePatch {
+            ordinal: Some(rules[1].ordinal),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    update(
+        &conn,
+        rules[1].id,
+        &RulePatch {
+            ordinal: Some(rules[0].ordinal),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    crate::derive::derive(&conn).unwrap();
+
+    assert_ne!(crate::preview::grouping(&conn).unwrap(), before);
+}
+
+/// A patch of one field leaves the others alone.
+#[test]
+fn a_patch_changes_only_the_fields_it_names() {
+    let fixture = crate::tests::library_with_two_competing_rules();
+    let conn = fixture.conn();
+    let before = read(&conn).unwrap().0[0].clone();
+
+    update(
+        &conn,
+        before.id,
+        &RulePatch {
+            enabled: Some(false),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let after = read(&conn)
+        .unwrap()
+        .0
+        .into_iter()
+        .find(|r| r.id == before.id)
+        .unwrap();
+    assert!(!after.enabled);
+    assert_eq!(after.pattern, before.pattern);
+    assert_eq!(after.set_series, before.set_series);
+}
+
+/// The trap `RulePatch`'s nullable columns exist to name:
+/// `Some(Some(value))` sets a nullable column, leaving the patch field
+/// altogether `None` leaves it alone, and `Some(None)` clears it back to
+/// NULL — the only way a rule stops setting a field it used to. A test that
+/// only ever patches with `Some(Some(_))` cannot tell that apart from a
+/// version of `update` that writes every column regardless of what `patch`
+/// actually named, since "set it" and "always rewrite it" look identical on
+/// a column already holding the value being set.
+#[test]
+fn clearing_a_nullable_column_sets_it_to_null_rather_than_leaving_it_alone() {
+    let fixture = crate::tests::library_with_two_competing_rules();
+    let conn = fixture.conn();
+    let rules = read(&conn).unwrap().0;
+    let with_series = rules
+        .iter()
+        .find(|r| r.set_series.is_some())
+        .expect("the fixture's first rule sets series");
+
+    update(
+        &conn,
+        with_series.id,
+        &RulePatch {
+            set_series: Some(None),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let after = read(&conn)
+        .unwrap()
+        .0
+        .into_iter()
+        .find(|r| r.id == with_series.id)
+        .unwrap();
+    assert_eq!(after.set_series, None);
+    assert_eq!(
+        after.set_edition_key, with_series.set_edition_key,
+        "a patch clearing one nullable column must leave a different nullable column, \
+         set_edition_key, exactly where it found it"
+    );
+}
+
+/// Patching a rule that does not exist is `false`, not an error and not a
+/// silently created row.
+#[test]
+fn patching_an_absent_rule_reports_it_rather_than_creating_one() {
+    let fixture = crate::tests::library_with_two_competing_rules();
+    let conn = fixture.conn();
+    let before = read(&conn).unwrap().0.len();
+
+    let changed = update(
+        &conn,
+        9_999,
+        &RulePatch {
+            enabled: Some(false),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert!(!changed);
+    assert_eq!(read(&conn).unwrap().0.len(), before);
+}
+
+/// A patch naming nothing at all still has to answer whether `id` exists —
+/// `update`'s own empty-`SET`-list special case, pinned directly rather than
+/// left to whichever branch happens to run.
+#[test]
+fn an_entirely_empty_patch_reports_whether_the_row_exists_without_changing_anything() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let before = read(&conn).unwrap().0;
+    let id = before[0].id;
+
+    let changed = update(&conn, id, &RulePatch::default()).unwrap();
+
+    assert!(changed);
+    assert_eq!(read(&conn).unwrap().0, before);
+}
+
+/// `create`'s own headline decision, pinned directly: a rule with no
+/// `ordinal` named appends past whatever the table already holds rather
+/// than landing at the front of the layering order.
+#[test]
+fn creating_without_an_ordinal_appends_past_the_current_maximum() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let max_before = read(&conn)
+        .unwrap()
+        .0
+        .iter()
+        .map(|r| r.ordinal)
+        .max()
+        .expect("the seeded defaults give this a real maximum to be one past");
+
+    let id = create(
+        &conn,
+        &NewRule {
+            ordinal: None,
+            enabled: true,
+            root_id: None,
+            kind: RuleKind::Prefix,
+            pattern: "Anything/".to_string(),
+            match_on: MatchOn::Path,
+            set_edition_key: None,
+            set_kind: None,
+            set_language: None,
+            set_series: None,
+            note: None,
+        },
+    )
+    .unwrap();
+
+    let created = read(&conn)
+        .unwrap()
+        .0
+        .into_iter()
+        .find(|r| r.id == id)
+        .unwrap();
+    assert!(
+        created.ordinal > max_before,
+        "a new rule with no ordinal named must sort after every rule already in the table, not \
+         at ordinal 0 — got ordinal {}, max before was {max_before}",
+        created.ordinal
+    );
+}
+
+/// **Minor 3.** `create`'s own doc comment names the hazard: a bare
+/// `MAX(ordinal) + 1` overflows the moment a rule already sits at
+/// `i64::MAX` — exactly what `crate::proposals::accept_with`'s own
+/// `COALESCE(MAX(ordinal), 4) + 1` does, measured for real once
+/// (`crate::tests::LAST_WORD_ORDINAL`'s own doc comment tells that story).
+/// `create` guards the identical computation with `i64::saturating_add`
+/// rather than a bare `+`, so a rule already at `i64::MAX` gives the next
+/// one `i64::MAX` too.
+///
+/// Reverting `create`'s `m.saturating_add(1)` to a bare `m + 1` turns this
+/// test red: a debug build panics on the overflow, and a release build
+/// wraps to `i64::MIN`, sorting the new rule first instead of last.
+#[test]
+fn creating_past_the_maximum_ordinal_saturates_rather_than_overflowing() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    create(
+        &conn,
+        &NewRule {
+            ordinal: Some(i64::MAX),
+            enabled: true,
+            root_id: None,
+            kind: RuleKind::Prefix,
+            pattern: "Ceiling/".to_string(),
+            match_on: MatchOn::Path,
+            set_edition_key: None,
+            set_kind: None,
+            set_language: None,
+            set_series: None,
+            note: None,
+        },
+    )
+    .unwrap();
+
+    let id = create(
+        &conn,
+        &NewRule {
+            ordinal: None,
+            enabled: true,
+            root_id: None,
+            kind: RuleKind::Prefix,
+            pattern: "PastTheCeiling/".to_string(),
+            match_on: MatchOn::Path,
+            set_edition_key: None,
+            set_kind: None,
+            set_language: None,
+            set_series: None,
+            note: None,
+        },
+    )
+    .unwrap();
+
+    let created = read(&conn)
+        .unwrap()
+        .0
+        .into_iter()
+        .find(|r| r.id == id)
+        .unwrap();
+    assert_eq!(
+        created.ordinal,
+        i64::MAX,
+        "one past i64::MAX saturates at i64::MAX rather than panicking or wrapping"
+    );
+}
+
+/// The rest of what `create` writes, over a rule that names every field —
+/// `creating_without_an_ordinal_appends_past_the_current_maximum` already
+/// covers the default; this is the content round trip.
+#[test]
+fn created_rule_reads_back_with_the_content_it_was_given() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+
+    let id = create(
+        &conn,
+        &NewRule {
+            ordinal: Some(42),
+            enabled: false,
+            root_id: None,
+            kind: RuleKind::Regex,
+            pattern: "^(?<series>[^/]+)/".to_string(),
+            match_on: MatchOn::Path,
+            set_edition_key: Some("raw".to_string()),
+            set_kind: None,
+            set_language: None,
+            set_series: None,
+            note: Some("a hand-typed rule".to_string()),
+        },
+    )
+    .unwrap();
+
+    let created = read(&conn)
+        .unwrap()
+        .0
+        .into_iter()
+        .find(|r| r.id == id)
+        .unwrap();
+    assert_eq!(created.ordinal, 42);
+    assert!(!created.enabled);
+    assert_eq!(created.kind, RuleKind::Regex);
+    assert_eq!(created.pattern, "^(?<series>[^/]+)/");
+    assert_eq!(created.set_edition_key, Some("raw".to_string()));
+    assert_eq!(created.note, Some("a hand-typed rule".to_string()));
 }
