@@ -133,10 +133,7 @@ use taiyaku_library::{
     librarydoc::{self, LibraryDoc},
 };
 
-use crate::{
-    ServeState,
-    auth::{Principal, Role},
-};
+use crate::{ServeState, auth::Principal};
 
 /// Why a metadata route could not answer.
 ///
@@ -191,22 +188,6 @@ impl IntoResponse for NoAnswer {
 fn panicked(what: &str, why: &tokio::task::JoinError) -> Response {
     NoAnswer::Failed(format!("{what} panicked: {why}")).into_response()
 }
-
-/// The refusal every handler here opens with, or `None` for an administrator.
-///
-/// Shaped like `curation::admin_or_forbidden`: one place decides what this
-/// answer is, so no two handlers here can drift into different refusals of
-/// the same question.
-fn admin_or_forbidden(principal: &Principal) -> Option<Response> {
-    (principal.role != Role::Admin).then(|| {
-        (
-            StatusCode::FORBIDDEN,
-            "editing library metadata is an administrator's",
-        )
-            .into_response()
-    })
-}
-
 /// Apply an edit to one work's document and persist it, answering the
 /// re-projected document **and** what [`hand::save`] made of it — the raw
 /// halves [`edit_work`] merges for a single-document route, and
@@ -615,10 +596,11 @@ pub(crate) struct WorkEdit {
 pub(crate) async fn patch_work(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(slug): AxPath<String>,
     Json(edit): Json<WorkEdit>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let edited = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, NoAnswer> {
@@ -728,10 +710,11 @@ pub(crate) struct EditionEdit {
 pub(crate) async fn patch_edition(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
     Json(edit): Json<EditionEdit>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let edited = tokio::task::spawn_blocking(move || {
@@ -808,10 +791,11 @@ pub(crate) struct MemberEdit {
 pub(crate) async fn patch_member(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
     Json(edit): Json<MemberEdit>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let edited = tokio::task::spawn_blocking(move || {
@@ -939,10 +923,11 @@ fn apply_series_edit(doc: &mut LibraryDoc, edit: &SeriesEdit) {
 pub(crate) async fn patch_series(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
     Json(edit): Json<SeriesEdit>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let edited = tokio::task::spawn_blocking(move || {

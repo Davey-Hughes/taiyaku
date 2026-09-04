@@ -17,7 +17,8 @@ use tower::ServiceExt;
 /// each test one line further from its assertion. The guard itself is asserted
 /// over in `auth::tests`, which calls the real `build_router` directly.
 fn build_router(state: Arc<crate::ServeState>) -> axum::Router {
-    crate::test_support::authenticating(super::build_router(state))
+    let library = Arc::clone(&state.library);
+    crate::test_support::authenticating(super::build_router(state), &library)
 }
 
 /// The three shapes a reader depends on: the work list to find a work, the

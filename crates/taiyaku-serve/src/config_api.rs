@@ -103,10 +103,7 @@ use axum::{
 use rusqlite::OptionalExtension;
 use taiyaku_library::{derive, hand, preview, rules, scan};
 
-use crate::{
-    ServeState,
-    auth::{Principal, Role},
-};
+use crate::{ServeState, auth::Principal};
 
 /// The matched-files table's own cap for [`preview_rules`] — a number this
 /// route chooses for itself; nothing in spec C4 sets one, and
@@ -178,27 +175,6 @@ impl IntoResponse for NoAnswer {
 fn panicked(what: &str, why: &tokio::task::JoinError) -> Response {
     NoAnswer::Failed(format!("{what} panicked: {why}")).into_response()
 }
-
-/// The refusal every handler here opens with, or `None` for an administrator.
-///
-/// `pub(crate)`, and this module's own doc comment says why: it is not a
-/// borrow of `curation::admin_or_forbidden`, which a sibling module cannot
-/// reach at all, but the canonical copy for every C4 route — tasks 11 and 12
-/// (roots, scan control) call this one directly rather than each mirroring a
-/// third.
-///
-/// **The message names no one route — whole-branch review, M3.** It used to
-/// read "the rule editor is an administrator's" unconditionally, which is
-/// simply wrong on the nine call sites that are not the rule editor: a
-/// reader refused `POST /api/library/roots/{id}/scan` was told the message
-/// meant for a different screen entirely. Worded generically instead, since
-/// this one function answers for every C4 route listed above, not only the
-/// rules routes it started on.
-pub(crate) fn admin_or_forbidden(principal: &Principal) -> Option<Response> {
-    (principal.role != Role::Admin)
-        .then(|| (StatusCode::FORBIDDEN, "this route is an administrator's").into_response())
-}
-
 /// Whether the `root` table holds `id`.
 ///
 /// Two different questions share this one query. [`create_rule`] and
@@ -640,8 +616,9 @@ fn conflict_json(conflict: &preview::Conflict) -> serde_json::Value {
 pub(crate) async fn list_rules(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let built = tokio::task::spawn_blocking(move || {
@@ -676,9 +653,10 @@ pub(crate) async fn list_rules(
 pub(crate) async fn create_rule(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let new_rule = match new_rule_from_json(&body) {
@@ -724,10 +702,11 @@ pub(crate) async fn create_rule(
 pub(crate) async fn patch_rule(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let patch = match rule_patch_from_json(&body) {
@@ -772,9 +751,10 @@ pub(crate) async fn patch_rule(
 pub(crate) async fn delete_rule(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
 
@@ -828,9 +808,10 @@ pub(crate) async fn delete_rule(
 pub(crate) async fn preview_rules(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
 
@@ -930,9 +911,10 @@ pub(crate) async fn preview_rules(
 pub(crate) async fn import_rules(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     body: axum::body::Bytes,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let text = match std::str::from_utf8(&body) {
@@ -1430,10 +1412,11 @@ pub(crate) struct ScanQuery {
 pub(crate) async fn start_scan(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
     Query(query): Query<ScanQuery>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     if query.full.is_some() {
@@ -1553,9 +1536,10 @@ pub(crate) async fn start_scan(
 pub(crate) async fn scan_status(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
 
@@ -1626,8 +1610,9 @@ pub(crate) async fn scan_status(
 pub(crate) async fn list_roots(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let built = tokio::task::spawn_blocking(move || {
@@ -1691,9 +1676,10 @@ pub(crate) async fn list_roots(
 pub(crate) async fn create_root(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let path = match root_path_from_json(&body) {
@@ -1724,10 +1710,11 @@ pub(crate) async fn create_root(
 pub(crate) async fn patch_root(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let patch = match root_patch_from_json(&body) {
@@ -1819,10 +1806,11 @@ pub(crate) struct DeleteRootQuery {
 pub(crate) async fn delete_root(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
     Query(query): Query<DeleteRootQuery>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let dry_run = query.dry_run;

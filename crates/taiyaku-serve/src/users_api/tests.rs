@@ -6,7 +6,7 @@ use axum::http::{Method, StatusCode};
 /// is a screen that renders in stages.
 #[tokio::test]
 async fn the_user_list_carries_sessions_keys_and_grants() {
-    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
 
     let json = get_json(&router, "/api/library/users").await;
     let users = json["users"].as_array().expect("a users array");
@@ -45,7 +45,7 @@ async fn the_user_list_carries_sessions_keys_and_grants() {
 /// insert that omitted the column minted an administrator".
 #[tokio::test]
 async fn creating_a_user_defaults_to_a_reader_and_never_echoes_a_hash() {
-    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
 
     let response = send_json(
         &router,
@@ -73,7 +73,7 @@ async fn creating_a_user_defaults_to_a_reader_and_never_echoes_a_hash() {
 /// any store call.
 #[tokio::test]
 async fn creating_a_user_without_a_password_is_the_callers_mistake() {
-    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
 
     let response = send_json(
         &router,
@@ -89,7 +89,7 @@ async fn creating_a_user_without_a_password_is_the_callers_mistake() {
 /// the caller's mistake rather than a 500.
 #[tokio::test]
 async fn creating_a_user_with_a_name_already_taken_is_refused() {
-    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
     let body = serde_json::json!({ "name": "reader", "password": "hunter2" });
 
     send_json(&router, Method::POST, "/api/library/users", &body).await;
@@ -102,8 +102,7 @@ async fn creating_a_user_with_a_name_already_taken_is_refused() {
 /// first time somebody adds a route and does not think about it.
 #[tokio::test]
 async fn every_users_route_refuses_a_reader() {
-    let (router, _state, _fixture) =
-        test_support::router_over_a_single_scanned_work_in_a_browser_as_a_reader();
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work_as_a_reader();
     let body = serde_json::json!({});
 
     for (method, path) in [
@@ -147,7 +146,7 @@ async fn a_reader(router: &axum::Router, state: &crate::ServeState) -> i64 {
 /// that can set either capability column to 0.
 #[tokio::test]
 async fn patching_a_user_sets_the_capability_columns_o54_could_not_reach() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let id = a_reader(&router, &state).await;
 
     let response = send_json(
@@ -175,7 +174,7 @@ async fn patching_a_user_sets_the_capability_columns_o54_could_not_reach() {
 /// would break the second.
 #[tokio::test]
 async fn resetting_a_password_ends_the_targets_sessions_and_keeps_its_keys() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let id = a_reader(&router, &state).await;
     {
         let conn = state.library.conn();
@@ -220,7 +219,7 @@ async fn resetting_a_password_ends_the_targets_sessions_and_keeps_its_keys() {
 /// failing for a reason about the library's state.
 #[tokio::test]
 async fn the_two_role_refusals_answer_409_rather_than_500() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let admin = user_id(&state, "local");
 
     let demote = send_json(
@@ -248,7 +247,7 @@ async fn the_two_role_refusals_answer_409_rather_than_500() {
 /// own resolver, not just the table.
 #[tokio::test]
 async fn deleting_a_user_quotes_its_counts_first_and_ends_its_session() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let id = a_reader(&router, &state).await;
     {
         let conn = state.library.conn();
@@ -302,7 +301,7 @@ async fn deleting_a_user_quotes_its_counts_first_and_ends_its_session() {
 /// the real, committed removal and answered 200.
 #[tokio::test]
 async fn a_misspelled_dry_run_is_refused_rather_than_deleting() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let id = a_reader(&router, &state).await;
 
     let response = send_json(
@@ -331,7 +330,7 @@ async fn a_misspelled_dry_run_is_refused_rather_than_deleting() {
 /// whole reason for putting it there rather than on a fifth route.
 #[tokio::test]
 async fn a_roots_list_in_the_patch_body_writes_the_grants() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let root = {
         let conn = state.library.conn();
         conn.query_row("SELECT id FROM root", [], |r| r.get::<_, i64>(0))
@@ -359,7 +358,7 @@ async fn a_roots_list_in_the_patch_body_writes_the_grants() {
 /// asserted here rather than assumed, since the route is what supplies both.
 #[tokio::test]
 async fn an_admin_revokes_one_session_and_not_another_accounts() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let reader = a_reader(&router, &state).await;
     let admin = user_id(&state, "local");
     {
@@ -415,7 +414,7 @@ async fn an_admin_revokes_one_session_and_not_another_accounts() {
 /// holds — the other half of "a device was lost".
 #[tokio::test]
 async fn an_admin_revokes_one_api_key() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let reader = a_reader(&router, &state).await;
     let secret = {
         let conn = state.library.conn();
@@ -472,7 +471,7 @@ async fn an_admin_revokes_one_api_key() {
 /// server breaking.
 #[tokio::test]
 async fn neither_user_route_will_write_an_empty_password() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
 
     let created = send_json(
         &router,
@@ -531,7 +530,7 @@ async fn neither_user_route_will_write_an_empty_password() {
 /// route that edits permissions. Found by C4 PR 2's whole-branch review.
 #[tokio::test]
 async fn a_patch_refused_for_its_password_does_not_apply_its_other_fields() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let id = a_reader(&router, &state).await;
     // A second administrator, so a role change here is refused for the
     // password and not for C4 §4's own invariant.
@@ -573,7 +572,7 @@ async fn a_patch_refused_for_its_password_does_not_apply_its_other_fields() {
 /// doc comments that assume it. C4 PR 2's whole-branch review, question 3.
 #[tokio::test]
 async fn no_user_route_body_carries_a_hash_a_token_or_a_key_secret() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let id = a_reader(&router, &state).await;
     let secret = {
         let conn = state.library.conn();
@@ -642,7 +641,7 @@ async fn no_user_route_body_carries_a_hash_a_token_or_a_key_secret() {
 /// fault was reported to the client as a conflict.
 #[tokio::test]
 async fn a_role_the_schema_refuses_is_400_on_both_routes() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let id = a_reader(&router, &state).await;
 
     let created = send_json(
@@ -673,7 +672,7 @@ async fn a_role_the_schema_refuses_is_400_on_both_routes() {
 /// patch route 400s on the identical shape. Found by the whole-branch review.
 #[tokio::test]
 async fn a_role_that_is_not_a_string_is_refused_rather_than_defaulted() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
 
     let response = send_json(
         &router,
@@ -700,7 +699,7 @@ async fn a_role_that_is_not_a_string_is_refused_rather_than_defaulted() {
 /// of the browser they were working in. Found by the whole-branch review.
 #[tokio::test]
 async fn an_administrator_cannot_reset_their_own_password_through_this_route() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let admin = user_id(&state, "local");
     {
         let conn = state.library.conn();
@@ -737,7 +736,7 @@ async fn an_administrator_cannot_reset_their_own_password_through_this_route() {
 /// wrong noun. Found by the whole-branch review.
 #[tokio::test]
 async fn a_missing_session_or_key_names_itself_rather_than_the_account() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let id = a_reader(&router, &state).await;
 
     // Both halves: an account that exists with no such session, and an
@@ -778,7 +777,7 @@ async fn a_missing_session_or_key_names_itself_rather_than_the_account() {
 /// else about it says so.
 #[tokio::test]
 async fn can_log_in_tells_a_locked_account_from_a_usable_one() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let usable = a_reader(&router, &state).await;
     let locked = {
         let conn = state.library.conn();
@@ -836,7 +835,7 @@ async fn can_log_in_tells_a_locked_account_from_a_usable_one() {
 /// against the function one over from the one it named.
 #[tokio::test]
 async fn a_dry_run_and_a_real_removal_refuse_with_the_same_status() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let admin = user_id(&state, "local");
 
     let quoted = send_json(
@@ -868,7 +867,7 @@ async fn a_dry_run_and_a_real_removal_refuse_with_the_same_status() {
 /// route — 404 from the existence check, never a 409 from the store.
 #[tokio::test]
 async fn deleting_an_account_that_does_not_exist_is_404_on_both_halves() {
-    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
 
     for query in ["", "?dry_run=true"] {
         let response = send_json(
@@ -921,7 +920,7 @@ async fn a_closure_that_panicked_is_a_500_naming_what_was_running() {
 #[tokio::test]
 async fn an_api_key_reaches_no_user_administration_route() {
     use tower::ServiceExt as _;
-    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
 
     for (method, path) in [
         (Method::GET, "/api/library/users"),
@@ -972,7 +971,7 @@ async fn an_api_key_reaches_no_user_administration_route() {
 /// review of that round.
 #[tokio::test]
 async fn a_roots_list_naming_a_root_that_does_not_exist_is_the_callers_mistake() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let id = a_reader(&router, &state).await;
 
     let response = send_json(

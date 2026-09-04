@@ -116,7 +116,7 @@ async fn every_backup_route_refuses_a_reader() {
 /// Found by C4 PR 2's mutation sweep.
 #[tokio::test]
 async fn an_in_memory_library_refuses_all_three_backup_routes() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_in_a_browser();
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     assert!(
         state.library.path().is_none(),
         "this fixture is the in-memory one, which is the point of the test"

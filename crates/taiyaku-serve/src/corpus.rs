@@ -408,7 +408,10 @@ fn a_corpus_edition_with_members(
                 auth: crate::session::AuthConfig::default(),
                 scans: Default::default(),
             });
-            let router = crate::test_support::authenticating(crate::build_router(state));
+            let router = crate::test_support::authenticating(
+                crate::build_router(state.clone()),
+                &state.library,
+            );
             return (router, slug, key, pages);
         }
     }
@@ -455,7 +458,10 @@ fn a_corpus_edition_of_one_file(root: &Path) -> (axum::Router, String, String, P
                 auth: crate::session::AuthConfig::default(),
                 scans: Default::default(),
             });
-            let router = crate::test_support::authenticating(crate::build_router(state));
+            let router = crate::test_support::authenticating(
+                crate::build_router(state.clone()),
+                &state.library,
+            );
             return (router, slug, key, path);
         }
     }

@@ -135,7 +135,7 @@ pub(crate) fn router_over_a_file_backed_library()
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = session_authenticating(crate::build_router(state.clone()), &state.library);
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
 }
 
@@ -507,7 +507,7 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = authenticating(crate::build_router(state.clone()));
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state)
 }
 
@@ -571,7 +571,7 @@ pub(crate) fn router_over_a_library_with_two_editions()
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = authenticating(crate::build_router(state.clone()));
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, work_id, fixture)
 }
 
@@ -661,7 +661,7 @@ pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<Serv
     // `authenticating`, because `library()` seeds a claimed account and every
     // route is behind the guard since spec A2 — the same wrapper
     // `router_over_a_library` uses, for the same reason.
-    let router = authenticating(crate::build_router(state.clone()));
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
 }
 
@@ -816,7 +816,7 @@ fn router_over_a_scanned_tree(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = authenticating(crate::build_router(state.clone()));
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
 }
 
@@ -839,43 +839,6 @@ pub(crate) fn router_over_a_single_scanned_work()
 -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
     router_over_a_scanned_tree("taiyaku-test-single-scanned-work", "", &["Scanned"])
 }
-
-/// [`router_over_a_single_scanned_work`], authenticating with a **session**
-/// rather than the API key every other fixture sends.
-///
-/// What `users_api`'s tests need: those routes refuse a device credential, so
-/// through the ordinary fixture every one of them answers 403 for a reason
-/// that has nothing to do with what is being tested. See
-/// [`session_authenticating`].
-pub(crate) fn router_over_a_single_scanned_work_in_a_browser()
--> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
-    let (_router, state, fixture) = router_over_a_single_scanned_work();
-    let router = session_authenticating(crate::build_router(state.clone()), &state.library);
-    (router, state, fixture)
-}
-
-/// [`router_over_a_single_scanned_work_in_a_browser`], demoted to a reader —
-/// so a 403 is about the *role* and not about the credential kind.
-///
-/// # Panics
-///
-/// Panics if the demotion updates no row.
-pub(crate) fn router_over_a_single_scanned_work_in_a_browser_as_a_reader()
--> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
-    let (router, state, fixture) = router_over_a_single_scanned_work_in_a_browser();
-    {
-        let conn = state.library.conn();
-        let demoted = conn
-            .execute("UPDATE user SET role = 'user' WHERE id = 1", [])
-            .expect("demotes the fixture account");
-        assert_eq!(
-            demoted, 1,
-            "the fixture account must actually stop being an administrator"
-        );
-    }
-    (router, state, fixture)
-}
-
 /// [`router_over_a_single_scanned_work`], with the fixture account demoted to
 /// a reader — the same demotion `router_over_a_scanned_work_as_a_reader`
 /// applies to its own fixture and for the same reason: a router wrapped in
@@ -993,7 +956,7 @@ pub(crate) fn state_with_two_scanned_roots() -> (axum::Router, std::sync::Arc<Se
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = authenticating(crate::build_router(state.clone()));
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
 }
 
@@ -1113,7 +1076,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = authenticating(crate::build_router(state.clone()));
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
 }
 
@@ -1193,7 +1156,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = authenticating(crate::build_router(state.clone()));
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture, root_a)
 }
 
@@ -1294,7 +1257,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = authenticating(crate::build_router(state.clone()));
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture, root_a)
 }
 
@@ -1448,17 +1411,21 @@ pub(crate) const FIXTURE_KEY: &str = "tyk_the-suites-own-key-not-a-real-secret";
 
 pub(crate) const FIXTURE_PHC: &str = "$argon2id$v=19$m=19456,t=2,p=1$KtgzR4TOZsatunnAHzKmig$fRrVxJJcb/LwTcYO+9XZ4C5uNgdPM131N8iXWxLeXxk";
 
-/// Wrap a router so every request through it presents the fixture credential.
+/// Wrap a router so every request through it presents **an API key**.
 ///
-/// **Spec A2 §9 refuses a `--no-auth` flag and a dev bypass**, so the suite does
-/// not get one either: this is a test *client* that authenticates, through the
-/// real guard, with a real password that `give_the_fixture_account_a_password`
-/// actually stored. Nothing here is reachable from a production binary.
+/// **This used to be `authenticating`, and that default is what hid O93.**
+/// Every route test in this crate drove a device credential, so no test could
+/// see that `config_api`, `curation`, `metadata`, `users_api` and `backup_api`
+/// all admitted one — the administrative routes were being *exercised* by the
+/// credential they should have been refusing, through four whole-branch
+/// reviews. Renamed rather than deleted: a key is the right client for OPDS
+/// and for anything asserting key behaviour, and those callers now say so.
 ///
-/// One function rather than one per helper, so "how a test authenticates" has a
-/// single answer — and a request that sets its own `Authorization` is left
-/// alone, so a test asserting a *wrong* credential still can.
-pub(crate) fn authenticating(router: axum::Router) -> axum::Router {
+/// **Spec A2 §9 refuses a `--no-auth` flag and a dev bypass**, so the suite
+/// does not get one either: this is a test *client* that authenticates through
+/// the real guard. A request that sets its own `Authorization` is left alone,
+/// so a test asserting a *wrong* credential still can.
+pub(crate) fn key_authenticating(router: axum::Router) -> axum::Router {
     let credential = fixture_authorization();
     router.layer(axum::middleware::from_fn(
         move |mut request: axum::extract::Request, next: axum::middleware::Next| {
@@ -1476,8 +1443,43 @@ pub(crate) fn authenticating(router: axum::Router) -> axum::Router {
     ))
 }
 
-/// Wrap a router so every request presents a real **browser session**, not
-/// the API key [`authenticating`] injects.
+/// A `Cookie` header value carrying a real session for account 1.
+///
+/// [`fixture_authorization`]'s counterpart for a test that builds its own
+/// requests and needs to be a **browser** — which, since O93, is what every
+/// administrative route requires. `auth::tests` builds its requests by hand
+/// against the real `build_router`, so it cannot go through
+/// [`authenticating`].
+///
+/// # Panics
+///
+/// Panics if the session cannot be opened.
+pub(crate) fn fixture_session_cookie(library: &taiyaku_library::Library) -> String {
+    let token = taiyaku_library::credential::mint_token();
+    {
+        let conn = library.conn();
+        taiyaku_library::account::open_session(&conn, 1, &token, Some("the suite"), None)
+            .expect("opens a fixture session");
+    }
+    format!("{}={token}", crate::session::COOKIE_NAME)
+}
+
+/// The `Extensions` a **browser session** arrives with, for a test that calls
+/// a handler directly rather than through the router.
+///
+/// `session::administering_or_forbidden` asks two questions, and the second
+/// reads `auth::By` out of the request's extensions — so a direct call that
+/// supplies only a `Principal` is refused for the credential kind, whatever
+/// role the principal carries.
+#[must_use]
+pub(crate) fn from_a_browser() -> axum::http::Extensions {
+    let mut extensions = axum::http::Extensions::new();
+    extensions.insert(crate::auth::By::Cookie);
+    extensions
+}
+
+/// Wrap a router so every request presents a real **browser session** — the
+/// suite's default, and the client the web API actually has.
 ///
 /// **The suite's default credential is the one kind an administration route
 /// refuses**, and that is why this exists. `authenticating` sends
@@ -1497,7 +1499,7 @@ pub(crate) fn authenticating(router: axum::Router) -> axum::Router {
 ///
 /// Panics if the session cannot be opened, which would leave every test using
 /// it authenticating as nobody.
-pub(crate) fn session_authenticating(
+pub(crate) fn authenticating(
     router: axum::Router,
     library: &taiyaku_library::Library,
 ) -> axum::Router {
@@ -1513,11 +1515,29 @@ pub(crate) fn session_authenticating(
             let cookie = cookie.clone();
             async move {
                 let headers = request.headers();
-                if !headers.contains_key("authorization") && !headers.contains_key("cookie") {
+                // **Appended to whatever cookies the request already carries,
+                // not skipped when it carries any.** A browser sends every
+                // cookie for the host in one header, and a test that sets its
+                // own for an unrelated reason — `routes::tests`'s logging test
+                // sends `cookie: session=secret` to prove an unlisted header
+                // is not recorded — would otherwise be silently unauthenticated
+                // and answer 401 about something it is not testing.
+                let existing = headers
+                    .get("cookie")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                let already_signed_in = existing.contains(crate::session::COOKIE_NAME);
+                if !headers.contains_key("authorization") && !already_signed_in {
+                    let joined = if existing.is_empty() {
+                        cookie.clone()
+                    } else {
+                        format!("{existing}; {cookie}")
+                    };
                     let out = request.headers_mut();
                     out.insert(
                         "cookie",
-                        axum::http::HeaderValue::from_str(&cookie).expect("ascii"),
+                        axum::http::HeaderValue::from_str(&joined).expect("ascii"),
                     );
                     // **A matching `host` and `origin` too, because a cookie
                     // without them is not what a browser sends.** Spec A2's
@@ -1527,11 +1547,15 @@ pub(crate) fn session_authenticating(
                     // cookie would make every write here a 403 about
                     // something the test is not asking about. The same pair
                     // `session/tests.rs` sets by hand on each request.
-                    out.insert("host", axum::http::HeaderValue::from_static("test"));
-                    out.insert(
-                        "origin",
-                        axum::http::HeaderValue::from_static("http://test"),
-                    );
+                    if !out.contains_key("host") {
+                        out.insert("host", axum::http::HeaderValue::from_static("test"));
+                    }
+                    if !out.contains_key("origin") {
+                        out.insert(
+                            "origin",
+                            axum::http::HeaderValue::from_static("http://test"),
+                        );
+                    }
                 }
                 next.run(request).await
             }

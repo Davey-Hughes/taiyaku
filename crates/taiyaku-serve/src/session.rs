@@ -590,13 +590,27 @@ fn principal_of(extensions: &axum::http::Extensions) -> Option<&Principal> {
 /// 403 rather than 401: the credential is valid and the caller is who they say,
 /// which is exactly why a re-authentication prompt would be the wrong answer.
 /// Found by the second whole-branch review.
-// **The wording is deliberately not "the account it belongs to" any more.**
-// It was, and that was true while `session.rs`'s six self-service routes were
-// the only callers. C4 PR 2's `users_api` and `backup_api` manage *other*
-// accounts through this same gate, where that clause is simply false — and a
-// refusal that asserts something untrue is the defect this branch's own review
-// caught twice over in message text. Worded for what the gate is about rather
-// than for the first routes to use it.
+///
+/// **Called directly only by this module's own six self-service routes.**
+/// Everything administrative reaches it through
+/// [`administering_or_forbidden`], which asks the role question first.
+// **The wording has been widened twice, and the second time is the lesson.**
+// It began as "an API key cannot manage the account it belongs to", true while
+// `session.rs`'s six self-service routes were the only callers. C4 PR 2 added
+// `users_api`/`backup_api`, which manage *other* accounts, and reworded it to
+// "cannot manage accounts, keys or sessions". O93 then widened the callers
+// again — the rule editor, the roots API, the proposals inbox, the metadata
+// PATCHes — and that second wording became false on twenty-two of the
+// thirty-one routes it answers for: `DELETE /api/library/roots/3` manages no
+// account, key or session.
+//
+// **A refusal that asserts something untrue is a defect**, and this work
+// caught it three separate times in message text. Worded now for the boundary
+// itself rather than for whichever routes happen to sit behind it, which is
+// the only version that does not go stale the next time the gate is reused.
+// The phrase "API key" is load-bearing:
+// `auth::tests::exactly_the_declared_routes_refuse_an_api_key` classifies by
+// it.
 pub(crate) fn refuse_a_device_credential(extensions: &axum::http::Extensions) -> Option<Response> {
     if extensions
         .get::<crate::auth::By>()
@@ -608,10 +622,57 @@ pub(crate) fn refuse_a_device_credential(extensions: &axum::http::Extensions) ->
         (
             StatusCode::FORBIDDEN,
             [(header::CONTENT_TYPE, "application/json")],
-            r#"{"error":"an API key cannot manage accounts, keys or sessions; sign in from a browser to do that"}"#,
+            r#"{"error":"an API key reads a library; it does not administer one. Sign in from a browser to do that"}"#,
         )
             .into_response(),
     )
+}
+/// **The one gate every administrative route in this server opens with**: an
+/// administrator, *and* a browser session rather than a device credential.
+///
+/// # Why the two questions are one gate
+///
+/// They were two, and three modules each kept their own copy of the first —
+/// `config_api`, `curation` and `metadata` all defined an `admin_or_forbidden`
+/// reading `principal.role` and nothing else. So an administrator's **API
+/// key**, the credential typed into a third-party OPDS reader and hashed fast
+/// on the argument that it rides every page request, reached every one of
+/// them: the rule editor, the roots API, `DELETE /api/library/roots/{id}` —
+/// which spec C4 §2 calls the most destructive action in the product — the
+/// proposals inbox, and the four metadata PATCHes.
+///
+/// Spec A2's second whole-branch review had already closed this shape for the
+/// *self-service* account routes and built [`refuse_a_device_credential`] for
+/// it, recording the harm in as many words: *"a key typed into a third-party
+/// reader granted minting further keys, listing the owner's browsers with
+/// their addresses, and signing every one of them out"*. C4 PR 2 then measured
+/// the administrative version — `GET /api/library/users` under
+/// `Authorization: Basic name:tyk_…` answering **200** with every account's
+/// sessions, IP addresses and user-agents — gated its own nine routes, and
+/// opened **O93** for the twenty-two it did not own. This closes O93.
+///
+/// # The rule, stated so a new route cannot miss it
+///
+/// **A route that asks whether you are an administrator asks this instead.**
+/// There is no longer any function in this crate that answers only the first
+/// half, which is the property `auth::tests::no_module_answers_the_role_question_alone`
+/// holds — three copies of a half-check is how the half that was missing went
+/// unnoticed through four reviews.
+///
+/// **O58's two routes are deliberately untouched**, and they are not an
+/// exception to the rule: `put_truth` and `patch_alignments` take no
+/// `Principal` at all and are not administrative — any authenticated reader
+/// may write a truth document. What credential kind *should* be allowed to
+/// rewrite a shared document is the question O58 holds open, and it is a
+/// different question from this one.
+pub(crate) fn administering_or_forbidden(
+    principal: &crate::auth::Principal,
+    extensions: &axum::http::Extensions,
+) -> Option<Response> {
+    if principal.role != crate::auth::Role::Admin {
+        return Some((StatusCode::FORBIDDEN, "this route is an administrator's").into_response());
+    }
+    refuse_a_device_credential(extensions)
 }
 
 /// Everything the account screen reads and writes.

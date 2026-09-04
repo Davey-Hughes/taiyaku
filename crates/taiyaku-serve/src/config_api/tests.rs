@@ -357,6 +357,7 @@ async fn the_import_route_reports_the_proposals_it_reopens() {
     let response = crate::config_api::import_rules(
         axum::extract::State(std::sync::Arc::clone(&state)),
         axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
         axum::body::Bytes::from(pre_accept_json),
     )
     .await;
@@ -1270,7 +1271,7 @@ fn state_with_many_scan_entries(
 #[tokio::test]
 async fn the_preview_routes_matched_files_table_reports_its_own_truncation() {
     let (state, _fixture) = state_with_many_scan_entries("taiyaku-test-preview-truncation", 501);
-    let router = test_support::authenticating(crate::build_router(state.clone()));
+    let router = test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let listed = get_json(&router, "/api/library/rules").await;
     let existing = listed["rules"].as_array().cloned().expect("rules array");
@@ -1368,6 +1369,7 @@ async fn the_preview_route_does_not_wait_on_the_shared_connections_mutex() {
     let response = crate::config_api::preview_rules(
         axum::extract::State(std::sync::Arc::clone(&state)),
         axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
         axum::Json(serde_json::json!({ "rules": [] })),
     )
     .await;
@@ -1946,7 +1948,7 @@ async fn a_rules_route_validation_message_still_names_a_rule() {
 /// the one `create_root`'s handler actually writes through.
 #[tokio::test]
 async fn a_store_fault_creating_a_root_is_a_500_not_a_400() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let (_router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let fixture = test_support::Fixture::new("taiyaku-test-create-root-store-fault");
     std::fs::create_dir_all(fixture.path().join("New Root")).expect("mkdir");
     {
@@ -1956,7 +1958,22 @@ async fn a_store_fault_creating_a_root_is_a_500_not_a_400() {
     }
     let body = serde_json::json!({ "path": fixture.path().to_string_lossy() });
 
-    let response = send_json(&router, Method::POST, "/api/library/roots", &body).await;
+    // **Called directly rather than through the router, and the pragma is
+    // why.** `query_only` refuses *every* write on this connection, including
+    // the expiry slide `account::session_owner` performs on each request — so
+    // a request through the router is refused 401 by the guard, before the
+    // handler this test is about ever runs. (An API key's `last_used` write is
+    // deliberately best-effort and swallowed, which is why this passed while
+    // the suite authenticated with one; it cannot go back to a key, because
+    // O93's gate now refuses one on this route.) The store fault under test is
+    // the handler's, so the handler is what it calls.
+    let response = crate::config_api::create_root(
+        axum::extract::State(std::sync::Arc::clone(&state)),
+        axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
+        axum::Json(body),
+    )
+    .await;
     let status = response.status();
     let text = test_support::body_string(response).await;
     assert_eq!(
@@ -2361,6 +2378,7 @@ async fn a_second_scan_of_a_root_already_scanning_is_refused() {
     let response = crate::config_api::start_scan(
         axum::extract::State(std::sync::Arc::clone(&state)),
         axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
         axum::extract::Path(root_id),
         axum::extract::Query(crate::config_api::ScanQuery::default()),
     )
@@ -2388,6 +2406,7 @@ async fn a_second_scan_of_a_root_already_scanning_is_refused() {
     let response = crate::config_api::start_scan(
         axum::extract::State(std::sync::Arc::clone(&state)),
         axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
         axum::extract::Path(root_id),
         axum::extract::Query(crate::config_api::ScanQuery::default()),
     )
@@ -2418,6 +2437,7 @@ async fn the_scan_report_names_what_it_could_not_read() {
     let started = crate::config_api::start_scan(
         axum::extract::State(std::sync::Arc::clone(&state)),
         axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
         axum::extract::Path(root_id),
         axum::extract::Query(crate::config_api::ScanQuery::default()),
     )
@@ -2429,6 +2449,7 @@ async fn the_scan_report_names_what_it_could_not_read() {
         let response = crate::config_api::scan_status(
             axum::extract::State(std::sync::Arc::clone(&state)),
             axum::extract::Extension(an_administrator()),
+            test_support::from_a_browser(),
             axum::extract::Path(root_id),
         )
         .await;
@@ -2491,6 +2512,7 @@ async fn a_scan_report_names_the_work_a_folded_documents_orphan_was_absorbed_int
     let started = crate::config_api::start_scan(
         axum::extract::State(std::sync::Arc::clone(&state)),
         axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
         axum::extract::Path(root_id),
         axum::extract::Query(crate::config_api::ScanQuery::default()),
     )
@@ -2502,6 +2524,7 @@ async fn a_scan_report_names_the_work_a_folded_documents_orphan_was_absorbed_int
         let response = crate::config_api::scan_status(
             axum::extract::State(std::sync::Arc::clone(&state)),
             axum::extract::Extension(an_administrator()),
+            test_support::from_a_browser(),
             axum::extract::Path(root_id),
         )
         .await;
@@ -2654,6 +2677,7 @@ async fn a_second_roots_scan_is_not_blocked_by_the_first_roots_own_scan() {
     let response = crate::config_api::start_scan(
         axum::extract::State(std::sync::Arc::clone(&state)),
         axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
         axum::extract::Path(root_b),
         axum::extract::Query(crate::config_api::ScanQuery::default()),
     )
@@ -2677,6 +2701,7 @@ async fn scan_status_404s_for_a_root_this_library_does_not_hold() {
     let response = crate::config_api::scan_status(
         axum::extract::State(std::sync::Arc::clone(&state)),
         axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
         axum::extract::Path(999_999),
     )
     .await;
@@ -2705,6 +2730,7 @@ async fn scan_status_reads_the_database_for_a_known_root_with_no_registry_entry(
     let response = crate::config_api::scan_status(
         axum::extract::State(std::sync::Arc::clone(&state)),
         axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
         axum::extract::Path(root_id),
     )
     .await;
@@ -2779,6 +2805,7 @@ async fn deleting_a_root_clears_its_stale_scan_registry_entry() {
     let status = crate::config_api::scan_status(
         axum::extract::State(std::sync::Arc::clone(&state)),
         axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
         axum::extract::Path(new_id),
     )
     .await;
@@ -2834,6 +2861,7 @@ async fn a_dry_run_delete_leaves_the_scan_registry_entry_alone() {
     let status = crate::config_api::scan_status(
         axum::extract::State(std::sync::Arc::clone(&state)),
         axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
         axum::extract::Path(root_id),
     )
     .await;
@@ -2895,6 +2923,7 @@ async fn scan_status_carries_both_database_columns_even_with_a_registry_entry() 
     let response = crate::config_api::scan_status(
         axum::extract::State(std::sync::Arc::clone(&state)),
         axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
         axum::extract::Path(root_id),
     )
     .await;

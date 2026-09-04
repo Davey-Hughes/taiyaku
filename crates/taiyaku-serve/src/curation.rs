@@ -57,10 +57,7 @@ use axum::{
 };
 use taiyaku_library::proposals::{self, Filter, ProposedRule};
 
-use crate::{
-    ServeState,
-    auth::{Principal, Role},
-};
+use crate::{ServeState, auth::Principal};
 
 /// The state the inbox counts its kind tabs within when the query names none.
 ///
@@ -167,22 +164,6 @@ fn present(conn: &rusqlite::Connection, id: i64) -> Result<(), NoAnswer> {
         Err(why) => Err(NoAnswer::Failed(why)),
     }
 }
-
-/// The refusal every handler here opens with, or `None` for an administrator.
-///
-/// Shaped like `library_api::failed`: one place decides what this answer is,
-/// so no two handlers here can drift into different refusals of the same
-/// question.
-fn admin_or_forbidden(principal: &Principal) -> Option<Response> {
-    (principal.role != Role::Admin).then(|| {
-        (
-            StatusCode::FORBIDDEN,
-            "the proposals inbox is an administrator's",
-        )
-            .into_response()
-    })
-}
-
 /// One proposal, as the detail route echoes it back inside its evidence.
 fn proposal_json(p: &proposals::Proposal) -> serde_json::Value {
     serde_json::json!({
@@ -320,9 +301,10 @@ pub(crate) struct InboxQuery {
 pub(crate) async fn list(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     Query(query): Query<InboxQuery>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
 
@@ -377,9 +359,10 @@ pub(crate) async fn list(
 pub(crate) async fn detail(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
 
@@ -422,10 +405,11 @@ pub(crate) async fn detail(
 pub(crate) async fn resolution(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let rule = match rule_from_json(&body) {
@@ -477,10 +461,11 @@ pub(crate) async fn resolution(
 pub(crate) async fn accept(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let rule = match rule_from_json(&body) {
@@ -513,9 +498,10 @@ pub(crate) async fn accept(
 pub(crate) async fn unaccept(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     // `list`'s reasoning about the async worker: a read, then a transaction
@@ -542,9 +528,10 @@ pub(crate) async fn unaccept(
 pub(crate) async fn dismiss(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
 ) -> Response {
-    if let Some(refusal) = admin_or_forbidden(&principal) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     // `list`'s reasoning about the async worker.

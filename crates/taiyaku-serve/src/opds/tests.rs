@@ -755,7 +755,7 @@ async fn the_acquisition_link_follows_can_download_in_both_directions() {
                     .expect("withholds the capability");
             }
         }
-        let router = crate::test_support::authenticating(crate::build_router(state));
+        let router = crate::test_support::key_authenticating(crate::build_router(state));
         let response = crate::test_support::get(&router, "/opds/v1.2/works/t").await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = crate::test_support::body_string(response).await;
@@ -803,7 +803,7 @@ async fn the_acquisition_link_follows_can_download_in_both_directions() {
         conn.execute("UPDATE user SET can_download = 0", [])
             .expect("withholds the capability");
     }
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router = crate::test_support::key_authenticating(crate::build_router(state));
     let feed = crate::test_support::get(&router, "/opds/v1.2/works/t").await;
     let body = crate::test_support::body_string(feed).await;
     let href = body
@@ -1050,7 +1050,7 @@ fn router_with_a_real_page_under_a_withheld_root(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = crate::test_support::authenticating(crate::build_router(state.clone()));
+    let router = crate::test_support::key_authenticating(crate::build_router(state.clone()));
     (router, state)
 }
 
@@ -1119,7 +1119,7 @@ fn router_with_two_editions_split_across_roots(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = crate::test_support::authenticating(crate::build_router(state.clone()));
+    let router = crate::test_support::key_authenticating(crate::build_router(state.clone()));
     (router, state)
 }
 
@@ -1200,7 +1200,7 @@ fn router_with_two_works_one_withheld(dir: &str) -> (axum::Router, std::sync::Ar
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = crate::test_support::authenticating(crate::build_router(state.clone()));
+    let router = crate::test_support::key_authenticating(crate::build_router(state.clone()));
     (router, state)
 }
 
@@ -1429,7 +1429,7 @@ async fn the_opds_download_401s_with_a_prompt_where_the_api_twin_does_not() {
 #[tokio::test]
 async fn the_opds_download_serves_the_same_bytes_as_the_api_route() {
     let state = Arc::new(crate::test_support::state("taiyaku-test-opds-dl-same"));
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router = crate::test_support::key_authenticating(crate::build_router(state));
 
     let mut bodies = Vec::new();
     for path in [

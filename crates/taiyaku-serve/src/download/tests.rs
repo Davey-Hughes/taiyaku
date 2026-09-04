@@ -313,7 +313,8 @@ async fn drain(response: axum::http::Response<axum::body::Body>) -> (Vec<u8>, bo
 #[tokio::test]
 async fn a_two_member_edition_downloads_as_one_readable_cbz() {
     let state = std::sync::Arc::new(crate::test_support::state("download-two-members"));
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let response = crate::test_support::get(&router, "/api/works/t/raw/download").await;
     assert_eq!(response.status(), 200);
@@ -386,7 +387,8 @@ async fn a_single_member_edition_is_served_byte_for_byte() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let response = crate::test_support::get(&router, "/api/works/w/a/download").await;
     assert_eq!(response.status(), 200);
@@ -402,7 +404,8 @@ async fn a_single_member_edition_is_served_byte_for_byte() {
 #[tokio::test]
 async fn a_range_of_a_generated_download_is_that_slice_of_the_whole() {
     let state = std::sync::Arc::new(crate::test_support::state("download-range"));
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let whole = all_of(crate::test_support::get(&router, "/api/works/t/raw/download").await).await;
 
@@ -439,7 +442,8 @@ async fn a_range_of_a_generated_download_is_that_slice_of_the_whole() {
 #[tokio::test]
 async fn an_unsatisfiable_range_is_refused_with_the_real_length() {
     let state = std::sync::Arc::new(crate::test_support::state("download-bad-range"));
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     use tower::ServiceExt as _;
     let response = router
@@ -468,7 +472,6 @@ async fn an_unsatisfiable_range_is_refused_with_the_real_length() {
 #[tokio::test]
 async fn the_filename_comes_from_the_library_rows_when_it_has_them() {
     let (router, _state, fixture) = crate::test_support::router_over_a_scanned_work_in_a_series();
-    let router = crate::test_support::authenticating(router);
 
     // `router_over_a_scanned_work` deliberately leaves the fixture directory
     // empty — it exists to prove a *correction* mints no file, and every
@@ -520,7 +523,8 @@ async fn the_filename_comes_from_the_library_rows_when_it_has_them() {
 #[tokio::test]
 async fn an_edition_that_does_not_exist_is_a_404_before_any_bytes() {
     let state = std::sync::Arc::new(crate::test_support::state("download-no-edition"));
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let response = crate::test_support::get(&router, "/api/works/t/nonesuch/download").await;
     assert_eq!(response.status(), 404);
@@ -560,7 +564,8 @@ async fn a_withheld_download_capability_refuses_with_403() {
         conn.execute("UPDATE user SET can_download = 0", [])
             .expect("withholds the capability");
     }
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let response = crate::test_support::get(&router, "/api/works/t/raw/download").await;
     assert_eq!(
@@ -579,7 +584,8 @@ async fn a_member_downloads_as_the_file_on_disk() {
     let state = std::sync::Arc::new(crate::test_support::state("download-member"));
     let root = std::env::temp_dir().join("download-member");
     let second = std::fs::read(root.join("c2.cbz")).unwrap();
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     // Ordinal 1 is the second member — the document's order, counting from 0.
     let response = crate::test_support::get(&router, "/api/works/t/raw/members/1/download").await;
@@ -610,7 +616,8 @@ async fn a_member_downloads_as_the_file_on_disk() {
 #[tokio::test]
 async fn a_member_ordinal_past_the_end_is_a_404() {
     let state = std::sync::Arc::new(crate::test_support::state("download-member-past"));
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let response = crate::test_support::get(&router, "/api/works/t/raw/members/9/download").await;
     assert_eq!(response.status(), 404);
@@ -625,7 +632,8 @@ async fn a_member_range_is_that_slice_of_the_file() {
     let state = std::sync::Arc::new(crate::test_support::state("download-member-range"));
     let root = std::env::temp_dir().join("download-member-range");
     let first = std::fs::read(root.join("c1.cbz")).unwrap();
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     use tower::ServiceExt as _;
     let response = router
@@ -696,7 +704,8 @@ async fn a_directory_member_is_refused_not_streamed() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let response = crate::test_support::get(&router, "/api/works/t/raw/members/0/download").await;
     assert_eq!(response.status(), 404);
@@ -717,7 +726,8 @@ async fn a_directory_member_is_refused_not_streamed() {
 async fn a_withheld_download_capability_refuses_a_member_download_too() {
     let state = std::sync::Arc::new(crate::test_support::state("download-member-withheld"));
     withhold(&state, "can_download");
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let response = crate::test_support::get(&router, "/api/works/t/raw/members/0/download").await;
     assert_eq!(
@@ -757,7 +767,8 @@ fn withhold(state: &crate::ServeState, column: &str) {
 async fn without_can_download_the_download_is_403_and_the_shelf_still_works() {
     let state = std::sync::Arc::new(crate::test_support::state("download-no-can-download"));
     withhold(&state, "can_download");
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     // 403, not 404: the caller may see this edition and may not have it. A 404
     // here would be a lie that also breaks the UI's ability to explain itself.
@@ -782,7 +793,8 @@ async fn without_can_download_the_download_is_403_and_the_shelf_still_works() {
 async fn without_can_stream_the_pages_are_403_and_the_download_still_works() {
     let state = std::sync::Arc::new(crate::test_support::state("download-no-can-stream"));
     withhold(&state, "can_stream");
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     for path in ["/api/works/t/raw/pages/0", "/opds/v1.2/works/t/raw/pages/0"] {
         let response = crate::test_support::get(&router, path).await;
@@ -984,7 +996,8 @@ async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let response = crate::test_support::get(&router, "/api/works/t/raw/download").await;
     assert_eq!(
@@ -1042,7 +1055,8 @@ async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
 #[tokio::test]
 async fn a_route_download_matches_the_whole_at_every_local_header_boundary() {
     let state = std::sync::Arc::new(crate::test_support::state("download-boundary-walk"));
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let whole = all_of(crate::test_support::get(&router, "/api/works/t/raw/download").await).await;
     let total = whole.len();
@@ -1102,7 +1116,8 @@ async fn a_route_download_matches_the_whole_at_every_local_header_boundary() {
 #[tokio::test]
 async fn n_random_ranges_of_a_route_download_reassemble_into_the_whole() {
     let state = std::sync::Arc::new(crate::test_support::state("download-random-ranges"));
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let whole = all_of(crate::test_support::get(&router, "/api/works/t/raw/download").await).await;
     let total = whole.len() as u64;
@@ -1189,7 +1204,8 @@ async fn a_single_member_directory_edition_is_generated_not_passed_through() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
     });
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let response = crate::test_support::get(&router, "/api/works/t/raw/download").await;
     assert_eq!(
@@ -1268,7 +1284,8 @@ fn a_suffix_range_answers_with_the_last_n_bytes() {
 #[tokio::test]
 async fn a_download_waits_for_a_permit_once_every_slot_is_held() {
     let state = std::sync::Arc::new(crate::test_support::state("download-concurrency-cap"));
-    let router = crate::test_support::authenticating(crate::build_router(state));
+    let router =
+        crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let mut held = Vec::new();
     for _ in 0..super::MAX_CONCURRENT_DOWNLOADS {

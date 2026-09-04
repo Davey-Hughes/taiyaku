@@ -28,7 +28,7 @@ use axum::{
 };
 use taiyaku_library::account::{self, Account, KeySummary, SessionSummary};
 
-use crate::{ServeState, auth::Principal, config_api::admin_or_forbidden};
+use crate::{ServeState, auth::Principal};
 
 /// Why a users route could not answer.
 ///
@@ -79,39 +79,6 @@ impl IntoResponse for UserAnswer {
         (status, Json(serde_json::json!({ "error": message }))).into_response()
     }
 }
-
-/// The refusal every handler in this module opens with: an administrator,
-/// **and a browser session rather than a device credential**.
-///
-/// **`admin_or_forbidden` alone was not enough, and this is the hole the fix
-/// round found.** It reads `principal.role` and nothing else, so an
-/// administrator's API key — the credential typed into a third-party OPDS
-/// reader, hashed fast on the argument that it rides every page request —
-/// reached every route here. Measured before the fix: `GET
-/// /api/library/users` under `Authorization: Basic name:tyk_…` answered
-/// **200** with every account's sessions, their IP addresses and their
-/// user-agents.
-///
-/// Spec A2's second whole-branch review already closed exactly this for the
-/// *self-service* account routes, and `session::refuse_a_device_credential`
-/// is the helper it built: "a key typed into a third-party reader granted
-/// minting further keys, listing the owner's browsers with their addresses,
-/// and signing every one of them out". These routes are that capability's
-/// **superset** — they do it to every account rather than to the key's own —
-/// so a gate A2 thought necessary there cannot be optional here.
-///
-/// **Deliberately not extended to `config_api`, `curation` or `metadata`.**
-/// Those edit the library's organisation and its shared documents, and
-/// whether that counts as administering is **O58**, an open decision with a
-/// spec argument on each side. Credentials are not that question: A2 decided
-/// them, and this only applies its decision to the routes this branch adds.
-fn administering_or_forbidden(
-    principal: &Principal,
-    extensions: &axum::http::Extensions,
-) -> Option<Response> {
-    admin_or_forbidden(principal).or_else(|| crate::session::refuse_a_device_credential(extensions))
-}
-
 /// The one place a store refusal becomes a status.
 ///
 /// **Shared by all three writers.** `update`, `remove` and `removal_cost`
@@ -197,7 +164,7 @@ pub(crate) async fn list_users(
     Extension(principal): Extension<Principal>,
     extensions: axum::http::Extensions,
 ) -> Response {
-    if let Some(refusal) = administering_or_forbidden(&principal, &extensions) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
 
@@ -230,7 +197,7 @@ pub(crate) async fn create_user(
     extensions: axum::http::Extensions,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    if let Some(refusal) = administering_or_forbidden(&principal, &extensions) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
 
@@ -380,7 +347,7 @@ pub(crate) async fn patch_user(
     AxPath(id): AxPath<i64>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    if let Some(refusal) = administering_or_forbidden(&principal, &extensions) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let patch = match user_patch_from_json(&body) {
@@ -471,7 +438,7 @@ pub(crate) async fn delete_user(
     AxPath(id): AxPath<i64>,
     Query(query): Query<DeleteUserQuery>,
 ) -> Response {
-    if let Some(refusal) = administering_or_forbidden(&principal, &extensions) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
     let dry_run = query.dry_run;
@@ -537,7 +504,7 @@ pub(crate) async fn revoke_session(
     extensions: axum::http::Extensions,
     AxPath((id, sid)): AxPath<(i64, String)>,
 ) -> Response {
-    if let Some(refusal) = administering_or_forbidden(&principal, &extensions) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
 
@@ -567,7 +534,7 @@ pub(crate) async fn revoke_key(
     extensions: axum::http::Extensions,
     AxPath((id, kid)): AxPath<(i64, i64)>,
 ) -> Response {
-    if let Some(refusal) = administering_or_forbidden(&principal, &extensions) {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
 

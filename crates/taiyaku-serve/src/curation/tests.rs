@@ -1233,6 +1233,7 @@ async fn no_curation_route_stalls_the_runtime() {
         crate::curation::list(
             State(Arc::clone(&state)),
             Extension(an_administrator()),
+            crate::test_support::from_a_browser(),
             Query(crate::curation::InboxQuery {
                 state: Some("open".to_string()),
                 kind: None,
@@ -1252,6 +1253,7 @@ async fn no_curation_route_stalls_the_runtime() {
         crate::curation::detail(
             State(Arc::clone(&state)),
             Extension(an_administrator()),
+            crate::test_support::from_a_browser(),
             AxPath(id),
         ),
     )
@@ -1267,6 +1269,7 @@ async fn no_curation_route_stalls_the_runtime() {
         crate::curation::resolution(
             State(Arc::clone(&state)),
             Extension(an_administrator()),
+            crate::test_support::from_a_browser(),
             AxPath(id),
             axum::Json(crate::curation::rule_json(&rule)),
         ),
@@ -1283,6 +1286,7 @@ async fn no_curation_route_stalls_the_runtime() {
         crate::curation::accept(
             State(Arc::clone(&state)),
             Extension(an_administrator()),
+            crate::test_support::from_a_browser(),
             AxPath(id),
             axum::Json(crate::curation::rule_json(&rule)),
         ),
@@ -1300,6 +1304,7 @@ async fn no_curation_route_stalls_the_runtime() {
         crate::curation::unaccept(
             State(Arc::clone(&state)),
             Extension(an_administrator()),
+            crate::test_support::from_a_browser(),
             AxPath(id),
         ),
     )
@@ -1315,6 +1320,7 @@ async fn no_curation_route_stalls_the_runtime() {
         crate::curation::dismiss(
             State(Arc::clone(&state)),
             Extension(an_administrator()),
+            crate::test_support::from_a_browser(),
             AxPath(id),
         ),
     )

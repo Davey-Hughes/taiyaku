@@ -1750,6 +1750,7 @@ async fn every_route_declares_its_grant_posture() {
     // outright would leave the four with no driven proof at all, which is how
     // a reclassification quietly becomes a hole.
     let refuses_slug = refuses_state.works[0].id.clone();
+    let refuses_browser = crate::test_support::fixture_session_cookie(&refuses_state.library);
     let (refuses_edition_id, refuses_member_id): (i64, i64) = {
         let conn = refuses_state.library.conn();
         let edition_id = conn
@@ -1788,7 +1789,12 @@ async fn every_route_declares_its_grant_posture() {
                 Request::builder()
                     .method("PATCH")
                     .uri(&uri)
-                    .header("authorization", &credential)
+                    // **A session, not `credential` — O93.** Held fixed against the
+                    // admitted half below so the pair varies only the *role*, which is
+                    // what this test claims to attribute the status difference to.
+                    .header("cookie", &refuses_browser)
+                    .header("host", "test")
+                    .header("origin", "http://test")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -2044,6 +2050,16 @@ async fn every_route_declares_its_grant_posture() {
         )
         .expect("the granted edition and its one member")
     };
+    // **Both halves drive a session — O93, and the reason is the trap it left.**
+    // The refused half above sends `credential` (an API key) as a *reader*;
+    // this half sends a session as an *administrator*. That varies two things
+    // at once, so neither gate is pinned by the pair: delete the role check
+    // from `administering_or_forbidden` and the refused half still 403s, on
+    // the credential instead. The comment above claims "the material is
+    // unchanged between the two halves, so the status difference is
+    // attributable to the role alone", and that only stays true if the
+    // credential is held fixed. Found by the review of O93's own branch.
+    let browser = crate::test_support::fixture_session_cookie(&split_state.library);
     for (pattern, uri, body) in [
         (
             "/api/library/editions/{id}",
@@ -2062,7 +2078,9 @@ async fn every_route_declares_its_grant_posture() {
                 Request::builder()
                     .method("PATCH")
                     .uri(&uri)
-                    .header("authorization", &credential)
+                    .header("cookie", &browser)
+                    .header("host", "test")
+                    .header("origin", "http://test")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -2946,4 +2964,200 @@ fn a_users_grant_and_capabilities_are_left_exactly_as_the_row_holds_them() {
         "and their flags are still their own"
     );
     assert!(principal.can_stream);
+}
+
+/// **No module answers the role question alone — O93.**
+///
+/// `config_api`, `curation` and `metadata` each defined their own
+/// `admin_or_forbidden` reading `principal.role` and nothing else, and
+/// `users_api`/`backup_api` copied one. Three copies of a half-check is how
+/// the missing half went unnoticed through four whole-branch reviews: an
+/// administrator's API key reached every administrative route in the product,
+/// including `DELETE /api/library/roots/{id}`.
+///
+/// `session::administering_or_forbidden` is now the only function that answers
+/// "may this caller administer", and this test is what stops a fourth copy
+/// appearing. A grep rather than a request, deliberately: the defect was the
+/// *existence* of a second answer, which no single request can see.
+#[test]
+fn no_module_answers_the_role_question_alone() {
+    let sources = [
+        ("config_api.rs", include_str!("../config_api.rs")),
+        ("curation.rs", include_str!("../curation.rs")),
+        ("metadata.rs", include_str!("../metadata.rs")),
+        ("users_api.rs", include_str!("../users_api.rs")),
+        ("backup_api.rs", include_str!("../backup_api.rs")),
+        ("routes.rs", include_str!("../routes.rs")),
+        ("library_api.rs", include_str!("../library_api.rs")),
+    ];
+
+    for (name, source) in sources {
+        assert!(
+            !source.contains("fn admin_or_forbidden"),
+            "{name} defines its own `admin_or_forbidden`. That function answered \
+             only half the question — `session::administering_or_forbidden` \
+             answers both, and O93 is what three copies of the half cost"
+        );
+        assert!(
+            !source.contains("principal.role != Role::Admin")
+                && !source.contains("principal.role != crate::auth::Role::Admin"),
+            "{name} compares a role to decide an administrative refusal. Call \
+             `session::administering_or_forbidden`, which also refuses a device \
+             credential — O93"
+        );
+    }
+}
+
+/// **Every guarded route is driven with an API key, and the set that refuses
+/// one must be exactly the set declared here.**
+///
+/// Derived from [`crate::routes::guarded_routes`] rather than hand-typed, and
+/// that is the whole point. The first version of this test listed thirty-one
+/// paths by hand, and a companion counted `pub(crate) async fn` per module —
+/// between them they still had O93's own hole: a handler declared `pub async
+/// fn` was invisible to the count, and a **sixth administrative module** was
+/// invisible to both. O93 was five modules each looking fine on their own
+/// terms; a check that enumerates modules repeats the mistake it is for.
+///
+/// So the classification runs the other way. Every guarded route is driven
+/// with a real key; whichever answer the credential gate gives is observed,
+/// not assumed; and the result is compared for **set equality** with
+/// [`ADMINISTRATIVE`]. A new route that refuses a key without being listed
+/// fails here, and so does one that *stops* refusing — including a whole new
+/// module nobody thought to add to a list.
+///
+/// **A path parameter is filled with `1`, and the value does not matter.** The
+/// gate runs before any id is looked up, so an administrative route answers
+/// 403 for the credential whatever id it was handed, and a non-administrative
+/// one answers 401/404/whatever — never the credential refusal. That is what
+/// makes one substitution enough for every pattern.
+/// The one guarded route this test cannot classify, and why.
+///
+/// `PUT /api/password` takes `Json<PasswordChange>`, and an extractor runs
+/// **before** the handler — so the `{}` body this test sends is rejected 422
+/// by `axum` and the credential gate is never reached. It is not an
+/// exemption: `session::tests::an_api_key_cannot_mint_keys_or_end_sessions`
+/// drives it with a real key and a real body, alongside `/api/keys` and
+/// `/api/sessions`, and has since spec A2's second whole-branch review.
+///
+/// Listed rather than skipped silently, so a second route joining it is a
+/// deliberate act with a reason beside it.
+const CLASSIFIED_ELSEWHERE: &[&str] = &["/api/password"];
+
+/// Every guarded route observed to refuse an API key.
+///
+/// **Not "administrative"** — that was the first name and it was wrong. Spec
+/// A2's own self-service account routes refuse a device credential too, for a
+/// different reason (a key may not manage the account it belongs to), and
+/// naming the set after one of its two reasons invited leaving the other out.
+/// The invariant is about the answer, not the motive.
+const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
+    "/api/keys",
+    "/api/keys/{id}",
+    "/api/sessions",
+    "/api/sessions/{id}",
+    "/api/library/rules",
+    "/api/library/rules/{id}",
+    "/api/library/rules/preview",
+    "/api/library/rules/import",
+    "/api/library/roots",
+    "/api/library/roots/{id}",
+    "/api/library/roots/{id}/scan",
+    "/api/library/proposals",
+    "/api/library/proposals/{id}",
+    "/api/library/proposals/{id}/resolution",
+    "/api/library/proposals/{id}/accept",
+    "/api/library/proposals/{id}/dismiss",
+    "/api/library/works/{slug}",
+    "/api/library/series/{id}",
+    "/api/library/editions/{id}",
+    "/api/library/members/{id}",
+    "/api/library/users",
+    "/api/library/users/{id}",
+    "/api/library/users/{id}/sessions/{sid}",
+    "/api/library/users/{id}/keys/{kid}",
+    "/api/library/backups",
+    "/api/library/backups/{name}",
+];
+
+#[tokio::test]
+async fn exactly_the_declared_routes_refuse_an_api_key() {
+    let (_router, state, _fixture) = crate::test_support::router_over_a_single_scanned_work();
+    let router = crate::test_support::key_authenticating(crate::build_router(state.clone()));
+
+    let mut refused: Vec<&'static str> = Vec::new();
+    for (pattern, _) in crate::routes::guarded_routes() {
+        if CLASSIFIED_ELSEWHERE.contains(&pattern) {
+            continue;
+        }
+        let uri = pattern.replace("{slug}", "1").replace("{sid}", "1");
+        let uri = regex_free_fill(&uri);
+
+        // **Every method this server registers, `PUT` included.** A first
+        // version tried only GET/POST/PATCH/DELETE, and `/api/password` — a
+        // `PUT`-only route that has refused a device credential since spec
+        // A2 — was therefore never reached and never classified. A route
+        // registered for only some methods answers 405 for the rest, which is
+        // not the credential refusal and so does not classify it either.
+        let mut saw_refusal = false;
+        for method in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(&uri)
+                        .header("host", "test")
+                        .header("origin", "http://test")
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .expect("router answers");
+            let status = response.status();
+            let body = crate::test_support::body_string(response).await;
+            if status == StatusCode::FORBIDDEN && body.contains("API key") {
+                saw_refusal = true;
+            }
+        }
+        if saw_refusal {
+            refused.push(pattern);
+        }
+    }
+
+    let mut declared: Vec<&str> = REFUSE_A_DEVICE_CREDENTIAL.to_vec();
+    declared.sort_unstable();
+    refused.sort_unstable();
+    refused.dedup();
+
+    assert_eq!(
+        refused, declared,
+        "the routes that refuse an API key are not the routes declared to. A \
+         route that appears in the left column and not the right is newly \
+         administrative and wants adding; one in the right and not the left \
+         has STOPPED refusing a device credential, which is O93"
+    );
+}
+
+/// Replace every remaining `{…}` path parameter with `1`.
+///
+/// Written by hand rather than with `regex`, which is not a dependency of this
+/// crate — the same reason `config_api` reaches for `rules::Engine::compile`
+/// instead of `Regex::new`.
+fn regex_free_fill(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut skipping = false;
+    for c in pattern.chars() {
+        match c {
+            '{' => {
+                skipping = true;
+                out.push('1');
+            }
+            '}' => skipping = false,
+            _ if skipping => {}
+            _ => out.push(c),
+        }
+    }
+    out
 }
