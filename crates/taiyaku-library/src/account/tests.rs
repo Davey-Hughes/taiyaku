@@ -924,3 +924,504 @@ fn granted_roots_names_the_paths_for_display() {
         "ordered by path, which is what a person reads"
     );
 }
+
+// --- spec C4 §4: user administration -------------------------------------
+
+/// O54's note — "nothing can set either to 0 outside a fixture until spec C4's
+/// user administration" — stops being true here. A patch writes the columns it
+/// names and leaves the ones it does not.
+#[test]
+fn a_patch_writes_the_columns_it_names_and_leaves_the_others() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+
+    let patch = Patch {
+        can_download: Some(false),
+        ..Patch::default()
+    };
+    let after = update(&conn, id, &patch, None).expect("updates");
+
+    assert!(!after.can_download, "the named column changed");
+    assert!(after.can_stream, "an unnamed column is left alone");
+    assert_eq!(after.name, "reader", "an unnamed column is left alone");
+    assert_eq!(after.role, "user", "an unnamed column is left alone");
+}
+
+/// PR2 §2's invariant 1, by the demotion route rather than the delete one.
+/// `promote` already refuses the same lockout from the other end.
+#[test]
+fn demoting_the_only_administrator_who_can_log_in_is_refused() {
+    let library = claimed_library();
+    let conn = library.conn();
+
+    let patch = Patch {
+        role: Some("user".to_string()),
+        ..Patch::default()
+    };
+    let why = update(&conn, 1, &patch, None).expect_err("refuses");
+
+    assert!(matches!(why, WriteError::Refused(_)), "{why:?}");
+    assert!(
+        why.to_string().contains("no administrator"),
+        "the message says what would be left: {why}"
+    );
+    assert_eq!(
+        by_id(&conn, 1).expect("reads").expect("exists").role,
+        "admin",
+        "the refusal wrote nothing"
+    );
+}
+
+/// PR2 §2's rule 2, and it is deliberately tested **with a second admin
+/// present** so it cannot pass by accidentally re-testing invariant 1: the
+/// library keeps an administrator either way, and the refusal is about who is
+/// asking.
+#[test]
+fn an_administrator_cannot_demote_themselves_even_beside_another_one() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let second = add(&conn, "second", "pw", "admin").expect("adds a second admin");
+    let patch = Patch {
+        role: Some("user".to_string()),
+        ..Patch::default()
+    };
+
+    let why = update(&conn, second, &patch, Some(second)).expect_err("refuses");
+    assert!(matches!(why, WriteError::Refused(_)), "{why:?}");
+    assert!(
+        why.to_string().contains("another administrator"),
+        "the message names the way out: {why}"
+    );
+
+    let done = update(&conn, second, &patch, Some(1)).expect("a different admin may");
+    assert_eq!(done.role, "user");
+}
+
+/// The CLI has no session to be, so it passes `None` and rule 2 does not fire
+/// for it — invariant 1 still does, which the test above this one covers.
+#[test]
+fn an_actorless_caller_may_demote_an_administrator_beside_another_one() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let second = add(&conn, "second", "pw", "admin").expect("adds a second admin");
+
+    let done = update(
+        &conn,
+        second,
+        &Patch {
+            role: Some("user".to_string()),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect("no actor, no self-demotion rule");
+    assert_eq!(done.role, "user");
+}
+
+/// `004_auth.sql` gives `role` a `CHECK (role IN ('admin', 'user'))`, added
+/// because "a typo stored a role that is neither and `Principal::from_account`'s
+/// `== "admin"` quietly read it as a reader". `update` lets the constraint
+/// refuse rather than keeping a second list of the two words.
+#[test]
+fn a_role_that_is_neither_word_is_refused_and_writes_nothing() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+
+    let why = update(
+        &conn,
+        id,
+        &Patch {
+            role: Some("moderator".to_string()),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect_err("refuses");
+
+    assert!(
+        matches!(why, WriteError::Unusable(_)),
+        "a role the schema refuses is the caller's mistake, not a conflict \
+         and not a fault: {why:?}"
+    );
+    assert!(
+        why.to_string().contains("moderator"),
+        "the message names the value: {why}"
+    );
+    assert_eq!(
+        by_id(&conn, id).expect("reads").expect("exists").role,
+        "user",
+        "the refusal wrote nothing"
+    );
+}
+
+/// An id naming no account is an error rather than a silent no-op: every
+/// caller of this function is about to render what it returns.
+#[test]
+fn patching_an_account_that_does_not_exist_names_the_id() {
+    let library = claimed_library();
+    let conn = library.conn();
+
+    let why = update(&conn, 4242, &Patch::default(), None).expect_err("refuses");
+    assert!(why.to_string().contains("4242"), "{why}");
+}
+
+/// Two roots to grant, since a test about *replacing* a grant list needs more
+/// than one id to tell "replaced" from "appended".
+fn two_roots(conn: &rusqlite::Connection) -> (i64, i64) {
+    a_root(conn, 7, "/srv/manga");
+    a_root(conn, 8, "/srv/raw");
+    (7, 8)
+}
+
+/// PR2 §1.2: a `roots` list replaces the grant set wholesale rather than
+/// adding to it.
+#[test]
+fn a_roots_list_replaces_the_grants_rather_than_adding_to_them() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let (first, second) = two_roots(&conn);
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+    grant_root(&conn, id, first).expect("grants the first");
+
+    update(
+        &conn,
+        id,
+        &Patch {
+            roots: Some(vec![second]),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect("updates");
+
+    assert_eq!(
+        roots_for(&conn, id).expect("reads"),
+        vec![second],
+        "the list replaced the grants; it did not append to them"
+    );
+}
+
+/// An absent `roots` key leaves the grants alone, which is the difference
+/// between `None` and `Some(vec![])` that makes the field an `Option<Vec<_>>`.
+#[test]
+fn a_patch_without_a_roots_key_leaves_the_grants_alone() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let (first, _second) = two_roots(&conn);
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+    grant_root(&conn, id, first).expect("grants the first");
+
+    update(
+        &conn,
+        id,
+        &Patch {
+            can_stream: Some(false),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect("updates");
+
+    assert_eq!(roots_for(&conn, id).expect("reads"), vec![first]);
+}
+
+/// **An empty list means unrestricted, not blind**, which is spec A2's
+/// sharpest edge and is stated on [`grant_root`]: every account in every
+/// existing library holds an empty grant, so any other reading would have
+/// emptied every library the day migration 6 applied.
+#[test]
+fn an_empty_roots_list_makes_an_account_unrestricted_rather_than_blind() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let (first, _second) = two_roots(&conn);
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+    grant_root(&conn, id, first).expect("grants the first");
+
+    update(
+        &conn,
+        id,
+        &Patch {
+            roots: Some(Vec::new()),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect("updates");
+
+    assert!(
+        roots_for(&conn, id).expect("reads").is_empty(),
+        "an empty grant is what `Principal::from_account` reads as unrestricted"
+    );
+}
+
+/// A refused role change must not leave a half-written grant list behind it —
+/// both halves are inside one `Nested` scope.
+#[test]
+fn a_refused_role_change_writes_no_grants_either() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let (first, second) = two_roots(&conn);
+    grant_root(&conn, 1, first).expect("grants the admin the first root");
+
+    update(
+        &conn,
+        1,
+        &Patch {
+            role: Some("user".to_string()),
+            roots: Some(vec![second]),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect_err("the only administrator cannot be demoted");
+
+    assert_eq!(
+        roots_for(&conn, 1).expect("reads"),
+        vec![first],
+        "the refusal happened before anything was written"
+    );
+}
+
+/// C4 §4's counts, taken before anything is deleted. Deliberately over an
+/// account carrying one of everything, so a `Removal` that reported zeros for
+/// four of the five fields could not pass.
+#[test]
+fn removing_an_account_states_what_it_costs_before_it_acts() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let (first, _second) = two_roots(&conn);
+    let work = a_work(&conn);
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+    grant_root(&conn, id, first).expect("grants a root");
+    create_key(&conn, id, "tablet").expect("mints a key");
+    open_session(&conn, id, "tok", None, None).expect("opens a session");
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (?1, ?2, 'raw', 3)",
+        rusqlite::params![id, work],
+    )
+    .expect("records a position");
+    conn.execute(
+        "INSERT INTO note (id, user_id, work_id, edition, slot, body, created, updated)
+         VALUES ('n1', ?1, ?2, 'raw', 3, 'hi', '2026-01-01', '2026-01-01')",
+        rusqlite::params![id, work],
+    )
+    .expect("records a note");
+
+    let quoted = removal_cost(&conn, id).expect("costs it");
+    assert_eq!(
+        quoted,
+        Removal {
+            name: "reader".to_string(),
+            positions: 1,
+            notes: 1,
+            sessions: 1,
+            keys: 1,
+            grants: 1,
+        }
+    );
+    assert!(
+        by_id(&conn, id).expect("reads").is_some(),
+        "a quote deletes nothing"
+    );
+
+    let done = remove(&conn, id).expect("removes");
+    assert_eq!(
+        done, quoted,
+        "the removal answers the counts from before it"
+    );
+    assert!(by_id(&conn, id).expect("reads").is_none());
+}
+
+/// Five tables cascade from `user(id)`, and they only cascade because
+/// `PRAGMA foreign_keys` is ON per connection (`lib.rs:339`). A test that
+/// opened a bare `rusqlite::Connection` would see no cascade at all and would
+/// pass a wrong answer as right — so this asserts the rows are gone, not just
+/// that the account is.
+#[test]
+fn removing_an_account_takes_its_positions_notes_sessions_keys_and_grants() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let (first, _second) = two_roots(&conn);
+    let work = a_work(&conn);
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+    grant_root(&conn, id, first).expect("grants a root");
+    create_key(&conn, id, "tablet").expect("mints a key");
+    open_session(&conn, id, "tok", None, None).expect("opens a session");
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (?1, ?2, 'raw', 3)",
+        rusqlite::params![id, work],
+    )
+    .expect("records a position");
+
+    remove(&conn, id).expect("removes");
+
+    for table in ["progress", "session", "api_key", "user_root"] {
+        let left: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE user_id = ?1"),
+                [id],
+                |r| r.get(0),
+            )
+            .expect("counts");
+        assert_eq!(left, 0, "`{table}` kept a row for a deleted account");
+    }
+    let works: i64 = conn
+        .query_row("SELECT COUNT(*) FROM work", [], |r| r.get(0))
+        .expect("counts");
+    assert_eq!(works, 1, "deleting a person deletes none of the library");
+}
+
+/// PR2 §2's invariant 1, by the delete route.
+#[test]
+fn the_last_administrator_who_can_log_in_cannot_be_deleted() {
+    let library = claimed_library();
+    let conn = library.conn();
+    add(&conn, "reader", "pw", "user").expect("adds a reader, who is not an admin");
+
+    let why = remove(&conn, 1).expect_err("refuses");
+    assert!(matches!(why, WriteError::Refused(_)), "{why:?}");
+    assert!(
+        why.to_string().contains("no administrator"),
+        "the message says what would be left: {why}"
+    );
+    assert!(by_id(&conn, 1).expect("reads").is_some());
+}
+
+/// The same invariant, satisfied: a second administrator makes the first
+/// removable.
+#[test]
+fn an_administrator_beside_another_one_can_be_deleted() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let second = add(&conn, "second", "pw", "admin").expect("adds a second admin");
+
+    remove(&conn, second).expect("removes");
+    assert!(by_id(&conn, second).expect("reads").is_none());
+}
+
+/// An id naming no account is an error, not a silent success reporting zeros.
+#[test]
+fn removing_an_account_that_does_not_exist_names_the_id() {
+    let library = claimed_library();
+    let conn = library.conn();
+    assert!(
+        removal_cost(&conn, 4242)
+            .expect_err("refuses")
+            .to_string()
+            .contains("4242")
+    );
+    assert!(
+        remove(&conn, 4242)
+            .expect_err("refuses")
+            .to_string()
+            .contains("4242")
+    );
+}
+
+/// **The quote runs the same refusal the commit runs.** `removal_cost` used to
+/// answer five counts for a deletion `remove` would then refuse, so an operator
+/// read the counts, confirmed, and met the refusal afterwards — on the route
+/// whose whole purpose is to say what will happen. Found by C4 PR 2's
+/// whole-branch review.
+#[test]
+fn quoting_the_removal_of_the_last_administrator_is_refused_like_the_removal() {
+    let library = claimed_library();
+    let conn = library.conn();
+    add(&conn, "reader", "pw", "user").expect("adds a reader");
+
+    let quoted = removal_cost(&conn, 1).expect_err("the quote refuses");
+    let done = remove(&conn, 1).expect_err("and so does the removal");
+    assert_eq!(quoted, done, "one refusal, stated identically by both");
+}
+
+/// **A patch's password lands in the same transaction as its columns.** They
+/// used to be two writes — `update` committing its own scope and
+/// `set_password` opening none — so a store fault on the password left the
+/// role and capability changes committed beside a failed request. Found by
+/// C4 PR 2's whole-branch review; asserted here through the one failure that
+/// is reachable without breaking the disk.
+#[test]
+fn a_patch_with_a_refused_password_writes_none_of_its_columns() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+
+    let why = update(
+        &conn,
+        id,
+        &Patch {
+            can_stream: Some(false),
+            password: Some(String::new()),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect_err("refuses");
+    assert!(matches!(why, WriteError::Unusable(_)), "{why:?}");
+
+    let after = by_id(&conn, id).expect("reads").expect("exists");
+    assert!(
+        after.can_stream,
+        "the column change went in with the refused password and must not have landed"
+    );
+}
+
+/// The password half of a patch ends every session and keeps every key, which
+/// is what `set_password(.., None)` did before it moved inside `update`.
+#[test]
+fn a_patched_password_ends_every_session_and_keeps_every_key() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+    open_session(&conn, id, "tok", None, None).expect("opens a session");
+    create_key(&conn, id, "tablet").expect("mints a key");
+
+    update(
+        &conn,
+        id,
+        &Patch {
+            password: Some("rotated".to_string()),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect("updates");
+
+    assert!(sessions_of(&conn, id, None).expect("reads").is_empty());
+    assert_eq!(keys_of(&conn, id).expect("reads").len(), 1);
+    let (_, stored) = by_name(&conn, "reader").expect("reads").expect("exists");
+    assert!(credential::verify_password("rotated", &stored));
+}
+
+/// **An administrator may patch their own row while sending their role back
+/// unchanged**, which is what a form that PATCHes every field does on every
+/// save. Without `role != current.role` guarding it, the self-demotion refusal
+/// would fire on an edit that changes no role at all.
+///
+/// Pinned because the mutation sweep cannot: `replace && with || in update`
+/// is *unviable* — the `&&` sits in a let-chain and the mutant does not
+/// compile — so the sweep reports the condition as unreachable rather than as
+/// untested. C4 PR 2 checked the 18 unviable mutants against what it changed,
+/// which is the only thing that finds this class.
+#[test]
+fn an_administrator_may_edit_their_own_row_while_resending_their_role() {
+    let library = claimed_library();
+    let conn = library.conn();
+
+    let after = update(
+        &conn,
+        1,
+        &Patch {
+            name: Some("renamed".to_string()),
+            role: Some("admin".to_string()),
+            ..Patch::default()
+        },
+        Some(1),
+    )
+    .expect("an unchanged role is not a demotion");
+
+    assert_eq!(after.name, "renamed");
+    assert_eq!(after.role, "admin");
+}

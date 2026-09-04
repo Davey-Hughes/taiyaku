@@ -126,6 +126,23 @@ async fn every_route_refuses_an_anonymous_request() {
         // roots comment just above gives for why it matters doubly that it
         // is guarded here first.
         "/api/library/roots/{id}/scan",
+        // Spec C4 §4's user administration, PR 2 — admin-gated *inside* each
+        // handler, the identical reasoning the scan comment just above gives,
+        // and with the sharpest instance of it: these routes are the only
+        // writer of `role`, `can_download`, `can_stream` and `user_root` in
+        // the product, so an anonymous request reaching one at all would be
+        // an anonymous request able to grant itself administration.
+        "/api/library/users",
+        "/api/library/users/{id}",
+        "/api/library/users/{id}/sessions/{sid}",
+        "/api/library/users/{id}/keys/{kid}",
+        // Spec C4 §5's backup routes, PR 2 — admin-gated *inside* each
+        // handler, and the guard matters most here of anywhere in this list:
+        // a backup is the whole database, so an anonymous request reaching
+        // the download route would be an anonymous download of every
+        // account's password hash.
+        "/api/library/backups",
+        "/api/library/backups/{name}",
         "/opds/v1.2/catalog",
         "/opds/v1.2/works",
         "/opds/v1.2/works/{work}",
@@ -1636,19 +1653,21 @@ async fn every_route_declares_its_grant_posture() {
          fixture granting a root to the seeded *admin* — the combination O86 \
          made unrepresentable — so the proof is void rather than lost. Tasks \
          8, 11 and 12 all only ever added `GrantIndependent` routes, so none \
-         of the three moved this count"
+         of the three moved this count, and neither does C4 PR 2's user \
+         administration for the same reason"
     );
     assert_eq!(
         table.len() - driven,
-        26,
-        "the remaining 26 guarded routes must be GrantIndependent or \
+        32,
+        "the remaining 32 guarded routes must be GrantIndependent or \
          KnownGap — see the `driven == 19` assertion just above, which this \
          one is the other half of. Was 19, then 15 while I8 held the four \
          metadata routes in the driven half, 19 again once O86 returned \
          them, 23 once task 8 added spec C4 §6's four rule-editor routes, \
-         25 once task 11 added spec C4 §2's two roots routes, and 26 now \
-         task 12 added spec C4 §3's one scan-control route — every one of \
-         the seven, GrantIndependent"
+         25 once task 11 added spec C4 §2's two roots routes, 26 once task \
+         12 added spec C4 §3's one scan-control route, and 32 now C4 PR 2 \
+         added spec C4 §4's four user routes and §5's two backup routes — \
+         every one of the thirteen, GrantIndependent"
     );
 
     let credential = crate::test_support::fixture_authorization();

@@ -201,6 +201,10 @@ fn print_usage() {
          key revoke <user> <id>  [--db PATH]"
     );
     println!(
+        "       taiyaku library backup [--out DIR] [--keep N] [--db PATH]  \
+         (--out writes where the server will not list it)"
+    );
+    println!(
         "       taiyaku library export <work>|--all [--dir DIR|--in-place] [--user NAME] [--db PATH]"
     );
     println!("       taiyaku library scan  [--add PATH] [--root PATH] [--no-derive] [--db PATH]");

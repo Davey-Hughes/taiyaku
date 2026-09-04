@@ -6,6 +6,7 @@
 
 mod alignments;
 mod auth;
+mod backup_api;
 mod cache_root;
 mod cbz;
 mod comicinfo;
@@ -44,6 +45,7 @@ pub mod session;
 mod source;
 mod stump;
 mod truth;
+mod users_api;
 mod works;
 
 use std::sync::Arc;

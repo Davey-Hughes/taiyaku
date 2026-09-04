@@ -62,27 +62,104 @@ pub(crate) fn work(dir: &str) -> Work {
 /// another's.
 pub(crate) fn library() -> std::sync::Arc<taiyaku_library::Library> {
     let library = taiyaku_library::Library::open_in_memory().expect("in-memory library");
-    // **Migration 4 leaves the seeded account locked**, which is correct for a
-    // real fresh library and useless for a fixture: every route is behind the
-    // guard since spec A2 and there is no bypass (§9), so a fixture library
-    // that nobody can authenticate against is a fixture no route test can use.
-    // Given a password here rather than at each call site, because "the fixture
-    // library" and "a library with a usable account" are the same thing for
-    // every test in this crate.
+    seed_fixture_account(&library);
+    std::sync::Arc::new(library)
+}
+
+/// **Migration 4 leaves the seeded account locked**, which is correct for a
+/// real fresh library and useless for a fixture: every route is behind the
+/// guard since spec A2 and there is no bypass (§9), so a fixture library that
+/// nobody can authenticate against is a fixture no route test can use.
+///
+/// **Extracted from [`library`] rather than copied into
+/// [`router_over_a_file_backed_library`]**, for the ordinary reason: two
+/// copies of a fixture's credential are two things to forget to change
+/// together.
+fn seed_fixture_account(library: &taiyaku_library::Library) {
+    let conn = library.conn();
+    conn.execute(
+        "UPDATE user SET password_hash = ?1 WHERE id = 1",
+        [FIXTURE_PHC],
+    )
+    .expect("gives the fixture account a password");
+    conn.execute(
+        "INSERT INTO api_key (user_id, name, secret_sha256) VALUES (1, 'the suite', ?1)",
+        [taiyaku_library::credential::token_sha256(FIXTURE_KEY)],
+    )
+    .expect("gives the fixture account a key");
+}
+
+/// A router over a library **that is a file**, which every backup test needs:
+/// `Library::path` answers `None` for `:memory:` and `backup_api` refuses with
+/// 409 when it does — correctly, since there is nothing to copy.
+///
+/// **Three directories inside one [`Fixture`], rather than siblings of it.**
+/// The scan root is `tree/`, the database is `db/library.db` and covers go in
+/// `covers/`, so the database and the `backups/` directory beside it are
+/// outside the root — anything under a root is material the next scan walks —
+/// while all three still go away with the one `Drop`.
+/// [`router_over_a_scanned_tree`] puts its `cache_dir` beside the fixture with
+/// `with_file_name` instead, which leaks it; that is not copied here, and the
+/// 9,147 leaked directories [`Fixture`]'s own comment records are why.
+///
+/// # Panics
+///
+/// Panics if the directories cannot be created or the library cannot be
+/// opened — a fixture that silently fell back to memory would make every
+/// backup test assert the 409 refusal rather than the feature.
+pub(crate) fn router_over_a_file_backed_library()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let fixture = Fixture::new("taiyaku-test-file-backed-library");
+    let tree = fixture.path().join("tree");
+    let db_dir = fixture.path().join("db");
+    write_pages(&tree.join("Scanned").join("Scanned - v01"), 2);
+    std::fs::create_dir_all(&db_dir).expect("creates the database directory");
+
+    let library = taiyaku_library::Library::open(&db_dir.join("library.db"))
+        .expect("opens a file-backed library");
+    seed_fixture_account(&library);
     {
         let conn = library.conn();
-        conn.execute(
-            "UPDATE user SET password_hash = ?1 WHERE id = 1",
-            [FIXTURE_PHC],
-        )
-        .expect("gives the fixture account a password");
-        conn.execute(
-            "INSERT INTO api_key (user_id, name, secret_sha256) VALUES (1, 'the suite', ?1)",
-            [taiyaku_library::credential::token_sha256(FIXTURE_KEY)],
-        )
-        .expect("gives the fixture account a key");
+        let root = taiyaku_library::scan::add_root(&conn, &tree).expect("adds the root");
+        taiyaku_library::scan::scan_root(&conn, &root).expect("scans the tree");
+        taiyaku_library::derive::derive(&conn).expect("derives the library");
     }
-    std::sync::Arc::new(library)
+    let library = std::sync::Arc::new(library);
+    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works,
+        cache_dir: fixture.path().join("covers"),
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
+    });
+    let router = session_authenticating(crate::build_router(state.clone()), &state.library);
+    (router, state, fixture)
+}
+
+/// [`router_over_a_file_backed_library`], with the fixture account demoted to
+/// a reader — the same demotion [`router_over_a_single_scanned_work_as_a_reader`]
+/// applies, and for the same reason.
+///
+/// # Panics
+///
+/// Panics if the demotion updates no row.
+pub(crate) fn router_over_a_file_backed_library_as_a_reader()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let (router, state, fixture) = router_over_a_file_backed_library();
+    {
+        let conn = state.library.conn();
+        let demoted = conn
+            .execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+            .expect("demotes the fixture account");
+        assert_eq!(
+            demoted, 1,
+            "the fixture account must actually stop being an administrator"
+        );
+    }
+    (router, state, fixture)
 }
 
 /// The fixture work, wired to a `LocalLibrary`, ready for `build_router`.
@@ -763,6 +840,42 @@ pub(crate) fn router_over_a_single_scanned_work()
     router_over_a_scanned_tree("taiyaku-test-single-scanned-work", "", &["Scanned"])
 }
 
+/// [`router_over_a_single_scanned_work`], authenticating with a **session**
+/// rather than the API key every other fixture sends.
+///
+/// What `users_api`'s tests need: those routes refuse a device credential, so
+/// through the ordinary fixture every one of them answers 403 for a reason
+/// that has nothing to do with what is being tested. See
+/// [`session_authenticating`].
+pub(crate) fn router_over_a_single_scanned_work_in_a_browser()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let (_router, state, fixture) = router_over_a_single_scanned_work();
+    let router = session_authenticating(crate::build_router(state.clone()), &state.library);
+    (router, state, fixture)
+}
+
+/// [`router_over_a_single_scanned_work_in_a_browser`], demoted to a reader —
+/// so a 403 is about the *role* and not about the credential kind.
+///
+/// # Panics
+///
+/// Panics if the demotion updates no row.
+pub(crate) fn router_over_a_single_scanned_work_in_a_browser_as_a_reader()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let (router, state, fixture) = router_over_a_single_scanned_work_in_a_browser();
+    {
+        let conn = state.library.conn();
+        let demoted = conn
+            .execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+            .expect("demotes the fixture account");
+        assert_eq!(
+            demoted, 1,
+            "the fixture account must actually stop being an administrator"
+        );
+    }
+    (router, state, fixture)
+}
+
 /// [`router_over_a_single_scanned_work`], with the fixture account demoted to
 /// a reader — the same demotion `router_over_a_scanned_work_as_a_reader`
 /// applies to its own fixture and for the same reason: a router wrapped in
@@ -1355,6 +1468,69 @@ pub(crate) fn authenticating(router: axum::Router) -> axum::Router {
                     request.headers_mut().insert(
                         "authorization",
                         axum::http::HeaderValue::from_str(&credential).expect("ascii"),
+                    );
+                }
+                next.run(request).await
+            }
+        },
+    ))
+}
+
+/// Wrap a router so every request presents a real **browser session**, not
+/// the API key [`authenticating`] injects.
+///
+/// **The suite's default credential is the one kind an administration route
+/// refuses**, and that is why this exists. `authenticating` sends
+/// [`fixture_authorization`] — a `Basic name:tyk_…` key — so every route test
+/// in this crate has always driven a *device* credential. Spec A2's
+/// `session::refuse_a_device_credential` turns that away from anything that
+/// manages accounts or credentials, so `users_api` and `backup_api` cannot be
+/// tested through `authenticating` at all; a router wrapped in it answers 403
+/// for a reason that has nothing to do with what the test is about.
+///
+/// Opens one real session against the fixture library and sends its cookie,
+/// through the same guard, exactly as a browser would. A request setting its
+/// own `Authorization` or `Cookie` is left alone, so a test asserting the
+/// *key's* refusal still can.
+///
+/// # Panics
+///
+/// Panics if the session cannot be opened, which would leave every test using
+/// it authenticating as nobody.
+pub(crate) fn session_authenticating(
+    router: axum::Router,
+    library: &taiyaku_library::Library,
+) -> axum::Router {
+    let token = taiyaku_library::credential::mint_token();
+    {
+        let conn = library.conn();
+        taiyaku_library::account::open_session(&conn, 1, &token, Some("the suite"), None)
+            .expect("opens the fixture session");
+    }
+    let cookie = format!("{}={token}", crate::session::COOKIE_NAME);
+    router.layer(axum::middleware::from_fn(
+        move |mut request: axum::extract::Request, next: axum::middleware::Next| {
+            let cookie = cookie.clone();
+            async move {
+                let headers = request.headers();
+                if !headers.contains_key("authorization") && !headers.contains_key("cookie") {
+                    let out = request.headers_mut();
+                    out.insert(
+                        "cookie",
+                        axum::http::HeaderValue::from_str(&cookie).expect("ascii"),
+                    );
+                    // **A matching `host` and `origin` too, because a cookie
+                    // without them is not what a browser sends.** Spec A2's
+                    // CSRF check refuses a cookie-authenticated `POST`,
+                    // `PATCH` or `DELETE` whose `Origin` does not match the
+                    // host — correctly — so a fixture that sent only the
+                    // cookie would make every write here a 403 about
+                    // something the test is not asking about. The same pair
+                    // `session/tests.rs` sets by hand on each request.
+                    out.insert("host", axum::http::HeaderValue::from_static("test"));
+                    out.insert(
+                        "origin",
+                        axum::http::HeaderValue::from_static("http://test"),
                     );
                 }
                 next.run(request).await

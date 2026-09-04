@@ -14981,3 +14981,53 @@ happens.
 **Not measured:** a library of thousands of series, which §11 names and
 nothing here answers; and the cost with conflict detection running alongside,
 which is quadratic in rules and was measured on four.
+
+## What a `VACUUM INTO` of the real library costs — 2026-09-04
+
+The C4 PR 2 build design §4 left this unmeasured and said so, and §10 named it
+as the one figure that PR could produce and had not. It decides whether
+`POST /api/library/backups` can stay synchronous. It can, by two orders of
+magnitude.
+
+Measured on a **copy** of the real library — **130 series, 1858 works, 1883
+members, 2044 scan entries**, 3,534,848 bytes — through the shipped command,
+`taiyaku library backup --db <copy>`, `--release` build, seven runs:
+
+```
+run 1: 7 ms      run 5: 6 ms
+run 2: 6 ms      run 6: 6 ms
+run 3: 6 ms      run 7: 6 ms
+run 4: 6 ms
+```
+
+**Median 6 ms**, and that figure is an **upper bound on the `VACUUM INTO`
+itself**: it is whole-process wall clock, so it includes `exec`, opening the
+database, the migration check `Library::open` runs, and the `strftime` that
+mints the name. The statement is some fraction of six milliseconds and this
+measurement cannot say which fraction — it does not need to, because the
+question it was taken to answer is whether a route can afford to answer when
+the copy is done, and at 6 ms the answer is not close.
+
+For scale, the same library's **rule preview costs a median of 281 ms**
+(2026-09-03, above). A backup is roughly **one fiftieth** of a preview the
+screen already runs on demand.
+
+**The backup is smaller than the database**: 3,338,240 bytes against
+3,534,848, because `VACUUM INTO` writes a defragmented copy. That is a
+property of the statement rather than a loss — the copy restores whole:
+`sqlite3 <backup> "select count(*) from work, series, member"` answers
+**1858 / 130 / 1883**, the same as the source.
+
+**Isolation, proven rather than asserted** — the discipline the preview
+measurement above records for the same reason. The command was pointed at a
+copy in the scratch directory, and afterwards `cmp` reported the copy
+**byte-identical to the source**, so nothing was written to either. The source
+directory listing is unchanged. `VACUUM INTO` is a read of the source and a
+write of a new file, and this is the evidence for that rather than the
+assumption.
+
+**Not measured:** what this costs on a library of thousands of series, which
+is the same gap the preview measurement leaves; and whether a second
+connection's `VACUUM INTO` is as invisible to the server's readers as WAL
+promises, which the build design §10 names and which wants the process under
+load rather than a command run seven times. Both are still open.

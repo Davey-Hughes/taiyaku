@@ -169,6 +169,19 @@ taiyaku library user revoke-root alice /shelf/manga
 # cannot recover stays unrooted and invisible to a restricted account, and
 # `grant-root` says so when it finds any.
 
+# take a backup. the database is the only copy of notes, collections, tags,
+# external ids, users and read history — a sidecar export carries none of
+# those, so it is not a backup and this is. SQLite's own `VACUUM INTO`, so the
+# server does not have to stop:
+taiyaku library backup                    # -> <db parent>/backups/library-<stamp>.db
+taiyaku library backup --keep 7           # ...and delete all but the seven newest
+#
+# there is no schedule inside the server. a cron entry runs this. `--out DIR`
+# writes somewhere else, and the settings screen will not list what lands
+# there — it can only compute the one directory beside the database.
+#
+# restore is out of band on purpose: stop the server, move the file, start it.
+
 # the same import, without starting a server — for a library `serve` has
 # already populated, or a one-off migration
 taiyaku library import taiyaku.json

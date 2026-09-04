@@ -205,3 +205,22 @@ fn the_stored_hash_carries_this_modules_parameters() {
         "algorithm or version changed: {phc}"
     );
 }
+
+/// **The refusal that used to live in three places and not in this one.**
+///
+/// `hash_password("")` produced a well-formed PHC string, so
+/// `verify_password("", phc)` answered true and `admin_exists` counted the row
+/// as a working administrator. Spec A2's whole-branch review caught the claim
+/// route missing the check on 2026-08-18; C4 PR 2's two new user routes had it
+/// none of the times, which is the same defect arriving by a route three
+/// copies of a rule cannot cover.
+#[test]
+fn an_empty_password_is_refused_where_every_writer_passes_through() {
+    let why = hash_password("").expect_err("refuses");
+    assert!(why.contains("empty password"), "{why}");
+
+    // The property the refusal exists for: without it, this is the hash an
+    // account would carry, and it verifies.
+    let real = hash_password("x").expect("a one-character password is still a password");
+    assert!(!verify_password("", &real));
+}

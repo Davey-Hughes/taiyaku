@@ -1948,6 +1948,43 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             "/api/library/roots/{id}/scan",
             get(crate::config_api::scan_status).post(crate::config_api::start_scan),
         ),
+        // **Spec C4 §4's user-administration routes, PR 2.** Admin-gated for
+        // the reason every route in this block is, with one of its own: this
+        // is the only writer of `role`, `can_download`, `can_stream` and
+        // `user_root` in the product, so a route here that landed in
+        // `open_routes` would let anybody grant themselves anything.
+        // `users_api::tests::every_users_route_refuses_a_reader` drives them
+        // all for a 403.
+        (
+            "/api/library/users",
+            get(crate::users_api::list_users).post(crate::users_api::create_user),
+        ),
+        (
+            "/api/library/users/{id}",
+            axum::routing::patch(crate::users_api::patch_user)
+                .delete(crate::users_api::delete_user),
+        ),
+        (
+            "/api/library/users/{id}/sessions/{sid}",
+            axum::routing::delete(crate::users_api::revoke_session),
+        ),
+        (
+            "/api/library/users/{id}/keys/{kid}",
+            axum::routing::delete(crate::users_api::revoke_key),
+        ),
+        // **Spec C4 §5's backup routes, PR 2.** Admin-gated with a reason of
+        // their own on top of the block's: a backup is the whole database,
+        // password hashes included, so the download route hands an
+        // administrator every account's PHC string. There is no restore route
+        // — C4 §5 puts restore out of band on purpose.
+        (
+            "/api/library/backups",
+            get(crate::backup_api::list_backups).post(crate::backup_api::create_backup),
+        ),
+        (
+            "/api/library/backups/{name}",
+            get(crate::backup_api::download_backup),
+        ),
     ]);
     routes.extend(crate::opds::routes());
     routes
@@ -2381,6 +2418,60 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
                           /api/library/roots/{id} holds for a root's own \
                           edit or removal, one step earlier in this same \
                           table",
+            },
+        ),
+        // Spec C4 §4's user routes, PR 2. Every entry states its own reason
+        // rather than inheriting a shared one, the same rule the rules and
+        // roots blocks above hold this table to.
+        (
+            "/api/library/users",
+            GrantIndependent {
+                reason: "admin-only; lists and creates accounts, and an \
+                          account's own root grants are the thing being \
+                          edited here rather than a filter to apply to the \
+                          answer — filtering this list by the *administrator's* \
+                          grant would hide the very accounts being administered",
+            },
+        ),
+        (
+            "/api/library/users/{id}",
+            GrantIndependent {
+                reason: "edits or removes one account, including the root \
+                          grants that decide what *that* account may see — a \
+                          write about somebody else's access, with no meaning \
+                          to filter against the administrator's own",
+            },
+        ),
+        (
+            "/api/library/users/{id}/sessions/{sid}",
+            GrantIndependent {
+                reason: "ends one browser session of one account — C4 §4's \
+                          'a device was lost', which is about a credential \
+                          rather than about any material a grant could scope",
+            },
+        ),
+        (
+            "/api/library/users/{id}/keys/{kid}",
+            GrantIndependent {
+                reason: "ends one API key of one account, the identical \
+                          standing the sessions route above holds, for the \
+                          credential an OPDS reader presents instead",
+            },
+        ),
+        (
+            "/api/library/backups",
+            GrantIndependent {
+                reason: "admin-only; lists and takes snapshots of the whole \
+                          database, which is not any one account's material \
+                          and has no per-root shape to filter",
+            },
+        ),
+        (
+            "/api/library/backups/{name}",
+            GrantIndependent {
+                reason: "hands back one whole-database snapshot — password \
+                          hashes and every root's rows together, which is \
+                          precisely why it is admin-only rather than filtered",
             },
         ),
         (

@@ -2784,3 +2784,78 @@ fn exporting_another_reader_in_place_is_refused_and_names_the_way_out() {
         "the refusal must come before a database is ever opened"
     );
 }
+
+/// `taiyaku library backup` writes a real, openable snapshot into the
+/// directory the server will look in, and `--keep` prunes what it displaced.
+///
+/// **One invocation, not two.** `VACUUM INTO` refuses an existing target and
+/// the name carries a whole-second timestamp, so two runs inside the same
+/// second collide — which is `backup.rs`'s deliberate refusal rather than a
+/// defect, and is exactly what a second command call here would test by
+/// accident. The two older backups are minted by hand instead, so the one run
+/// exercises take-then-prune the way a cron entry does.
+#[test]
+fn backup_writes_a_snapshot_beside_the_database_and_keep_prunes() {
+    let dir = scratch("backup-command");
+    let db = dir.join("library.db");
+    taiyaku_library::Library::open(&db).expect("creates the library");
+
+    let into = taiyaku_library::backup::directory_for(&db);
+    std::fs::create_dir_all(&into).expect("creates the backup directory");
+    let decoys: Vec<String> = ["01", "02"]
+        .iter()
+        .map(|day| {
+            let name = format!("library-202601{day}T000000Z.db");
+            std::fs::write(into.join(&name), b"x").expect("writes an older backup");
+            name
+        })
+        .collect();
+
+    crate::library::command(&[
+        "backup".to_string(),
+        "--db".to_string(),
+        db.to_string_lossy().into_owned(),
+        "--keep".to_string(),
+        "1".to_string(),
+    ])
+    .expect("takes a backup and prunes");
+
+    let left = taiyaku_library::backup::list(&into).expect("lists");
+    assert_eq!(
+        left.len(),
+        1,
+        "--keep 1 leaves exactly the newest: {left:?}"
+    );
+    // **Named against the decoys, not against a year.** This read
+    // `starts_with("2026") && !starts_with("202601")`, which is a test that
+    // fails every run from 2027 onward and would have failed throughout
+    // January 2026. Found by C4 PR 2's whole-branch review.
+    assert!(
+        !decoys.contains(&left[0].name),
+        "the survivor is the one this run took, not a hand-minted decoy: {left:?}"
+    );
+    taiyaku_library::Library::open(&into.join(&left[0].name)).expect("the backup opens");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--keep` that is not a number is the caller's mistake and says so, rather
+/// than silently pruning nothing.
+#[test]
+fn backup_refuses_a_keep_that_is_not_a_number() {
+    let dir = scratch("backup-keep");
+    let db = dir.join("library.db");
+    taiyaku_library::Library::open(&db).expect("creates the library");
+
+    let why = crate::library::command(&[
+        "backup".to_string(),
+        "--db".to_string(),
+        db.to_string_lossy().into_owned(),
+        "--keep".to_string(),
+        "some".to_string(),
+    ])
+    .expect_err("refuses");
+    assert!(why.contains("--keep"), "{why}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

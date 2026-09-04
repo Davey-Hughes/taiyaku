@@ -671,6 +671,323 @@ pub fn add(conn: &Connection, name: &str, password: &str, role: &str) -> Result<
     Ok(conn.last_insert_rowid())
 }
 
+/// The account with this id, or `None`.
+///
+/// [`by_name`] answers the login question and returns the stored hash beside
+/// the account; this one answers "which row is id 42" for an administrative
+/// screen that already has the id and must never see a hash.
+///
+/// # Errors
+///
+/// Returns an error if the query fails.
+pub fn by_id(conn: &Connection, id: i64) -> Result<Option<Account>, String> {
+    conn.query_row(
+        "SELECT id, name, role, can_download, can_stream FROM user WHERE id = ?1",
+        params![id],
+        account_from_row,
+    )
+    .optional()
+    .map_err(|e| format!("looking up account {id}: {e}"))
+}
+
+/// What [`update`] may change about one account.
+///
+/// **Every field is "leave it alone" when `None`**, including `roots`: the
+/// difference between `None` (do not touch the grants) and `Some(vec![])`
+/// (grant nothing, which spec A2 defines as *unrestricted* — see
+/// [`grant_root`]) is the whole reason that field is an `Option<Vec<_>>`
+/// rather than a `Vec<_>`.
+///
+/// **`password` is an administrator resetting somebody else's**, and it is
+/// here rather than left to [`set_password`] because the two have to succeed
+/// or fail together.
+///
+/// This design first said the opposite — that folding it in "would put an
+/// argon2 hash inside this function's transaction for every caller that was
+/// only changing a checkbox" — and the whole-branch review showed what the
+/// separation cost: [`update`] commits its own scope and `set_password` opens
+/// none, so a store fault on the password left the role and capability
+/// changes **committed** beside a failed request. A half-applied `PATCH`, on
+/// the one route that edits permissions.
+///
+/// The objection is answered rather than overruled: the hash is taken
+/// **before** the scope opens, so `None` costs nothing and `Some` costs one
+/// argon2 outside the transaction rather than inside it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Patch {
+    pub name: Option<String>,
+    pub role: Option<String>,
+    pub can_download: Option<bool>,
+    pub can_stream: Option<bool>,
+    pub roots: Option<Vec<i64>>,
+    pub password: Option<String>,
+}
+
+/// Why one of this module's writers would not do what it was asked.
+///
+/// **Three cases rather than one `String`**, because the caller has to tell
+/// them apart and could not: `create_user` answered `400` for a role the
+/// schema's `CHECK` refuses while `patch_user` answered `409` for the
+/// identical mistake, and a disk fault inside either was reported to the
+/// client as a conflict. Found by C4 PR 2's whole-branch review.
+///
+/// **Shared by [`update`], [`remove`] and [`removal_cost`] rather than one
+/// type per function.** Typing only `update` — which is what the review
+/// named — left `remove`'s disk faults answering `409` and, worse, left a
+/// *dry run* of removing the last administrator answering **500** where the
+/// real removal answered 409: the quote is the safety feature on the
+/// destructive route, and it was the one path reporting a routine refusal as
+/// a server fault. Fixing only the function a review points at is how the
+/// second instance survives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteError {
+    /// The caller's own mistake: an empty password, a name already taken, a
+    /// role the schema's `CHECK (role IN ('admin', 'user'))` refuses.
+    Unusable(String),
+    /// Well-formed, names a real account, and still not allowed — spec C4
+    /// §4's refusals.
+    Refused(String),
+    /// A store fault. Nothing about the request caused it.
+    Failed(String),
+}
+
+impl std::fmt::Display for WriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unusable(why) | Self::Refused(why) | Self::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
+/// Whether some account **other than** `excluding` is an administrator who can
+/// actually log in.
+///
+/// **The same "role is not enough" reading [`admin_exists`] takes**, and for
+/// the same reason: migration 1 seeds an admin row that migration 4 locks, so
+/// counting roles alone would let the last real administrator be demoted or
+/// deleted behind a row nobody can log in as.
+fn another_admin_can_log_in(conn: &Connection, excluding: i64) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM user
+          WHERE role = 'admin' AND password_hash <> ?1 AND id <> ?2",
+        params![credential::LOCKED, excluding],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count > 0)
+    .map_err(|e| format!("counting the other administrators: {e}"))
+}
+
+/// Change an account, refusing the two changes spec C4 §4 says would lock the
+/// library's administrator out of it.
+///
+/// `acting_as` is the account making the change, or `None` for a caller with
+/// no session to be — which is what the CLI is. It exists for exactly one
+/// rule, C4 §4's second refusal, and that rule cannot be enforced without it.
+///
+/// **The two role refusals are not one rule, and merging them ships neither.**
+/// The first is about the *library's* state after the change and fires for any
+/// caller; the second is about *who* is asking and fires even when the library
+/// keeps an administrator. A single "is this the last admin" check satisfies
+/// the letter of both and lets an administrator demote themselves whenever a
+/// second one exists, which C4 §4 forbids in as many words.
+///
+/// **`role` is validated by the schema, not here.** `004_auth.sql` gives the
+/// column `CHECK (role IN ('admin', 'user'))`; a second list of the two words
+/// in this function is a second list to drift.
+///
+/// # Errors
+///
+/// Returns an error if `id` names no account, if either refusal fires, or if
+/// SQLite refuses the write — which includes a `role` the schema's `CHECK`
+/// rejects.
+pub fn update(
+    conn: &Connection,
+    id: i64,
+    patch: &Patch,
+    acting_as: Option<i64>,
+) -> Result<Account, WriteError> {
+    // **The hash is taken before the scope opens**, so an empty password is
+    // refused before anything is written and no argon2 runs inside a
+    // transaction. [`Patch`]'s own doc carries the argument.
+    let phc = match patch.password.as_deref() {
+        Some(password) => Some(credential::hash_password(password).map_err(WriteError::Unusable)?),
+        None => None,
+    };
+
+    // **The scope opens before the invariant is read, not after.** This
+    // connection is configured `TransactionBehavior::Immediate` (`lib.rs`), so
+    // `Nested::open` takes the write lock at `BEGIN` — which means the
+    // "is there another administrator" question and the demotion that acts on
+    // its answer are one atomic step. Read outside, they were two: the CLI is
+    // a documented second writer in a second process, and it demoting one
+    // administrator while this demotes another could leave the library with
+    // none — the single state this check exists to prevent. Found by C4 PR 2's
+    // whole-branch review.
+    let scope = crate::Nested::open(conn, "account_update")
+        .map_err(|e| WriteError::Failed(format!("updating account {id}: {e}")))?;
+
+    let current = by_id(conn, id)
+        .map_err(WriteError::Failed)?
+        .ok_or_else(|| WriteError::Unusable(format!("no account with id {id}")))?;
+
+    if let Some(role) = patch.role.as_deref()
+        && role != current.role
+        && current.role == "admin"
+    {
+        if acting_as == Some(id) {
+            return Err(WriteError::Refused(
+                "an administrator cannot remove their own admin role; another \
+                 administrator has to do it"
+                    .to_string(),
+            ));
+        }
+        if !another_admin_can_log_in(conn, id).map_err(WriteError::Failed)? {
+            return Err(WriteError::Refused(format!(
+                "demoting `{}` would leave this library with no administrator who can \
+                 log in. Give another account the admin role first",
+                current.name
+            )));
+        }
+    }
+
+    let mut sets: Vec<String> = Vec::new();
+    let mut values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(v) = &patch.name {
+        values.push(Box::new(v.clone()));
+        sets.push(format!("name = ?{}", values.len()));
+    }
+    if let Some(v) = &patch.role {
+        values.push(Box::new(v.clone()));
+        sets.push(format!("role = ?{}", values.len()));
+    }
+    if let Some(v) = patch.can_download {
+        values.push(Box::new(i64::from(v)));
+        sets.push(format!("can_download = ?{}", values.len()));
+    }
+    if let Some(v) = patch.can_stream {
+        values.push(Box::new(i64::from(v)));
+        sets.push(format!("can_stream = ?{}", values.len()));
+    }
+
+    if !sets.is_empty() {
+        values.push(Box::new(id));
+        let sql = format!(
+            "UPDATE user SET {} WHERE id = ?{}",
+            sets.join(", "),
+            values.len()
+        );
+        let refs: Vec<&dyn rusqlite::ToSql> = values.iter().map(AsRef::as_ref).collect();
+        conn.execute(&sql, refs.as_slice()).map_err(|e| {
+            // **The message names the value SQLite refused; SQLite's own does
+            // not.** Two of the four columns carry a constraint — `role` a
+            // `CHECK (role IN ('admin', 'user'))` and `name` a `UNIQUE` — and
+            // both report the constraint rather than the input, so a person
+            // reading the refusal sees "CHECK constraint failed: role IN
+            // ('admin', 'user')" with nothing saying what they typed. Named
+            // by echoing the patch rather than by re-listing the two allowed
+            // words here, which would be a second list to drift from the
+            // schema's.
+            let mut named = format!("updating account {id}");
+            if let Some(role) = &patch.role {
+                named.push_str(&format!(", role `{role}`"));
+            }
+            if let Some(name) = &patch.name {
+                named.push_str(&format!(", name `{name}`"));
+            }
+            // **`Unusable`, not `Failed`.** Everything this statement can
+            // refuse is the caller's own input — the `CHECK` on `role`, the
+            // `UNIQUE` on `name` — so a 500 here would report a typo as a
+            // server fault. A store fault mid-statement is misfiled as a 400
+            // by the same token, and that is the trade: the two constraint
+            // violations are the overwhelmingly likely cause and the only
+            // ones a caller can act on.
+            WriteError::Unusable(format!("{named}: {e}"))
+        })?;
+    }
+
+    // **Replace-all, diffed rather than deleted and reinserted.** C4 PR 1's
+    // §3 correction records what delete-and-reinsert cost the rule table —
+    // fresh ids reopened every accepted proposal through an
+    // `ON DELETE SET NULL` — and while `user_root` carries no such foreign
+    // key, a diff is the same size of code and cannot acquire that class of
+    // bug later.
+    //
+    // **`Some(vec![])` is not the same instruction as `None`.** An absent list
+    // leaves the grants alone; an empty one takes them all away, which spec A2
+    // defines as *unrestricted* rather than blind — see [`grant_root`].
+    if let Some(wanted) = &patch.roots {
+        // **A root id no row holds is the caller's mistake, not a fault.**
+        // `user_root.root_id` REFERENCES `root(id)`, and `INSERT OR IGNORE`
+        // does *not* suppress a foreign-key violation — SQLite's `ON CONFLICT`
+        // algorithm covers UNIQUE, NOT NULL, CHECK and PRIMARY KEY, and FK is
+        // not among them. So `{"roots": [999]}` reached the client as
+        // `500 :: granting root 999 to user 2: FOREIGN KEY constraint failed`
+        // until this was asked first. `config_api::root_exists` is the same
+        // check one module over, added for the same reason: SQLite's own text,
+        // surfaced verbatim, is not an answer. Found by the review of C4 PR 2's
+        // fix round — and the fix round is what introduced it, by widening
+        // every `update` failure from one 409 into three cases and putting
+        // this one in the wrong one.
+        for root_id in wanted {
+            let exists: bool = conn
+                .query_row("SELECT 1 FROM root WHERE id = ?1", params![root_id], |_| {
+                    Ok(())
+                })
+                .optional()
+                .map(|found| found.is_some())
+                .map_err(|e| {
+                    WriteError::Failed(format!("checking whether root {root_id} exists: {e}"))
+                })?;
+            if !exists {
+                return Err(WriteError::Unusable(format!(
+                    "there is no root {root_id} to grant"
+                )));
+            }
+        }
+
+        let held = roots_for(conn, id).map_err(WriteError::Failed)?;
+        for root_id in &held {
+            if !wanted.contains(root_id) {
+                revoke_root(conn, id, *root_id).map_err(WriteError::Failed)?;
+            }
+        }
+        for root_id in wanted {
+            if !held.contains(root_id) {
+                grant_root(conn, id, *root_id).map_err(WriteError::Failed)?;
+            }
+        }
+    }
+
+    // **The password lands inside this scope, with the columns above it.**
+    // Written here rather than through [`set_password`] for the reason
+    // [`Patch`]'s own doc gives: that function opens no transaction of its
+    // own, so calling it *after* this one committed left a store fault able
+    // to produce a half-applied patch.
+    //
+    // **Every session of the account's ends**, which is A2 §4's rule for an
+    // administrator resetting somebody else's password: there is no session
+    // of the *target's* that made the change, so there is none to keep.
+    // API keys are deliberately untouched — independent credentials with
+    // their own revocation.
+    if let Some(phc) = phc {
+        conn.execute(
+            "UPDATE user SET password_hash = ?2 WHERE id = ?1",
+            params![id, phc],
+        )
+        .map_err(|e| WriteError::Failed(format!("setting the password for account {id}: {e}")))?;
+        conn.execute("DELETE FROM session WHERE user_id = ?1", params![id])
+            .map_err(|e| WriteError::Failed(format!("ending sessions for account {id}: {e}")))?;
+    }
+
+    scope
+        .commit()
+        .map_err(|e| WriteError::Failed(format!("committing the update of account {id}: {e}")))?;
+
+    by_id(conn, id)
+        .map_err(WriteError::Failed)?
+        .ok_or_else(|| WriteError::Failed(format!("account {id} vanished mid-update")))
+}
+
 /// Replace an account's password, **ending every session it has open**.
 ///
 /// §4: a compromised session must not outlive the password change that was meant
@@ -910,6 +1227,129 @@ pub fn revoke_session(conn: &Connection, user_id: i64, id: &str) -> Result<bool,
     )
     .map(|rows| rows > 0)
     .map_err(|e| format!("revoking a session: {e}"))
+}
+
+// --- removal -------------------------------------------------------------
+
+/// What deleting one account costs.
+///
+/// **Named after [`crate::scan::Removal`] field for field where the two
+/// overlap** — `positions` and `notes` mean the same words on both — because
+/// root removal and account removal are the same shape (count, then act,
+/// through one route that answers the identical body for a quote and a
+/// commit), and two destructive paths that look alike should read alike.
+///
+/// **No work, edition or member appears here, and that is the difference from
+/// a root's removal.** Deleting a person deletes none of the library.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Removal {
+    pub name: String,
+    pub positions: usize,
+    pub notes: usize,
+    pub sessions: usize,
+    pub keys: usize,
+    pub grants: usize,
+}
+
+/// The five counts and the name, as one row.
+///
+/// **One statement rather than five round trips**, and shared by
+/// [`removal_cost`] and [`remove`] so the quote and the commit can never count
+/// differently.
+fn count_for(conn: &Connection, id: i64, name: String) -> Result<Removal, String> {
+    conn.query_row(
+        "SELECT (SELECT COUNT(*) FROM progress  WHERE user_id = ?1),
+                (SELECT COUNT(*) FROM note      WHERE user_id = ?1),
+                (SELECT COUNT(*) FROM session   WHERE user_id = ?1),
+                (SELECT COUNT(*) FROM api_key   WHERE user_id = ?1),
+                (SELECT COUNT(*) FROM user_root WHERE user_id = ?1)",
+        params![id],
+        |row| {
+            Ok(Removal {
+                name,
+                positions: row.get::<_, i64>(0)?.unsigned_abs() as usize,
+                notes: row.get::<_, i64>(1)?.unsigned_abs() as usize,
+                sessions: row.get::<_, i64>(2)?.unsigned_abs() as usize,
+                keys: row.get::<_, i64>(3)?.unsigned_abs() as usize,
+                grants: row.get::<_, i64>(4)?.unsigned_abs() as usize,
+            })
+        },
+    )
+    .map_err(|e| format!("counting what removing account {id} costs: {e}"))
+}
+
+/// Count what [`remove`] would take, without taking any of it.
+///
+/// **Runs [`remove`]'s refusal too, and that is the point of the quote.** A
+/// dry run whose whole purpose is to state what the commit will do must not
+/// answer `200 OK` with five counts for a deletion the commit will then
+/// refuse — an operator would read the counts, confirm, and meet the refusal
+/// afterwards. Found by C4 PR 2's whole-branch review.
+///
+/// # Errors
+///
+/// [`WriteError::Unusable`] for an `id` naming no account,
+/// [`WriteError::Refused`] if removing it would leave the library with no
+/// administrator who can log in, [`WriteError::Failed`] if a count fails.
+pub fn removal_cost(conn: &Connection, id: i64) -> Result<Removal, WriteError> {
+    let account = by_id(conn, id)
+        .map_err(WriteError::Failed)?
+        .ok_or_else(|| WriteError::Unusable(format!("no account with id {id}")))?;
+    refuse_removing_the_last_admin(conn, &account)?;
+    count_for(conn, id, account.name).map_err(WriteError::Failed)
+}
+
+/// The one statement of C4 §4's first refusal, read by [`remove`] and by
+/// [`removal_cost`] so the quote and the commit cannot disagree.
+fn refuse_removing_the_last_admin(conn: &Connection, account: &Account) -> Result<(), WriteError> {
+    if account.role == "admin"
+        && !another_admin_can_log_in(conn, account.id).map_err(WriteError::Failed)?
+    {
+        return Err(WriteError::Refused(format!(
+            "removing `{}` would leave this library with no administrator who can \
+             log in. Give another account the admin role first",
+            account.name
+        )));
+    }
+    Ok(())
+}
+
+/// Delete an account and everything `ON DELETE CASCADE` takes with it,
+/// answering the counts from **before** the delete.
+///
+/// **The counts are taken inside the transaction that deletes**, exactly as
+/// `scan::apply_removal` takes a root's: counting afterwards answers zero for
+/// the numbers this function exists to state honestly.
+///
+/// **Refuses to delete the last administrator who can log in**, which is C4
+/// §4's first refusal and the same invariant [`update`] holds against a
+/// demotion. [`promote`] states the third face of it.
+///
+/// # Errors
+///
+/// [`WriteError::Unusable`] for an `id` naming no account,
+/// [`WriteError::Refused`] if the last-administrator rule fires,
+/// [`WriteError::Failed`] if SQLite refuses the delete.
+pub fn remove(conn: &Connection, id: i64) -> Result<Removal, WriteError> {
+    // **The scope opens before the invariant is read**, for the reason
+    // [`update`] states: this connection is `TransactionBehavior::Immediate`,
+    // so the write lock is taken at `BEGIN` and the check cannot be overtaken
+    // by the CLI in another process between reading and acting.
+    let scope = crate::Nested::open(conn, "account_remove")
+        .map_err(|e| WriteError::Failed(format!("removing account {id}: {e}")))?;
+
+    let account = by_id(conn, id)
+        .map_err(WriteError::Failed)?
+        .ok_or_else(|| WriteError::Unusable(format!("no account with id {id}")))?;
+    refuse_removing_the_last_admin(conn, &account)?;
+
+    let cost = count_for(conn, id, account.name).map_err(WriteError::Failed)?;
+    conn.execute("DELETE FROM user WHERE id = ?1", params![id])
+        .map_err(|e| WriteError::Failed(format!("removing account {id}: {e}")))?;
+    scope
+        .commit()
+        .map_err(|e| WriteError::Failed(format!("committing the removal of account {id}: {e}")))?;
+    Ok(cost)
 }
 
 #[cfg(test)]

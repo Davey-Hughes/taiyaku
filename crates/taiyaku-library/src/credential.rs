@@ -110,12 +110,39 @@ fn hasher() -> argon2::Argon2<'static> {
 /// second version to keep track of, to do a job [`mint_token`] already needs
 /// done.
 ///
+/// **An empty password is refused here**, which is the one place every writer
+/// of `user.password_hash` passes through.
+///
+/// `hash_password("")` produces a *well-formed* PHC string rather than
+/// [`LOCKED`], so [`verify_password`] answers true for it and anybody who
+/// presses Enter can sign in — and `account::admin_exists` counts
+/// `password_hash <> '!'`, so the account then reads as a working
+/// administrator.
+///
+/// **This refusal existed three times before it existed once.** Spec A2's
+/// whole-branch review found the claim route missing it on 2026-08-18 and
+/// noted that "both sibling paths already refuse this in the same words:
+/// `change_password` and the CLI's `accept`" — three copies, in three crates,
+/// of one rule about this crate's own column. C4 PR 2 then added two more
+/// writers (`POST /api/library/users` and `PATCH /api/library/users/{id}`)
+/// and they had it *none* of the times, which is the same defect arriving by
+/// the route the three copies could not cover. Moved here, where it cannot be
+/// missed by a writer that has not been written yet. The three call sites keep
+/// their own checks: each fires earlier and words the refusal for the screen
+/// it is on, and none of them is now the only thing standing between an empty
+/// string and the column.
+///
 /// # Errors
 ///
-/// Returns an error if the salt cannot be encoded or the hasher rejects the
-/// input, which it does only for inputs beyond argon2's own maximum length.
+/// Returns an error if `password` is empty, if the salt cannot be encoded, or
+/// if the hasher rejects the input, which it does only for inputs beyond
+/// argon2's own maximum length.
 pub fn hash_password(password: &str) -> Result<String, String> {
     use argon2::password_hash::{PasswordHasher as _, SaltString};
+
+    if password.is_empty() {
+        return Err("an empty password would lock the account rather than open it".to_string());
+    }
 
     let mut salt = [0u8; SALT_BYTES];
     rand::fill(&mut salt);

@@ -590,7 +590,14 @@ fn principal_of(extensions: &axum::http::Extensions) -> Option<&Principal> {
 /// 403 rather than 401: the credential is valid and the caller is who they say,
 /// which is exactly why a re-authentication prompt would be the wrong answer.
 /// Found by the second whole-branch review.
-fn refuse_a_device_credential(extensions: &axum::http::Extensions) -> Option<Response> {
+// **The wording is deliberately not "the account it belongs to" any more.**
+// It was, and that was true while `session.rs`'s six self-service routes were
+// the only callers. C4 PR 2's `users_api` and `backup_api` manage *other*
+// accounts through this same gate, where that clause is simply false — and a
+// refusal that asserts something untrue is the defect this branch's own review
+// caught twice over in message text. Worded for what the gate is about rather
+// than for the first routes to use it.
+pub(crate) fn refuse_a_device_credential(extensions: &axum::http::Extensions) -> Option<Response> {
     if extensions
         .get::<crate::auth::By>()
         .is_some_and(|by| by.may_administer())
@@ -601,7 +608,7 @@ fn refuse_a_device_credential(extensions: &axum::http::Extensions) -> Option<Res
         (
             StatusCode::FORBIDDEN,
             [(header::CONTENT_TYPE, "application/json")],
-            r#"{"error":"an API key cannot manage the account it belongs to; sign in from the reader to change a password or manage keys and sessions"}"#,
+            r#"{"error":"an API key cannot manage accounts, keys or sessions; sign in from a browser to do that"}"#,
         )
             .into_response(),
     )

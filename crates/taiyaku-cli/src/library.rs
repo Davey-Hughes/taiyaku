@@ -73,16 +73,85 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
         Some("user") => crate::user::command(&args[1..]),
         Some("key") => crate::user::key_command(&args[1..]),
         Some("root") => root_command(&args[1..]),
+        Some("backup") => backup(&args[1..]),
         Some(other) => Err(format!(
             "library has no subcommand `{other}`; it has import, export, scan, rules, \
-             proposals, user, key and root"
+             proposals, user, key, root and backup"
         )),
         None => Err(
-            "library needs a subcommand: import, export, scan, rules, proposals, user, key or \
-             root"
+            "library needs a subcommand: import, export, scan, rules, proposals, user, key, \
+             root or backup"
                 .to_string(),
         ),
     }
+}
+
+/// `taiyaku library backup [--out DIR] [--keep N] [--db PATH]` — store spec
+/// §13.4 and spec C4 §5.
+///
+/// **`--out` writes somewhere the server will not look**, which the usage line
+/// says out loud: `GET /api/library/backups` lists
+/// `taiyaku_library::backup::directory_for(db)` and can only compute that one
+/// directory. The flag is an escape hatch for an operator writing to another
+/// volume, not a second configured location.
+///
+/// **`--keep` is absent by default.** A command that deletes files the first
+/// time it runs is a surprise on the run where the operator is least sure what
+/// it does; retention is opt-in, and the cron entry that wants it says so.
+///
+/// **No schedule**, per this PR's build design §5 and spec C4's: a cron entry
+/// runs this, and the server gains no timer at all in C4.
+///
+/// # Errors
+///
+/// Returns an error if a flag is unknown or malformed, if the database cannot
+/// be opened, if `VACUUM INTO` fails — which includes a backup of that name
+/// already existing — or if a pruned file cannot be removed.
+fn backup(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags("library backup", args, &["--db", "--out", "--keep"])?;
+    reject_positional_arguments(
+        "library backup",
+        args,
+        &["--db", "--out", "--keep"],
+        "it takes flags only",
+    )?;
+    let db = resolve_db_path(option_value(args, "--db", "a path")?)?;
+    let into = match option_value(args, "--out", "a directory")? {
+        Some(dir) => PathBuf::from(dir),
+        None => taiyaku_library::backup::directory_for(&db),
+    };
+    let keep = match option_value(args, "--keep", "a count")? {
+        Some(n) => Some(
+            n.parse::<usize>()
+                .map_err(|_| format!("`--keep {n}` is not a count"))?,
+        ),
+        None => None,
+    };
+
+    let library = Library::open(&db)?;
+    let taken = {
+        let conn = library.conn();
+        // **A collision is the caller's timing, not a fault**, and the CLI
+        // says so in the terms a person at a terminal is in: the name carries
+        // a whole-second stamp, so two runs inside one second have nowhere to
+        // put the second. The route answers 409 for the same reason.
+        taiyaku_library::backup::take(&conn, &into).map_err(|e| match e {
+            taiyaku_library::backup::TakeError::Exists(why) => format!("{why}. Try again"),
+            taiyaku_library::backup::TakeError::Failed(why) => why,
+        })?
+    };
+    println!(
+        "wrote {} ({} bytes)",
+        into.join(&taken.name).display(),
+        taken.bytes
+    );
+
+    if let Some(keep) = keep {
+        for name in taiyaku_library::backup::prune(&into, keep)? {
+            println!("pruned {}", into.join(&name).display());
+        }
+    }
+    Ok(())
 }
 
 fn import(args: &[String]) -> Result<(), String> {
