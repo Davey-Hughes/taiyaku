@@ -1397,3 +1397,113 @@ body {
   border-top: 1px solid ButtonBorder;
   font-size: 0.85rem;
 }
+
+/* Spec C4's settings area. System colours throughout, per this file's own
+   rule and `index.css.test.ts`'s WCAG check: `Login.tsx` shipped a hardcoded
+   #111 on this app's front door, and that test exists because of it. */
+.config-nav ul {
+  display: flex;
+  gap: 1rem;
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0 0 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+}
+
+.config-nav a[aria-current="page"] {
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.roots .root-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.root-row {
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  padding: 1rem;
+}
+
+.root-row h3 {
+  margin: 0;
+}
+
+.root-row .regime {
+  opacity: 0.8;
+}
+
+.root-row .fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.5rem;
+}
+
+.root-row .fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.root-row .actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+/* A heavier border than a card's, because this is the most destructive
+   action in the product and C4 §2 records that it does not look like one. */
+.remove-root {
+  border: 2px solid color-mix(in srgb, currentColor 50%, transparent);
+  border-radius: 4px;
+  margin-top: 1rem;
+  padding: 1rem;
+}
+
+.remove-root .counts {
+  font-weight: 600;
+}
+
+.add-root {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.roots .add-root label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.scan-report dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.25rem 1rem;
+  margin: 0;
+}
+
+.scan-report .count,
+.scan-report .paths {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.scan-report .count dt,
+.scan-report .paths dt {
+  opacity: 0.8;
+}
+
+.scan-report .count dd,
+.scan-report .paths dd {
+  margin: 0;
+}
+
+.scan-report .note {
+  font-size: 0.9em;
+  opacity: 0.7;
+}

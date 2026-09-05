@@ -88,4 +88,15 @@ describe('the sidebar', () => {
     const host = at(<Sidebar roots={[]} showRoots={false} />)
     expect(host.querySelector('a[href="/proposals"]')).toBeNull()
   })
+
+  it('draws the configuration link for an admin and not for a reader', () => {
+    // Spec C4 is admin-gated throughout, and the link takes the same `admin`
+    // prop the proposals entry does rather than a second one. What an account
+    // may *see* is the server's to enforce; this chooses only what to draw.
+    const withAdmin = at(<Sidebar roots={[]} showRoots={false} admin />)
+    expect(withAdmin.querySelector('a[href="/config"]')).not.toBeNull()
+
+    const withoutAdmin = at(<Sidebar roots={[]} showRoots={false} />)
+    expect(withoutAdmin.querySelector('a[href="/config"]')).toBeNull()
+  })
 })

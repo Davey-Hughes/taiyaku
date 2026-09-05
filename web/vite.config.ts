@@ -154,10 +154,10 @@ export default defineConfig({
       // thresholds were not lowered to restore it: the number to move when this
       // fires is the coverage, not the bar.
       thresholds: {
-        statements: 96, // measured 97.49, was 98.03 when set
-        branches: 92, // measured 93.99, was 94.38 when set
-        functions: 97, // measured 99.10, was 99.29 when set
-        lines: 97, // measured 99.17, was 99.53 when set
+        statements: 96, // measured 97.52, was 98.03 when set
+        branches: 92, // measured 93.38, was 94.38 when set
+        functions: 97, // measured 99.08, was 99.29 when set
+        lines: 97, // measured 99.27, was 99.53 when set
         // **These are aggregate, and an aggregate cannot see one module go
         // dark.** Measured: skipping the whole of `pairing.test.ts` drops
         // `pairing.ts` from 100% to 83.58% and the total only 98.03% → 97.49%,

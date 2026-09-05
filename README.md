@@ -228,14 +228,27 @@ the identical count and rolls back, so a client can render it before sending
 the plain `DELETE` that actually removes anything; sent without `?dry_run=true`,
 a `DELETE` reports those same counts as it takes them, in one step.
 
-The screens that use them are not built yet; the routes are what spec C4's
-configuration UI is being assembled on.
+**The roots screen is built**, at `/config/roots` — an admin-only settings area
+beside the library, where a root is added, edited, scanned and removed from the
+browser rather than a terminal. Adding one renders whichever of the three
+checks the server refused on, and on a success shows the watcher probe it just
+ran, so the scan regime is known before the first scan rather than discovered
+later. Removing one states what it will take — works, reading positions, notes
+— and offers no confirm button at all until those counts have arrived. A scan
+started from the screen reports both halves of what it did in full: the walk
+and the derivation, every field, with what it *could not* do listed before what
+it did, and an empty list drawn as `0` rather than left out — so "nothing was
+unreadable this time" cannot be mistaken for "this version does not say".
+
+The rule editor, user administration and backup are the two UI PRs after it;
+their routes are already here.
 
 To read in the browser, build the WebAssembly binding first, then run the reader
 against `serve --db`. The browser opens on a **library** now, not a single work —
 a grid of series with a continue strip above it, `react-router` resolving four
-routes between the grid, a series page, search and the reader itself, and a
-`Library` button in the reader's own chrome for the way back out. The binding is
+routes between the grid, a series page, search and the reader itself — five
+with the settings area above — and a `Library` button in the reader's own
+chrome for the way back out. The binding is
 generated and gitignored, but install order does
 not decide whether `taiyaku-wasm` resolves: `taiyaku-wasm` is a `link:` symlink,
 and pnpm creates it whether or not `pkg/` exists yet, dangling until it does. The

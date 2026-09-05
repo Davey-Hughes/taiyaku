@@ -20,6 +20,7 @@
  */
 import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router'
 import App from './App'
+import { Config } from './Config'
 import { Library } from './Library'
 import { Proposals } from './Proposals'
 import { Search } from './Search'
@@ -66,6 +67,23 @@ export function AppRoutes() {
         element={
           <Shell>
             <Proposals />
+          </Shell>
+        }
+      />
+      {/*
+        A splat, because `Config` declares its own child routes from `TABS` —
+        see that file's own doc comment for why the list and the routes it
+        implies live together. Every other route here is a leaf.
+
+        No admin guard, like `/proposals` above: a non-admin who types this
+        reaches it and is shown the server's own 403 sentence, which is what
+        `api.ts`'s `getJson` was changed during C3 to make possible.
+      */}
+      <Route
+        path="/config/*"
+        element={
+          <Shell>
+            <Config />
           </Shell>
         }
       />

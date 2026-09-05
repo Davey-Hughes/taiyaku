@@ -15031,3 +15031,81 @@ is the same gap the preview measurement leaves; and whether a second
 connection's `VACUUM INTO` is as invisible to the server's readers as WAL
 promises, which the build design §10 names and which wants the process under
 load rather than a command run seven times. Both are still open.
+
+## What the roots screen's own scan costs, driven end to end — 2026-09-04
+
+Spec C4's roots screen (PR A) is the first thing that can start a scan from a
+browser, and the build design's §10 named the cost of one as a gap both spec B
+and C4's server half carry. This is the first figure.
+
+**Setup.** A copy of the real library's `library.db` (1858 works, 130 series,
+one root at `/home/davey/temp/manga-test/Volumes`, 490 GB, never scanned by any
+serving process — `last_scan_at` and `last_scan_status` both `NULL`), served by
+a debug build on `127.0.0.1:8137`. The scanned root is **not** that one: it is a
+scratch root of three four-page CBZs written into the session scratchpad, so the
+walk is trivial and what the number measures is the derivation behind it. The
+real tree was read and never written, and the proof is below.
+
+**The figure: `elapsed_secs` 1.028**, from `POST /api/library/roots/2/scan` to
+the poll that first read `running: false`. Wall clock across the screen's own
+1 s polling loop was 1.05 s, so the poll interval is the resolution here rather
+than the measurement. The walk itself is 2 directories and 3 files; the other
+second is `derive::derive`, which is library-wide rather than per-root and so
+re-derived all 1861 works. **That is the shape worth carrying: a scan's cost is
+its root's walk plus a whole-library derivation, so scanning the smallest root
+in a large library is not cheap.** A 1 s poll is therefore not obviously wrong,
+and is still a guess: nothing has scanned the 490 GB root.
+
+**What the report actually carried.** 8 fields from `ScanReport` and 29 from
+`DeriveReport` — **37**, which is the number `ScanReport.test.tsx` asserts, now
+confirmed against the wire rather than against arithmetic over the two structs.
+Non-zero among the fields the screen draws *first*, the ones naming what the
+scan did not do: `unreadable: 13`, `unattached_chapter_dirs: 1`,
+`series_holding_no_work: 1`. The 13 are the real library's — O90's RAR-named
+`.cbz` volumes and one member whose bytes could not be hashed — so the
+confession-first ordering had something real to confess on its first run.
+
+`last_scan_at` and `last_scan_status` were written for the first time by a
+serving process: `2026-09-04 20:38:42` / `ok`.
+
+**The three validations, each refusing with its own sentence:**
+
+```
+POST /roots {"path":"…/Volumes/Akame ga KILL!"}
+  400  is inside existing root /home/davey/temp/manga-test/Volumes (id 1)
+POST /roots {"path":"/home/davey/temp"}
+  400  contains existing root /home/davey/temp/manga-test/Volumes (id 1)
+POST /roots {"path":"/nope/not/here"}
+  400  No such file or directory (os error 2)
+POST /roots {"path":"…/scratch-root"}
+  200  watching: true, watch_reason: null, interval_secs: 86400
+```
+
+Both nesting directions, and the probe answered on the *success* — which is the
+only one of the three that produces anything when nothing is wrong, and is what
+lets the screen state the regime before the first scan.
+
+**The regime line for the real, never-scanned root** renders as
+`watch state unknown — probed when a root is added · no scan interval set ·
+never scanned` — no `null`, no `undefined`, which is the case the row that had
+never been scanned would otherwise have shown three of.
+
+**Single-flight held.** A second `POST` while the first was running answered
+**409**, naming the root and its path, rather than queuing a second walk.
+
+**`?dryrun=true` is still refused.** 400, `unknown field 'dryrun', expected
+'dry_run'` — the `deny_unknown_fields` fix from PR 1's whole-branch review,
+re-confirmed from the client side, since a client that misspells that key runs a
+committed removal. `config.ts`'s own test pins the exact string for this reason.
+
+**Removal quoted the same counts it then charged.** Dry run
+`{works: 1, positions: 0, notes: 0}` with the work count unchanged at 1859
+afterwards; the real `DELETE` reported the identical three and left 1858 — the
+library's original count exactly.
+
+**Proof the real tree was never written.** `find … -printf '%p %s\n' | sort |
+sha256sum` over `/home/davey/temp/manga-test`, before and after the whole
+session: `75c20e25f913ec55ecde79173dbb6f8e5a89a6baf1fc5258337e23563430fb13`
+both times, and `find … -name .taiyaku` finds none. The root's
+`keeps_documents` is `0`, so nothing should have been written under it, and
+this is the measurement rather than the assumption.

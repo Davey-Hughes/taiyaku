@@ -30,6 +30,14 @@
  * safe default `gate.ts`'s own doc comment gives for a screen mounted with no
  * gate above it at all.
  *
+ * **`admin` now gates two entries, and the second is spec C4's.** The
+ * settings area is admin-only for the same reason the proposals inbox is, and
+ * takes the same prop rather than a second one: what an account may *see* is
+ * the server's to enforce — every `/api/library/{rules,roots,users,backups}`
+ * route answers a reader 403 — and this chooses only what to draw. A
+ * non-admin who types `/config` reaches it and is shown the server's own
+ * sentence, which is exactly what `/proposals` already does.
+ *
  * **`openProposals` is the count spec C3 §6 and the build design's
  * file-structure table both asked for, and this entry shipped without.** The
  * deviation was recorded rather than silently taken, and its stated cost was
@@ -64,7 +72,7 @@ import type { RootCard } from './library'
 export interface SidebarProps {
   roots: RootCard[]
   showRoots: boolean
-  /** Admin-only: the proposals inbox link. See this file's own doc comment. */
+  /** Admin-only: the proposals inbox and the settings area. See this file's own doc comment. */
   admin?: boolean
   /**
    * Open proposals at `curation.ts`'s `INBOX_MIN_SCORE`, once known.
@@ -99,6 +107,11 @@ export function Sidebar({
                 <span className="count">{openProposals}</span>
               )}
             </Link>
+          </li>
+        )}
+        {admin && (
+          <li>
+            <Link to="/config">Configuration</Link>
           </li>
         )}
       </ul>
