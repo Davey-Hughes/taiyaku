@@ -349,7 +349,23 @@ fn rows_for(
         for rel_path in rel_paths(conn, root.id)? {
             let resolved = engine.resolve(root, &rel_path);
             let decided_here = resolved.provenance.values().any(|&id| id == rule_id);
+            // **A rule that can set nothing near-misses nothing**, and the
+            // emptiness has to be tested before the `all`, which is vacuously
+            // true over an empty set. `fields_settable_by`'s own doc comment
+            // frames the question this answers — "did this rule miss this
+            // entry, or did it simply have nothing to say about it at all" —
+            // and without this guard the second case was answered as the
+            // first, for every entry in the library at once.
+            //
+            // **`blankRule()` is exactly that rule, so this was the ordinary
+            // case rather than a degenerate one.** The editor's "+ Add" mints
+            // a `regex` rule with an empty pattern and no `set_*` columns, and
+            // selects it immediately: nothing is settable, so every
+            // `scan_entry` in the library read as a near-miss and the Matched
+            // files tab opened on 500 rows and a truncation notice. Found by
+            // the whole-branch review of C4 PR B.
             let is_near_miss = !decided_here
+                && !fields_set.is_empty()
                 && fields_set
                     .iter()
                     .all(|field| match resolved.provenance.get(field) {
@@ -490,6 +506,176 @@ pub fn preview_with_rows(
         ),
         rows,
     ))
+}
+
+/// What a save did — [`apply`]'s answer.
+///
+/// **The `Impact` is the same shape [`preview`] answers, on purpose.** Spec
+/// C4 §4.2: the screen compares the two, and a save whose impact differs from
+/// the preview it was made from is drawn as a warning rather than swallowed.
+/// Nothing should change between them on a single-writer library; the screen's
+/// entire promise is that the preview is true, and the cheapest place to
+/// notice it is false is the save that just disproved it.
+///
+/// **`PartialEq`, not `Eq`.** [`crate::rules::Rule`] itself derives only
+/// `PartialEq` — nothing about its fields forbids `Eq`, but nothing here
+/// needs it either, since every comparison this module or its tests make is
+/// `assert_eq!`/`assert_ne!`, both of which only ever require `PartialEq`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Applied {
+    pub impact: Impact,
+    /// Every proposal this derivation put back in front of someone, ascending
+    /// — [`crate::proposals::reopened_ids`]. The ids, not the count, because
+    /// spec C4 §1 asks the screen to *state* them after a save;
+    /// `impact.proposals_reopened` is the same list's length.
+    pub reopened_proposals: Vec<i64>,
+    /// The rule table as this save left it, read back on the same connection
+    /// once the save has committed — so a rule that arrived as `id: 0` comes
+    /// back carrying the id it was actually written under and the editor
+    /// needs no second request to learn it.
+    ///
+    /// **After the commit, not inside the transaction — whole-branch review,
+    /// I6.** [`apply`]'s own doc comment carries the full argument; the short
+    /// version is that this read (and [`Self::complaints`]'s) answers nothing
+    /// [`Impact`] needs, so it has no business sitting between the derive
+    /// landing and the commit that makes it durable.
+    pub rules: Vec<crate::rules::Rule>,
+    /// [`crate::rules::read`]'s complaints plus
+    /// [`crate::rules::Engine::compile`]'s, the same pair `rules::import_json`'s
+    /// route reports. A pattern that will not compile is dropped silently by
+    /// the engine every derivation loads, so this is the only place a save can
+    /// say so.
+    pub complaints: Vec<String>,
+    /// Everything [`crate::derive::derive_with`]'s `Documents::Reconcile` pass
+    /// reported about the user's own filesystem — whole-branch review, I5.
+    ///
+    /// **The only `derive` caller that used to report nothing about
+    /// `<root>/.taiyaku/`, on the only route in this product that writes
+    /// there.** `Impact` describes the database's own structure and nothing
+    /// past it; `repaired_documents`, `unwritable_documents`,
+    /// `orphan_documents`, `declined_documents`, `stale_documents` and the
+    /// fold counts all live on [`crate::derive::DeriveReport`] instead, so a
+    /// save that could not write a hand document — a read-only root,
+    /// [`crate::hand::save`]'s own `persisted: false` path — used to answer
+    /// `200` with a rehome count and nothing else.
+    ///
+    /// **Carried whole rather than copied field by field.** `taiyaku-serve`
+    /// already owns a renderer for every field of [`crate::derive::DeriveReport`]
+    /// — `config_api::derive_report_json`, the one the scan route uses — and
+    /// carrying the struct itself is what lets a save reuse it verbatim
+    /// instead of this crate growing a second, partial one that could drift
+    /// from it the moment a field is added to either.
+    pub derive_report: crate::derive::DeriveReport,
+}
+
+/// Replace the rule table with `proposed` and derive over it, committed.
+///
+/// **[`preview_with_rows`] without the rollback, and with
+/// [`crate::derive::Documents::Reconcile`] in place of `Skip`** — spec C4 §4.1.
+/// A real derivation reconciles hand documents under `<root>/.taiyaku/`; a
+/// preview must not, because a rollback would not undo a file it wrote. That
+/// one enum value is the whole difference in what reaches the user's tree.
+///
+/// **Why this function exists rather than the sequence inlined in the route.**
+/// [`crate::rules::replace_all`] is `pub(crate)`, which is correct — nothing
+/// outside this crate should be able to rewrite the rule table without
+/// deriving. Widening it to `pub` for one caller would export exactly the half
+/// of the operation that is dangerous alone: a rule set replaced with nothing
+/// derived over it is a library whose structure silently disagrees with the
+/// rules that are supposed to have produced it, until somebody scans.
+///
+/// **One `BEGIN IMMEDIATE` over the whole library, the same trade
+/// [`preview_with_rows`] makes and for the same reason.** A plain
+/// [`crate::derive::derive`] is atomic per work rather than across the
+/// library, so a half-derived library still has most of its works current.
+/// This is not that: a save either lands whole or does not land, because a
+/// rule set half-applied is a state nothing in this product knows how to
+/// describe. The cost is the write lock, held for one full derivation —
+/// measured at a median 281 ms on 130 series and 1858 works — which is why
+/// the route takes [`crate::Library::working`] rather than the shared
+/// connection.
+///
+/// **Nothing fallible sits between `derive_with` returning and the commit
+/// below — whole-branch review, I6.** This module's own doc comment states
+/// why [`preview_with_rows`] runs `Documents::Skip`: a rollback cannot undo a
+/// file. `Documents::Reconcile` is exactly what this function runs instead,
+/// so every `?` that used to sit between the derive landing and the commit
+/// was a way for the database to roll back while the real files
+/// `hand::reconcile`'s gap repair and `hand::rename_for_rekey` had already
+/// written or renamed stayed exactly where the derive put them — a hand
+/// document renamed to a `content_key` the database never adopted, reported
+/// as an orphan on the next pass, someone's corrections detached from their
+/// work.
+///
+/// Two of the reads that used to sit in that window stay there anyway:
+/// `after`'s own [`grouping`] and [`crate::proposals::states`] genuinely have
+/// to run on *this* transaction, because they describe what *this*
+/// derivation did, not what the table happens to hold once something else
+/// has had a chance to write to it — a read taken after the commit could be
+/// answering a question this save was never asked. Both are cheap SELECTs on
+/// a transaction already open, so keeping them costs nothing this restructuring
+/// was trying to save. [`Impact`] and the reopened proposal ids are computed
+/// from them before the commit for the same reason.
+///
+/// What actually moved is [`crate::rules::read`] and
+/// [`crate::rules::Engine::compile`] — used only to populate
+/// [`Applied::rules`] and [`Applied::complaints`], which answer nothing
+/// [`Impact`] needs and have no business deciding whether this transaction is
+/// allowed to land. Both now run after `tx.commit()`, on `conn` rather than
+/// the consumed `tx` — reading the rule table back once it is durable rather
+/// than while it is still provisional.
+///
+/// **The residue this leaves, because there is nowhere left to move it.** The
+/// commit itself can still be refused, and a refusal there rolls the database
+/// back with the files already written or renamed regardless — the one
+/// window this restructuring narrows to a single statement rather than
+/// closes. Nothing short of writing those files inside the same durability
+/// boundary as the row that names them would close it the rest of the way,
+/// and SQLite has no such boundary to offer.
+///
+/// # Errors
+///
+/// If SQLite refuses the transaction, if [`crate::rules::replace_all`] refuses
+/// `proposed` (a nonzero id naming no row this table holds — the stale-editor
+/// case — or one id named twice), if [`crate::derive::derive_with`] fails, if
+/// the commit itself is refused, or if reading the rule table back afterward
+/// fails.
+pub fn apply(conn: &Connection, proposed: &[crate::rules::Rule]) -> Result<Applied, String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("starting the save transaction: {e}"))?;
+    let before = grouping(&tx)?;
+    let proposals_before = crate::proposals::states(&tx)?;
+
+    crate::rules::replace_all(&tx, proposed)?;
+    let report = crate::derive::derive_with(&tx, crate::derive::Documents::Reconcile)?;
+    let after = grouping(&tx)?;
+    let proposals_after = crate::proposals::states(&tx)?;
+
+    let reopened_proposals = crate::proposals::reopened_ids(&proposals_before, &proposals_after);
+    let impact = diff(&before, &after, reopened_proposals.len(), report.raised);
+
+    // Explicit, for the reason `preview_with_rows`'s own `rollback` is
+    // explicit: a commit that happens because nobody rolled back is a commit
+    // nobody can find when reading this later.
+    tx.commit()
+        .map_err(|e| format!("committing the save: {e}"))?;
+
+    // After the commit, on `conn` rather than the now-consumed `tx` — see
+    // this function's own doc comment for why: neither answers a question
+    // `impact` above needed, so neither has business sitting between the
+    // derive landing and the commit that makes it durable.
+    let (rules, mut complaints) = crate::rules::read(conn)?;
+    let (_engine, compile_complaints) = crate::rules::Engine::compile(&rules);
+    complaints.extend(compile_complaints);
+
+    Ok(Applied {
+        impact,
+        reopened_proposals,
+        rules,
+        complaints,
+        derive_report: report,
+    })
 }
 
 // --- conflict detection ----------------------------------------------------

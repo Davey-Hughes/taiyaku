@@ -14920,6 +14920,58 @@ created and every correction answers `persisted: false`, which is O82's
 read-only case as the ordinary case rather than the corner one. Not tracked
 here either: the server that will run this owns its storage.
 
+## What a *save* costs on a real library — 2026-09-05
+
+The section below priced the preview and nothing priced the save, because
+until C4 PR B there was no save: every rules route wrote the `rule` table and
+returned. `preview::apply` is that missing half — the same derivation, without
+the rollback and under `Documents::Reconcile` rather than `Skip`.
+
+Measured through `apply_cost_on_a_real_library`, an `#[ignore]`d test beside
+the preview's own and pointed at the same `TAIYAKU_PREVIEW_DB`, on a `--release`
+build against a **copy** of the same library the section below used — 130
+series, 1858 works, 2044 scan entries, 4 rules, and a root with
+`keeps_documents` **off**.
+
+| | run 1 | run 2 |
+| --- | --- | --- |
+| `preview`, unchanged list | 287.1 ms | 308.4 ms |
+| `apply`, unchanged list | 280.7 ms | 330.6 ms |
+| `apply` again, unchanged list | 277.2 ms | 303.3 ms |
+
+**A save costs what a preview costs.** The two straddle each other across the
+runs, which is the finding: committing instead of rolling back is not where
+the time goes, and neither is the reconcile pass. The derivation is the whole
+cost, exactly as the preview's own measurement concluded — so the screen's
+Save button needs no different treatment from its preview, and the ~281 ms the
+editor was designed around is the right figure for both.
+
+**Single-shot per run, not a median of ten** like the preview measurement
+beside it, and the second run sat under a concurrently building workspace.
+That is why two runs are tabled rather than one number: the honest claim is
+"the same, within noise", not a figure to three digits.
+
+**Two things this library could not measure.** It holds **0 accepted
+proposals** (29 open), so the reopen path — the property
+`a_save_of_the_unchanged_list_reopens_nothing` exists for, and the one an
+import breaks — is asserted here against a library that cannot exercise it;
+the fixtures are what cover it. And its root has `keeps_documents` off, so the
+`Documents::Reconcile` pass had no document to write: what a save costs on a
+root that *keeps* documents is unmeasured, and it is the only case where a
+save should cost more than a preview.
+
+**The impact agreed exactly**, both runs, and both saves reopened nothing:
+`Impact { series_before: 129, series_after: 129, series_merged: 0,
+works_rehomed: 0, works_orphaned: 0, proposals_reopened: 0,
+proposals_raised: 0 }`. That the preview and the save agree is pinned on
+fixtures by `a_preview_and_a_real_save_produce_the_same_structure`, where a
+fixture has three works; this is the same claim where 1858 works give a
+disagreement somewhere to hide.
+
+*(129 series against the 130 the table above counts: `Impact` counts distinct
+series **names** reached by a member, and one series in this library holds no
+member the grouping query returns.)*
+
 ## What a rule preview costs on a real library — 2026-09-03
 
 Spec C4 §11 marks its mockup's "34 ms" as **an illustration and not a

@@ -1,5 +1,5 @@
 use crate::preview::{
-    Conflict, Decided, Impact, Rows, conflicts, diff, grouping, preview, preview_with_rows,
+    Conflict, Decided, Impact, Rows, conflicts, grouping, preview, preview_with_rows,
 };
 
 /// The promise the whole screen rests on: what the preview says will happen
@@ -14,9 +14,17 @@ use crate::preview::{
 /// `proposals_reopened` — a `preview` that always answered
 /// `Impact::default()` would still pass that narrower check on a fixture
 /// with no orphans. Running the real save's own before/after groupings
-/// through [`diff`] — the exact function `preview` itself calls — is what
+/// through `diff` — the exact function `preview` itself calls — is what
 /// makes this a check on `preview`'s answer rather than a check on one
 /// number that happens to agree with it.
+///
+/// **The save side is [`crate::preview::apply`], which is what makes this a
+/// claim about shipped code.** It used to be `replace_all` followed by
+/// `derive` — two lines that existed nowhere but here, so the test asserted
+/// that a preview agrees with a sequence this test types out rather than with
+/// the save this product actually performs. Spec C4 §4.1, and the failure
+/// mode `plans-need-executed-fixtures` names, sitting inside the test that
+/// guards the screen's central promise.
 ///
 /// **Important 2.** `Alpha` (`library_with_two_roots`'s third root) already
 /// reads `"Alpha"` before this test's own widening rule sends everything
@@ -56,24 +64,15 @@ fn a_preview_and_a_real_save_produce_the_same_structure() {
     );
 
     let before_save = grouping(&conn).unwrap();
-    let proposals_before_save = crate::proposals::states(&conn).unwrap();
-    crate::rules::replace_all(&conn, &proposed).unwrap();
-    let report = crate::derive::derive(&conn).unwrap();
+    let applied = crate::preview::apply(&conn, &proposed).unwrap();
     let after_save = grouping(&conn).unwrap();
-    let proposals_after_save = crate::proposals::states(&conn).unwrap();
 
     assert_ne!(
         before_save, after_save,
         "the fixture must actually change, or this proves nothing"
     );
-    let actual = diff(
-        &before_save,
-        &after_save,
-        crate::proposals::reopened(&proposals_before_save, &proposals_after_save),
-        report.raised,
-    );
     assert_eq!(
-        predicted, actual,
+        predicted, applied.impact,
         "the predicted Impact is not what the save produced"
     );
 }
@@ -100,6 +99,14 @@ fn a_preview_and_a_real_save_produce_the_same_structure() {
 /// changes and the database keeps the old series until something re-applies
 /// it. A derive that reads this document back — preview's own rolled-back
 /// one, or a real save's — is exactly what is supposed to do that.
+///
+/// **The save side is [`crate::preview::apply`], for the reason
+/// `a_preview_and_a_real_save_produce_the_same_structure`'s own doc comment
+/// gives — whole-branch review, M5.** This test drove `crate::derive::derive`
+/// directly until now, which made it a claim about a sequence typed out only
+/// in this file rather than about the save this product actually performs;
+/// this is the one test covering a present-but-unabsorbed document, so it was
+/// the one place that gap survived the sibling's own conversion.
 #[test]
 fn a_preview_and_a_real_save_agree_on_a_work_with_an_unabsorbed_hand_document() {
     let fixture = crate::tests::library_with_a_kept_document();
@@ -143,30 +150,21 @@ fn a_preview_and_a_real_save_agree_on_a_work_with_an_unabsorbed_hand_document() 
     let predicted = preview(&conn, &current_rules).expect("previewing must not itself fail");
 
     // Same shape as `a_preview_and_a_real_save_produce_the_same_structure`:
-    // the real save's own before/after groupings run through the identical
-    // `diff` function `preview` itself calls, so this is a check on
-    // `preview`'s answer rather than on one number that happens to agree
-    // with it.
+    // the real save's own `Applied::impact` is compared directly, which is a
+    // check on `preview`'s answer rather than on one number that happens to
+    // agree with it.
     let before_save = grouping(&conn).unwrap();
-    let proposals_before_save = crate::proposals::states(&conn).unwrap();
-    let report = crate::derive::derive(&conn).expect("the real save must not fail either");
+    let applied =
+        crate::preview::apply(&conn, &current_rules).expect("the real save must not fail");
     let after_save = grouping(&conn).unwrap();
-    let proposals_after_save = crate::proposals::states(&conn).unwrap();
 
     assert_ne!(
         before_save, after_save,
         "the real save must actually move the work onto the chosen series, or this proves \
          nothing"
     );
-    let actual = diff(
-        &before_save,
-        &after_save,
-        crate::proposals::reopened(&proposals_before_save, &proposals_after_save),
-        report.raised,
-    );
-
     assert_eq!(
-        predicted, actual,
+        predicted, applied.impact,
         "a preview must predict exactly what a real save does, even for a work whose hand \
          document is present but not yet absorbed"
     );
@@ -239,6 +237,64 @@ fn a_preview_leaves_the_library_tree_byte_identical() {
     preview(&conn, &proposed).unwrap();
 
     assert_eq!(crate::tests::tree_snapshot(fixture.root_path()), before);
+}
+
+/// A save **writes the library tree**, which is the one thing that
+/// distinguishes it from the preview it is otherwise identical to.
+///
+/// **This is the mirror of `a_preview_leaves_the_library_tree_byte_identical`
+/// just above, and it exists because nothing else in this crate could tell
+/// the two apart.** [`crate::preview::apply`] differs from
+/// [`crate::preview::preview_with_rows`] in exactly two things: it commits
+/// rather than rolling back, and it derives under
+/// [`crate::derive::Documents::Reconcile`] rather than `Skip`. The commit is
+/// covered by `apply_commits_what_preview_rolls_back`. The `Documents` value
+/// was covered by nothing at all: hand-swapping `Reconcile` for `Skip` inside
+/// `apply` left **all 720 tests in this crate green**, so the one line
+/// deciding whether a save touches the user's filesystem — spec C4 §4.1 calls
+/// it "the whole difference in what reaches the user's tree" — was free to
+/// change in either direction unnoticed. Found by the whole-branch review's
+/// own hand-applied mutation, after `cargo-mutants` reported `apply`'s only
+/// mutant *unviable* (`Applied` derives no `Default`) and so reported the
+/// sweep clean while proving nothing about this function — O88's remaining
+/// cause, doing exactly what its entry says it does.
+///
+/// **The document must have somewhere to go, or `Skip` and `Reconcile` are
+/// indistinguishable**, which is the same trap the preview test above
+/// documents: `library_with_a_kept_document`'s document is already settled,
+/// so a further derive under `Reconcile` writes nothing either way. Deleting
+/// the file first reopens the gap [`crate::hand::reconcile`]'s own repair
+/// exists to close, so a save that really runs `Reconcile` writes it straight
+/// back and a save that runs `Skip` leaves the gap exactly as open as it
+/// found it.
+#[test]
+fn a_save_writes_the_library_tree_a_preview_would_have_left_alone() {
+    let fixture = crate::tests::library_with_a_kept_document();
+    let conn = fixture.conn();
+    let work_id: i64 = conn
+        .query_row("SELECT id FROM work", [], |r| r.get(0))
+        .expect("the fixture's one work");
+    let document = crate::hand::path_for(&conn, work_id)
+        .unwrap()
+        .expect("the fixture's document has settled at an address");
+
+    let settled = crate::tests::tree_snapshot(fixture.root_path());
+    std::fs::remove_file(&document).expect("reopening the gap `reconcile` would repair");
+    let with_the_gap = crate::tests::tree_snapshot(fixture.root_path());
+    assert_ne!(
+        settled, with_the_gap,
+        "the gap must be observable in the snapshot, or this test cannot see the repair either"
+    );
+
+    let proposed = crate::rules::read(&conn).unwrap().0;
+    crate::preview::apply(&conn, &proposed).unwrap();
+
+    assert_eq!(
+        crate::tests::tree_snapshot(fixture.root_path()),
+        settled,
+        "a save derives under Documents::Reconcile, so it repairs the gap it found; under Skip \
+         the document would still be missing"
+    );
 }
 
 /// **Important 4.** Every test above `push`es a rule; none removes one. The
@@ -589,6 +645,134 @@ fn a_preview_that_drops_one_of_two_accepts_leaves_the_surviving_one_accepted() {
         proposals_after, proposals_before,
         "a preview must roll back regardless of what it predicts"
     );
+}
+
+/// **What a *save* costs, beside what a preview costs.** The sibling below
+/// measures `preview`; this measures [`crate::preview::apply`], and it exists
+/// because the spec priced the preview and never priced the save at all —
+/// while the save is the one that commits, reconciles hand documents, and
+/// holds the write lock for a whole derivation with a person waiting on it.
+///
+/// **It also re-asserts the branch's central claim at real scale.** That a
+/// preview and a save produce the same `Impact` is pinned on fixtures by
+/// `a_preview_and_a_real_save_produce_the_same_structure`; a fixture has
+/// three works. Here it is checked against a library with 1858, where a
+/// disagreement would have somewhere to hide.
+///
+/// **Run it against a copy**, for the reason the sibling gives and one more:
+/// unlike a preview, this one *commits*. Under a root with
+/// `keeps_documents` on it also writes beneath `<root>/.taiyaku/`.
+///
+/// ```sh
+/// TAIYAKU_PREVIEW_DB=/path/to/copy.db \
+///   cargo test -p taiyaku-library --release apply_cost -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "measurement; needs TAIYAKU_PREVIEW_DB"]
+fn apply_cost_on_a_real_library() {
+    let Some(path) = std::env::var_os("TAIYAKU_PREVIEW_DB") else {
+        panic!("set TAIYAKU_PREVIEW_DB to a copy of a real library");
+    };
+    let library = crate::Library::open(std::path::Path::new(&path)).expect("opens the library");
+    let conn = library.conn();
+
+    let rules = crate::rules::read(&conn).expect("reading rules").0;
+    let accepted: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM proposal WHERE state = 'accepted'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("counting accepted proposals");
+    println!("accepted proposals before: {accepted}");
+
+    let start = std::time::Instant::now();
+    let predicted = crate::preview::preview(&conn, &rules).expect("previewing");
+    println!("preview  unchanged: {:?}", start.elapsed());
+
+    let start = std::time::Instant::now();
+    let applied = crate::preview::apply(&conn, &rules).expect("saving");
+    println!("apply    unchanged: {:?}", start.elapsed());
+
+    assert_eq!(
+        predicted, applied.impact,
+        "the preview and the save disagree on a real library, which is the one thing this \
+         screen's promise cannot survive"
+    );
+    assert!(
+        applied.reopened_proposals.is_empty(),
+        "a save of the unchanged list reopened {:?} — `replace_all`'s differential update is \
+         what stops this, and a real library is where a delete-and-reinsert would show",
+        applied.reopened_proposals
+    );
+
+    // Twice, because the second is the one that would catch a save whose own
+    // answer changed what a following save sees — ids minted, ordinals
+    // rewritten, or an accepted proposal orphaned by the first pass.
+    let start = std::time::Instant::now();
+    let again = crate::preview::apply(&conn, &rules).expect("saving again");
+    println!("apply    again:     {:?}", start.elapsed());
+    assert!(
+        again.reopened_proposals.is_empty(),
+        "a second save of the unchanged list reopened {:?}",
+        again.reopened_proposals
+    );
+}
+
+/// **A rule that can set nothing near-misses nothing** — the editor's own
+/// "+ Add", which was filling the Matched files tab with the whole library.
+///
+/// `blankRule()` in `web/src/rules.ts` mints a `regex` rule with an empty
+/// pattern and no `set_*` columns, and the screen selects it the moment it is
+/// added. [`crate::rules::fields_settable_by`] returns an **empty set** for
+/// such a rule — nothing to set statically, and no capture names in a pattern
+/// that is the empty string — and `fields_set.iter().all(..)` over an empty
+/// set is vacuously `true`. So every `scan_entry` in the library read as a
+/// near-miss: on a real library the tab opened on 500 rows and a truncation
+/// notice, on the most ordinary gesture the screen has.
+///
+/// A near-miss means "this rule could have set something here and did not".
+/// With nothing settable there is nothing to have missed, which is the
+/// distinction `fields_settable_by`'s own doc comment exists to draw. Found
+/// by C4 PR B's whole-branch review.
+#[test]
+fn a_rule_that_sets_nothing_near_misses_nothing() {
+    let fixture = crate::tests::library_with_two_roots();
+    let conn = fixture.conn();
+    let mut proposed = crate::rules::read(&conn).unwrap().0;
+
+    // The editor's freshly-added rule, exactly as `blankRule()` builds it.
+    proposed.push(crate::rules::Rule {
+        id: 0,
+        ordinal: 9_000,
+        enabled: true,
+        root_id: None,
+        kind: crate::rules::RuleKind::Regex,
+        pattern: String::new(),
+        match_on: crate::rules::MatchOn::Path,
+        set_edition_key: None,
+        set_kind: None,
+        set_language: None,
+        set_series: None,
+        note: None,
+    });
+    let added = proposed.len() - 1;
+
+    let (_impact, rows) = preview_with_rows(&conn, &proposed, Some(added), 500).unwrap();
+
+    assert!(
+        rows.rows.is_empty(),
+        "a rule setting nothing reached {} rows; every one of them is an entry it had nothing          to say about, not one it missed",
+        rows.rows.len()
+    );
+    assert!(!rows.truncated, "and so there is nothing to truncate");
+
+    // The fixture must actually hold entries, or the assertion above passes
+    // for the wrong reason — an empty library near-misses nothing either.
+    let entries: i64 = conn
+        .query_row("SELECT COUNT(*) FROM scan_entry", [], |r| r.get(0))
+        .unwrap();
+    assert!(entries > 0, "the fixture must have entries to have missed");
 }
 
 /// **A measurement, not a check.** C4 §11 marks its "34 ms" as an
@@ -1704,5 +1888,215 @@ fn two_same_ordinal_unsaved_rules_break_their_tie_in_proposed_order() {
         Some("earlier"),
         "and the earlier rule must be the one reported as the disagreement, not the winner: \
          {found:?}"
+    );
+}
+
+// --- Task 2: apply, the committed twin --------------------------------------
+
+/// **A save writes, where a preview does not** — the one difference that
+/// matters, asserted by reading the grouping back off the connection after
+/// `apply` returns rather than by trusting the `Impact` it reported. An
+/// `apply` that rolled back like its twin would answer the identical
+/// `Impact` and leave this assertion red.
+#[test]
+fn apply_commits_what_preview_rolls_back() {
+    let fixture = crate::tests::library_with_two_roots();
+    let conn = fixture.conn();
+    let mut proposed = crate::rules::read(&conn).unwrap().0;
+    proposed.push(crate::tests::a_rule_setting_series("Alpha"));
+
+    let before = grouping(&conn).unwrap();
+    let predicted = preview(&conn, &proposed).unwrap();
+    assert_eq!(
+        grouping(&conn).unwrap(),
+        before,
+        "a preview must leave the library exactly as it found it"
+    );
+
+    let applied = crate::preview::apply(&conn, &proposed).unwrap();
+
+    assert_eq!(
+        applied.impact, predicted,
+        "the save's own impact must equal the preview made from the same list"
+    );
+    assert_ne!(
+        grouping(&conn).unwrap(),
+        before,
+        "the save must have changed the library — this is the whole of what apply adds"
+    );
+    assert_eq!(
+        applied.rules.len(),
+        proposed.len(),
+        "the answer carries the rules as written, so the editor need not re-fetch"
+    );
+    assert!(
+        applied.rules.iter().all(|rule| rule.id != 0),
+        "every rule the save answers carries the real id it was written under, including the \
+         appended one that arrived as id 0: {:?}",
+        applied.rules
+    );
+}
+
+/// **The property `rules::replace_all`'s differential update exists for, and
+/// the one `POST /rules/import` breaks** — spec §4's whole argument for why
+/// this route is not that one. Saving the list unchanged must reopen nothing,
+/// because every kept row keeps its id and `created_rule_id`'s
+/// `ON DELETE SET NULL` never fires.
+#[test]
+fn a_save_of_the_unchanged_list_reopens_nothing() {
+    let (fixture, _base_rules) = crate::tests::library_with_an_accepted_proposal();
+    let conn = fixture.conn();
+    let proposed = crate::rules::read(&conn).unwrap().0;
+
+    let applied = crate::preview::apply(&conn, &proposed).unwrap();
+
+    assert_eq!(
+        applied.reopened_proposals,
+        Vec::<i64>::new(),
+        "an unchanged list keeps every rule id, so nothing orphans a created_rule_id"
+    );
+    assert_eq!(applied.impact.proposals_reopened, 0);
+    let still_accepted: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM proposal WHERE state = 'accepted'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        still_accepted, 1,
+        "the accepted proposal is still answered after a save of the list it wrote"
+    );
+}
+
+/// **I5.** `apply` used to keep only `report.raised` out of the
+/// `DeriveReport` its own `Documents::Reconcile` pass produced — every other
+/// field `hand::reconcile` populates (`repaired_documents`,
+/// `unwritable_documents`, `orphan_documents`, `declined_documents`,
+/// `stale_documents`) was computed and thrown away. This is the only route in
+/// this product that writes under `<root>/.taiyaku/` and, before this,
+/// the only `derive` caller that reported nothing about what happened there:
+/// a save that could not write a hand document answered `200` with a rehome
+/// count and silence.
+///
+/// **The technique is `hand/tests.rs`'s own** —
+/// `a_root_that_cannot_take_the_document_still_arms_the_guard`'s plain file
+/// where the directory belongs, not a read-only permission bit. CI runs as
+/// root, which ignores the write bit, so a `set_readonly` root would let
+/// `create_dir_all` succeed there and this test would pass on a developer's
+/// own machine and nowhere it matters.
+#[test]
+fn apply_reports_a_document_it_could_not_write() {
+    let fixture = crate::tests::library_with_a_kept_document();
+    let conn = fixture.conn();
+    let work_id: i64 = conn
+        .query_row("SELECT id FROM work", [], |r| r.get(0))
+        .expect("the fixture's one work");
+    let path = crate::hand::path_for(&conn, work_id)
+        .expect("resolving the document's address")
+        .expect("a kept root's work has an address");
+
+    // Reopens the gap `hand::reconcile`'s own gap repair exists to close —
+    // the same move `a_preview_leaves_the_library_tree_byte_identical` uses —
+    // then blocks the repair itself: a plain file where the `.taiyaku`
+    // directory belongs makes `create_dir_all` fail with `AlreadyExists` for
+    // any uid.
+    std::fs::remove_file(&path).expect("clearing the settled document");
+    let taiyaku_dir = path.parent().expect("an address always has a directory");
+    std::fs::remove_dir(taiyaku_dir).expect("removing the now-empty .taiyaku directory");
+    std::fs::write(taiyaku_dir, b"not a directory")
+        .expect("planting a file where the directory must go");
+
+    let proposed = crate::rules::read(&conn).unwrap().0;
+    let applied = crate::preview::apply(&conn, &proposed)
+        .expect("a document apply cannot write must not fail the save itself");
+
+    assert_eq!(
+        applied.derive_report.unwritable_documents.len(),
+        1,
+        "the save must report the document it could not write: {:?}",
+        applied.derive_report.unwritable_documents
+    );
+    assert!(
+        applied.derive_report.unwritable_documents[0]
+            .contains(&taiyaku_dir.to_string_lossy().to_string()),
+        "the reason should name the path that could not be written: {:?}",
+        applied.derive_report.unwritable_documents
+    );
+}
+
+/// **I6.** `apply` used to read the rule table back and compile an `Engine`
+/// from it — `crate::rules::read`, fallible on a genuine SQLite fault —
+/// between `derive_with` returning and its own `tx.commit()`. Any failure in
+/// that window rolled the database back while the real files
+/// `derive_with`'s own `Documents::Reconcile` pass had already written or
+/// renamed stayed exactly where it left them: a hand document renamed to a
+/// `content_key` the database never adopted, reported as an orphan on the
+/// next pass — this module's own doc comment on `apply` states the argument
+/// in full, and it is the reason [`preview_with_rows`] runs `Skip` instead.
+///
+/// **Watches the SQL `apply` actually sends rather than forcing the read to
+/// fail** — the same `trace_v2` technique
+/// `taiyaku-library/src/tests.rs`'s own
+/// `committing_the_real_transaction_branch_sends_no_savepoint_statement`
+/// uses, because there is no seam that fails `crate::rules::read`'s query
+/// without also breaking the very commit it is meant to sit on one side of.
+/// What this test can pin instead is the fact that actually decides which
+/// side of `COMMIT` such a failure would land on: the order `apply` itself
+/// sends statements to SQLite in.
+#[test]
+fn apply_reads_the_rule_table_back_after_committing_not_before() {
+    use std::sync::Mutex;
+
+    static RULE_APPLY_STATEMENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    fn watch(event: rusqlite::trace::TraceEvent<'_>) {
+        if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event {
+            RULE_APPLY_STATEMENTS.lock().unwrap().push(sql.to_string());
+        }
+    }
+
+    let fixture = crate::tests::library_with_two_roots();
+    let conn = fixture.conn();
+    let mut proposed = crate::rules::read(&conn).unwrap().0;
+    proposed.push(crate::tests::a_rule_setting_series("Alpha"));
+
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+        Some(watch),
+    );
+    crate::preview::apply(&conn, &proposed).expect("the save must not fail");
+    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+
+    let statements = RULE_APPLY_STATEMENTS.lock().unwrap();
+    let commit_at = statements
+        .iter()
+        .position(|sql| sql.trim().eq_ignore_ascii_case("COMMIT"))
+        .expect("apply commits its transaction");
+    // **Every occurrence, not just the first.** `derive_with`'s own
+    // `Engine::load` reads the rule table too — the identical SQL text
+    // `rules::read` sends — so the *first* occurrence is always the one
+    // before the commit, whichever code this test runs against. What
+    // distinguishes the fix is `apply`'s own read, the last one issued,
+    // moving to the far side of `COMMIT`.
+    let rule_read_positions: Vec<usize> = statements
+        .iter()
+        .enumerate()
+        .filter(|(_, sql)| sql.contains("FROM rule ORDER BY ordinal, id"))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        rule_read_positions.len() >= 2,
+        "expected at least two reads of the rule table — `derive_with`'s own `Engine::load` \
+         before the commit, and `apply`'s own read of the table it just saved after it: {:?}",
+        *statements
+    );
+    let last_rule_read_at = *rule_read_positions.last().expect("checked non-empty above");
+
+    assert!(
+        last_rule_read_at > commit_at,
+        "apply's own read of the rule table back must come after the commit, not before it — a \
+         failure in that read must never be able to roll the database back while the files \
+         `derive_with` already wrote or renamed stay exactly where it put them: {:?}",
+        *statements
     );
 }

@@ -1901,10 +1901,17 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         // are, and for the identical reason stated on each of theirs: a
         // route that writes cannot afford to land in `open_routes`.
         // `config_api::tests::every_config_api_route_refuses_a_reader`
-        // drives all six for a 403.
+        // drives all seven for a 403.
         (
             "/api/library/rules",
-            get(crate::config_api::list_rules).post(crate::config_api::create_rule),
+            get(crate::config_api::list_rules)
+                .post(crate::config_api::create_rule)
+                // Spec C4 §4.2's save route, PR B. A method on this same
+                // path, so nothing else in this file's route *lists* moves —
+                // and `config_api::tests::every_config_api_route_refuses_a_
+                // reader` grows a line, because a per-path list cannot see a
+                // method arrive.
+                .put(crate::config_api::save_rules),
         ),
         (
             "/api/library/rules/{id}",
@@ -2356,7 +2363,10 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
                           not about what any one account may see: a rule is \
                           a property of the scan, and an administrator's \
                           roots are not filtered — the same standing \
-                          /api/library/proposals holds above",
+                          /api/library/proposals holds above — PR B's PUT \
+                          derives over every work in the library from the \
+                          proposed set, which is as far from a per-account \
+                          scope as a write in this product gets",
             },
         ),
         (

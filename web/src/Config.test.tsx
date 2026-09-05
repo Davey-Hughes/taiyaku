@@ -3,11 +3,22 @@ import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from './config'
 import { Config } from './Config'
+import * as curation from './curation'
+import * as rulesApi from './rules'
 import { mount } from './testing/mount'
 
 vi.mock('./config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./config')>()),
   listRoots: vi.fn(),
+}))
+vi.mock('./rules', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./rules')>()),
+  listRules: vi.fn(),
+  previewRules: vi.fn(),
+}))
+vi.mock('./curation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./curation')>()),
+  listProposals: vi.fn(),
 }))
 
 async function at(entry: string) {
@@ -30,6 +41,25 @@ async function at(entry: string) {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(config.listRoots).mockResolvedValue({ roots: [] })
+  vi.mocked(rulesApi.listRules).mockResolvedValue({ rules: [], complaints: [] })
+  vi.mocked(rulesApi.previewRules).mockResolvedValue({
+    impact: {
+      series_before: 0,
+      series_after: 0,
+      series_merged: 0,
+      works_rehomed: 0,
+      works_orphaned: 0,
+      proposals_reopened: 0,
+      proposals_raised: 0,
+    },
+    rows: [],
+    rows_truncated: false,
+    conflicts: [],
+  })
+  vi.mocked(curation.listProposals).mockResolvedValue({
+    proposals: [],
+    counts: {},
+  })
 })
 
 describe('Config', () => {
@@ -42,10 +72,11 @@ describe('Config', () => {
 
   it('sends a bare /config to the leading tab', async () => {
     // The index redirect reads `TABS[0]`, so it cannot drift from the sub-nav
-    // — one list, read twice. The build design's §2.
+    // — one list, read twice. The build design's §2. PR B prepends the rule
+    // editor, which is what makes it the landing screen.
     const host = await at('/config')
-    expect(host.textContent).toContain('Roots')
-    expect(host.querySelector('.roots')).not.toBeNull()
+    expect(host.textContent).toContain('Rules')
+    expect(host.querySelector('.rule-editor')).not.toBeNull()
   })
 
   it('marks the current tab', async () => {
@@ -71,6 +102,6 @@ describe('Config', () => {
     // drew the sub-nav over a blank pane with nothing said. PR B adding that
     // tab is exactly when somebody types it.
     const host = await at('/config/nonsense')
-    expect(host.querySelector('.roots')).not.toBeNull()
+    expect(host.querySelector('.rule-editor')).not.toBeNull()
   })
 })

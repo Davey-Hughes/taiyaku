@@ -31,9 +31,11 @@ const root = (over: Partial<Root> = {}): Root => ({
 describe('TABS', () => {
   it('leads with the tab the index redirect lands on', () => {
     // `Config.tsx` sends `/config` to `TABS[0].path`. A tab list whose first
-    // entry is not a real route is a redirect into nothing.
+    // entry is not a real route is a redirect into nothing. PR B prepends the
+    // rule editor, which is what makes the flagship the landing screen — the
+    // build design's §2 records that as the one intended move of this list.
     expect(TABS.length).toBeGreaterThan(0)
-    expect(TABS[0].path).toBe('roots')
+    expect(TABS[0].path).toBe('rules')
   })
 
   it('gives every tab a distinct path', () => {

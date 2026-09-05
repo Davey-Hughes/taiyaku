@@ -403,8 +403,23 @@ impl Library {
         // The cost is that a read-only `unchecked_transaction` would also take
         // the write lock; there is none, and one would be the wrong shape here
         // anyway — `Library` hands out one connection behind a `Mutex`, and
-        // `working`'s second connection is used by exactly one long job at a
-        // time.
+        // every caller of [`Self::working`] is expected to run at most one
+        // long job against it at a time.
+        //
+        // **A contract on the caller, not a guarantee this type provides —
+        // whole-branch review, I4.** Every call to `working` opens an
+        // independent connection with no memory of any other, so nothing
+        // here stops two long jobs running at once; a C4 branch shipped with
+        // nothing above this module enforcing the one-at-a-time premise
+        // either, and a save's single `BEGIN IMMEDIATE` landed between two of
+        // a scan's own per-work transactions — replacing the rule table and
+        // re-deriving the whole library while the scan's already-compiled
+        // `Engine` was still mid-pass under the rules that transaction just
+        // replaced. `taiyaku-serve`'s `ServeState::library_job` is what makes
+        // the premise true today: a lock a scan's derive and a save's
+        // `preview::apply` both take before ever calling `working`, so the
+        // two genuinely run one at a time rather than merely being assumed
+        // to.
         conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
         require_fts5(conn)
     }

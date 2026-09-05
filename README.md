@@ -215,9 +215,9 @@ taiyaku library proposals --dismiss 4
 ```
 
 **The rules and the roots are also reachable over HTTP now**, admin-only, under
-`/api/library/rules` and `/api/library/roots`. Two of those routes do something
-the CLI cannot: `POST /api/library/rules/preview` answers *what a proposed rule
-list would do to the whole library* — series merged, works re-homed, works
+`/api/library/rules` and `/api/library/roots`. Three of those routes do
+something the CLI cannot: `POST /api/library/rules/preview` answers *what a
+proposed rule list would do to the whole library* — series merged, works re-homed, works
 orphaned, proposals raised, which files each rule matched and which it missed —
 by running the real derivation against it and rolling back, so nothing is
 written; and `POST /api/library/roots/{id}/scan` starts a scan in the server
@@ -227,6 +227,16 @@ takes them, if the caller asks first: `DELETE .../roots/{id}?dry_run=true` runs
 the identical count and rolls back, so a client can render it before sending
 the plain `DELETE` that actually removes anything; sent without `?dry_run=true`,
 a `DELETE` reports those same counts as it takes them, in one step.
+
+`PUT /api/library/rules` is the third, and it is the first thing in this
+product that *applies* a rule. Every other rules route wrote the rule table
+and returned, so an edit changed the rules and nothing else until the next
+scan; this one replaces the set and re-derives the library in a single
+transaction, then reports what it actually did — against what the preview
+predicted — and which accepted proposals it reopened. It is not the same as
+`POST .../rules/import`, which mints fresh ids by design and so reopens every
+accepted proposal whose rule it replaces: that is right for a rule document
+carried in from another library and wrong for a save.
 
 **The roots screen is built**, at `/config/roots` — an admin-only settings area
 beside the library, where a root is added, edited, scanned and removed from the
@@ -240,8 +250,23 @@ and the derivation, every field, with what it *could not* do listed before what
 it did, and an empty list drawn as `0` rather than left out — so "nothing was
 unreadable this time" cannot be mistaken for "this version does not say".
 
-The rule editor, user administration and backup are the two UI PRs after it;
-their routes are already here.
+**The rule editor is built too**, at `/config/rules` — the screen the whole
+preview mechanism exists for, and the settings area's landing tab. An ordered
+list on the left, the rule being edited and its preview on the right. Nothing
+is written until Save, and the button says what saving will do — *apply to 71
+works* — from a preview that is never stale, because the preview re-runs on
+every gesture that changes the answer and on none that do not: a field commits
+on blur or Enter and never while you type, since deriving the library to
+answer a question about a half-typed regex costs a third of a second to get a
+wrong answer. Four tabs read that preview: the impact, the files the selected
+rule matched *and the ones it only just missed*, which of the seven fields each
+rule decided, and any two rules that would decide one field differently — the
+last carrying its count on the tab strip, so a conflict is never hidden behind
+a tab nobody clicked. A rule an accepted proposal wrote is marked, and deleting
+it says which proposal that reopens before it does anything.
+
+User administration and backup are the one UI PR after this; their routes are
+already here.
 
 To read in the browser, build the WebAssembly binding first, then run the reader
 against `serve --db`. The browser opens on a **library** now, not a single work —

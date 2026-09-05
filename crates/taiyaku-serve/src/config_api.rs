@@ -115,11 +115,11 @@ use crate::{ServeState, auth::Principal};
 /// rule has no use for thousands of identical rows in one response.
 const MATCHED_FILES_LIMIT: usize = 500;
 
-/// [`preview_rules`]'s cap on the `rules` array itself — the term
-/// [`preview::conflicts`] is quadratic in, per this module's own doc comment
-/// on what `preview_rules` costs and why 281 ms is only half the story.
-/// `axum`'s 2 MB body default was, until this constant existed, the only
-/// bound on that array at all.
+/// Both [`preview_rules`]'s and [`save_rules`]'s cap on the `rules` array
+/// itself — the term [`preview::conflicts`] is quadratic in, per this
+/// module's own doc comment on what `preview_rules` costs and why 281 ms is
+/// only half the story. `axum`'s 2 MB body default was, until this constant
+/// existed, the only bound on that array at all.
 ///
 /// **200 is chosen, not measured** — nothing in spec C4 sets a ceiling, and
 /// the seeded default rule set is four rules, fifty times smaller than this.
@@ -155,6 +155,11 @@ enum NoAnswer {
     Unusable(String),
     /// A store failure, which is a 500 rather than anything a caller can fix.
     Failed(String),
+    /// A scan or another save already holds [`crate::ServeState::library_job`]
+    /// — 409, [`save_rules`]'s own whole-branch review, I4. The same spirit as
+    /// [`start_scan`]'s own `409` for a second scan of one root: naming why is
+    /// cheaper than a caller discovering it by watching the clock.
+    Busy(String),
 }
 
 impl IntoResponse for NoAnswer {
@@ -165,6 +170,7 @@ impl IntoResponse for NoAnswer {
             }
             Self::Unusable(why) => (StatusCode::BAD_REQUEST, why).into_response(),
             Self::Failed(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+            Self::Busy(why) => (StatusCode::CONFLICT, why).into_response(),
         }
     }
 }
@@ -193,6 +199,33 @@ fn root_exists(conn: &rusqlite::Connection, id: i64) -> Result<bool, String> {
         .optional()
         .map(|found| found.is_some())
         .map_err(|e| format!("checking whether root {id} exists: {e}"))
+}
+
+/// [`root_exists`], asked once per `root_id` a proposed rule list names —
+/// whole-branch review, M2.
+///
+/// **[`create_rule`] and [`patch_rule`] already refuse a stale or removed
+/// root this way for one rule at a time; [`preview_rules`] and [`save_rules`]
+/// propose a whole list at once**, and neither called [`root_exists`] at
+/// all until now — a rule scoped to a root deleted since answered with
+/// [`crate::rules::replace_all`]'s own `FOREIGN KEY constraint failed`,
+/// surfaced verbatim, the exact fold [`root_exists`]'s own doc comment spends
+/// a paragraph refusing. Shared rather than duplicated into both routes'
+/// `spawn_blocking` closures, for the reason [`read_proposed_rules`] is
+/// shared: two copies of the same loop are two places to forget the check
+/// the next time a third route proposes a rule list.
+fn check_proposed_roots(
+    conn: &rusqlite::Connection,
+    proposed: &[rules::Rule],
+) -> Result<(), NoAnswer> {
+    for rule in proposed {
+        if let Some(root_id) = rule.root_id
+            && !root_exists(conn, root_id).map_err(NoAnswer::Failed)?
+        {
+            return Err(NoAnswer::Unusable(format!("there is no root {root_id}")));
+        }
+    }
+    Ok(())
 }
 
 /// The one complaint [`rules::Engine::compile`] would raise for a single rule
@@ -342,8 +375,8 @@ fn optional_text(body: &serde_json::Value, field: &str) -> Result<Option<String>
     }
 }
 
-/// A rule, as [`preview_rules`] reads each element of the `rules` array it
-/// was sent.
+/// A rule, as [`read_proposed_rules`] reads each element of the `rules` array
+/// [`preview_rules`] or [`save_rules`] was sent.
 ///
 /// **`id` defaults to `0` rather than being required.** That is
 /// `taiyaku_library::rules::Rule`'s own sentinel for "not saved yet" — an
@@ -374,6 +407,45 @@ fn rule_from_json(body: &serde_json::Value) -> Result<rules::Rule, String> {
         set_series: optional_text(body, "set_series")?,
         note: optional_text(body, "note")?,
     })
+}
+
+/// The `rules` array both [`preview_rules`] and [`save_rules`] read off their
+/// body, mapped through [`rule_from_json`] and bounded by
+/// [`MAX_PROPOSED_RULES`] the identical way.
+///
+/// **Extracted rather than left as the near-verbatim block each route had.**
+/// The design's own requirement is that a save be "symmetric with
+/// `POST /rules/preview` down to the body key, the `MAX_PROPOSED_RULES`
+/// bound and the `rule_from_json` reader — the same list previews and saves,
+/// so the client cannot send one shape to one and another to the other." Two
+/// independently-editable copies of this block can only keep that promise by
+/// staying in step by hand, which is exactly the kind of promise a codebase
+/// breaks the first time one copy is touched and the other is not; one
+/// function reading both `rules` arrays makes the symmetry structural
+/// instead — there is no second copy left to drift.
+///
+/// `noun` is the same shared idiom [`required_str`]/[`patch_bool`]/
+/// [`patch_nullable_text`] already take — `"preview"` from [`preview_rules`],
+/// `"save"` from [`save_rules`] — naming which route's own wording the
+/// missing-array message carries.
+fn read_proposed_rules(body: &serde_json::Value, noun: &str) -> Result<Vec<rules::Rule>, NoAnswer> {
+    let Some(raw_rules) = body.get("rules").and_then(serde_json::Value::as_array) else {
+        return Err(NoAnswer::Unusable(format!(
+            "the {noun} body must carry a `rules` array"
+        )));
+    };
+    let proposed: Vec<rules::Rule> = raw_rules
+        .iter()
+        .map(rule_from_json)
+        .collect::<Result<_, _>>()
+        .map_err(NoAnswer::Unusable)?;
+    if proposed.len() > MAX_PROPOSED_RULES {
+        return Err(NoAnswer::Unusable(format!(
+            "the proposed list holds {} rules, over this route's {MAX_PROPOSED_RULES}-rule limit",
+            proposed.len()
+        )));
+    }
+    Ok(proposed)
 }
 
 /// A new rule, as [`create_rule`]'s body is read. The counterpart of
@@ -805,6 +877,10 @@ pub(crate) async fn delete_rule(
 /// [`import_rules`]'s own doc comment states for `rules::import_json` — this
 /// function has no `evaluable`-shaped split either, and answering `500` for
 /// a caller's stale state is the exact fold this module otherwise refuses.
+///
+/// **[`check_proposed_roots`] refuses, `400`, a rule scoped to a root that no
+/// longer exists — whole-branch review, M2.** Shared with [`save_rules`];
+/// see that function's own call to it.
 pub(crate) async fn preview_rules(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -815,21 +891,10 @@ pub(crate) async fn preview_rules(
         return refusal;
     }
 
-    let Some(raw_rules) = body.get("rules").and_then(serde_json::Value::as_array) else {
-        return NoAnswer::Unusable("the preview body must carry a `rules` array".to_string())
-            .into_response();
-    };
-    let proposed: Vec<rules::Rule> = match raw_rules.iter().map(rule_from_json).collect() {
+    let proposed = match read_proposed_rules(&body, "preview") {
         Ok(proposed) => proposed,
-        Err(why) => return NoAnswer::Unusable(why).into_response(),
+        Err(no_answer) => return no_answer.into_response(),
     };
-    if proposed.len() > MAX_PROPOSED_RULES {
-        return NoAnswer::Unusable(format!(
-            "the proposed list holds {} rules, over this route's {MAX_PROPOSED_RULES}-rule limit",
-            proposed.len()
-        ))
-        .into_response();
-    }
     let selected: Option<usize> = match body.get("selected") {
         None | Some(serde_json::Value::Null) => None,
         Some(value) => match value.as_u64().and_then(|n| usize::try_from(n).ok()) {
@@ -854,6 +919,7 @@ pub(crate) async fn preview_rules(
 
     let preview = tokio::task::spawn_blocking(move || {
         let working = state.library.working().map_err(NoAnswer::Failed)?;
+        check_proposed_roots(&working, &proposed)?;
         let (impact, rows) =
             preview::preview_with_rows(&working, &proposed, selected, MATCHED_FILES_LIMIT)
                 .map_err(NoAnswer::Unusable)?;
@@ -871,6 +937,117 @@ pub(crate) async fn preview_rules(
         Ok(Ok(body)) => Json(body).into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
         Err(why) => panicked("previewing the proposed rule list", &why),
+    }
+}
+
+/// `PUT /api/library/rules` — replace the whole rule set with the `rules` the
+/// request carries **and derive over the library**, committed.
+///
+/// **The first route in this product that applies a rule.** Every other rules
+/// route writes the `rule` table and returns — [`patch_rule`]'s own doc
+/// comment says so in as many words — so a person editing rules through this
+/// screen changed the rule table and nothing else until somebody scanned.
+/// Spec C4 §1's Save button states "apply to 71 works"; this is what makes
+/// that sentence true. See the build design's §4.
+///
+/// **`PUT`, not `POST`**, because the body is the complete desired state of a
+/// collection that already has a URL, which is what `PUT` means.
+/// [`import_rules`] stays what it is — a *document* import that mints fresh
+/// ids by design, for a document from another library that has none of this
+/// one's, and which therefore reopens every accepted proposal whose rule it
+/// replaces. That is correct for a foreign document and wrong for a save,
+/// which is the whole reason these are two routes.
+///
+/// **Symmetric with [`preview_rules`] down to the body key**, the
+/// [`MAX_PROPOSED_RULES`] bound and the [`rule_from_json`] reader — the same
+/// list previews and saves, so the client cannot send one shape to one and
+/// another to the other. It takes no `selected`: rows are a property of which
+/// rule is open in the editor, and a save has no such thing.
+///
+/// **On [`taiyaku_library::Library::working`], not `conn`** — this module's
+/// own doc comment states why in full, and a save is the longest job here:
+/// one full derivation over the whole library under a single write lock,
+/// measured at a median 281 ms on 130 series and 1858 works.
+///
+/// **Every [`taiyaku_library::preview::apply`] failure is answered 400**, the
+/// same admitted fold [`preview_rules`] states for the identical reason:
+/// `rules::replace_all` refuses a nonzero id naming no row this table holds,
+/// which is exactly what a stale editor sends — a rule the caller's own copy
+/// still shows, deleted by someone else since — and there is no
+/// `evaluable`-shaped split to tell that apart from a genuine store fault.
+///
+/// **[`check_proposed_roots`] refuses, `400`, a rule scoped to a root that no
+/// longer exists — whole-branch review, M2.** [`create_rule`]/[`patch_rule`]
+/// already made this same check for one rule; a save proposes a whole list,
+/// so a stale `root_id` anywhere in it is caught here rather than reaching
+/// `rules::replace_all`'s own foreign key and surfacing SQLite's raw text.
+///
+/// **Refuses, `409`, rather than racing a scan — whole-branch review, I4.**
+/// [`crate::ServeState::library_job`] is the lock this route and a scan's own
+/// derive both take before ever calling [`taiyaku_library::Library::working`]
+/// — see that field's own doc comment for the interleaving it closes: a
+/// save's single transaction landing between two of a scan's own, replacing
+/// the rule table and re-deriving the whole library out from under a scan
+/// still mid-pass under the rules that transaction just replaced. This route
+/// never waits for the lock — it tries once and answers at once if a scan or
+/// another save already holds it, the same shape [`start_scan`]'s own
+/// registry already answers for a second scan of one root.
+///
+/// **Carries the whole derive report — whole-branch review, I5.** Every other
+/// `derive` caller in this product reports what happened under
+/// `<root>/.taiyaku/`; this route used to report nothing, so a save that
+/// could not write a hand document answered `200` with a rehome count and
+/// silence. `"derive"` is [`derive_report_json`] — the identical renderer
+/// [`finished_scan_json`] already uses — over
+/// [`taiyaku_library::preview::Applied::derive_report`].
+pub(crate) async fn save_rules(
+    State(state): State<Arc<ServeState>>,
+    Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
+        return refusal;
+    }
+
+    let proposed = match read_proposed_rules(&body, "save") {
+        Ok(proposed) => proposed,
+        Err(no_answer) => return no_answer.into_response(),
+    };
+
+    let saved = tokio::task::spawn_blocking(move || {
+        // Tried, never waited for: a scan can run for as long as a real
+        // filesystem walk takes, and blocking this request behind it would
+        // leave a caller with no way to tell "still applying" apart from
+        // "hung." See `ServeState::library_job`'s own doc comment.
+        let _job = match state.library_job.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(NoAnswer::Busy(
+                    "a scan or another save is currently running against this library; wait \
+                     for it to finish and save again"
+                        .to_string(),
+                ));
+            }
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        let working = state.library.working().map_err(NoAnswer::Failed)?;
+        check_proposed_roots(&working, &proposed)?;
+        let applied = preview::apply(&working, &proposed).map_err(NoAnswer::Unusable)?;
+        Ok::<_, NoAnswer>(serde_json::json!({
+            "impact": impact_json(&applied.impact),
+            "rules": applied.rules.iter().map(rule_json).collect::<Vec<_>>(),
+            "reopened_proposals": applied.reopened_proposals,
+            "complaints": applied.complaints,
+            "derive": derive_report_json(&applied.derive_report),
+        }))
+    })
+    .await;
+
+    match saved {
+        Ok(Ok(body)) => Json(body).into_response(),
+        Ok(Err(no_answer)) => no_answer.into_response(),
+        Err(why) => panicked("saving the proposed rule list", &why),
     }
 }
 
@@ -959,7 +1136,7 @@ pub(crate) async fn import_rules(
 /// read it with `text.contains(...)`. This task's own brief asks for a
 /// caller's mistake to come back "with the store's own message in an
 /// `error` field" instead — a JSON body — and widening `NoAnswer` to do that
-/// would rewrite the wire format of six routes this task never touches for
+/// would rewrite the wire format of seven routes this task never touches for
 /// the sake of four it does. A second, small type is cheaper than that, and
 /// leaves task 8's answer alone.
 #[derive(Debug)]
@@ -1299,10 +1476,25 @@ fn finished_scan_json(
 /// partly derived (whole-branch review, Important 1). See
 /// [`scan::mark_derive_failed`] for why the correction lives in
 /// `taiyaku-library` rather than here.
+///
+/// **Takes [`crate::ServeState::library_job`] for its whole length, walk and
+/// derive both — whole-branch review, I4.** See that field's own doc comment
+/// for the interleaving this closes: without it, a save's own transaction
+/// could replace the rule table and re-derive the whole library while this
+/// function's own `derive::derive` was still mid-pass under an `Engine`
+/// compiled from the rules that transaction just replaced. Unlike
+/// [`save_rules`]'s own `try_lock`, this blocks: a scan already runs
+/// unwatched in the background, so there is nobody here to answer a refusal
+/// to, and [`scan_status`] is where a caller learns how long the wait plus
+/// the scan together took either way.
 fn run_scan_inner(
     library: &taiyaku_library::Library,
     root: &scan::Root,
+    job: &std::sync::Mutex<()>,
 ) -> Result<serde_json::Value, String> {
+    let _job = job
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let working = library.working()?;
     let scan_report = scan::scan_root(&working, root)?;
     let derive_report = match derive::derive(&working) {
@@ -1338,9 +1530,13 @@ fn run_scan_inner(
 /// that root's scan slot down with it — the caught payload is rendered as
 /// this report's `error`, `done` is still set `true`, and the root can be
 /// scanned again on the next `POST`.
-fn run_scan(library: &taiyaku_library::Library, root: &scan::Root) -> serde_json::Value {
+fn run_scan(
+    library: &taiyaku_library::Library,
+    root: &scan::Root,
+    job: &std::sync::Mutex<()>,
+) -> serde_json::Value {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_scan_inner(library, root)
+        run_scan_inner(library, root, job)
     }));
     match outcome {
         Ok(Ok(report)) => report,
@@ -1472,7 +1668,7 @@ pub(crate) async fn start_scan(
 
     let spawn_state = Arc::clone(&state);
     tokio::task::spawn_blocking(move || {
-        let report = run_scan(&spawn_state.library, &root);
+        let report = run_scan(&spawn_state.library, &root, &spawn_state.library_job);
         let mut scans = spawn_state
             .scans
             .lock()

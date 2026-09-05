@@ -285,6 +285,7 @@ fn a_resolved_root_keeps_covers_and_thumbs_as_siblings() {
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     };
     let covers = state.cache_dir.clone();
     let thumbs = state.thumb_cache_dir();

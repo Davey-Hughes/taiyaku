@@ -143,6 +143,46 @@ pub struct ServeState {
     /// finished report back. A crate this size gains nothing from a
     /// lock-free map for that shape of access.
     pub scans: Arc<std::sync::Mutex<std::collections::HashMap<i64, ScanProgress>>>,
+    /// The lock a scan's derive and a save's `preview::apply` both take
+    /// before calling [`taiyaku_library::Library::working`] — whole-branch
+    /// review, I4.
+    ///
+    /// **Why a second lock rather than teaching [`Self::scans`] the
+    /// question.** `scans` answers "is *this root* already scanning," keyed
+    /// by root id, which a save is not; turning it into "is *anything*
+    /// running" by scanning its values under the same `Mutex` would still
+    /// leave a gap between that check and the moment a save actually calls
+    /// `working` for a scan to start in — a check-then-act race, not a fix.
+    /// A `Mutex<()>` closes that gap by construction: acquiring it and
+    /// running the long job are the same critical section.
+    ///
+    /// **What this closes.** `config_api::run_scan_inner`'s own scan derives
+    /// one work at a time, holding no lock of its own across the whole pass —
+    /// the right grain for a scan, so a half-finished one still leaves most
+    /// of the library current. `taiyaku_library::preview::apply` instead
+    /// holds one `BEGIN IMMEDIATE` across a whole-library derive so a save
+    /// lands atomically. Nothing serialised those two against each other
+    /// before this: a save's single transaction could land between two of a
+    /// scan's own, replacing the rule table and re-deriving the whole library
+    /// while the scan's already-compiled `Engine` was still mid-pass under
+    /// the rules that transaction just replaced — the scan then wrote its
+    /// remaining works back under rules the `rule` table no longer named.
+    ///
+    /// **Acquired and released entirely inside `spawn_blocking`, never held
+    /// across an `.await`.** Both a save and a scan already run on a
+    /// blocking-pool thread with nothing else to yield to for the whole
+    /// call, so holding a `std::sync::Mutex` for the length of a derivation
+    /// costs that one thread, not the async runtime.
+    ///
+    /// **A save does not wait on this lock; it answers `409` at once if a
+    /// scan or another save already holds it** — `config_api::NoAnswer::Busy`,
+    /// the same spirit as the `409` [`Self::scans`] already answers for a
+    /// second scan of one root: a caller learns why its save did not land
+    /// rather than the request simply taking as long as whatever else is
+    /// running. A scan blocks instead: it already runs unwatched in the
+    /// background, and `scan_status` is where a caller learns how long that
+    /// took either way.
+    pub library_job: Arc<std::sync::Mutex<()>>,
 }
 
 /// One root's scan, as the registry in [`ServeState::scans`] tracks it —
@@ -423,6 +463,7 @@ pub async fn serve(
         log,
         auth,
         scans: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        library_job: Arc::new(std::sync::Mutex::new(())),
     });
 
     // §4's other half: expired sessions are deleted lazily on lookup, and swept

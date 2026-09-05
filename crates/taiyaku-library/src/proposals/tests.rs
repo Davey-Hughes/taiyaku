@@ -4357,3 +4357,43 @@ fn evidence_performs_exactly_one_sweep() {
         "one expanded row, one sweep for both sides and the rule beside them",
     );
 }
+
+/// [`crate::preview::Applied::reopened_proposals`] answers *which* proposals a
+/// save put back in front of someone, not merely how many — the same shape
+/// [`crate::rules::Deleted::reopened_proposals`] and `rules::import_json`
+/// already answer, so all three routes report one key one way.
+///
+/// **Ascending, and that is `States`' own `BTreeMap` ordering rather than a
+/// sort this function performs.** Asserted here because a later change to
+/// `States`' type would silently make the order arbitrary, and a list of ids
+/// whose order drifts between requests reads as a different answer.
+#[test]
+fn reopened_ids_names_every_proposal_a_derivation_put_back() {
+    let before: crate::proposals::States = [
+        (7, "accepted".to_string()),
+        (3, "accepted".to_string()),
+        (5, "accepted".to_string()),
+        (9, "open".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let after: crate::proposals::States = [
+        (7, "open".to_string()),
+        (3, "open".to_string()),
+        (5, "accepted".to_string()),
+        (9, "open".to_string()),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(
+        crate::proposals::reopened_ids(&before, &after),
+        vec![3, 7],
+        "only the two that went accepted -> open, ascending; 5 never moved and 9 was open already"
+    );
+    assert_eq!(
+        crate::proposals::reopened(&before, &after),
+        2,
+        "the count is the list's own length, not a second definition of what reopened means"
+    );
+}

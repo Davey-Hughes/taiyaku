@@ -1210,6 +1210,7 @@ fn router_with_material_under_a_withheld_root(dir: &str) -> (axum::Router, Arc<S
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     (build_router(state.clone()), state)
 }
@@ -1305,6 +1306,7 @@ fn two_works_one_withheld(dir: &str) -> (axum::Router, Arc<ServeState>) {
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     (build_router(state.clone()), state)
 }
@@ -1435,6 +1437,7 @@ fn one_work_two_editions_split_across_roots(dir: &str) -> (axum::Router, Arc<Ser
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     (build_router(state.clone()), state)
 }
@@ -1556,6 +1559,7 @@ fn one_work_three_editions_hub_withheld(dir: &str) -> (axum::Router, Arc<ServeSt
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     (build_router(state.clone()), state)
 }

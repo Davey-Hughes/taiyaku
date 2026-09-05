@@ -126,7 +126,7 @@ export async function getJson<T>(path: string): Promise<T> {
  */
 export async function sendJson<T>(
   path: string,
-  method: 'POST' | 'DELETE' | 'PATCH',
+  method: 'POST' | 'PUT' | 'DELETE' | 'PATCH',
   body?: unknown,
 ): Promise<T | undefined> {
   const res = await request(path, {

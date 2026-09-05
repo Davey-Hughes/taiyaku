@@ -463,22 +463,41 @@ pub(crate) fn states(conn: &Connection) -> Result<States, String> {
     Ok(out)
 }
 
-/// How many proposals were `accepted` in `before` and are `open` in `after`
+/// Which proposals were `accepted` in `before` and are `open` in `after`
 /// — [`crate::preview::Impact::proposals_reopened`]'s one definition, shared
 /// by [`crate::preview::preview`] and by `preview/tests.rs` for the same
 /// reason `preview`'s own private `diff` function is: two ways of computing
 /// what "reopened" means is how they come to disagree.
 ///
+/// **Ascending, and that is [`States`]' own `BTreeMap` ordering rather than a
+/// sort performed here** — the same contract
+/// [`reopen_orphaned_accepts`] states for its own return, and the shape
+/// [`crate::rules::Deleted::reopened_proposals`] already answers. Retyping
+/// `States` as a `HashMap` would make this order arbitrary without changing a
+/// line of this function, so the ordering is asserted in
+/// `proposals/tests.rs` rather than left to the type.
+///
 /// **`pub(crate)`, not `pub`**, for the same reason [`states`] just above is
 /// — its only callers are inside this crate.
-#[must_use]
-pub(crate) fn reopened(before: &States, after: &States) -> usize {
+pub(crate) fn reopened_ids(before: &States, after: &States) -> Vec<i64> {
     after
         .iter()
         .filter(|(id, state)| {
             state.as_str() == STATE_OPEN && before.get(*id).is_some_and(|was| was == STATE_ACCEPTED)
         })
-        .count()
+        .map(|(id, _state)| *id)
+        .collect()
+}
+
+/// How many proposals [`reopened_ids`] named — the count
+/// [`crate::preview::Impact::proposals_reopened`] carries.
+///
+/// **Its `.len()`, not a second filter.** Two ways of arriving at one number
+/// is how they come to disagree — the argument [`crate::preview::Impact`]'s
+/// own `proposals_raised` field makes for carrying the derive report's count
+/// through rather than recounting it here.
+pub(crate) fn reopened(before: &States, after: &States) -> usize {
+    reopened_ids(before, after).len()
 }
 
 /// Every open proposal scoring at least `min_score`, highest score first.

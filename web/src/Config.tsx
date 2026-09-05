@@ -25,10 +25,12 @@
  */
 import { Navigate, NavLink, Route, Routes } from 'react-router'
 import { TABS } from './config'
+import { RuleEditor } from './RuleEditor'
 import { Roots } from './Roots'
 
 /** Which component draws each tab. Keyed by `Tab.path`. */
 const SCREENS: Record<string, React.ReactNode> = {
+  rules: <RuleEditor />,
   roots: <Roots />,
 }
 

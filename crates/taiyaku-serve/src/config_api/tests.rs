@@ -126,6 +126,12 @@ async fn every_config_api_route_refuses_a_reader() {
     for (method, path) in [
         (Method::GET, "/api/library/rules"),
         (Method::POST, "/api/library/rules"),
+        // Spec C4 §4.2's save route. A *method* on a path already in this
+        // list, which is exactly why it needs its own line: `guarded_routes`
+        // and `auth/tests.rs`'s `expected` array are keyed by path and
+        // neither of them moves when a method is added, so this loop is the
+        // only thing that would notice a save route shipping ungated.
+        (Method::PUT, "/api/library/rules"),
         (Method::PATCH, "/api/library/rules/1"),
         (Method::DELETE, "/api/library/rules/1"),
         (Method::POST, "/api/library/rules/preview"),
@@ -345,6 +351,7 @@ async fn the_import_route_reports_the_proposals_it_reopens() {
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
 
     // The rule set exactly as it stood before the accept above — importing
@@ -1259,6 +1266,7 @@ fn state_with_many_scan_entries(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     (state, fixture)
 }
@@ -1343,6 +1351,7 @@ async fn the_preview_route_does_not_wait_on_the_shared_connections_mutex() {
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
 
     // A background thread takes `Library::conn`'s mutex and holds it — for up
@@ -2174,7 +2183,8 @@ async fn a_derive_failure_after_a_successful_scan_corrects_last_scan_status() {
         root
     };
 
-    let outcome = crate::config_api::run_scan_inner(&library, &root);
+    let job = std::sync::Mutex::new(());
+    let outcome = crate::config_api::run_scan_inner(&library, &root, &job);
     assert!(
         outcome.is_err(),
         "the derive must actually fail, or this test proves nothing: {outcome:?}"
@@ -2267,6 +2277,7 @@ fn state_with_a_root_that_cannot_write_its_document(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     (state, fixture)
 }
@@ -2350,6 +2361,7 @@ fn state_with_a_root_that_folds_a_hand_documented_work(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     (state, fixture)
 }
@@ -2627,7 +2639,8 @@ async fn a_scan_does_not_wait_on_the_shared_connections_mutex() {
     held_rx.recv().expect("the holder thread took the mutex");
 
     let started = std::time::Instant::now();
-    let result = crate::config_api::run_scan_inner(&library, &root);
+    let job = std::sync::Mutex::new(());
+    let result = crate::config_api::run_scan_inner(&library, &root, &job);
     let elapsed = started.elapsed();
 
     release_tx.send(()).ok();
@@ -3031,5 +3044,295 @@ async fn a_roots_closure_that_panicked_is_a_500_naming_what_was_running() {
             .as_str()
             .is_some_and(|error| error.contains("listing roots panicked")),
         "it names what was running, not just that something did: {body}"
+    );
+}
+
+/// **I4.** `save_rules` and a scan's own derive both take
+/// [`crate::ServeState::library_job`] before running — see that field's own
+/// doc comment for the interleaving nothing serialised before this. A
+/// background thread holding the lock stands in for a scan actually holding
+/// it, which is simpler and deterministic: this is a test of `save_rules`'s
+/// own refusal, not of `scan_root`/`derive::derive`'s timing.
+#[tokio::test]
+async fn a_save_refuses_while_the_library_job_lock_is_held() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let listed = get_json(&router, "/api/library/rules").await;
+    let existing = listed["rules"].as_array().cloned().expect("rules array");
+
+    let job = std::sync::Arc::clone(&state.library_job);
+    let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let guard = job
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        held_tx.send(()).expect("the test is still waiting");
+        let _ = release_rx.recv_timeout(std::time::Duration::from_secs(5));
+        drop(guard);
+    });
+    held_rx.recv().expect("the holder thread took the lock");
+
+    let response = send_json(
+        &router,
+        Method::PUT,
+        "/api/library/rules",
+        &serde_json::json!({ "rules": existing }),
+    )
+    .await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+
+    release_tx.send(()).ok();
+    holder.join().expect("the holder thread did not panic");
+
+    assert_eq!(status, StatusCode::CONFLICT, "{text}");
+    assert!(
+        text.to_lowercase().contains("scan"),
+        "the refusal must say why, the same spirit as the existing 409 for a second scan of \
+         one root: {text}"
+    );
+
+    // Once the lock is free, the identical request must succeed — proving
+    // the refusal above was about contention, not a route that always fails.
+    let response = send_json(
+        &router,
+        Method::PUT,
+        "/api/library/rules",
+        &serde_json::json!({ "rules": existing }),
+    )
+    .await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+}
+
+/// **The route derives**, asserted by reading the grouping back after the
+/// save rather than by trusting the `impact` it reported. Spec C4 §7: a
+/// handler that wrote the rule table and returned would answer the identical
+/// body and leave this red — which is precisely the defect this route exists
+/// to close, since every other rules route does exactly that.
+#[tokio::test]
+async fn saving_rules_derives_over_the_library() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let listed = get_json(&router, "/api/library/rules").await;
+    let existing = listed["rules"].as_array().cloned().expect("rules array");
+
+    let mut proposed = existing.clone();
+    proposed.push(retitle_rule(&existing));
+
+    let before = {
+        let conn = state.library.conn();
+        taiyaku_library::preview::grouping(&conn).expect("the grouping before the save")
+    };
+
+    let response = send_json(
+        &router,
+        Method::PUT,
+        "/api/library/rules",
+        &serde_json::json!({ "rules": proposed }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_str(&test_support::body_string(response).await).expect("a JSON body");
+
+    let after = {
+        let conn = state.library.conn();
+        taiyaku_library::preview::grouping(&conn).expect("the grouping after the save")
+    };
+    assert_ne!(
+        before, after,
+        "the save must have re-derived the library, not merely written the rule table: {json}"
+    );
+    assert!(
+        json["impact"]["works_rehomed"].as_u64().unwrap() > 0,
+        "{json}"
+    );
+    assert_eq!(
+        json["rules"].as_array().unwrap().len(),
+        proposed.len(),
+        "the answer carries the rules as written: {json}"
+    );
+    assert!(
+        json["reopened_proposals"].is_array(),
+        "the same key delete_rule and import_rules answer: {json}"
+    );
+    assert!(json["complaints"].is_array(), "{json}");
+}
+
+/// **The save and the preview it was made from must agree** — the screen
+/// compares them and draws a warning when they differ, and this is the check
+/// that the comparison is between two things that can agree at all.
+#[tokio::test]
+async fn a_save_answers_the_impact_its_own_preview_predicted() {
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let listed = get_json(&router, "/api/library/rules").await;
+    let existing = listed["rules"].as_array().cloned().expect("rules array");
+
+    let mut proposed = existing.clone();
+    proposed.push(retitle_rule(&existing));
+
+    let previewed = preview_json(&router, &serde_json::json!({ "rules": proposed })).await;
+    let response = send_json(
+        &router,
+        Method::PUT,
+        "/api/library/rules",
+        &serde_json::json!({ "rules": proposed }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the save must succeed before its body can be compared to the preview's"
+    );
+    let saved: serde_json::Value =
+        serde_json::from_str(&test_support::body_string(response).await).expect("a JSON body");
+
+    assert_eq!(
+        previewed["impact"], saved["impact"],
+        "the preview and the save it was made from disagree, which is the one thing this \
+         screen's promise cannot survive"
+    );
+}
+
+/// A stale editor — a rule the caller's own copy still shows, deleted by
+/// somebody else since — is the caller's mistake, not a store fault.
+/// [`crate::config_api::preview_rules`]'s own doc comment states the same fold
+/// for the same reason.
+#[tokio::test]
+async fn saving_a_rule_that_no_longer_exists_is_the_callers_mistake() {
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let listed = get_json(&router, "/api/library/rules").await;
+    let mut proposed = listed["rules"].as_array().cloned().expect("rules array");
+    proposed[0]["id"] = serde_json::json!(9_999);
+
+    let response = send_json(
+        &router,
+        Method::PUT,
+        "/api/library/rules",
+        &serde_json::json!({ "rules": proposed }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let text = test_support::body_string(response).await;
+    assert!(
+        text.contains("9999") || text.contains("no such rule"),
+        "the refusal must name the rule that is not there: {text}"
+    );
+}
+
+/// [`creating_a_rule_against_an_unknown_root_is_a_400_naming_it`]'s twin for
+/// `PUT /api/library/rules` — whole-branch review, M2. `save_rules` never
+/// called `root_exists` for a proposed rule's `root_id`, unlike `create_rule`
+/// and `patch_rule`; with `foreign_keys = ON`, a rule scoped to a root that
+/// does not exist reached `rules::replace_all`'s own foreign key and
+/// answered with SQLite's raw `FOREIGN KEY constraint failed` text.
+#[tokio::test]
+async fn saving_a_rule_scoped_to_an_unknown_root_is_a_400_naming_it() {
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let listed = get_json(&router, "/api/library/rules").await;
+    let existing = listed["rules"].as_array().cloned().expect("rules array");
+
+    let mut proposed = existing.clone();
+    let mut stray = retitle_rule(&existing);
+    stray["root_id"] = serde_json::json!(999_999);
+    proposed.push(stray);
+
+    let response = send_json(
+        &router,
+        Method::PUT,
+        "/api/library/rules",
+        &serde_json::json!({ "rules": proposed }),
+    )
+    .await;
+
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(
+        text.contains("999999"),
+        "the 400 must name the missing root: {text}"
+    );
+    assert!(
+        !text.to_lowercase().contains("foreign key"),
+        "a caller's own mistake must not surface SQLite's own text: {text}"
+    );
+}
+
+/// The same bound the preview route holds, spelled the same way — spec §4.2:
+/// the same list previews and saves, so the client cannot send one shape to
+/// one and another to the other.
+#[tokio::test]
+async fn saving_more_rules_than_the_limit_is_refused() {
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let listed = get_json(&router, "/api/library/rules").await;
+    let existing = listed["rules"].as_array().cloned().expect("rules array");
+    let one = existing.first().cloned().expect("at least one seeded rule");
+
+    let mut proposed = Vec::new();
+    for _ in 0..=201 {
+        let mut copy = one.clone();
+        copy["id"] = serde_json::json!(0);
+        proposed.push(copy);
+    }
+
+    let response = send_json(
+        &router,
+        Method::PUT,
+        "/api/library/rules",
+        &serde_json::json!({ "rules": proposed }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let text = test_support::body_string(response).await;
+    assert!(text.contains("200"), "the refusal names the limit: {text}");
+}
+
+/// A body with no `rules` array at all.
+#[tokio::test]
+async fn saving_without_a_rules_array_is_refused() {
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let response = send_json(
+        &router,
+        Method::PUT,
+        "/api/library/rules",
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let text = test_support::body_string(response).await;
+    assert!(
+        text.contains("save body"),
+        "the refusal must name the route the caller actually reached: {text}"
+    );
+}
+
+/// **The `noun` [`crate::config_api::read_proposed_rules`] takes is load-bearing,
+/// and only a pair of tests can see it.** That function is shared by the
+/// preview and the save precisely so the two cannot drift about what a
+/// proposed list is — but the one thing it must *not* share is which route
+/// the caller reached, and a single-route test passes just as well against a
+/// reader that hard-codes either noun or ignores the parameter outright.
+/// This is the other half of the pair; the save's own is directly above.
+///
+/// Added after a review found the extraction had replaced two hand-written
+/// messages with one parameterised one and no test asserted either's text.
+#[tokio::test]
+async fn previewing_without_a_rules_array_is_refused_naming_the_preview() {
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/api/library/rules/preview",
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let text = test_support::body_string(response).await;
+    assert!(
+        text.contains("preview body"),
+        "the refusal must name the route the caller actually reached: {text}"
     );
 }

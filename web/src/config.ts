@@ -33,7 +33,10 @@ export interface Tab {
  * leads this list, and PR B prepending the rule editor is what makes the
  * flagship the landing screen rather than a separate decision somewhere else.
  */
-export const TABS: Tab[] = [{ path: 'roots', label: 'Roots' }]
+export const TABS: Tab[] = [
+  { path: 'rules', label: 'Rules' },
+  { path: 'roots', label: 'Roots' },
+]
 
 /** One `root` row, as `GET /api/library/roots` sends it. */
 export interface Root {

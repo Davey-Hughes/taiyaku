@@ -134,6 +134,7 @@ pub(crate) fn router_over_a_file_backed_library()
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -172,6 +173,7 @@ pub(crate) fn state(dir: &str) -> ServeState {
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     }
 }
 
@@ -358,6 +360,7 @@ pub(crate) fn state_with_real_pages() -> (std::sync::Arc<ServeState>, Fixture) {
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     (state, fixture)
 }
@@ -506,6 +509,7 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state)
@@ -570,6 +574,7 @@ pub(crate) fn router_over_a_library_with_two_editions()
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, work_id, fixture)
@@ -657,6 +662,7 @@ pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<Serv
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     // `authenticating`, because `library()` seeds a claimed account and every
     // route is behind the guard since spec A2 — the same wrapper
@@ -815,6 +821,7 @@ fn router_over_a_scanned_tree(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -955,6 +962,7 @@ pub(crate) fn state_with_two_scanned_roots() -> (axum::Router, std::sync::Arc<Se
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -1075,6 +1083,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -1155,6 +1164,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture, root_a)
@@ -1256,6 +1266,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        library_job: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture, root_a)
