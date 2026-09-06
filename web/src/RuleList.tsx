@@ -20,6 +20,15 @@
  * `created_rule_id`, which needs no server change (the build design's §5.5).
  * A rule no proposal wrote deletes without a dialog — nothing is written until
  * Save, so an ordinary delete is undoable by not saving.
+ *
+ * **Every gesture here is frozen while a save is in flight — O96.** Not
+ * politeness: `RuleEditor::save` replaces the whole list with `answer.rules`
+ * when it lands, so a reorder, a toggle, an add or a delete committed during
+ * the ~281 ms it takes is applied, previewed, and then silently thrown away.
+ * The freeze is also what keeps the positional identity above *true across a
+ * save* — `answer.rules` is aligned to the list that was sent, and a list that
+ * moved under the request has no correspondence to it at all. `RuleForm` is
+ * deliberately **not** frozen; that half is in `RuleEditor.tsx`'s own comment.
  */
 import { useEffect, useState } from 'react'
 import type { Proposal } from './curation'
@@ -30,6 +39,7 @@ export function RuleList({
   selected,
   proposals,
   overrideCount,
+  saving,
   onSelect,
   onToggle,
   onReorder,
@@ -40,6 +50,13 @@ export function RuleList({
   selected: number | undefined
   proposals: Proposal[]
   overrideCount: number
+  /**
+   * A save is in flight, and every gesture here is frozen for the duration —
+   * O96, and this file's own doc comment on why. **`saving`, never `busy`:**
+   * a preview in flight is superseded by `RuleEditor`'s `latest` sequence
+   * guard and is never lost, so a gesture during one is correct and cheap.
+   */
+  saving: boolean
   onSelect: (index: number) => void
   onToggle: (index: number) => void
   onReorder: (from: number, to: number) => void
@@ -101,7 +118,7 @@ export function RuleList({
             key={index}
             className="rule-row"
             aria-current={selected === index ? 'true' : undefined}
-            draggable
+            draggable={!saving}
             onDragStart={(e) => {
               e.dataTransfer.setData('text/plain', String(index))
               e.dataTransfer.effectAllowed = 'move'
@@ -109,6 +126,14 @@ export function RuleList({
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => {
               e.preventDefault()
+              // O96, and **both guards are needed**: `draggable={!saving}`
+              // stops a drag *starting* during a save, and this stops the
+              // drop of one that was already in progress when the save
+              // began — flipping the attribute under a live drag cancels
+              // nothing. A reorder committed here is overwritten by
+              // `answer.rules` when the save lands, with nothing on screen
+              // saying so, which is the whole of O96.
+              if (saving) return
               // **The empty payload is rejected before `Number` sees it, and
               // that is the whole of this line.** `DataTransfer.getData`
               // answers `''` for a key nothing ever set — a file dragged in
@@ -129,12 +154,14 @@ export function RuleList({
             <input
               type="checkbox"
               checked={rule.enabled}
+              disabled={saving}
               aria-label={`rule ${index + 1} enabled`}
               onChange={() => onToggle(index)}
             />
             <button
               type="button"
               className="select"
+              disabled={saving}
               onClick={() => onSelect(index)}
             >
               {(rule.set_series ??
@@ -161,6 +188,7 @@ export function RuleList({
             <button
               type="button"
               className="delete"
+              disabled={saving}
               aria-label={`delete rule ${index + 1}`}
               onClick={() => askOrDelete(index)}
             >
@@ -180,6 +208,7 @@ export function RuleList({
           <button
             type="button"
             className="confirm-delete"
+            disabled={saving}
             onClick={() => {
               onDelete(confirming.index)
               setConfirming(undefined)
@@ -209,7 +238,12 @@ export function RuleList({
         </p>
       )}
 
-      <button type="button" className="add-rule" onClick={onAdd}>
+      <button
+        type="button"
+        className="add-rule"
+        disabled={saving}
+        onClick={onAdd}
+      >
         + Add
       </button>
     </div>

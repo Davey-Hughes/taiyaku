@@ -526,6 +526,246 @@ describe('RuleEditor', () => {
     })
   })
 
+  /**
+   * Holds a save open and returns its resolvers. The list this fixture loads
+   * has an **unsaved second rule** (`id: 0`) that comes back with a minted
+   * `id: 7` — a fixture returning the ids it sent cannot fail against the
+   * merge taking the edit's own id, which is the defect that reopens
+   * proposals for nothing.
+   */
+  const heldSave = async () => {
+    vi.mocked(rulesApi.listRules).mockResolvedValue({
+      rules: [rule(), rule({ id: 0, ordinal: 2, pattern: 'Colour/.*' })],
+      complaints: [],
+    })
+    let resolveSave: (value: Saved) => void = () => {}
+    let rejectSave: (why: unknown) => void = () => {}
+    vi.mocked(rulesApi.saveRules).mockImplementation(
+      () =>
+        new Promise((resolve, reject) => {
+          resolveSave = resolve
+          rejectSave = reject
+        }),
+    )
+    const host = await render()
+    // Open rule 2 — the unsaved one — so the form's commit lands on it.
+    await act(async () => {
+      host.querySelectorAll<HTMLElement>('.rule-row button.select')[1].click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const button = host.querySelector<HTMLButtonElement>('button.save')
+    if (!button) throw new Error('no save button')
+    await act(async () => {
+      button.click()
+      await Promise.resolve()
+    })
+    // Loud rather than silent: the button is disabled on `busy`, and a click
+    // that never fired would otherwise make every test below assert the
+    // no-save-in-flight path while claiming to assert the other one.
+    expect(rulesApi.saveRules).toHaveBeenCalledTimes(1)
+    // `land` and `fail` read the `let`s above at call time, which is after
+    // the executor assigned them.
+    return {
+      host,
+      land: (answer: Saved) => resolveSave(answer),
+      fail: (why: unknown) => rejectSave(why),
+    }
+  }
+
+  /** The answer `heldSave`'s list comes back as: rule 2's `id: 0` is minted 7. */
+  const heldSaveAnswer = () =>
+    savedBody({
+      rules: [rule(), rule({ id: 7, ordinal: 2, pattern: 'Colour/.*' })],
+    })
+
+  /** Blur a changed `pattern` field, which is what commits it. */
+  const editPatternAndBlur = async (host: HTMLElement, value: string) => {
+    const pattern = host.querySelector<HTMLInputElement>(
+      'input[name="pattern"]',
+    ) as HTMLInputElement
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set
+    act(() => {
+      setter?.call(pattern, value)
+      pattern.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      pattern.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+      await Promise.resolve()
+    })
+  }
+
+  it('keeps a form commit made while a save was in flight, on the server’s own row — O96', async () => {
+    const { host, land } = await heldSave()
+    await editPatternAndBlur(host, 'Edited/.*')
+
+    await act(async () => {
+      land(heldSaveAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // The edit survived the save that would have overwritten it...
+    expect(
+      host.querySelector<HTMLInputElement>('input[name="pattern"]')?.value,
+    ).toBe('Edited/.*')
+    // ...and the *server's* minted id came with it. Asserted through the next
+    // preview's own argument, which is the list `rules` now holds — reading it
+    // off the DOM is impossible, and that is precisely why taking the edit's
+    // `id: 0` forward would ship unnoticed.
+    const sent = vi.mocked(rulesApi.previewRules).mock.calls.at(-1)?.[0]
+    expect(sent?.[1]).toMatchObject({ id: 7, pattern: 'Edited/.*', ordinal: 2 })
+  })
+
+  it('says the held edit is applied and unsaved, and the notice outlives the follow-up preview — O96', async () => {
+    const { host, land } = await heldSave()
+    await editPatternAndBlur(host, 'Edited/.*')
+
+    await act(async () => {
+      land(heldSaveAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // The follow-up preview has landed by now, and its success path calls
+    // `setFailure(undefined)` — a notice stored in `failure` would be gone.
+    const notice = host.querySelector('.held-edit')
+    expect(notice?.textContent).toContain('rule 2')
+    expect(notice?.textContent).toContain('unsaved')
+    // The save's own report is still standing next to it, which is the whole
+    // reason the notice exists rather than `commit`'s `setSaved(undefined)`.
+    expect(host.querySelector('.saved')).not.toBeNull()
+  })
+
+  it('replaces the list with the server’s answer when nothing was edited during the save — O96', async () => {
+    // The unchanged path. Without this, "keep the edit" could be implemented
+    // as "never replace the list" and every other test here would still pass,
+    // while unsaved rules kept `id: 0` forever.
+    const { host, land } = await heldSave()
+    await act(async () => {
+      land(heldSaveAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.held-edit')).toBeNull()
+    const sent = vi.mocked(rulesApi.previewRules).mock.calls.at(-1)?.[0]
+    expect(sent?.[1]).toMatchObject({ id: 7, pattern: 'Colour/.*' })
+  })
+
+  it('disables Import while a save is in flight — O96, whole-branch review C1', async () => {
+    // Import is the one discarded gesture whose loss outlives the session:
+    // `POST .../rules/import` writes the rule table, so an import landing
+    // inside the save window leaves the store holding the imported rules and
+    // the screen showing the list `setRules` puts back over them.
+    //
+    // `async`/`await` throughout, never `act(...).then(...)`: a rejection
+    // chained off `act`'s thenable is swallowed, and this test passed while
+    // printing its own AssertionError until that was fixed.
+    const { host, land } = await heldSave()
+    const importButton = host.querySelector<HTMLButtonElement>('.import button')
+    expect(importButton?.textContent).toBe('Import')
+    expect(importButton?.disabled).toBe(true)
+
+    await act(async () => {
+      land(heldSaveAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // The control, without which the assertion above passes against a button
+    // that is disabled always.
+    expect(
+      host.querySelector<HTMLButtonElement>('.import button')?.disabled,
+    ).toBe(false)
+  })
+
+  it('refuses an import that arrives while a save is in flight, and writes nothing — O96, whole-branch review C1', async () => {
+    // The *second* guard, for the reason the drag has two: a file picker
+    // opened before the save started is still open and still delivers. The
+    // assertion that matters is `importRules` never being called — the button
+    // being disabled cannot cover this, and refusing after the write would be
+    // no refusal at all.
+    const { host, land } = await heldSave()
+    vi.mocked(rulesApi.importRules).mockClear()
+
+    const fileInput = host.querySelector<HTMLInputElement>('input[type="file"]')
+    if (!fileInput) throw new Error('no file input')
+    const file = new File(['[]'], 'rules.json', { type: 'application/json' })
+    Object.defineProperty(fileInput, 'files', {
+      value: [file],
+      configurable: true,
+    })
+    await act(async () => {
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(rulesApi.importRules).not.toHaveBeenCalled()
+    const notice = [...host.querySelectorAll('.import p')]
+      .map((n) => n.textContent ?? '')
+      .find((t) => t.includes('not applied'))
+    expect(notice).toContain('nothing was imported')
+
+    await act(async () => {
+      land(heldSaveAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  })
+
+  it('clears the held-edit notice when a later gesture changes the list — O96, whole-branch review M3', async () => {
+    // The notice names a rule by *position* and claims it is the list on
+    // screen. Delete a lower-indexed rule and both halves are false. This is
+    // `RuleList`'s own M3 for its confirm dialog, for the same reason.
+    const { host, land } = await heldSave()
+    await editPatternAndBlur(host, 'Edited/.*')
+    await act(async () => {
+      land(heldSaveAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.held-edit')).not.toBeNull()
+
+    await act(async () => {
+      host.querySelectorAll<HTMLElement>('.rule-row button.delete')[0].click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.held-edit')).toBeNull()
+  })
+
+  it('keeps a held edit when the save fails, and states the failure where the preview cannot wipe it — O96', async () => {
+    // Spec §5.1. `commit` fires a preview whose success path clears
+    // `failure`, so the save's own reason goes to the notice slot on this
+    // path — otherwise the 409 a scan causes flashes and vanishes.
+    const { host, fail } = await heldSave()
+    await editPatternAndBlur(host, 'Edited/.*')
+
+    await act(async () => {
+      fail(new Error('a scan is currently running'))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(
+      host.querySelector<HTMLInputElement>('input[name="pattern"]')?.value,
+    ).toBe('Edited/.*')
+    const notice = host.querySelector('.held-edit')
+    expect(notice?.textContent).toContain('a scan is currently running')
+    expect(notice?.textContent).toContain('rule 2')
+  })
+
   it('disables Save while a preview is in flight, and re-enables it once the preview lands', async () => {
     // Save compares the answer it gets back against `predicted.current` — the
     // *last landed* preview's impact. A click that lands while a preview is

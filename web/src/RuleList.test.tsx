@@ -62,6 +62,7 @@ function render(props: Partial<Parameters<typeof RuleList>[0]> = {}) {
         selected={0}
         proposals={[]}
         overrideCount={0}
+        saving={false}
         {...handlers}
         {...props}
       />,
@@ -249,6 +250,7 @@ describe('RuleList', () => {
           selected={undefined}
           proposals={proposals}
           overrideCount={0}
+          saving={false}
           onSelect={vi.fn()}
           onToggle={vi.fn()}
           onReorder={vi.fn()}
@@ -272,6 +274,7 @@ describe('RuleList', () => {
         ]}
         selected={undefined}
         proposals={proposals}
+        saving={false}
         overrideCount={0}
         onSelect={vi.fn()}
         onToggle={vi.fn()}
@@ -314,6 +317,116 @@ describe('RuleList', () => {
       host.querySelector<HTMLElement>('button.add-rule')?.click()
     })
     expect(onAdd).toHaveBeenCalled()
+  })
+
+  /**
+   * The five gestures O96 freezes, read **per element**. A whole-page check
+   * cannot tell "the row is frozen" from "the page rendered nothing".
+   */
+  const gestures = (host: HTMLElement) => ({
+    draggable: host
+      .querySelector<HTMLElement>('.rule-row')
+      ?.getAttribute('draggable'),
+    toggle: host.querySelector<HTMLInputElement>(
+      '.rule-row input[type="checkbox"]',
+    )?.disabled,
+    select: host.querySelector<HTMLButtonElement>('.rule-row button.select')
+      ?.disabled,
+    remove: host.querySelector<HTMLButtonElement>('.rule-row button.delete')
+      ?.disabled,
+    add: host.querySelector<HTMLButtonElement>('button.add-rule')?.disabled,
+  })
+
+  it('freezes every gesture while a save is in flight, and only while one is — O96', () => {
+    // Both halves, because the positive alone passes against a component that
+    // hardcodes `disabled` — which is the mechanical mis-fix this item warns
+    // about, and it would freeze the list permanently.
+    expect(gestures(render({ saving: true }).host)).toEqual({
+      draggable: 'false',
+      toggle: true,
+      select: true,
+      remove: true,
+      add: true,
+    })
+    expect(gestures(render({ saving: false }).host)).toEqual({
+      draggable: 'true',
+      toggle: false,
+      select: false,
+      remove: false,
+      add: false,
+    })
+  })
+
+  it('freezes the confirm dialog’s Delete and reopen too — O96, whole-branch review M2', () => {
+    // The dialog can only be open across a save if it was opened before the
+    // save started, because the Delete that opens it is itself disabled — so
+    // the *same* `rules` array is passed to both renders, or `RuleList`'s own
+    // M3 effect closes the dialog and this asserts nothing.
+    //
+    // It is the one frozen control the `gestures` helper above cannot reach,
+    // and the one that reopens a proposal.
+    const rules = [
+      rule({ id: 1 }),
+      rule({ id: 2, ordinal: 2, pattern: 'Colour/.*' }),
+    ]
+    const proposals = [proposal({ id: 42, created_rule_id: 2 })]
+    const props = {
+      rules,
+      selected: undefined,
+      proposals,
+      overrideCount: 0,
+      onSelect: vi.fn(),
+      onToggle: vi.fn(),
+      onReorder: vi.fn(),
+      onAdd: vi.fn(),
+      onDelete: vi.fn(),
+    }
+    let host: HTMLElement | undefined
+    act(() => {
+      host = mount(<RuleList {...props} saving={false} />)
+    })
+    if (!host) throw new Error('nothing mounted')
+    act(() => {
+      host?.querySelectorAll<HTMLElement>('.rule-row button.delete')[1].click()
+    })
+    expect(host.querySelector('[role="alertdialog"]')).not.toBeNull()
+    expect(
+      host.querySelector<HTMLButtonElement>('button.confirm-delete')?.disabled,
+    ).toBe(false)
+
+    act(() => {
+      rerender(<RuleList {...props} saving={true} />)
+    })
+    expect(host.querySelector('[role="alertdialog"]')).not.toBeNull()
+    expect(
+      host.querySelector<HTMLButtonElement>('button.confirm-delete')?.disabled,
+    ).toBe(true)
+  })
+
+  it('refuses a drop that lands while a save is in flight — O96', () => {
+    // `draggable={!saving}` cannot cancel a drag that was already in progress
+    // when the save started; flipping the attribute under it does nothing to
+    // the drop that ends it. jsdom dispatches both events regardless of the
+    // attribute, which is exactly what lets this assert the **handler's**
+    // guard rather than the attribute's — remove the `if (saving) return`
+    // from `onDrop` and this fails while the test above still passes.
+    const { host, onReorder } = render({ saving: true })
+    const rows = host.querySelectorAll<HTMLElement>('.rule-row')
+    const dt = dataTransfer()
+    act(() => {
+      rows[1].dispatchEvent(
+        Object.assign(new Event('dragstart', { bubbles: true }), {
+          dataTransfer: dt,
+        }),
+      )
+      rows[0].dispatchEvent(
+        Object.assign(new Event('drop', { bubbles: true }), {
+          dataTransfer: dt,
+          preventDefault: () => {},
+        }),
+      )
+    })
+    expect(onReorder).not.toHaveBeenCalled()
   })
 
   it('draws the rule count, and says nothing about cost below the threshold', () => {

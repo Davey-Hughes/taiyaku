@@ -72,6 +72,33 @@
  * current (unpreviewed) list to `apply` — which then disagreed with the
  * stale `predicted.current` and drew the same "something changed the
  * library" warning, again blaming the server for a client-side gap.
+ *
+ * **A save freezes the list and holds the form's commit — O96.** `save`'s
+ * `.then` replaces the whole list with `answer.rules`, so every gesture
+ * committed during the ~281 ms it takes used to be applied, previewed and
+ * silently discarded. `RuleList` is frozen for the duration; `RuleForm` is
+ * deliberately not, because `disabled` on a focused input makes the browser
+ * fire `blur` and this form commits on blur — the mechanical guard would
+ * itself commit the half-typed edit into the window it was meant to close.
+ * So the form stays live and its commit is *held*, then applied on top of
+ * `answer.rules` taking that row's `id` and `ordinal` from the server.
+ * **Import is the third surface and is *refused* rather than frozen or held**
+ * — spec §2.1: it writes the rule table, so a held import has already
+ * happened by the time anything could apply it, and it needs two guards for
+ * the drag's reason (a picker opened before the save still delivers). The
+ * freeze is what makes that merge exact: `answer.rules` is positionally
+ * aligned to the list that was sent, and a list that moved under the request
+ * has no correspondence to it at all. A *failed* save keeps the edit too, and
+ * puts its own reason in `heldNotice` rather than `failure` — spec §5.1.
+ *
+ * **`selected` in `save`'s closure is no longer stale, and that is a property
+ * of the guards rather than of this file.** It used to be: selecting a rule
+ * mid-save left the follow-up preview's `rows` scoped to the rule that *was*
+ * open while the form showed the new one. Nothing can change `selected`
+ * during a save now — `RuleList` is frozen and `PreviewTabs`' two options
+ * have been `disabled={busy || saving}` since O95 — so a `selectedRef` would
+ * hide the invariant rather than state it. A new surface that sets `selected`
+ * without a guard reopens the defect without touching `save`.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
@@ -140,6 +167,14 @@ export function RuleEditor() {
    * the next save.
    */
   const [saveMismatch, setSaveMismatch] = useState<string | undefined>()
+  /**
+   * Set when a `RuleForm` commit arrives while a save is in flight. Its own
+   * slot for the reason `saveMismatch` and `importNotice` each have one: the
+   * follow-up preview clears `failure` when it succeeds, and a notice stored
+   * there is wiped by the very call that follows it. Cleared only by the next
+   * save. Spec §5, and §5.1 for why the *failed*-save reason lands here too.
+   */
+  const [heldNotice, setHeldNotice] = useState<string | undefined>()
   const [saved, setSaved] = useState<Saved | undefined>()
   const [saving, setSaving] = useState(false)
   /** The preview whose impact `saved` is compared against. */
@@ -148,6 +183,23 @@ export function RuleEditor() {
   const latest = useRef(0)
   /** Whether a save is already on its way. A ref, for the reason `Roots.tsx`'s is. */
   const savingNow = useRef(false)
+  /**
+   * A `RuleForm` commit that arrived while a save was in flight — O96.
+   *
+   * The list is frozen for the duration (`RuleList`'s `saving` prop), so
+   * `selected` cannot move under this and at most one rule can be edited.
+   * Held rather than applied, because `save`'s own `.then` replaces the whole
+   * list with `answer.rules`; applied on landing, onto the server's row, so
+   * the minted id survives.
+   *
+   * **The form is not the only surface left live — Import is too, and it is
+   * *refused* rather than held.** An earlier version of this comment claimed
+   * the form was the only one, which was the guard-that-does-not-exist shape
+   * O95's third review pass kept finding. `doImport` cannot be held: it has
+   * already written the rule table by the time anything here could apply it,
+   * so it refuses inside the window and says so.
+   */
+  const held = useRef<{ index: number; rule: Rule } | undefined>(undefined)
   /** The hidden file input the Import button triggers. */
   const fileInput = useRef<HTMLInputElement>(null)
 
@@ -194,6 +246,14 @@ export function RuleEditor() {
     setRules(next)
     setSelected(open)
     setSaved(undefined)
+    // O96: the held-edit notice names a rule by *position* — "your edit to
+    // rule 4" — and says it is the list on screen. Any mutation can make both
+    // halves false: delete rule 2 and rule 4 is a different rule. This is
+    // `RuleList`'s own M3 for its confirm dialog, which closes on every list
+    // change rather than re-deriving where the row went, and for the same
+    // reason. The failed-save path below deliberately sets the notice *after*
+    // calling this, so its own message survives the clear.
+    setHeldNotice(undefined)
     runPreview(next, open)
   }
 
@@ -203,25 +263,56 @@ export function RuleEditor() {
     setSaving(true)
     setFailure(undefined)
     setSaveMismatch(undefined)
+    setHeldNotice(undefined)
     const made = predicted.current
     saveRules(rules)
       .then((answer) => {
         savingNow.current = false
         setSaving(false)
         setSaved(answer)
-        setRules(answer.rules)
         if (made !== undefined && impactChanged(made.impact, answer.impact))
           setSaveMismatch(
             'The save differs from the preview it was made from. Something changed the library ' +
               'between the two — the numbers below are what actually happened.',
           )
+        // O96: a commit the form made while this save was in flight is
+        // applied *on top of* the answer rather than discarded by it.
+        // `answer.rules` is positionally aligned to the list that was sent —
+        // `rules::replace_all` preserves position and mints an id only for a
+        // zero one — and `RuleList` was frozen for the duration, so `index`
+        // still names the same rule. **`id` and `ordinal` come from the
+        // answer** for that reason: carrying the edit's own `id: 0` forward
+        // would mint a *second* row on the next save and orphan
+        // `created_rule_id` on any accepted proposal that wrote the first,
+        // reopening it for nothing — the very reopening `save_rules`' own doc
+        // comment contrasts against `import_rules`.
+        const pending = held.current
+        held.current = undefined
+        const next =
+          pending === undefined
+            ? answer.rules
+            : answer.rules.map((rule, i) =>
+                i === pending.index
+                  ? { ...pending.rule, id: rule.id, ordinal: rule.ordinal }
+                  : rule,
+              )
+        setRules(next)
+        if (pending !== undefined)
+          setHeldNotice(
+            `Your edit to rule ${pending.index + 1} arrived while the save was running, so ` +
+              'it is not in the save reported below — it is applied to the list on screen ' +
+              'and is unsaved. Save again to apply it.',
+          )
         // I1: the button's number has to describe *this* saved list, not the
         // one a save ago — so a fresh preview runs for it here, through the
         // same seq-guarded `runPreview` every other gesture uses, and Save
-        // stays disabled (`busy`) until it lands. `selected` still names the
-        // right rule: a save preserves position, only ids on a freshly
-        // inserted row change.
-        runPreview(answer.rules, selected)
+        // stays disabled (`busy`) until it lands. `selected` is not stale:
+        // O96 froze `RuleList`, and `PreviewTabs`' two options have been
+        // `disabled={busy || saving}` since O95, so no surface can change it
+        // while a save is in flight. That is a property of *every* such
+        // surface being guarded, not of this line — a new unguarded one
+        // reopens the defect without touching `save`.
+        runPreview(next, selected)
         // The list just changed under every accepted proposal's
         // `created_rule_id`, so the badges are re-read rather than assumed.
         acceptedProposals()
@@ -231,7 +322,34 @@ export function RuleEditor() {
       .catch((err: unknown) => {
         savingNow.current = false
         setSaving(false)
-        setFailure(message(err))
+        const pending = held.current
+        held.current = undefined
+        if (pending === undefined) {
+          // Unchanged: nothing follows this, so `failure` survives to be read.
+          setFailure(message(err))
+          return
+        }
+        // O96, spec §5.1: the save wrote nothing, so the list is still the
+        // one that was sent and the held edit applies to it unchanged — no id
+        // came back to adopt. The failure text goes to `heldNotice` rather
+        // than `failure` because `commit` fires a preview whose success path
+        // calls `setFailure(undefined)`, and the reason a person most needs
+        // to read here is the 409 `save_rules` answers while a scan holds
+        // `library_job`.
+        setFailure(undefined)
+        commit(
+          rules.map((rule, i) => (i === pending.index ? pending.rule : rule)),
+          selected,
+        )
+        // **After `commit`, not before** — `commit` clears `heldNotice` (see
+        // its own comment), so setting this first would have it cleared by
+        // the very call meant to apply the edit it describes. Both land in
+        // one React batch and the last write wins.
+        setHeldNotice(
+          `The save failed: ${message(err)}. Your edit to rule ${pending.index + 1} ` +
+            'arrived while it was running — it is applied to the list on screen and is ' +
+            'unsaved.',
+        )
       })
   }
 
@@ -240,6 +358,25 @@ export function RuleEditor() {
     // notice from a previous import cannot outlive this one, whichever way
     // it resolves.
     setImportNotice(undefined)
+    // O96, and **the second of two guards**, for the reason the drag has two:
+    // the Import button is `disabled` while a save is in flight, but a file
+    // picker opened *before* the save started is still open and can still
+    // deliver a file during it. This refuses rather than holds, and that is
+    // forced rather than chosen — `POST .../rules/import` **writes the rule
+    // table**, so by the time a held import could be applied the write has
+    // already happened. Import is the one gesture on this screen whose loss
+    // outlives the session: landing inside the save window would leave the
+    // store holding the imported rules, the screen showing the pre-import
+    // list `setRules` puts back, and this notice saying the import worked —
+    // and the next Save would write the screen's list back over it, reopening
+    // every proposal a second time.
+    if (savingNow.current) {
+      setImportNotice(
+        'A save was still running, so the import was not applied — nothing was ' +
+          'imported and nothing was changed. Try it again now the save has finished.',
+      )
+      return
+    }
     importRules(text)
       .then((answer) => {
         // Every other editor gesture lands in `commit`; this is the shape it
@@ -301,6 +438,11 @@ export function RuleEditor() {
           {saveMismatch}
         </p>
       )}
+      {heldNotice !== undefined && (
+        <p role="alert" className="held-edit">
+          {heldNotice}
+        </p>
+      )}
 
       <div className="editor-panes">
         <RuleList
@@ -308,6 +450,7 @@ export function RuleEditor() {
           selected={selected}
           proposals={proposals}
           overrideCount={preview?.overrides.length ?? 0}
+          saving={saving}
           onSelect={(index) => {
             // M1: the design runs a preview on selecting a *different*
             // rule — `rows` is scoped to `selected`, and changing which is
@@ -363,12 +506,21 @@ export function RuleEditor() {
               key={`${selected}:${rules[selected].id}`}
               rule={rules[selected]}
               roots={roots}
-              onCommit={(edited) =>
+              onCommit={(edited) => {
+                // O96: `RuleForm` is deliberately not frozen — disabling a
+                // focused input makes the browser fire `blur`, and this form
+                // commits on blur, so the mechanical guard would itself
+                // commit the half-typed edit into the very window the item is
+                // about. So the field stays live and the *commit* waits.
+                if (savingNow.current) {
+                  held.current = { index: selected, rule: edited }
+                  return
+                }
                 commit(
                   rules.map((rule, i) => (i === selected ? edited : rule)),
                   selected,
                 )
-              }
+              }}
             />
           ) : (
             <p className="empty">
@@ -446,7 +598,11 @@ export function RuleEditor() {
         </button>
 
         <div className="import">
-          <button type="button" onClick={() => fileInput.current?.click()}>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => fileInput.current?.click()}
+          >
             Import
           </button>
           <p>
