@@ -292,7 +292,37 @@ impl Resolved {
         self.provenance.insert(field, rule_id);
     }
 
+    /// **A non-finite value sets nothing at all**, exactly as a capture that
+    /// does not parse sets nothing.
+    ///
+    /// `str::parse::<f64>()` accepts `nan`, `inf`, `infinity` and overflowing
+    /// literals like `1e999`, so a capture group aimed at a filename and
+    /// slightly too wide really does produce one — `^(?<volume>Nan)` off
+    /// `Nanatsu no Taizai` is the case this was found through, a real series
+    /// title rather than anything contrived. There is no volume or chapter a
+    /// non-finite could mean, and letting one through made three separate
+    /// things wrong downstream, each found by a different review pass of the
+    /// O95 branch: `preview::overrides` reported a chain in which *every*
+    /// rule produced `NaN` as a disagreement with itself, since `NaN != NaN`;
+    /// `config_api::field_value_json` collapsed every non-finite onto the same
+    /// `null` that means "this field is unset", because JSON holds neither;
+    /// and the editor then drew "rule 3 overrides rule 2 on N files" above two
+    /// sides both reading *unset*. One cause, refused once, here.
+    ///
+    /// **Guarded here rather than at `apply_captures`' two call sites**,
+    /// because `RuleKind::BuiltinVolume` and `BuiltinChapter` reach this
+    /// function by a different path and a guard per caller is a guard that
+    /// grows a hole when somebody adds a third.
+    ///
+    /// **Rejected: comparing non-finites as equal in `preview::FieldValue`.**
+    /// That was the first fix written for the `NaN` half and it is wrong for
+    /// the other: `inf` and `NaN` are genuinely *different* resolutions, so
+    /// treating every non-finite pair as one answer would suppress a real
+    /// disagreement to hide a rendering problem.
     fn set_number(&mut self, field: Field, rule_id: i64, value: f64) {
+        if !value.is_finite() {
+            return;
+        }
         match field {
             Field::Volume => self.volume = Some(value),
             Field::Chapter => self.chapter = Some(value),

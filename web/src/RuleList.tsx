@@ -4,7 +4,7 @@
  * **Everything here addresses a rule by its position, never by its id.** Two
  * rules the editor has added and not saved both carry `id: 0` — the store's
  * own sentinel — so an id cannot tell them apart, and `preview::Decided` and
- * `preview::Conflict` hold the same boundary in the store for the same
+ * `preview::Override` hold the same boundary in the store for the same
  * reason. `key` is the index too, which is normally the wrong answer in React
  * and is the right one here: the identity of a row in this list *is* its
  * position, and reordering is the operation the list exists to support.
@@ -29,7 +29,7 @@ export function RuleList({
   rules,
   selected,
   proposals,
-  conflictCount,
+  overrideCount,
   onSelect,
   onToggle,
   onReorder,
@@ -39,7 +39,7 @@ export function RuleList({
   rules: Rule[]
   selected: number | undefined
   proposals: Proposal[]
-  conflictCount: number
+  overrideCount: number
   onSelect: (index: number) => void
   onToggle: (index: number) => void
   onReorder: (from: number, to: number) => void
@@ -195,14 +195,16 @@ export function RuleList({
 
       <p className="rule-count">
         {rules.length} rules
-        {conflictCount > 0 && (
-          <span className="conflict-badge">{conflictCount} conflicts</span>
+        {overrideCount > 0 && (
+          <span className="override-badge">
+            {overrideCount === 1 ? '1 override' : `${overrideCount} overrides`}
+          </span>
         )}
       </p>
       {rules.length > PREVIEW_EXPENSIVE_ABOVE && (
         <p className="cost">
           Past {PREVIEW_EXPENSIVE_ABOVE} rules the preview gets expensive —
-          conflict detection compares every pair, so the cost rises faster than
+          override detection compares every pair, so the cost rises faster than
           the list does.
         </p>
       )}

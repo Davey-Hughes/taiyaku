@@ -35,7 +35,7 @@ export const MATCH_ONS = ['path', 'name', 'parent'] as const
 /**
  * Where the editor says a preview is getting expensive.
  *
- * **Forty, and it is a guess.** The conflicts term is quadratic in the number
+ * **Forty, and it is a guess.** The overrides term is quadratic in the number
  * of proposed rules — measured in a debug build on a one-work fixture: 10
  * extra rules 47 ms, 40 → 401 ms, 80 → 1.34 s, 160 → 5.01 s. This is anchored
  * to that curve's knee, not to a measurement of this screen. The preview route
@@ -105,18 +105,35 @@ export interface Row {
 }
 
 /**
- * One field two enabled rules would decide differently.
+ * One field where a later enabled rule replaces an earlier one's different
+ * answer.
+ *
+ * **An observation, not a complaint — O95.** This was `Conflict` until
+ * 2026-09-05, and the word made the editor offer a reorder as the fix: on the
+ * shipped seeded defaults, rule 4 overriding rule 1's series is what folds a
+ * colour edition into its main series, and the reorder is the one thing that
+ * breaks it. The store finds exactly what it always found; only the noun and
+ * what the screen does with it changed.
  *
  * `first` and `wins` are positions in the request's `rules` array, the same
  * boundary `Decided` holds. `others` counts the disagreements `first` does not
- * name, so a chain of three or more reads "and 2 others" rather than implying
- * it is the whole story.
+ * name, so a chain of three or more says so rather than implying it is the
+ * whole story.
+ *
+ * **`first_value` and `wins_value` describe `rel_path` alone**, not all
+ * `examples` of it — which earlier rules ran, and so what they left behind, is
+ * a per-file fact. They are what makes the row a judgement someone can
+ * actually make: naming the two rules says *that* they disagreed, and only the
+ * values say what about. `null` is a value here — a rule clearing what an
+ * earlier one set — and a number for `volume` or `chapter`.
  */
-export interface Conflict {
+export interface Override {
   field: string
   rel_path: string
   first: number
   wins: number
+  first_value: string | number | null
+  wins_value: string | number | null
   others: number
   examples: number
 }
@@ -127,7 +144,7 @@ export interface Preview {
   rows: Row[]
   /** Whether more rows existed than the route's 500-row cap. Drawn, not swallowed. */
   rows_truncated: boolean
-  conflicts: Conflict[]
+  overrides: Override[]
 }
 
 /**

@@ -359,11 +359,18 @@ C4 §1's: an ordered list on the left, the editor and the preview on the right.
 
 ### 5.2 Four tabs, and two of them read one array
 
-C4 §1 names three tabs and describes conflict detection as a warning; the
+C4 §1 names three tabs and describes override detection as a warning; the
 server half's §2.1 calls it a tab. It is a **fourth tab with a count badge
-drawn from every tab**, so a conflict is never hidden behind a tab nobody
+drawn from every tab**, so an override is never hidden behind a tab nobody
 clicked — which is the failure mode a warning-that-is-a-tab has and a warning
 does not.
+
+**It was called Conflicts until O95 closed on 2026-09-05**, and this section
+described that tab; every sentence below is the tab as it now ships. The
+rename and what it changed are in
+[`2026-09-05-o95-overrides-framing-design.md`](2026-09-05-o95-overrides-framing-design.md),
+with the decision recorded beside the narrowing it follows in the server
+half's §2.2.
 
 - **Impact** — `impact`, independent of which rule is selected.
 - **Matched files** — `rows`, as `rel_path`, `before → after`, and
@@ -377,10 +384,15 @@ does not.
   the boundary `config_api`'s own module doc explains — so the cell names the
   rule at that position in the editor, which is the rule the person is looking
   at.
-- **Conflicts** — `conflicts`, each naming the field, the path, the losing and
-  winning rule positions, the count of *other* disagreeing rules, and
-  examples. C4 §1's two offered fixes — reorder, or narrow — are the two
-  actions on the row.
+- **Overrides** — `overrides`, each naming the field, the path, the losing and
+  winning rule positions, **the value each of the two produced for the file
+  the row names**, the count of *other* disagreeing rules, and examples. C4
+  §1's two offered fixes — reorder, or narrow — are on the row as *options*
+  rather than fixes: "Move rule N above rule M", and "Edit rule N", which puts
+  the winning rule in the form, since narrowing means editing a regex and no
+  button can guess how. O95 is why they are options: on the shipped seeded
+  defaults the single fix this row used to offer was the one action that broke
+  what the pairing exists to do.
 
 `rows` is scoped to `selected`, and `MATCHED_FILES_LIMIT` caps it at 500 with
 `rows_truncated` saying so. **The cap is drawn.** A table that quietly stopped
@@ -417,17 +429,17 @@ write lock for 0.3–0.5 s against a concurrent scan, repeatedly, for nothing.
 will do from the live preview's `works_rehomed`. Because the preview is never
 stale, that number is never a lie.
 
-### 5.4 Conflicts, and the count that keeps a chain honest
+### 5.4 Overrides, and the count that keeps a chain honest
 
 Reported where two enabled rules would decide a field **differently** — the
 server half's §2.1 narrowed C4 §1's literal wording, because taken literally it
 flags the shipped seeded defaults, where rule 1 and rule 4 both set `Series` by
 design. A chain of three or more disagreeing rules reports its most recent
-disagreement and the count of the others; the row reads *"and 2 others"* rather
-than implying it is the whole story, and in the ordinary two-rule case the
-count is zero and the editor draws nothing extra.
+disagreement and the count of the others; the row reads *"2 other rules
+disagree here."* rather than implying it is the whole story, and in the
+ordinary two-rule case the count is zero and the editor draws nothing extra.
 
-**The conflicts term is quadratic in the number of proposed rules and the
+**The overrides term is quadratic in the number of proposed rules and the
 preview route bounds the input at 200**, measured in a debug build on a
 one-work fixture: 10 extra rules 47 ms, 40 → 401 ms, 80 → 1.34 s, 160 →
 5.01 s. The editor draws a rule count and, past **forty rules**, says the
@@ -479,7 +491,7 @@ crates/taiyaku-serve/src/config_api.rs     + save_rules
 crates/taiyaku-serve/src/routes.rs         the route, in four lists
 crates/taiyaku-serve/src/config_api/tests.rs
 
-web/src/rules.ts        Rule/Impact/Row/Conflict types, the client, the
+web/src/rules.ts        Rule/Impact/Row/Override types, the client, the
                         root_path↔root_id converter
 web/src/RuleEditor.tsx  the screen: the list, the selection, the preview state
 web/src/RuleList.tsx    the ordered list, drag-reorder, enable
@@ -605,7 +617,7 @@ Every C4 §7 test that falls in the UI half:
 - **Reordering two rules changes the preview**, which is per-field layering
   asserted through the screen rather than assumed by it.
 - **Deleting a proposal-written rule states the proposal it reopened.**
-- **Conflict detection's seeded-defaults case is drawn** — `edition = raw`
+- **Override detection's seeded-defaults case is drawn** — `edition = raw`
   under `Manga (RAW)/` against a later `edition = en-color`, both matching
   `Manga (RAW)/Go-Toubun no Hanayome - Full Color`.
 

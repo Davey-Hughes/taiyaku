@@ -253,6 +253,44 @@ Rejected: leaving it silent, which under-reports with nothing on screen saying
 so; and one row per disagreeing pair, which is N-choose-2 rows for a case that
 is already rare and unchanged for the common two-rule one.
 
+### 2.2 The noun is "override", and the row states rather than corrects
+
+**Decided by the owner 2026-09-05, closing O95, and it does not change a line
+of §2.1's detection.** The narrowing above was made because a literal reading
+of C4 §1 flags the shipped seeded defaults; it does not reach the case the real
+library actually produces, because there the two rules genuinely *disagree* —
+rule 1 reads a series from the directory, rule 4 reads it from the filename,
+and rule 4 winning is **what folds a colour edition into its main series**. The
+screen called that a conflict and offered "Move rule 4 above rule 1", which is
+the one action that breaks the fold.
+
+`Conflict` is `Override` in the store, `conflicts` is `overrides` on the wire,
+and the tab reads **Overrides** — one word end to end, rather than a screen and
+the route it calls using two. `Override` also carries `first_value` and
+`wins_value`, which the wire did not carry before: naming the two rules says
+*that* they disagreed and never what about, and what about is the whole of the
+judgement the tab now asks a person to make. The two values belong to the entry
+`rel_path` names, not to all `examples` of it, for the same per-file reason
+`others` takes a maximum — `preview::Override`'s own doc comment carries it.
+
+The row offers **two options under a neutral lead** rather than one fix:
+reorder, and *Edit rule N*, which puts the winning rule in the form. Narrowing
+means editing a regex and no button can guess how — a "Narrow" button that
+appended a lookahead would write a regex nobody asked for, and on this very
+case the right narrowing is none.
+
+**Rejected: suppressing the seeded pair.** No exemption can be written
+honestly, because "these two rules are a deliberate layering" is intent and
+intent is not a column, and special-casing the seeded ids goes stale the moment
+somebody edits one. **Rejected: a further narrowing of the detector**, for the
+same reason — what separates this pairing from a genuine mistake is not
+anything the two values or the two patterns record.
+
+`docs/superpowers/specs/2026-09-05-o95-overrides-framing-design.md` is this
+decision's own build design, and `docs/status.md`'s O95 carries the
+measurement: 27 of 128 directories on the real library, 21%, carry a filename
+stem differing from their directory.
+
 ## 3. Removing a root is delete-plus-derive, and it reuses §2
 
 C4 §2 calls removal *"the most destructive action in the product"* and requires

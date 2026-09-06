@@ -678,10 +678,20 @@ pub fn apply(conn: &Connection, proposed: &[crate::rules::Rule]) -> Result<Appli
     })
 }
 
-// --- conflict detection ----------------------------------------------------
+// --- override detection ----------------------------------------------------
 
-/// One field where a *later* enabled rule silently overrides an *earlier*
-/// one's genuinely different answer, for at least one `scan_entry`.
+/// One field where a *later* enabled rule replaces an *earlier* one's
+/// genuinely different answer, for at least one `scan_entry`.
+///
+/// **This is an observation, and the screen that draws it says so — O95.**
+/// It was called a `Conflict` until 2026-09-05, and the word was wrong in the
+/// one case the shipped defaults produce on nearly every library: migration
+/// 3's rule 1 reads a series from the directory and its rule 4 reads it from
+/// the filename, rule 4 wins, and **that is what folds a colour edition into
+/// its main series** — rule 4's own seeded note says so. Naming it a conflict
+/// made the editor offer a reorder as the fix, and the reorder is the one
+/// thing that breaks the fold. The detection below is unchanged and correct;
+/// only the noun moved. See `docs/status.md`, O95.
 ///
 /// **C4 §1's own worked example, and the reason this exists.** A rule sets
 /// `edition_key = "raw"` for everything under `Manga (RAW)/`; a later rule
@@ -691,22 +701,38 @@ pub fn apply(conn: &Connection, proposed: &[crate::rules::Rule]) -> Result<Appli
 /// — every rule did exactly what it says — producing a wrong answer, and
 /// [`crate::rules::Engine::resolve`] cannot show it: `Resolved::provenance`
 /// keeps only the *winner* per field, by construction, so a loser leaves no
-/// trace for anything downstream of `resolve` to find. [`conflicts`] is the
+/// trace for anything downstream of `resolve` to find. [`overrides`] is the
 /// separate pass that looks for the loser instead of only ever seeing the
-/// winner.
+/// winner. Whether a given override is that mistake or the seeded fold above
+/// is a question about **intent**, and intent is not a column — which is why
+/// this struct reports both and judges neither.
 ///
-/// **`first` and `wins` are indices into the `proposed` slice [`conflicts`]
+/// **`first` and `wins` are indices into the `proposed` slice [`overrides`]
 /// was called with — never a rule's database id.** The same boundary
 /// [`Decided`] holds, for the same reason: a rule still being typed into
 /// C4's editor carries `id: 0`, indistinguishable from a second unsaved rule
 /// in the same call and from [`crate::rules::is_root_fallback`]'s own
 /// sentinel, so nothing past this struct's construction may name a rule by
 /// its `Rule::id`. See [`Decided`]'s own doc comment for the fuller
-/// argument; [`conflicts`]'s own doc comment covers the mechanism this
+/// argument; [`overrides`]'s own doc comment covers the mechanism this
 /// function uses to stay off that id entirely, including while it is
 /// running, not merely at the boundary.
 ///
-/// **A conflict is about the *value*, not merely about who touched the
+/// **`first_value` and `wins_value` are the values for `rel_path`, not for
+/// every one of `examples`.** Which earlier rules actually ran, and so what
+/// they left behind, is a per-`scan_entry` fact — the same one `others`
+/// takes a maximum over below — so two entries sharing one
+/// `(field, first, wins)` triple can hold different values. The pair kept
+/// here is the one belonging to the entry `rel_path` names, captured in the
+/// same step that captures the path, so a row's example file and its two
+/// values can never describe different files.
+///
+/// **They exist because the row is now a judgement someone has to make.**
+/// Naming the two rules says *that* they disagree; only the values say what
+/// about, and `Death Note (Colored Council)` → `Death Note` reads instantly
+/// as a deliberate normalisation where two regexes and a path do not.
+///
+/// **An override is about the *value*, not merely about who touched the
 /// field.** Two enabled rules setting the same field to the *same* value are
 /// not reported — the seeded defaults do exactly this on purpose: migration
 /// 3's rule 1 captures a series from the parent directory, and its rule 4
@@ -715,12 +741,12 @@ pub fn apply(conn: &Connection, proposed: &[crate::rules::Rule]) -> Result<Appli
 /// disagreeing with it. A detector that fired on any two rules touching one
 /// field would flag that pairing on every ordinarily-named file in every
 /// library this crate has a fixture for — noise on the layering model's own
-/// worked example of itself working, not a defect to reorder or narrow away.
-/// `first` names the *most recent* earlier rule whose value actually differs
-/// from what `wins` produces — not necessarily the very first rule to touch
-/// the field at all, since an intervening rule may have agreed with it
-/// before `wins` came along and disagreed; "most recent disagreement" is the
-/// one the two on-screen fixes (reorder, narrow) are actually about.
+/// worked example of itself working. `first` names the *most recent* earlier
+/// rule whose value actually differs from what `wins` produces — not
+/// necessarily the very first rule to touch the field at all, since an
+/// intervening rule may have agreed with it before `wins` came along and
+/// disagreed; "most recent disagreement" is the one the two on-screen
+/// options (reorder, or edit the winner) are actually about.
 ///
 /// **A disabled rule can never be `first` or `wins`.**
 /// [`crate::rules::Engine::resolve`] skips a disabled rule outright — it
@@ -729,9 +755,9 @@ pub fn apply(conn: &Connection, proposed: &[crate::rules::Rule]) -> Result<Appli
 /// rules move around it. The C4 editor shows disabled rules in the same
 /// list as enabled ones; this struct is never built from one regardless.
 ///
-/// **A rule cannot conflict with itself.** [`conflicts`] walks each rule at
+/// **A rule cannot override itself.** [`overrides`] walks each rule at
 /// most once per entry, so `first` and `wins` are always two distinct
-/// indices whenever a [`Conflict`] exists at all. Two *different* rules
+/// indices whenever an [`Override`] exists at all. Two *different* rules
 /// sharing one `ordinal` still resolve to a single order —
 /// [`crate::rules::Engine::compile`]'s own tie-break, id ascending, which
 /// this function reproduces rather than leaving to chance — so the lower-id
@@ -753,51 +779,86 @@ pub fn apply(conn: &Connection, proposed: &[crate::rules::Rule]) -> Result<Appli
 /// under-reports with nothing on screen saying so (the status quo this
 /// decision replaces); and one row per disagreeing pair, N-choose-2 rows
 /// for a case that is already rare and unchanged for the common two-rule
-/// one. See [`conflicts`]'s own doc comment for how the count is taken when
+/// one. See [`overrides`]'s own doc comment for how the count is taken when
 /// two entries share one `(field, first, wins)` triple but disagree on how
 /// many other rules were involved.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Conflict {
+///
+/// **No `Eq`, deliberately.** [`FieldValue::Number`] holds an `f64`, so this
+/// derives `PartialEq` alone. Nothing needs the stronger bound: this type is
+/// never a map key or a set member, and [`overrides`]'s own grouping keys on
+/// the `(Field, usize, usize)` triple rather than on the struct.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Override {
     pub field: crate::rules::Field,
     pub rel_path: String,
     pub first: usize,
     pub wins: usize,
+    pub first_value: FieldValue,
+    pub wins_value: FieldValue,
     pub others: usize,
     pub examples: usize,
 }
 
-/// One field's value at one point in a resolution — [`Snapshot`] rather than
-/// the bare `i64` [`crate::rules::Resolved::provenance`] records for it,
-/// because that id is exactly the thing [`conflicts`] must not compare: two
-/// rules that both set a field to the *same* string are not a conflict (see
-/// [`Conflict`]'s own doc comment), and telling that apart from "nothing
+/// One field's value at one point in a resolution — this rather than the bare
+/// `i64` [`crate::rules::Resolved::provenance`] records for it, because that
+/// id is exactly the thing [`overrides`] must not compare: two rules that
+/// both set a field to the *same* string are not an override (see
+/// [`Override`]'s own doc comment), and telling that apart from "nothing
 /// changed" needs the actual value, not who most recently wrote it.
+///
+/// **Public, and typed rather than stringified**, since 2026-09-05: an
+/// [`Override`] carries two of these out to the editor, and a `volume` is a
+/// number all the way to the wire the way [`Placement`]'s own fields are.
+/// `None` in either arm is a field the resolution left unset — which is a
+/// real half of a disagreement, not an absence of one, since a later rule
+/// clearing what an earlier rule set is exactly the case a reader needs to
+/// see.
 #[derive(Debug, Clone, PartialEq)]
-enum Snapshot {
-    Str(Option<String>),
-    Num(Option<f64>),
+pub enum FieldValue {
+    Text(Option<String>),
+    Number(Option<f64>),
 }
 
-/// The value [`Snapshot`] holds for `field` in `resolved` — the one place
+/// The value [`FieldValue`] holds for `field` in `resolved` — the one place
 /// this module reaches into each of [`crate::rules::Resolved`]'s seven typed
-/// fields by name, so every other function here can compare two snapshots
+/// fields by name, so every other function here can compare two values
 /// generically instead of matching on [`crate::rules::Field`] itself.
-fn snapshot(resolved: &crate::rules::Resolved, field: crate::rules::Field) -> Snapshot {
+fn field_value(resolved: &crate::rules::Resolved, field: crate::rules::Field) -> FieldValue {
     match field {
-        crate::rules::Field::Series => Snapshot::Str(resolved.series.clone()),
-        crate::rules::Field::EditionKey => Snapshot::Str(resolved.edition_key.clone()),
-        crate::rules::Field::Kind => Snapshot::Str(resolved.kind.clone()),
-        crate::rules::Field::Language => Snapshot::Str(resolved.language.clone()),
-        crate::rules::Field::Title => Snapshot::Str(resolved.title.clone()),
-        crate::rules::Field::Volume => Snapshot::Num(resolved.volume),
-        crate::rules::Field::Chapter => Snapshot::Num(resolved.chapter),
+        crate::rules::Field::Series => FieldValue::Text(resolved.series.clone()),
+        crate::rules::Field::EditionKey => FieldValue::Text(resolved.edition_key.clone()),
+        crate::rules::Field::Kind => FieldValue::Text(resolved.kind.clone()),
+        crate::rules::Field::Language => FieldValue::Text(resolved.language.clone()),
+        crate::rules::Field::Title => FieldValue::Text(resolved.title.clone()),
+        crate::rules::Field::Volume => FieldValue::Number(resolved.volume),
+        crate::rules::Field::Chapter => FieldValue::Number(resolved.chapter),
     }
 }
 
+/// One [`Override`] under construction, while [`overrides`] is still walking
+/// the entries that share its `(field, first, wins)` key.
+///
+/// **A struct rather than the tuple this was**, which clippy's own
+/// `type_complexity` refused once the two values joined it — and the names are
+/// worth more than the brevity here anyway, since `examples` and `others` are
+/// both counts and `first_value` and `wins_value` are both values, so a
+/// positional read of either pair is one transposition away from a row that
+/// says something untrue.
+struct PartialOverride {
+    /// The entry this row will name, and the entry both values below belong
+    /// to. First encountered wins, and nothing overwrites it.
+    rel_path: String,
+    examples: usize,
+    others: usize,
+    first_value: FieldValue,
+    wins_value: FieldValue,
+}
+
 /// Every field where two or more of `proposed`'s enabled rules would decide
-/// a `scan_entry` differently — see [`Conflict`]'s own doc comment for
-/// exactly what "differently" excludes, and for why `first`/`wins` are
-/// positions in `proposed` rather than rule ids.
+/// a `scan_entry` differently — see [`Override`]'s own doc comment for
+/// exactly what "differently" excludes, for why `first`/`wins` are
+/// positions in `proposed` rather than rule ids, and for why the noun is
+/// "override" rather than "conflict".
 ///
 /// **No transaction, and no derivation.** Unlike [`preview`] and
 /// [`preview_with_rows`], this reads `scan_entry` and the rule set as they
@@ -818,7 +879,7 @@ fn snapshot(resolved: &crate::rules::Resolved, field: crate::rules::Field) -> Sn
 /// any kept row, regardless of list position). A saved rule keeps its real
 /// id, so two saved rules sharing an `ordinal` still tie-break the way
 /// [`crate::rules::Engine::compile`] genuinely orders them. This relabelling
-/// is never written anywhere and never returned — every [`Conflict`] this
+/// is never written anywhere and never returned — every [`Override`] this
 /// function produces names a position in `proposed`, translated back through
 /// the same index this relabelling was built from, not the relabelled id
 /// itself.
@@ -852,15 +913,17 @@ fn snapshot(resolved: &crate::rules::Resolved, field: crate::rules::Field) -> Sn
 /// worth of `Regex::new` calls, the expensive one by an order of magnitude
 /// per `rules.rs`'s own module doc. Whether either shape is affordable on a
 /// library of thousands rather than a handful is exactly the gap C4 §11
-/// flags and this function does nothing to close.
+/// flags and this function does nothing to close. Carrying the two values
+/// out on each row costs nothing on top: they were already computed, to tell
+/// a disagreement from an agreement, and were previously thrown away.
 ///
 /// # Errors
 ///
 /// If listing roots or reading `scan_entry` fails.
-pub fn conflicts(
+pub fn overrides(
     conn: &Connection,
     proposed: &[crate::rules::Rule],
-) -> Result<Vec<Conflict>, String> {
+) -> Result<Vec<Override>, String> {
     // Every proposed rule, relabelled so its `id` can never collide with
     // `crate::rules::is_root_fallback`'s own sentinel or with another
     // proposed rule — see this function's own doc comment. `order` is the
@@ -911,9 +974,12 @@ pub fn conflicts(
         .collect();
 
     let roots = crate::scan::roots(conn)?;
+    // Keyed on the triple the row is *about*; the value carries the one entry
+    // the row names, its two values, and the counts taken across every entry
+    // that shares the key.
     let mut grouped: std::collections::BTreeMap<
         (crate::rules::Field, usize, usize),
-        (String, usize, usize),
+        PartialOverride,
     > = std::collections::BTreeMap::new();
 
     for root in &roots {
@@ -921,12 +987,12 @@ pub fn conflicts(
             let mut prev = engines[0].resolve(root, &rel_path);
             // Per field, every rule that changed it for this entry, in
             // resolution order, each with the value it left behind —
-            // [`Snapshot`], not the raw provenance id, since telling a
+            // [`FieldValue`], not the raw provenance id, since telling a
             // genuine disagreement apart from two rules agreeing needs the
             // value itself.
             let mut chains: std::collections::BTreeMap<
                 crate::rules::Field,
-                Vec<(usize, Snapshot)>,
+                Vec<(usize, FieldValue)>,
             > = std::collections::BTreeMap::new();
             for (k, &rule_index) in order.iter().enumerate() {
                 let cur = engines[k + 1].resolve(root, &rel_path);
@@ -940,7 +1006,7 @@ pub fn conflicts(
                         chains
                             .entry(field)
                             .or_default()
-                            .push((rule_index, snapshot(&cur, field)));
+                            .push((rule_index, field_value(&cur, field)));
                     }
                 }
                 prev = cur;
@@ -951,17 +1017,18 @@ pub fn conflicts(
                     continue;
                 };
                 // Every earlier rule whose value for this field actually
-                // differs from the winner's, most recent first — see
-                // `Conflict`'s own doc comment for why "disagreement" rather
-                // than "touched the field" is the bar, and for what `others`
-                // means below.
-                let disagreeing: Vec<usize> = earlier
+                // differs from the winner's, most recent first, each still
+                // carrying that value — see `Override`'s own doc comment for
+                // why "disagreement" rather than "touched the field" is the
+                // bar, for what `others` means below, and for why the pair
+                // of values kept is the one belonging to this entry.
+                let disagreeing: Vec<(usize, &FieldValue)> = earlier
                     .iter()
                     .rev()
                     .filter(|(_, value)| value != wins_value)
-                    .map(|&(rule_index, _)| rule_index)
+                    .map(|(rule_index, value)| (*rule_index, value))
                     .collect();
-                let Some(&first_index) = disagreeing.first() else {
+                let Some(&(first_index, first_value)) = disagreeing.first() else {
                     continue;
                 };
                 // `first` (above) already names the most recent
@@ -972,8 +1039,14 @@ pub fn conflicts(
                 let others = disagreeing.len() - 1;
                 let entry = grouped
                     .entry((field, first_index, *wins_index))
-                    .or_insert_with(|| (rel_path.clone(), 0, others));
-                entry.1 += 1;
+                    .or_insert_with(|| PartialOverride {
+                        rel_path: rel_path.clone(),
+                        examples: 0,
+                        others,
+                        first_value: first_value.clone(),
+                        wins_value: wins_value.clone(),
+                    });
+                entry.examples += 1;
                 // Two entries can share one `(field, first, wins)` triple
                 // yet disagree on how many *other* rules were involved —
                 // which earlier rules actually ran, and so which of them
@@ -981,24 +1054,28 @@ pub fn conflicts(
                 // one. Taking the maximum means the row never claims fewer
                 // disagreements than some entry it covers actually has —
                 // the same under-reporting `others` exists to rule out in
-                // the first place.
-                entry.2 = entry.2.max(others);
+                // the first place. The two *values* are not maximised and
+                // not overwritten for the same reason inverted: they are
+                // the named entry's own, and a row whose example file and
+                // values came from different entries would be a worse lie
+                // than an under-count.
+                entry.others = entry.others.max(others);
             }
         }
     }
 
     Ok(grouped
         .into_iter()
-        .map(
-            |((field, first, wins), (rel_path, examples, others))| Conflict {
-                field,
-                rel_path,
-                first,
-                others,
-                wins,
-                examples,
-            },
-        )
+        .map(|((field, first, wins), grouped)| Override {
+            field,
+            rel_path: grouped.rel_path,
+            first,
+            wins,
+            first_value: grouped.first_value,
+            wins_value: grouped.wins_value,
+            others: grouped.others,
+            examples: grouped.examples,
+        })
         .collect())
 }
 

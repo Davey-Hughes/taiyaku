@@ -1,5 +1,5 @@
 use crate::preview::{
-    Conflict, Decided, Impact, Rows, conflicts, grouping, preview, preview_with_rows,
+    Decided, FieldValue, Impact, Override, Rows, grouping, overrides, preview, preview_with_rows,
 };
 
 /// The promise the whole screen rests on: what the preview says will happen
@@ -1417,9 +1417,9 @@ fn an_out_of_range_selected_index_is_refused_naming_the_index_and_the_lists_leng
     );
 }
 
-// --- conflict detection ------------------------------------------------
+// --- override detection ------------------------------------------------
 
-/// C4 §1's own worked example, and the reason `conflicts` exists: a rule
+/// C4 §1's own worked example, and the reason `overrides` exists: a rule
 /// sets `edition_key = "raw"` for everything under `Manga (RAW)/`, a later
 /// colour rule sets `edition_key = "en-color"` for anything ending "Full
 /// Color", both match `Manga (RAW)/Go-Toubun no Hanayome - Full Color`, the
@@ -1439,11 +1439,11 @@ fn an_out_of_range_selected_index_is_refused_naming_the_index_and_the_lists_leng
 /// fixture's own two-level `Manga (RAW)/<series>/` path incidentally
 /// surfaces: rule 1 reads the file's series as `"Manga (RAW)"`, rule 4
 /// (filename-based) reads it correctly, and the two genuinely disagree,
-/// which `conflicts` correctly reports as a *second*, unrelated `Series`
-/// conflict on the same file. `Series` sorts ahead of `EditionKey` in
+/// which `overrides` correctly reports as a *second*, unrelated `Series`
+/// override on the same file. `Series` sorts ahead of `EditionKey` in
 /// `crate::rules::Field`'s own declaration order, so an unfiltered
 /// `.find(rel_path.contains(..))` finds that one first. This test is about
-/// C4 §1's `EditionKey` conflict specifically, not about rule 1's own
+/// C4 §1's `EditionKey` override specifically, not about rule 1's own
 /// separate, orthogonal limitation.
 #[test]
 fn two_rules_setting_edition_on_one_file_are_reported_with_both_ids() {
@@ -1451,7 +1451,7 @@ fn two_rules_setting_edition_on_one_file_are_reported_with_both_ids() {
     let conn = fixture.conn();
     let proposed = crate::rules::read(&conn).unwrap().0;
 
-    let found = conflicts(&conn, &proposed).unwrap();
+    let found = overrides(&conn, &proposed).unwrap();
 
     let one = found
         .iter()
@@ -1459,11 +1459,11 @@ fn two_rules_setting_edition_on_one_file_are_reported_with_both_ids() {
             c.field == crate::rules::Field::EditionKey
                 && c.rel_path.contains("Go-Toubun no Hanayome - Full Color")
         })
-        .expect("the seeded defaults' own conflict is not reported");
+        .expect("the seeded defaults' own override is not reported");
     assert_eq!(one.field, crate::rules::Field::EditionKey);
     assert_ne!(
         one.first, one.wins,
-        "a conflict names both rules, not one twice"
+        "an override names both rules, not one twice"
     );
     assert_eq!(
         proposed[one.first].set_edition_key.as_deref(),
@@ -1483,7 +1483,313 @@ fn two_rules_setting_edition_on_one_file_are_reported_with_both_ids() {
     );
 }
 
-/// A field one rule alone decides is not a conflict, however many files it
+/// **O95, executed.** The shape the real library actually has: a directory
+/// carrying an edition suffix its filenames do not, so migration 3's rule 1
+/// (series from the directory) and its rule 4 (series from the filename)
+/// produce genuinely different values and rule 4 wins — which is what folds
+/// a colour edition into its main series, and is not a mistake.
+///
+/// **This asserts the two values, and that is the whole of what is new.**
+/// `two_rules_setting_edition_on_one_file_are_reported_with_both_ids` above
+/// already pins `first` and `wins`; naming the rules says *that* they
+/// disagreed and never what about. The editor draws
+/// `Chainsaw Man - Digital Colored Comics` → `Chainsaw Man`, and a reader
+/// deciding whether this layering is deliberate has nothing else to decide
+/// from — so a row that dropped the values would still pass every assertion
+/// that existed before this one.
+///
+/// **`examples` is 2 and not 4.** The two directory rows this fixture also
+/// scans reach neither rule; the fixture's own doc comment says why. A count
+/// of 4 here would mean the row is claiming files it does not describe.
+#[test]
+fn the_seeded_pairing_reports_the_two_values_it_chose_between() {
+    let fixture = crate::tests::library_with_colour_edition_directories();
+    let conn = fixture.conn();
+    let proposed = crate::rules::read(&conn).unwrap().0;
+
+    let found = overrides(&conn, &proposed).unwrap();
+
+    assert_eq!(
+        found.len(),
+        1,
+        "only the series pairing disagrees on this fixture — volume and chapter have one \
+         decider each: {found:?}"
+    );
+    let one = &found[0];
+    assert_eq!(one.field, crate::rules::Field::Series);
+    assert_eq!(
+        proposed[one.first].note.as_deref(),
+        Some("series from the first directory under the root"),
+        "`first` must name the rule that read the directory: {found:?}"
+    );
+    assert_eq!(
+        proposed[one.wins].note.as_deref(),
+        Some("series from the filename where it repeats it"),
+        "`wins` must name the rule that read the filename: {found:?}"
+    );
+    assert_eq!(
+        one.first_value,
+        FieldValue::Text(Some("Chainsaw Man - Digital Colored Comics".to_string())),
+        "the row must carry the value the directory gave: {found:?}"
+    );
+    assert_eq!(
+        one.wins_value,
+        FieldValue::Text(Some("Chainsaw Man".to_string())),
+        "the row must carry the value the filename gave, which is the one that folds the \
+         colour edition into its main series: {found:?}"
+    );
+    assert_eq!(
+        one.examples, 2,
+        "both archives share this row; the two directory rows reach neither rule: {found:?}"
+    );
+}
+
+/// `volume` reports the volume and `chapter` reports the chapter — the two
+/// numeric arms of `field_value`, pinned separately.
+///
+/// **Found by hand after a mutation sweep said nothing, which is the point.**
+/// `field_value` returns a `FieldValue`, which derives no `Default`, so its
+/// only generated mutant is the unviable whole-body one — O88's second cause.
+/// The sweep of this branch reported it as `unviable`, not as a gap, and
+/// hand-applying the swap `Field::Volume => FieldValue::Number(resolved.chapter)`
+/// then failed **nothing at all** across the whole workspace: the two numeric
+/// arms could be exchanged and every test in this repository still passed.
+///
+/// **It is not a cosmetic swap.** `overrides` compares two snapshots to decide
+/// whether two rules genuinely disagree, so a `Volume` chain compared on
+/// `chapter` values silently *drops* real disagreements and invents ones that
+/// only differ in the other field — and since O95 the row also *draws* the
+/// value, so a wrong arm shows a person a number belonging to a different
+/// column.
+///
+/// **One added rule for volume, two for chapter, and the asymmetry is the
+/// fixture's.** Seeded rule 2 is `builtin-volume` and already decides `Volume`
+/// for every archive here, so one disagreeing rule is enough to make a chain
+/// of two. Seeded rule 3 is `builtin-chapter` and finds no chapter in
+/// `Beta - v01.cbz` at all, so it never sets the field and never joins a
+/// chain — chapter needs both of its disagreeing rules supplied.
+///
+/// **Each half fails against the swap for the same reason**: the two rules of
+/// its chain, read through the *other* field, agree — `chapter` is unset for
+/// every entry, and `volume` is whatever seeded rule 2 alone decided — so the
+/// row disappears entirely rather than merely carrying a wrong number.
+#[test]
+fn the_numeric_fields_report_their_own_values_and_not_each_others() {
+    let fixture = crate::tests::library_with_two_roots();
+    let conn = fixture.conn();
+    let seeded = crate::rules::read(&conn).unwrap().0;
+
+    let capturing = |ordinal: i64, pattern: &str, note: &str| crate::rules::Rule {
+        id: 0,
+        ordinal,
+        enabled: true,
+        root_id: None,
+        kind: crate::rules::RuleKind::Regex,
+        pattern: pattern.to_string(),
+        match_on: crate::rules::MatchOn::Name,
+        set_edition_key: None,
+        set_kind: None,
+        set_language: None,
+        set_series: None,
+        note: Some(note.to_string()),
+    };
+
+    // Volume: seeded rule 2 reads `v01` as 1, and this reads the leading zero
+    // of the same token as 0. A genuine disagreement on one field.
+    let mut proposed = seeded.clone();
+    proposed.push(capturing(
+        500,
+        "v(?<volume>0)",
+        "the leading zero, disagreeing with builtin-volume",
+    ));
+    let found = overrides(&conn, &proposed).unwrap();
+    let volume: Vec<&Override> = found
+        .iter()
+        .filter(|o| o.field == crate::rules::Field::Volume)
+        .collect();
+    assert_eq!(
+        volume.len(),
+        1,
+        "one Volume row: builtin-volume against the leading-zero capture: {found:?}"
+    );
+    assert_eq!(
+        proposed[volume[0].first].note.as_deref(),
+        Some("volume from the name, via taiyaku_read::volume_number"),
+        "`first` must name the seeded builtin-volume rule: {found:?}"
+    );
+    assert_eq!(
+        volume[0].first_value,
+        FieldValue::Number(Some(1.0)),
+        "the volume row carries the volume builtin-volume read, not some other field's: {found:?}"
+    );
+    assert_eq!(
+        volume[0].wins_value,
+        FieldValue::Number(Some(0.0)),
+        "and the volume the winning capture read: {found:?}"
+    );
+
+    // Chapter: two captures off the same token, `0` against `1`. Seeded rule 3
+    // finds no chapter in these names, so it is not part of this chain.
+    let mut proposed = seeded;
+    proposed.push(capturing(
+        500,
+        "v(?<chapter>0)",
+        "the leading zero as a chapter",
+    ));
+    proposed.push(capturing(
+        501,
+        "v0(?<chapter>[0-9])",
+        "the digit after it, disagreeing",
+    ));
+    let found = overrides(&conn, &proposed).unwrap();
+    let chapter: Vec<&Override> = found
+        .iter()
+        .filter(|o| o.field == crate::rules::Field::Chapter)
+        .collect();
+    assert_eq!(
+        chapter.len(),
+        1,
+        "one Chapter row, from the two captures that disagree: {found:?}"
+    );
+    assert_eq!(
+        chapter[0].first_value,
+        FieldValue::Number(Some(0.0)),
+        "the chapter row carries a chapter, not the volume seeded rule 2 decided: {found:?}"
+    );
+    assert_eq!(
+        chapter[0].wins_value,
+        FieldValue::Number(Some(1.0)),
+        "and the chapter the winning capture read: {found:?}"
+    );
+}
+
+/// A capture that parses to a non-finite number sets nothing, so it can never
+/// reach an [`Override`] at all.
+///
+/// **`^(?<volume>Nan)` off `Nanatsu no Taizai` is the case, and it is a real
+/// series title rather than anything contrived.** `str::parse::<f64>()`
+/// accepts `nan`, `inf`, `infinity` and overflowing literals, so a capture
+/// group aimed at a filename and slightly too wide produces one without
+/// anybody writing `nan` on purpose.
+///
+/// **Three defects downstream had one cause**, each found by a different
+/// review pass of this branch: `NaN != NaN`, so a chain in which every rule
+/// produced `NaN` satisfied `overrides`' own disagreement filter at every
+/// step and reported an override where all the rules agreed; `field_value_json`
+/// collapsed every non-finite onto the `null` that means *unset*; and the
+/// editor then drew "rule 3 overrides rule 2 on N files" above two sides both
+/// reading *unset*. `rules::Resolved::set_number` refuses the value instead,
+/// which closes all three at the point it enters.
+///
+/// **Asserted at both ends.** That the resolution leaves `volume` unset is
+/// what the guard does; that `overrides` then reports no `Volume` row at all
+/// is what the screen depends on, and a test of only the first would pass
+/// against a `preview` that had gone looking for the field some other way.
+#[test]
+fn a_capture_that_is_not_a_number_sets_nothing() {
+    let fixture = crate::tests::library_with_a_name_that_parses_as_not_a_number();
+    let conn = fixture.conn();
+    let mut proposed = crate::rules::read(&conn).unwrap().0;
+    // Seeded `builtin-volume` reads `v01` as 1 and would mask the guard by
+    // leaving `volume` set for a reason that has nothing to do with it.
+    for rule in &mut proposed {
+        if rule.kind == crate::rules::RuleKind::BuiltinVolume {
+            rule.enabled = false;
+        }
+    }
+    proposed.push(crate::rules::Rule {
+        id: 0,
+        ordinal: 500,
+        enabled: true,
+        root_id: None,
+        kind: crate::rules::RuleKind::Regex,
+        pattern: "^(?<volume>Nan)".to_string(),
+        match_on: crate::rules::MatchOn::Name,
+        set_edition_key: None,
+        set_kind: None,
+        set_language: None,
+        set_series: None,
+        note: Some("captures Nan, which parses as NaN".to_string()),
+    });
+
+    let engine = crate::rules::Engine::compile(&proposed).0;
+    let root = &crate::scan::roots(&conn).unwrap()[0];
+    let resolved = engine.resolve(root, "Nanatsu no Taizai/Nanatsu no Taizai v01.cbz");
+    assert_eq!(
+        resolved.volume, None,
+        "a capture parsing to NaN must leave the field unset, exactly as one that does not \
+         parse at all does"
+    );
+    assert!(
+        !resolved
+            .provenance
+            .contains_key(&crate::rules::Field::Volume),
+        "and must leave no provenance behind either, or `overrides` sees a rule that decided \
+         a field it did not set"
+    );
+
+    let found = overrides(&conn, &proposed).unwrap();
+    assert!(
+        found.iter().all(|o| o.field != crate::rules::Field::Volume),
+        "nothing set Volume, so no row can be about it: {found:?}"
+    );
+}
+
+/// A row's two values belong to the `scan_entry` its `rel_path` names, never
+/// to another entry that happens to share its `(field, first, wins)` triple.
+///
+/// **Which is a real hazard and not a hypothetical one.** `others` on the
+/// same struct *is* taken across every sharing entry — a maximum, deliberately
+/// — so "aggregate it the way the neighbouring field is aggregated" is the
+/// obvious wrong move, and it produces a row naming one file while describing
+/// another. The fixture is built so the two entries disagree on the values
+/// and agree on everything else: `Chainsaw Man - Digital Colored Comics`
+/// sorts first under `rel_paths`' own `ORDER BY rel_path`, so a
+/// last-write-wins or a maximum would leave `rel_path` pointing at Chainsaw
+/// Man while the values read `Death Note`.
+///
+/// **Asserted against the row's own `rel_path`, not against a constant.**
+/// A test that hard-coded both halves would pass equally if the ordering
+/// changed and *both* moved together; deriving the expected pair from the
+/// path the row itself names is what pins them to each other.
+#[test]
+fn a_rows_values_belong_to_the_entry_it_names() {
+    let fixture = crate::tests::library_with_colour_edition_directories();
+    let conn = fixture.conn();
+    let proposed = crate::rules::read(&conn).unwrap().0;
+
+    let found = overrides(&conn, &proposed).unwrap();
+    let one = found
+        .iter()
+        .find(|o| o.field == crate::rules::Field::Series)
+        .expect("the seeded pairing's own series row");
+
+    let directory = one
+        .rel_path
+        .split('/')
+        .next()
+        .expect("every entry in this fixture sits under a directory");
+    assert_eq!(
+        one.first_value,
+        FieldValue::Text(Some(directory.to_string())),
+        "`first_value` is what rule 1 read from THIS row's own directory: {found:?}"
+    );
+    let stem = directory
+        .split_once(" (")
+        .or_else(|| directory.split_once(" - "))
+        .map_or(directory, |(before, _)| before);
+    assert_eq!(
+        one.wins_value,
+        FieldValue::Text(Some(stem.to_string())),
+        "`wins_value` is what rule 4 read from THIS row's own filename: {found:?}"
+    );
+    assert_ne!(
+        one.first_value, one.wins_value,
+        "a row that reports no difference is not an override at all: {found:?}"
+    );
+}
+
+/// A field one rule alone decides is not an override, however many files it
 /// touches.
 ///
 /// **Not `crate::tests::a_rule_setting_series` and not `Field::Series`,
@@ -1493,19 +1799,19 @@ fn two_rules_setting_edition_on_one_file_are_reported_with_both_ids() {
 /// and its rule 4, from the filename "where it repeats it" — and every file
 /// this fixture writes is named so the two agree (`Beta/Beta - v01.cbz`
 /// yields `"Beta"` both ways), which is exactly the harmless case
-/// [`Conflict`]'s own doc comment carves out: two rules setting a field to
+/// [`Override`]'s own doc comment carves out: two rules setting a field to
 /// the *same* value are not reported. `a_rule_setting_series("Alpha")`
 /// pushes a rule that sends *every* file to the literal string `"Alpha"` —
 /// which genuinely disagrees with what rule 4 already captured for `Beta`
 /// and `Gamma` (only this fixture's own `Alpha` root already reads
 /// `"Alpha"`, per its own doc comment) — so using it here would not test
 /// "one rule alone decides a field" at all; it would recreate C4 §1's own
-/// shape by accident, and a correct `conflicts` reports it, which is not
+/// shape by accident, and a correct `overrides` reports it, which is not
 /// what this test is for. `Field::Kind` is untouched by every seeded rule
 /// and by this fixture's own roots (only `edition_key` is set on them), so
 /// a rule setting it really is the only thing that ever decides it here.
 #[test]
-fn one_rule_setting_a_field_across_the_library_is_not_a_conflict() {
+fn one_rule_setting_a_field_across_the_library_is_not_an_override() {
     let fixture = crate::tests::library_with_two_roots();
     let conn = fixture.conn();
     let mut proposed = crate::rules::read(&conn).unwrap().0;
@@ -1524,10 +1830,10 @@ fn one_rule_setting_a_field_across_the_library_is_not_a_conflict() {
         note: Some("the only rule in this fixture that ever sets Kind".to_string()),
     });
 
-    let found = conflicts(&conn, &proposed).unwrap();
+    let found = overrides(&conn, &proposed).unwrap();
     assert!(
         found.iter().all(|c| c.field != crate::rules::Field::Kind),
-        "one rule deciding Kind for every file in the library is not a conflict: {found:?}"
+        "one rule deciding Kind for every file in the library is not an override: {found:?}"
     );
 }
 
@@ -1535,7 +1841,7 @@ fn one_rule_setting_a_field_across_the_library_is_not_a_conflict() {
 /// would genuinely disagree with the enabled rule that is the field's only
 /// real decider — [`crate::rules::Engine::resolve`] skips a disabled rule
 /// outright, so it never reaches `apply_set_columns` for it at all, and
-/// [`conflicts`] leans on exactly that rather than filtering `enabled`
+/// [`overrides`] leans on exactly that rather than filtering `enabled`
 /// itself. The C4 editor shows disabled rules in the same list as enabled
 /// ones, which is what makes this worth pinning rather than assuming.
 #[test]
@@ -1573,14 +1879,14 @@ fn a_disabled_rules_own_value_is_never_compared_against_the_enabled_rule_that_al
         note: Some("disabled: would disagree with the rule above if it ever ran".to_string()),
     });
 
-    let found = conflicts(&conn, &proposed).unwrap();
+    let found = overrides(&conn, &proposed).unwrap();
     assert!(
         found.iter().all(|c| c.field != crate::rules::Field::Kind),
         "the disabled rule must never be counted as a second decider of Kind: {found:?}"
     );
 }
 
-/// One [`Conflict`] per (field, first, wins), not one row per file — its
+/// One [`Override`] per (field, first, wins), not one row per file — its
 /// `examples` count is the number of entries that actually share it, read
 /// back and checked for real rather than assumed to be more than the `1` a
 /// hard-coded count would also produce.
@@ -1590,7 +1896,7 @@ fn a_disabled_rules_own_value_is_never_compared_against_the_enabled_rule_that_al
 /// nine rows in total, every one of which the two `".*"` rules below match,
 /// so nine is what a genuine count reads back as.
 #[test]
-fn the_conflict_count_is_the_real_number_of_entries_that_share_it_not_a_constant() {
+fn the_override_count_is_the_real_number_of_entries_that_share_it_not_a_constant() {
     let fixture = crate::tests::library_with_two_roots();
     let conn = fixture.conn();
     let mut proposed = crate::rules::read(&conn).unwrap().0;
@@ -1623,26 +1929,26 @@ fn the_conflict_count_is_the_real_number_of_entries_that_share_it_not_a_constant
         note: None,
     });
 
-    let found = conflicts(&conn, &proposed).unwrap();
-    let kind_conflicts: Vec<&Conflict> = found
+    let found = overrides(&conn, &proposed).unwrap();
+    let kind_overrides: Vec<&Override> = found
         .iter()
         .filter(|c| c.field == crate::rules::Field::Kind)
         .collect();
     assert_eq!(
-        kind_conflicts.len(),
+        kind_overrides.len(),
         1,
         "both rules match every entry under every scope, so this is one (field, first, wins) \
          triple, not several: {found:?}"
     );
     assert_eq!(
-        kind_conflicts[0].examples, 9,
-        "every one of the fixture's nine scan_entry rows shares this conflict: {found:?}"
+        kind_overrides[0].examples, 9,
+        "every one of the fixture's nine scan_entry rows shares this override: {found:?}"
     );
 }
 
 /// `first` names the most recent **disagreement**, not merely the earliest
 /// rule to touch the field — the distinction the value-aware reduction in
-/// `conflicts` (`earlier.iter().rev().find(|(_, value)| value != wins_value)`)
+/// `overrides` (`earlier.iter().rev().find(|(_, value)| value != wins_value)`)
 /// exists for, and the one every other `preview::` test up to this one
 /// happens not to exercise: replacing that reduction with `earlier.first()`
 /// still passes all of them.
@@ -1650,14 +1956,14 @@ fn the_conflict_count_is_the_real_number_of_entries_that_share_it_not_a_constant
 /// Three rules on one file: ordinal 500 sets `Kind = "Z"`, ordinal 501 sets
 /// `Kind = "Y"`, ordinal 502 sets `Kind = "Z"` and wins. `earlier.first()`
 /// would report the ordinal-500 rule — whose value is *identical* to the
-/// winner's, directly contradicting [`Conflict`]'s own doc comment on what a
-/// conflict is about. The correct answer is the ordinal-501 rule: the only
+/// winner's, directly contradicting [`Override`]'s own doc comment on what a
+/// override is about. The correct answer is the ordinal-501 rule: the only
 /// earlier rule whose value for `Kind` actually differs from `"Z"`.
 ///
 /// `Field::Kind` again, for the same reason
-/// `one_rule_setting_a_field_across_the_library_is_not_a_conflict` uses it:
+/// `one_rule_setting_a_field_across_the_library_is_not_an_override` uses it:
 /// untouched by every seeded rule and by `library_with_two_roots`'s own root
-/// defaults, so nothing else in this fixture can produce a `Kind` conflict
+/// defaults, so nothing else in this fixture can produce a `Kind` override
 /// by accident.
 #[test]
 fn the_first_disagreement_is_reported_even_when_an_earlier_rule_agreed_with_the_winner() {
@@ -1709,45 +2015,45 @@ fn the_first_disagreement_is_reported_even_when_an_earlier_rule_agreed_with_the_
         note: Some("wins".to_string()),
     });
 
-    let found = conflicts(&conn, &proposed).unwrap();
-    let kind_conflicts: Vec<&Conflict> = found
+    let found = overrides(&conn, &proposed).unwrap();
+    let kind_overrides: Vec<&Override> = found
         .iter()
         .filter(|c| c.field == crate::rules::Field::Kind)
         .collect();
     assert_eq!(
-        kind_conflicts.len(),
+        kind_overrides.len(),
         1,
         "one (field, first, wins) triple, not one per file or per rule pair: {found:?}"
     );
-    let conflict = kind_conflicts[0];
+    let reported = kind_overrides[0];
     assert_eq!(
-        proposed[conflict.wins].set_kind.as_deref(),
+        proposed[reported.wins].set_kind.as_deref(),
         Some("Z"),
         "`wins` must name the ordinal-502 rule: {found:?}"
     );
     assert_eq!(
-        proposed[conflict.first].set_kind.as_deref(),
+        proposed[reported.first].set_kind.as_deref(),
         Some("Y"),
         "`first` must name the ordinal-501 rule — the only earlier rule whose value genuinely \
          differs from the winner's `\"Z\"` — not the ordinal-500 rule, whose value is the same \
          `\"Z\"` the winner produces: {found:?}"
     );
     assert_eq!(
-        conflict.others, 0,
+        reported.others, 0,
         "only one earlier rule (ordinal 501) actually disagrees with the winner — the \
          ordinal-500 rule agrees with it and so is not a disagreement to count: {found:?}"
     );
 }
 
 /// Three rules that pairwise disagree — `Kind` set to `"v1"`, `"v2"`, then
-/// `"v3"`, all distinct — still produce exactly one `Conflict` for the
+/// `"v3"`, all distinct — still produce exactly one `Override` for the
 /// field: `first` names `"v2"`'s rule (the most recent disagreement, per
-/// [`Conflict`]'s own doc comment), `wins` names `"v3"`'s. The
+/// [`Override`]'s own doc comment), `wins` names `"v3"`'s. The
 /// `"v1"`-versus-`"v3"` disagreement is real and is not the one named by
 /// `first` — `others` is how that stays discoverable instead of silent:
-/// decided by the owner 2026-09-03, recorded on [`Conflict`] itself.
+/// decided by the owner 2026-09-03, recorded on [`Override`] itself.
 #[test]
-fn a_three_way_disagreement_reports_one_conflict_with_one_other() {
+fn a_three_way_disagreement_reports_one_override_with_one_other() {
     let fixture = crate::tests::library_with_two_roots();
     let conn = fixture.conn();
     let mut proposed = crate::rules::read(&conn).unwrap().0;
@@ -1794,44 +2100,44 @@ fn a_three_way_disagreement_reports_one_conflict_with_one_other() {
         note: None,
     });
 
-    let found = conflicts(&conn, &proposed).unwrap();
-    let kind_conflicts: Vec<&Conflict> = found
+    let found = overrides(&conn, &proposed).unwrap();
+    let kind_overrides: Vec<&Override> = found
         .iter()
         .filter(|c| c.field == crate::rules::Field::Kind)
         .collect();
     assert_eq!(
-        kind_conflicts.len(),
+        kind_overrides.len(),
         1,
         "one row for the field, not one per disagreeing pair — the N-choose-2 alternative the \
          owner's decision rejected: {found:?}"
     );
-    let conflict = kind_conflicts[0];
+    let reported = kind_overrides[0];
     assert_eq!(
-        proposed[conflict.first].set_kind.as_deref(),
+        proposed[reported.first].set_kind.as_deref(),
         Some("v2"),
         "`first` must name the most recent disagreement, v2's rule: {found:?}"
     );
     assert_eq!(
-        proposed[conflict.wins].set_kind.as_deref(),
+        proposed[reported.wins].set_kind.as_deref(),
         Some("v3"),
         "`wins` must name the rule that actually decided it, v3's: {found:?}"
     );
     assert_eq!(
-        conflict.others, 1,
+        reported.others, 1,
         "the v1-versus-v3 disagreement is real and is not the one `first` names — `others` is \
          what keeps it discoverable rather than silent: {found:?}"
     );
 }
 
-// --- the relabelled id `conflicts` mints for an unsaved rule --------------
+// --- the relabelled id `overrides` mints for an unsaved rule --------------
 
 /// **The relabelled id two same-ordinal unsaved rules get must preserve
 /// their `proposed` order — the tie-break a real save would produce.**
-/// `conflicts`'s own doc comment states the intent directly: ties are broken
+/// `overrides`'s own doc comment states the intent directly: ties are broken
 /// "on the relabelled id exactly as `compile` breaks them on the real one,"
 /// and a real [`crate::rules::replace_all`] mints a *later*-inserted
 /// same-ordinal rule the *higher* id, since SQLite's own rowid only ever
-/// increases. Every other `conflicts` test in this module gives its unsaved
+/// increases. Every other `overrides` test in this module gives its unsaved
 /// rules distinct ordinals, so `ordinal` alone already orders them and this
 /// tie-break never runs at all.
 ///
@@ -1871,20 +2177,20 @@ fn two_same_ordinal_unsaved_rules_break_their_tie_in_proposed_order() {
     };
     let proposed = vec![earlier_in_the_list, later_in_the_list];
 
-    let found = conflicts(&conn, &proposed).unwrap();
-    let conflict = found
+    let found = overrides(&conn, &proposed).unwrap();
+    let reported = found
         .iter()
         .find(|c| c.field == crate::rules::Field::Kind)
-        .expect("two same-ordinal rules disagreeing on Kind must be reported as a conflict");
+        .expect("two same-ordinal rules disagreeing on Kind must be reported as an override");
 
     assert_eq!(
-        proposed[conflict.wins].set_kind.as_deref(),
+        proposed[reported.wins].set_kind.as_deref(),
         Some("later"),
         "the rule appearing later in `proposed` must win an equal-ordinal tie — the same rule a \
          real save would mint the higher id for: {found:?}"
     );
     assert_eq!(
-        proposed[conflict.first].set_kind.as_deref(),
+        proposed[reported.first].set_kind.as_deref(),
         Some("earlier"),
         "and the earlier rule must be the one reported as the disagreement, not the winner: \
          {found:?}"

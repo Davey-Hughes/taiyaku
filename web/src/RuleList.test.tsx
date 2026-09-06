@@ -61,7 +61,7 @@ function render(props: Partial<Parameters<typeof RuleList>[0]> = {}) {
         rules={[rule(), rule({ id: 2, ordinal: 2, pattern: 'Colour/.*' })]}
         selected={0}
         proposals={[]}
-        conflictCount={0}
+        overrideCount={0}
         {...handlers}
         {...props}
       />,
@@ -89,7 +89,7 @@ describe('RuleList', () => {
 
   it('selects by index, never by rule id', () => {
     // Two unsaved rules both carry `id: 0`; a list keyed on id could not tell
-    // them apart, and `Decided`/`Conflict` name a position for the same reason.
+    // them apart, and `Decided`/`Override` name a position for the same reason.
     const { host, onSelect } = render({
       rules: [rule({ id: 0 }), rule({ id: 0, pattern: 'Second/.*' })],
     })
@@ -248,7 +248,7 @@ describe('RuleList', () => {
           rules={rules}
           selected={undefined}
           proposals={proposals}
-          conflictCount={0}
+          overrideCount={0}
           onSelect={vi.fn()}
           onToggle={vi.fn()}
           onReorder={vi.fn()}
@@ -272,7 +272,7 @@ describe('RuleList', () => {
         ]}
         selected={undefined}
         proposals={proposals}
-        conflictCount={0}
+        overrideCount={0}
         onSelect={vi.fn()}
         onToggle={vi.fn()}
         onReorder={vi.fn()}
@@ -346,8 +346,10 @@ describe('RuleList', () => {
     expect(host.textContent).not.toContain('expensive')
   })
 
-  it('draws the conflict count as a badge', () => {
-    const { host } = render({ conflictCount: 2 })
-    expect(host.querySelector('.conflict-badge')?.textContent).toContain('2')
+  it('draws the override count as a badge', () => {
+    const { host } = render({ overrideCount: 2 })
+    expect(host.querySelector('.override-badge')?.textContent).toContain(
+      '2 overrides',
+    )
   })
 })

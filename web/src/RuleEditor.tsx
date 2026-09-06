@@ -307,7 +307,7 @@ export function RuleEditor() {
           rules={rules}
           selected={selected}
           proposals={proposals}
-          conflictCount={preview?.conflicts.length ?? 0}
+          overrideCount={preview?.overrides.length ?? 0}
           onSelect={(index) => {
             // M1: the design runs a preview on selecting a *different*
             // rule — `rows` is scoped to `selected`, and changing which is
@@ -381,9 +381,17 @@ export function RuleEditor() {
             rules={rules}
             selected={selected}
             busy={busy}
+            saving={saving}
             onReorder={(from, to) => {
               const next = renumber(moved(rules, from, to))
               commit(next, selected === from ? to : selected)
+            }}
+            // The same call `RuleList`'s own `onSelect` makes, guard included:
+            // "Edit rule 4" from an override row is selecting rule 4, so it
+            // costs one derivation, and selecting the rule already open costs
+            // none.
+            onSelectRule={(index) => {
+              if (index !== selected) commit(rules, index)
             }}
           />
         </div>

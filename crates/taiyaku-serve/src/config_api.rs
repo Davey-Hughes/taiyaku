@@ -32,7 +32,7 @@
 //! own sentinel for "the root's own default column decided this" the moment
 //! two unsaved rules sit in one request. A position in the exact list the
 //! caller just sent has no such collision, whatever id any rule in it does or
-//! does not carry yet. [`taiyaku_library::preview::Conflict::first`] and
+//! does not carry yet. [`taiyaku_library::preview::Override::first`] and
 //! `::wins` are the same boundary, for the same reason, and this module passes
 //! both straight through rather than resolving either back to an id.
 //!
@@ -81,7 +81,7 @@
 //! demand, not per keystroke, and that decision is the client's; this route
 //! only has to answer the request it is actually sent.
 //!
-//! **281 ms is `preview_with_rows` alone — `preview::conflicts` is a second,
+//! **281 ms is `preview_with_rows` alone — `preview::overrides` is a second,
 //! quadratic term in the same request, in the number of proposed rules.**
 //! Measured on a one-work fixture (so essentially the rule term by itself,
 //! debug build): 10 extra rules cost 47 ms, 40 → 401 ms, 80 → 1.34 s,
@@ -116,7 +116,7 @@ use crate::{ServeState, auth::Principal};
 const MATCHED_FILES_LIMIT: usize = 500;
 
 /// Both [`preview_rules`]'s and [`save_rules`]'s cap on the `rules` array
-/// itself — the term [`preview::conflicts`] is quadratic in, per this
+/// itself — the term [`preview::overrides`] is quadratic in, per this
 /// module's own doc comment on what `preview_rules` costs and why 281 ms is
 /// only half the story. `axum`'s 2 MB body default was, until this constant
 /// existed, the only bound on that array at all.
@@ -130,7 +130,7 @@ const MATCHED_FILES_LIMIT: usize = 500;
 /// active rules would already be unmanageable through the editor's own UI
 /// long before it threatened this route, while still refusing the
 /// pathological case (an automated or malformed caller inflating the array)
-/// before it ever reaches [`preview::conflicts`] rather than after paying for
+/// before it ever reaches [`preview::overrides`] rather than after paying for
 /// it.
 const MAX_PROPOSED_RULES: usize = 200;
 
@@ -601,7 +601,7 @@ fn rule_patch_from_json(body: &serde_json::Value) -> Result<rules::RulePatch, St
 
 /// [`taiyaku_library::rules::Field`]'s wire spelling — every field this
 /// module ever names on the way out, in one place so [`row_json`] and
-/// [`conflict_json`] cannot drift into two different words for the same
+/// [`override_json`] cannot drift into two different words for the same
 /// column.
 fn field_key(field: rules::Field) -> &'static str {
     match field {
@@ -662,16 +662,56 @@ fn row_json(row: &preview::Row) -> serde_json::Value {
     })
 }
 
-/// One [`taiyaku_library::preview::Conflict`], `first`/`wins` passed straight
+/// One [`taiyaku_library::preview::FieldValue`] on the wire — a JSON string
+/// for a text field, a JSON number for `volume` or `chapter`, and `null` for
+/// either left unset.
+///
+/// **Typed rather than stringified**, matching how [`placement_json`] already
+/// carries a `Placement` across: a `volume` that arrives as `"3"` is a number
+/// the client would have to parse back, and one that arrives as `3` is the
+/// number the store actually holds. `null` is a value here and not an absence
+/// — a later rule *clearing* what an earlier rule set is exactly the case an
+/// override row exists to show.
+///
+/// **A non-finite number would render as `null` too, and that is why it can no
+/// longer get here.** JSON has no NaN or infinity and
+/// `serde_json::Number::from_f64` refuses both, so an infinite `volume` would
+/// be indistinguishable from an unset one and the editor would draw it as
+/// *unset* — on a row whose whole job is telling two values apart. Three
+/// review passes of the O95 branch each found one face of that, and
+/// `rules::Resolved::set_number` now refuses a non-finite at the point it
+/// enters, so neither arm below can receive one from any rule. The
+/// `map_or(Null, …)` stays because `from_f64` is fallible in the type system
+/// whatever the caller guarantees, and an `expect` here would turn a display
+/// concern into a 500.
+fn field_value_json(value: &preview::FieldValue) -> serde_json::Value {
+    match value {
+        preview::FieldValue::Text(text) => text.as_ref().map_or(serde_json::Value::Null, |t| {
+            serde_json::Value::String(t.clone())
+        }),
+        preview::FieldValue::Number(number) => number
+            .and_then(serde_json::Number::from_f64)
+            .map_or(serde_json::Value::Null, serde_json::Value::Number),
+    }
+}
+
+/// One [`taiyaku_library::preview::Override`], `first`/`wins` passed straight
 /// through as the indices into the request's `rules` array they already are.
-fn conflict_json(conflict: &preview::Conflict) -> serde_json::Value {
+///
+/// **`first_value` and `wins_value` describe `rel_path` alone**, not every one
+/// of `examples` — [`taiyaku_library::preview::Override`]'s own doc comment
+/// carries why, and the editor draws them beside that path rather than beside
+/// the count for the same reason.
+fn override_json(over: &preview::Override) -> serde_json::Value {
     serde_json::json!({
-        "field": field_key(conflict.field),
-        "rel_path": conflict.rel_path,
-        "first": conflict.first,
-        "wins": conflict.wins,
-        "others": conflict.others,
-        "examples": conflict.examples,
+        "field": field_key(over.field),
+        "rel_path": over.rel_path,
+        "first": over.first,
+        "wins": over.wins,
+        "first_value": field_value_json(&over.first_value),
+        "wins_value": field_value_json(&over.wins_value),
+        "others": over.others,
+        "examples": over.examples,
     })
 }
 
@@ -852,7 +892,7 @@ pub(crate) async fn delete_rule(
 /// `POST /api/library/rules/preview` — what replacing the rule set with the
 /// whole `rules` the request carries would change, plus which pairs of them
 /// disagree, found without writing anything: [`preview::preview_with_rows`]
-/// rolls its own transaction back and [`preview::conflicts`] opens none.
+/// rolls its own transaction back and [`preview::overrides`] opens none.
 ///
 /// **Takes its connection from [`taiyaku_library::Library::working`], not
 /// [`taiyaku_library::Library::conn`].** This module's own doc comment states
@@ -923,12 +963,12 @@ pub(crate) async fn preview_rules(
         let (impact, rows) =
             preview::preview_with_rows(&working, &proposed, selected, MATCHED_FILES_LIMIT)
                 .map_err(NoAnswer::Unusable)?;
-        let conflicts = preview::conflicts(&working, &proposed).map_err(NoAnswer::Failed)?;
+        let overrides = preview::overrides(&working, &proposed).map_err(NoAnswer::Failed)?;
         Ok::<_, NoAnswer>(serde_json::json!({
             "impact": impact_json(&impact),
             "rows": rows.rows.iter().map(row_json).collect::<Vec<_>>(),
             "rows_truncated": rows.truncated,
-            "conflicts": conflicts.iter().map(conflict_json).collect::<Vec<_>>(),
+            "overrides": overrides.iter().map(override_json).collect::<Vec<_>>(),
         }))
     })
     .await;

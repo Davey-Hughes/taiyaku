@@ -147,6 +147,8 @@ it mutates only changed code and takes minutes.
 
 | 2026-09-04 | O93's credential gate, `--since main` (34 mutants, 4 m) | **34 caught, 0 missed, 0 unviable** — the first sweep in this log with nothing in any of the three columns but *caught*, and the shape is why: a gate is the one thing a mutation sweep proves better than any reading. Every mutant of `administering_or_forbidden` — the role comparison, the `Role::Admin` constant, the whole-body replacement — is killed by `every_administrative_route_refuses_an_api_key`, which drives all thirty-one administrative routes with a real key. **Zero unviable is itself worth noting** against the 19 the branch before it carried: those were all `Ok(Default::default())` against types deriving no `Default`, and this change adds no function returning such a type. The lesson from #106's run three still holds — this is a fact about this commit — but a gate is the case where a clean sweep says the most. |
 
+| 2026-09-05 | O95's override reframing, `--since main` (9 mutants, 2 m) | **0 survivors — 7 caught, 2 unviable — and the run is worth a row because one of the two unviable was hiding a real defect.** `field_value` (the renamed `snapshot`) returns a `FieldValue`, which derives no `Default`, so its only generated mutant is the whole-body one and it is unviable: **O88's second cause, reported as `unviable` rather than as a gap**. Hand-applying `Field::Volume => FieldValue::Number(resolved.chapter)` failed **nothing at all** across the whole workspace — the two numeric arms were exchangeable and every test still passed. That is not cosmetic: `overrides` compares two snapshots to decide whether two rules genuinely disagree, so a `Volume` chain compared on `chapter` values drops real disagreements, and since O95 the row draws the value to a person as well. `the_numeric_fields_report_their_own_values_and_not_each_others` pins both arms and fails against either swap, verified by hand in both directions. The other unviable is `overrides -> Ok(vec![Default::default()])`, benign — its `Ok(vec![])` sibling is viable and caught. **This branch also re-keyed the one accepted `preview.rs` entry below**: `690:34 … in conflicts` is now `939:34 … in overrides`, the same equivalent mutant under the renamed function, re-keyed rather than left to surface as new in the next workspace sweep. **The lesson is [[O88]]'s restated with a case**: the unviable count is not noise to skim, and the second time this file has recorded a hand-check of one finding a hole a clean run could not report |
+
 <!-- entries -->### `crates/taiyaku-cli/src/duplicates.rs`
 
 - `crates/taiyaku-cli/src/duplicates.rs:453:53: replace > with >= in contradictions`
@@ -870,12 +872,12 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-library/src/preview.rs`
 
-- `crates/taiyaku-library/src/preview.rs:690:34: replace - with / in conflicts`
+- `crates/taiyaku-library/src/preview.rs:939:34: replace - with / in overrides`
   **An equivalent mutant, verified rather than assumed.** The expression is
   `i64::MAX - (proposed.len() as i64) + index as i64`, computed once per
   unsaved (`id == 0`) rule in `proposed`, `index` its own position. The
   relabelled id it produces is never read back by anything outside this
-  function — `conflicts` uses it only as the second half of the sort key
+  function — `overrides` uses it only as the second half of the sort key
   `(relabelled[i].ordinal, relabelled[i].id)` that decides resolution order,
   never as a value compared against a real row id or against
   `crate::rules::ROOT_FALLBACK` the way `preview::rows_for`'s own `decided`
@@ -916,7 +918,7 @@ it mutates only changed code and takes minutes.
 
   It stops being equivalent the day anything downstream starts reading the
   relabelled id itself rather than only its ordering, or the day a caller
-  can reach `conflicts` with a `proposed` list long enough to shrink
+  can reach `overrides` with a `proposed` list long enough to shrink
   `i64::MAX / proposed.len()` into the range a real row id occupies.
 
 ### `crates/taiyaku-library/src/proposals.rs`

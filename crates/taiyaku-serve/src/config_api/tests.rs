@@ -150,7 +150,7 @@ async fn every_config_api_route_refuses_a_reader() {
 /// one rule in isolation answers a question nobody asked, because layering
 /// makes a rule's effect a property of its neighbours. `selected` names which
 /// rule's matched-files table to build, separately from the impact and the
-/// conflicts (properties of the list) since only the rows are about one rule.
+/// overrides (properties of the list) since only the rows are about one rule.
 #[tokio::test]
 async fn the_preview_route_answers_over_the_whole_proposed_list() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -171,7 +171,7 @@ async fn the_preview_route_answers_over_the_whole_proposed_list() {
         json["impact"]["works_rehomed"].as_u64().unwrap() > 0,
         "the appended rule retitles the scanned work's series: {json}"
     );
-    assert!(json["conflicts"].is_array(), "{json}");
+    assert!(json["overrides"].is_array(), "{json}");
     assert!(json["rows"].is_array(), "{json}");
     assert!(
         json["rows_truncated"].is_boolean(),
@@ -240,7 +240,7 @@ async fn a_matched_files_row_carries_its_own_fields_not_a_default_value() {
     );
 }
 
-/// `selected` is optional: the impact and the conflicts stand without it, and
+/// `selected` is optional: the impact and the overrides stand without it, and
 /// omitting it must not cost a row-building pass over every scan entry.
 #[tokio::test]
 async fn a_preview_with_no_rule_selected_answers_without_rows() {
@@ -411,7 +411,7 @@ async fn the_preview_route_leaves_the_rule_table_as_it_found_it() {
 
 /// [`required_i64`](crate::config_api::required_i64) feeds `rule_from_json`'s
 /// `ordinal` — the field the whole layering model orders resolution by.
-/// Nothing above ever sends two *conflicting* proposed rules through the
+/// Nothing above ever sends two *disagreeing* proposed rules through the
 /// preview route with an ordinal that disagrees with their position in the
 /// request's own `rules` array, so replacing `required_i64`'s body with
 /// `Ok(-1)` — every proposed rule's ordinal collapsing to the same constant,
@@ -572,26 +572,29 @@ async fn a_proposed_rules_own_enabled_flag_not_a_constant_true_decides_whether_i
     );
 }
 
-/// [`conflict_json`](crate::config_api::conflict_json) and
+/// [`override_json`](crate::config_api::override_json) and
 /// [`field_key`](crate::config_api::field_key) render one
-/// [`taiyaku_library::preview::Conflict`] for the preview route's own
-/// `"conflicts"` array. Nothing above ever sends two proposed rules that
+/// [`taiyaku_library::preview::Override`] for the preview route's own
+/// `"overrides"` array. Nothing above ever sends two proposed rules that
 /// actually disagree on a field through the preview route at all —
 /// `the_preview_route_answers_over_the_whole_proposed_list`'s own single
-/// appended rule has nothing to disagree with — so `json["conflicts"]`
-/// stayed an array (possibly empty) under either replacing `conflict_json`'s
-/// body with `Default::default()` (every conflict renders `null`) or
+/// appended rule has nothing to disagree with — so `json["overrides"]`
+/// stayed an array (possibly empty) under either replacing `override_json`'s
+/// body with `Default::default()` (every override renders `null`) or
 /// `field_key`'s with `""` (every field renders under the same collapsed
-/// key), and the whole suite stayed green.
+/// key), and the whole suite stayed green. It now also pins
+/// [`field_value_json`](crate::config_api::field_value_json), whose text arm
+/// is what the editor's own row reads and which nothing else in this suite
+/// reaches.
 #[tokio::test]
-async fn a_genuine_disagreement_reaches_the_preview_routes_conflicts_array() {
+async fn a_genuine_disagreement_reaches_the_preview_routes_overrides_array() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
     let listed = get_json(&router, "/api/library/rules").await;
     let existing = listed["rules"].as_array().cloned().expect("rules array");
 
     let mut proposed = existing.clone();
     // `Field::Kind`, untouched by every seeded rule — the same choice
-    // `preview::tests::one_rule_setting_a_field_across_the_library_is_not_a_conflict`
+    // `preview::tests::one_rule_setting_a_field_across_the_library_is_not_an_override`
     // makes, for the same reason: nothing else here can produce a Kind
     // disagreement by accident.
     proposed.push(serde_json::json!({
@@ -623,24 +626,105 @@ async fn a_genuine_disagreement_reaches_the_preview_routes_conflicts_array() {
 
     let json = preview_json(&router, &serde_json::json!({ "rules": proposed })).await;
 
-    let conflicts = json["conflicts"]
+    let overrides = json["overrides"]
         .as_array()
-        .expect("conflicts must be an array");
-    let kind_conflict = conflicts
+        .expect("overrides must be an array");
+    let kind_override = overrides
         .iter()
         .find(|c| c["field"] == "kind")
         .unwrap_or_else(|| {
-            panic!("two rules disagreeing on Kind must produce a real conflict entry: {json}")
+            panic!("two rules disagreeing on Kind must produce a real override entry: {json}")
         });
     assert_eq!(
-        kind_conflict["wins"].as_u64(),
+        kind_override["wins"].as_u64(),
         Some((proposed.len() - 1) as u64),
-        "{kind_conflict}"
+        "{kind_override}"
     );
     assert_eq!(
-        kind_conflict["first"].as_u64(),
+        kind_override["first"].as_u64(),
         Some((proposed.len() - 2) as u64),
-        "{kind_conflict}"
+        "{kind_override}"
+    );
+    // **The two values, which are what the editor actually draws** — O95.
+    // The indices above say *which* rules disagreed; only these say what
+    // about, and a row that named the rules and dropped the values would
+    // leave the reader to reconstruct both from two regexes and a path.
+    // `field_value_json` is reachable no other way from this suite: every
+    // other preview assertion here is about `impact` or `rows`.
+    assert_eq!(
+        kind_override["first_value"].as_str(),
+        Some("manga"),
+        "the earlier rule's own value belongs on the row: {kind_override}"
+    );
+    assert_eq!(
+        kind_override["wins_value"].as_str(),
+        Some("light-novel"),
+        "the winner's value belongs on the row: {kind_override}"
+    );
+}
+
+/// [`field_value_json`](crate::config_api::field_value_json)'s **`Number` arm**
+/// — a `volume` or `chapter` value crossing as a JSON number rather than a
+/// string or a `null`.
+///
+/// **Its own test, because nothing else in this crate reaches that arm.**
+/// Every other override fixture here and in `web/` carries text values, and
+/// `a_genuine_disagreement_reaches_the_preview_routes_overrides_array` above
+/// asserts `as_str()` on a `kind` row. Measured: replacing the whole arm with
+/// `serde_json::Value::Null` left **537 of 537** tests in this crate passing.
+/// The editor would then draw every numeric row as
+/// *"rule 2 `builtin-volume` → unset / rule 3 → unset (wins)"* — a row
+/// asserting a disagreement above two identical blanks — with CI green.
+///
+/// **This is the same hole one layer up**, which
+/// `preview::tests::the_numeric_fields_report_their_own_values_and_not_each_others`
+/// closed for `preview::field_value`'s two numeric arms; the wire arm did not
+/// get the matching assertion until the second whole-branch review asked for
+/// it. `docs/mutants-baseline.md`'s 2026-09-05 row carries why a sweep cannot
+/// see either of them.
+#[tokio::test]
+async fn a_numeric_override_crosses_the_wire_as_a_number() {
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let listed = get_json(&router, "/api/library/rules").await;
+    let mut proposed = listed["rules"].as_array().cloned().expect("rules array");
+
+    // Seeded `builtin-volume` reads `Scanned - v01` as 1; this reads the
+    // leading zero of the same token as 0. A genuine disagreement on a
+    // numeric field, which is the only way to get one of these rows at all.
+    proposed.push(serde_json::json!({
+        "ordinal": 500,
+        "enabled": true,
+        "root_id": null,
+        "kind": "regex",
+        "pattern": "v(?<volume>0)",
+        "match_on": "name",
+        "set_series": null,
+        "set_edition_key": null,
+        "set_kind": null,
+        "set_language": null,
+        "note": "the leading zero, disagreeing with builtin-volume",
+    }));
+
+    let json = preview_json(&router, &serde_json::json!({ "rules": proposed })).await;
+    let overrides = json["overrides"]
+        .as_array()
+        .expect("overrides must be an array");
+    let volume = overrides
+        .iter()
+        .find(|o| o["field"] == "volume")
+        .unwrap_or_else(|| panic!("a volume disagreement must reach the wire: {json}"));
+
+    // `as_f64`, not `as_str`: the arm's whole job is that a number stays a
+    // number rather than arriving as `"1"` for the client to parse back.
+    assert_eq!(
+        volume["first_value"].as_f64(),
+        Some(1.0),
+        "builtin-volume's own reading of v01: {volume}"
+    );
+    assert_eq!(
+        volume["wins_value"].as_f64(),
+        Some(0.0),
+        "the winning capture's reading of the same token: {volume}"
     );
 }
 
@@ -929,7 +1013,7 @@ async fn listing_rules_reports_a_pattern_that_does_not_compile() {
 }
 
 /// MINOR 5 — the proposed list itself, not just the matched-files table, has
-/// a cap: `preview::conflicts` is quadratic in its length, and nothing but
+/// a cap: `preview::overrides` is quadratic in its length, and nothing but
 /// axum's 2 MB body default bounded it before this existed.
 ///
 /// **`TOO_MANY` is a literal, not `MAX_PROPOSED_RULES + 1`.** Deriving the
@@ -1208,7 +1292,7 @@ async fn patching_a_rules_pattern_writes_the_sent_string() {
 
 /// A library with `count` `scan_entry` rows under one root, written directly
 /// rather than through a real scan or real files — `preview::rows_for` and
-/// `preview::conflicts` read only `scan_entry` and `root`, and
+/// `preview::overrides` read only `scan_entry` and `root`, and
 /// `hand::load`'s own doc comment (`preview.rs`) is what makes deriving over
 /// a root with nothing on disk answer `Ok(None)` rather than fail: nothing
 /// this route touches needs a byte on disk to exist. Building this any other

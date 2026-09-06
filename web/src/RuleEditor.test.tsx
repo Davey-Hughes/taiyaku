@@ -4,7 +4,7 @@ import * as config from './config'
 import * as curation from './curation'
 import { RuleEditor } from './RuleEditor'
 import * as rulesApi from './rules'
-import type { Impact, Preview, Rule, Saved } from './rules'
+import type { Impact, Override, Preview, Rule, Saved } from './rules'
 import { mount } from './testing/mount'
 
 vi.mock('./rules', async (importOriginal) => ({
@@ -50,11 +50,23 @@ const impact = (over: Partial<Impact> = {}): Impact => ({
   ...over,
 })
 
+const anOverride = (over: Partial<Override> = {}): Override => ({
+  field: 'series',
+  rel_path: 'a/b',
+  first: 0,
+  wins: 1,
+  first_value: 'A',
+  wins_value: 'B',
+  others: 0,
+  examples: 3,
+  ...over,
+})
+
 const previewBody = (over: Partial<Preview> = {}): Preview => ({
   impact: impact(),
   rows: [],
   rows_truncated: false,
-  conflicts: [],
+  overrides: [],
   ...over,
 })
 
@@ -753,29 +765,37 @@ describe('RuleEditor', () => {
     expect(host.textContent).toContain('12')
   })
 
-  it('reorders from the Conflicts tab’s own button, the same as a drag would', async () => {
+  it('reorders from the Overrides tab’s own button, the same as a drag would', async () => {
     // `PreviewTabs` carries its own `onReorder`, wired separately from
     // `RuleList`'s drag-and-drop — this is the only path that exercises it.
     vi.mocked(rulesApi.previewRules).mockResolvedValue(
       previewBody({
-        conflicts: [
-          {
-            field: 'series',
-            rel_path: 'a/b',
-            first: 0,
-            wins: 1,
-            others: 0,
-            examples: 3,
-          },
-        ],
+        overrides: [anOverride()],
       }),
     )
     const host = await render()
-    await clickText(host, 'Conflicts')
+    await clickText(host, 'Overrides')
     vi.mocked(rulesApi.previewRules).mockClear()
     await clickText(host, 'Move rule 2 above rule 1')
     const sent = vi.mocked(rulesApi.previewRules).mock.calls[0][0]
     expect(sent.map((r) => r.pattern)).toEqual(['Colour/.*', 'Manga/.*'])
+  })
+
+  it('opens the winning rule in the form from an override row', async () => {
+    // **O95's second option, and the only path that exercises it.** "Edit
+    // rule 2" is how a person narrows the rule that won, which no button can
+    // do for them — and it must select the *winner*, since selecting the
+    // loser would put the wrong regex in front of them. Selecting a rule is
+    // also a preview trigger, so the request that follows is the proof it
+    // actually selected one.
+    vi.mocked(rulesApi.previewRules).mockResolvedValue(
+      previewBody({ overrides: [anOverride()] }),
+    )
+    const host = await render()
+    await clickText(host, 'Overrides')
+    vi.mocked(rulesApi.previewRules).mockClear()
+    await clickText(host, 'Edit rule 2')
+    expect(vi.mocked(rulesApi.previewRules).mock.calls[0][1]).toBe(1)
   })
 
   it('draws a failure instead of exporting when a rule scopes to a root this library does not have', async () => {

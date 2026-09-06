@@ -342,15 +342,15 @@ pub(crate) fn a_rule_setting_series(series: &str) -> crate::rules::Rule {
 /// setting `edition_key = "en-color"` for anything ending "Full Color" — both
 /// matching `Manga (RAW)/Go-Toubun no Hanayome - Full Color`, the later
 /// winning, a Japanese colour edition reading as English. For
-/// `crate::preview::tests`'s conflict-detection tests.
+/// `crate::preview::tests`'s override-detection tests.
 ///
 /// **The seeded four never touch `edition_key` at all** (migration 3 seeds
 /// only series/volume/chapter rules), so the pair added here is the *only*
-/// source of the conflict — nothing about `library_with_two_roots`' own
+/// source of the override — nothing about `library_with_two_roots`' own
 /// series-capturing rules (which two of the seeded four already are) is
 /// entangled with it.
 ///
-/// **A directory row, not the archive itself, is where the conflict lands.**
+/// **A directory row, not the archive itself, is where the override lands.**
 /// `scan_root` writes a `scan_entry` for every directory level, not only
 /// leaf files — `Manga (RAW)/Go-Toubun no Hanayome - Full Color` is one such
 /// row, and it is the only entry both new rules match: the raw-edition
@@ -360,7 +360,7 @@ pub(crate) fn a_rule_setting_series(series: &str) -> crate::rules::Rule {
 /// filename underneath it (`… - v01.cbz`) does not.
 ///
 /// **Saved, not merely proposed** — through [`crate::rules::replace_all`]
-/// directly on the shared connection, since `crate::preview::conflicts`
+/// directly on the shared connection, since `crate::preview::overrides`
 /// reads `proposed` from `crate::rules::read`, which only ever sees what is
 /// actually in the `rule` table.
 pub(crate) fn library_with_the_seeded_defaults() -> FixtureLibrary {
@@ -411,7 +411,87 @@ pub(crate) fn library_with_the_seeded_defaults() -> FixtureLibrary {
             note: Some("C4 §1: anything ending \"Full Color\" is the colour edition".to_string()),
         });
         crate::rules::replace_all(&conn, &rules)
-            .expect("saving the seeded defaults plus C4 §1's own conflicting pair");
+            .expect("saving the seeded defaults plus C4 §1's own disagreeing pair");
+    }
+    FixtureLibrary { library, dir }
+}
+
+/// A library shaped the way O95 found the real one: two series whose
+/// **directory** carries an edition or group suffix that their **filenames**
+/// do not — `Death Note (Colored Council)/Death Note v01.cbz` and
+/// `Chainsaw Man - Digital Colored Comics/Chainsaw Man v01.cbz`.
+///
+/// **Nothing is added to the seeded four.** That is the point: migration 3's
+/// rule 1 reads the series from the directory, its rule 4 reads it from the
+/// filename "where it repeats it", rule 4 wins on ordinal, and **that is what
+/// folds a colour edition into its main series** rather than a mistake to
+/// reorder away. `crate::preview::overrides` reports it, correctly, and the
+/// editor states it as an observation — `docs/status.md`, O95.
+///
+/// **Not a contrived shape.** Measured on the real library 2026-09-05: 27 of
+/// 128 directories, 21%, carry a filename stem differing from their
+/// directory.
+///
+/// **Two of them, not one, and with different series either side.** Both
+/// files produce the same `(Series, rule 1, rule 4)` triple and *different*
+/// values, which is the one arrangement that can tell a row carrying its own
+/// example's values apart from a row carrying whichever entry happened to be
+/// walked last.
+///
+/// **The directory rows themselves contribute nothing**, which is what keeps
+/// `examples` readable as "two archives": rule 1's `^(?<series>[^/]+)/` needs
+/// a separator a bare directory `rel_path` does not have, and rule 4's
+/// `^(?<series>.+?)[ _-]+v` needs a `v` after a separator that neither
+/// directory name carries.
+pub(crate) fn library_with_colour_edition_directories() -> FixtureLibrary {
+    let dir = tempdir("preview-colour-edition-directories");
+    for (directory, file) in [
+        ("Death Note (Colored Council)", "Death Note v01.cbz"),
+        (
+            "Chainsaw Man - Digital Colored Comics",
+            "Chainsaw Man v01.cbz",
+        ),
+    ] {
+        crate::scan::tests::write_archive(&dir.path.join(directory).join(file), 3);
+    }
+
+    let library = Library::open_in_memory().expect("an in-memory library opens");
+    {
+        let conn = library.conn();
+        let root = crate::scan::add_root(&conn, &dir.path).expect("adding the root");
+        crate::scan::scan_root(&conn, &root).expect("scanning the root");
+    }
+    FixtureLibrary { library, dir }
+}
+
+/// A library whose series name begins with a run of letters that
+/// `str::parse::<f64>()` reads as **not a number** — `Nanatsu no Taizai`,
+/// whose first three characters are `Nan`.
+///
+/// **Not contrived, and that is the point.** `rules::apply_captures` parses a
+/// `volume` or `chapter` capture with a bare `str::parse::<f64>()`, which
+/// accepts `nan`, `inf`, `infinity` and overflowing literals — so a capture
+/// group aimed at a filename and slightly too wide really does produce one,
+/// off a real series title, without anybody writing `nan` on purpose.
+///
+/// It exists for `preview::FieldValue::agrees_with`: two rules that both
+/// capture `Nan` produce two `NaN`s, and `NaN != NaN`, so a *derived*
+/// comparison reports them as disagreeing with each other when they read the
+/// same three characters off the same file.
+pub(crate) fn library_with_a_name_that_parses_as_not_a_number() -> FixtureLibrary {
+    let dir = tempdir("preview-not-a-number");
+    crate::scan::tests::write_archive(
+        &dir.path
+            .join("Nanatsu no Taizai")
+            .join("Nanatsu no Taizai v01.cbz"),
+        3,
+    );
+
+    let library = Library::open_in_memory().expect("an in-memory library opens");
+    {
+        let conn = library.conn();
+        let root = crate::scan::add_root(&conn, &dir.path).expect("adding the root");
+        crate::scan::scan_root(&conn, &root).expect("scanning the root");
     }
     FixtureLibrary { library, dir }
 }

@@ -15031,8 +15031,9 @@ scan runs is an ordinary thing to do, and this is the number that says what
 happens.
 
 **Not measured:** a library of thousands of series, which §11 names and
-nothing here answers; and the cost with conflict detection running alongside,
-which is quadratic in rules and was measured on four.
+nothing here answers; and the cost with override detection running alongside,
+which is quadratic in rules and was measured on four. *(It was called conflict
+detection until O95 closed on 2026-09-05; nothing about the cost changed.)*
 
 ## What a `VACUUM INTO` of the real library costs — 2026-09-04
 

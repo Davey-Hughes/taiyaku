@@ -54,7 +54,7 @@ beforeEach(() => {
     },
     rows: [],
     rows_truncated: false,
-    conflicts: [],
+    overrides: [],
   })
   vi.mocked(curation.listProposals).mockResolvedValue({
     proposals: [],
