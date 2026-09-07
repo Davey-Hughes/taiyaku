@@ -995,3 +995,60 @@ async fn a_roots_list_naming_a_root_that_does_not_exist_is_the_callers_mistake()
         "and no grant was written"
     );
 }
+
+/// C4 §6.2: the expanded card shows "whether it is the browser doing the
+/// asking", so a person can tell which row is the session in front of them
+/// before revoking one.
+///
+/// **It was `false` for every session on this route.** `assembled` passed
+/// `None` where `session::list_sessions` passes `token_of(&headers)`, so the
+/// field shipped as a constant — on the one screen where revoking the wrong
+/// row signs the administrator out of the browser they are working in.
+#[tokio::test]
+async fn the_user_list_marks_the_session_doing_the_asking_and_no_other() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+
+    // A second account with a session of its own, so "marked" cannot pass by
+    // marking everything.
+    let reader = a_reader(&router, &state).await;
+    {
+        let conn = state.library.conn();
+        taiyaku_library::account::open_session(
+            &conn,
+            reader,
+            "a-readers-token",
+            Some("another browser"),
+            None,
+        )
+        .expect("opens the reader's session");
+    }
+
+    let json = get_json(&router, "/api/library/users").await;
+    let users = json["users"].as_array().expect("a users array");
+
+    let admin = users
+        .iter()
+        .find(|u| u["id"] == 1)
+        .expect("the fixture administrator");
+    let marked = admin["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .filter(|s| s["current"] == true)
+        .count();
+    assert_eq!(
+        marked, 1,
+        "exactly the session this request arrived on is the current one: {json}"
+    );
+
+    let other = users
+        .iter()
+        .find(|u| u["id"] == reader)
+        .expect("the reader");
+    let reader_sessions = other["sessions"].as_array().expect("sessions");
+    assert_eq!(reader_sessions.len(), 1, "{json}");
+    assert_eq!(
+        reader_sessions[0]["current"], false,
+        "another account's session is never the browser doing the asking: {json}"
+    );
+}

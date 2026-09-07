@@ -265,8 +265,27 @@ last carrying its count on the tab strip, so a conflict is never hidden behind
 a tab nobody clicked. A rule an accepted proposal wrote is marked, and deleting
 it says which proposal that reopens before it does anything.
 
-User administration and backup are the one UI PR after this; their routes are
-already here.
+**And the last two tabs are built**, at `/config/users` and `/config/backup`.
+One card per account: its role, whether it may download and stream, which roots
+it may see — an empty list is *unrestricted*, and the card says so, because the
+empty state and a failed read look identical and mean opposite things — and,
+when expanded, its open sessions and its API keys, each revocable one at a time
+for the device that was lost. The account this browser is signed in as is
+marked, and so is the session in front of you, so revoking one is not a guess.
+The two things that would lock a library out of its own administration are
+refused by the server and drawn as one reason over both controls: the last
+administrator who can log in can be neither removed nor demoted, and nobody may
+demote themselves. Resetting somebody's password ends every session they have
+and leaves their API keys alone; resetting your own is refused here and belongs
+to the account panel, which is still reachable only from inside the reader by
+pressing `A`. Removing an account states five counts and the name first, and
+takes no work, edition or member with it.
+
+The backup tab takes one now, lists what exists with a download link each, and
+says the four things a button cannot: restore is out of band, a backup is the
+whole database — password hashes included — a sidecar export is not a backup,
+and the schedule is the cron entry above rather than anything inside the
+server.
 
 To read in the browser, build the WebAssembly binding first, then run the reader
 against `serve --db`. The browser opens on a **library** now, not a single work —

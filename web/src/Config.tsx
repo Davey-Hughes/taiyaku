@@ -24,14 +24,18 @@
  * screen is a red test rather than a dead link.
  */
 import { Navigate, NavLink, Route, Routes } from 'react-router'
+import { Backup } from './Backup'
 import { TABS } from './config'
 import { RuleEditor } from './RuleEditor'
 import { Roots } from './Roots'
+import { Users } from './Users'
 
 /** Which component draws each tab. Keyed by `Tab.path`. */
 const SCREENS: Record<string, React.ReactNode> = {
   rules: <RuleEditor />,
   roots: <Roots />,
+  users: <Users />,
+  backup: <Backup />,
 }
 
 export function Config() {

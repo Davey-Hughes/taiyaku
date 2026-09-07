@@ -1507,3 +1507,118 @@ body {
   font-size: 0.9em;
   opacity: 0.7;
 }
+
+/* Spec C4 §4's users screen and §5's backup screen. System colours, as the
+   settings-area comment above requires and `index.css.test.ts` checks. */
+.users .user-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.user-row {
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  padding: 1rem;
+}
+
+.user-row h3 {
+  margin: 0;
+}
+
+.user-row .why,
+.user-row .locked {
+  font-size: 0.9em;
+  opacity: 0.8;
+}
+
+.user-row .fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.user-row .grant-list,
+.user-row .session-list,
+.user-row .key-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.user-row .session-list li,
+.user-row .key-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+}
+
+.user-row .session-list .when,
+.user-row .key-list .when {
+  opacity: 0.8;
+  font-size: 0.9em;
+}
+
+.user-row .session-list .current {
+  font-weight: 600;
+}
+
+/* What is left of an account whose removal worked and whose list read did
+   not: no controls, and a line saying so. */
+.user-row.removed .gone {
+  opacity: 0.8;
+}
+
+.user-row .actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+/* The heavier border `.remove-root` carries, for the same reason: this is the
+   second-most destructive route in the product. */
+.remove-user {
+  border: 2px solid color-mix(in srgb, currentColor 50%, transparent);
+  border-radius: 4px;
+  padding: 1rem;
+}
+
+.remove-user .counts {
+  font-weight: 600;
+}
+
+.users .add-user label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.backup .backup-list {
+  list-style: none;
+  margin: 1rem 0;
+  padding: 0;
+}
+
+.backup .backup-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.25rem 0;
+}
+
+.backup .backup-list .when,
+.backup .backup-list .size {
+  opacity: 0.8;
+}
+
+.backup .what-a-backup-is {
+  margin-top: 1.5rem;
+  border-top: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  padding-top: 1rem;
+  max-width: 60ch;
+}

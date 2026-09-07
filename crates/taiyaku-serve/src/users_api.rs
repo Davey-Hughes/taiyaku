@@ -146,12 +146,24 @@ fn user_json(
 }
 
 /// Read one account's sessions, keys and grants and render it whole.
+///
+/// **`current_token` is the caller's own session cookie**, and it is a
+/// parameter rather than `None` because [`SessionSummary::current`] is
+/// otherwise a constant on this route: it was, and C4 §6.2's "whether it is
+/// the browser doing the asking" was a field that shipped and never said yes —
+/// on the one screen where revoking the wrong row signs the administrator out
+/// of the browser they are working in. Only the caller's own account can hold
+/// a session whose sha256 matches, so passing it for every account is correct
+/// rather than merely harmless: [`account::sessions_of`] compares hashes, and
+/// inverting one is the sha256 preimage problem. `session::list_sessions` has
+/// passed it since spec A2; this route is the one that did not.
 fn assembled(
     conn: &rusqlite::Connection,
     account: &Account,
     can_log_in: bool,
+    current_token: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    let sessions = account::sessions_of(conn, account.id, None)?;
+    let sessions = account::sessions_of(conn, account.id, current_token)?;
     let keys = account::keys_of(conn, account.id)?;
     let roots = account::granted_roots(conn, account.id)?;
     Ok(user_json(account, can_log_in, &sessions, &keys, &roots))
@@ -163,16 +175,18 @@ pub(crate) async fn list_users(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
     extensions: axum::http::Extensions,
+    headers: axum::http::HeaderMap,
 ) -> Response {
     if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
+    let token = crate::session::token_of(&headers);
 
     let built = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
         let mut rendered = Vec::new();
         for (account, can_log_in) in account::list(&conn)? {
-            rendered.push(assembled(&conn, &account, can_log_in)?);
+            rendered.push(assembled(&conn, &account, can_log_in, token.as_deref())?);
         }
         Ok::<_, String>(rendered)
     })
@@ -235,7 +249,11 @@ pub(crate) async fn create_user(
         let account = account::by_id(&conn, id)
             .map_err(UserAnswer::Failed)?
             .ok_or(UserAnswer::Missing(id))?;
-        assembled(&conn, &account, true).map_err(UserAnswer::Failed)
+        // **`None`, and not the caller's token.** An account created a moment
+        // ago has no sessions at all, so there is nothing here for a token to
+        // match — and the caller's session belongs to a different account by
+        // construction.
+        assembled(&conn, &account, true, None).map_err(UserAnswer::Failed)
     })
     .await;
 
@@ -345,11 +363,16 @@ pub(crate) async fn patch_user(
     Extension(principal): Extension<Principal>,
     extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
     if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
+    // An administrator patching their *own* capabilities gets their own row
+    // back, and a row disagreeing with the list about which session is current
+    // would be a screen contradicting itself one render later.
+    let token = crate::session::token_of(&headers);
     let patch = match user_patch_from_json(&body) {
         Ok(read) => read,
         Err(why) => return UserAnswer::Unusable(why).into_response(),
@@ -387,7 +410,7 @@ pub(crate) async fn patch_user(
         // a failed request.
         let account = account::update(&conn, id, &patch, Some(acting_as)).map_err(answered)?;
         let can = can_log_in(&conn, id).map_err(UserAnswer::Failed)?;
-        assembled(&conn, &account, can).map_err(UserAnswer::Failed)
+        assembled(&conn, &account, can, token.as_deref()).map_err(UserAnswer::Failed)
     })
     .await;
 

@@ -3,8 +3,10 @@ import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from './config'
 import { Config } from './Config'
+import * as backupApi from './backup'
 import * as curation from './curation'
 import * as rulesApi from './rules'
+import * as usersApi from './users'
 import { mount } from './testing/mount'
 
 vi.mock('./config', async (importOriginal) => ({
@@ -19,6 +21,14 @@ vi.mock('./rules', async (importOriginal) => ({
 vi.mock('./curation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./curation')>()),
   listProposals: vi.fn(),
+}))
+vi.mock('./users', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./users')>()),
+  listUsers: vi.fn(),
+}))
+vi.mock('./backup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./backup')>()),
+  listBackups: vi.fn(),
 }))
 
 async function at(entry: string) {
@@ -60,6 +70,8 @@ beforeEach(() => {
     proposals: [],
     counts: {},
   })
+  vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [] })
+  vi.mocked(backupApi.listBackups).mockResolvedValue({ backups: [] })
 })
 
 describe('Config', () => {

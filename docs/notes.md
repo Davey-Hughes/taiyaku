@@ -15162,3 +15162,90 @@ session: `75c20e25f913ec55ecde79173dbb6f8e5a89a6baf1fc5258337e23563430fb13`
 both times, and `find … -name .taiyaku` finds none. The root's
 `keeps_documents` is `0`, so nothing should have been written under it, and
 this is the measurement rather than the assumption.
+
+## The users and backup screens against a real library — 2026-09-06
+
+C4 PR C, driven end to end against a **copy** of the real library at
+`/home/davey/temp/manga-test/library.db` — 3,534,848 bytes, the same 130-series
+library every figure since 2026-09-03 is measured on. The copy is the whole
+isolation: the server was started with `--db` pointing at it, and the original's
+sha256 is `d1111d80beebab85479b8266dc00814b7a5bbca207bd4aae9ad4dcbc19fa0dce`
+**before and after the session**, unchanged. Two accounts on the copy —
+`local` (admin, the account the library already had) and `alice` (reader, added
+for this) — with a session each and one API key.
+
+**`GET /api/library/users` costs 0.3–0.7 ms** over the loopback, five
+consecutive requests: 0.674, 0.479, 0.376, 0.328, 0.291 ms. The route assembles
+three queries per account — sessions, keys, grants — so the figure is *two
+accounts' worth*, and what is **not** measured here is a library with fifty of
+them. That is the honest limit of this number: it says the shape is cheap, not
+that it scales, and nothing on this branch depends on the latter.
+
+**The flag this branch added is true end to end.** With Chrome signed in and a
+`curl` session open on the same account, the list marked exactly one session
+`current: true` — the browser's — and `false` for the other and for `alice`'s.
+Read off the rendered card as well as the JSON: the Chrome row draws **this
+browser** and the `curl` row (`user_agent: the admin browser`) does not. Before
+this branch the field was `false` for every row, on the screen where revoking
+the wrong one signs the administrator out.
+
+**`POST /api/library/backups` costs 7.2 ms and 6.3 ms** through the route,
+against the 6 ms median the CLI measured on 2026-09-04 — the same `VACUUM INTO`
+plus HTTP, a session lookup and `spawn_blocking`. Output 3,338,240 bytes from a
+3,534,848-byte database, which is the vacuum reclaiming free pages rather than
+anything the route does.
+
+**The same-second collision reproduces.** Two `POST`s issued concurrently after
+a backup had already been taken that second both answered **409** with the
+store's own sentence — *"a backup named library-20260907T034309Z.db is already
+there; the name carries a whole-second timestamp, so a second backup inside the
+same second has nowhere to go"*. The screen renders that sentence rather than
+classifying by status, which is deliberate: the in-memory-library refusal is
+also a 409, and a screen reading the number would have to guess which it had.
+
+**The download hands over the file, exactly.** `GET
+/api/library/backups/library-20260907T034309Z.db` answered 200,
+`content-type: application/vnd.sqlite3`,
+`content-disposition: attachment; filename="…"`, `content-length: 3338240`, and
+the bytes' sha256 is identical to the file on disk
+(`6496937690c1e7eda2f52862514ef44a17f77eb715a888c888a43cfaa6cc7c83`). Measured
+with `curl` rather than through the browser deliberately: a browser download is
+the one thing the request log reports as **0 bytes**, so the browser cannot be
+the witness here.
+
+**What the pixels found that the tests did not.** One defect, in copy: the add
+form's paragraph carried a markdown backtick pair around `004_auth.sql` and
+drew them as themselves. It is `<code>` now. Everything else the screens claim
+was confirmed as drawn — the sole administrator's role control and Remove both
+dead with one reason beside them, `local — this is you`, the removal dialog
+reading *"Removing alice takes 0 in-progress positions, 0 notes, 1 open
+session, 1 API key and 0 root grants"* with correct singulars, and the backup
+list newest-first at `3.2 MiB` each.
+
+**Re-driven after the review round**, on the same copy: the backticks are two
+elements now, ticking a root on `alice` sent `roots: [1]`, the store answered
+with the grant, and the card came back live with the box ticked — which is the
+*hold* working, since the controls are dead from the click until the list read
+that follows it lands. The real library's sha256 was unchanged again
+afterwards.
+
+**Counts after this branch:** 2028 Rust tests (from 2027 — Task 1's one server
+test), and 2,006 in `web/` (1,146 `node`, 860 `jsdom`), from 1,933. The 73 new
+web tests are 19 in the two clients and 54 across the three screens. **Fifteen
+of those fifty-four were written after the screens were finished**, counted per
+commit rather than estimated: 39 stood before any review, 2 came from a
+self-review round, and the four whole-branch passes' fix rounds added 3, 3, 4
+and 3.
+
+**Four passes, fifteen findings, and they did not converge: 5, then 3, then 4,
+then 3.** Every finding of passes 2, 3 and 4 lived inside a fix an earlier pass
+had produced — the same shape #108 recorded over four passes and #110 over
+three. What *did* fall is severity rather than rate: pass 1 found a control
+that silently revoked a grant, pass 4 found three narrow races (a tombstone
+outliving its account through a reused React key, a revocation writing back a
+click-time snapshot, and two dry runs answering out of order). **A fifth pass
+was not commissioned**, on spec A2's own precedent: the rate is a fact about
+the process rather than about the code, and what measures whether a test can
+see a defect is hand-applying it — which every fix on this branch has had, and
+every one of the nineteen review-written tests fails against the defect it
+names.

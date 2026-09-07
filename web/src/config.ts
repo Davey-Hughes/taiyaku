@@ -36,6 +36,8 @@ export interface Tab {
 export const TABS: Tab[] = [
   { path: 'rules', label: 'Rules' },
   { path: 'roots', label: 'Roots' },
+  { path: 'users', label: 'Users' },
+  { path: 'backup', label: 'Backup' },
 ]
 
 /** One `root` row, as `GET /api/library/roots` sends it. */
