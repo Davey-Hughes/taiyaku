@@ -15249,3 +15249,76 @@ the process rather than about the code, and what measures whether a test can
 see a defect is hand-applying it — which every fix on this branch has had, and
 every one of the nineteen review-written tests fails against the defect it
 names.
+
+## O99: the document stamp, reproduced rather than waited for — 2026-09-06
+
+**The failure came from CI run 437's push job on `main`**, not from a branch,
+and not from anything this session ran. Read back off the forge rather than
+quoted from a report: job `test` (id 7165) failed at
+`preview/tests.rs:292:5`, 1109 passed and 1 failed of the 2027 that run held,
+and the two trees differed in one file and one field —
+`"updated": "2026-09-06T21:28:50Z"` against `"…49Z"` inside
+`<root>/.taiyaku/<content_key>.library.json`, every other byte equal, the
+archive beside it identical.
+
+*(The local reproduction below produced its own pair, `05:28:20Z` against
+`05:28:19Z` on 2026-09-07. Same defect, different clock; the CI pair above is
+the one that is evidence of anything.)*
+
+**Reproduced deterministically before anything was edited**, by copying the
+test and sleeping 1.1 s between the settled snapshot and `preview::apply` — the
+one variable, and the only change. It fails every run, and the instrumented
+diff names exactly one path and one field. The stamp comes from
+`librarydoc::of`, which fills `updated` from
+`SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')` at projection time; no column
+holds it, so two projections of an unchanged work differ whenever a wall-clock
+second falls between them. `hand::reconcile` already normalises that field
+before deciding whether a document is stale, and says why in its own comment:
+comparing it would report every reachable document stale, including one written
+a moment ago.
+
+**Why the fix is a second helper rather than a change to `tree_snapshot`.**
+Four call sites, and only one of them spans a write. The other three —
+`a_preview_leaves_the_library_tree_byte_identical`,
+`skipping_documents_leaves_the_library_tree_byte_identical` and
+`removal_cost_touches_no_file_on_disk` — each assert that an operation wrote
+*nothing*, so for them a rewrite that moved only the stamp is exactly the
+defect the comparison exists to catch. Normalising inside the shared helper
+would have blinded three tests to close one flake.
+
+**Three checks on the fix, run in this order.**
+
+1. The fixed test, with the 1.1 s sleep still in it: **passes**. The same sleep
+   that made it fail deterministically no longer does.
+2. The same sleep, plus `Documents::Reconcile` hand-swapped for `Skip` at
+   `preview.rs:651`: **fails**, on its own assertion — *"a save derives under
+   Documents::Reconcile, so it repairs the gap it found"*. The normalisation
+   cost the test nothing of what it is for.
+3. `NORMALISED_STAMP.clone_into(&mut doc.updated)` removed from the helper:
+   `normalising_the_stamp_hides_a_second_and_hides_nothing_else` **fails**.
+
+**The third test exists because the flake cannot be proved from the test that
+carried it.** What differs is two projections a second apart, and a unit test's
+two writes land inside the same second almost every time — which is why this
+survived from #109 until a CI run happened to straddle a boundary. So the
+normalisation is proved directly, on the two stamps that run produced, rather
+than by leaving a 1.1 s sleep in the suite. Its last two assertions are what
+keep it honest: a helper that returned an empty map, or dropped documents,
+would satisfy the equality and fail the inequality after it, and one that tried
+to parse every file under the root would panic on the archive beside it.
+
+**The mutation sweep examined nothing, and that is the correct result rather
+than a clean bill.** `scripts/mutants.sh --since main` answers *"No mutants to
+filter"*: every line this branch changes is test code — a `pub(crate)` helper
+under `#[cfg(test)]`, a test, and one call site — and `cargo-mutants` does not
+mutate test code. Read as coverage it would say the branch is fully caught;
+what it actually says is that it had nothing to look at. The three hand-applied
+defects above are the whole of the evidence here. It is O87's point arriving
+from a third direction — after a mutant caught only across a crate boundary,
+and an `unviable` hiding a live hole — in its cheapest form: a sweep reporting
+zero is a fact about the sweep until you check what it ran on. `--since main`
+also reported no survivor outside the baseline, which is true and equally
+uninformative about this branch.
+
+**Counts after this branch:** 2029 Rust tests, from 2028 — the one new test
+above. `web/` unchanged at 2,006.

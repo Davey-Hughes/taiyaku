@@ -853,6 +853,117 @@ fn collect_files(dir: &Path, found: &mut BTreeMap<PathBuf, Vec<u8>>) {
     }
 }
 
+/// What [`tree_snapshot_stamps_normalised`] writes in place of a real stamp.
+/// Deliberately not a timestamp, so a value that reached a comparison
+/// unnormalised reads as one in the failure output rather than as a near-miss.
+const NORMALISED_STAMP: &str = "<stamp normalised for comparison>";
+
+/// [`tree_snapshot`], with every `.library.json`'s `updated` stamp replaced by
+/// [`NORMALISED_STAMP`] — for the one comparison in this crate that spans a
+/// write the document is *supposed* to receive.
+///
+/// **Why the stamp cannot be compared.** [`crate::librarydoc::of`] fills
+/// `updated` from `strftime('%Y-%m-%dT%H:%M:%SZ', 'now')` at projection time
+/// and nothing in the schema holds it, so two projections of an *unchanged*
+/// work differ whenever a wall-clock second falls between them.
+/// [`crate::hand::reconcile`] normalises the same field for the same reason
+/// before deciding whether a document on disk is stale, and its comment says
+/// what comparing it would cost there: every reachable document reported
+/// stale, including one written a moment ago. Here it cost a flake — O99.
+///
+/// **Why this is a second function rather than a change to `tree_snapshot`,
+/// and has to stay one.** The crate's three other snapshot comparisons each
+/// assert that something wrote *nothing* — a preview, a `Documents::Skip`
+/// derivation, and `scan::removal_cost`. For those a rewrite that changed
+/// only the stamp is precisely the defect they exist to catch, since the
+/// file's bytes moving at all is the whole signal. Normalising inside
+/// `tree_snapshot` would blind all three to close one flake.
+///
+/// **What this normalises is wider than the stamp, and saying only "the
+/// stamp" would overstate it.** A document is compared as a `LibraryDoc`
+/// parsed and re-serialised, not as the bytes on disk, so two documents whose
+/// content agrees but whose formatting does not also compare equal. That
+/// costs the one caller nothing — both of its documents are written by the
+/// same `to_json`, so there is no formatting difference to hide — but it is
+/// what the code does, and a document that will not parse is a panic here
+/// rather than a comparison.
+pub(crate) fn tree_snapshot_stamps_normalised(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    tree_snapshot(root)
+        .into_iter()
+        .map(|(path, bytes)| {
+            if !path.to_string_lossy().ends_with(".library.json") {
+                return (path, bytes);
+            }
+            let text = String::from_utf8(bytes).expect("a library document is UTF-8");
+            let mut doc = crate::librarydoc::LibraryDoc::from_json(&text)
+                .expect("a library document under a fixture root parses");
+            NORMALISED_STAMP.clone_into(&mut doc.updated);
+            (path, doc.to_json().into_bytes())
+        })
+        .collect()
+}
+
+/// **The flake this normalisation closes cannot be seen by running the test
+/// that carried it.** What differs is two projections a second apart, and a
+/// unit test's two writes land inside the same second almost every time —
+/// which is why the defect survived from #109 until a CI run happened to
+/// straddle a boundary. So the normalisation is proved here directly, on the
+/// two stamps that run actually produced (`21:28:49Z` and `21:28:50Z`),
+/// rather than by a sleep in the test that needs it.
+///
+/// **The last two assertions are what keep this honest.** A normalisation
+/// that returned an empty map, or dropped documents entirely, would satisfy
+/// the equality above and destroy every comparison built on it; and one that
+/// tried to parse every file under the root would panic on the archive.
+#[test]
+fn normalising_the_stamp_hides_a_second_and_hides_nothing_else() {
+    let dir = tempdir("stamp-normalisation");
+    let document = dir.path.join(".taiyaku").join("abc.library.json");
+    std::fs::create_dir_all(document.parent().expect("the document has a parent"))
+        .expect("creating .taiyaku/");
+    let archive = dir.path.join("Series - v01.cbz");
+    std::fs::write(&archive, b"PK\x03\x04 not really a zip").expect("writing the archive");
+
+    let write_document = |updated: &str, title: &str| {
+        std::fs::write(
+            &document,
+            format!(
+                "{{\n  \"taiyaku_library\": 1,\n  \"updated\": \"{updated}\",\n  \"title\": \"{title}\"\n}}"
+            ),
+        )
+        .expect("writing the document");
+    };
+
+    write_document("2026-09-06T21:28:49Z", "Hand-Set Title");
+    let earlier = tree_snapshot_stamps_normalised(&dir.path);
+    let earlier_strict = tree_snapshot(&dir.path);
+
+    write_document("2026-09-06T21:28:50Z", "Hand-Set Title");
+    assert_ne!(
+        tree_snapshot(&dir.path),
+        earlier_strict,
+        "the two documents must really differ on disk, or nothing below is proved"
+    );
+    assert_eq!(
+        tree_snapshot_stamps_normalised(&dir.path),
+        earlier,
+        "a second between two projections of an unchanged work is not a change"
+    );
+
+    write_document("2026-09-06T21:28:50Z", "A Different Title");
+    assert_ne!(
+        tree_snapshot_stamps_normalised(&dir.path),
+        earlier,
+        "normalising the stamp must not hide the fields beside it"
+    );
+
+    assert_eq!(
+        earlier.get(&archive).map(Vec::as_slice),
+        Some(&b"PK\x03\x04 not really a zip"[..]),
+        "a file that is not a document passes through untouched"
+    );
+}
+
 /// **Two processes are expected to hold this file at once, and the second one
 /// used to fail on the spot with "database is locked" rather than waiting.**
 ///

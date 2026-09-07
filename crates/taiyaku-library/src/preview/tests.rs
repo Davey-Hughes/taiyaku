@@ -267,6 +267,21 @@ fn a_preview_leaves_the_library_tree_byte_identical() {
 /// exists to close, so a save that really runs `Reconcile` writes it straight
 /// back and a save that runs `Skip` leaves the gap exactly as open as it
 /// found it.
+///
+/// **The comparison is [`crate::tests::tree_snapshot_stamps_normalised`] and
+/// not `tree_snapshot`, which is the one way this test differs from the
+/// crate's three other snapshot comparisons** —
+/// `a_preview_leaves_the_library_tree_byte_identical` above,
+/// `derive::tests::skipping_documents_leaves_the_library_tree_byte_identical`
+/// and `scan::tests::removal_cost_touches_no_file_on_disk`. Each of those
+/// asserts that an operation wrote *nothing*, so every byte under the root is
+/// signal to them. This one spans a write that
+/// is supposed to happen, and the document that comes back carries a fresh
+/// `updated` stamp — a field [`crate::librarydoc::of`] fills from the clock
+/// and no column holds. Comparing it made this test fail whenever the
+/// fixture's own write and the save's landed either side of a wall-clock
+/// second, which is O99: CI run 437 hit `21:28:50Z` against `21:28:49Z` on a
+/// tree that was otherwise byte-identical.
 #[test]
 fn a_save_writes_the_library_tree_a_preview_would_have_left_alone() {
     let fixture = crate::tests::library_with_a_kept_document();
@@ -278,9 +293,9 @@ fn a_save_writes_the_library_tree_a_preview_would_have_left_alone() {
         .unwrap()
         .expect("the fixture's document has settled at an address");
 
-    let settled = crate::tests::tree_snapshot(fixture.root_path());
+    let settled = crate::tests::tree_snapshot_stamps_normalised(fixture.root_path());
     std::fs::remove_file(&document).expect("reopening the gap `reconcile` would repair");
-    let with_the_gap = crate::tests::tree_snapshot(fixture.root_path());
+    let with_the_gap = crate::tests::tree_snapshot_stamps_normalised(fixture.root_path());
     assert_ne!(
         settled, with_the_gap,
         "the gap must be observable in the snapshot, or this test cannot see the repair either"
@@ -290,7 +305,7 @@ fn a_save_writes_the_library_tree_a_preview_would_have_left_alone() {
     crate::preview::apply(&conn, &proposed).unwrap();
 
     assert_eq!(
-        crate::tests::tree_snapshot(fixture.root_path()),
+        crate::tests::tree_snapshot_stamps_normalised(fixture.root_path()),
         settled,
         "a save derives under Documents::Reconcile, so it repairs the gap it found; under Skip \
          the document would still be missing"
