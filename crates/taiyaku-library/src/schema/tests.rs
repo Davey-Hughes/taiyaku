@@ -759,8 +759,13 @@ fn migration_6_adds_member_root_id_leaving_existing_members_null() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_twelve() {
-    assert_eq!(SCHEMA_VERSION, 12);
+fn the_schema_version_is_thirteen() {
+    assert_eq!(SCHEMA_VERSION, 13);
+    assert_eq!(
+        MIGRATIONS.len(),
+        SCHEMA_VERSION as usize,
+        "the version and the migration count are one fact"
+    );
 }
 
 /// **I5.** The row this test used to seed was inserted *after* `migrate()`
@@ -1129,4 +1134,28 @@ fn migration_9_rebuild_carries_a_pre_existing_position_across_intact() {
         "a finished-once fact must not be lost by the copy"
     );
     assert_eq!(read_count, 2);
+}
+
+/// Spec C3 §6's capability arrives switched **off** for every account that
+/// already exists, including the administrator migration 1 seeds.
+///
+/// `can_download` and `can_stream` default to 1 because they widen what an
+/// account may read and every account was already doing both. This one
+/// decides whether an account may rewrite archives taiyaku does not own, and
+/// no account anywhere was already doing that — so defaulting it on would
+/// hand every library's administrators a power none of them asked for, on an
+/// upgrade none of them read. See
+/// `docs/superpowers/specs/2026-09-07-comicinfo-write-back-design.md` §1.1.
+#[test]
+fn migration_13_gives_every_existing_account_can_stamp_off() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    migrate(&conn).expect("migrates to 13");
+
+    let can_stamp: i64 = conn
+        .query_row("SELECT can_stamp FROM user WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .expect("the seeded account carries the column");
+
+    assert_eq!(can_stamp, 0, "the seeded administrator may not stamp");
 }

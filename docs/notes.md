@@ -15322,3 +15322,60 @@ uninformative about this branch.
 
 **Counts after this branch:** 2029 Rust tests, from 2028 — the one new test
 above. `web/` unchanged at 2,006.
+
+## What a ComicInfo plan and a stamp cost on real archives — 2026-09-07
+
+Spec C3 §6's build design asked for two figures in its §11 and said neither
+had been taken. Both are now taken on the workstation, by
+`stamp::tests::report` — `--ignored`, on the pattern `credential::tests::report`
+set for argon2, because a figure that depends on the machine is a measurement
+to record here rather than a threshold to fail a build on:
+
+```
+TAIYAKU_CORPUS=/home/davey/projects/taiyaku/corpus cargo test --release \
+  -p taiyaku-library stamp::tests::report -- --ignored --nocapture
+```
+
+**`TAIYAKU_CORPUS` must be absolute.** `cargo test` runs a package's tests with
+the working directory set to that package's own directory, so a relative
+`corpus` resolves to `crates/taiyaku-library/corpus` and finds nothing — the
+same trap `check-all.sh` resolves at the top of the file and documents there.
+The first run of this measurement hit it.
+
+Over `corpus/gotoubun-v01` — 3 works, 4 members, 615.6 MB of stampable
+archive:
+
+| | |
+| --- | --- |
+| scan and derive | 361 ms |
+| **plan over every work** | **2.43 ms** |
+| plain `fs::copy` of the largest archive (319.2 MB) | 58.5 ms |
+| **`rewrite_one` of that archive** | **299 ms** |
+
+**The plan is cheap, and cheap for the reason the design predicted.** 2.43 ms
+across four archives is a central-directory read plus one small entry each; it
+is not a page decode and it does not touch the 615 MB. So the confirmation can
+stay synchronous, which was the open question §11 raised against it. The
+caveat this figure does *not* answer: on the NAS over a spinning disk this is
+four seeks rather than four warm reads, and nothing here has measured that.
+The number above is a workstation figure with the files in page cache.
+
+**A rewrite is about five times a plain copy** — 299 ms against 58.5 ms for
+the same 319 MB, or roughly 1.07 GB/s. The difference is the zip parse, the
+central directory rebuilt, and a sha256 over the output, which the stamp needs
+anyway because the member row is about to record it. §6's *"not a cheap
+click"* holds: at this rate the 4.1 GB the design uses as its example is
+around four seconds of rewriting, before any of it is paid over a network.
+
+**The measurement writes nothing to the corpus, and proves it rather than
+claiming it.** `plan` only reads, so its half runs against the corpus in
+place; the rewrite half copies one archive into a temp directory first, and
+the test re-hashes the corpus original at the end and asserts it is unchanged.
+An isolation that is only asserted in a comment is the kind that stops being
+true later.
+
+**Still not measured**, and both stay in the build design's §11: anything on
+the NAS, and whether `raw_copy_file` preserves a data descriptor on an entry
+written with one. The corpus's archives come from many tools and at least some
+streaming writers emit them; nothing in `corpus/gotoubun-v01` exercised that
+path, so the byte-identity test has not yet seen one.

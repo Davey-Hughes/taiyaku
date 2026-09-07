@@ -1425,3 +1425,36 @@ fn an_administrator_may_edit_their_own_row_while_resending_their_role() {
     assert_eq!(after.name, "renamed");
     assert_eq!(after.role, "admin");
 }
+
+/// **Every resolver reads the column, not just the one a patch test drives.**
+///
+/// This module holds five separate `SELECT` lists naming the capability
+/// columns — `by_name`, `by_api_key`, `session_owner`, `by_id` and `list`.
+/// [`account_from_row`] reads them by name, so adding a column to four of the
+/// five is not a compile error anywhere: it is one resolver quietly reporting
+/// `can_stamp = false` for an account that holds it, and which resolver
+/// depends on how the caller authenticated. An OPDS client would stamp and a
+/// browser would not, or the other way round.
+#[test]
+fn every_resolver_reports_can_stamp() {
+    let library = claimed_library();
+    let conn = library.conn();
+    conn.execute("UPDATE user SET can_stamp = 1 WHERE id = 1", [])
+        .expect("granting the capability");
+    let key = create_key(&conn, 1, "a key").expect("issues a key");
+    let token = credential::mint_token();
+    open_session(&conn, 1, &token, None, None).expect("opens a session");
+
+    let (named, _) = by_name(&conn, "local").expect("reads").expect("exists");
+    assert!(named.can_stamp, "by_name");
+    let keyed = by_api_key(&conn, &key).expect("reads").expect("exists");
+    assert!(keyed.can_stamp, "by_api_key");
+    let sessioned = session_owner(&conn, &token)
+        .expect("reads")
+        .expect("exists");
+    assert!(sessioned.can_stamp, "session_owner");
+    let identified = by_id(&conn, 1).expect("reads").expect("exists");
+    assert!(identified.can_stamp, "by_id");
+    let listed = list(&conn).expect("reads");
+    assert!(listed[0].0.can_stamp, "list");
+}

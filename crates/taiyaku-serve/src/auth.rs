@@ -297,6 +297,35 @@ pub struct Principal {
     /// could not linger. This field closed O54's first half, under C1;
     /// `can_download` and `can_stream` above closed the rest, under C2.
     pub roots: Vec<i64>,
+
+    /// **Not dominated by `role`, and the only field here that is not.**
+    ///
+    /// [`Principal::from_account`] folds `can_download`, `can_stream` and
+    /// `roots` into the admin role per O86 — an administrator is unrestricted
+    /// in every dimension the schema has. This column is the exception, and
+    /// the reason comes out of O86's own argument rather than against it.
+    ///
+    /// O86 exists because an administrator edits rows no grant can scope:
+    /// `series_title` is keyed `(series_id, title)` with no per-work column,
+    /// so a half-sighted admin could rename a series for the whole library
+    /// while refreshing only the works their grant shows. **Every capability
+    /// O86 dominates widens what an account may read**, and the incoherence
+    /// it prevents is a *partial view* driving a *total write*. Neither half
+    /// reaches this one: it decides whether an account may rewrite archives
+    /// taiyaku does not own, a stamp names one work, and withholding it
+    /// leaves no half-state — the stamp either happens or it does not.
+    ///
+    /// Spec C3 §6/§7 and
+    /// `docs/superpowers/specs/2026-09-07-comicinfo-write-back-design.md`
+    /// §1.1. Defaults to 0 (`schema/013_can_stamp.sql`), so no account in any
+    /// existing library gained it on the upgrade that added the column —
+    /// including the administrator who ran the upgrade.
+    ///
+    /// Pinned by `auth::tests::an_administrator_does_not_inherit_can_stamp`,
+    /// which asserts the other two ARE inherited in the same breath, so this
+    /// comment cannot drift from the code the way O95's third pass found
+    /// twice.
+    pub can_stamp: bool,
 }
 
 impl Principal {
@@ -345,6 +374,8 @@ impl Principal {
             role,
             can_download: admin || account.can_download,
             can_stream: admin || account.can_stream,
+            // No `admin ||`, deliberately — see the field's doc comment.
+            can_stamp: account.can_stamp,
             roots: if admin { Vec::new() } else { roots },
         }
     }

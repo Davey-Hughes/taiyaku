@@ -141,8 +141,21 @@ One `axum` middleware resolves every request to a `Principal`:
 
 ```rust
 struct Principal { user_id: i64, role: Role, can_download: bool,
-                   can_stream: bool, roots: Vec<i64> }
+                   can_stream: bool, can_stamp: bool, roots: Vec<i64> }
 ```
+
+**`can_stamp` was added by spec C3 §6 (migration 013) and is the one field
+here that `role` does not dominate.** O86 settled that an administrator is
+unrestricted in every other dimension whatever the columns say — the reason
+being that an admin edits shared rows no grant can scope, so a *partial view*
+driving a *total write* is the incoherence to prevent. Neither half reaches
+this one: it decides whether an account may rewrite archives taiyaku does not
+own, a stamp names one work, and withholding it leaves no half-state. It
+defaults to 0, so no account in any existing library gained it on the upgrade.
+The argument is in
+[`2026-09-07-comicinfo-write-back-design.md`](2026-09-07-comicinfo-write-back-design.md)
+§1.1 and is pinned by
+`auth::tests::an_administrator_does_not_inherit_can_stamp`.
 
 from either the session cookie or `Authorization: Basic`. `/api/*` and `/opds/*`
 both sit behind it.

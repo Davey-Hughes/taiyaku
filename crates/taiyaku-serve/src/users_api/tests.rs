@@ -1052,3 +1052,73 @@ async fn the_user_list_marks_the_session_doing_the_asking_and_no_other() {
         "another account's session is never the browser doing the asking: {json}"
     );
 }
+
+/// Spec C3 §6's capability is granted from the same screen as the other two.
+///
+/// **`can_stamp` is written and the two beside it are left alone**, which is
+/// the half a test asserting only the `200` would miss: `update`'s
+/// set-builder names each column in its own `if let`, so a missing arm is a
+/// silent no-op with a `200` in front of it.
+#[tokio::test]
+async fn patching_a_user_sets_can_stamp() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let id = a_reader(&router, &state).await;
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/users/{id}"),
+        &serde_json::json!({ "can_stamp": true }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = get_json(&router, "/api/library/users").await;
+    let row = json["users"]
+        .as_array()
+        .expect("users")
+        .iter()
+        .find(|u| u["id"] == id)
+        .expect("the patched account");
+    assert_eq!(row["can_stamp"], true, "the column was written: {json}");
+    assert_eq!(
+        row["can_download"], true,
+        "an unnamed column is left alone: {json}"
+    );
+}
+
+/// The list reports it, so the screen can render a checkbox without a second
+/// request per row — the reason C4 §4 gives for the other three.
+#[tokio::test]
+async fn the_user_list_carries_can_stamp() {
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
+
+    let json = get_json(&router, "/api/library/users").await;
+    let first = &json["users"].as_array().expect("a users array")[0];
+
+    assert!(
+        !first["can_stamp"].is_null(),
+        "`can_stamp` is missing from a user row: {json}"
+    );
+    assert_eq!(
+        first["can_stamp"], false,
+        "and the seeded administrator does not hold it: {json}"
+    );
+}
+
+/// A malformed value is refused rather than coerced, as the two beside it are.
+#[tokio::test]
+async fn patching_a_user_refuses_a_non_boolean_can_stamp() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let id = a_reader(&router, &state).await;
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/users/{id}"),
+        &serde_json::json!({ "can_stamp": "yes" }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

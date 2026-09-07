@@ -996,6 +996,7 @@ pub(crate) async fn whoami(request: Request) -> Response {
     "admin": principal.role == crate::auth::Role::Admin,
     "can_download": principal.can_download,
     "can_stream": principal.can_stream,
+    "can_stamp": principal.can_stamp,
     })),)
         .into_response()
 }

@@ -827,6 +827,99 @@ fn router_over_a_scanned_tree(
     (router, state, fixture)
 }
 
+/// One scanned, single-volume work whose member is a real **`.cbz`**, not a
+/// directory of pages.
+///
+/// **Every other scanned fixture here writes `write_pages`**, so its member
+/// sniffs as `Format::Dir`. That is right for the routes those fixtures were
+/// built for and useless for spec C3 §6's write-back, which only ever touches
+/// a zip: against a directory-backed fixture the stamp plan is empty, and two
+/// of its route tests passed while asserting nothing until this existed.
+///
+/// Keeps documents, for the reason [`router_over_a_scanned_tree`] gives.
+///
+/// # Panics
+///
+/// Panics if the tree cannot be written or the scan fails.
+pub(crate) fn router_over_a_scanned_cbz() -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let prefix = "taiyaku-test-scanned-cbz";
+    let fixture = Fixture::new(prefix);
+    // **Everything under the one fixture directory, which is unique per
+    // call.** Keying a sibling path on `prefix` instead puts every test using
+    // this fixture on the same database file, and they run in parallel: the
+    // first `remove_dir_all` pulls the file out from under a connection
+    // another test has already mmap'd, which arrives as SIGBUS rather than as
+    // anything that names itself.
+    let tree = fixture.path().join("tree");
+    let db_dir = fixture.path().join("db");
+    let dir = tree.join("Scanned");
+    std::fs::create_dir_all(&dir).expect("creates the series directory");
+    std::fs::create_dir_all(&db_dir).expect("creates the database directory");
+
+    let path = dir.join("Scanned - v01.cbz");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).expect("creates the archive"));
+    for entry in ["000.jpg", "001.jpg"] {
+        zip.start_file(entry, zip::write::SimpleFileOptions::default())
+            .expect("starts an entry");
+        zip.write_all(entry.as_bytes()).expect("writes an entry");
+    }
+    zip.finish().expect("finishes the archive");
+
+    // **File-backed, unlike its neighbours, and that is the point.**
+    // `Library::working()` opens a genuine second connection only where the
+    // library has a file; against an in-memory one it hands back the shared
+    // guard instead. Spec C3 §6's two routes both take `working()`, so an
+    // in-memory fixture would exercise the shared path in every test and
+    // leave the path that actually runs in production untested — a fixture
+    // where right and wrong render the same.
+    let library = taiyaku_library::Library::open(&db_dir.join("library.db"))
+        .expect("opens a file-backed library");
+    seed_fixture_account(&library);
+    {
+        let conn = library.conn();
+        let root = taiyaku_library::scan::add_root(&conn, &tree).expect("adds the root");
+        conn.execute(
+            "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+            [root.id],
+        )
+        .expect("the fixture keeps documents");
+        taiyaku_library::scan::scan_root(&conn, &root).expect("scans the tree");
+        taiyaku_library::derive::derive(&conn).expect("derives the library");
+    }
+    let library = std::sync::Arc::new(library);
+    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works,
+        // Outside the scanned tree, so nothing this creates is material a
+        // later scan walks — `router_over_a_scanned_tree`'s own reasoning.
+        cache_dir: fixture.path().join("covers"),
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
+        library_job: Default::default(),
+    });
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
+    (router, state, fixture)
+}
+
+pub(crate) fn router_over_a_scanned_cbz_as_a_reader()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let (router, state, fixture) = router_over_a_scanned_cbz();
+    {
+        let conn = state.library.conn();
+        let demoted = conn
+            .execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+            .expect("demotes the fixture account");
+        assert_eq!(
+            demoted, 1,
+            "the fixture account must actually stop being an administrator"
+        );
+    }
+    (router, state, fixture)
+}
+
 /// One scanned, single-volume work with a root of its own — the metadata
 /// PATCH routes' own fixture.
 ///

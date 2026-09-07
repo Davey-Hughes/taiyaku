@@ -148,7 +148,7 @@ fn noncharacters_u_fffe_and_u_ffff_are_dropped_too() {
 
 #[test]
 fn read_gets_the_series_the_language_and_the_label_out_of_the_rows() {
-    let library = crate::test_support::library();
+    let library = crate::Library::open_in_memory().expect("in-memory library");
     let conn = library.conn();
     conn.execute(
         "INSERT INTO series (id, sort_title) VALUES (1, 'Sortable')",
@@ -212,7 +212,7 @@ fn read_gets_the_series_the_language_and_the_label_out_of_the_rows() {
 /// rather than failing.
 #[test]
 fn a_work_with_no_series_still_reads_its_work_level_credits() {
-    let library = crate::test_support::library();
+    let library = crate::Library::open_in_memory().expect("in-memory library");
     let conn = library.conn();
     // A second series and a credit attached to it, so a query that leaked
     // across the NULL would pick this up and fail the assertion below.

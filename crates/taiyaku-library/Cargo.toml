@@ -42,6 +42,14 @@ rusqlite = { version = "0.38", features = ["backup"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
+# Spec C3 §6's write-back rewrites a member's archive, which means reading its
+# central directory and writing it back out with every entry's compressed bytes
+# untouched (`ZipWriter::raw_copy_file`). Already in the tree via
+# `taiyaku-read`, and named here for the reason that manifest gives for naming
+# its own: a direct dependency of this crate's code should be a line in this
+# crate's manifest. `docs/status.md` states this workspace's short dependency
+# list as a fact about the project, so that file gains a line with this one.
+zip = "7.2.0"
 taiyaku-core = { path = "../taiyaku-core" }
 taiyaku-read = { path = "../taiyaku-read" }
 

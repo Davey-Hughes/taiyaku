@@ -27,6 +27,12 @@ pub struct Account {
     pub role: String,
     pub can_download: bool,
     pub can_stream: bool,
+    /// Spec C3 §6. **Not folded into the admin role** by
+    /// `taiyaku-serve`'s `Principal::from_account`, unlike the two above —
+    /// the one exception to O86, argued in
+    /// `docs/superpowers/specs/2026-09-07-comicinfo-write-back-design.md`
+    /// §1.1.
+    pub can_stamp: bool,
 }
 
 fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
@@ -36,6 +42,7 @@ fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         role: row.get("role")?,
         can_download: row.get::<_, i64>("can_download")? != 0,
         can_stream: row.get::<_, i64>("can_stream")? != 0,
+        can_stamp: row.get::<_, i64>("can_stamp")? != 0,
     })
 }
 
@@ -46,7 +53,7 @@ fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
 /// Returns an error if the query fails.
 pub fn by_name(conn: &Connection, name: &str) -> Result<Option<(Account, String)>, String> {
     conn.query_row(
-        "SELECT id, name, role, can_download, can_stream, password_hash
+        "SELECT id, name, role, can_download, can_stream, can_stamp, password_hash
            FROM user
           WHERE name = ?1",
         params![name],
@@ -82,7 +89,7 @@ pub fn by_api_key(conn: &Connection, secret: &str) -> Result<Option<Account>, St
             // unclaimed, renaming it out from under a live credential. The
             // invariant was enforced in one of the two resolvers. Found by the
             // third whole-branch review.
-            "SELECT u.id, u.name, u.role, u.can_download, u.can_stream
+            "SELECT u.id, u.name, u.role, u.can_download, u.can_stream, u.can_stamp
                FROM api_key k
                JOIN user u ON u.id = k.user_id
               WHERE k.secret_sha256 = ?1
@@ -326,7 +333,7 @@ pub fn session_owner(conn: &Connection, token: &str) -> Result<Option<Account>, 
 
     let found = conn
         .query_row(
-            "SELECT u.id, u.name, u.role, u.can_download, u.can_stream
+            "SELECT u.id, u.name, u.role, u.can_download, u.can_stream, u.can_stamp
                FROM session s
                JOIN user u ON u.id = s.user_id
               WHERE s.token_sha256 = ?1",
@@ -682,7 +689,7 @@ pub fn add(conn: &Connection, name: &str, password: &str, role: &str) -> Result<
 /// Returns an error if the query fails.
 pub fn by_id(conn: &Connection, id: i64) -> Result<Option<Account>, String> {
     conn.query_row(
-        "SELECT id, name, role, can_download, can_stream FROM user WHERE id = ?1",
+        "SELECT id, name, role, can_download, can_stream, can_stamp FROM user WHERE id = ?1",
         params![id],
         account_from_row,
     )
@@ -719,6 +726,7 @@ pub struct Patch {
     pub role: Option<String>,
     pub can_download: Option<bool>,
     pub can_stream: Option<bool>,
+    pub can_stamp: Option<bool>,
     pub roots: Option<Vec<i64>>,
     pub password: Option<String>,
 }
@@ -867,6 +875,10 @@ pub fn update(
     if let Some(v) = patch.can_stream {
         values.push(Box::new(i64::from(v)));
         sets.push(format!("can_stream = ?{}", values.len()));
+    }
+    if let Some(v) = patch.can_stamp {
+        values.push(Box::new(i64::from(v)));
+        sets.push(format!("can_stamp = ?{}", values.len()));
     }
 
     if !sets.is_empty() {
@@ -1086,7 +1098,7 @@ pub fn revoke_key(conn: &Connection, user_id: i64, key_id: i64) -> Result<bool, 
 pub fn list(conn: &Connection) -> Result<Vec<(Account, bool)>, String> {
     let mut statement = conn
         .prepare(
-            "SELECT id, name, role, can_download, can_stream, password_hash
+            "SELECT id, name, role, can_download, can_stream, can_stamp, password_hash
                FROM user ORDER BY id",
         )
         .map_err(|e| format!("preparing the account list: {e}"))?;

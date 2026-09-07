@@ -107,6 +107,9 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/library/series/{id}",
         "/api/library/editions/{id}",
         "/api/library/members/{id}",
+        // Spec C3 §6's ComicInfo write-back — admin-gated, and gated again on
+        // `can_stamp`, which an administrator does not inherit.
+        "/api/library/works/{slug}/stamp-comicinfo",
         // Spec C4 §6's rule editor, task 8 of the branch plan — admin-gated
         // *inside* each handler, the identical reasoning the proposals and
         // metadata comments above give for why it matters doubly that these
@@ -1662,8 +1665,8 @@ async fn every_route_declares_its_grant_posture() {
     );
     assert_eq!(
         table.len() - driven,
-        32,
-        "the remaining 32 guarded routes must be GrantIndependent or \
+        33,
+        "the remaining 33 guarded routes must be GrantIndependent or \
          KnownGap — see the `driven == 19` assertion just above, which this \
          one is the other half of. Was 19, then 15 while I8 held the four \
          metadata routes in the driven half, 19 again once O86 returned \
@@ -1671,7 +1674,11 @@ async fn every_route_declares_its_grant_posture() {
          25 once task 11 added spec C4 §2's two roots routes, 26 once task \
          12 added spec C4 §3's one scan-control route, and 32 now C4 PR 2 \
          added spec C4 §4's four user routes and §5's two backup routes — \
-         every one of the thirteen, GrantIndependent"
+         every one of the thirteen, GrantIndependent C3 §6's \
+         ComicInfo write-back is the one route that has moved it since: \
+         admin-only like the rest, and gated again on a capability an \
+         administrator does not inherit, which changes who may call it and \
+         not what any caller's grant would filter"
     );
 
     let credential = crate::test_support::fixture_authorization();
@@ -2931,6 +2938,7 @@ fn an_administrator_is_unrestricted_whatever_the_row_says() {
         role: "admin".into(),
         can_download: false,
         can_stream: false,
+        can_stamp: false,
     };
     let principal = Principal::from_account(&granted, vec![1, 2]);
 
@@ -2942,6 +2950,12 @@ fn an_administrator_is_unrestricted_whatever_the_row_says() {
     );
     assert!(principal.can_download, "and the capability flags follow it");
     assert!(principal.can_stream, "and the capability flags follow it");
+    assert!(
+        !principal.can_stamp,
+        "except `can_stamp`, which O86 does not reach — spec C3 §6 and \
+         `2026-09-07-comicinfo-write-back-design.md` §1.1. Stated here, in \
+         O86's own test, so the rule and its one exception are read together"
+    );
 }
 
 /// The other half, and the one that fails if the rule is written as
@@ -2954,6 +2968,7 @@ fn a_users_grant_and_capabilities_are_left_exactly_as_the_row_holds_them() {
         role: "user".into(),
         can_download: false,
         can_stream: true,
+        can_stamp: false,
     };
     let principal = Principal::from_account(&granted, vec![1, 2]);
 
@@ -3076,6 +3091,7 @@ const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
     "/api/library/series/{id}",
     "/api/library/editions/{id}",
     "/api/library/members/{id}",
+    "/api/library/works/{slug}/stamp-comicinfo",
     "/api/library/users",
     "/api/library/users/{id}",
     "/api/library/users/{id}/sessions/{sid}",
@@ -3164,4 +3180,71 @@ fn regex_free_fill(pattern: &str) -> String {
         }
     }
     out
+}
+
+/// **The one exception to O86, pinned here rather than asserted in a comment.**
+///
+/// [`Principal::from_account`] folds `can_download`, `can_stream` and `roots`
+/// into the admin role — an administrator is unrestricted in all three
+/// whatever the columns say. `can_stamp` is not folded, because O86's argument
+/// is about an administrator editing shared rows they cannot see, and no
+/// half-sighted state follows from withholding a per-work file rewrite: a
+/// stamp names one work and either happens or does not. Spec C3 §6/§7 and
+/// `docs/superpowers/specs/2026-09-07-comicinfo-write-back-design.md` §1.1.
+///
+/// A comment claiming a guard that does not exist is O95's third-pass shape
+/// and #111's second finding. This test is what stops a third instance: the
+/// three assertions below fail in opposite directions, so a change that folds
+/// `can_stamp` in alongside the others cannot satisfy all three.
+#[test]
+fn an_administrator_does_not_inherit_can_stamp() {
+    let account = taiyaku_library::account::Account {
+        id: 1,
+        name: "root".to_string(),
+        role: "admin".to_string(),
+        can_download: false,
+        can_stream: false,
+        can_stamp: false,
+    };
+
+    let principal = Principal::from_account(&account, vec![]);
+
+    assert!(principal.can_download, "O86: role dominates can_download");
+    assert!(principal.can_stream, "O86: role dominates can_stream");
+    assert!(
+        !principal.can_stamp,
+        "an administrator holding can_stamp = 0 may not stamp"
+    );
+}
+
+/// The other half: the column is what grants it, for an administrator too.
+#[test]
+fn a_granted_administrator_may_stamp() {
+    let account = taiyaku_library::account::Account {
+        id: 1,
+        name: "root".to_string(),
+        role: "admin".to_string(),
+        can_download: true,
+        can_stream: true,
+        can_stamp: true,
+    };
+
+    assert!(Principal::from_account(&account, vec![]).can_stamp);
+}
+
+/// And for a reader, where nothing was ever folded in.
+#[test]
+fn a_reader_may_stamp_only_when_the_column_says_so() {
+    let mut account = taiyaku_library::account::Account {
+        id: 2,
+        name: "reader".to_string(),
+        role: "user".to_string(),
+        can_download: true,
+        can_stream: true,
+        can_stamp: false,
+    };
+    assert!(!Principal::from_account(&account, vec![]).can_stamp);
+
+    account.can_stamp = true;
+    assert!(Principal::from_account(&account, vec![]).can_stamp);
 }

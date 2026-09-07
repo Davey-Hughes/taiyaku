@@ -143,7 +143,7 @@ use crate::{ServeState, auth::Principal};
 /// however different they were on the way in, and a `Response` already built
 /// cannot be asked which of them it was.
 #[derive(Debug)]
-enum NoAnswer {
+pub(crate) enum NoAnswer {
     /// The route's own slug or id names nothing this route can edit — 404.
     ///
     /// Unlike `curation::NoAnswer::Missing`, this carries no id: the four
@@ -419,7 +419,11 @@ fn root_grant_clause(work_alias: &str, roots: &[i64]) -> String {
 /// The numeric `work.id` behind a slug, or [`NoAnswer::Missing`] — for a slug
 /// naming nothing, and for one naming a work `roots` does not grant, exactly
 /// as [`taiyaku_library::browse::work`] answers `None` for both (I8).
-fn work_by_slug(conn: &rusqlite::Connection, roots: &[i64], slug: &str) -> Result<i64, NoAnswer> {
+pub(crate) fn work_by_slug(
+    conn: &rusqlite::Connection,
+    roots: &[i64],
+    slug: &str,
+) -> Result<i64, NoAnswer> {
     let sql = format!(
         "SELECT w.id FROM work w WHERE w.slug = ?1{}",
         root_grant_clause("w", roots)

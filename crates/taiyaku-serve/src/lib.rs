@@ -9,7 +9,6 @@ mod auth;
 mod backup_api;
 mod cache_root;
 mod cbz;
-mod comicinfo;
 mod composite;
 /// Spec C4 §6's rule-editor routes: the admin-only CRUD, preview and import
 /// over [`taiyaku_library::rules`] and [`taiyaku_library::preview`].
@@ -43,6 +42,7 @@ mod reqlog;
 mod routes;
 pub mod session;
 mod source;
+mod stamp;
 mod stump;
 mod truth;
 mod users_api;

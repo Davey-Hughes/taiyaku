@@ -769,12 +769,12 @@ fn prepare(
     let page_count = u32::try_from(described.len()).unwrap_or(u32::MAX);
     let comic_info = {
         let conn = state.library.conn();
-        crate::comicinfo::read(&conn, slug, edition_key, page_count)
-            .map(|info| crate::comicinfo::xml(&info).into_bytes())
+        taiyaku_library::comicinfo::read(&conn, slug, edition_key, page_count)
+            .map(|info| taiyaku_library::comicinfo::xml(&info).into_bytes())
             .unwrap_or_else(|_| {
                 // No rows for this work — a document-only library. The
                 // document still states what the sidecar knows.
-                crate::comicinfo::xml(&crate::comicinfo::ComicInfo {
+                taiyaku_library::comicinfo::xml(&taiyaku_library::comicinfo::ComicInfo {
                     series: None,
                     number: None,
                     title: Some(title.clone()),

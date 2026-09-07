@@ -100,6 +100,11 @@ fn an_administrator() -> crate::auth::Principal {
         role: crate::auth::Role::Admin,
         can_download: true,
         can_stream: true,
+        // The schema's default. These fixtures drive routes that predate the
+        // capability, and a `true` here would mean an administrator inherits
+        // it after all — the thing `auth::tests::an_administrator_does_not
+        // _inherit_can_stamp` exists to refuse.
+        can_stamp: false,
         roots: Vec::new(),
     }
 }

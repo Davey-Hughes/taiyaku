@@ -11,6 +11,7 @@
 pub mod account;
 pub mod backup;
 pub mod browse;
+pub mod comicinfo;
 pub mod credential;
 pub mod derive;
 pub mod export;
@@ -36,6 +37,7 @@ pub mod proposals;
 pub mod rules;
 pub mod scan;
 pub mod schema;
+pub mod stamp;
 pub mod state;
 pub mod watch;
 

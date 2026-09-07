@@ -26,6 +26,12 @@
 //! key. Deriving a language from `raw` or `en` would be a guess presented as
 //! metadata, which is what `work.root_id` was rejected for in spec C1.
 
+//! **This module was `taiyaku-serve`'s until spec C3 §6.** It reads the
+//! database and renders XML, which is a store concern; it sat in the server
+//! crate only because C2's generated download happened to be its first
+//! caller. The stamp is its second, and a stamp is a store mutation, so the
+//! two share it from here rather than one reaching up into the other's crate.
+
 use std::fmt::Write as _;
 
 use rusqlite::Connection;
@@ -33,15 +39,15 @@ use rusqlite::Connection;
 /// The facts a `ComicInfo.xml` states, each optional because each may be
 /// genuinely unknown.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ComicInfo {
-    pub(crate) series: Option<String>,
-    pub(crate) number: Option<f64>,
-    pub(crate) title: Option<String>,
-    pub(crate) page_count: u32,
-    pub(crate) language: Option<String>,
+pub struct ComicInfo {
+    pub series: Option<String>,
+    pub number: Option<f64>,
+    pub title: Option<String>,
+    pub page_count: u32,
+    pub language: Option<String>,
     /// `(role, person name)` as `credit` holds them, in a stable order.
-    pub(crate) credits: Vec<(String, String)>,
-    pub(crate) notes: Option<String>,
+    pub credits: Vec<(String, String)>,
+    pub notes: Option<String>,
 }
 
 /// What this library knows about one edition of one work.
@@ -51,7 +57,7 @@ pub(crate) struct ComicInfo {
 /// Returns an error if the rows cannot be read, or if no work has this slug —
 /// which a caller reaches only after the visibility check has already passed,
 /// so it means the work went away between the two.
-pub(crate) fn read(
+pub fn read(
     conn: &Connection,
     slug: &str,
     edition_key: &str,
@@ -198,7 +204,7 @@ fn number_text(volume: f64) -> String {
 }
 
 /// The document, as the bytes that go into the archive.
-pub(crate) fn xml(info: &ComicInfo) -> String {
+pub fn xml(info: &ComicInfo) -> String {
     let mut out = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<ComicInfo>\n");
     let mut element = |name: &str, value: &str| {
         let _ = writeln!(out, "  <{name}>{}</{name}>", escape(value));

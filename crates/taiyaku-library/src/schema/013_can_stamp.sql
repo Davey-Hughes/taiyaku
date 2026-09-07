@@ -1,0 +1,20 @@
+-- Spec C3 §6's capability: may this account rewrite the archives of a work?
+-- Designed in docs/superpowers/specs/2026-09-07-comicinfo-write-back-design.md
+-- §1.1.
+--
+-- **DEFAULT 0, where `can_download` and `can_stream` default to 1.** Those two
+-- widen what an account may read, and every existing account was already doing
+-- both, so defaulting them on changed nothing the day migration 4 applied.
+-- This one decides whether an account may rewrite files taiyaku does not own,
+-- and there is no account anywhere that was already doing that. Defaulting it
+-- on would grant every library's administrators a power none of them asked
+-- for, on an upgrade none of them read.
+--
+-- **The seeded administrator (id 1, from migration 1) gets 0 like everyone
+-- else**, which is the half of §1.1's exception to O86 that lives in the
+-- schema. The other half is in `Principal::from_account`, which folds
+-- `can_download`, `can_stream` and `roots` into the admin role and does NOT
+-- fold this one. A default of 1 here would have made that carve-out
+-- unobservable: every administrator would already hold the capability, and the
+-- test that pins the exception would pass against a build that had dropped it.
+ALTER TABLE user ADD COLUMN can_stamp INTEGER NOT NULL DEFAULT 0;

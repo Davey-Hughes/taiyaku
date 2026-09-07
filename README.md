@@ -386,6 +386,13 @@ the core, not a nice-to-have.
 **Your library is not modified.** Archives are read, never rewritten. Alignment lives
 beside them and can be deleted without loss.
 
+There is exactly one exception, and it is opt-in twice over: the **ComicInfo
+write-back** rewrites a work's archives to carry the metadata taiyaku holds.
+It needs a per-account capability that no account has by default — not even an
+administrator — and it is confirmed per work, against a list naming every file
+it will rewrite and their total size. Nothing else in the product writes to
+your library, and nothing does it as a side effect of saving something else.
+
 ## Contributing
 
 `main` is **linear** — no merge commits — and every commit on it is an **atomic unit**: it builds

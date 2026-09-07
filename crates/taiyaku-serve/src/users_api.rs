@@ -120,6 +120,7 @@ fn user_json(
         "role": account.role,
         "can_download": account.can_download,
         "can_stream": account.can_stream,
+        "can_stamp": account.can_stamp,
         // An account still holding `credential::LOCKED` has a row and no way
         // in, and nothing else about it says so — `account::list`'s own doc
         // comment calls this "the second half worth printing".
@@ -314,6 +315,12 @@ fn user_patch_from_json(body: &serde_json::Value) -> Result<account::Patch, Stri
         patch.can_stream = Some(
             v.as_bool()
                 .ok_or_else(|| "`can_stream` must be a boolean".to_string())?,
+        );
+    }
+    if let Some(v) = body.get("can_stamp") {
+        patch.can_stamp = Some(
+            v.as_bool()
+                .ok_or_else(|| "`can_stamp` must be a boolean".to_string())?,
         );
     }
     if let Some(v) = body.get("roots") {

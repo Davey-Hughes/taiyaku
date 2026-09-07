@@ -518,6 +518,27 @@ pub(crate) fn refuse_if_cannot_stream(extensions: &axum::http::Extensions) -> Op
     })
 }
 
+/// The same for rewriting a work's archives — spec C3 §6, the one route in
+/// this product that modifies a file the user owns.
+///
+/// **Unreachable by an administrator who was not granted it**, which is what
+/// separates this from the two above. [`crate::auth::Principal::can_stamp`]
+/// is the column rather than `admin || column`; this function does not
+/// restate that rule, it reads the field that holds it.
+///
+/// Defaults to 0 (`schema/013_can_stamp.sql`), so nothing changed for any
+/// account in any existing library the day the column landed.
+pub(crate) fn refuse_if_cannot_stamp(extensions: &axum::http::Extensions) -> Option<Response> {
+    let principal = extensions.get::<crate::auth::Principal>()?;
+    (!principal.can_stamp).then(|| {
+        (
+            StatusCode::FORBIDDEN,
+            "this account may edit metadata but not rewrite archives",
+        )
+            .into_response()
+    })
+}
+
 /// Which editions of `slug` this caller may see, or the refusal to send
 /// instead — [`refuse_if_hidden`]'s whole-work counterpart, for a route that
 /// has no single edition to check against: the document `get_sidecar`
@@ -1896,6 +1917,18 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             "/api/library/members/{id}",
             axum::routing::patch(crate::metadata::patch_member),
         ),
+        // **Spec C3 §6's write-back, and the only route in this product that
+        // modifies a file the user owns.** Guarded four ways —
+        // authenticated, admin, `can_stamp`, then the slug — and the third is
+        // a capability an administrator does NOT inherit, which is this
+        // branch's one documented exception to O86. See
+        // `auth::Principal::can_stamp`, and `stamp.rs`'s own module comment
+        // for why the capability is read before the slug is resolved rather
+        // than after.
+        (
+            "/api/library/works/{slug}/stamp-comicinfo",
+            axum::routing::get(crate::stamp::plan).post(crate::stamp::perform),
+        ),
         // **Spec C4 §6's rule-editor routes, task 8 of the branch plan.**
         // Admin-gated the same way the curation and metadata blocks above
         // are, and for the identical reason stated on each of theirs: a
@@ -2349,6 +2382,17 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
             GrantIndependent {
                 reason: "admin-only, and O86 drops an admin's root grant, so \
                          no caller of this route holds one to refuse against",
+            },
+        ),
+        (
+            "/api/library/works/{slug}/stamp-comicinfo",
+            GrantIndependent {
+                reason: "admin-only and gated again on `can_stamp`; O86 drops \
+                         an admin's root grant, so `work_by_slug`'s grant \
+                         clause is empty for every caller that reaches here \
+                         and there is no grant left to filter or refuse \
+                         against — a slug this route answers 404 for is one \
+                         that names nothing, not one held back",
             },
         ),
         // Spec C4 §6's rule editor. Every entry states its own reason rather
