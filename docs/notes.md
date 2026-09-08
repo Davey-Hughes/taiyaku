@@ -15423,3 +15423,196 @@ mtime was identical before and after (`2026-09-02 05:51:48.853004102`), `find
 same figure over HTTP, and the same figure on the NAS. Neither changes what
 shipped; both would sharpen the sentence above about what keeps the window
 real.
+
+*Both were measured on 2026-09-08 and both are below, together with the drive
+this section did not do. **The 2.3 ms above is a tmpfs figure** — the same
+command against the same database on ext4 costs 15.2 ms, and the difference is
+one `fsync`. The paragraph above is left as written; read the next section
+before quoting the number.*
+
+## O97: the same figure over HTTP and on the NAS, and the drive — 2026-09-08
+
+The section above owed three things and did one of them. This is the other two
+— the import window measured over HTTP and with the database on the NAS — and
+the drive the build design's §5 Step 4 asked for and the branch shipped
+without: a real library in a browser with the import held open at the
+transport.
+
+### Everything measured on the same day, same library, same binary
+
+A copy of the real library (`/home/davey/temp/manga-test/library.db`, 3.5 MB,
+130 series, 1858 works, 2044 scan entries, the four seeded rules), with its
+root repointed to an empty scratch directory first. The HTTP figures are
+`POST /api/library/rules/import` through `taiyaku serve --release`, timed by
+`curl`'s own `time_total`, **interleaved** local-then-NAS on each of 20 rounds
+so a background spike lands on both.
+
+| what | median | mean | min / max |
+| --- | --- | --- | --- |
+| `POST …/rules/import`, database on local ext4 NVMe | **6.0 ms** | 5.9 ms | 5.1 / 10.7 ms |
+| `POST …/rules/import`, database on the NAS over NFSv4 | **1.7 ms** | 1.7 ms | 1.4 / 2.3 ms |
+| `GET …/rules` (connect + auth + read four rules), local¹ | 0.7 ms | 1.2 ms | 0.4 / 6.3 ms |
+| `GET …/rules`, NAS¹ | 0.4 ms | 0.5 ms | 0.4 / 0.7 ms |
+| `library rules --import`, whole process, tmpfs | 2.3 ms | 2.3 ms | 2.1 / 2.5 ms |
+| `library rules --import`, whole process, ext4 NVMe | 15.2 ms | 15.3 ms | 14.1 / 18.0 ms |
+| `library rules --import`, whole process, NAS | 6.8 ms | 6.9 ms | 6.3 / 7.7 ms |
+
+The three CLI rows are ten runs each, repeated three times for the first two;
+the medians moved by 0.1 ms across repetitions, so they are stable rather than
+lucky. ¹ The two `GET` rows are ten runs each, taken separately rather than
+interleaved — they are the baseline the two `POST` figures are read against,
+not figures being compared with one another.
+
+### The recorded 2.3 ms was a tmpfs figure, and that is the whole story
+
+The section above says "copied into a scratch directory first" and does not
+say which filesystem. It was tmpfs: the same command against the same database
+reproduces **2.3 ms** on `/tmp` and costs **15.2 ms** on ext4, across three
+repetitions each. So the figure that has been standing as "what an import
+costs" excluded the only expensive thing a durable write does.
+
+| `fsync` of a 4 KiB rewrite, 30 samples | median | min / max |
+| --- | --- | --- |
+| ext4 on this NVMe | **4.885 ms** | 4.417 / 5.554 ms |
+| NFSv4 to the NAS | **0.144 ms** | 0.128 / 0.245 ms |
+| tmpfs | **0.000 ms** | — |
+
+That single measurement explains every row in the first table. `synchronous`
+is left at SQLite's default (`Library::configure` sets `foreign_keys`,
+`busy_timeout`, WAL and `recursive_triggers`, and no more), so in WAL mode a
+commit is `FULL` and fsyncs. On tmpfs that is free; on this NVMe it is ~5 ms,
+which is essentially the whole of the 6.0 ms HTTP figure; and to the NAS it is
+0.14 ms.
+
+### The NAS is *faster*, which inverts this file's own sentence
+
+The section above said the window stays real because of "everything the
+measurement excludes — a LAN round trip is 1–5 ms on its own, and the NAS is
+slower". Both halves are wrong on this hardware. The round trip to this NAS is ~0.14 ms, not
+1–5 ms; and an import with the database on the NAS costs **1.7 ms** against
+**6.0 ms** with it on the local disk — three and a half times *cheaper*.
+
+The reason is not that the NAS is fast, it is that the two fsyncs mean
+different things. The local one waits for a flush the drive actually honours.
+The NFSv4 `COMMIT` is answered by the server, and this one answers it from its
+own cache — so the NAS number is a measurement of a weaker durability promise,
+not of a faster disk. Worth knowing before anyone reads it as an argument for
+putting a library database on a share; the honest reading is that the local
+figure is the durable one.
+
+**None of this changes what shipped.** §0.2's own argument was that the design
+is the same at 5 ms as at 500 ms, because a window that must not admit a
+second writer is not a question of width. That still holds — the correction is
+to the sentence about *why* the window is real, not to the gate.
+
+### The drive: a real library, in a browser, with the import held open
+
+`taiyaku serve` on 8180 against the copy, a 40-line Node proxy on 8181 that
+forwards every request verbatim and holds `POST /api/library/rules/import` for
+a configurable number of milliseconds before forwarding it upstream, and vite
+on 5199 with `TAIYAKU_SERVE` pointed at the proxy. **The hold is before the
+forward, not after**, so during the window the store has genuinely not been
+written: the client is waiting on the network rather than on a patched
+`fetch`, and the server sees the request only when the hold ends. The proxy's
+own log is the evidence:
+
+```
+20:58:36.635 HOLD  25000ms  POST /api/library/rules/import
+20:59:01.641 SEND  POST /api/library/rules/import
+20:59:01.647 BACK  200 /api/library/rules/import
+21:00:20.490 HOLD  90000ms  POST /api/library/rules/import
+21:01:50.491 SEND  POST /api/library/rules/import
+21:01:50.495 BACK  200 /api/library/rules/import
+```
+
+Six and four milliseconds upstream, held for twenty-five and ninety seconds.
+
+**All five of Step 4's assertions hold**, read out of the DOM rather than off a
+screenshot:
+
+- Save is `disabled` and reads its ordinary label — `Save — apply to 0 works`,
+  never `Saving…`. The two are separate states and this is the one that proves
+  it.
+- Import reads `Importing…` and is `disabled`.
+- Every rule row carries `draggable="false"` and all three controls on each row
+  — the enable checkbox, the pattern button, the delete — report
+  `disabled: true`, as does `+ Add`.
+- The Overrides tab's two options (`Move rule 4 above rule 1`, `Edit rule 4`)
+  are `disabled` during the window and enabled again after it. That row exists
+  here because this library really does have the seeded-defaults conflict —
+  *rule 4 overrides rule 1 on 178 files*, `Death Note (Colored Council)` — so
+  the freeze was checked against a real override rather than a fixture's.
+- The form stays live: all nine inputs and selects report `disabled: false`
+  during the window. Typing `EDITED-DURING-IMPORT` into rule 4's pattern and
+  pressing Tab drew the `refused` notice — *"An import was running, so your
+  edit to rule 4 was not applied…"* — while `Importing…` still stood, and the
+  list's own row 4 still showed the old pattern.
+- When the import landed, the imported rules were on screen (three rules, the
+  document's, replacing four) **with the `refused` notice still standing beside
+  the import's own**. That is the whole reason the fourth slot exists, and it
+  is now proven on real material rather than in a fixture.
+
+### Three findings, none of them the gate
+
+**1. The refusal for a second import is written to the slot the first import
+overwrites.** `doImport`'s guard puts both of its refusals in `importNotice`.
+For a save in flight that survives, because a save's landing does not touch
+that state. For an *import* in flight it does not: the running import's success
+path calls `setImportNotice('The imported rules are stored…')`, so the sentence
+that said *"An import was already running, so this one was not applied"* is
+replaced by one saying an import worked. Driven and watched: the refusal stood
+on screen at 21:02:44 while `Importing…` was up, and at 21:03:21 — after the
+first import landed — only the success sentence remained, with the store
+holding the *first* document and the second silently discarded.
+
+This is the exact failure the build design's §5 names as its reason for
+creating the `refused` slot ("**Not `importNotice`.** … its success path
+overwrites it … leaving the person told the import worked and never told their
+Save did nothing"), reached in the function that reasoning was written for.
+
+**No test can see it.** No test delivers a second file during a held import;
+`heldImport` picks one file and the case that follows asserts only that the
+button is `disabled` and says `Importing…`, under the title *"so a second pick
+cannot race the first"*. The button is the *first* guard. The second guard —
+`doImport`'s own `writer.current !== undefined` check, the one for a picker
+opened before the write started — has no test on its import-during-import
+branch, and its message has no test at all.
+
+**2. Both `refused` sentences assert a state that has not happened yet.** They
+end *"The imported rules are on screen now"* and *"The imported rules are on
+screen now; press Save to apply them"*, and both are set while the import is
+still in flight — so for the width of the window the sentence is false, and
+the second one points at a button that is `disabled` for exactly as long as it
+is on screen. At 2 ms nobody sees it; held for ninety seconds it is the only
+thing on screen. The tests match on `'was not sent'`, `'not applied'` and
+`'rule 2'` — never on the clause that is wrong, which is the shape this
+repository keeps finding: an assertion whose substring excludes the defect.
+
+**3. The gate is taken after `file.text()` resolves, so the disabled button
+does not cover the file-read window.** `onChange` does `file.text().then(doImport)`,
+and `writer.current` is set inside `doImport` — so between picking a file and
+its text arriving, Import is still enabled and the gate is still free. That is
+the route by which finding 1 is reachable without a synthetic event: pick a
+large file, click Import again while its text is still being read, pick a small
+one, and the small one's import is running when the large one's `doImport`
+finally fires. Not driven; derived from the code while writing finding 1 up.
+
+None of the three touches the gate itself, which held under every condition
+driven above.
+
+### Isolation, and one thing the ritual's own check gets wrong
+
+The real `library.db`'s mtime was identical before and after
+(`2026-09-02 05:51:48.853004102`), no `.taiyaku` was written anywhere under the
+real tree, `Volumes/` was untouched (mtime still `2026-09-02 05:51:40`), and
+`git status` was clean. The NAS probe directory was removed afterwards.
+
+`find -newermt` against the start stamp did **not** come back empty: the
+container directory `/home/davey/temp/manga-test` had a newer mtime, and
+nothing had been written to it. **A read-only `SELECT` against a WAL database
+moves its directory's mtime** — SQLite creates `-wal` and `-shm` beside the
+file and removes them on close — while leaving the database file's own mtime
+untouched. Reproduced deliberately on a copy: directory mtime `14:14:06` before
+one `select count(*)`, `14:14:07` after, database mtime unchanged either side.
+So the second half of the isolation ritual fires on a plain read, and the
+mtime of the database file is the half that actually means something.
