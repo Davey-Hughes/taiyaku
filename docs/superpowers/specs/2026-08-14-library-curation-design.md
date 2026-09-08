@@ -157,10 +157,12 @@ to know which it has.
 
 ## 6. The one feature that writes to your library
 
-**Server half shipped 2026-09-07**, built to
-[`2026-09-07-comicinfo-write-back-design.md`](2026-09-07-comicinfo-write-back-design.md);
-the confirmation screen is PR B and is still to come, so nothing in the UI
-reaches these routes yet.
+**Shipped 2026-09-07**, built to
+[`2026-09-07-comicinfo-write-back-design.md`](2026-09-07-comicinfo-write-back-design.md)
+in two PRs: the server half (#114) and the confirmation screen. The screen is a
+section of `MetadataEditor`, below Save and outside its `<form>` — a button
+inside a form submits it, which would have made the irreversible thing a
+literal side effect of the reversible one.
 
 The ComicInfo write-back, whose gates the store spec designs in §13.2. C3 owns
 only the confirmation, and the confirmation is the feature:
@@ -200,6 +202,7 @@ PATCH  /api/library/works/{slug}
 PATCH  /api/library/editions/{id}
 PATCH  /api/library/members/{id}
 
+GET    /api/library/works/{slug}/stamp-comicinfo    §6, what would change
 POST   /api/library/works/{slug}/stamp-comicinfo    §6, guarded
 ```
 

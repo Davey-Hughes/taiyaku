@@ -21,6 +21,7 @@ const ADMIN: Me = {
   admin: true,
   can_download: true,
   can_stream: true,
+  can_stamp: false,
 }
 
 /**

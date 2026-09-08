@@ -542,9 +542,12 @@ out.
 
 ### 6.2 The users screen
 
-One card per account: name, role, `can_download`, `can_stream`, granted roots,
-and **`can_log_in`** — an account still holding `credential::LOCKED` has a row
-and no way in, and `account::list` calls that "the second half worth printing".
+One card per account: name, role, `can_download`, `can_stream`, **`can_stamp`**
+— the one `role` does not imply, since it decides whether the account may
+rewrite archives taiyaku does not own rather than widening what it may read
+(the documented O86 exception) — granted roots, and **`can_log_in`** — an
+account still holding `credential::LOCKED` has a row and no way in, and
+`account::list` calls that "the second half worth printing".
 Expanding shows its sessions (created, last seen, user-agent, IP, and whether
 it is the browser doing the asking) and its API keys, each revocable
 individually, because C4 §4's stated case is "a device was lost".

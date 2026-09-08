@@ -149,6 +149,14 @@ export interface Me {
   admin: boolean
   can_download: boolean
   can_stream: boolean
+  /**
+   * **Not implied by `admin`.** Every other capability here reads
+   * `admin || column` in `Principal::from_account`; this one reads the column
+   * alone — the one documented exception to O86, because it decides whether an
+   * account may rewrite files taiyaku does not own. A screen that treated an
+   * administrator as holding it would offer a control the server answers 403.
+   */
+  can_stamp: boolean
 }
 
 export async function me(): Promise<Me> {

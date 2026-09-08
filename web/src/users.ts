@@ -50,6 +50,15 @@ export interface User {
   keys: ApiKey[]
   /** **Empty means unrestricted, not blind** — spec A2, O54. */
   roots: Grant[]
+  /**
+   * **The one capability `role` does not imply.** Every other capability on
+   * this row is read as `admin || column` by `Principal::from_account`; this
+   * one is the column alone — the documented exception to O86, because it
+   * decides whether an account may rewrite archives taiyaku does not own
+   * rather than widening what it may read. Default 0, so nobody gained it on
+   * the upgrade that added it.
+   */
+  can_stamp: boolean
 }
 
 /**
@@ -65,6 +74,7 @@ export interface UserPatch {
   role?: string
   can_download?: boolean
   can_stream?: boolean
+  can_stamp?: boolean
   /** The whole grant list, replacing what is there. There is no per-root route. */
   roots?: number[]
   /**

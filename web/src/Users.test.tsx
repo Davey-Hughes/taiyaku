@@ -27,6 +27,7 @@ const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   role: 'admin',
   can_download: true,
   can_stream: true,
+  can_stamp: false,
   can_log_in: true,
   sessions: [],
   keys: [],
@@ -39,6 +40,7 @@ const who = {
   admin: true,
   can_download: true,
   can_stream: true,
+  can_stamp: false,
 }
 
 async function settle(signedInAs = who) {

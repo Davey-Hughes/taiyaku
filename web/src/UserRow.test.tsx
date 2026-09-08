@@ -20,6 +20,7 @@ const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   role: 'admin',
   can_download: true,
   can_stream: true,
+  can_stamp: false,
   can_log_in: true,
   sessions: [],
   keys: [],
@@ -407,6 +408,40 @@ describe('the fields', () => {
     })
     await click(control(host, 'input[name="root-3"]'))
     expect(usersApi.patchUser).toHaveBeenCalledWith(2, { roots: [4] })
+  })
+
+  it('offers can_stamp as a third capability, and sends it on its own', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user', can_stamp: false })
+    const { host } = await show(other, [me, other])
+
+    // `control` throws when the selector matches nothing, so its return is
+    // never null and a `not.toBeNull()` here could not fail. The claim worth
+    // making is the state of the box it found.
+    const box = control<HTMLInputElement>(host, 'input[name="can_stamp"]')
+    expect(box.checked).toBe(false)
+
+    await click(box)
+
+    // On its own: a save that also resent `can_stream` would write a column
+    // nobody touched, and an absent key is what the route reads as "leave
+    // this alone".
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { can_stamp: true })
+  })
+
+  it('draws can_stamp unticked for an administrator who does not hold it', async () => {
+    // **The one capability `role` does not dominate** — the documented O86
+    // exception, because it decides whether an account may rewrite archives
+    // taiyaku does not own rather than widening what it may read. A card that
+    // drew this ticked because the account is an admin would state a
+    // permission the server answers 403 to.
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'admin', can_stamp: false })
+    const { host } = await show(other, [me, other])
+
+    expect(
+      control<HTMLInputElement>(host, 'input[name="can_stamp"]').checked,
+    ).toBe(false)
   })
 
   it('says the library has no roots rather than drawing an empty editor', async () => {

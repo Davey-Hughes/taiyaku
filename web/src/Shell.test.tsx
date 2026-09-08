@@ -30,6 +30,7 @@ const who = (over: Partial<Me> = {}): Me => ({
   admin: false,
   can_download: false,
   can_stream: false,
+  can_stamp: false,
   ...over,
 })
 

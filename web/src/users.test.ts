@@ -18,6 +18,7 @@ const user = (over: Partial<User> = {}): User => ({
   role: 'admin',
   can_download: true,
   can_stream: true,
+  can_stamp: false,
   can_log_in: true,
   sessions: [],
   keys: [],
@@ -119,6 +120,17 @@ describe('the users client', () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit
     expect(init.method).toBe('PATCH')
     expect(init.body).toBe(JSON.stringify({ can_download: false }))
+  })
+
+  it('passes can_stamp through to the PATCH body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ user: user() }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await patchUser(3, { can_stamp: true })
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit
+    expect(init.method).toBe('PATCH')
+    expect(init.body).toBe(JSON.stringify({ can_stamp: true }))
   })
 
   it('spells dry_run exactly, because the server refuses any other key', async () => {

@@ -329,6 +329,24 @@ export function Series() {
   // table). Rendering the affordance to a reader would invite a correction
   // and then answer 403, which is worse than not offering it.
   const mayEdit = useGate()?.who.admin === true
+  // **The column alone — never `admin || can_stamp`.** Every other capability
+  // on `who` reads `admin || column` (`mayDownload` above is one, and
+  // `mayEdit` folds `admin` in the same way), because O86 makes role
+  // dominate: an administrator is unrestricted in every dimension the schema
+  // has. `can_stamp` is the one documented exception to that rule (`Me`'s own
+  // comment in `api.ts`, and design doc §1.1): every capability O86 folds
+  // widens what an account may *read*, and this one instead decides whether
+  // it may *rewrite files taiyaku does not own* — a risk an admin role does
+  // not, by itself, answer for. `admin || can_stamp` was rejected for the
+  // same reason `mayDownload` offers nothing rather than a disabled control:
+  // it would draw this section for an administrator who does not hold the
+  // column, and the server answers that write with 403.
+  //
+  // `mayEdit` above already requires `admin` to show the editor at all, so
+  // the section this gates needs both — admin AND can_stamp — which is
+  // narrower than either alone. That is intended, not an oversight to
+  // "simplify" by dropping one half.
+  const mayStamp = useGate()?.who.can_stamp === true
   const { id } = useParams()
   // **Parsed before the effect, not inside it.** `Number('not-a-number')` is
   // `NaN`, and `/api/library/series/NaN` is a request the server answers with
@@ -635,6 +653,7 @@ export function Series() {
                         slug={w.slug}
                         title={w.title}
                         onPatch={patchWork}
+                        canStamp={mayStamp}
                       />
                     )}
                   </li>

@@ -145,10 +145,10 @@ export function UserRow({
    *
    * **A terminal state rather than a closed dialog.** Closing the dialog put
    * the plain *Remove…* back over a deleted account, and left the role
-   * dropdown, both capability boxes, the grants, the password form and every
-   * Revoke live against an id that answers "no account with id 2". The card
-   * normally unmounts the moment the reload lands; this is what it draws when
-   * that read fails instead. Third review pass.
+   * dropdown, all three capability boxes, the grants, the password form and
+   * every Revoke live against an id that answers "no account with id 2". The
+   * card normally unmounts the moment the reload lands; this is what it draws
+   * when that read fails instead. Third review pass.
    */
   const [removed, setRemoved] = useState(false)
   /**
@@ -404,6 +404,16 @@ export function UserRow({
             onChange={(e) => save({ can_stream: e.target.checked })}
           />
           <span>May stream pages</span>
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            name="can_stamp"
+            checked={shown.can_stamp}
+            disabled={saving}
+            onChange={(e) => save({ can_stamp: e.target.checked })}
+          />
+          <span>May write ComicInfo.xml into archives</span>
         </label>
       </div>
 

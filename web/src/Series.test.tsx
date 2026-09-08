@@ -42,6 +42,7 @@ const who = (over: Partial<Me> = {}): Me => ({
   admin: false,
   can_download: true,
   can_stream: true,
+  can_stamp: false,
   ...over,
 })
 
@@ -394,6 +395,47 @@ describe('Series, the work-level editor', () => {
     })
     expect(host.querySelector('.alignment-panel')).not.toBeNull()
     expect(host.querySelector('.metadata-editor')).toBeNull()
+  })
+
+  /**
+   * Task 5, C3 §7 / design doc §1.1: `can_stamp` is the one capability O86
+   * does not fold into `admin`, so the stamp section inside the editor has to
+   * be gated on the column alone. These two are the case the column exists
+   * for and its mirror — an administrator is necessary (the describe block
+   * above already covers "no editor at all" without it) but not sufficient.
+   */
+  it('offers the ComicInfo stamp section to an administrator who holds can_stamp', async () => {
+    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+    const host = await settleWith(
+      { panel: 'button' },
+      who({ admin: true, can_stamp: true }),
+    )
+    const open = host.querySelector<HTMLButtonElement>('.panel-open')
+    await act(async () => {
+      open?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.metadata-editor')).not.toBeNull()
+    expect(host.querySelector('.stamp-comicinfo')).not.toBeNull()
+  })
+
+  it('withholds the ComicInfo stamp section from an administrator who does not hold can_stamp', async () => {
+    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+    const host = await settleWith(
+      { panel: 'button' },
+      who({ admin: true, can_stamp: false }),
+    )
+    const open = host.querySelector<HTMLButtonElement>('.panel-open')
+    await act(async () => {
+      open?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // The editor itself is still offered — this is about the one section
+    // inside it, not the admin gate the two tests above already cover.
+    expect(host.querySelector('.metadata-editor')).not.toBeNull()
+    expect(host.querySelector('.stamp-comicinfo')).toBeNull()
   })
 })
 

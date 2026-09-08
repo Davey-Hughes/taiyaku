@@ -1,11 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  backupUrl,
-  humanBytes,
-  listBackups,
-  readableTaken,
-  takeBackup,
-} from './backup'
+import { backupUrl, listBackups, readableTaken, takeBackup } from './backup'
 
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -15,21 +9,6 @@ const json = (body: unknown) =>
 
 afterEach(() => {
   vi.unstubAllGlobals()
-})
-
-describe('humanBytes', () => {
-  it('counts bytes in bytes', () => {
-    expect(humanBytes(0)).toBe('0 B')
-    expect(humanBytes(512)).toBe('512 B')
-  })
-
-  it('uses binary units and names them as such', () => {
-    // KiB rather than kB, because the divisor is 1024. A label that says kB
-    // over a 1024-divisor is a figure that disagrees with `ls -l`.
-    expect(humanBytes(1024)).toBe('1.0 KiB')
-    expect(humanBytes(1536)).toBe('1.5 KiB')
-    expect(humanBytes(5 * 1024 * 1024 * 1024)).toBe('5.0 GiB')
-  })
 })
 
 describe('readableTaken', () => {
@@ -69,6 +48,19 @@ describe('the backup client', () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit
     expect(init.method).toBe('POST')
     expect(init.body).toBeUndefined()
+  })
+
+  it('refuses an empty 204 where a backup was expected', async () => {
+    // `sendJson` answers `undefined` for a 204, and `expectBody` is what turns
+    // that into a named failure rather than letting `taken.name` throw on
+    // `undefined` a line later. The route always sends a body today; this is
+    // the guard for a server that stops doing so, and it is the one branch in
+    // this file that lost its cover when `humanBytes` moved to `bytes.ts`.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+    )
+    await expect(takeBackup()).rejects.toThrow(/empty 204/)
   })
 
   it('addresses a download by name, encoded', () => {

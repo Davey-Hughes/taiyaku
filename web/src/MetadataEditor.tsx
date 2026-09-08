@@ -34,13 +34,204 @@
  * reserved for the one path that really did lose the edit: a thrown
  * 409/404/403 from a hard failure.
  */
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useRef, useState } from 'react'
+import { humanBytes } from './bytes'
 import { type PatchResult, reasons, type WorkEdit } from './metadata'
+import {
+  type Archive,
+  performStamp,
+  type Stamped,
+  type StampPlan,
+  stampPlan,
+} from './stamp'
+
+/**
+ * How many archives, as one phrase. Four places print this count — the plan's
+ * total, the confirm control's own label, the line that says a rewrite is
+ * running, and the completion — and three of them are about the same number.
+ * A helper rather than four inline ternaries so a singular cannot be right in
+ * one of them and wrong in the next.
+ */
+const archiveCount = (n: number) => `${n} ${n === 1 ? 'archive' : 'archives'}`
+
+/**
+ * What the ComicInfo section is doing, as one value.
+ *
+ * **This exists because three review passes found the same defect three
+ * times.** Every control and every status line in this section used to state
+ * its own condition over six independent variables (`plan`, `asking`,
+ * `planFailure`, `stamped`, `sending`, `stampFailure`) plus two refs; each
+ * round's fix moved one of those conditions and left the others disagreeing
+ * with it, and three separate comments arguing which combinations were
+ * reachable were each proven false by the next pass. So the combination is
+ * computed once, in `phaseOf` below, and everything renders from the answer.
+ *
+ * **A discriminated union rather than a bare string union.** Four of the eight
+ * phases have something to draw — the plan they are about, or the sentence a
+ * server sent — and a string would leave every reader reaching back into the
+ * raw state for it, which is exactly the shape being removed. The cost is that
+ * the union has to be constructed rather than compared; that is one function.
+ */
+type StampPhase =
+  /** Nothing has been asked. The read control is all there is. */
+  | { kind: 'idle' }
+  /** A plan read is out, with no answer yet to draw. */
+  | { kind: 'reading' }
+  /** The last plan read failed. Nothing is on the wire. */
+  | { kind: 'read-failed'; message: string }
+  /** A plan landed naming no archive to rewrite. */
+  | { kind: 'empty'; plan: StampPlan }
+  /** A plan landed with archives in it, waiting to be confirmed. */
+  | { kind: 'ready'; plan: StampPlan }
+  /**
+   * A rewrite is on the wire.
+   *
+   * **`plan` is the plan being written, held apart from the plan slot.** A
+   * re-read pressed in the same React batch as the confirm blanks that slot
+   * while the POST is still out, and what is being rewritten right now is a
+   * fact about the write rather than about the slot — which is the whole of
+   * pass 3's finding 3: with the slot blanked, the only thing on screen was
+   * "Working out which archives would change…", naming the read.
+   */
+  | { kind: 'writing'; plan: StampPlan }
+  /**
+   * A rewrite was refused.
+   *
+   * `plan` is the plan slot, which is what a retry would send. It is
+   * `undefined` only when a re-read in the same batch blanked it, in which
+   * case there is nothing to retry and the read control is the way on.
+   */
+  | { kind: 'refused'; message: string; plan: StampPlan | undefined }
+  /** A rewrite finished and nothing has been asked since. */
+  | { kind: 'done' }
+
+/**
+ * The one derivation. Nothing below this line reads the raw state.
+ *
+ * **The order is total, over states that are mostly exclusive already**, and
+ * the exclusions are mechanical rather than argued: `askPlan` blanks the plan
+ * slot and both failures at the press, and `confirmStamp` clears the stamp
+ * failure at the press and supersedes any plan read in flight, so a read
+ * cannot outlive the stamp that follows it. That leaves `refused` beside a
+ * plan slot as the only combination that really occurs, which is why that
+ * phase carries one. The chain still names every state: this file has been
+ * wrong three times about which combinations occur, and a total order costs a
+ * line each where a fourth argument about reachability costs another review
+ * pass.
+ *
+ * **A write in flight is tested first** because a rewrite with no undo
+ * outranks anything else this section could be saying.
+ *
+ * **`plan` is tested before `asking`, deliberately.** The two cannot both be
+ * set — `askPlan` blanks the slot at the press — so in correct code the order
+ * is unobservable, and the reason for it is what a *broken* version shows.
+ * Measured, by deleting `askPlan`'s `setPlan(undefined)` with the chain both
+ * ways round: this order fails two tests, including the one that names the
+ * frame — `blanks the refused plan and its confirm control while the re-read
+ * is out`; the other order fails one, because a stale plan hides behind
+ * "Working out which archives would change…" until the read settles. The
+ * deletion is caught either way. What this order buys is the test that
+ * describes the frame still being the test that sees it.
+ */
+const phaseOf = (state: {
+  plan: StampPlan | undefined
+  asking: boolean
+  planFailure: string | undefined
+  writing: StampPlan | undefined
+  stampFailure: string | undefined
+  stamped: Stamped | undefined
+}): StampPhase => {
+  if (state.writing !== undefined)
+    return { kind: 'writing', plan: state.writing }
+  if (state.stampFailure !== undefined)
+    return { kind: 'refused', message: state.stampFailure, plan: state.plan }
+  if (state.planFailure !== undefined)
+    return { kind: 'read-failed', message: state.planFailure }
+  if (state.plan !== undefined)
+    return state.plan.archives.length === 0
+      ? { kind: 'empty', plan: state.plan }
+      : { kind: 'ready', plan: state.plan }
+  if (state.asking) return { kind: 'reading' }
+  return state.stamped === undefined ? { kind: 'idle' } : { kind: 'done' }
+}
+
+/**
+ * A phase this file has not been taught to draw, refused at compile time.
+ *
+ * **The first exhaustiveness guard in `web/src`, so this comment says what one
+ * is for.** Compiler-enforced coverage is the whole argument for making the
+ * phase a discriminated union, and until this call neither switch over it had
+ * any: `phaseBody` carries no `default`, and a `switch` whose arms all
+ * `return` and which names eight kinds of nine just infers `undefined` into
+ * its return type — a legal thing for a renderer to return; `confirmablePlan`
+ * carried `default: return undefined`, which swallows an unnamed kind and
+ * answers with the same value it gives five named ones. So a ninth phase used
+ * to compile at both sites, drawing nothing and dropping the confirm at the
+ * same moment: an empty status region beside the read control alone, which is
+ * pass 3's finding 1 exactly. Naming the five explicitly below is what lets a
+ * `default` mean "nothing reaches here" rather than "everything else".
+ *
+ * **A `never` parameter rather than a return-type annotation**, which is the
+ * alternative a reader reaches for first and which catches neither site:
+ * `undefined` is assignable to `ReactNode`, and `confirmablePlan` is already
+ * annotated `StampPlan | undefined`. Assigning the narrowed value to `never`
+ * is the only spelling that makes the missing case an error — verified by
+ * adding a ninth kind to `StampPhase`, which fails `tsc` at both call sites
+ * and nowhere else.
+ *
+ * **It draws nothing rather than throwing, and that is a reversal.** Throwing
+ * was the first spelling, on the argument that a section absent altogether
+ * cannot be pressed where a half-drawn confirmation for a rewrite with no undo
+ * can. What that argument missed is the blast radius: there is no error
+ * boundary anywhere in `web/src`, and `main.tsx` renders through a plain
+ * `createRoot`, so a throw here unmounts the whole tree under `#root` — the
+ * nav, the gate and every route — rather than this section. Returning
+ * `undefined` costs nothing the compiler was giving us, since the `never`
+ * parameter above is what makes a missing case an error; it only changes
+ * which failure the already-impossible branch lands on. The `console.error`
+ * is there so "impossible" stays observable instead of silent.
+ */
+const unhandledPhase = (phase: never): undefined => {
+  console.error('unhandled stamp phase', phase)
+  return undefined
+}
+
+/**
+ * The plan a confirm would send in this phase, or `undefined` where there is
+ * none to send.
+ *
+ * **One function, so the control, its label and the body cannot disagree.**
+ * The confirm control used to be gated on a spelling of "the plan has
+ * archives" that the block around it no longer implied, and then on
+ * `stamped === undefined` besides — a gate whose comment claimed every plan
+ * reachable after a rewrite predated it. That claim was false (see
+ * `confirmStamp`), and the phase it produced rendered a total, an archive
+ * list, an irreversible warning and **no controls at all**.
+ *
+ * An `empty` plan is deliberately not confirmable: there is nothing to write.
+ */
+const confirmablePlan = (phase: StampPhase): StampPlan | undefined => {
+  switch (phase.kind) {
+    case 'ready':
+    case 'writing':
+    case 'refused':
+      return phase.plan
+    case 'idle':
+    case 'reading':
+    case 'read-failed':
+    case 'empty':
+    case 'done':
+      return undefined
+    default:
+      return unhandledPhase(phase)
+  }
+}
 
 export function MetadataEditor({
   slug,
   title,
   onPatch,
+  canStamp = false,
 }: {
   slug: string
   title: string
@@ -51,6 +242,20 @@ export function MetadataEditor({
    * but nothing here inspects it.
    */
   onPatch: (slug: string, fields: WorkEdit) => Promise<PatchResult>
+  /**
+   * Whether to offer the ComicInfo write-back at all — spec C3 §6.
+   *
+   * **The caller asserts two things by passing `true`**, which is why this is
+   * a prop rather than a `useGate()` read here: that the account holds
+   * `can_stamp`, and that `slug` is a *work* slug. The second matters because
+   * this component's own doc is explicit that `slug` is a loose name for
+   * whatever identifier `onPatch` takes, and the stamp routes take a work's.
+   *
+   * **Absent, not disabled**, per C3 §6 and `Series.tsx`'s `mayDownload`: a
+   * disabled control invites a person to find out why and nothing on this
+   * screen could tell them.
+   */
+  canStamp?: boolean
 }) {
   const [value, setValue] = useState(title)
   const [current, setCurrent] = useState(title)
@@ -68,6 +273,211 @@ export function MetadataEditor({
   // whether it renders a reason.
   const [unwritten, setUnwritten] = useState<string[]>()
   const [failure, setFailure] = useState<string>()
+
+  /**
+   * The six pieces of state the stamp section holds. **None of them is read
+   * by the JSX**: `phaseOf` above folds them into one phase, and everything
+   * below renders from that. A control gated on one of these directly is the
+   * defect this section has now had fixed four times.
+   *
+   * `plan` is the answer to the last read that landed and was not superseded;
+   * `asking` tells "nothing read yet" from "a read is out", since both leave
+   * the slot `undefined`.
+   */
+  const [plan, setPlan] = useState<StampPlan>()
+  const [asking, setAsking] = useState(false)
+  const [planFailure, setPlanFailure] = useState<string>()
+
+  /**
+   * The confirmation's own three.
+   *
+   * **`writing` holds the plan being written rather than a boolean.** It was
+   * `sending: boolean`, and the count it could not carry was then read off
+   * the plan slot — which a re-read blanks — so the one place that said a
+   * rewrite was running was a button that two reachable states did not
+   * render. The plan is what the POST was given; a boolean is that fact with
+   * the useful half thrown away.
+   */
+  const [stamped, setStamped] = useState<Stamped>()
+  const [writing, setWriting] = useState<StampPlan>()
+  const [stampFailure, setStampFailure] = useState<string>()
+
+  /**
+   * Whether a plan read is already out — the same ref, for the same reason,
+   * as `inFlight` below.
+   *
+   * **The comment this replaces was false.** It said a second press was "only
+   * reachable after a failure, by which time the first has already settled",
+   * and offered that as why no guard was needed. React batches state, so two
+   * presses dispatched before the next render both run this function with
+   * `asking` still `false` and the control still in the DOM — verified: it
+   * sent two `stampPlan`s. Nothing about a failure enters into it.
+   */
+  const planInFlight = useRef(false)
+  /**
+   * The newest plan read, the same counter as `UserRow.askCost`'s, and for its
+   * reason: whichever read was asked for last is the one whose answer may
+   * draw, so a slow earlier answer cannot land on top of a newer one.
+   *
+   * **It is load-bearing now, which it was not when it was written.** Its own
+   * comment used to record that nothing was ever discarded through it,
+   * because the control that starts a read was gone while `asking`. Two
+   * things changed: the read control is now rendered in every phase (disabled
+   * while a request is out) rather than conditionally absent, and
+   * `confirmStamp` bumps this counter to supersede a plan read that a stamp
+   * has overtaken. Both are answers that must not draw, and this is what
+   * discards them.
+   */
+  const latestPlan = useRef(0)
+
+  /**
+   * Whether a stamp is already on its way.
+   *
+   * **A ref as well as a phase, for the reason every other guarded press in
+   * this codebase carries one**: React batches state, so two presses
+   * dispatched before the next render both run the handler and `disabled` has
+   * not reached the DOM. On this control that is not a cosmetic double-send —
+   * the second POST arrives against a library the first has already moved, so
+   * it is answered 409 by the plan-mismatch guard and reads to the person as
+   * a stamp that failed.
+   *
+   * Declared above `askPlan` rather than beside `confirmStamp`, because a
+   * plan read has to see it too — see `askPlan`'s own guard.
+   */
+  const inFlight = useRef(false)
+
+  /**
+   * Apply a plan answer, if it is still the one being waited for.
+   *
+   * The ref is released here rather than at the call sites so a superseded
+   * answer leaves it held by the read that superseded it. A read superseded
+   * by a *stamp* is the exception — nothing else would ever release it — so
+   * `confirmStamp` releases it there.
+   */
+  const settlePlan = (seq: number, draw: () => void) => {
+    if (seq !== latestPlan.current) return
+    planInFlight.current = false
+    setAsking(false)
+    draw()
+  }
+
+  // Fetched on press, never on mount — computing a plan costs a disk seek
+  // per archive, unmeasured on the deployment target (a NAS over spinning
+  // disks), and mounting this section once per opened panel would spend that
+  // cost on every panel nobody stamps.
+  const askPlan = () => {
+    // **The ref, paired with the `disabled` the control carries.** The
+    // attribute is what a person sees and what stops the second press of a
+    // slow double-click; the ref is what stops two presses dispatched inside
+    // one React batch, before that attribute reaches the DOM. Every other
+    // ref-guarded control in this tree carries both — `RemoveRoot`,
+    // `UserRow`, `Users`, `Roots`, `RootRow`, `Backup`, `RuleEditor` — and
+    // this control and the confirm below were the two exceptions until pass 3
+    // swept for the shape.
+    //
+    // **A running POST refuses a plan read as firmly as a running GET does.**
+    // The confirm and this control are on screen together in the `ready` and
+    // `refused` phases and React batches state, so one press of each inside a
+    // single batch reaches both handlers with the DOM unchanged; without this
+    // the GET went out while the stamp was on the wire and answered with a
+    // library caught mid-rewrite, which is neither the plan that was
+    // confirmed nor the one that follows it. `confirmStamp` carries no
+    // matching `planInFlight` guard because its POST needs none: it sends the
+    // plan the person is looking at, and `stamp::apply` compares that body to
+    // a freshly computed plan field for field and answers 409 on any
+    // difference, so a library that moved under it refuses the write rather
+    // than mis-applying it.
+    if (planInFlight.current || inFlight.current) return
+    planInFlight.current = true
+    const seq = ++latestPlan.current
+    setAsking(true)
+    setPlan(undefined)
+    setPlanFailure(undefined)
+    // The refusal that sent the person back here is about the plan they were
+    // just shown, and this reads a new one — leaving it on screen would put a
+    // stale alert over a fresh list.
+    //
+    // **`stamped` is deliberately not cleared here.** What an irreversible
+    // rewrite did is not a property of the current read, so it is not a
+    // property of the phase either: the completion below renders from
+    // `stamped` at the section's own level, and a read cannot swallow it
+    // whenever it happens. The record is cleared by the press that starts a
+    // *different* rewrite, in `confirmStamp`, and by nothing else.
+    setStampFailure(undefined)
+    stampPlan(slug)
+      .then((answer) => {
+        settlePlan(seq, () => {
+          setPlan(answer)
+        })
+      })
+      .catch((err: unknown) => {
+        settlePlan(seq, () => {
+          setPlanFailure(err instanceof Error ? err.message : String(err))
+        })
+      })
+  }
+
+  /**
+   * Rewrite the archives `sending` names.
+   *
+   * **The plan comes in as an argument rather than off the closure**, and it
+   * is the one the phase drew: the control that calls this is rendered from
+   * `confirmablePlan(phase)` and hands that same value back, so the body
+   * posted is by construction the plan the person was looking at. `plan`
+   * being read here instead is how a confirm came to send a body the block
+   * around it was no longer describing.
+   */
+  const confirmStamp = (sending: StampPlan) => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setWriting(sending)
+    setStampFailure(undefined)
+    // **The previous rewrite's report goes with the press that starts a new
+    // one.** Two completions cannot be told apart on screen: leaving it would
+    // put "Rewrote 2 archives." above a refusal of a *different* write with
+    // nothing to say which was which. The alternative — keeping it and
+    // labelling the two — needs a timestamp this section does not have and
+    // would still read as one report.
+    setStamped(undefined)
+    // **A stamp supersedes a plan read in flight.** That GET went out before
+    // this POST and answers about a library this write is in the middle of
+    // moving: it is neither the plan that was confirmed nor the one that
+    // follows. Bumping the counter is what makes `settlePlan` discard it, and
+    // since that discard returns before releasing the ref, the release
+    // happens here instead.
+    //
+    // The alternative — drawing that answer — is what this file used to do,
+    // and it is where two of pass 3's three findings came from: the plan it
+    // drew described archives this write was in the middle of rewriting, and
+    // the section reported either "Nothing to write" or a fresh plan with
+    // every control gated off.
+    planInFlight.current = false
+    latestPlan.current += 1
+    setAsking(false)
+    // **`sending.archives`, not a rebuild of them.** `stamp::apply` compares
+    // the body to a freshly computed plan field for field; anything
+    // reconstructed here is a 409 waiting to happen.
+    performStamp(slug, sending.archives)
+      .then((answer) => {
+        inFlight.current = false
+        setWriting(undefined)
+        setStamped(answer)
+        // **The plan this applied is spent.** Every archive it named now
+        // holds the document taiyaku would write, so the server answers 409
+        // for it and it describes nothing anybody can act on. Clearing it is
+        // what makes "which plans on screen predate the rewrite" a question
+        // with a mechanical answer — none of them do, because this line
+        // clears the one that was applied and the supersede above discards
+        // the one that raced it. A plan on screen after this is one somebody
+        // pressed for afterwards, and confirming it is a real thing to do.
+        setPlan(undefined)
+      })
+      .catch((err: unknown) => {
+        inFlight.current = false
+        setWriting(undefined)
+        setStampFailure(err instanceof Error ? err.message : String(err))
+      })
+  }
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
@@ -88,43 +498,424 @@ export function MetadataEditor({
       })
   }
 
-  return (
-    <form className="metadata-editor" onSubmit={submit}>
-      <label className="field title">
-        <span>Title</span>
-        <input
-          type="text"
-          name="title"
-          value={value}
-          onChange={(event) => {
-            setValue(event.target.value)
-          }}
-        />
-      </label>
-      <button type="submit" disabled={saving}>
-        Save
-      </button>
-      <p className="current">{current}</p>
-      {unwritten !== undefined && (
-        <div className="unwritten">
-          <p>
-            Saved — but this correction could not be saved beside your library
-            {unwritten.length > 0 ? ':' : '.'}
+  const phase = phaseOf({
+    plan,
+    asking,
+    planFailure,
+    writing,
+    stampFailure,
+    stamped,
+  })
+  const confirmable = confirmablePlan(phase)
+  /**
+   * The two phases with a request out, which are exactly the two the refs
+   * guard. Named once so the attribute and the ref cannot come apart.
+   */
+  const busy = phase.kind === 'reading' || phase.kind === 'writing'
+
+  /**
+   * The formats this work holds that a stamp will not write.
+   *
+   * **One definition, drawn from whichever plan is being shown.** It rendered
+   * inside the non-empty branch alone, so a work whose every archive is a
+   * `.cbr` was told "nothing to write" and never told that the rar is why —
+   * two situations the server had already told the screen apart, collapsed
+   * into one sentence. It reads "this work holds" rather than "also holds"
+   * for the same reason: in the empty branch there is no *also*.
+   *
+   * **What it says about those formats is the rule, not a claim about
+   * reading them.** It used to read "which taiyaku reads and never writes",
+   * which is false for every token it can print but `dir`:
+   * `Format::is_readable` is `Dir | Zip` alone, and `pages.rs`'s
+   * `unsupported_container` refuses rar, 7z, tar and PDF outright. What is
+   * true of all nine tokens is the write rule, so that is what this states,
+   * and the two non-formats get their own sentence rather than being folded
+   * into a list of formats.
+   *
+   * **The EPUB sentence is conditional, and it is there because the rule as
+   * stated is unreconcilable without it.** An EPUB *is* a zip container, so
+   * "writes into zip archives and nothing else" beside `epub-fixed` in the
+   * list reads as a contradiction. What taiyaku actually does is filter on
+   * what `sniff` identified: `stamp::plan` skips anything whose format is not
+   * `Format::Zip`, and an EPUB is `EpubFixed`/`EpubReflow`. So the rule is
+   * stated in terms of that identification, and the extra sentence draws only
+   * when an EPUB is in the list — the alternative, saying it always, spends a
+   * sentence on a distinction that does not arise for a work holding a rar.
+   */
+  const skippedNote = (shown: StampPlan) => {
+    const skipped = shown.skipped_formats
+    if (skipped.length === 0) return null
+    /**
+     * The tokens that name a format, as opposed to the two that report the
+     * absence of one. `stamp.rs`'s `skipped_formats` can print nine values:
+     * `dir`, `rar`, `7z`, `pdf`, `tar`, `epub-fixed` and `epub-reflow` all
+     * come from `Format::token`, while `unknown` is what a file that was read
+     * and matched no signature answers and `unreadable` is what a file that
+     * could not be opened at all answers. The last two are not formats and
+     * must not be listed as if they were — "this work holds unreadable" is
+     * not a sentence about a format.
+     */
+    const namedFormats = skipped.filter(
+      (token) => token !== 'unknown' && token !== 'unreadable',
+    )
+    const containers = namedFormats.some((token) => token.startsWith('epub'))
+    return (
+      <div className="skipped">
+        {namedFormats.length > 0 && (
+          <p className="formats">
+            Left alone: this work holds {namedFormats.join(', ')}. A stamp
+            writes ComicInfo.xml into the archives taiyaku identifies as a plain
+            zip, and nothing else, whether or not taiyaku can read the format.
           </p>
-          {unwritten.length > 0 && (
-            <ul>
-              {unwritten.map((why) => (
-                <li key={why}>{why}</li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-      {failure !== undefined && (
-        <p className="failure" role="alert">
-          {failure}
+        )}
+        {containers && (
+          <p className="containers">
+            An EPUB is a zip container as well, which is where that
+            identification shows: taiyaku identifies one as an EPUB rather than
+            as a plain zip, so a stamp leaves it alone with the rest.
+          </p>
+        )}
+        {skipped.includes('unreadable') && (
+          <p className="unopened">
+            At least one file in this work could not be opened at all, so
+            nothing here can say what it holds. A stamp leaves it where it is.
+          </p>
+        )}
+        {skipped.includes('unknown') && (
+          <p className="unrecognised">
+            At least one file in this work matches no format taiyaku recognises.
+            A stamp leaves it where it is.
+          </p>
+        )}
+      </div>
+    )
+  }
+
+  /** What a confirm would rewrite, and everything that follows from it. */
+  const planBlock = (shown: StampPlan) => (
+    <>
+      <p className="total">
+        This rewrites {archiveCount(shown.archives.length)},{' '}
+        {humanBytes(shown.total_bytes)} in all. A zip cannot be edited in place,
+        so each one is copied whole and renamed over the original.
+      </p>
+      <ul className="archives">
+        {shown.archives.map((archive: Archive) => (
+          <li className="archive" key={archive.member_id}>
+            <span className="path">{archive.path}</span>{' '}
+            <span className="size">{humanBytes(archive.bytes)}</span>
+          </li>
+        ))}
+      </ul>
+      <div className="consequences">
+        <p>
+          Every archive above gets a new sha256, and three things follow from
+          that:
         </p>
+        <ul>
+          <li>
+            any alignment or labelling recorded against these members is treated
+            as stale until the next scan, because the staleness check compares
+            exactly this digest;
+          </li>
+          <li>
+            every thumbnail already generated for these members is regenerated
+            the next time it is asked for;
+          </li>
+          {/*
+           * **A forecast weakened to what the outcome copy can report.** This
+           * read "and its <content_key>.library.json moves with it when it
+           * does", promising as certain the one thing `key-moved-alone` below
+           * then has to take back: `hand::rename_for_rekey` answers `false`
+           * for five causes, and two of them — a file already at the new
+           * address, and a root that refuses the rename — leave the document
+           * stranded at the old key. Both paragraphs are on screen together
+           * after a stamp, so the promise was contradicted in place; and it
+           * was made before the person agreed to something with no undo,
+           * which is the half that matters.
+           */}
+          <li>
+            this work's content_key changes if any archive above belongs to its
+            hub edition, and taiyaku then tries to move its
+            &lt;content_key&gt;.library.json to the new address. That move is
+            attempted, not promised: a file already sitting at the new address,
+            or a root that refuses the rename, leaves the document stranded at
+            the old key.
+          </li>
+        </ul>
+        <p className="irreversible">
+          There is no undo: the original files are replaced, not kept. If this
+          is interrupted partway, the archives already rewritten stay rewritten
+          and their rows stay stale until the next scan.
+        </p>
+      </div>
+      {skippedNote(shown)}
+    </>
+  )
+
+  /**
+   * What the section is saying, one branch per phase and no branch reading
+   * anything but the phase.
+   *
+   * **Every phase here either draws a control below or is one press from
+   * one.** `idle` and `done` draw nothing at all: `idle` because nothing has
+   * been asked, `done` because the completion above it is the whole answer.
+   * Neither is a dead end — the read control renders in all eight phases —
+   * and there is no terminal phase in this section, which is why none of them
+   * says so.
+   */
+  const phaseBody = () => {
+    switch (phase.kind) {
+      case 'idle':
+      case 'done':
+        return null
+      case 'reading':
+        return (
+          <p className="asking">Working out which archives would change…</p>
+        )
+      case 'read-failed':
+        return (
+          <p className="plan-failure" role="alert">
+            {phase.message}
+          </p>
+        )
+      case 'empty':
+        return (
+          <>
+            {/*
+             * **The disjunct that used to end this sentence is gone.** It
+             * read "…, or this work has no zip archive at all", which was
+             * false above "Rewrote 2 archives." and above a 409 saying the
+             * work's archives had changed — both states this section reaches
+             * with an empty plan on screen. It was also unnecessary: "every
+             * zip archive already holds it" is true of a work with none, so
+             * the universal covers the case the disjunct was added for, and
+             * the `.skipped` note under it says what the work holds instead.
+             */}
+            <p className="nothing">
+              Nothing to write: every zip archive in this work already holds the
+              ComicInfo.xml taiyaku would write.
+            </p>
+            {skippedNote(phase.plan)}
+          </>
+        )
+      case 'ready':
+        return planBlock(phase.plan)
+      case 'writing':
+        return (
+          <>
+            {/*
+             * **At the section's level, not inside the confirm control.** The
+             * one place "a rewrite is running" reached the DOM was that
+             * button's label, and the button was gated on the plan slot — so
+             * with the slot blanked by a re-read the section said "Working
+             * out which archives would change…" while archives were being
+             * irreversibly rewritten. The phase carries the plan being
+             * written, so this sentence can be drawn whatever the slot holds.
+             */}
+            <p className="writing">
+              Rewriting {archiveCount(phase.plan.archives.length)} — the
+              originals are being replaced now, and nothing here can stop it.
+            </p>
+            {planBlock(phase.plan)}
+          </>
+        )
+      case 'refused':
+        return (
+          <>
+            <p className="stamp-failure" role="alert">
+              {phase.message}
+            </p>
+            {phase.plan !== undefined && planBlock(phase.plan)}
+          </>
+        )
+      default:
+        return unhandledPhase(phase)
+    }
+  }
+
+  return (
+    <>
+      <form className="metadata-editor" onSubmit={submit}>
+        <label className="field title">
+          <span>Title</span>
+          <input
+            type="text"
+            name="title"
+            value={value}
+            onChange={(event) => {
+              setValue(event.target.value)
+            }}
+          />
+        </label>
+        <button type="submit" disabled={saving}>
+          Save
+        </button>
+        <p className="current">{current}</p>
+        {unwritten !== undefined && (
+          <div className="unwritten">
+            <p>
+              Saved — but this correction could not be saved beside your library
+              {unwritten.length > 0 ? ':' : '.'}
+            </p>
+            {unwritten.length > 0 && (
+              <ul>
+                {unwritten.map((why) => (
+                  <li key={why}>{why}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {failure !== undefined && (
+          <p className="failure" role="alert">
+            {failure}
+          </p>
+        )}
+      </form>
+      {/*
+       * Outside the `<form>` above, not inside it — a `<button>` inside a
+       * form with no `type` attribute submits that form, which would make an
+       * irreversible archive rewrite a side effect of pressing Save on a
+       * reversible title edit. `type="button"` below is belt and braces on
+       * top of that structural separation.
+       */}
+      {canStamp && (
+        <section className="stamp-comicinfo" aria-label="Write ComicInfo.xml">
+          <h3>Write ComicInfo.xml into this work's archives</h3>
+          {/*
+           * One element for all eight phases and for the completion above
+           * them, present from the first render: a live region has to exist
+           * before the thing it announces changes, which is `AcceptForm`'s own
+           * reasoning for the identical wrapper around its four. `aria-live`
+           * rather than `role="status"`, so the two failure paragraphs inside
+           * keep the assertive `role="alert"` they need without a second live
+           * role wrapping them.
+           *
+           * The comment was copied from `AcceptForm` and its test was not, so
+           * deleting this attribute cost nothing until pass 4.
+           * `MetadataEditor.test.tsx` now pins it the way
+           * `AcceptForm.test.tsx` pins its own.
+           */}
+          <div className="stamp-state" aria-live="polite">
+            {/*
+             * **On `stamped` alone, above the phase and inside the live
+             * region.** What a rewrite with no undo actually did is a fact
+             * about a cycle that has finished, and the phase is what this
+             * section is doing now — so a plan read afterwards can put the
+             * section back into `ready` without touching this. It sits first
+             * because it reads chronologically: what happened, then what is
+             * being considered next.
+             *
+             * **Inside the region because success is otherwise announced
+             * nowhere.** A failure carries `role="alert"`; this does not, and
+             * it sat outside every live region until pass 4 — so a screen
+             * reader heard "Rewriting 2 archives — the originals are being
+             * replaced now", then that paragraph was removed (silent under the
+             * default `aria-relevant`), and the outcome of the irreversible act
+             * was inserted in silence. The alternative — `role="status"` on
+             * `.stamped` itself — announces nothing, for `AcceptForm`'s own
+             * reason: a region declared on the message is created at the moment
+             * its content appears, and a region has to exist before what it
+             * announces is put into it. The wrapper this now sits inside is
+             * rendered in all eight phases, from the first render.
+             *
+             * It rendered inside `plan.archives.length > 0` two rounds ago,
+             * where a fresh empty plan — the likely answer, since the stamp had
+             * just written every archive — replaced "Rewrote 2 archives" and
+             * the whole O81 stranded-document paragraph with "Nothing to
+             * write".
+             */}
+            {stamped !== undefined && (
+              <div className="stamped">
+                <p className="rewrote">
+                  Rewrote {archiveCount(stamped.rewritten)}.
+                </p>
+                {/*
+                 * Three outcomes, not two. `content_key` is `null` whenever
+                 * the work's identity did not move — `identity::content_key`
+                 * hashes the hub edition's member digests alone — and the
+                 * paragraph this replaces printed that `null` into the
+                 * sentence and then explained the absent key with "it had no
+                 * document on disk to move", which is a claim
+                 * `stamp::apply` never makes: it hard-codes `document_moved`
+                 * false when the key did not move, without asking whether a
+                 * document exists.
+                 */}
+                {stamped.content_key === null ? (
+                  <p className="key-held">
+                    This work's content_key did not change, so nothing had to
+                    move with it: the key is derived from the hub edition's
+                    members alone, and no archive rewritten here belongs to that
+                    edition.
+                  </p>
+                ) : stamped.document_moved ? (
+                  <p className="key-moved">
+                    This work's content_key is now {stamped.content_key}, and
+                    its &lt;content_key&gt;.library.json moved with it.
+                  </p>
+                ) : (
+                  /*
+                   * O81, stated as the uncertainty it is.
+                   * `hand::rename_for_rekey` answers `false` for five
+                   * causes: no on-disk address, no parent, nothing at the
+                   * old key, something already at the new one, and a rename
+                   * the root refused. The last two leave the document
+                   * stranded at the old key; the first three are benign.
+                   * Nothing in the answer says which, so neither does this.
+                   */
+                  <p className="key-moved-alone">
+                    This work's content_key is now {stamped.content_key}, and
+                    its &lt;content_key&gt;.library.json did not move with it.
+                    Either there was no document to move, or one is now stranded
+                    at the old key — nothing here can tell those apart. The next
+                    scan reports a document left behind as an orphan, with the
+                    title it holds.
+                  </p>
+                )}
+                {stamped.sidecar_rewritten && (
+                  <p className="sidecar">
+                    This work's taiyaku.json was rewritten too, so it records
+                    the new digests.
+                  </p>
+                )}
+              </div>
+            )}
+            {phaseBody()}
+          </div>
+          {confirmable !== undefined && (
+            <button
+              type="button"
+              name="confirm-stamp"
+              onClick={() => {
+                confirmStamp(confirmable)
+              }}
+              disabled={phase.kind === 'writing'}
+            >
+              {phase.kind === 'writing'
+                ? 'Rewriting…'
+                : `Rewrite ${archiveCount(confirmable.archives.length)}`}
+            </button>
+          )}
+          {/*
+           * **One read control, one label, in every phase.** There were two —
+           * "What would this change?" gated on there being no plan, and "What
+           * would this change now?" gated on a refusal — with the same
+           * handler, and after a failed read beside a refused stamp both drew
+           * at once. Rendering it always, disabled while a request is out,
+           * also answers the phase that had no controls at all: whatever this
+           * section is showing, there is a way to ask again.
+           */}
+          <button
+            type="button"
+            name="plan-stamp"
+            onClick={askPlan}
+            disabled={busy}
+          >
+            What would this change?
+          </button>
+        </section>
       )}
-    </form>
+    </>
   )
 }

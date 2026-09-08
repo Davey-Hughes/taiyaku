@@ -37,11 +37,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   type Backup as StoredBackup,
   backupUrl,
-  humanBytes,
   listBackups,
   readableTaken,
   takeBackup,
 } from './backup'
+import { humanBytes } from './bytes'
 
 export function Backup() {
   const [backups, setBackups] = useState<StoredBackup[] | undefined>()
