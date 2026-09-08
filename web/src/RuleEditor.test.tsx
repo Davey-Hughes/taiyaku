@@ -700,10 +700,12 @@ describe('RuleEditor', () => {
    */
   const heldImport = async (openRule?: number) => {
     let resolveImport: (value: ImportAnswer) => void = () => {}
+    let rejectImport: (reason: Error) => void = () => {}
     vi.mocked(rulesApi.importRules).mockImplementation(
       () =>
-        new Promise((resolve) => {
+        new Promise((resolve, reject) => {
           resolveImport = resolve
+          rejectImport = reject
         }),
     )
     const host = await render()
@@ -737,7 +739,14 @@ describe('RuleEditor', () => {
     // never fired would make every test below assert the no-write-in-flight
     // path while claiming to assert the other one.
     expect(rulesApi.importRules).toHaveBeenCalledTimes(1)
-    return { host, land: (a: ImportAnswer) => resolveImport(a) }
+    return {
+      host,
+      land: (a: ImportAnswer) => resolveImport(a),
+      // A refused document is the ordinary failure on this route, so the
+      // window's notices have to be readable against it and not only against
+      // a landing.
+      fail: (reason: Error) => rejectImport(reason),
+    }
   }
 
   /**
@@ -894,13 +903,22 @@ describe('RuleEditor', () => {
     ).toBe(false)
   })
 
-  /**
-   * Drives the window between `setWriting('import')` and the render that
-   * disables Save. Two microtask ticks: the first for `file.text()`, the
-   * second for `doImport`. Measured against the pre-fix code — at that point
-   * `importRules` has been called and the Save button still fires.
-   */
-  const importInFlightUnrendered = async () => {
+  it('disables Save in the same tick the import gate is taken, so no click can reach it — O97, closed further by O101', async () => {
+    // **This test used to drive the ref guard and now proves the ref guard is
+    // not what stands here.** `save`'s `writer.current !== undefined` check
+    // exists because `disabled` lands on a render while the ref is read
+    // synchronously — and until O101 that gap was real: the gate was taken
+    // inside `file.text()`'s `.then`, one microtask after the change event
+    // returned, so a click landing in between reached `save` with the button
+    // still drawn enabled. `beginImport` now takes the gate inside the
+    // discrete change event itself, which React flushes synchronously, so
+    // `frozen` and `writer.current` change together and there is no tick in
+    // which only one of them is standing.
+    //
+    // So this asserts the *pair*, immediately, with no `await` to hide behind:
+    // the button is already disabled when the event returns. Move the gate
+    // back after the read and this fails, which is what makes it O101's own
+    // regression guard rather than a restatement of the `disabled` test above.
     let resolveImport: (value: ImportAnswer) => void = () => {}
     vi.mocked(rulesApi.importRules).mockImplementation(
       () =>
@@ -920,63 +938,24 @@ describe('RuleEditor', () => {
     })
     await act(async () => {
       fileInput.dispatchEvent(new Event('change', { bubbles: true }))
-      await Promise.resolve()
-      await Promise.resolve()
-      // **Pinned, not incidental**: the button is still enabled here. That is
-      // what makes the refusal below the *ref* guard's work rather than the
-      // `disabled` attribute's, and it is the whole reason this test is not
-      // the same test as the one asserting `disabled`.
-      expect(saveButton.disabled).toBe(false)
+      expect(saveButton.disabled).toBe(true)
       saveButton.click()
       await Promise.resolve()
     })
-    return { host, land: (a: ImportAnswer) => resolveImport(a) }
-  }
 
-  it('refuses a save that slips past the disabled button during an import, and writes nothing — O97', async () => {
-    // The *second* guard, for the reason the drag has two. The button's
-    // `disabled` is state and lands on a render; `writer` is read
-    // synchronously. Driving that window is what makes this test asymmetric
-    // to the `disabled` assertion above — which is what proves the two guards
-    // are not one test twice.
-    const { host, land } = await importInFlightUnrendered()
-
+    // Loud rather than silent, the same reason `heldImport` says so: an
+    // import that never fired would leave the button disabled for some other
+    // reason and this test would assert nothing.
     expect(rulesApi.importRules).toHaveBeenCalledTimes(1)
     expect(rulesApi.saveRules).not.toHaveBeenCalled()
-    expect(host.querySelector('p.refused')?.textContent).toContain(
-      'was not sent',
-    )
 
     await act(async () => {
-      land(importAnswer())
+      resolveImport(importAnswer())
       await Promise.resolve()
       await Promise.resolve()
       await Promise.resolve()
     })
-  })
-
-  it('keeps the refusal on screen after the import that caused it lands — O97', async () => {
-    // `commit` clears `heldNotice` and `doImport`'s success path overwrites
-    // `importNotice`, so a refusal living in either slot disappears at exactly
-    // the moment the person needs it — leaving them told the import worked and
-    // never told their save did nothing. This fails if the notice is moved.
-    const { host, land } = await importInFlightUnrendered()
-    expect(host.querySelector('p.refused')).not.toBeNull()
-
-    await act(async () => {
-      land(importAnswer())
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.querySelector('p.refused')?.textContent).toContain(
-      'was not sent',
-    )
-    expect(
-      [...host.querySelectorAll('.import p')]
-        .map((n) => n.textContent ?? '')
-        .find((t) => t.includes('imported rules are stored')),
-    ).toBeDefined()
+    expect(saveButton.disabled).toBe(false)
   })
 
   it('discards a form commit made during an import rather than holding it, and says which rule — O97', async () => {
@@ -1094,10 +1073,16 @@ describe('RuleEditor', () => {
     })
 
     expect(rulesApi.importRules).not.toHaveBeenCalled()
-    const notice = [...host.querySelectorAll('.import p')]
-      .map((n) => n.textContent ?? '')
-      .find((t) => t.includes('not applied'))
+    // In `refused` since O100, not in `importNotice`: a message about a
+    // gesture that did not happen cannot live in the slot owned by the one
+    // that did. Here it survived there by luck — nothing in `save` writes
+    // `importNotice` — and it moved with the second-import case, which did not.
+    const notice = host.querySelector('p.refused')?.textContent ?? ''
+    expect(notice).toContain('not applied')
     expect(notice).toContain('nothing was imported')
+    // Set while the save is still running, so "now the save has finished"
+    // was false for as long as it was on screen — O100's second half.
+    expect(notice).toContain('once the save has finished')
 
     await act(async () => {
       land(heldSaveAnswer())
@@ -1105,6 +1090,215 @@ describe('RuleEditor', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
+  })
+
+  /**
+   * Delivers a file to the hidden input — the gesture, not the button. Used
+   * for the pick that lands *inside* a window, which is the only way to reach
+   * `beginImport`'s own guard: the button is `disabled` by then, and a picker
+   * opened before the window started still delivers.
+   */
+  const deliverFile = async (
+    host: HTMLElement,
+    file: { text: () => Promise<string> },
+  ) => {
+    const fileInput = host.querySelector<HTMLInputElement>('input[type="file"]')
+    if (!fileInput) throw new Error('no file input')
+    Object.defineProperty(fileInput, 'files', {
+      value: [file],
+      configurable: true,
+    })
+    await act(async () => {
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  }
+
+  /**
+   * A file whose `text()` is held open, so the window between picking a file
+   * and its bytes arriving can be inspected. A real `File` resolves on the
+   * next microtask and that window is unobservable; a large one takes as long
+   * as the read, which is what O101 is about.
+   */
+  const heldReadFile = () => {
+    let deliver: (text: string) => void = () => {}
+    return {
+      file: {
+        text: () =>
+          new Promise<string>((resolve) => {
+            deliver = resolve
+          }),
+      },
+      arrive: async (text: string) => {
+        await act(async () => {
+          deliver(text)
+          await Promise.resolve()
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+      },
+    }
+  }
+
+  it('keeps the refusal of a second import on screen after the first import lands — O100', async () => {
+    // Both of `beginImport`'s refusals used to go to `importNotice`, and the
+    // running import's own success path overwrites that state — so the
+    // sentence saying the second pick was refused is replaced by one saying
+    // an import worked, and the person is left believing the file they picked
+    // second is the one in the store. It is not; the first document is. This
+    // is the failure the build design's §5 created `refused` to avoid,
+    // reached in the function that reasoning was written for, and found by
+    // driving a real library with the POST held open at the transport.
+    const { host, land } = await heldImport()
+    vi.mocked(rulesApi.importRules).mockClear()
+
+    await deliverFile(
+      host,
+      new File(['[]'], 'second.json', { type: 'application/json' }),
+    )
+    expect(rulesApi.importRules).not.toHaveBeenCalled()
+    const refused = host.querySelector('p.refused')?.textContent ?? ''
+    expect(refused).toContain('imported twice')
+    // **The clause, not just the sentence.** This one is set while the first
+    // import is still running, so "now the first has finished" was false for
+    // the width of the window — the same tense defect as the discard notice
+    // below, and the reason to assert the half that was wrong rather than a
+    // substring that skips it.
+    expect(refused).toContain('once the first has finished')
+
+    await act(async () => {
+      land(importAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // The half that fails against the defect: the refusal outlives the answer
+    // that would otherwise erase it, beside the import's own sentence.
+    expect(host.querySelector('p.refused')?.textContent).toContain(
+      'imported twice',
+    )
+    expect(
+      [...host.querySelectorAll('.import p')]
+        .map((n) => n.textContent ?? '')
+        .find((t) => t.includes('imported rules are stored')),
+    ).toBeDefined()
+  })
+
+  it('tells a discarded edit what the import will do, not what it has already done — O100', async () => {
+    // The sentence ended "The imported rules are on screen now" and is set
+    // while the import is still in flight, so for the width of the window it
+    // describes a list that is not on screen yet. At two milliseconds nobody
+    // reads it; held open at the transport it is the only thing on screen,
+    // which is how it was found.
+    const { host, fail } = await heldImport(1)
+    await editPatternAndBlur(host, 'Edited/.*')
+
+    const refused = host.querySelector('p.refused')?.textContent ?? ''
+    expect(refused).toContain('rule 2')
+    expect(refused).toContain('once the import has finished')
+    expect(refused).not.toContain('on screen now')
+
+    // **And it has to stay true when the import does not land.** An earlier
+    // wording promised the imported rules would replace the list; a refused
+    // document is the ordinary failure here, so that promise was broken by
+    // the commonest ending this route has. The list is still the loaded one
+    // and the notice must not say otherwise.
+    await act(async () => {
+      fail(new Error('rules/import: not a rule document'))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('p.refused')?.textContent).toBe(refused)
+    expect(
+      [...host.querySelectorAll('.rule-row')].some((r) =>
+        r.textContent?.includes('Imported'),
+      ),
+    ).toBe(false)
+  })
+
+  it('takes the writer gate before the file is read, so Import says Importing… while the bytes are still arriving — O101', async () => {
+    // The gate was taken inside `doImport`, which ran in `file.text()`'s
+    // `.then` — so between picking a file and its bytes arriving, Import was
+    // enabled and `writer.current` was free. On a small document that window
+    // is one microtask; on a large one it is however long the read takes, and
+    // nothing on screen said the gesture had started.
+    vi.mocked(rulesApi.importRules).mockResolvedValue(importAnswer())
+    const held = heldReadFile()
+    const host = await render()
+    await deliverFile(host, held.file)
+
+    const importButton = host.querySelector<HTMLButtonElement>('.import button')
+    expect(importButton?.textContent).toBe('Importing…')
+    expect(importButton?.disabled).toBe(true)
+    expect(host.querySelector<HTMLButtonElement>('button.save')?.disabled).toBe(
+      true,
+    )
+    // Not called yet: the gate is held for a read that has not finished, which
+    // is the whole claim.
+    expect(rulesApi.importRules).not.toHaveBeenCalled()
+
+    await held.arrive('[]')
+    expect(rulesApi.importRules).toHaveBeenCalledTimes(1)
+    expect(
+      host.querySelector<HTMLButtonElement>('.import button')?.disabled,
+    ).toBe(false)
+  })
+
+  it('refuses a second pick made while the first file is still being read — O101', async () => {
+    // The consequence of the window above, and the route by which O100 is
+    // reachable without a synthetic event: pick a large file, pick a small one
+    // while it is still being read, and the small one's import is running when
+    // the large one's finally fires.
+    vi.mocked(rulesApi.importRules).mockResolvedValue(importAnswer())
+    const held = heldReadFile()
+    const host = await render()
+    await deliverFile(host, held.file)
+    await deliverFile(
+      host,
+      new File(['[]'], 'second.json', { type: 'application/json' }),
+    )
+
+    expect(rulesApi.importRules).not.toHaveBeenCalled()
+    expect(host.querySelector('p.refused')?.textContent).toContain(
+      'imported twice',
+    )
+
+    await held.arrive('[]')
+    // One write, not two: the first pick's, the one that took the gate.
+    expect(rulesApi.importRules).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears the writer gate when the file cannot be read — O101', async () => {
+    // The gate is taken before the read, so the read's own failure has to
+    // release it. This is the third instance on this screen of a gate taken
+    // and never released, after the failed import and the document that is
+    // not JSON, and it is new because the gate moved.
+    const host = await render()
+    const fileInput = host.querySelector<HTMLInputElement>('input[type="file"]')
+    if (!fileInput) throw new Error('no file input')
+    Object.defineProperty(fileInput, 'files', {
+      value: [{ text: () => Promise.reject(new Error('could not be read')) }],
+      configurable: true,
+    })
+    await act(async () => {
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(host.querySelector<HTMLButtonElement>('button.save')?.disabled).toBe(
+      false,
+    )
+    expect(
+      host.querySelector<HTMLButtonElement>('.import button')?.disabled,
+    ).toBe(false)
+    expect(host.querySelector('p[role="alert"]')?.textContent).toContain(
+      'could not be read',
+    )
   })
 
   it('clears the held-edit notice when a later gesture changes the list — O96, whole-branch review M3', async () => {
@@ -1353,7 +1547,7 @@ describe('RuleEditor', () => {
   })
 
   it('keeps naming the proposals an import reopened after its own follow-up preview resolves', async () => {
-    // `doImport` fires its own `runPreview` right after landing, and that
+    // `sendImport` fires its own `runPreview` right after landing, and that
     // preview's success path unconditionally clears `failure` — so a notice
     // stored there was wiped a preview-cycle later, almost always before a
     // person could read it, by the very call the import itself triggered.

@@ -101,22 +101,39 @@
  *
  * **Both writers refuse rather than queue, in both directions** — spec §2.1
  * and O97's §1. Each writes the rule table, so by the time a queued one could
- * run the other's write has already happened. Each needs two guards for the
- * drag's reason: the button's `disabled` lands on a render, while `writer` is
- * read synchronously — a picker opened before a save still delivers, and a
- * click can reach the Save button in the tick before `setWriting('import')`
- * renders. A refused save, and a form commit discarded by an import, both go
- * to `refused`, which `commit` does not clear — `heldNotice` and
- * `importNotice` are each wiped by the import's own answer. A *failed* save
- * keeps the edit and puts its reason in `heldNotice` rather than `failure` —
- * spec §5.1 — and a *failed* import clears the gate on **both** of its
- * failure shapes, without which one bad document would disable both writers
- * for the rest of the session. The two are not one: a rejected request is
- * caught by `.catch`, but `importRules` is not `async` and evaluates
+ * run the other's write has already happened. **Import needs two guards** for
+ * the drag's reason: the button's `disabled` lands on a render, and the
+ * hidden file input delivers whatever the button says, because a picker
+ * opened before the write started is still open. **Save's second guard is now
+ * defence rather than cover**, and O101 is why: the import gate used to be
+ * taken inside `file.text()`'s `.then`, a microtask after the change event
+ * returned, so a click could reach Save with the button still drawn enabled.
+ * `beginImport` takes it inside the discrete event itself, which React
+ * flushes synchronously, so `frozen` and `writer.current` change together and
+ * no click can land between them. The check stays — the invariant is what is
+ * being stated, and a writer that took the gate outside a discrete event
+ * would reopen the gap without touching `save` — but nothing exercises it,
+ * and its message is unreachable with it.
+ *
+ * **Every refusal goes to `refused`**, which `commit` does not clear:
+ * a refused save, a form commit discarded by an import, and — since O100 —
+ * an import refused because a write was already in flight. That last one
+ * lived in `importNotice` and was erased by the running import's own answer,
+ * which is precisely the failure `refused` was created to prevent, in the
+ * function the reasoning was written for. A *failed* save keeps the edit and
+ * puts its reason in `heldNotice` rather than `failure` — spec §5.1 — and a
+ * *failed* import clears the gate on **all three** of its failure shapes,
+ * without which one bad file would disable both writers for the rest of the
+ * session. They are not one, and they are caught in **two** places: the
+ * request's own rejection in `sendImport`'s `.catch`, and the other two in
+ * `beginImport`'s. The **read**'s rejection exists only because the gate is
+ * now taken before the read. And `importRules` is not `async` — it evaluates
  * `JSON.parse(doc)` as an argument, so a document that is not JSON throws
- * *synchronously* — before any promise exists to attach a `.catch` to. That
- * one needs the `try` around the call, and picking a file that is not JSON
- * is the most ordinary way to reach it.
+ * *synchronously*, out of `sendImport` before its own chain is built; what
+ * makes that a rejected promise rather than an escaped throw is that
+ * `sendImport` is called inside a `.then`, so it lands in `beginImport`'s
+ * `.catch` too. Picking a file that is not JSON is the most ordinary way to
+ * reach it, and the O97 test that drives one is what keeps it caught.
  *
  * **`selected` in `save`'s closure is no longer stale, and that is a property
  * of the guards rather than of this file.** It used to be: selecting a rule
@@ -190,7 +207,7 @@ export function RuleEditor() {
   /**
    * Which proposals the last import reopened, if any. Separate from
    * `failure` for the reason `Roots.tsx`'s `addFailure` is separate from its
-   * `failure`, and read that file's own doc comment on the pair: `doImport`
+   * `failure`, and read that file's own doc comment on the pair: `sendImport`
    * fires a follow-up `runPreview` right after landing, and that preview's
    * success path unconditionally clears `failure` — so a notice stored there
    * was wiped by the very call that had just populated it, almost always
@@ -223,9 +240,12 @@ export function RuleEditor() {
    * is cleared by `commit`, by design and with its own comment saying why —
    * and the import's success path calls `commit`, so a refusal written there
    * is wiped by the very event it has to outlive. `importNotice` is cleared up
-   * front by `doImport` and overwritten by its answer, so a refused save
-   * written there survives until the import lands and then disappears, leaving
-   * the person told the import worked and never told their save did nothing.
+   * front by `beginImport` and overwritten by `sendImport`'s answer, so a
+   * refusal written there survives until the import lands and then disappears,
+   * leaving the person told the import worked and never told their own gesture
+   * did nothing. **That is not hypothetical and it shipped**: `beginImport`'s
+   * own refusal for a second pick lived in `importNotice` until O100, and was
+   * erased by the running import's answer every time.
    *
    * This is the fourth notice on this screen needing a slot `runPreview` does
    * not touch, after `importNotice`, `saveMismatch` and `heldNotice`, and the
@@ -261,9 +281,9 @@ export function RuleEditor() {
    * **The form is not the only surface left live — Import is too, and it is
    * *refused* rather than held.** An earlier version of this comment claimed
    * the form was the only one, which was the guard-that-does-not-exist shape
-   * O95's third review pass kept finding. `doImport` cannot be held: it has
+   * O95's third review pass kept finding. An import cannot be held: it has
    * already written the rule table by the time anything here could apply it,
-   * so it refuses inside the window and says so.
+   * so it refuses inside the window and says so — in `refused`, since O100.
    */
   const held = useRef<{ index: number; rule: Rule } | undefined>(undefined)
   /** The hidden file input the Import button triggers. */
@@ -325,14 +345,22 @@ export function RuleEditor() {
 
   const save = () => {
     if (writer.current !== undefined) {
+      // **Unreachable through the UI since O101, and kept** — see this file's
+      // own top comment. `beginImport` takes the gate inside the discrete
+      // change event, so `frozen` is already true by the time any click can
+      // be dispatched and React skips a click handler whose props say
+      // `disabled`. What is stated here is the invariant, not a path: a
+      // writer that took the gate outside a discrete event would reopen the
+      // window this closed, and would reopen it here rather than in `save`.
+      //
       // Only the import case says anything: a second Save during a save is the
       // same gesture twice and the person has nothing to act on, which is the
       // behaviour O96 shipped and this keeps.
       if (writer.current === 'import')
         setRefused(
           'An import was still running, so the save was not sent — nothing was saved ' +
-            'and nothing was changed. The imported rules are on screen now; press Save ' +
-            'to apply them.',
+            'and nothing was changed. Save again once the import has finished and its ' +
+            'rules are on screen.',
         )
       return
     }
@@ -431,57 +459,103 @@ export function RuleEditor() {
       })
   }
 
-  const doImport = (text: string) => {
+  /**
+   * The whole import gesture, from the picked file rather than from its text
+   * — **the gate is taken before the read, not after it** (O101). It used to
+   * be taken inside a `file.text().then(...)`, so between picking a file and
+   * its bytes arriving Import was still enabled and `writer` was still free:
+   * a microtask on a small document, and however long the read takes on a
+   * large one, with nothing on screen saying the gesture had started. That is
+   * also the route by which a second pick reaches a gate meant to be held.
+   * Taking it earlier means the read's *own* failure has to release it, which
+   * is the third instance on this screen of a gate that must not leak.
+   *
+   * Typed by what it needs — `text()` — rather than as `File`. The gesture
+   * does not care where the bytes come from, and the narrower type is what
+   * lets a test hold the read open, which is the window this function exists
+   * to cover.
+   */
+  const beginImport = (file: { text: () => Promise<string> }) => {
     // Cleared up front, the same as `Roots.tsx`'s `addFailure` — so a stale
     // notice from a previous import cannot outlive this one, whichever way
     // it resolves.
     setImportNotice(undefined)
     // O96, and **the second of two guards**, for the reason the drag has two:
-    // the Import button is `disabled` while a save is in flight, but a file
-    // picker opened *before* the save started is still open and can still
+    // the Import button is `disabled` while a write is in flight, but a file
+    // picker opened *before* that write started is still open and can still
     // deliver a file during it. This refuses rather than holds, and that is
     // forced rather than chosen — `POST .../rules/import` **writes the rule
     // table**, so by the time a held import could be applied the write has
     // already happened. Import is the one gesture on this screen whose loss
     // outlives the session: landing inside the save window would leave the
     // store holding the imported rules, the screen showing the pre-import
-    // list `setRules` puts back, and this notice saying the import worked —
+    // list `setRules` puts back, and a notice saying the import worked —
     // and the next Save would write the screen's list back over it, reopening
     // every proposal a second time.
+    //
+    // **Both refusals go to `refused`, and the import case is why** (O100).
+    // They used to go to `importNotice`, which is the slot the *running*
+    // import's own success path overwrites — so the sentence saying a second
+    // pick was refused was replaced, milliseconds later, by one saying an
+    // import had worked, and the person was left believing the file they
+    // picked second was the one in the store. That is the failure §5 of the
+    // build design names as its whole reason for creating `refused`, reached
+    // in the function that reasoning was written for. The save case survived
+    // in `importNotice` by luck rather than by design — nothing in `save`
+    // writes that state — and is moved with it, because a message about a
+    // gesture that did *not* happen cannot live in a slot owned by the
+    // gesture that did.
     if (writer.current !== undefined) {
-      setImportNotice(
+      setRefused(
         writer.current === 'save'
           ? 'A save was still running, so the import was not applied — nothing was ' +
-              'imported and nothing was changed. Try it again now the save has finished.'
+              'imported and nothing was changed. Try it again once the save has finished.'
           : 'An import was already running, so this one was not applied — nothing ' +
-              'was imported twice. Try it again now the first has finished.',
+              'was imported twice. Try it again once the first has finished.',
       )
       return
     }
     writer.current = 'import'
     setWriting('import')
     setRefused(undefined)
-    // **`importRules` can throw synchronously, and a `.catch` cannot see it.**
-    // It is not `async`: its body is
+    const release = () => {
+      writer.current = undefined
+      setWriting(undefined)
+    }
+    file
+      .text()
+      .then((text) => sendImport(text, release))
+      // **The read's own failure**, which only exists because the gate is now
+      // taken before it: a file the browser cannot read would otherwise leave
+      // both writers dead for the session with a message and no way back.
+      .catch((err: unknown) => {
+        release()
+        setFailure(message(err))
+      })
+  }
+
+  /**
+   * The request half, once the document's text has arrived and the gate is
+   * already held. Separate from `beginImport` so the gesture's failure shapes
+   * stay legible, and they are **three, caught in two places**: the read's
+   * rejection and `importRules`' *synchronous* throw both land in
+   * `beginImport`'s `.catch`, because this whole function is called from
+   * inside a `.then`; the request's own rejection lands here.
+   */
+  const sendImport = (text: string, release: () => void) =>
+    // **`importRules` throws synchronously and no `.catch` of its own can see
+    // it.** It is not `async`: its body is
     // `expectBody(sendJson(..., JSON.parse(doc)))`, and `JSON.parse` runs as
     // an *argument* — so a document that is not valid JSON throws out of the
     // call itself, before any promise exists for `.then`/`.catch` to attach
-    // to. Without this the gate below stays held for the rest of the session
-    // and both writers are dead, with only a parse error on screen to say
-    // why. Picking the wrong file is the most ordinary way to reach it.
-    let started: ReturnType<typeof importRules>
-    try {
-      started = importRules(text)
-    } catch (err: unknown) {
-      writer.current = undefined
-      setWriting(undefined)
-      setFailure(message(err))
-      return
-    }
-    started
+    // to. What catches it is that this call is made **inside** a `.then`,
+    // where a synchronous throw is a rejected promise; the `try` this used to
+    // need went with the restructure, and the O97 test that drives a
+    // non-JSON file through the input is what keeps it caught if anyone moves
+    // the call back out of the chain.
+    importRules(text)
       .then((answer) => {
-        writer.current = undefined
-        setWriting(undefined)
+        release()
         // Every other editor gesture lands in `commit`; this is the shape it
         // already has (set the rules, close/leave the selection, drop the
         // last save, preview once), so it goes through the same funnel
@@ -518,11 +592,9 @@ export function RuleEditor() {
         // refused import is the ordinary case (`rules/import` rejects a
         // malformed document), so the leak would be reached by the first
         // person who picked the wrong file.
-        writer.current = undefined
-        setWriting(undefined)
+        release()
         setFailure(message(err))
       })
-  }
 
   const exportDoc = () => {
     try {
@@ -638,6 +710,19 @@ export function RuleEditor() {
                 }
                 if (writer.current === 'import') {
                   // **Discarded, not held**, and forced rather than chosen.
+                  //
+                  // The last clause of the notice is deliberately
+                  // outcome-neutral. An earlier version promised that the
+                  // import's rules would replace the list — true when it
+                  // lands, and a promise this screen breaks when it does not.
+                  // A refused document is the ordinary failure here, so the
+                  // sentence has to hold for both endings. (**That the edit
+                  // is discarded even when the import fails is a real
+                  // asymmetry with O96's failed *save*, which keeps it** —
+                  // the reasoning below only holds for an import that
+                  // succeeded. It is left as it is rather than fixed here:
+                  // holding across an import is a behaviour change, not a
+                  // wording one.)
                   // Holding works for a save because `answer.rules` is
                   // positionally aligned to the list that was sent. An
                   // import's answer is aligned to nothing — it replaces every
@@ -647,7 +732,7 @@ export function RuleEditor() {
                   setRefused(
                     `An import was running, so your edit to rule ${selected + 1} was not ` +
                       'applied — an import replaces every rule, so there is no row left to ' +
-                      'apply it to. The imported rules are on screen now.',
+                      'apply it to. Make the edit again once the import has finished.',
                   )
                   return
                 }
@@ -754,10 +839,9 @@ export function RuleEditor() {
               const file = e.target.files?.[0]
               e.target.value = ''
               if (file === undefined) return
-              file
-                .text()
-                .then(doImport)
-                .catch((err: unknown) => setFailure(message(err)))
+              // The whole gesture, file and all — `beginImport` takes the
+              // gate before it reads, so this handler owns no part of it.
+              beginImport(file)
             }}
           />
         </div>

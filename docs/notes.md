@@ -15552,7 +15552,7 @@ screenshot:
   the import's own**. That is the whole reason the fourth slot exists, and it
   is now proven on real material rather than in a fixture.
 
-### Three findings, none of them the gate
+### Three findings, none of them the gate — O100 and O101
 
 **1. The refusal for a second import is written to the slot the first import
 overwrites.** `doImport`'s guard puts both of its refusals in `importNotice`.
@@ -15598,7 +15598,30 @@ one, and the small one's import is running when the large one's `doImport`
 finally fires. Not driven; derived from the code while writing finding 1 up.
 
 None of the three touches the gate itself, which held under every condition
-driven above.
+driven above. **A fourth turned up in the fix round for the second**, and is
+recorded here because the shape recurs: the first rewording of the discard
+notice ended *"Its rules replace the list when it lands"* — true when it does,
+and a promise the screen breaks when the document is refused, which is the
+commonest ending this route has. Trading one false sentence for another is
+what happens when a wording fix is checked against the happy path only; the
+test now drives the discard and then *fails* the import. It also surfaced a
+decision nobody had made: a form commit discarded by an import stays discarded
+even when the import fails and the list is therefore unchanged, where O96's
+failed **save** keeps the held edit for exactly that reason. The first two are **O100**, the third **O101**, both opened and
+closed the day of the drive.
+
+**Fixing the third closed a window that was not its own, and cost a test its
+scenario.** With the gate taken inside the discrete `change` event — which
+React flushes synchronously — `frozen` and `writer.current` change together,
+where before there was a microtask in which the ref was taken and Save was
+still drawn enabled. That microtask is what made `save`'s second guard
+*reachable*, and O97's test for it can no longer stage its own case: React
+skips a click handler whose props say `disabled`, so no click reaches `save`
+during an import at all. The test is restaged as the assertion that now
+protects the case — the button is disabled in the same tick the gate is taken,
+with no `await` to hide behind — which makes it O101's regression guard. The
+guard itself is kept and its message with it, unreachable, because the
+invariant is what it states; O101's row carries that as what remains.
 
 ### Isolation, and one thing the ritual's own check gets wrong
 
