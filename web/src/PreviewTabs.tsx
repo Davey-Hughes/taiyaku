@@ -100,7 +100,7 @@ export function PreviewTabs({
   rules,
   selected,
   busy,
-  saving,
+  frozen,
   onReorder,
   onSelectRule,
 }: {
@@ -109,11 +109,12 @@ export function PreviewTabs({
   selected: number | undefined
   busy: boolean
   /**
-   * A save is in flight. Separate from `busy` because they gate different
-   * things: `busy` also draws "Previewing…", which a save is not, while both
-   * make the two option buttons unsafe — see their own comment below.
+   * A write is in flight — a save or an import. Separate from `busy` because
+   * they gate different things: `busy` also draws "Previewing…", which a
+   * write is not, while both make the two option buttons unsafe — see their
+   * own comment below.
    */
-  saving: boolean
+  frozen: boolean
   onReorder: (from: number, to: number) => void
   onSelectRule: (index: number) => void
 }) {
@@ -358,7 +359,7 @@ export function PreviewTabs({
                       <p className="options">
                         Options:{' '}
                         {/*
-                          **Both are disabled while a preview *or a save* is in
+                          **Both are disabled while a preview or a write is in
                           flight**, because this row is drawn from the
                           *previous* preview and its indices need not still
                           describe `rules`.
@@ -372,10 +373,11 @@ export function PreviewTabs({
                           — `moved()` splices `undefined` in and `renumber`
                           turns it into a phantom `{ordinal: n}` rule.
 
-                          **The save window is the wider one, and this used to
+                          **The write window is the wider one, and this used to
                           say Save covered it.** It does not: `save()` sets
-                          `saving`, never `busy`, and Save's own guard is
-                          `saving || busy || preview === undefined` — so these
+                          `writer.current` (which `frozen` reads), never
+                          `busy`, and Save's own guard is
+                          `frozen || busy || preview === undefined` — so these
                           two buttons were live for the seconds a save takes
                           on a real library while Save was not. A reorder
                           pressed inside it is applied, and then silently
@@ -389,7 +391,7 @@ export function PreviewTabs({
                         <button
                           type="button"
                           className="reorder"
-                          disabled={busy || saving}
+                          disabled={busy || frozen}
                           onClick={() => onReorder(over.wins, over.first)}
                         >
                           Move rule {over.wins + 1} above rule {over.first + 1}
@@ -397,7 +399,7 @@ export function PreviewTabs({
                         <button
                           type="button"
                           className="edit-winner"
-                          disabled={busy || saving}
+                          disabled={busy || frozen}
                           onClick={() => onSelectRule(over.wins)}
                         >
                           Edit rule {over.wins + 1}

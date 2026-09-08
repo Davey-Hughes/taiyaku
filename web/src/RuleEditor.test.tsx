@@ -685,6 +685,391 @@ describe('RuleEditor', () => {
     ).toBe(false)
   })
 
+  type ImportAnswer = {
+    rules: Rule[]
+    complaints: string[]
+    reopened_proposals: number[]
+  }
+
+  /**
+   * Holds an import open and returns its resolver — the mirror of `heldSave`.
+   * The answer carries **different rules from the ones sent**, which is what
+   * an import actually does: it mints fresh ids and replaces the list, so a
+   * fixture echoing the sent rules back could not fail against an edit being
+   * held across it rather than discarded.
+   */
+  const heldImport = async (openRule?: number) => {
+    let resolveImport: (value: ImportAnswer) => void = () => {}
+    vi.mocked(rulesApi.importRules).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveImport = resolve
+        }),
+    )
+    const host = await render()
+    // **Selected before the import starts, never during it.** The list is
+    // frozen for the import's duration, so `button.select` is disabled and a
+    // click inside the window opens nothing — which is correct behaviour and
+    // makes "edit a rule mid-import" reachable only from a rule already open.
+    if (openRule !== undefined) {
+      await act(async () => {
+        host
+          .querySelectorAll<HTMLElement>('.rule-row button.select')
+          [openRule].click()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+    }
+    const fileInput = host.querySelector<HTMLInputElement>('input[type="file"]')
+    if (!fileInput) throw new Error('no file input')
+    const file = new File(['[]'], 'rules.json', { type: 'application/json' })
+    Object.defineProperty(fileInput, 'files', {
+      value: [file],
+      configurable: true,
+    })
+    await act(async () => {
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // Loud rather than silent, for `heldSave`'s own reason: an import that
+    // never fired would make every test below assert the no-write-in-flight
+    // path while claiming to assert the other one.
+    expect(rulesApi.importRules).toHaveBeenCalledTimes(1)
+    return { host, land: (a: ImportAnswer) => resolveImport(a) }
+  }
+
+  /**
+   * What `heldImport`'s import answers with. `set_series` is what a rule row
+   * draws — never `pattern` — so these two strings are how a test tells the
+   * imported list from the loaded one on screen.
+   */
+  const importAnswer = (): ImportAnswer => ({
+    rules: [
+      rule({ id: 11, set_series: 'Imported A' }),
+      rule({ id: 12, ordinal: 2, set_series: 'Imported B' }),
+    ],
+    complaints: [],
+    reopened_proposals: [],
+  })
+
+  it('disables Save while an import is in flight, and re-enables it when the import lands — O97', async () => {
+    const { host, land } = await heldImport()
+    expect(host.querySelector<HTMLButtonElement>('button.save')?.disabled).toBe(
+      true,
+    )
+
+    await act(async () => {
+      land(importAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // The control, without which the assertion above passes against a button
+    // disabled for some other reason. Both halves are non-trivial: the notice
+    // proves the resolver delivered, and the row proves the list it delivered
+    // is the one on screen.
+    const notice = [...host.querySelectorAll('.import p')]
+      .map((n) => n.textContent ?? '')
+      .find((t) => t.includes('imported rules are stored'))
+    expect(notice).toBeDefined()
+    expect(
+      [...host.querySelectorAll('.rule-row')].some((r) =>
+        r.textContent?.includes('Imported B'),
+      ),
+    ).toBe(true)
+  })
+
+  it('says Importing… and disables Import while an import is in flight, so a second pick cannot race the first — O97', async () => {
+    const { host, land } = await heldImport()
+    const importButton = host.querySelector<HTMLButtonElement>('.import button')
+    expect(importButton?.textContent).toBe('Importing…')
+    expect(importButton?.disabled).toBe(true)
+
+    await act(async () => {
+      land(importAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const after = host.querySelector<HTMLButtonElement>('.import button')
+    expect(after?.textContent).toBe('Import')
+    expect(after?.disabled).toBe(false)
+  })
+
+  it('freezes the rule list and the override options while an import is in flight — O97', async () => {
+    // The Overrides row needs a preview that *has* one, and its own tab open:
+    // with the default empty `overrides` those two buttons never render, so a
+    // test naming them while asserting only on `.rule-row` would pass against
+    // `PreviewTabs` never being frozen at all. `PreviewTabs.test.tsx` mounts
+    // only with `frozen={false}`, so this is the one place that covers it.
+    vi.mocked(rulesApi.previewRules).mockResolvedValue(
+      previewBody({ overrides: [anOverride()] }),
+    )
+    const { host, land } = await heldImport()
+    await act(async () => {
+      ;[...host.querySelectorAll<HTMLElement>('.preview-tabs button')]
+        .find((b) => b.textContent?.startsWith('Overrides'))
+        ?.click()
+      await Promise.resolve()
+    })
+    expect(
+      host.querySelector<HTMLButtonElement>('button.reorder')?.disabled,
+    ).toBe(true)
+    expect(
+      host.querySelector<HTMLButtonElement>('button.edit-winner')?.disabled,
+    ).toBe(true)
+    // Per control, not per page: a page-level assertion cannot tell these
+    // apart from the Save button it sits beside.
+    expect(
+      host.querySelector<HTMLInputElement>('.rule-row input[type="checkbox"]')
+        ?.disabled,
+    ).toBe(true)
+    expect(
+      host.querySelector<HTMLButtonElement>('.rule-row button.select')
+        ?.disabled,
+    ).toBe(true)
+    expect(host.querySelector<HTMLElement>('.rule-row')?.draggable).toBe(false)
+
+    await act(async () => {
+      land(importAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(
+      host.querySelector<HTMLInputElement>('.rule-row input[type="checkbox"]')
+        ?.disabled,
+    ).toBe(false)
+    expect(host.querySelector<HTMLElement>('.rule-row')?.draggable).toBe(true)
+    expect(
+      host.querySelector<HTMLButtonElement>('button.reorder')?.disabled,
+    ).toBe(false)
+  })
+
+  it('clears the gate when an import fails, so one bad file does not disable both writers for the session — O97', async () => {
+    // The `.catch` half of taking the gate. A refused document is the
+    // ordinary failure here, not an exotic one, so a leak on this path is
+    // reached by the first person who picks the wrong file — and it is
+    // invisible: the screen shows the server's sentence and nothing says
+    // why neither button works any more.
+    let rejectImport: (why: unknown) => void = () => {}
+    vi.mocked(rulesApi.importRules).mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectImport = reject
+        }),
+    )
+    const host = await render()
+    const fileInput = host.querySelector<HTMLInputElement>('input[type="file"]')
+    if (!fileInput) throw new Error('no file input')
+    const file = new File(['[]'], 'rules.json', { type: 'application/json' })
+    Object.defineProperty(fileInput, 'files', {
+      value: [file],
+      configurable: true,
+    })
+    await act(async () => {
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // The control: the gate is held while the import is in flight.
+    expect(host.querySelector<HTMLButtonElement>('button.save')?.disabled).toBe(
+      true,
+    )
+
+    await act(async () => {
+      rejectImport(new Error('rules/import: not a rule document'))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector<HTMLButtonElement>('button.save')?.disabled).toBe(
+      false,
+    )
+    expect(
+      host.querySelector<HTMLButtonElement>('.import button')?.disabled,
+    ).toBe(false)
+  })
+
+  /**
+   * Drives the window between `setWriting('import')` and the render that
+   * disables Save. Two microtask ticks: the first for `file.text()`, the
+   * second for `doImport`. Measured against the pre-fix code — at that point
+   * `importRules` has been called and the Save button still fires.
+   */
+  const importInFlightUnrendered = async () => {
+    let resolveImport: (value: ImportAnswer) => void = () => {}
+    vi.mocked(rulesApi.importRules).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveImport = resolve
+        }),
+    )
+    const host = await render()
+    const fileInput = host.querySelector<HTMLInputElement>('input[type="file"]')
+    if (!fileInput) throw new Error('no file input')
+    const saveButton = host.querySelector<HTMLButtonElement>('button.save')
+    if (!saveButton) throw new Error('no save button')
+    const file = new File(['[]'], 'rules.json', { type: 'application/json' })
+    Object.defineProperty(fileInput, 'files', {
+      value: [file],
+      configurable: true,
+    })
+    await act(async () => {
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+      // **Pinned, not incidental**: the button is still enabled here. That is
+      // what makes the refusal below the *ref* guard's work rather than the
+      // `disabled` attribute's, and it is the whole reason this test is not
+      // the same test as the one asserting `disabled`.
+      expect(saveButton.disabled).toBe(false)
+      saveButton.click()
+      await Promise.resolve()
+    })
+    return { host, land: (a: ImportAnswer) => resolveImport(a) }
+  }
+
+  it('refuses a save that slips past the disabled button during an import, and writes nothing — O97', async () => {
+    // The *second* guard, for the reason the drag has two. The button's
+    // `disabled` is state and lands on a render; `writer` is read
+    // synchronously. Driving that window is what makes this test asymmetric
+    // to the `disabled` assertion above — which is what proves the two guards
+    // are not one test twice.
+    const { host, land } = await importInFlightUnrendered()
+
+    expect(rulesApi.importRules).toHaveBeenCalledTimes(1)
+    expect(rulesApi.saveRules).not.toHaveBeenCalled()
+    expect(host.querySelector('p.refused')?.textContent).toContain(
+      'was not sent',
+    )
+
+    await act(async () => {
+      land(importAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  })
+
+  it('keeps the refusal on screen after the import that caused it lands — O97', async () => {
+    // `commit` clears `heldNotice` and `doImport`'s success path overwrites
+    // `importNotice`, so a refusal living in either slot disappears at exactly
+    // the moment the person needs it — leaving them told the import worked and
+    // never told their save did nothing. This fails if the notice is moved.
+    const { host, land } = await importInFlightUnrendered()
+    expect(host.querySelector('p.refused')).not.toBeNull()
+
+    await act(async () => {
+      land(importAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('p.refused')?.textContent).toContain(
+      'was not sent',
+    )
+    expect(
+      [...host.querySelectorAll('.import p')]
+        .map((n) => n.textContent ?? '')
+        .find((t) => t.includes('imported rules are stored')),
+    ).toBeDefined()
+  })
+
+  it('discards a form commit made during an import rather than holding it, and says which rule — O97', async () => {
+    // Holding works for a save because `answer.rules` is positionally aligned
+    // to the list that was sent. An import's answer is aligned to nothing: it
+    // replaces every rule and mints fresh ids, so index 1 of the answer is not
+    // the rule the person was editing and applying the edit there would
+    // overwrite an unrelated rule with it. Discarding is forced, not chosen.
+    const { host, land } = await heldImport(1)
+    await editPatternAndBlur(host, 'Edited/.*')
+
+    expect(host.querySelector('p.refused')?.textContent).toContain('rule 2')
+    // The edit reached nothing: the list on screen is still the loaded one.
+    expect(
+      [...host.querySelectorAll('.rule-row')].some((r) =>
+        r.textContent?.includes('Imported B'),
+      ),
+    ).toBe(false)
+
+    await act(async () => {
+      land(importAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // The imported list is what is on screen, with no trace of the edit.
+    expect(
+      [...host.querySelectorAll('.rule-row')].some((r) =>
+        r.textContent?.includes('Imported B'),
+      ),
+    ).toBe(true)
+  })
+
+  it('still holds a form commit made during a save, which this branch must not cost — O96, kept', async () => {
+    // The regression guard: task 4 changes the code that decides between held
+    // and discarded, and O96's whole claim lives on the other branch of it.
+    const { host, land } = await heldSave()
+    await editPatternAndBlur(host, 'Edited/.*')
+
+    await act(async () => {
+      land(heldSaveAnswer())
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('p.refused')).toBeNull()
+    const pattern = host.querySelector<HTMLInputElement>(
+      'input[name="pattern"]',
+    )
+    expect(pattern?.value).toBe('Edited/.*')
+  })
+
+  it('clears the gate when the document is not JSON, which throws before any promise exists — O97', async () => {
+    // **`importRules` is not `async`.** Its body is
+    // `expectBody(sendJson(..., JSON.parse(doc)))`, and `JSON.parse` is
+    // evaluated as an *argument* — synchronously, inside the call. A file
+    // that is not valid JSON therefore throws out of `importRules` itself
+    // rather than returning a rejected promise, so `.then`/`.catch` are never
+    // attached and the `.catch` that clears the gate never runs. Picking the
+    // wrong file is the most ordinary thing a person can do here, and the
+    // symptom is that Save and Import are dead for the rest of the session
+    // with only a parse error on screen to explain it.
+    //
+    // The mock throws synchronously for exactly that reason: it is modelling
+    // `JSON.parse`, not inventing a failure mode.
+    vi.mocked(rulesApi.importRules).mockImplementation(() => {
+      throw new SyntaxError('Unexpected token < in JSON at position 0')
+    })
+    const host = await render()
+    const fileInput = host.querySelector<HTMLInputElement>('input[type="file"]')
+    if (!fileInput) throw new Error('no file input')
+    const file = new File(['<html>'], 'rules.json', {
+      type: 'application/json',
+    })
+    Object.defineProperty(fileInput, 'files', {
+      value: [file],
+      configurable: true,
+    })
+    await act(async () => {
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(host.querySelector<HTMLButtonElement>('button.save')?.disabled).toBe(
+      false,
+    )
+    expect(
+      host.querySelector<HTMLButtonElement>('.import button')?.disabled,
+    ).toBe(false)
+  })
+
   it('refuses an import that arrives while a save is in flight, and writes nothing — O96, whole-branch review C1', async () => {
     // The *second* guard, for the reason the drag has two: a file picker
     // opened before the save started is still open and still delivers. The

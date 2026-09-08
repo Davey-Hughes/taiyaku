@@ -103,7 +103,7 @@ function render(props: Partial<Parameters<typeof PreviewTabs>[0]> = {}) {
         rules={rules}
         selected={0}
         busy={false}
-        saving={false}
+        frozen={false}
         onReorder={onReorder}
         onSelectRule={onSelectRule}
         {...props}
@@ -335,8 +335,8 @@ describe('PreviewTabs', () => {
   })
 
   it.each([
-    ['a preview', { busy: true, saving: false }],
-    ['a save', { busy: false, saving: true }],
+    ['a preview', { busy: true, frozen: false }],
+    ['a save', { busy: false, frozen: true }],
   ])('offers neither option while %s is in flight', (_what, flags) => {
     // The row is drawn from the *previous* preview, so its indices need not
     // still describe `rules` — a delete followed by a click inside either
@@ -344,11 +344,14 @@ describe('PreviewTabs', () => {
     // `undefined` into the list through `moved()`.
     //
     // **Both windows, because they are not the same window.** `save()` sets
-    // `saving` and never `busy`, so a version of this test that only checked
-    // `busy` passed while a save left both buttons live for seconds on a real
-    // library — and a reorder pressed inside that window is applied and then
-    // silently discarded by the save's own `setRules`. Found by the second
-    // whole-branch review of this branch.
+    // the `writer` gate this component reads as `frozen`, and never `busy`,
+    // so a version of this test that only checked `busy` passed while a save
+    // left both buttons live for seconds on a real library — and a reorder
+    // pressed inside that window is applied and then silently discarded by
+    // the save's own `setRules`. Found by the second whole-branch review of
+    // this branch. Since O97 `frozen` covers an import too, and that half is
+    // covered in `RuleEditor.test.tsx` rather than here, because it needs a
+    // real import in flight to produce it.
     const { host, click } = render({
       preview: preview({ overrides: [anOverride()] }),
       ...flags,

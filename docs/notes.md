@@ -15379,3 +15379,47 @@ the NAS, and whether `raw_copy_file` preserves a data descriptor on an entry
 written with one. The corpus's archives come from many tools and at least some
 streaming writers emit them; nothing in `corpus/gotoubun-v01` exercised that
 path, so the byte-identity test has not yet seen one.
+
+## O97: how wide the import window actually is — 2026-09-08
+
+The build design's §0.2 owed this figure and refused to guess it. O96 could
+name its window — a save costs a median **280.7 ms** on the real library (the
+`apply`-unchanged-list row above) — and the claim that an import "should be
+cheaper, because `rules/import` writes the rule table and derives nothing" was
+marked as the guess it was.
+
+**Measured 2026-09-08, against an isolated copy of the real library**
+(`/home/davey/temp/manga-test/library.db`, 3.5 MB, the four seeded rules),
+copied into a scratch directory first. Ten runs of `taiyaku library rules
+--import`, which reaches the same `rules::replace_all` the HTTP route does:
+
+| | median | mean | min / max |
+| --- | --- | --- | --- |
+| rule import, whole process | **2.3 ms** | 2.6 ms | 2.1 / 5.1 ms |
+
+**What this figure is, precisely.** It is the whole CLI process — launch of a
+17 MB binary, opening SQLite, the import, exit — so the store operation is
+*at most* 2.3 ms and the real number is smaller. It is **not** the HTTP route:
+it omits `Authorization`, the JSON parse, and the network. It is measured on
+this workstation, not on the NAS.
+
+**The result is two orders of magnitude, and it does not change the design.**
+An import window is ~2 ms of store work against a save's 280.7 ms of
+derivation. What keeps the window real is everything the measurement excludes
+— a LAN round trip is 1–5 ms on its own, and the NAS is slower — so the
+window is narrow rather than absent. §0.2 said the design is the same at 5 ms
+as at 500 ms because a window that must not admit a second writer is not a
+question of width, and the measurement is what makes that a statement rather
+than an assumption. It also says why O97 survived from #109 to now with nobody
+tripping over it: the window is short enough that hitting it takes either bad
+luck or a slow link.
+
+**Isolation proven afterwards rather than assumed**: the real `library.db`'s
+mtime was identical before and after (`2026-09-02 05:51:48.853004102`), `find
+-newer` against the start stamp returned nothing under the real tree, and
+`git status` was clean.
+
+**Still owed, and carried into O97's own entry rather than lost here**: the
+same figure over HTTP, and the same figure on the NAS. Neither changes what
+shipped; both would sharpen the sentence above about what keeps the window
+real.

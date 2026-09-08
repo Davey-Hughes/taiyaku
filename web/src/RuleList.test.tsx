@@ -62,7 +62,7 @@ function render(props: Partial<Parameters<typeof RuleList>[0]> = {}) {
         selected={0}
         proposals={[]}
         overrideCount={0}
-        saving={false}
+        frozen={false}
         {...handlers}
         {...props}
       />,
@@ -250,7 +250,7 @@ describe('RuleList', () => {
           selected={undefined}
           proposals={proposals}
           overrideCount={0}
-          saving={false}
+          frozen={false}
           onSelect={vi.fn()}
           onToggle={vi.fn()}
           onReorder={vi.fn()}
@@ -274,7 +274,7 @@ describe('RuleList', () => {
         ]}
         selected={undefined}
         proposals={proposals}
-        saving={false}
+        frozen={false}
         overrideCount={0}
         onSelect={vi.fn()}
         onToggle={vi.fn()}
@@ -341,14 +341,14 @@ describe('RuleList', () => {
     // Both halves, because the positive alone passes against a component that
     // hardcodes `disabled` — which is the mechanical mis-fix this item warns
     // about, and it would freeze the list permanently.
-    expect(gestures(render({ saving: true }).host)).toEqual({
+    expect(gestures(render({ frozen: true }).host)).toEqual({
       draggable: 'false',
       toggle: true,
       select: true,
       remove: true,
       add: true,
     })
-    expect(gestures(render({ saving: false }).host)).toEqual({
+    expect(gestures(render({ frozen: false }).host)).toEqual({
       draggable: 'true',
       toggle: false,
       select: false,
@@ -383,7 +383,7 @@ describe('RuleList', () => {
     }
     let host: HTMLElement | undefined
     act(() => {
-      host = mount(<RuleList {...props} saving={false} />)
+      host = mount(<RuleList {...props} frozen={false} />)
     })
     if (!host) throw new Error('nothing mounted')
     act(() => {
@@ -395,7 +395,7 @@ describe('RuleList', () => {
     ).toBe(false)
 
     act(() => {
-      rerender(<RuleList {...props} saving={true} />)
+      rerender(<RuleList {...props} frozen={true} />)
     })
     expect(host.querySelector('[role="alertdialog"]')).not.toBeNull()
     expect(
@@ -404,13 +404,13 @@ describe('RuleList', () => {
   })
 
   it('refuses a drop that lands while a save is in flight — O96', () => {
-    // `draggable={!saving}` cannot cancel a drag that was already in progress
+    // `draggable={!frozen}` cannot cancel a drag that was already in progress
     // when the save started; flipping the attribute under it does nothing to
     // the drop that ends it. jsdom dispatches both events regardless of the
     // attribute, which is exactly what lets this assert the **handler's**
-    // guard rather than the attribute's — remove the `if (saving) return`
+    // guard rather than the attribute's — remove the `if (frozen) return`
     // from `onDrop` and this fails while the test above still passes.
-    const { host, onReorder } = render({ saving: true })
+    const { host, onReorder } = render({ frozen: true })
     const rows = host.querySelectorAll<HTMLElement>('.rule-row')
     const dt = dataTransfer()
     act(() => {

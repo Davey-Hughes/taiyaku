@@ -39,7 +39,7 @@ export function RuleList({
   selected,
   proposals,
   overrideCount,
-  saving,
+  frozen,
   onSelect,
   onToggle,
   onReorder,
@@ -51,12 +51,18 @@ export function RuleList({
   proposals: Proposal[]
   overrideCount: number
   /**
-   * A save is in flight, and every gesture here is frozen for the duration —
-   * O96, and this file's own doc comment on why. **`saving`, never `busy`:**
-   * a preview in flight is superseded by `RuleEditor`'s `latest` sequence
-   * guard and is never lost, so a gesture during one is correct and cheap.
+   * A write is in flight — a save or an import. Every control here is frozen
+   * for its duration, because both writers answer with a list that replaces
+   * this one, so a gesture made inside the window is applied, previewed and
+   * then overwritten with nothing on screen saying so.
+   *
+   * **A write, never `busy`:** a preview in flight is superseded by
+   * `runPreview`'s sequence guard and is never lost, so a gesture during one
+   * is correct and cheap. Freezing on `busy` would grey the list for ~281 ms
+   * after every gesture, which is the rhythm the build design's §5.3 costed
+   * out and kept.
    */
-  saving: boolean
+  frozen: boolean
   onSelect: (index: number) => void
   onToggle: (index: number) => void
   onReorder: (from: number, to: number) => void
@@ -118,7 +124,7 @@ export function RuleList({
             key={index}
             className="rule-row"
             aria-current={selected === index ? 'true' : undefined}
-            draggable={!saving}
+            draggable={!frozen}
             onDragStart={(e) => {
               e.dataTransfer.setData('text/plain', String(index))
               e.dataTransfer.effectAllowed = 'move'
@@ -126,14 +132,14 @@ export function RuleList({
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => {
               e.preventDefault()
-              // O96, and **both guards are needed**: `draggable={!saving}`
-              // stops a drag *starting* during a save, and this stops the
-              // drop of one that was already in progress when the save
+              // O96, and **both guards are needed**: `draggable={!frozen}`
+              // stops a drag *starting* during a write, and this stops the
+              // drop of one that was already in progress when the write
               // began — flipping the attribute under a live drag cancels
               // nothing. A reorder committed here is overwritten by
-              // `answer.rules` when the save lands, with nothing on screen
+              // `answer.rules` when the write lands, with nothing on screen
               // saying so, which is the whole of O96.
-              if (saving) return
+              if (frozen) return
               // **The empty payload is rejected before `Number` sees it, and
               // that is the whole of this line.** `DataTransfer.getData`
               // answers `''` for a key nothing ever set — a file dragged in
@@ -154,14 +160,14 @@ export function RuleList({
             <input
               type="checkbox"
               checked={rule.enabled}
-              disabled={saving}
+              disabled={frozen}
               aria-label={`rule ${index + 1} enabled`}
               onChange={() => onToggle(index)}
             />
             <button
               type="button"
               className="select"
-              disabled={saving}
+              disabled={frozen}
               onClick={() => onSelect(index)}
             >
               {(rule.set_series ??
@@ -188,7 +194,7 @@ export function RuleList({
             <button
               type="button"
               className="delete"
-              disabled={saving}
+              disabled={frozen}
               aria-label={`delete rule ${index + 1}`}
               onClick={() => askOrDelete(index)}
             >
@@ -208,7 +214,7 @@ export function RuleList({
           <button
             type="button"
             className="confirm-delete"
-            disabled={saving}
+            disabled={frozen}
             onClick={() => {
               onDelete(confirming.index)
               setConfirming(undefined)
@@ -241,7 +247,7 @@ export function RuleList({
       <button
         type="button"
         className="add-rule"
-        disabled={saving}
+        disabled={frozen}
         onClick={onAdd}
       >
         + Add

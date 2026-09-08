@@ -73,30 +73,57 @@
  * stale `predicted.current` and drew the same "something changed the
  * library" warning, again blaming the server for a client-side gap.
  *
- * **A save freezes the list and holds the form's commit — O96.** `save`'s
- * `.then` replaces the whole list with `answer.rules`, so every gesture
- * committed during the ~281 ms it takes used to be applied, previewed and
- * silently discarded. `RuleList` is frozen for the duration; `RuleForm` is
- * deliberately not, because `disabled` on a focused input makes the browser
- * fire `blur` and this form commits on blur — the mechanical guard would
- * itself commit the half-typed edit into the window it was meant to close.
- * So the form stays live and its commit is *held*, then applied on top of
- * `answer.rules` taking that row's `id` and `ordinal` from the server.
- * **Import is the third surface and is *refused* rather than frozen or held**
- * — spec §2.1: it writes the rule table, so a held import has already
- * happened by the time anything could apply it, and it needs two guards for
- * the drag's reason (a picker opened before the save still delivers). The
- * freeze is what makes that merge exact: `answer.rules` is positionally
- * aligned to the list that was sent, and a list that moved under the request
- * has no correspondence to it at all. A *failed* save keeps the edit too, and
- * puts its own reason in `heldNotice` rather than `failure` — spec §5.1.
+ * **One writer at a time — O96, then O97.** This screen has two writers of
+ * the rule table, Save and Import, and `writer` is the single gate both take:
+ * a `'save' | 'import' | undefined` ref, read synchronously, mirrored into
+ * `writing` for the render. It is three-valued rather than a boolean each
+ * because `saving && importing` must never exist, and O96 is what two
+ * booleans agreeing by hand cost — it guarded an import during a save and
+ * left a save during an import, which became O97.
+ *
+ * **Every write's answer replaces the whole list**, so a gesture committed
+ * inside either window was applied, previewed and silently discarded.
+ * `RuleList` and `PreviewTabs`' two override options freeze on `frozen`
+ * (`writing !== undefined`), which is why the prop is not called `saving`:
+ * it is true during an import too, and a name that stopped being true is the
+ * staleness the open-items table exists to avoid.
+ *
+ * **`RuleForm` is deliberately not frozen**, because `disabled` on a focused
+ * input makes the browser fire `blur` and this form commits on blur — the
+ * mechanical guard would itself commit the half-typed edit into the window it
+ * was meant to close. The form stays live and the *commit* is what the gate
+ * acts on, with two answers rather than one. For a **save** it is *held* and
+ * applied on top of `answer.rules`, taking that row's `id` and `ordinal` from
+ * the server; the freeze is what makes that merge exact, since `answer.rules`
+ * is positionally aligned to the list that was sent. For an **import** it is
+ * *discarded*, and that is forced rather than chosen: an import mints fresh
+ * ids and replaces every rule, so no index carries the edit across.
+ *
+ * **Both writers refuse rather than queue, in both directions** — spec §2.1
+ * and O97's §1. Each writes the rule table, so by the time a queued one could
+ * run the other's write has already happened. Each needs two guards for the
+ * drag's reason: the button's `disabled` lands on a render, while `writer` is
+ * read synchronously — a picker opened before a save still delivers, and a
+ * click can reach the Save button in the tick before `setWriting('import')`
+ * renders. A refused save, and a form commit discarded by an import, both go
+ * to `refused`, which `commit` does not clear — `heldNotice` and
+ * `importNotice` are each wiped by the import's own answer. A *failed* save
+ * keeps the edit and puts its reason in `heldNotice` rather than `failure` —
+ * spec §5.1 — and a *failed* import clears the gate on **both** of its
+ * failure shapes, without which one bad document would disable both writers
+ * for the rest of the session. The two are not one: a rejected request is
+ * caught by `.catch`, but `importRules` is not `async` and evaluates
+ * `JSON.parse(doc)` as an argument, so a document that is not JSON throws
+ * *synchronously* — before any promise exists to attach a `.catch` to. That
+ * one needs the `try` around the call, and picking a file that is not JSON
+ * is the most ordinary way to reach it.
  *
  * **`selected` in `save`'s closure is no longer stale, and that is a property
  * of the guards rather than of this file.** It used to be: selecting a rule
  * mid-save left the follow-up preview's `rows` scoped to the rule that *was*
  * open while the form showed the new one. Nothing can change `selected`
  * during a save now — `RuleList` is frozen and `PreviewTabs`' two options
- * have been `disabled={busy || saving}` since O95 — so a `selectedRef` would
+ * have been `disabled={busy || frozen}` since O95 — so a `selectedRef` would
  * hide the invariant rather than state it. A new surface that sets `selected`
  * without a guard reopens the defect without touching `save`.
  */
@@ -138,6 +165,20 @@ const impactChanged = (a: Impact, b: Impact) =>
 const acceptedProposals = () =>
   listProposals({ state: 'accepted' }).then((inbox) => inbox.proposals)
 
+/**
+ * Which write is in flight, if any. Both writers on this screen — Save and
+ * Import — take this gate, and neither runs while the other holds it.
+ *
+ * **One three-valued variable rather than a boolean each.** Two booleans admit
+ * `saving && importing`, a state that must never exist and that four separate
+ * conditions would then have to agree about. O96 shipped two guards that
+ * agreed by hand and O97 is what that cost — a save started during an import,
+ * which no condition was asked about. This is #115's `phaseOf` lesson one size
+ * down: when every fix moves one condition and the gates then disagree, the
+ * defect is the absence of a single source of truth, not the gates.
+ */
+type Writer = 'save' | 'import' | undefined
+
 export function RuleEditor() {
   const [rules, setRules] = useState<Rule[]>([])
   const [roots, setRoots] = useState<Root[]>([])
@@ -175,18 +216,43 @@ export function RuleEditor() {
    * save. Spec §5, and §5.1 for why the *failed*-save reason lands here too.
    */
   const [heldNotice, setHeldNotice] = useState<string | undefined>()
+  /**
+   * A gesture refused or discarded because a write was in flight.
+   *
+   * **Its own slot, because neither existing one can hold it.** `heldNotice`
+   * is cleared by `commit`, by design and with its own comment saying why —
+   * and the import's success path calls `commit`, so a refusal written there
+   * is wiped by the very event it has to outlive. `importNotice` is cleared up
+   * front by `doImport` and overwritten by its answer, so a refused save
+   * written there survives until the import lands and then disappears, leaving
+   * the person told the import worked and never told their save did nothing.
+   *
+   * This is the fourth notice on this screen needing a slot `runPreview` does
+   * not touch, after `importNotice`, `saveMismatch` and `heldNotice`, and the
+   * pattern is worth naming: a message about a gesture that did *not* happen
+   * cannot live in a slot owned by the gesture that did.
+   *
+   * Cleared when a write actually starts, which is the moment its claim stops
+   * being true — and deliberately not by `commit`.
+   */
+  const [refused, setRefused] = useState<string | undefined>()
   const [saved, setSaved] = useState<Saved | undefined>()
-  const [saving, setSaving] = useState(false)
   /** The preview whose impact `saved` is compared against. */
   const predicted = useRef<Preview | undefined>(undefined)
   /** The newest `previewRules` call — see this file's own doc comment. */
   const latest = useRef(0)
-  /** Whether a save is already on its way. A ref, for the reason `Roots.tsx`'s is. */
-  const savingNow = useRef(false)
+  /** The synchronous gate — read before either writer starts. */
+  const writer = useRef<Writer>(undefined)
+  /** The same fact, for the render. */
+  const [writing, setWriting] = useState<Writer>(undefined)
+  /** A save specifically — what the Save button's own label reads. */
+  const saving = writing === 'save'
+  /** Any write at all — what every frozen surface reads. */
+  const frozen = writing !== undefined
   /**
    * A `RuleForm` commit that arrived while a save was in flight — O96.
    *
-   * The list is frozen for the duration (`RuleList`'s `saving` prop), so
+   * The list is frozen for the duration (`RuleList`'s `frozen` prop), so
    * `selected` cannot move under this and at most one rule can be edited.
    * Held rather than applied, because `save`'s own `.then` replaces the whole
    * list with `answer.rules`; applied on landing, onto the server's row, so
@@ -258,17 +324,29 @@ export function RuleEditor() {
   }
 
   const save = () => {
-    if (savingNow.current) return
-    savingNow.current = true
-    setSaving(true)
+    if (writer.current !== undefined) {
+      // Only the import case says anything: a second Save during a save is the
+      // same gesture twice and the person has nothing to act on, which is the
+      // behaviour O96 shipped and this keeps.
+      if (writer.current === 'import')
+        setRefused(
+          'An import was still running, so the save was not sent — nothing was saved ' +
+            'and nothing was changed. The imported rules are on screen now; press Save ' +
+            'to apply them.',
+        )
+      return
+    }
+    writer.current = 'save'
+    setWriting('save')
+    setRefused(undefined)
     setFailure(undefined)
     setSaveMismatch(undefined)
     setHeldNotice(undefined)
     const made = predicted.current
     saveRules(rules)
       .then((answer) => {
-        savingNow.current = false
-        setSaving(false)
+        writer.current = undefined
+        setWriting(undefined)
         setSaved(answer)
         if (made !== undefined && impactChanged(made.impact, answer.impact))
           setSaveMismatch(
@@ -308,7 +386,7 @@ export function RuleEditor() {
         // same seq-guarded `runPreview` every other gesture uses, and Save
         // stays disabled (`busy`) until it lands. `selected` is not stale:
         // O96 froze `RuleList`, and `PreviewTabs`' two options have been
-        // `disabled={busy || saving}` since O95, so no surface can change it
+        // `disabled={busy || frozen}` since O95, so no surface can change it
         // while a save is in flight. That is a property of *every* such
         // surface being guarded, not of this line — a new unguarded one
         // reopens the defect without touching `save`.
@@ -320,8 +398,8 @@ export function RuleEditor() {
           .catch(() => {})
       })
       .catch((err: unknown) => {
-        savingNow.current = false
-        setSaving(false)
+        writer.current = undefined
+        setWriting(undefined)
         const pending = held.current
         held.current = undefined
         if (pending === undefined) {
@@ -370,15 +448,40 @@ export function RuleEditor() {
     // list `setRules` puts back, and this notice saying the import worked —
     // and the next Save would write the screen's list back over it, reopening
     // every proposal a second time.
-    if (savingNow.current) {
+    if (writer.current !== undefined) {
       setImportNotice(
-        'A save was still running, so the import was not applied — nothing was ' +
-          'imported and nothing was changed. Try it again now the save has finished.',
+        writer.current === 'save'
+          ? 'A save was still running, so the import was not applied — nothing was ' +
+              'imported and nothing was changed. Try it again now the save has finished.'
+          : 'An import was already running, so this one was not applied — nothing ' +
+              'was imported twice. Try it again now the first has finished.',
       )
       return
     }
-    importRules(text)
+    writer.current = 'import'
+    setWriting('import')
+    setRefused(undefined)
+    // **`importRules` can throw synchronously, and a `.catch` cannot see it.**
+    // It is not `async`: its body is
+    // `expectBody(sendJson(..., JSON.parse(doc)))`, and `JSON.parse` runs as
+    // an *argument* — so a document that is not valid JSON throws out of the
+    // call itself, before any promise exists for `.then`/`.catch` to attach
+    // to. Without this the gate below stays held for the rest of the session
+    // and both writers are dead, with only a parse error on screen to say
+    // why. Picking the wrong file is the most ordinary way to reach it.
+    let started: ReturnType<typeof importRules>
+    try {
+      started = importRules(text)
+    } catch (err: unknown) {
+      writer.current = undefined
+      setWriting(undefined)
+      setFailure(message(err))
+      return
+    }
+    started
       .then((answer) => {
+        writer.current = undefined
+        setWriting(undefined)
         // Every other editor gesture lands in `commit`; this is the shape it
         // already has (set the rules, close/leave the selection, drop the
         // last save, preview once), so it goes through the same funnel
@@ -407,7 +510,18 @@ export function RuleEditor() {
             `import. Save applies them.${reopened}`,
         )
       })
-      .catch((err: unknown) => setFailure(message(err)))
+      .catch((err: unknown) => {
+        // **The gate is cleared here too, and this is not symmetry for its
+        // own sake.** A failed import that kept `writer.current` set would
+        // disable Save *and* Import for the rest of the session, with the
+        // screen showing only the server's sentence about the document — a
+        // refused import is the ordinary case (`rules/import` rejects a
+        // malformed document), so the leak would be reached by the first
+        // person who picked the wrong file.
+        writer.current = undefined
+        setWriting(undefined)
+        setFailure(message(err))
+      })
   }
 
   const exportDoc = () => {
@@ -444,13 +558,19 @@ export function RuleEditor() {
         </p>
       )}
 
+      {refused !== undefined && (
+        <p role="alert" className="refused">
+          {refused}
+        </p>
+      )}
+
       <div className="editor-panes">
         <RuleList
           rules={rules}
           selected={selected}
           proposals={proposals}
           overrideCount={preview?.overrides.length ?? 0}
-          saving={saving}
+          frozen={frozen}
           onSelect={(index) => {
             // M1: the design runs a preview on selecting a *different*
             // rule — `rows` is scoped to `selected`, and changing which is
@@ -512,8 +632,23 @@ export function RuleEditor() {
                 // commits on blur, so the mechanical guard would itself
                 // commit the half-typed edit into the very window the item is
                 // about. So the field stays live and the *commit* waits.
-                if (savingNow.current) {
+                if (writer.current === 'save') {
                   held.current = { index: selected, rule: edited }
+                  return
+                }
+                if (writer.current === 'import') {
+                  // **Discarded, not held**, and forced rather than chosen.
+                  // Holding works for a save because `answer.rules` is
+                  // positionally aligned to the list that was sent. An
+                  // import's answer is aligned to nothing — it replaces every
+                  // rule and mints fresh ids — so this index does not name the
+                  // rule being edited and applying the edit there would
+                  // overwrite an unrelated rule with it.
+                  setRefused(
+                    `An import was running, so your edit to rule ${selected + 1} was not ` +
+                      'applied — an import replaces every rule, so there is no row left to ' +
+                      'apply it to. The imported rules are on screen now.',
+                  )
                   return
                 }
                 commit(
@@ -533,7 +668,7 @@ export function RuleEditor() {
             rules={rules}
             selected={selected}
             busy={busy}
-            saving={saving}
+            frozen={frozen}
             onReorder={(from, to) => {
               const next = renumber(moved(rules, from, to))
               commit(next, selected === from ? to : selected)
@@ -580,7 +715,7 @@ export function RuleEditor() {
 
       <div className="editor-actions">
         {/*
-         * Disabled on `busy` too, not only `saving` — see this file's own
+         * Disabled on `busy` too, not only `frozen` — see this file's own
          * top comment. Without it, a click landing inside the ~300-500 ms a
          * preview takes sends `rules` against a `predicted.current` that has
          * not caught up yet, and the mismatch draws a warning that blames
@@ -589,7 +724,7 @@ export function RuleEditor() {
         <button
           type="button"
           className="save"
-          disabled={saving || busy || preview === undefined}
+          disabled={frozen || busy || preview === undefined}
           onClick={save}
         >
           {saving
@@ -600,10 +735,10 @@ export function RuleEditor() {
         <div className="import">
           <button
             type="button"
-            disabled={saving}
+            disabled={frozen}
             onClick={() => fileInput.current?.click()}
           >
-            Import
+            {writing === 'import' ? 'Importing…' : 'Import'}
           </button>
           <p>
             Import replaces every rule with the document’s, minting fresh ids,
