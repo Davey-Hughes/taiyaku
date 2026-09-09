@@ -47,6 +47,12 @@ export interface Root {
   edition_key: string | null
   default_kind: string | null
   default_language: string | null
+  /**
+   * Patterns a scan is meant to skip — **stored and read back, applied
+   * nowhere.** `scan::scan_root` still does not consult it: the open half of
+   * O92.
+   */
+  exclude_globs: string | null
   scan_interval_secs: number | null
   /** Whether `<root>/.taiyaku/` is kept — migration 012, off by default. */
   keeps_documents: boolean

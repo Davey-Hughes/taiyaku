@@ -50,6 +50,7 @@ fn root() -> Root {
         edition_key: None,
         default_kind: None,
         default_language: None,
+        exclude_globs: None,
         scan_interval_secs: None,
         keeps_documents: false,
     }

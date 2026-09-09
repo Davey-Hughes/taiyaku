@@ -1177,18 +1177,58 @@ fn a_root_patch_changes_only_the_field_it_names() {
     );
     assert!(after.keeps_documents, "untouched: keeps_documents");
 
-    // `exclude_globs` is not one of `Root`'s own fields — read it directly.
-    let exclude_globs: Option<String> = conn
-        .query_row(
-            "SELECT exclude_globs FROM root WHERE id = ?1",
-            [root.id],
-            |r| r.get(0),
-        )
-        .expect("reading exclude_globs back");
     assert_eq!(
-        exclude_globs.as_deref(),
+        after.exclude_globs.as_deref(),
         Some("*.tmp"),
         "untouched: exclude_globs"
+    );
+}
+
+/// A listed root reports `exclude_globs`, so a client can see what the
+/// column holds.
+///
+/// **O92's readable half.** The column shipped in migration 1 and
+/// [`super::update_root`] has always patched it, but `Root` did not carry it
+/// and the list query did not select it — so the roots screen's box for it
+/// was write-only, starting empty whatever the row held. Nothing *applies*
+/// the pattern to a walk even now; that is the rest of O92 and it is a
+/// decision rather than a patch.
+///
+/// **Both cases, because only the pair pins the read.** A test that checks
+/// the patched value alone passes against a query hard-coding any non-`None`
+/// constant, and one that checks the fresh root alone passes against a
+/// `Root` that never reads the column at all.
+#[test]
+fn a_listed_root_reports_the_exclude_globs_it_holds() {
+    let dir = crate::tests::tempdir("scan-root-exclude-globs");
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    let root = super::add_root(&conn, &dir.path).expect("adding the root");
+
+    assert_eq!(
+        super::roots(&conn).expect("listing roots")[0]
+            .exclude_globs
+            .as_deref(),
+        None,
+        "a root nobody has patched excludes nothing"
+    );
+
+    super::update_root(
+        &conn,
+        root.id,
+        &super::RootPatch {
+            exclude_globs: Some(Some("**/extras/**".to_string())),
+            ..Default::default()
+        },
+    )
+    .expect("patching");
+
+    assert_eq!(
+        super::roots(&conn).expect("listing roots")[0]
+            .exclude_globs
+            .as_deref(),
+        Some("**/extras/**"),
+        "the pattern the patch stored, read back off the listed row"
     );
 }
 

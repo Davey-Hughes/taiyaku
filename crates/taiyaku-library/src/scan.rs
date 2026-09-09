@@ -53,6 +53,14 @@ pub struct Root {
     pub edition_key: Option<String>,
     pub default_kind: Option<String>,
     pub default_language: Option<String>,
+    /// Patterns a scan is meant to skip, as one stored string.
+    ///
+    /// **Read here and applied nowhere.** [`scan_root`] does not consult it,
+    /// so nothing is excluded from a walk — the open half of O92. It is
+    /// carried on `Root` anyway because a column an admin can set and no
+    /// client can read back is a box that starts empty whatever the row
+    /// holds, which is the half that was a defect rather than a decision.
+    pub exclude_globs: Option<String>,
     pub scan_interval_secs: Option<i64>,
     /// Whether this root keeps `<root>/.taiyaku/<content_key>.library.json`.
     ///
@@ -71,8 +79,8 @@ pub struct Root {
 pub fn roots(conn: &Connection) -> Result<Vec<Root>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, path, edition_key, default_kind, default_language, scan_interval_secs, \
-             keeps_documents \
+            "SELECT id, path, edition_key, default_kind, default_language, exclude_globs, \
+             scan_interval_secs, keeps_documents \
              FROM root ORDER BY id",
         )
         .map_err(|e| format!("listing roots: {e}"))?;
@@ -84,8 +92,9 @@ pub fn roots(conn: &Connection) -> Result<Vec<Root>, String> {
                 edition_key: r.get(2)?,
                 default_kind: r.get(3)?,
                 default_language: r.get(4)?,
-                scan_interval_secs: r.get(5)?,
-                keeps_documents: r.get(6)?,
+                exclude_globs: r.get(5)?,
+                scan_interval_secs: r.get(6)?,
+                keeps_documents: r.get(7)?,
             })
         })
         .map_err(|e| format!("listing roots: {e}"))?;
@@ -131,6 +140,7 @@ pub fn add_root(conn: &Connection, path: &Path) -> Result<Root, String> {
         edition_key: None,
         default_kind: None,
         default_language: None,
+        exclude_globs: None,
         scan_interval_secs: None,
         keeps_documents,
     })

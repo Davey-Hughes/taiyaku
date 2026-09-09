@@ -1241,6 +1241,7 @@ fn root_json(
         "edition_key": root.edition_key,
         "default_kind": root.default_kind,
         "default_language": root.default_language,
+        "exclude_globs": root.exclude_globs,
         "scan_interval_secs": root.scan_interval_secs,
         "keeps_documents": root.keeps_documents,
         "last_scan_at": last_scan_at,

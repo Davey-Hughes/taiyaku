@@ -26,27 +26,28 @@
  *
  * **"Edited" is an `input` event, not a value comparison, and getting there
  * took three rounds of one review.** The obvious rule — write when the box
- * differs from what the row holds — cannot work for `exclude_globs`, whose
- * value the row never reports, so `from` answered `''` forever and an admin
+ * differs from what the row holds — could not work for `exclude_globs`, whose
+ * value the row did not report, so `from` answered `''` forever and an admin
  * who set a pattern then emptied the box hit `'' === ''` and wrote nothing
  * (pass 1). Comparing against the last value *this card* had sent fixed that
  * only within a single mount, since that state starts empty on every load
  * (pass 3). Treating the column's value as *unknown* instead removed the
  * guard altogether, so a bare focus-and-tab-away sent `{exclude_globs: null}`
- * and silently deleted a stored pattern — config loss nothing would have
- * noticed, since O92 means nothing reads the column yet (pass 4). Whether
- * somebody typed in the box is the fact all three were reaching for, and it
- * is the one the DOM already reports. `from` returning `undefined` for a
- * column the row cannot describe is the other half: it makes "no opinion"
- * expressible instead of faked with `''`.
+ * and silently deleted a stored pattern (pass 4). Whether somebody typed in
+ * the box is the fact all three were reaching for, and it is the one the DOM
+ * already reports. **That rule is unchanged now that the row does report the
+ * column** — an edit is still what sends, and the equality guard is still the
+ * second check rather than the first. What did go is `from`'s `undefined`
+ * arm, which existed only to say "this row cannot describe this column".
  *
- * **`exclude_globs` is edited here and does nothing.** O92: the column ships
- * in migration 1, `scan::update_root` patches it, and `scan::scan_root` never
+ * **`exclude_globs` is edited here and applied nowhere.** O92: the column
+ * ships in migration 1, `scan::update_root` patches it, `GET
+ * /api/library/roots` now sends it back — and `scan::scan_root` still never
  * reads it, so nothing is ever excluded from a scan. It is drawn because C4
  * §2 lists it among a root's fields and because leaving it out would hide the
- * gap rather than record it; the label says so in as many words. It is also
- * **write-only**: `GET /api/library/roots` does not send the column, so the box
- * starts empty whatever the row holds.
+ * gap rather than record it; the label says so in as many words. What it is
+ * no longer is **write-only**: the box starts at the pattern the row holds,
+ * so an admin can see what they set.
  *
  * **Live progress is elapsed seconds and nothing else.** `ScanProgress`
  * carries a start `Instant` and a done flag and no per-file counter; drawing a
@@ -93,16 +94,16 @@ interface TextField {
   name: string
   label: string
   /**
-   * What the `root` row says this column holds, or `undefined` where the row
-   * cannot say.
+   * What the `root` row says this column holds.
    *
-   * `exclude_globs` is the `undefined` case, and it is not a quirk: the list
-   * route does not send that column, so the row reports nothing about it and
-   * an emptied box there is a genuine instruction rather than a no-op. Every
-   * other column answers a string, and an edit back to that string writes
-   * nothing.
+   * **Every column answers, including `exclude_globs`.** It used to be the
+   * exception — the list route did not send it, so `from` could only answer
+   * `undefined` and the blur guard had to let an unreadable column always
+   * send. O92's readable half closed that: `root_json` carries the column,
+   * so an edit back to the stored string writes nothing here exactly as it
+   * does for the other three.
    */
-  from: (root: Root) => string | undefined
+  from: (root: Root) => string
   patch: (value: string | null) => RootPatch
 }
 
@@ -127,10 +128,10 @@ const TEXT_FIELDS: TextField[] = [
   },
   {
     name: 'exclude_globs',
+    // Still the honest label: the column is read back now, and `scan_root`
+    // still does not apply it. That is the half of O92 left open.
     label: 'Exclude globs (recorded, not yet applied — O92)',
-    // The list route does not send this column, so the row can never say what
-    // it holds — `undefined`, not `''`. See `from`'s own doc comment.
-    from: () => undefined,
+    from: (r) => r.exclude_globs ?? '',
     patch: (exclude_globs) => ({ exclude_globs }),
   },
 ]
@@ -176,14 +177,16 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
    * Which text boxes the admin has actually typed in since focusing them.
    *
    * **A write happens because somebody edited a box, never because its value
-   * differs from something.** Two rounds of this branch tried to decide it by
+   * differs from something.** Two rounds of C4 PR A tried to decide it by
    * comparison and both were wrong, in opposite directions: comparing against
-   * the row meant `exclude_globs` — whose stored value the row cannot report —
-   * could never be cleared, and treating its value as *unknown* instead meant
-   * a bare focus-and-tab-away sent `{exclude_globs: null}` and silently
-   * deleted a stored pattern. Editing is the fact both were reaching for, and
-   * an `input` event is what says it happened. Whole-branch review passes 1,
-   * 3 and 4.
+   * the row meant `exclude_globs` — whose stored value the row could not then
+   * report — could never be cleared, and treating its value as *unknown*
+   * instead meant a bare focus-and-tab-away sent `{exclude_globs: null}` and
+   * silently deleted a stored pattern. Editing is the fact both were reaching
+   * for, and an `input` event is what says it happened. Whole-branch review
+   * passes 1, 3 and 4. **The row does report the column now** (O92's readable
+   * half) and the rule is unchanged: this guard still runs first, and the
+   * equality check against the row is still the second.
    */
   const edited = useRef<Set<string>>(new Set())
   /**
@@ -405,7 +408,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
             <input
               type="text"
               name={field.name}
-              defaultValue={field.from(root) ?? ''}
+              defaultValue={field.from(root)}
               onFocus={() => {
                 edited.current.delete(field.name)
               }}
@@ -418,11 +421,11 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
                 // whatever the box happens to show.
                 if (!edited.current.has(field.name)) return
                 edited.current.delete(field.name)
-                // A column the row *can* report, edited back to what it
-                // already holds, is a no-op. One it cannot report always
-                // sends — which is the only way to clear such a column.
-                const stored = field.from(root)
-                if (stored !== undefined && next === stored) return
+                // Edited back to what the row already holds: a no-op. Every
+                // column can be compared this way since O92's readable half
+                // landed; `exclude_globs` was the one that could not, and the
+                // `undefined` arm that carried it is gone with it.
+                if (next === field.from(root)) return
                 save(field, next)
               }}
             />

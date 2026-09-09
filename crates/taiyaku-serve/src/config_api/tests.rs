@@ -1580,6 +1580,59 @@ async fn the_root_list_carries_the_interval_and_the_last_scan() {
     assert!(first["keeps_documents"].is_boolean(), "{json}");
 }
 
+/// The list carries `exclude_globs`, so the box the roots screen draws for
+/// it can start at what the row actually holds.
+///
+/// **O92's readable half.** `root_patch_from_json` has always accepted the
+/// key and `scan::update_root` has always written it; `root_json` did not
+/// send it back, which made that box write-only — it started empty whatever
+/// the row held, and the screen's own three review passes went into deciding
+/// what an emptied one could safely mean without ever being able to see the
+/// stored value. Applying the pattern to a walk is the rest of O92 and is
+/// still not done.
+///
+/// **The unpatched root is checked too, and for `null` rather than for
+/// absence.** A `root_json` that omits the key entirely reads as
+/// `Value::Null` through indexing, so asserting only `first["exclude_globs"]
+/// .is_null()` passes against the very defect this closes — it is
+/// `get(...).is_some()` that tells a sent `null` from a key nobody wrote.
+#[tokio::test]
+async fn the_root_list_carries_the_exclude_globs_the_row_holds() {
+    let (router, _state, _fixture) = test_support::state_with_two_scanned_roots();
+
+    let before = get_json(&router, "/api/library/roots").await;
+    let first = &before["roots"].as_array().expect("a roots array")[0];
+    let id = first["id"].as_i64().expect("a root id");
+    assert!(
+        first.get("exclude_globs").is_some(),
+        "the key is sent for a root that has no pattern, as an explicit null: {before}"
+    );
+    assert!(first["exclude_globs"].is_null(), "{before}");
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/roots/{id}"),
+        &serde_json::json!({ "exclude_globs": "**/extras/**" }),
+    )
+    .await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{text}");
+
+    let after = get_json(&router, "/api/library/roots").await;
+    let patched = after["roots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id)
+        .expect("the patched root is still listed");
+    assert_eq!(
+        patched["exclude_globs"], "**/extras/**",
+        "the pattern the patch stored, read back off the list: {after}"
+    );
+}
+
 /// A root that exists, is readable and does not overlap anything is added,
 /// probed and listed — the ordinary path through all three of C4 §2's
 /// checks.

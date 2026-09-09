@@ -19,6 +19,7 @@ const root = (over: Partial<config.Root> = {}): config.Root => ({
   edition_key: 'en',
   default_kind: 'manga',
   default_language: 'en',
+  exclude_globs: null,
   scan_interval_secs: 86400,
   keeps_documents: false,
   last_scan_at: null,
@@ -96,6 +97,44 @@ async function edit(host: HTMLElement, name: string, value: string) {
     )?.set
     setter?.call(box, value)
     box.dispatchEvent(new Event('input', { bubbles: true }))
+    box.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
+/**
+ * Type a value, then type the box back to what it already showed, and leave —
+ * all inside one focus session.
+ *
+ * **`edit` cannot stage this, and a test written with it passes against a
+ * deleted guard.** `edit` drives the box straight to its target value, and
+ * React's per-instance value tracker was seeded at mount with `defaultValue`
+ * — so setting a box to the value it already displays fires no `input` event
+ * at all. `edited` stays empty and the blur returns at the *first* guard,
+ * which makes such a test indistinguishable from `tabThrough` and blind to
+ * the equality guard it claims to be about. Verified by replacing
+ * `if (next === field.from(root)) return` with a constant no box can hold:
+ * the whole jsdom project stayed green. The value has to genuinely move and
+ * come back for the second guard to be the one that stops the write.
+ */
+async function retype(
+  host: HTMLElement,
+  name: string,
+  via: string,
+  back: string,
+) {
+  const box = host.querySelector(`input[name="${name}"]`) as HTMLInputElement
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value',
+  )?.set
+  await act(async () => {
+    box.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+    for (const value of [via, back]) {
+      setter?.call(box, value)
+      box.dispatchEvent(new Event('input', { bubbles: true }))
+    }
     box.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
     await Promise.resolve()
     await Promise.resolve()
@@ -196,6 +235,9 @@ describe('RootRow', () => {
   })
 
   it('sends nothing when a field is blurred unchanged', async () => {
+    // This is the `edited` guard, not the equality one: driving a box to the
+    // value it already shows fires no `input` event, so it is `tabThrough`
+    // by another route. The equality guard has its own test, with `retype`.
     const host = await settle()
     await edit(host, 'edition_key', 'en')
     expect(config.patchRoot).not.toHaveBeenCalled()
@@ -565,10 +607,22 @@ describe('RootRow', () => {
     expect(host?.textContent).toContain('inotify limit reached')
   })
 
-  it('patches exclude_globs, the column nothing reads', async () => {
-    // O92. The box is write-only from here — `GET /api/library/roots` does
-    // not send the column — so this is the only place the write is pinned at
-    // all, and the only evidence the field is wired to anything.
+  it('shows the exclude_globs pattern the row holds', async () => {
+    // **O92's readable half.** `GET /api/library/roots` sends the column now,
+    // so the box starts at what is stored instead of empty — which is what
+    // made it write-only, and what three passes of this branch's review had
+    // to design around without ever being able to see the value.
+    const host = await settle({ exclude_globs: '**/extras/**' })
+    const box = host.querySelector(
+      'input[name="exclude_globs"]',
+    ) as HTMLInputElement
+    expect(box.value).toBe('**/extras/**')
+  })
+
+  it('patches exclude_globs, the column nothing applies', async () => {
+    // O92. The column is read back now, and still applied by nothing: this
+    // pins that the box is wired to the patch route at all, which is separate
+    // from the two tests above that pin what it reads.
     const host = await settle()
     await edit(host, 'exclude_globs', '**/extras/**')
     expect(config.patchRoot).toHaveBeenCalledWith(3, {
@@ -595,21 +649,15 @@ describe('RootRow', () => {
 
   // --- whole-branch review, 2026-09-04 -----------------------------------
 
-  it('clears exclude_globs, the field whose stored value it cannot read', async () => {
-    // **Review finding 1.** The blur guard compares against `field.from(root)`,
-    // and `exclude_globs`'s `from` is hard-coded `''` because the list route
-    // does not send the column — so once a value was written, emptying the box
-    // compared `'' === ''`, returned early, and left the column set while the
-    // input showed empty. There is no other way to clear it from the UI, and
-    // this file's own doc comment claimed the opposite.
-    const host = await settle()
-    await edit(host, 'exclude_globs', '**/extras/**')
-    expect(config.patchRoot).toHaveBeenCalledWith(3, {
-      exclude_globs: '**/extras/**',
-    })
-
-    vi.clearAllMocks()
-    vi.mocked(config.patchRoot).mockResolvedValue(undefined)
+  it('clears a stored exclude_globs pattern', async () => {
+    // **Review finding 1, restaged on the row that now reports the value.**
+    // The blur guard compares against `field.from(root)`, which was hard-coded
+    // `''` while the list route did not send the column — so emptying a box
+    // that held a pattern compared `'' === ''`, returned early, and left the
+    // column set while the input showed empty. O92's readable half is what
+    // lets this be staged the way an admin actually meets it: a root that
+    // *holds* a pattern, emptied.
+    const host = await settle({ exclude_globs: '**/extras/**' })
     await edit(host, 'exclude_globs', '')
     expect(config.patchRoot).toHaveBeenCalledWith(3, { exclude_globs: null })
   })
@@ -853,11 +901,39 @@ describe('RootRow', () => {
     // sent this mount" mean *unknown* skipped the equality guard entirely, so
     // `save(field, '')` fired on a bare focus-and-leave and `patch_nullable_
     // text` wrote SQL NULL. Tabbing through the form deleted a stored
-    // `exclude_globs` pattern, with nothing typed and nothing said — and O92
-    // means nothing reads the column yet, so it would go unnoticed until O92
-    // is fixed. Value equality cannot express this; whether the admin
-    // actually edited the box can.
-    const host = await settle()
+    // `exclude_globs` pattern, with nothing typed and nothing said. Value
+    // equality cannot express this; whether the admin actually edited the box
+    // can — and it is still the rule now that the column *is* readable,
+    // because an edit is the fact both wrong models were reaching for. Staged
+    // on a root that holds a pattern, which is what there was to lose.
+    const host = await settle({ exclude_globs: '**/extras/**' })
+    await tabThrough(host, 'exclude_globs')
+    expect(config.patchRoot).not.toHaveBeenCalled()
+  })
+
+  it('does not write an abandoned edit when the box is tabbed through again', async () => {
+    // **The `edited` guard's only witness, and the review of O92's own fix
+    // round is what found it missing.** Staging every tab-through on a box
+    // whose displayed value equals `field.from(root)` lets the blur fall
+    // through to the *equality* guard and return there, so all three
+    // tab-through tests kept passing with `edited` deleted outright — 47
+    // files, 927 tests, green. Before the row could report `exclude_globs`
+    // its `from` was `undefined`, and that is what had been holding this up.
+    //
+    // A dirty box is the case only `edited` can see. The `PATCH` is refused,
+    // so the box keeps the typed value while `root` still holds the old one;
+    // the admin gives up and tabs out. Nothing was edited *this* focus, so
+    // nothing is sent — where value comparison would write the abandoned
+    // pattern, which is the pass-4 shape on a different trigger.
+    const host = await settle({ exclude_globs: '**/extras/**' })
+    vi.mocked(config.patchRoot).mockRejectedValue(new Error('502 Bad Gateway'))
+    await edit(host, 'exclude_globs', '**/tmp/**')
+    expect(config.patchRoot).toHaveBeenCalledWith(3, {
+      exclude_globs: '**/tmp/**',
+    })
+
+    vi.clearAllMocks()
+    vi.mocked(config.patchRoot).mockResolvedValue(undefined)
     await tabThrough(host, 'exclude_globs')
     expect(config.patchRoot).not.toHaveBeenCalled()
   })
@@ -876,28 +952,29 @@ describe('RootRow', () => {
     expect(config.patchRoot).not.toHaveBeenCalled()
   })
 
-  it('clears a write-only column when the admin actually empties it', async () => {
-    // **This replaces two pass-3 tests** that set an already-empty box to
-    // empty and expected a write. That is not an interaction: React's value
-    // tracker reports no change, no `input` event fires, and nothing was
-    // edited. Both were written against the value-comparison model, which is
-    // the model pass 4 removed.
-    // The box cannot show what is stored, so "clear it" has to be expressed
-    // as an edit: type something, delete it, leave. That is an edit, and it
-    // sends — which is the capability pass 1 and pass 3 were both reaching
-    // for and neither got right.
-    const host = await settle()
-    await edit(host, 'exclude_globs', 'x')
-    expect(config.patchRoot).toHaveBeenCalledWith(3, { exclude_globs: 'x' })
-    vi.clearAllMocks()
-    vi.mocked(config.patchRoot).mockResolvedValue(undefined)
-    await edit(host, 'exclude_globs', '')
-    expect(config.patchRoot).toHaveBeenCalledWith(3, { exclude_globs: null })
+  it('sends nothing when exclude_globs is typed back to what the row holds', async () => {
+    // **The half of O92's fix that a starting value alone does not prove.**
+    // Painting the box from `root.exclude_globs` while leaving `from` at
+    // `undefined` would pass the "shows the pattern" test above and still
+    // treat every blur as unknown — the pass-4 regression, which wrote SQL
+    // NULL over a stored pattern on a bare focus-and-leave. The guard has to
+    // read the same column the box does, and this is what says so.
+    //
+    // **`retype`, not `edit`.** The first version of this test used `edit`
+    // and passed with the equality guard deleted outright; see `retype`'s own
+    // doc comment for why. An admin appending a character to a stored pattern
+    // and deleting it again is the interaction this covers, and it is the
+    // only one the second guard can see.
+    const host = await settle({ exclude_globs: '**/extras/**' })
+    await retype(host, 'exclude_globs', '**/extras/**x', '**/extras/**')
+    expect(config.patchRoot).not.toHaveBeenCalled()
   })
 
-  it('sends nothing when a readable field is edited back to its stored value', async () => {
+  it('sends nothing when a readable field is typed back to its stored value', async () => {
+    // Pre-existing, and it had the same hole as the `exclude_globs` test
+    // above: driven by `edit` it never reached the equality guard at all.
     const host = await settle()
-    await edit(host, 'edition_key', 'en')
+    await retype(host, 'edition_key', 'enx', 'en')
     expect(config.patchRoot).not.toHaveBeenCalled()
   })
 

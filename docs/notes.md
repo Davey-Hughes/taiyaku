@@ -15639,3 +15639,43 @@ untouched. Reproduced deliberately on a copy: directory mtime `14:14:06` before
 one `select count(*)`, `14:14:07` after, database mtime unchanged either side.
 So the second half of the isolation ritual fires on a plain read, and the
 mtime of the database file is the half that actually means something.
+
+## O92's readable half, against the real library — 2026-09-08
+
+The roots screen's *Exclude globs* box was write-only: `GET /api/library/roots`
+did not send the column, so it started empty whatever the row held. `scan::Root`
+carries it now, `scan::roots` selects it, `root_json` sends it and
+`TextField.from` reads it. Driven against a copy of the real library — 1,858
+works, 2,044 scan entries, the one `local` admin — served on `127.0.0.1:8123`
+with `pnpm dev`'s proxy pointed at it through `TAIYAKU_SERVE`.
+
+| What was driven | Result |
+| ---- | ---- |
+| `GET /api/library/roots`, unpatched root | `"exclude_globs": null` — the key present, not absent |
+| `PATCH {"exclude_globs":"**/extras/**"}` then `GET` | `'**/extras/**'` comes back |
+| The screen, loaded fresh | the box reads `**/extras/**`; before this it read empty |
+| Emptying the box | column really goes to `NULL`, verified in SQLite |
+| Typing the value away and back in one focus | no `PATCH` — the equality guard |
+| A bare focus-and-leave on a box holding a pattern | no `PATCH` — the `edited` guard |
+
+**Emptying the box is the interaction three passes of C4 PR A's review were
+trying to make reachable**, and it works here for the first time with the box
+also showing what is stored — the two were previously in tension precisely
+because the row could not report the column.
+
+**Isolation proven afterwards rather than assumed.** The writes went to a copy
+under the session scratchpad; `/home/davey/temp/manga-test/library.db` still
+carries its 2026-09-02 05:51:48.853004102 mtime and its 3,534,848 bytes, and
+`find -newer` over the tree lists nothing. No scan or derive was triggered.
+
+**What the mutation sweep could not say.** `scripts/mutants.sh --since main`
+found 4 mutants — 2 caught, 2 unviable, 0 survivors — and none of the four
+touches the column read itself: cargo-mutants does not mutate the SELECT's
+string literal or a struct field initialiser. The two unviable are
+`Ok(Default::default())` and `Ok(vec![Default::default()])` failing to compile
+because `scan::Root` derives no `Default`, which is the known cause, not an
+untested function. The evidence that the read is pinned is hand-applied:
+`exclude_globs: r.get(5)?` → `None` fails two Rust tests, deleting the
+`"exclude_globs"` key from `root_json` fails one, `from: () => ''` fails three
+jsdom tests, and each of the two blur guards fails its own test and only its
+own.

@@ -19,6 +19,7 @@ const root = (over: Partial<config.Root> = {}): config.Root => ({
   edition_key: 'en',
   default_kind: 'manga',
   default_language: 'en',
+  exclude_globs: null,
   scan_interval_secs: 86400,
   keeps_documents: false,
   last_scan_at: null,
