@@ -203,8 +203,28 @@ web/src/__screenshots__/
 # reason and pointed at the wrong path.
 web/.vitest-attachments/
 
-# A screenshot of the labeller's toolbar, committed in #59 and referenced by no
-# markdown, HTML, CSS, TypeScript, Rust or config file. Named rather than
-# glob-ignored, so that adding a *deliberate* image to the repository root
-# stays a decision somebody makes rather than something this line swallows.
-/controls.png
+# --- images ---
+#
+# Ignored by extension, reversing the line that stood here: it named
+# `/controls.png` so that adding a deliberate image would stay "a decision
+# somebody makes rather than something this line swallows". Sound, and it did
+# not work — naming catches the stray you already found and none of the next.
+# Four got in across #35, #59 and #119, each answered by a rule written after
+# the fact.
+#
+# A deliberate image is a `!` line below, with the reason it is tracked. Note
+# that no ignore rule untracks something already committed; that takes a
+# `git rm`.
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.avif
+*.bmp
+*.tiff
+*.tif
+*.ico
+*.svg
+
+# Deliberate images, one `!` line each. (None yet.)
