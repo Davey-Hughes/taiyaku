@@ -1293,11 +1293,22 @@ fn root_patch_from_json(body: &serde_json::Value) -> Result<scan::RootPatch, Str
     if !body.is_object() {
         return Err("a root patch must be a JSON object".to_string());
     }
+    // **Refused here rather than at the store**, so a typo is caught at save
+    // rather than after a scan. `Some(None)` — clearing the column — is not
+    // a pattern and is not checked. What this catches is narrow: `ignore`
+    // rejects a dangling `\` and an unclosed `{` and accepts a great deal
+    // that means nothing useful, which is why a stored pattern that will not
+    // build is *also* handled, in `scan::Excluder::build`, rather than
+    // treated as impossible.
+    let exclude_globs = patch_nullable_text(body, "exclude_globs", "root")?;
+    if let Some(Some(patterns)) = &exclude_globs {
+        scan::check_exclude_globs(patterns)?;
+    }
     Ok(scan::RootPatch {
         edition_key: patch_nullable_text(body, "edition_key", "root")?,
         default_kind: patch_nullable_text(body, "default_kind", "root")?,
         default_language: patch_nullable_text(body, "default_language", "root")?,
-        exclude_globs: patch_nullable_text(body, "exclude_globs", "root")?,
+        exclude_globs,
         scan_interval_secs: patch_nullable_i64(body, "scan_interval_secs", "root")?,
         keeps_documents: patch_bool(body, "keeps_documents", "root")?,
     })
@@ -1344,6 +1355,10 @@ fn scan_report_json(report: &scan::ScanReport) -> serde_json::Value {
         gone,
         refused,
         unreadable_dirs,
+        excluded_dirs,
+        excluded_files,
+        bad_exclude_patterns,
+        forgotten_by_exclusion,
     } = report;
     serde_json::json!({
         "root": root.to_string_lossy(),
@@ -1352,8 +1367,12 @@ fn scan_report_json(report: &scan::ScanReport) -> serde_json::Value {
         "added": added,
         "updated": updated,
         "gone": gone,
+        "forgotten_by_exclusion": forgotten_by_exclusion,
         "refused": refused,
         "unreadable_dirs": unreadable_dirs,
+        "excluded_dirs": excluded_dirs,
+        "excluded_files": excluded_files,
+        "bad_exclude_patterns": bad_exclude_patterns,
     })
 }
 

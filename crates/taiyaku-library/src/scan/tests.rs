@@ -728,10 +728,12 @@ fn a_files_modification_time_reaches_its_scan_entry() {
         .set_times(std::fs::FileTimes::new().set_modified(when))
         .expect("stamps it");
 
-    let (measured, complaints) = measure(&dir.path, 0).expect("measures the tree");
+    let (measured, walk) =
+        measure(&dir.path, 0, &Excluder::build(None)).expect("measures the tree");
     assert!(
-        complaints.is_empty(),
-        "unexpected complaints: {complaints:?}"
+        walk.unreadable.is_empty(),
+        "unexpected unreadable dirs: {:?}",
+        walk.unreadable
     );
 
     let entries = flatten(&measured);
@@ -1190,9 +1192,10 @@ fn a_root_patch_changes_only_the_field_it_names() {
 /// **O92's readable half.** The column shipped in migration 1 and
 /// [`super::update_root`] has always patched it, but `Root` did not carry it
 /// and the list query did not select it — so the roots screen's box for it
-/// was write-only, starting empty whatever the row held. Nothing *applies*
-/// the pattern to a walk even now; that is the rest of O92 and it is a
-/// decision rather than a patch.
+/// was write-only, starting empty whatever the row held. Applying the pattern
+/// to a walk was the rest of O92 and closed on 2026-09-09: `scan_root_inner`
+/// compiles the column into an [`super::Excluder`] and `measure_dir` consults
+/// it before descending.
 ///
 /// **Both cases, because only the pair pins the read.** A test that checks
 /// the patched value alone passes against a query hard-coding any non-`None`
@@ -1799,5 +1802,838 @@ fn remove_root_repairs_a_surviving_documents_gap_only_after_its_own_commit() {
         begin_after_commit,
         "the reconcile pass that repairs the gap must open its own transaction after \
          remove_root's own COMMIT, never before it: {statements:?}"
+    );
+}
+
+/// The pattern language is gitignore's, taken from the crate rather than
+/// reimplemented — so this test pins the five behaviours the design chose it
+/// *for*, not the crate's whole surface.
+///
+/// Verified against `ignore` 0.4.33 on 2026-09-09 before it was written here;
+/// each row is a behaviour a hand-rolled matcher would have had to be given
+/// on purpose, and four of the five are ones `globset` alone cannot express.
+#[test]
+fn the_pattern_language_is_gitignores() {
+    let excluder = super::Excluder::build(Some(
+        "**/extras/**\nextras\n*.nfo\n!keep.nfo\n# a comment\n\n/toplevel\nbuild/",
+    ));
+
+    for (path, is_dir, expected, why) in [
+        (
+            "Naruto/extras",
+            true,
+            true,
+            "a bare name matches at any depth",
+        ),
+        (
+            "Naruto/extras/art.jpg",
+            false,
+            true,
+            "and so does what is under it",
+        ),
+        (
+            "a/b/c.nfo",
+            false,
+            true,
+            "a file pattern matches at any depth",
+        ),
+        ("a/keep.nfo", false, false, "negation re-includes"),
+        (
+            "toplevel",
+            true,
+            true,
+            "a leading slash anchors, and this is the root's own",
+        ),
+        (
+            "deep/toplevel",
+            true,
+            false,
+            "a leading slash anchors, and this is not",
+        ),
+        ("build", true, true, "a trailing slash means the directory"),
+        ("build", false, false, "and not a file of that name"),
+        (
+            "Naruto/v01.cbz",
+            false,
+            false,
+            "an ordinary member is untouched",
+        ),
+    ] {
+        assert_eq!(
+            excluder.excludes(path, is_dir),
+            expected,
+            "{path} (dir={is_dir}): {why}"
+        );
+    }
+}
+
+/// A column holding nothing excludes nothing — the path every scan in this
+/// repository takes, and the one a matcher that defaulted to matching
+/// everything would destroy silently.
+#[test]
+fn no_pattern_excludes_nothing() {
+    for patterns in [None, Some(""), Some("\n\n"), Some("# only a comment")] {
+        let excluder = super::Excluder::build(patterns);
+        assert!(
+            !excluder.excludes("anything/at/all.cbz", false),
+            "{patterns:?} must exclude nothing"
+        );
+        assert!(
+            excluder.complaints.is_empty(),
+            "{patterns:?} must complain about nothing"
+        );
+    }
+}
+
+/// A line that will not compile disables itself and leaves every other line
+/// standing — `rules.rs`'s rule, for its reason: a scan of a real library
+/// must not die over one bad pattern.
+///
+/// **`\` and `a{b` are the two shapes `ignore` 0.4.33 actually rejects**,
+/// measured on 2026-09-09. `a[`, `[a-`, `[[:bogus:]]` and `***` all compile,
+/// so this test names the two that exist rather than a category that does
+/// not.
+#[test]
+fn a_bad_line_disables_itself_and_nothing_else() {
+    let excluder = super::Excluder::build(Some("extras\n\\\n*.nfo"));
+
+    assert_eq!(excluder.complaints.len(), 1, "{:?}", excluder.complaints);
+    assert!(
+        excluder.complaints[0].contains('\\'),
+        "the complaint names the line: {:?}",
+        excluder.complaints
+    );
+    assert!(
+        excluder.excludes("a/extras", true),
+        "the line before it applies"
+    );
+    assert!(
+        excluder.excludes("a/b.nfo", false),
+        "the line after it applies"
+    );
+}
+
+/// `matched_path_or_any_parents`, which is what `forget_unseen` needs: a
+/// stale row under a directory the walk never descended into.
+#[test]
+fn a_child_of_an_excluded_directory_is_excluded_with_parents() {
+    let excluder = super::Excluder::build(Some("extras"));
+
+    assert!(
+        !excluder.excludes("Naruto/extras/art.jpg", false),
+        "the path itself does not match the pattern"
+    );
+    assert!(
+        excluder.excludes_with_parents("Naruto/extras/art.jpg", false),
+        "but its parent does, which is the question forget_unseen asks"
+    );
+}
+
+/// `check_exclude_globs` is what the PATCH route refuses on, so its two
+/// answers are pinned in both directions.
+#[test]
+fn check_exclude_globs_names_the_line_it_refuses() {
+    assert!(super::check_exclude_globs("extras\n*.nfo\n!keep.nfo").is_ok());
+    assert!(super::check_exclude_globs("").is_ok());
+
+    let why = super::check_exclude_globs("extras\na{b").expect_err("a{b is unclosed");
+    assert!(why.contains("a{b"), "the message names the line: {why}");
+}
+
+/// A root whose fixture holds a directory worth excluding and a file worth
+/// excluding, beside material that must survive both.
+///
+/// Built on [`fixture`] rather than beside it, so what "survives" means is
+/// the same seven entries every other test in this module already pins.
+fn fixture_with_junk() -> crate::tests::TempDir {
+    let dir = fixture();
+    write_pages(&dir.path.join("Go-Toubun no Hanayome/extras"), 2);
+    std::fs::write(dir.path.join("Go-Toubun no Hanayome/series.nfo"), b"junk").expect("write");
+    dir
+}
+
+/// A root with `exclude_globs` set, ready to scan.
+fn root_excluding(conn: &Connection, path: &Path, patterns: &str) -> Root {
+    Root {
+        exclude_globs: Some(patterns.to_string()),
+        ..add_root(conn, path).expect("add")
+    }
+}
+
+/// An excluded directory is not descended into, and the report names it.
+///
+/// **Both halves, because either alone passes against a defect.** A test
+/// asserting only the report passes against an implementation that names the
+/// directory and walks it anyway; a test asserting only the rows passes
+/// against one that skips it silently, which is the confession C4 §3 exists
+/// to require.
+#[test]
+fn an_excluded_directory_is_not_walked_and_is_named() {
+    let tree = fixture_with_junk();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_excluding(&conn, &tree.path, "extras");
+
+    let report = scan_root(&conn, &root).expect("scan");
+
+    assert_eq!(
+        report.excluded_dirs,
+        vec!["Go-Toubun no Hanayome/extras".to_string()],
+        "the directory the pattern named, and only it"
+    );
+    let under: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM scan_entry WHERE rel_path LIKE '%extras%'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("counting");
+    assert_eq!(under, 0, "nothing under it reached scan_entry");
+    assert!(
+        report.dirs >= 6,
+        "the rest of the tree was still walked: {} dirs",
+        report.dirs
+    );
+}
+
+/// An excluded file is skipped and counted, and the count is not a list.
+#[test]
+fn an_excluded_file_is_skipped_and_counted() {
+    let tree = fixture_with_junk();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_excluding(&conn, &tree.path, "*.nfo");
+
+    let report = scan_root(&conn, &root).expect("scan");
+
+    assert_eq!(report.excluded_files, 1);
+    assert!(
+        report.excluded_dirs.is_empty(),
+        "a file pattern names no directory"
+    );
+    let held: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM scan_entry WHERE rel_path LIKE '%.nfo'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("counting");
+    assert_eq!(held, 0, "it never became an entry");
+}
+
+/// A negation re-includes what its own pattern excluded, through the walk
+/// and not merely through the matcher.
+#[test]
+fn a_negation_re_includes_through_the_walk() {
+    let tree = fixture_with_junk();
+    std::fs::write(tree.path.join("Go-Toubun no Hanayome/keep.nfo"), b"keep").expect("write");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_excluding(&conn, &tree.path, "*.nfo\n!keep.nfo");
+
+    let report = scan_root(&conn, &root).expect("scan");
+
+    assert_eq!(report.excluded_files, 1, "series.nfo, and not keep.nfo");
+    let kept: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM scan_entry WHERE rel_path LIKE '%keep.nfo'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("counting");
+    assert_eq!(kept, 1, "the negated line put it back");
+}
+
+/// An excluded entry does not move `dir_state.entry_count`.
+///
+/// The exclusion happens before the counter, so a junk file arriving in a
+/// directory is not a change this library reports. Asserted by scanning the
+/// same tree twice with the file added in between.
+///
+/// **Pins the value, not only that it held steady.** `before == after`
+/// alone passes against `entry_count` computed by any consistently wrong
+/// arithmetic — `*=` leaves it `0` on both scans, `-=` leaves it the same
+/// negative number on both (this field is `i64`, so that does not panic) —
+/// because "wrong twice, the same way" still satisfies equality. Pinning
+/// `before` (and therefore `after`, by the equality below) to the number
+/// [`fixture`] actually produces rules both out.
+///
+/// [`fixture`]'s `Go-Toubun no Hanayome` holds exactly two direct entries —
+/// the `- v01 (2019)` and `- v02 (2019)` volume directories, both real
+/// directories that `read_dir` returns and neither dotfiles nor (on this
+/// first, `*.nfo`-excluding scan) excluded — so a correct `entry_count` for
+/// it is `2`.
+#[test]
+fn an_excluded_file_does_not_move_the_entry_count() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_excluding(&conn, &tree.path, "*.nfo");
+    scan_root(&conn, &root).expect("first");
+
+    let before: i64 = conn
+        .query_row(
+            "SELECT entry_count FROM dir_state WHERE rel_path = 'Go-Toubun no Hanayome'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("reading dir_state");
+    assert_eq!(
+        before, 2,
+        "the two volume directories, and only they, sit directly under it"
+    );
+
+    std::fs::write(tree.path.join("Go-Toubun no Hanayome/late.nfo"), b"junk").expect("write");
+    scan_root(&conn, &root).expect("second");
+
+    let after: i64 = conn
+        .query_row(
+            "SELECT entry_count FROM dir_state WHERE rel_path = 'Go-Toubun no Hanayome'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("reading dir_state");
+    assert_eq!(before, after, "an excluded arrival is not a change");
+}
+
+/// A bad line reaches the report and the good lines still apply.
+#[test]
+fn a_bad_pattern_is_reported_by_the_scan() {
+    let tree = fixture_with_junk();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_excluding(&conn, &tree.path, "extras\n\\");
+
+    let report = scan_root(&conn, &root).expect("scan");
+
+    assert_eq!(report.bad_exclude_patterns.len(), 1, "{report:?}");
+    assert_eq!(
+        report.excluded_dirs,
+        vec!["Go-Toubun no Hanayome/extras".to_string()],
+        "the line before the bad one still applied"
+    );
+}
+
+/// A root with no patterns reports three empty fields rather than omitting
+/// them — C4 §3.4's rule, at the layer that produces the numbers.
+#[test]
+fn a_root_with_no_patterns_reports_the_fields_empty() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, &tree.path).expect("add");
+
+    let report = scan_root(&conn, &root).expect("scan");
+
+    assert!(report.excluded_dirs.is_empty());
+    assert_eq!(report.excluded_files, 0);
+    assert!(report.bad_exclude_patterns.is_empty());
+}
+
+/// Excluding a page image removes it from its directory's page total, not
+/// merely from `scan_entry` — `measure_dir`'s exclusion check runs before
+/// `taiyaku_read::is_page_name`, so an excluded page image never reaches the
+/// counter that would otherwise have added it to `here`.
+///
+/// **All four assertions, because any one alone passes against a defect.** A
+/// test asserting only `excluded_files` passes against an implementation that
+/// counts the excluded file but still tallies its page into `here`; a test
+/// asserting only one directory's total cannot see that the parent's
+/// recursive sum — which is just the sum of its children's totals — followed
+/// the reduction up the tree. `an_excluded_directory_is_not_walked_and_is_named`,
+/// above, is the only existing test that touches directory content, and it
+/// excludes a whole directory wholesale rather than one page inside one.
+#[test]
+fn an_excluded_page_image_is_dropped_from_its_directorys_page_total() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_excluding(&conn, &tree.path, "002.jpg");
+
+    let report = scan_root(&conn, &root).expect("scan");
+
+    assert_eq!(
+        report.excluded_files, 2,
+        "002.jpg exists in both v01 and v02, and a bare gitignore name \
+         matches at any depth"
+    );
+    assert!(
+        report.excluded_dirs.is_empty(),
+        "a file pattern names no directory"
+    );
+
+    let v01_pages: i64 = conn
+        .query_row(
+            "SELECT pages FROM scan_entry WHERE rel_path = \
+             'Go-Toubun no Hanayome/Go-Toubun no Hanayome - v01 (2019)'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("reading v01's pages");
+    assert_eq!(
+        v01_pages, 2,
+        "v01 has three page images on disk; 002.jpg is one of them"
+    );
+
+    let v02_pages: i64 = conn
+        .query_row(
+            "SELECT pages FROM scan_entry WHERE rel_path = \
+             'Go-Toubun no Hanayome/Go-Toubun no Hanayome - v02 (2019)'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("reading v02's pages");
+    assert_eq!(
+        v02_pages, 3,
+        "v02 has four page images on disk; 002.jpg is one of them"
+    );
+
+    let series_pages: i64 = conn
+        .query_row(
+            "SELECT pages FROM scan_entry WHERE rel_path = 'Go-Toubun no Hanayome'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("reading the series directory's pages");
+    assert_eq!(
+        series_pages, 5,
+        "the parent's recursive total is the sum of its children's, so both \
+         exclusions above must follow it up the tree — 7 minus the two \
+         excluded pages"
+    );
+}
+
+/// The §8.1 refusal reports what the walk excluded, rather than zeroing it
+/// along with the counts it refuses to apply.
+///
+/// `scan_root_inner` builds the refusal's `ScanReport` as a struct literal
+/// with `dirs`, `files`, `added`, `updated` and `gone` all zero — nothing was
+/// applied — but `unreadable_dirs`, `excluded_dirs` and `excluded_files` are
+/// filled in from `walk`, and `bad_exclude_patterns` from `excluder.complaints`
+/// — **not from `walk`, whatever an earlier version of this comment claimed**
+/// — because the walk that found nothing to apply still ran and still
+/// excluded whatever the pattern named on the way, and the same patterns
+/// still failed to compile whether or not the walk they hobbled ever produced
+/// anything. An unmounted share looks exactly like a root whose own pattern
+/// excludes everything beneath it — both leave the walk with only the root
+/// itself — so this pins the combination directly rather than trusting that
+/// the two code paths agree.
+///
+/// **Assertion 5 is the one that matters most.** It proves the refusal
+/// protected the library from a pattern that would otherwise have forgotten
+/// every entry under the root: `gone` stays `0`, and the rows the first,
+/// unexcluded scan wrote are still there after the second, refused one.
+///
+/// **`bad_exclude_patterns` is pinned too — Minor 4.** `excluding`'s own
+/// pattern list carries a second, unparseable line (`a{b`, the exact shape
+/// [`check_exclude_globs_names_the_line_it_refuses`] uses) alongside `*`, so
+/// this refusal's own `bad_exclude_patterns` has something in it to assert
+/// against — setting that field to `Vec::new()` in `scan_root_inner`'s struct
+/// literal left every test in this module passing before this addition.
+#[test]
+fn a_refused_scan_reports_what_it_excluded_and_applies_nothing() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, &tree.path).expect("add");
+    let first = scan_root(&conn, &root).expect("first scan");
+    assert_eq!(first.refused, None, "the library holds entries after this");
+
+    // Excludes everything beneath the root, so the walk meets only the root
+    // itself — the same shape §8.1 treats as an unmounted share — plus one
+    // line that will not compile, so `bad_exclude_patterns` has something to
+    // assert.
+    let excluding = Root {
+        exclude_globs: Some("*\na{b".to_string()),
+        ..root
+    };
+    let report = scan_root(&conn, &excluding).expect("second scan");
+
+    assert!(
+        report.refused.is_some(),
+        "the walk found nothing under the root but the root itself"
+    );
+    assert!(
+        !report.excluded_dirs.is_empty(),
+        "the walk excluded the top-level directories on the way to finding \
+         nothing: {report:?}"
+    );
+    assert!(
+        report.excluded_files > 0,
+        "the walk excluded notes.pdf on the way to finding nothing: {report:?}"
+    );
+    assert_eq!(
+        report.bad_exclude_patterns.len(),
+        1,
+        "a{{b will not compile, and only it: {report:?}"
+    );
+    assert!(
+        report.bad_exclude_patterns[0].contains("a{b"),
+        "the complaint names the line it refuses: {report:?}"
+    );
+
+    assert_eq!(report.gone, 0, "a refusal applies nothing");
+    let kept: i64 = conn
+        .query_row("SELECT count(*) FROM scan_entry", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(
+        kept, 7,
+        "the rows the first scan wrote are untouched by the refusal"
+    );
+}
+
+/// The §8.1 refusal names `exclude_globs` as a fourth possible cause,
+/// always — but only recommends removing the root when the walk that just
+/// ran did not actually exclude anything on the way to finding nothing.
+/// Important 3: an admin whose own pattern swallowed the whole root a moment
+/// ago must not be told the most destructive remedy this product has (C4
+/// §2) is the fix.
+#[test]
+fn the_refusal_offers_removal_only_when_exclusion_did_not_cause_it() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+
+    // Case A: a root that genuinely emptied out. No `exclude_globs` at all —
+    // every real file removed from disk, not matched by a pattern.
+    let empty_tree = fixture();
+    let empty_root = add_root(&conn, &empty_tree.path).expect("add");
+    scan_root(&conn, &empty_root).expect("first scan");
+    std::fs::remove_dir_all(empty_tree.path.join("Go-Toubun no Hanayome")).expect("rm");
+    std::fs::remove_dir_all(empty_tree.path.join("Kaguya-sama - Fan Translated")).expect("rm");
+    std::fs::remove_file(empty_tree.path.join("notes.pdf")).expect("rm");
+    let genuinely_empty = scan_root(&conn, &empty_root).expect("second scan");
+    let message_a = genuinely_empty
+        .refused
+        .as_deref()
+        .expect("the library still holds the first scan's rows");
+    assert!(
+        message_a.contains("exclude_globs"),
+        "exclusion is named as a possible cause even when it was not this one: {message_a}"
+    );
+    assert!(
+        message_a.contains("remove it"),
+        "nothing was excluded, so removing the root is still the offered remedy: {message_a}"
+    );
+
+    // Case B: the same empty-looking result, but caused by the root's own
+    // exclude_globs rather than anything actually vanishing — a second,
+    // independent root, so this half does not depend on case A's rows.
+    let excluded_tree = fixture();
+    let plain = add_root(&conn, &excluded_tree.path).expect("add");
+    scan_root(&conn, &plain).expect("first scan");
+    let excluding = Root {
+        exclude_globs: Some("*".to_string()),
+        ..plain
+    };
+    let excluded_report = scan_root(&conn, &excluding).expect("second scan");
+    let message_b = excluded_report
+        .refused
+        .as_deref()
+        .expect("the library still holds the first scan's rows");
+    assert!(
+        message_b.contains("exclude_globs"),
+        "exclusion is named as a possible cause: {message_b}"
+    );
+    assert!(
+        !message_b.contains("remove it"),
+        "the patterns did this, so removing the root must not be the advice offered: {message_b}"
+    );
+}
+
+/// `excluded_everything` (`scan.rs`) reads
+/// `!walk.excluded_dirs.is_empty() || walk.excluded_files > 0` — and every
+/// other test that reaches it excludes both a directory and a file in the
+/// same walk, so `||` and `&&` agree and `> 0` could read `< 0` (always
+/// false for a `usize`) without either mutant surviving a `MISSED`.
+///
+/// This root has no subdirectory at all: `excluded_dirs` is empty and
+/// `excluded_files` is the only thing that can make `excluded_everything`
+/// true. `&&` with an empty `excluded_dirs` is false, so the mutated build
+/// would fall back to "remove it" — the one answer this root's own patterns
+/// must not produce.
+#[test]
+fn a_refusal_caused_by_excluded_files_alone_still_names_exclusion() {
+    let tree = crate::tests::tempdir("scan-refusal-files-only");
+    std::fs::write(tree.path.join("readme.txt"), b"not a page").expect("write");
+    std::fs::write(tree.path.join("notes.pdf"), b"%PDF-1.7\n").expect("write");
+
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, &tree.path).expect("add");
+    let first = scan_root(&conn, &root).expect("first scan");
+    assert_eq!(first.refused, None, "the library holds entries after this");
+
+    // Excludes both plain files and nothing else — there is nothing else on
+    // this tree to exclude.
+    let excluding = Root {
+        exclude_globs: Some("*".to_string()),
+        ..root
+    };
+    let report = scan_root(&conn, &excluding).expect("second scan");
+
+    assert!(
+        report.excluded_dirs.is_empty(),
+        "this root has no subdirectory for the pattern to exclude: {report:?}"
+    );
+    assert_eq!(
+        report.excluded_files, 2,
+        "both plain files were excluded: {report:?}"
+    );
+    let message = report
+        .refused
+        .as_deref()
+        .expect("the walk found nothing under the root but the root itself");
+    assert!(
+        message.contains("exclude_globs"),
+        "exclusion is named as a possible cause: {message}"
+    );
+    assert!(
+        message.contains("0 directories and 2 files"),
+        "the message must name the split the walk actually saw: {message}"
+    );
+    assert!(
+        !message.contains("remove it"),
+        "the patterns did this, so removing the root must not be the advice offered: {message}"
+    );
+}
+
+/// The directory-only twin of
+/// [`a_refusal_caused_by_excluded_files_alone_still_names_exclusion`]:
+/// `excluded_dirs` is the only thing that can make `excluded_everything`
+/// true here, so `> 0` reading `< 0` (always false for `usize`) cannot hide
+/// behind `excluded_files` the way it does in every other test that reaches
+/// this branch — including
+/// `the_refusal_offers_removal_only_when_exclusion_did_not_cause_it`'s case
+/// B, whose `*` pattern excludes [`fixture`]'s `notes.pdf` too and so is not
+/// a directories-only case.
+#[test]
+fn a_refusal_caused_by_excluded_directories_alone_still_names_exclusion() {
+    let tree = crate::tests::tempdir("scan-refusal-dirs-only");
+    write_pages(&tree.path.join("Series One"), 2);
+    write_pages(&tree.path.join("Series Two"), 3);
+
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, &tree.path).expect("add");
+    let first = scan_root(&conn, &root).expect("first scan");
+    assert_eq!(first.refused, None, "the library holds entries after this");
+
+    // Excludes both top-level directories and nothing else — there is no
+    // plain file on this tree for the pattern to exclude.
+    let excluding = Root {
+        exclude_globs: Some("*".to_string()),
+        ..root
+    };
+    let report = scan_root(&conn, &excluding).expect("second scan");
+
+    assert_eq!(
+        report.excluded_dirs.len(),
+        2,
+        "both top-level directories were excluded: {report:?}"
+    );
+    assert_eq!(
+        report.excluded_files, 0,
+        "this root has no plain file for the pattern to exclude: {report:?}"
+    );
+    let message = report
+        .refused
+        .as_deref()
+        .expect("the walk found nothing under the root but the root itself");
+    assert!(
+        message.contains("exclude_globs"),
+        "exclusion is named as a possible cause: {message}"
+    );
+    assert!(
+        message.contains("2 directories and 0 files"),
+        "the message must name the split the walk actually saw: {message}"
+    );
+    assert!(
+        !message.contains("remove it"),
+        "the patterns did this, so removing the root must not be the advice offered: {message}"
+    );
+}
+
+/// A row a new pattern now covers is counted apart from a file that
+/// genuinely disappeared.
+///
+/// **One test, both assertions, because the pairing is the claim.** A test
+/// asserting only `forgotten_by_exclusion` passes against an implementation
+/// that counts every stale row there; a test asserting only `gone` passes
+/// against one that counts every stale row there, which is what this
+/// codebase did before this field existed. Neither number means anything
+/// without the other.
+/// **Built on [`fixture`] with its own junk, rather than on
+/// [`fixture_with_junk`], and excludes `extras/` rather than `extras`.**
+/// Neither substitution is cosmetic:
+///
+/// - `fixture_with_junk`'s `extras` holds two *page images*
+///   (`write_pages`), and this module's own walk never gives a page image a
+///   `scan_entry` row of its own — `measure_dir` folds it into its parent
+///   directory's page total (see
+///   `the_page_images_inside_a_directory_member_are_counted_and_not_recorded`).
+///   `extras` would therefore hold exactly one stale row, not three, and
+///   this test would assert a false count.
+/// - a bare `extras` pattern is not `is_only_dir`, so `Excluder`'s `matched`
+///   call — the single-path check both `excludes` and the first step of
+///   `excludes_with_parents` make — passes regardless of the `is_dir` it is
+///   given (`ignore` 0.4.33's own `matched_stripped`: `!glob.is_only_dir() ||
+///   is_dir`). A test built on it cannot tell a correct `Held.is_dir` from
+///   Task 2's Step 4 mutation, which hard-codes it `false` — the very thing
+///   Step 9's table says this test catches. `extras/` is `is_only_dir`, so
+///   the directory row's own match — and therefore its landing in
+///   `forgotten_by_exclusion` rather than `gone` — turns on `is_dir` being
+///   right.
+///
+/// Two ordinary files stand in for the pages for the same reason: a file
+/// under `extras` must hold a `scan_entry` row that cannot match `extras/`
+/// by its own name (a directory-only pattern never matches a file, whatever
+/// its name), so the only way either row reaches `forgotten_by_exclusion` is
+/// through `excludes_with_parents`'s ancestor walk — which is what turns
+/// `excludes_with_parents` back into plain `excludes` (Step 9's third row)
+/// into a real, observable difference here.
+///
+/// **A fourth file — plain `extras`, at the root rather than under
+/// `Go-Toubun no Hanayome` — pins the mutation the three rows above cannot:
+/// `held_for` handing back `is_dir: true` for every row, not just `false`
+/// for every row.** `matched_path_or_any_parents` forces `is_dir = true` for
+/// every *ancestor* it climbs on the way to a stale descendant, so the
+/// directory row and the two files under it match the same way whatever
+/// `is_dir` their own `Held` carries — none of the three can tell a forced
+/// `true` from a real one. A row with no parent to fall back on can: this
+/// file's own name equals `extras/`'s stem, so it is a real test of its own
+/// `is_dir`, not an ancestor's. Recorded by the first, patternless scan,
+/// then deleted from disk before the second, it is stale for an ordinary
+/// reason and never a directory — real `is_dir == false` means the dir-only
+/// pattern does not match it, so it belongs in `gone`. Force `is_dir` to
+/// `true` and the same pattern claims it, moving it into
+/// `forgotten_by_exclusion` and mis-splitting the totals below.
+///
+/// **A fifth file — a second plain `extras`, under `Kaguya-sama - Fan
+/// Translated` rather than at the root — pins the one mutation the fourth
+/// file cannot: `==` flipped to `!=`, inverting `is_dir` for every row
+/// rather than replacing it with one constant.** With only the fourth file
+/// present, inversion moves exactly one row out of each bucket: the
+/// directory (real `true` → `false`) stops matching its own name and falls
+/// from `forgotten_by_exclusion` into `gone`, while the lone root `extras`
+/// file (real `false` → `true`) starts matching and moves the other way —
+/// one row leaves each bucket and one enters each, so both totals hold
+/// steady and a test built on four files alone passes against the
+/// inversion. A second file whose own name is also `extras`, elsewhere on
+/// the tree, breaks that balance: it inverts into `forgotten_by_exclusion`
+/// exactly as the root one does, so two rows enter that bucket for the one
+/// that leaves — `forgotten_by_exclusion` and `gone` both move under `==`
+/// → `!=`, not only under a constant `true` or `false`. Recorded by the
+/// first, patternless scan and deleted from disk before the second, the
+/// same as the fourth file.
+#[test]
+fn an_excluded_row_is_counted_apart_from_one_that_vanished() {
+    let tree = fixture();
+    std::fs::create_dir_all(tree.path.join("Go-Toubun no Hanayome/extras")).expect("mkdir");
+    std::fs::write(tree.path.join("Go-Toubun no Hanayome/extras/a.txt"), b"a").expect("write");
+    std::fs::write(tree.path.join("Go-Toubun no Hanayome/extras/b.txt"), b"b").expect("write");
+    // A *file* named `extras`, at the root — a different parent directory
+    // than the `extras` above, so the two never collide on disk. `extras/`
+    // is dir-only and this is not a directory, so on its real `is_dir` it
+    // must never be caught by that pattern.
+    std::fs::write(tree.path.join("extras"), b"not a directory").expect("write");
+    // A second plain file also named `extras`, under yet another parent —
+    // see the doc comment above for why one alone lets `==` → `!=` balance
+    // out.
+    std::fs::write(
+        tree.path.join("Kaguya-sama - Fan Translated/extras"),
+        b"also not a directory",
+    )
+    .expect("write");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+
+    // First scan: no patterns, so the extras directory and its two files,
+    // notes.pdf, and the two plain files also named extras, are all
+    // recorded.
+    let plain = add_root(&conn, &tree.path).expect("add");
+    let first = scan_root(&conn, &plain).expect("first");
+    assert_eq!(first.forgotten_by_exclusion, 0, "nothing was excluded yet");
+
+    // Now exclude `extras/`, and delete `notes.pdf` and both plain `extras`
+    // files from disk in the same pass. Three rows go — the directory and
+    // its two files — for one reason, and three rows go for the other.
+    std::fs::remove_file(tree.path.join("notes.pdf")).expect("rm");
+    std::fs::remove_file(tree.path.join("extras")).expect("rm");
+    std::fs::remove_file(tree.path.join("Kaguya-sama - Fan Translated/extras")).expect("rm");
+    let root = Root {
+        exclude_globs: Some("extras/".to_string()),
+        ..plain
+    };
+    let second = scan_root(&conn, &root).expect("second");
+
+    assert_eq!(
+        second.gone, 3,
+        "notes.pdf and both plain files named extras disappeared, and only they"
+    );
+    assert_eq!(
+        second.forgotten_by_exclusion, 3,
+        "the extras directory and its two files, forgotten for a different reason"
+    );
+}
+
+/// A directory-only pattern must not swallow a plain file of the same name
+/// that is still on disk *while the excluding scan itself runs* — Important
+/// 2.
+///
+/// **The gap this closes is at `measure_dir`'s own `excluder.excludes(&child_rel,
+/// is_dir)` call, not at `forget_unseen`'s `excludes_with_parents`.**
+/// [`an_excluded_row_is_counted_apart_from_one_that_vanished`] above also
+/// stages same-named files, but deletes every one of them from disk *before*
+/// its excluding scan runs — so that test's own walk never meets a live file
+/// this pattern could wrongly swallow, and only `forget_unseen`'s bookkeeping
+/// call is exercised. Forcing `measure_dir`'s call to `true` therefore passes
+/// every test in this module unchanged; forcing it to `false` is already
+/// caught, by that same test's directory assertion. This test's own file
+/// sits on disk during the one scan that matters, so `is_dir` at the point
+/// the walk actually asks the question has to be right: forced `true`, a
+/// directory-only pattern excludes the file exactly as wrongly as it excludes
+/// the directory, and the file's own row would never reach `scan_entry` at
+/// all.
+#[test]
+fn a_directory_only_pattern_does_not_swallow_a_present_file_of_the_same_name() {
+    let tree = fixture();
+    std::fs::create_dir_all(tree.path.join("Go-Toubun no Hanayome/extras")).expect("mkdir");
+    std::fs::write(tree.path.join("Go-Toubun no Hanayome/extras/a.txt"), b"a").expect("write");
+    // A *file* named `extras`, elsewhere on the tree — on disk for the one
+    // scan below, unlike the same-named files in
+    // `an_excluded_row_is_counted_apart_from_one_that_vanished`, which are
+    // deleted before their own excluding scan runs.
+    std::fs::write(
+        tree.path.join("Kaguya-sama - Fan Translated/extras"),
+        b"not a directory",
+    )
+    .expect("write");
+
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_excluding(&conn, &tree.path, "extras/");
+
+    let report = scan_root(&conn, &root).expect("scan");
+
+    assert_eq!(
+        report.excluded_dirs,
+        vec!["Go-Toubun no Hanayome/extras".to_string()],
+        "the directory-only pattern excludes the directory: {report:?}"
+    );
+    assert_eq!(
+        report.excluded_files, 0,
+        "a directory-only pattern must never exclude a plain file of the same name: {report:?}"
+    );
+    let file_row: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM scan_entry WHERE rel_path = \
+             'Kaguya-sama - Fan Translated/extras'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("counting");
+    assert_eq!(
+        file_row, 1,
+        "the file must become a scan_entry row, not be silently excluded: {report:?}"
     );
 }

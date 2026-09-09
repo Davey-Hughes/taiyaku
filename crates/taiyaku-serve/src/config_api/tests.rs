@@ -1588,8 +1588,8 @@ async fn the_root_list_carries_the_interval_and_the_last_scan() {
 /// send it back, which made that box write-only — it started empty whatever
 /// the row held, and the screen's own three review passes went into deciding
 /// what an emptied one could safely mean without ever being able to see the
-/// stored value. Applying the pattern to a walk is the rest of O92 and is
-/// still not done.
+/// stored value. Applying the pattern to a walk was the rest of O92 and
+/// closed on 2026-09-09.
 ///
 /// **The unpatched root is checked too, and for `null` rather than for
 /// absence.** A `root_json` that omits the key entirely reads as
@@ -2624,6 +2624,20 @@ async fn the_scan_report_names_what_it_could_not_read() {
     // Whole, per C4 §3 — every field present, the empty collections
     // included, not only the one this test is actually about.
     assert!(report["scan"]["unreadable_dirs"].is_array(), "{report}");
+    // O92: the four fields the exclusion half added, present even though
+    // this fixture's root excludes nothing. C4 §3.4 — "nothing excluded this
+    // time" and "this field does not exist in this version" have to look
+    // different.
+    assert!(report["scan"]["excluded_dirs"].is_array(), "{report}");
+    assert!(
+        report["scan"]["bad_exclude_patterns"].is_array(),
+        "{report}"
+    );
+    assert!(report["scan"]["excluded_files"].is_number(), "{report}");
+    assert!(
+        report["scan"]["forgotten_by_exclusion"].is_number(),
+        "{report}"
+    );
     assert!(report["scan"]["refused"].is_null(), "{report}");
     assert!(report["derive"]["raised"].is_number(), "{report}");
     assert!(report["derive"]["unfoldable"].is_array(), "{report}");
@@ -2642,6 +2656,169 @@ async fn the_scan_report_names_what_it_could_not_read() {
     assert!(
         !unwritable.is_empty(),
         "a document the derive pass could not write must be named, not silently dropped: {report}"
+    );
+}
+
+/// A library holding one root that has already been scanned once with no
+/// `exclude_globs`, with a real pattern set on it afterward — so the *next*
+/// scan, the one [`the_scan_reports_each_exclusion_field_with_its_own_value`]
+/// actually drives through the HTTP route, is the one that excludes
+/// something.
+///
+/// **Built so no two of the four exclusion fields land on the same value —
+/// Important 1.** [`scan_report_json`](crate::config_api::scan_report_json)
+/// destructures `ScanReport` with no `..`, which closes a *missing* key, but
+/// nothing before this fixture ever asserted an exact value for any of the
+/// four exclusion fields through the HTTP route — only `is_array()` /
+/// `is_number()` — so a transposition between two same-typed fields
+/// (`excluded_files` and `forgotten_by_exclusion`, the reviewer's own
+/// example) shipped with every test in this crate green. A fixture where two
+/// of the four happened to share a value could not catch that; this one is
+/// built so they cannot:
+///
+/// - `Junk/` and the file inside it are recorded by the *first*, unexcluded
+///   scan, then covered by the `Junk/` line once `exclude_globs` is set — a
+///   directory-only pattern excludes the directory itself, not files by
+///   name, so both rows land in `forgotten_by_exclusion`, never
+///   `excluded_files`.
+/// - `a.nfo`..`d.nfo` are written only *after* the first scan, so the
+///   second, excluding scan meets all four for the first time and skips
+///   them at the walk itself — `excluded_files`, not
+///   `forgotten_by_exclusion`, since nothing was ever held for them to
+///   forget.
+/// - `a{b` is a line `Excluder::build` cannot compile — the same shape
+///   `taiyaku_library::scan::tests::check_exclude_globs_names_the_line_it_refuses`
+///   uses — so `bad_exclude_patterns` holds exactly one complaint naming it.
+fn state_with_a_root_scanned_once_then_given_real_exclusions(
+    dir: &str,
+) -> (std::sync::Arc<crate::ServeState>, test_support::Fixture) {
+    let fixture = test_support::Fixture::new(dir);
+    let root_dir = fixture.path().join("root");
+    write_page_dir(&root_dir.join("Series").join("Series - v01"), 2);
+    std::fs::create_dir_all(root_dir.join("Junk")).expect("mkdir");
+    std::fs::write(root_dir.join("Junk").join("keep.txt"), b"keep").expect("write");
+
+    let library = test_support::library();
+    let root_id = {
+        let conn = library.conn();
+        let root = taiyaku_library::scan::add_root(&conn, &root_dir).expect("adds a root");
+        taiyaku_library::scan::scan_root(&conn, &root).expect("the first, unexcluded scan");
+        root.id
+    };
+
+    // Written only now — after the first scan — so the excluding scan below
+    // meets these for the first time rather than forgetting previously-held
+    // rows for them. See this fixture's own doc comment.
+    std::fs::write(root_dir.join("a.nfo"), b"a").expect("write");
+    std::fs::write(root_dir.join("b.nfo"), b"b").expect("write");
+    std::fs::write(root_dir.join("c.nfo"), b"c").expect("write");
+    std::fs::write(root_dir.join("d.nfo"), b"d").expect("write");
+    {
+        let conn = library.conn();
+        conn.execute(
+            "UPDATE root SET exclude_globs = ?2 WHERE id = ?1",
+            rusqlite::params![root_id, "Junk/\n*.nfo\na{b"],
+        )
+        .expect("setting exclude_globs");
+    }
+
+    let state = std::sync::Arc::new(crate::ServeState {
+        library,
+        works: Vec::new(),
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: fixture.path().join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
+        library_job: Default::default(),
+    });
+    (state, fixture)
+}
+
+/// F1 — Important: the four exclusion fields on the wire, driven through the
+/// real `start_scan`/`scan_status` route pair rather than called directly,
+/// and pinned to distinct values so a transposition between any two of them
+/// fails this test. See
+/// [`state_with_a_root_scanned_once_then_given_real_exclusions`]'s own doc
+/// comment for exactly how each of the four gets a value nothing else in
+/// this fixture shares.
+#[tokio::test]
+async fn the_scan_reports_each_exclusion_field_with_its_own_value() {
+    let (state, _fixture) = state_with_a_root_scanned_once_then_given_real_exclusions(
+        "taiyaku-test-scan-exclusion-fields-distinct",
+    );
+    let root_id = only_root_id(&state);
+
+    let started = crate::config_api::start_scan(
+        axum::extract::State(std::sync::Arc::clone(&state)),
+        axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
+        axum::extract::Path(root_id),
+        axum::extract::Query(crate::config_api::ScanQuery::default()),
+    )
+    .await;
+    assert_eq!(started.status(), StatusCode::ACCEPTED);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let json = loop {
+        let response = crate::config_api::scan_status(
+            axum::extract::State(std::sync::Arc::clone(&state)),
+            axum::extract::Extension(an_administrator()),
+            test_support::from_a_browser(),
+            axum::extract::Path(root_id),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = test_support::body_string(response).await;
+        let json: serde_json::Value = serde_json::from_str(&body).expect("a JSON body");
+        if json["running"] == false {
+            break json;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the scan did not finish within 5s: {json}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+
+    let scan = &json["report"]["scan"];
+
+    assert_eq!(
+        scan["excluded_dirs"],
+        serde_json::json!(["Junk"]),
+        "the directory-only pattern excludes Junk, and only Junk: {scan}"
+    );
+    let bad_patterns = scan["bad_exclude_patterns"]
+        .as_array()
+        .expect("bad_exclude_patterns must be an array");
+    assert_eq!(
+        bad_patterns.len(),
+        1,
+        "exactly one line of exclude_globs will not compile: {scan}"
+    );
+    assert!(
+        bad_patterns[0].as_str().is_some_and(|s| s.contains("a{b")),
+        "the complaint names the line it refuses: {scan}"
+    );
+    assert_eq!(
+        scan["excluded_files"], 4,
+        "a.nfo through d.nfo, met for the first time by the excluding scan: {scan}"
+    );
+    assert_eq!(
+        scan["forgotten_by_exclusion"], 2,
+        "Junk and keep.txt, held from the first scan and now covered by Junk/: {scan}"
+    );
+
+    // The point of the fixture: no two of the four hold the same value, so a
+    // transposition between any pair of them is something this test can
+    // actually see.
+    assert_ne!(
+        scan["excluded_files"], scan["forgotten_by_exclusion"],
+        "the two number fields must differ, or a swap between them is invisible: {scan}"
+    );
+    assert_ne!(
+        scan["excluded_dirs"], scan["bad_exclude_patterns"],
+        "the two array fields must differ, or a swap between them is invisible: {scan}"
     );
 }
 
@@ -3476,5 +3653,77 @@ async fn previewing_without_a_rules_array_is_refused_naming_the_preview() {
     assert!(
         text.contains("preview body"),
         "the refusal must name the route the caller actually reached: {text}"
+    );
+}
+
+/// An `exclude_globs` line that will not compile is refused at 400 and the
+/// column is left alone, so a typo cannot be stored for a scan to meet
+/// later.
+///
+/// **Both halves.** A test asserting only the status passes against a
+/// handler that answers 400 after writing; a test asserting only the column
+/// passes against one that rejects every patch.
+#[tokio::test]
+async fn a_roots_patch_refuses_an_exclude_globs_line_that_will_not_compile() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let root_id = only_root_id(&state);
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/roots/{root_id}"),
+        &one_field_patch("exclude_globs", serde_json::json!("extras")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // `a{b` is one of the two shapes `ignore` 0.4.33 actually rejects,
+    // measured 2026-09-09. `a[` and `[[:bogus:]]` compile, so neither would
+    // exercise this route.
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/roots/{root_id}"),
+        &one_field_patch("exclude_globs", serde_json::json!("extras\na{b")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let text = test_support::body_string(response).await;
+    assert!(text.contains("a{b"), "the refusal names the line: {text}");
+
+    assert_eq!(
+        root_text_column(&state, root_id, "exclude_globs").as_deref(),
+        Some("extras"),
+        "the stored pattern survived the refused patch"
+    );
+}
+
+/// Clearing the column is not a pattern and must not be validated as one.
+#[tokio::test]
+async fn a_roots_patch_may_still_clear_exclude_globs() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let root_id = only_root_id(&state);
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/roots/{root_id}"),
+        &one_field_patch("exclude_globs", serde_json::json!("extras")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/roots/{root_id}"),
+        &one_field_patch("exclude_globs", serde_json::Value::Null),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        root_text_column(&state, root_id, "exclude_globs"),
+        None,
+        "an empty column is not a pattern and must not be refused as one"
     );
 }

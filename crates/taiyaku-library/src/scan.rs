@@ -55,11 +55,10 @@ pub struct Root {
     pub default_language: Option<String>,
     /// Patterns a scan is meant to skip, as one stored string.
     ///
-    /// **Read here and applied nowhere.** [`scan_root`] does not consult it,
-    /// so nothing is excluded from a walk — the open half of O92. It is
-    /// carried on `Root` anyway because a column an admin can set and no
-    /// client can read back is a box that starts empty whatever the row
-    /// holds, which is the half that was a defect rather than a decision.
+    /// Compiled once per scan into an [`Excluder`] and applied by
+    /// `scan_root_inner`'s walk — O92. A pattern this cannot compile is
+    /// dropped and named in [`ScanReport::bad_exclude_patterns`] rather than
+    /// failing the scan; see [`Excluder::build`].
     pub exclude_globs: Option<String>,
     pub scan_interval_secs: Option<i64>,
     /// Whether this root keeps `<root>/.taiyaku/<content_key>.library.json`.
@@ -684,6 +683,130 @@ pub fn remove_root(
     Ok((removal, derived))
 }
 
+// --- exclusion -------------------------------------------------------------
+
+/// The patterns one root excludes from its own walk, compiled once per scan.
+///
+/// **gitignore's language, from `ignore`, not a glob matcher of this
+/// module's own.** `root.exclude_globs` holds one pattern per line, and a
+/// line means exactly what the same line in a `.gitignore` file means:
+/// negation with `!`, anchoring with a leading `/`, a directory only with a
+/// trailing `/`, `**` across separators, `#` comments and blank lines
+/// ignored. None of that is written here, which is the point — `rules.rs`
+/// refuses "a second, drifting reimplementation" for the same reason.
+///
+/// **Building never fails.** A line that will not compile is dropped and
+/// named in [`Self::complaints`], which [`ScanReport::bad_exclude_patterns`]
+/// carries out to whoever asked for the scan. That is `rules.rs`'s rule
+/// again: a malformed pattern disables its own rule and nothing else,
+/// because a scan of a real library must not die over one bad line. The
+/// column predates any validation — migration 1 — so a row can already hold
+/// anything, and treating a build failure as impossible would make it a
+/// crash rather than a complaint.
+///
+/// **Was `#[cfg_attr(not(test), expect(dead_code, …))]` on the type and on
+/// each of its methods, the same choice `cbz.rs` made for `Plan::zip64` ahead
+/// of its own caller landing** — three separate attributes rather than one on
+/// the module, because each came off on its own caller's schedule rather than
+/// all at once. Task 1 built only this matcher; `scan_root_inner` calling
+/// `Excluder::build` and `.excludes` took the attribute off those two and the
+/// struct itself, and `forget_unseen` calling `excludes_with_parents` (O92)
+/// took it off the last method. Nothing here is dead code any more.
+struct Excluder {
+    gitignore: ignore::gitignore::Gitignore,
+    /// One message per line that would not compile, naming the line.
+    complaints: Vec<String>,
+}
+
+impl Excluder {
+    /// Compile `patterns`, one per line. `None` and `""` both mean "exclude
+    /// nothing", which is the path every scan in this repository took before
+    /// this existed.
+    fn build(patterns: Option<&str>) -> Self {
+        let mut builder = ignore::gitignore::GitignoreBuilder::new("");
+        let mut complaints = Vec::new();
+        for line in patterns.unwrap_or_default().lines() {
+            if let Err(why) = builder.add_line(None, line) {
+                complaints.push(format!("`{}`: {why}", line.trim()));
+            }
+        }
+        // `build` cannot fail once `add_line` has accepted every line it
+        // kept — measured against `ignore` 0.4.33 on 2026-09-09, a builder
+        // holding only a rejected line still builds, empty. Handled rather
+        // than unwrapped anyway: this module's rule is that a pattern
+        // problem is a complaint, never a panic.
+        let gitignore = builder.build().unwrap_or_else(|why| {
+            complaints.push(format!("compiling this root's exclude patterns: {why}"));
+            ignore::gitignore::Gitignore::empty()
+        });
+        Self {
+            gitignore,
+            complaints,
+        }
+    }
+
+    /// Whether `rel_path` itself is excluded. The walk's question, asked
+    /// about a child before it is counted or descended into.
+    fn excludes(&self, rel_path: &str, is_dir: bool) -> bool {
+        matches!(
+            self.gitignore.matched(rel_path, is_dir),
+            ignore::Match::Ignore(_)
+        )
+    }
+
+    /// Whether `rel_path` or any directory above it is excluded —
+    /// [`forget_unseen`]'s question, since a row under a directory the walk
+    /// never descended into is stale for a reason the row's own path does
+    /// not state.
+    ///
+    /// **Fractionally more permissive than git**, and it is worth naming:
+    /// this tests the path itself before its parents, so a whitelisted child
+    /// of an excluded parent (`!a/extras/keep` under an excluded `extras`)
+    /// answers false here while the walk, correctly, never reaches it. It
+    /// decides only which of two counters a number lands in, never whether a
+    /// row is deleted.
+    fn excludes_with_parents(&self, rel_path: &str, is_dir: bool) -> bool {
+        matches!(
+            self.gitignore.matched_path_or_any_parents(rel_path, is_dir),
+            ignore::Match::Ignore(_)
+        )
+    }
+}
+
+/// Whether every line of `patterns` is a pattern this library can compile.
+///
+/// **`taiyaku-serve`'s `PATCH /api/library/roots/{id}` refuses on this**, so
+/// an admin hears about a typo at save rather than after a scan. A pattern
+/// already stored that will not build is a different matter and is not this
+/// function's business — see [`Excluder::build`], which drops it and
+/// complains.
+///
+/// **What this actually catches is narrow, and callers must not imply
+/// otherwise.** Measured against `ignore` 0.4.33 on 2026-09-09, `add_line`
+/// rejects a dangling `\` and an unclosed `{`. It accepts `a[`, `[a-`,
+/// `[[:bogus:]]`, `[]`, `***` and `a**b`. This is a guard against two
+/// specific typos, not a check that a pattern means what its author meant.
+///
+/// # Errors
+///
+/// Returns a message naming the offending line, ready to be handed to a
+/// person, if any line will not compile.
+pub fn check_exclude_globs(patterns: &str) -> Result<(), String> {
+    let mut builder = ignore::gitignore::GitignoreBuilder::new("");
+    for line in patterns.lines() {
+        builder.add_line(None, line).map_err(|why| {
+            format!(
+                "the root's `exclude_globs` line `{}` is not a usable pattern: {why}",
+                line.trim()
+            )
+        })?;
+    }
+    builder
+        .build()
+        .map(|_| ())
+        .map_err(|why| format!("the root's `exclude_globs` will not compile: {why}"))
+}
+
 // --- the scan --------------------------------------------------------------
 
 /// What one [`scan_root`] call found and did.
@@ -709,6 +832,48 @@ pub struct ScanReport {
     /// root's own directory refusing to list, which has nothing above it to
     /// skip to.
     pub unreadable_dirs: Vec<String>,
+    /// Directories a pattern in `root.exclude_globs` named, which this walk
+    /// therefore never descended into — no `read_dir`, no `stat`, no
+    /// `sniff`, no `member_pages` for anything beneath them.
+    ///
+    /// **C4 §3's fourth confession, finally a field.** That section requires
+    /// a scan to report "directories skipped by `exclude_globs`" alongside
+    /// the containers it could not open and the formats it cannot read; the
+    /// build design asserted every item of that discipline "is already a
+    /// field", which was true of the other three and false of this one until
+    /// now (O92).
+    pub excluded_dirs: Vec<String>,
+    /// Files a pattern named, counted rather than listed.
+    ///
+    /// **A count where [`Self::excluded_dirs`] is a list, deliberately.** A
+    /// library excludes a handful of subtrees and may exclude thousands of
+    /// `*.nfo` files; C4 §3.4 requires this report to render whole, and a
+    /// list of thousands cannot. Page images are included: a pattern that
+    /// excludes one reduces its directory's page total, which is what
+    /// excluding it means.
+    pub excluded_files: usize,
+    /// Lines of `root.exclude_globs` that would not compile, each naming
+    /// itself.
+    ///
+    /// A malformed pattern disables its own line and nothing else —
+    /// `rules.rs`'s rule, because a scan of a real library must not die over
+    /// one bad line, and migration 1's column predates any validation.
+    pub bad_exclude_patterns: Vec<String>,
+    /// Rows deleted from `scan_entry` because a pattern now covers them,
+    /// rather than because the file disappeared.
+    ///
+    /// **Split out of [`Self::gone`] rather than folded into it.** `gone`
+    /// means the file is no longer on disk. "You excluded it" and "it
+    /// disappeared" are different facts, and not conflating those is the
+    /// whole of this report's discipline — an admin who adds a pattern and
+    /// watches `gone` jump has been told the wrong thing.
+    ///
+    /// Nothing about a work, an edition, a member, a reading position or a
+    /// note is destroyed by this: nothing references `scan_entry`
+    /// (`schema/004_auth.sql`), and `derive`'s only `DELETE FROM work` is a
+    /// fold, which needs the material to have a home elsewhere. The works an
+    /// exclusion covers are left standing and stale. See O92's entry.
+    pub forgotten_by_exclusion: usize,
 }
 
 impl ScanReport {
@@ -722,6 +887,10 @@ impl ScanReport {
             gone: 0,
             refused: None,
             unreadable_dirs: Vec::new(),
+            excluded_dirs: Vec::new(),
+            excluded_files: 0,
+            bad_exclude_patterns: Vec::new(),
+            forgotten_by_exclusion: 0,
         }
     }
 }
@@ -836,7 +1005,8 @@ pub fn mark_derive_failed(conn: &Connection, id: i64) -> Result<(), String> {
 /// outcome on `root.last_scan_at`/`last_scan_status` regardless of which of
 /// the three ways out below this function takes.
 fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
-    let (measured, unreadable_dirs) = measure(&root.path, 0)?;
+    let excluder = Excluder::build(root.exclude_globs.as_deref());
+    let (measured, walk) = measure(&root.path, 0, &excluder)?;
     let seen = flatten(&measured);
 
     // §8.1, before a single row is written.
@@ -856,6 +1026,41 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
             )
             .map_err(|e| format!("counting what this root already held: {e}"))?;
         if held > 1 {
+            // A fourth cause, alongside the three below: this root's own
+            // `exclude_globs` can cover everything beneath it just as
+            // completely as an unmounted share can, and it is the one cause
+            // here an admin can have created themselves, seconds earlier —
+            // `Excluder::build("*\n!Naruto/**").excludes("Naruto", true)` is
+            // `true`, because git cannot re-include a child of an excluded
+            // parent, so the natural first attempt at a whitelist produces
+            // exactly this shape. Whether it did is decided from the walk
+            // that already ran, not guessed: `excluded_everything` is true
+            // only when this walk actually excluded a directory or a file on
+            // the way to finding nothing.
+            let excluded_everything = !walk.excluded_dirs.is_empty() || walk.excluded_files > 0;
+            // "Remove it" is C4 §2's most destructive action, and it must
+            // never be the advice handed to someone whose own patterns did
+            // this a moment ago — whole-branch review, Important 3. When the
+            // walk excluded nothing, exclusion cannot be the cause and the
+            // old remedy stands unchanged.
+            let remedy = if excluded_everything {
+                format!(
+                    "This scan's own exclude_globs excluded {} director{} and {} \
+                     file{} beneath this root, which is enough on its own to \
+                     produce exactly this — loosen or clear the patterns before \
+                     assuming anything is actually gone.",
+                    walk.excluded_dirs.len(),
+                    if walk.excluded_dirs.len() == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    },
+                    walk.excluded_files,
+                    if walk.excluded_files == 1 { "" } else { "s" },
+                )
+            } else {
+                "If the root has genuinely become empty, remove it.".to_string()
+            };
             return Ok(ScanReport {
                 root: root.path.clone(),
                 dirs: 0,
@@ -863,14 +1068,18 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
                 added: 0,
                 updated: 0,
                 gone: 0,
-                unreadable_dirs,
+                unreadable_dirs: walk.unreadable,
+                excluded_dirs: walk.excluded_dirs,
+                excluded_files: walk.excluded_files,
+                bad_exclude_patterns: excluder.complaints,
+                forgotten_by_exclusion: 0,
                 refused: Some(format!(
                     "{} scanned empty while the library holds {held} entries for it — \
                      refusing to apply. An unmounted share, a bind mount that was not \
-                     ready, or a renamed directory all look exactly like this, and \
+                     ready, a renamed directory, or this root's own exclude_globs \
+                     excluding everything beneath it all look exactly like this, and \
                      applying it would drop every work under this root along with the \
-                     reading positions and notes attached to them. If the root has \
-                     genuinely become empty, remove it.",
+                     reading positions and notes attached to them. {remedy}",
                     root.path.display()
                 )),
             });
@@ -897,7 +1106,9 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
         .unchecked_transaction()
         .map_err(|e| format!("starting the scan transaction: {e}"))?;
     let mut report = ScanReport::for_root(&root.path);
-    report.unreadable_dirs = unreadable_dirs;
+    report.unreadable_dirs = walk.unreadable;
+    report.excluded_dirs = walk.excluded_dirs;
+    report.excluded_files = walk.excluded_files;
     for entry in &seen {
         record(
             &tx,
@@ -908,7 +1119,15 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
             &mut report,
         )?;
     }
-    report.gone = forget_unseen(&tx, root.id, &seen, &held)?;
+    let (gone, forgotten_by_exclusion) = forget_unseen(&tx, root.id, &seen, &held, &excluder)?;
+    report.gone = gone;
+    report.forgotten_by_exclusion = forgotten_by_exclusion;
+    // Last use of `excluder` — moved out here rather than beside the other
+    // `walk`-derived fields above, because `forget_unseen` still needs a
+    // whole-struct `&excluder` to ask `excludes_with_parents`, and moving
+    // `complaints` out of it any earlier leaves `excluder` partially moved
+    // and that borrow will not compile.
+    report.bad_exclude_patterns = excluder.complaints;
     tx.commit()
         .map_err(|e| format!("committing the scan of {}: {e}", root.path.display()))?;
     Ok(report)
@@ -952,9 +1171,9 @@ impl Kind {
 /// `record` takes once it has. A single function computing it, rather than
 /// the same comparison written out twice, is what keeps those two decisions
 /// from drifting apart.
-fn unchanged(held: Option<(i64, i64)>, seen: &Seen) -> bool {
+fn unchanged(held: Option<Held>, seen: &Seen) -> bool {
     let size = i64::try_from(seen.size).unwrap_or(i64::MAX);
-    held == Some((size, seen.mtime))
+    held.is_some_and(|held| held.size == size && held.mtime == seen.mtime)
 }
 
 /// Write one entry, using facts `scan_root` already resolved rather than
@@ -983,7 +1202,7 @@ fn record(
     conn: &Connection,
     root: &Root,
     seen: &Seen,
-    held: Option<(i64, i64)>,
+    held: Option<Held>,
     resolved: Option<&Resolved>,
     report: &mut ScanReport,
 ) -> Result<(), String> {
@@ -1149,7 +1368,33 @@ struct Resolved {
     pages: Option<u32>,
 }
 
-/// The `(size, mtime)` this root already holds, by `rel_path`.
+/// One row `scan_entry` already holds for this root, as much of it as the
+/// walk needs: `(size, mtime)` to decide whether anything must be reopened,
+/// and `is_dir` so [`forget_unseen`] can ask [`Excluder`] about a stale path
+/// without a second query.
+///
+/// A named type rather than the `(i64, i64)` tuple this was — the shape
+/// [`Seen`], [`Resolved`] and [`Measured`] already use in this module.
+///
+/// **Used to derive `PartialEq, Eq` it never compared with, only to keep
+/// `is_dir` alive under dead-code analysis before this had a reader.**
+/// rustc counts a derived `eq` body as a read while explicitly not counting a
+/// derived `Clone` ("`Held` has a derived impl for the trait `Clone`, but
+/// this is intentionally ignored during dead code analysis") — measured
+/// 2026-09-09 — so `PartialEq, Eq` stood in for the reader `forget_unseen`
+/// did not have yet. `forget_unseen` now reads `is_dir` directly, to ask
+/// [`Excluder::excludes_with_parents`] whether a stale row was forgotten
+/// because a pattern covers it (O92), so the field has a real reader and the
+/// borrowed derives are gone with it — `Copy` remains because `held_for`'s
+/// map is read by value throughout this module.
+#[derive(Clone, Copy)]
+struct Held {
+    size: i64,
+    mtime: i64,
+    is_dir: bool,
+}
+
+/// What `(size, mtime, is_dir)` this root already holds, by `rel_path`.
 ///
 /// One query rather than one per entry, and outside the transaction, so the
 /// decision about what needs opening is made before any lock is taken. That
@@ -1158,19 +1403,29 @@ struct Resolved {
 /// was handed. No caller does that today — this crate's only caller is its
 /// own tests — so nothing closes the window yet; whoever adds a second
 /// writer needs to.
-fn held_for(conn: &Connection, root_id: i64) -> Result<HashMap<String, (i64, i64)>, String> {
+fn held_for(conn: &Connection, root_id: i64) -> Result<HashMap<String, Held>, String> {
     let mut stmt = conn
-        .prepare("SELECT rel_path, size, mtime FROM scan_entry WHERE root_id = ?1")
+        .prepare("SELECT rel_path, size, mtime, kind FROM scan_entry WHERE root_id = ?1")
         .map_err(|e| format!("reading what this root held: {e}"))?;
     let rows = stmt
         .query_map([root_id], |r| {
-            Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?)))
+            Ok((
+                r.get::<_, String>(0)?,
+                Held {
+                    size: r.get(1)?,
+                    mtime: r.get(2)?,
+                    is_dir: r.get::<_, String>(3)? == Kind::Dir.as_str(),
+                },
+            ))
         })
         .map_err(|e| format!("reading what this root held: {e}"))?;
     Ok(rows.filter_map(Result::ok).collect())
 }
 
-/// Drop rows for this root that the walk did not meet, and say how many.
+/// Drop rows for this root that the walk did not meet, and say how many for
+/// each of two reasons: `.0` genuinely gone from disk, `.1` forgotten only
+/// because a pattern now covers them — see [`ScanReport::forgotten_by_exclusion`]
+/// for why those are not the same number.
 ///
 /// Reached only after the §8.1 refusal above, so "the walk met nothing" can
 /// never arrive here. Iterates `held` — `held_for`'s result, already read
@@ -1180,16 +1435,18 @@ fn forget_unseen(
     conn: &Connection,
     root_id: i64,
     seen: &[Seen],
-    held: &HashMap<String, (i64, i64)>,
-) -> Result<usize, String> {
+    held: &HashMap<String, Held>,
+    excluder: &Excluder,
+) -> Result<(usize, usize), String> {
     let kept: HashSet<&str> = seen.iter().map(|entry| entry.rel_path.as_str()).collect();
     let mut gone = 0;
-    let stale: Vec<&str> = held
-        .keys()
-        .map(String::as_str)
-        .filter(|held| !kept.contains(held))
+    let mut forgotten_by_exclusion = 0;
+    let stale: Vec<(&str, Held)> = held
+        .iter()
+        .filter(|(rel_path, _)| !kept.contains(rel_path.as_str()))
+        .map(|(rel_path, held)| (rel_path.as_str(), *held))
         .collect();
-    for rel_path in stale {
+    for (rel_path, held) in stale {
         conn.execute(
             "DELETE FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
             rusqlite::params![root_id, rel_path],
@@ -1200,9 +1457,16 @@ fn forget_unseen(
             rusqlite::params![root_id, rel_path],
         )
         .map_err(|e| format!("forgetting the state of {rel_path}: {e}"))?;
-        gone += 1;
+        // Why it is stale, not merely that it is. A row under a directory
+        // the walk never descended into has a path that need not match any
+        // pattern itself, which is what `excludes_with_parents` is for.
+        if excluder.excludes_with_parents(rel_path, held.is_dir) {
+            forgotten_by_exclusion += 1;
+        } else {
+            gone += 1;
+        }
     }
-    Ok(gone)
+    Ok((gone, forgotten_by_exclusion))
 }
 
 // --- measure: the tree, gathered with no side effects -----------------------
@@ -1273,6 +1537,18 @@ impl MeasureError {
     }
 }
 
+/// What one walk accumulated besides the tree itself.
+///
+/// One accumulator rather than three out-params: [`measure_dir`] already
+/// threaded `unreadable: &mut Vec<String>`, and exclusion adds two more
+/// collections to a signature that was at its limit.
+#[derive(Default)]
+struct Walk {
+    unreadable: Vec<String>,
+    excluded_dirs: Vec<String>,
+    excluded_files: usize,
+}
+
 /// Measure `path` and everything beneath it, recursively, and every directory
 /// beneath it — but not `path` itself — that could not be listed.
 ///
@@ -1289,23 +1565,31 @@ impl MeasureError {
 /// nests past [`MAX_DEPTH`] directories anywhere beneath it — see
 /// [`MeasureError`] for why the second one is not caught and skipped the way
 /// the first is when it happens below the top.
-fn measure(path: &Path, depth: u32) -> Result<(Measured, Vec<String>), String> {
-    let mut unreadable = Vec::new();
-    let measured = measure_dir(path, String::new(), depth, &mut unreadable)
+fn measure(path: &Path, depth: u32, excluder: &Excluder) -> Result<(Measured, Walk), String> {
+    let mut walk = Walk::default();
+    let measured = measure_dir(path, String::new(), depth, excluder, &mut walk)
         .map_err(MeasureError::into_message)?;
-    Ok((measured, unreadable))
+    // `walk.excluded_dirs` is appended in `read_dir` order, which is not
+    // stable across identical scans of an unchanged tree — Minor 6. Sorted
+    // here, once, over the flat accumulator rather than inside
+    // `measure_dir`'s own loop, so the report is deterministic without
+    // touching `dir_entries.sort()`, the ordering the walk actually descends
+    // in.
+    walk.excluded_dirs.sort();
+    Ok((measured, walk))
 }
 
-/// One directory, measured — see [`measure`]. `unreadable` collects a message
-/// for every descendant directory this call meets and cannot list; `path`
-/// itself refusing to list is returned as an `Err` instead, which is what
-/// lets the caller tell "this one directory is unreadable" from "the
+/// One directory, measured — see [`measure`]. `walk.unreadable` collects a
+/// message for every descendant directory this call meets and cannot list;
+/// `path` itself refusing to list is returned as an `Err` instead, which is
+/// what lets the caller tell "this one directory is unreadable" from "the
 /// directory I was just asked to measure is" — see [`MeasureError`].
 fn measure_dir(
     path: &Path,
     rel_path: String,
     depth: u32,
-    unreadable: &mut Vec<String>,
+    excluder: &Excluder,
+    walk: &mut Walk,
 ) -> Result<Measured, MeasureError> {
     if depth > MAX_DEPTH {
         return Err(MeasureError::TooDeep(format!(
@@ -1337,13 +1621,37 @@ fn measure_dir(
         if name.starts_with('.') {
             continue;
         }
+        let child_rel = join_rel(&rel_path, &name);
+        let is_dir = child_path.is_dir();
+        // **Before `entry_count`, and before the page/file split.**
+        // `dir_state.entry_count` exists to say whether a directory changed;
+        // an excluded file arriving or leaving is not a change this library
+        // has any interest in, and counting it would make one show up. The
+        // cost is that `entry_count` no longer equals what `read_dir`
+        // returned — consistent, since it is only ever compared against a
+        // number computed the same way, and a pattern edit *should* read as
+        // a change.
+        //
+        // A directory is skipped here rather than filtered later, which is
+        // the whole saving: nothing beneath it is listed, stat'ed, sniffed
+        // or opened. It also gives git's own rule for free — a file whose
+        // parent directory is excluded cannot be re-included, because the
+        // walk never reaches it.
+        if excluder.excludes(&child_rel, is_dir) {
+            if is_dir {
+                walk.excluded_dirs.push(child_rel);
+            } else {
+                walk.excluded_files += 1;
+            }
+            continue;
+        }
         entry_count += 1;
-        if child_path.is_dir() {
-            dir_entries.push((name, child_path));
+        if is_dir {
+            dir_entries.push((child_rel, child_path));
         } else if taiyaku_read::is_page_name(&name) {
             here += 1;
         } else {
-            file_entries.push((name, child_path));
+            file_entries.push((child_rel, child_path));
         }
     }
     dir_entries.sort();
@@ -1351,13 +1659,8 @@ fn measure_dir(
 
     let mut pages = here;
     let mut children = Vec::new();
-    for (name, child_path) in dir_entries {
-        match measure_dir(
-            &child_path,
-            join_rel(&rel_path, &name),
-            depth + 1,
-            unreadable,
-        ) {
+    for (child_rel, child_path) in dir_entries {
+        match measure_dir(&child_path, child_rel, depth + 1, excluder, walk) {
             Ok(child) => {
                 if let Some(child_pages) = child.pages {
                     pages += child_pages;
@@ -1367,7 +1670,7 @@ fn measure_dir(
             // Skipped, not propagated: this directory cannot speak for
             // whatever is unreadable beneath it, but it can still speak for
             // everything else it holds. See `ScanReport::unreadable_dirs`.
-            Err(MeasureError::Unreadable(message)) => unreadable.push(message),
+            Err(MeasureError::Unreadable(message)) => walk.unreadable.push(message),
             // A cycle's depth is a property of the whole path down to it, not
             // of this one directory — caught here it would look like an
             // ordinary permission refusal and be silently skipped, which is
@@ -1376,8 +1679,8 @@ fn measure_dir(
             Err(err @ MeasureError::TooDeep(_)) => return Err(err),
         }
     }
-    for (name, child_path) in file_entries {
-        if let Some(file) = measure_file(&child_path, join_rel(&rel_path, &name)) {
+    for (child_rel, child_path) in file_entries {
+        if let Some(file) = measure_file(&child_path, child_rel) {
             children.push(file);
         }
     }

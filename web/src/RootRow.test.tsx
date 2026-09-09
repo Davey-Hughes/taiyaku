@@ -88,11 +88,15 @@ function press(host: HTMLElement, label: string) {
  * assignment.
  */
 async function edit(host: HTMLElement, name: string, value: string) {
-  const box = host.querySelector(`input[name="${name}"]`) as HTMLInputElement
+  const box = host.querySelector(`[name="${name}"]`) as
+    | HTMLInputElement
+    | HTMLTextAreaElement
   await act(async () => {
     box.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
     const setter = Object.getOwnPropertyDescriptor(
-      HTMLInputElement.prototype,
+      box instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype,
       'value',
     )?.set
     setter?.call(box, value)
@@ -124,9 +128,13 @@ async function retype(
   via: string,
   back: string,
 ) {
-  const box = host.querySelector(`input[name="${name}"]`) as HTMLInputElement
+  const box = host.querySelector(`[name="${name}"]`) as
+    | HTMLInputElement
+    | HTMLTextAreaElement
   const setter = Object.getOwnPropertyDescriptor(
-    HTMLInputElement.prototype,
+    box instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype,
     'value',
   )?.set
   await act(async () => {
@@ -143,7 +151,9 @@ async function retype(
 
 /** Focus a box and leave it, touching nothing — tabbing through the form. */
 async function tabThrough(host: HTMLElement, name: string) {
-  const box = host.querySelector(`input[name="${name}"]`) as HTMLInputElement
+  const box = host.querySelector(`[name="${name}"]`) as
+    | HTMLInputElement
+    | HTMLTextAreaElement
   await act(async () => {
     box.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
     box.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
@@ -525,6 +535,10 @@ describe('RootRow', () => {
           gone: 0,
           refused: null,
           unreadable_dirs: [],
+          excluded_dirs: [],
+          excluded_files: 0,
+          bad_exclude_patterns: [],
+          forgotten_by_exclusion: 0,
         },
         derive: {
           series: 1,
@@ -614,15 +628,16 @@ describe('RootRow', () => {
     // to design around without ever being able to see the value.
     const host = await settle({ exclude_globs: '**/extras/**' })
     const box = host.querySelector(
-      'input[name="exclude_globs"]',
-    ) as HTMLInputElement
+      'textarea[name="exclude_globs"]',
+    ) as HTMLTextAreaElement
     expect(box.value).toBe('**/extras/**')
   })
 
-  it('patches exclude_globs, the column nothing applies', async () => {
-    // O92. The column is read back now, and still applied by nothing: this
-    // pins that the box is wired to the patch route at all, which is separate
-    // from the two tests above that pin what it reads.
+  it('patches exclude_globs, the column the scanner now applies', async () => {
+    // O92, closed: the column is read back, patched here, and applied by
+    // `scan::scan_root`'s walk. This pins that the box is wired to the patch
+    // route at all, which is separate from the two tests above that pin what
+    // it reads.
     const host = await settle()
     await edit(host, 'exclude_globs', '**/extras/**')
     expect(config.patchRoot).toHaveBeenCalledWith(3, {
@@ -1022,5 +1037,75 @@ describe('RootRow', () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
       'there is no root 409',
     )
+  })
+
+  it('draws exclude_globs as a textarea holding every line', async () => {
+    const host = await settle({ exclude_globs: '**/extras/**\n*.nfo' })
+
+    const box = host.querySelector('textarea[name="exclude_globs"]')
+    expect(
+      box,
+      'the column is multi-line and its box must be too',
+    ).not.toBeNull()
+    expect((box as HTMLTextAreaElement).value).toBe('**/extras/**\n*.nfo')
+    expect(
+      host.querySelector('input[name="exclude_globs"]'),
+      'and it is no longer a single-line input',
+    ).toBeNull()
+  })
+
+  it('patches a two-line exclude_globs with its newline intact', async () => {
+    vi.mocked(config.patchRoot).mockResolvedValue(undefined)
+    const host = await settle({ exclude_globs: null })
+
+    await edit(host, 'exclude_globs', 'extras\n*.nfo')
+
+    expect(config.patchRoot).toHaveBeenCalledWith(3, {
+      exclude_globs: 'extras\n*.nfo',
+    })
+  })
+
+  it('no longer says exclude_globs is unapplied', async () => {
+    const host = await settle({ exclude_globs: null })
+
+    const label = host
+      .querySelector('textarea[name="exclude_globs"]')
+      ?.closest('label')
+      ?.querySelector('span')?.textContent
+    expect(label).toBe('Exclude globs (one gitignore pattern per line)')
+  })
+
+  // --- O92: the directory-vs-contents trap, 2026-09-09 -------------------
+
+  it('hints that a trailing slash or bare name skips the whole directory', async () => {
+    // **The trap this line exists to name.** Measured against the `ignore`
+    // crate, 2026-09-09: `**/extras/**` excludes the files under an `extras`
+    // directory but never the directory itself, so a scan still descends
+    // into it, still records it as a scan entry, and reports "Directories
+    // excluded: 0" — which reads to an admin as "my pattern did nothing"
+    // when gitignore did exactly what it was asked. Both shapes have to be
+    // named for the hint to be useful, so this checks both rather than just
+    // that a `<small>` exists.
+    const host = await settle({ exclude_globs: null })
+    const hint = host
+      .querySelector('textarea[name="exclude_globs"]')
+      ?.closest('label')
+      ?.querySelector('small')?.textContent
+    expect(hint).toContain('trailing slash or bare name')
+    expect(hint).toContain('/**')
+  })
+
+  it('gives the other three text fields no hint', async () => {
+    // Per field, not a page-level count: a page-level assertion cannot see
+    // which field a hint landed on, and this repository has been bitten by
+    // exactly that shape of test before.
+    const host = await settle()
+    for (const name of ['edition_key', 'default_kind', 'default_language']) {
+      const hint = host
+        .querySelector(`input[name="${name}"]`)
+        ?.closest('label')
+        ?.querySelector('small')
+      expect(hint, `${name} should carry no hint`).toBeNull()
+    }
   })
 })

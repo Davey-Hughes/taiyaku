@@ -1390,6 +1390,10 @@ fn scan_report(added: usize, updated: usize, gone: usize) -> taiyaku_library::sc
         gone,
         refused: None,
         unreadable_dirs: Vec::new(),
+        excluded_dirs: Vec::new(),
+        excluded_files: 0,
+        bad_exclude_patterns: Vec::new(),
+        forgotten_by_exclusion: 0,
     }
 }
 
@@ -1418,6 +1422,75 @@ fn scan_summary_names_unreadable_directories_when_present() {
 fn scan_summary_omits_unreadable_directories_when_none() {
     let line = scan_summary(&scan_report(3, 1, 2));
     assert!(!line.contains("unreadable"), "{line}");
+}
+
+/// O92: a directory `exclude_globs` named is never `read_dir`'d, and this
+/// is the line that says so.
+#[test]
+fn scan_summary_names_excluded_directories_when_present() {
+    let mut report = scan_report(3, 1, 2);
+    report.excluded_dirs = vec!["/library/extras".to_string()];
+    let line = scan_summary(&report);
+    assert!(line.contains("1 directories excluded"), "{line}");
+    assert!(line.contains("/library/extras"), "{line}");
+}
+
+#[test]
+fn scan_summary_omits_excluded_directories_when_none() {
+    let line = scan_summary(&scan_report(3, 1, 2));
+    assert!(!line.contains("excluded"), "{line}");
+}
+
+/// O92: `excluded_files` survived `> 0` mutated to `< 0` in the mutation
+/// sweep — nothing exercised this branch at all before this test.
+#[test]
+fn scan_summary_names_excluded_files_when_present() {
+    let mut report = scan_report(3, 1, 2);
+    report.excluded_files = 5;
+    let line = scan_summary(&report);
+    assert!(line.contains("5 files excluded"), "{line}");
+}
+
+#[test]
+fn scan_summary_omits_excluded_files_when_none() {
+    let line = scan_summary(&scan_report(3, 1, 2));
+    assert!(!line.contains("files excluded"), "{line}");
+}
+
+/// O92: a line of `exclude_globs` that would not compile disables only
+/// itself, and this is the line that names it.
+#[test]
+fn scan_summary_names_bad_exclude_patterns_when_present() {
+    let mut report = scan_report(3, 1, 2);
+    report.bad_exclude_patterns = vec!["a[".to_string()];
+    let line = scan_summary(&report);
+    assert!(line.contains("1 unusable exclude pattern(s)"), "{line}");
+    assert!(line.contains("a["), "{line}");
+}
+
+#[test]
+fn scan_summary_omits_bad_exclude_patterns_when_none() {
+    let line = scan_summary(&scan_report(3, 1, 2));
+    assert!(!line.contains("unusable"), "{line}");
+}
+
+/// O92: `forgotten_by_exclusion` survived `> 0` mutated to `< 0` in the
+/// mutation sweep, the same as `excluded_files` above.
+#[test]
+fn scan_summary_names_forgotten_by_exclusion_when_present() {
+    let mut report = scan_report(3, 1, 2);
+    report.forgotten_by_exclusion = 4;
+    let line = scan_summary(&report);
+    assert!(
+        line.contains("4 entries forgotten because a pattern now covers them"),
+        "{line}"
+    );
+}
+
+#[test]
+fn scan_summary_omits_forgotten_by_exclusion_when_none() {
+    let line = scan_summary(&scan_report(3, 1, 2));
+    assert!(!line.contains("forgotten"), "{line}");
 }
 
 fn derive_report() -> taiyaku_library::derive::DeriveReport {

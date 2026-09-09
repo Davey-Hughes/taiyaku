@@ -40,21 +40,30 @@
  * second check rather than the first. What did go is `from`'s `undefined`
  * arm, which existed only to say "this row cannot describe this column".
  *
- * **`exclude_globs` is edited here and applied nowhere.** O92: the column
- * ships in migration 1, `scan::update_root` patches it, `GET
- * /api/library/roots` now sends it back — and `scan::scan_root` still never
- * reads it, so nothing is ever excluded from a scan. It is drawn because C4
- * §2 lists it among a root's fields and because leaving it out would hide the
- * gap rather than record it; the label says so in as many words. What it is
- * no longer is **write-only**: the box starts at the pattern the row holds,
- * so an admin can see what they set.
+ * **`exclude_globs` is read, patched, and applied — O92 is closed.** The
+ * column ships in migration 1, `scan::update_root` patches it, `GET
+ * /api/library/roots` sends it back, and `scan::scan_root` reads it and
+ * excludes what it matches. It is drawn as a `<textarea>` rather than the
+ * other three columns' `<input>` because the column holds one pattern per
+ * line, and a newline is the only separator a real path cannot itself
+ * contain — a comma and a space both occur in real directory names. The
+ * label says what the syntax is and does not claim the pattern is checked:
+ * the server rejects a dangling `\` and an unclosed `{` and accepts
+ * everything else, which is a guard against two typos rather than a
+ * verification.
  *
  * **Live progress is elapsed seconds and nothing else.** `ScanProgress`
  * carries a start `Instant` and a done flag and no per-file counter; drawing a
  * bar over a number nobody computes would be an invented figure on the screen
  * whose own discipline is that a report names what it did not do.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  type FocusEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import {
   patchRoot,
   type Probe,
@@ -105,6 +114,31 @@ interface TextField {
    */
   from: (root: Root) => string
   patch: (value: string | null) => RootPatch
+  /**
+   * Drawn as a `<textarea>` rather than an `<input>`.
+   *
+   * `exclude_globs` alone: it holds one pattern per line, and a newline is
+   * the only separator a path cannot itself contain — a comma and a space
+   * both occur in real directory names, so either would make some real
+   * pattern unwritable.
+   */
+  multiline?: boolean
+  /**
+   * A line under the box, drawn only when set.
+   *
+   * **`exclude_globs` alone, because it alone hides a trap the matcher's own
+   * correctness makes invisible.** Measured against the `ignore` crate,
+   * 2026-09-09: `**\/extras/**` does not exclude the `extras` directory it
+   * names, only files under it — so a scan still descends into every
+   * `extras`, still records one as a scan entry, and reports "Directories
+   * excluded: 0", which reads to an admin as "my pattern did nothing" when
+   * gitignore did exactly what was asked. The label already says what the
+   * syntax is; this says what one shape of it does that has no equivalent
+   * trap on the other three fields, and it is silent about validation on
+   * purpose — the server rejects a dangling `\` and an unclosed `{` and
+   * accepts everything else, and this line must not imply otherwise.
+   */
+  hint?: string
 }
 
 const TEXT_FIELDS: TextField[] = [
@@ -128,11 +162,19 @@ const TEXT_FIELDS: TextField[] = [
   },
   {
     name: 'exclude_globs',
-    // Still the honest label: the column is read back now, and `scan_root`
-    // still does not apply it. That is the half of O92 left open.
-    label: 'Exclude globs (recorded, not yet applied — O92)',
+    // O92 is closed: the scanner applies this now. The label says what the
+    // syntax is, because gitignore's is not what "globs" alone implies —
+    // `!` negates, a leading `/` anchors, a trailing `/` means the
+    // directory. It does *not* claim the pattern is checked: the server
+    // rejects a dangling `\` and an unclosed `{` and accepts everything
+    // else, which is a guard against two typos rather than a verification.
+    label: 'Exclude globs (one gitignore pattern per line)',
+    multiline: true,
     from: (r) => r.exclude_globs ?? '',
     patch: (exclude_globs) => ({ exclude_globs }),
+    hint:
+      'A trailing slash or bare name excludes the directory and everything ' +
+      "under it; a '/**' suffix excludes only what's inside it.",
   },
 ]
 
@@ -402,35 +444,44 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
       )}
 
       <div className="fields">
-        {TEXT_FIELDS.map((field) => (
-          <label key={field.name}>
-            <span>{field.label}</span>
-            <input
-              type="text"
-              name={field.name}
-              defaultValue={field.from(root)}
-              onFocus={() => {
-                edited.current.delete(field.name)
-              }}
-              onChange={() => {
-                edited.current.add(field.name)
-              }}
-              onBlur={(e) => {
-                const next = e.target.value
-                // Nothing typed since this box was focused: nothing to write,
-                // whatever the box happens to show.
-                if (!edited.current.has(field.name)) return
-                edited.current.delete(field.name)
-                // Edited back to what the row already holds: a no-op. Every
-                // column can be compared this way since O92's readable half
-                // landed; `exclude_globs` was the one that could not, and the
-                // `undefined` arm that carried it is gone with it.
-                if (next === field.from(root)) return
-                save(field, next)
-              }}
-            />
-          </label>
-        ))}
+        {TEXT_FIELDS.map((field) => {
+          const boxProps = {
+            name: field.name,
+            defaultValue: field.from(root),
+            onFocus: () => {
+              edited.current.delete(field.name)
+            },
+            onChange: () => {
+              edited.current.add(field.name)
+            },
+            onBlur: (e: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+              const next = e.target.value
+              // Nothing typed since this box was focused: nothing to write,
+              // whatever the box happens to show.
+              if (!edited.current.has(field.name)) return
+              edited.current.delete(field.name)
+              // Edited back to what the row already holds: a no-op. Every
+              // column can be compared this way since O92's readable half
+              // landed; `exclude_globs` was the one that could not, and the
+              // `undefined` arm that carried it is gone with it.
+              if (next === field.from(root)) return
+              save(field, next)
+            },
+          }
+          return field.multiline ? (
+            <label key={field.name}>
+              <span>{field.label}</span>
+              <textarea rows={3} {...boxProps} />
+              {field.hint !== undefined && <small>{field.hint}</small>}
+            </label>
+          ) : (
+            <label key={field.name}>
+              <span>{field.label}</span>
+              <input type="text" {...boxProps} />
+              {field.hint !== undefined && <small>{field.hint}</small>}
+            </label>
+          )
+        })}
         <label>
           <span>Scan interval (seconds)</span>
           <input

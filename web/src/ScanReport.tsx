@@ -5,7 +5,7 @@
  * and the derivation are two different passes over the library, and keeping
  * them apart is what lets this draw "what the walk found" and "what
  * derivation made of it" rather than making a reader work out which of
- * thirty-seven keys came from which pass. `finished_scan_json`'s own doc
+ * forty-one keys came from which pass. `finished_scan_json`'s own doc
  * comment makes the same argument from the other side.
  *
  * **Every field is drawn, including the collections that are empty this
@@ -69,8 +69,14 @@ function Paths({
         {paths.length}
         {paths.length > 0 && (
           <ul>
-            {paths.map((path) => (
-              <li key={path}>
+            {paths.map((path, index) => (
+              // `index` alongside `path`: `Excluder::build` can emit two
+              // byte-identical complaints (two identical bad lines), and
+              // `bad_exclude_patterns` is exactly the field that renders
+              // through this component — a plain `key={path}` collides for
+              // that case, silently dropping one row from React's own
+              // reconciliation rather than the list this component drew.
+              <li key={`${index}:${path}`}>
                 <code>{path}</code>
               </li>
             ))}
@@ -142,6 +148,26 @@ function WalkSection({ walk }: { walk: Walk }) {
           field="unreadable_dirs"
           label="Directories it could not read"
           paths={walk.unreadable_dirs}
+        />
+        <Paths
+          field="excluded_dirs"
+          label="Directories excluded"
+          paths={walk.excluded_dirs}
+        />
+        <Paths
+          field="bad_exclude_patterns"
+          label="Unusable exclude patterns"
+          paths={walk.bad_exclude_patterns}
+        />
+        <Count
+          field="excluded_files"
+          label="Files excluded"
+          n={walk.excluded_files}
+        />
+        <Count
+          field="forgotten_by_exclusion"
+          label="Forgotten because excluded"
+          n={walk.forgotten_by_exclusion}
         />
         <div className="count" data-field="refused">
           <dt>Refused</dt>

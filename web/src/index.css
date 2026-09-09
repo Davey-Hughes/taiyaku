@@ -1448,6 +1448,13 @@ body {
   gap: 0.25rem;
 }
 
+/* Same convention as `.root-row .regime`: opacity, not a second colour, for
+   copy that is secondary rather than disabled — only `exclude_globs` sets
+   `TextField.hint`, so this never touches the other three boxes. */
+.root-row .fields small {
+  opacity: 0.8;
+}
+
 .root-row .actions {
   display: flex;
   gap: 0.5rem;

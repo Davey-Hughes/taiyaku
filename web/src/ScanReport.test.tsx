@@ -12,6 +12,10 @@ const walk = (over: Partial<Walk> = {}): Walk => ({
   gone: 0,
   refused: null,
   unreadable_dirs: [],
+  excluded_dirs: [],
+  excluded_files: 0,
+  bad_exclude_patterns: [],
+  forgotten_by_exclusion: 0,
   ...over,
 })
 
@@ -67,12 +71,12 @@ describe('ScanReport', () => {
   })
 
   it('draws every field of both reports', () => {
-    // Thirty-seven fields: eight from the walk, twenty-nine from the derive.
+    // Forty-one fields: twelve from the walk, twenty-nine from the derive.
     // Counted rather than spot-checked, because the failure this guards is a
     // field quietly dropped on the way out — which is exactly what happened
     // once already on the server side.
     const host = mount(<ScanReport outcome={finished()} />)
-    expect(host.querySelectorAll('[data-field]')).toHaveLength(37)
+    expect(host.querySelectorAll('[data-field]')).toHaveLength(41)
   })
 
   it('puts what the scan did not do before what it did', () => {
@@ -82,6 +86,45 @@ describe('ScanReport', () => {
     )
     expect(fields.indexOf('unreadable')).toBeLessThan(fields.indexOf('works'))
     expect(fields.indexOf('suppressed')).toBeLessThan(fields.indexOf('series'))
+  })
+
+  it('puts what the walk did not do before what it did', () => {
+    const host = mount(<ScanReport outcome={finished()} />)
+    const fields = [...host.querySelectorAll('[data-field]')].map((el) =>
+      el.getAttribute('data-field'),
+    )
+
+    // refused sits between the two groups and is neither, so it is left out
+    // of both lists rather than forced onto one side.
+    const didNotDo = [
+      'unreadable_dirs',
+      'excluded_dirs',
+      'bad_exclude_patterns',
+      'excluded_files',
+      'forgotten_by_exclusion',
+    ]
+    const achievement = ['dirs', 'files', 'added', 'updated', 'gone']
+
+    for (const before of didNotDo) {
+      for (const after of achievement) {
+        // `indexOf` answers -1 for a field this render dropped entirely, and
+        // -1 < anything holds — so a confession row removed outright used to
+        // pass this same comparison. Both indices must actually be present
+        // before their order means anything.
+        expect(
+          fields.indexOf(before),
+          `${before} must be rendered`,
+        ).toBeGreaterThanOrEqual(0)
+        expect(
+          fields.indexOf(after),
+          `${after} must be rendered`,
+        ).toBeGreaterThanOrEqual(0)
+        expect(
+          fields.indexOf(before),
+          `${before} must precede ${after}`,
+        ).toBeLessThan(fields.indexOf(after))
+      }
+    }
   })
 
   it('names an unreadable directory rather than a count alone', () => {
@@ -199,5 +242,54 @@ describe('ScanReport', () => {
     for (const path of ['a-fold', 'bad.json', 'readonly.json', 'stale.json']) {
       expect(host.textContent).toContain(path)
     }
+  })
+
+  it('draws all four exclusion fields when nothing was excluded', () => {
+    const host = mount(<ScanReport outcome={finished()} />)
+
+    // Per element, never a whole-page toContain: a page-level match cannot
+    // tell a zero beside the right label from one beside the wrong one.
+    for (const [field, label] of [
+      ['excluded_dirs', 'Directories excluded'],
+      ['excluded_files', 'Files excluded'],
+      ['forgotten_by_exclusion', 'Forgotten because excluded'],
+      ['bad_exclude_patterns', 'Unusable exclude patterns'],
+    ]) {
+      const row = host.querySelector(`[data-field="${field}"]`)
+      expect(row, `${field} must be drawn`).not.toBeNull()
+      expect(row?.querySelector('dt')?.textContent).toBe(label)
+      expect(row?.querySelector('dd')?.textContent).toContain('0')
+    }
+  })
+
+  it('names each excluded directory and each unusable pattern', () => {
+    const host = mount(
+      <ScanReport
+        outcome={finished({
+          scan: walk({
+            excluded_dirs: ['Naruto/extras', 'Bleach/scans'],
+            excluded_files: 12,
+            forgotten_by_exclusion: 40,
+            bad_exclude_patterns: ['`\\`: dangling'],
+          }),
+        })}
+      />,
+    )
+
+    const dirs = host.querySelector('[data-field="excluded_dirs"]')
+    expect(dirs?.querySelectorAll('li')).toHaveLength(2)
+    expect(dirs?.textContent).toContain('Naruto/extras')
+    expect(dirs?.textContent).toContain('Bleach/scans')
+
+    expect(
+      host.querySelector('[data-field="excluded_files"] dd')?.textContent,
+    ).toBe('12')
+    expect(
+      host.querySelector('[data-field="forgotten_by_exclusion"] dd')
+        ?.textContent,
+    ).toBe('40')
+    expect(
+      host.querySelector('[data-field="bad_exclude_patterns"]')?.textContent,
+    ).toContain('dangling')
   })
 })

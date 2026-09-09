@@ -588,9 +588,11 @@ fn documents_state_line(path: &Path, on: bool) -> String {
 /// [`taiyaku_library::watch::report_line`]'s own line — the two together are
 /// §8's report for one root.
 ///
-/// `unreadable_dirs` prints only when non-zero, the same rule
-/// [`derive_summary`] applies to its own silent-outcome counters: a `Vec`
-/// nobody prints is a directory a person never learns was skipped (I4).
+/// `unreadable_dirs`, `excluded_dirs`, `excluded_files`,
+/// `forgotten_by_exclusion` and `bad_exclude_patterns` print only when
+/// non-zero, the same rule [`derive_summary`] applies to its own
+/// silent-outcome counters: a `Vec` nobody prints is a directory a person
+/// never learns was skipped (I4).
 fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
     use std::fmt::Write as _;
 
@@ -604,6 +606,32 @@ fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
             "; {} unreadable directories: {}",
             report.unreadable_dirs.len(),
             report.unreadable_dirs.join(", ")
+        );
+    }
+    if !report.excluded_dirs.is_empty() {
+        let _ = write!(
+            line,
+            "; {} directories excluded: {}",
+            report.excluded_dirs.len(),
+            report.excluded_dirs.join(", ")
+        );
+    }
+    if report.excluded_files > 0 {
+        let _ = write!(line, "; {} files excluded", report.excluded_files);
+    }
+    if report.forgotten_by_exclusion > 0 {
+        let _ = write!(
+            line,
+            "; {} entries forgotten because a pattern now covers them",
+            report.forgotten_by_exclusion
+        );
+    }
+    if !report.bad_exclude_patterns.is_empty() {
+        let _ = write!(
+            line,
+            "; {} unusable exclude pattern(s): {}",
+            report.bad_exclude_patterns.len(),
+            report.bad_exclude_patterns.join(", ")
         );
     }
     line

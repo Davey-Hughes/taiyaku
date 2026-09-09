@@ -102,6 +102,10 @@ the server half's §1 made for its own ordering, one layer up.
   `scan::scan_root`. The roots screen edits it because C4 §2 lists it; the
   screen does not pretend it does anything, and O92 stays open. Making it work
   is a scanner change with its own blast radius.
+  *O92 has since closed — 2026-09-09, see its entry in `docs/status.md`. The
+  blast radius this paragraph anticipated turned out not to exist: nothing
+  references `scan_entry`, so an exclusion leaves the works it covers standing
+  and stale rather than destroying anything.*
 - **A general account screen outside the reader.** `Account.tsx` mounts from
   `App.tsx` and is reachable only from inside a work. §6 records what that
   costs the users screen and does not fix it.
@@ -655,7 +659,9 @@ are cheapest to pin.
   three, and a regex that compiles in JS is not the regex the store compiles.
 - **No rule testing against typed-in paths.** C4 §8 declines it; the preview
   runs against the real `scan_entry` table.
-- **No `exclude_globs` behaviour.** O92; §1.
+- **No `exclude_globs` behaviour.** O92; §1. *Shipped 2026-09-09 under O92's
+  own branch, not this one; the roots screen's box became a `<textarea>` and
+  `ScanReport.tsx` gained the four fields then.*
 - **No self-service anything.** C4 §8: this is the administrative view of
   other people.
 

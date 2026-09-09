@@ -48,9 +48,9 @@ export interface Root {
   default_kind: string | null
   default_language: string | null
   /**
-   * Patterns a scan is meant to skip — **stored and read back, applied
-   * nowhere.** `scan::scan_root` still does not consult it: the open half of
-   * O92.
+   * Patterns a scan skips, one gitignore pattern per line — **stored, read
+   * back and applied.** `scan_root_inner` compiles them into an `Excluder`
+   * and `measure_dir` consults it before descending: O92, closed 2026-09-09.
    */
   exclude_globs: string | null
   scan_interval_secs: number | null
@@ -121,6 +121,14 @@ export interface Walk {
   /** Spec B §8.1's refusal, or `null` where the scan was applied. */
   refused: string | null
   unreadable_dirs: string[]
+  /** Directories `root.exclude_globs` named, never descended into. */
+  excluded_dirs: string[]
+  /** Files a pattern named. A count, not a list — a library may exclude thousands. */
+  excluded_files: number
+  /** Lines of `exclude_globs` that would not compile, each naming itself. */
+  bad_exclude_patterns: string[]
+  /** Rows dropped because a pattern now covers them — not because a file vanished. */
+  forgotten_by_exclusion: number
 }
 
 /**

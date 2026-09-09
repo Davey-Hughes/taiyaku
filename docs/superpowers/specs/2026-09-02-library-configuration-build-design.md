@@ -354,6 +354,11 @@ C4 §3's discipline is that a scan **names what it did not do** — containers i
 could not open, formats it recognised and cannot read, directories skipped by
 `exclude_globs`, proposals raised, and B §8.1's refusal. Every one of those is
 already a field; none of them is currently shown anywhere but a terminal.
+*Not quite: "directories skipped by `exclude_globs`" was **not** a field when
+this was written, and could not be, because nothing skipped anything — that
+was O92. It became `ScanReport::excluded_dirs` on 2026-09-09, alongside
+`excluded_files`, `bad_exclude_patterns` and `forgotten_by_exclusion`, and the
+sentence is true as of then.*
 
 **`root.last_scan_at` and `last_scan_status` are written for the first time.**
 They have existed since migration 1 and **nothing in the tree writes or reads

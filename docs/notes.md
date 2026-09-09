@@ -15679,3 +15679,125 @@ untested function. The evidence that the read is pinned is hand-applied:
 `"exclude_globs"` key from `root_json` fails one, `from: () => ''` fails three
 jsdom tests, and each of the two blur guards fails its own test and only its
 own.
+
+## O92's scanner half, against the real library — 2026-09-09
+
+The walk applying `root.exclude_globs`, measured on a copy of the real library
+at `/home/davey/temp/manga-test` — 490 GB, 129 directories under the root,
+2,044 scan entries, 1,858 works. Release profile, this machine. Every write
+went to a database under the session scratchpad; the isolation proof is at the
+end.
+
+**The library's shape matters to what follows**: this root is flat. 129 series
+directories directly under `Volumes`, each holding archive files, and nothing
+nested deeper. There is no `extras/` subtree anywhere in it.
+
+### What the exclusion saved, once the page cache was controlled for
+
+The pattern was `One Piece*`, which matched **five** directories, not the two
+a look at the largest series suggested — `One Piece`, `- Digital Colored
+Comics`, `- Definitive Edition (Colored)`, `- Cover Stories - Digital Colored
+Comics` and `- Special One-Shot!`. The scan report named all five, which is
+the confession working; a count alone would have hidden that the pattern was
+broader than intended.
+
+| walk | entries | wall |
+|---|---|---|
+| incremental, nothing moved, no patterns | 2,044 | 0.35 s |
+| **cold, first walk of 490 GB**, no patterns | 2,044 | **30.06 s** |
+| cold, `One Piece*` excluded | 1,778 | 1.28 s |
+| warm, no patterns | 2,044 | 1.45 s / 1.46 s |
+| warm, `One Piece*` excluded | 1,778 | 1.27 s / 1.28 s |
+
+**The 30.06 s → 1.28 s reading is not a 23× speedup and must not be quoted as
+one.** The 30 s run was the first walk over 490 GB and it filled the page
+cache; the excluded run that followed inherited a warm one. Re-run with both
+arms warm and twice each, the honest figure is **1.46 s → 1.28 s, a 12.3%
+saving for 13.0% of entries skipped** (266 of 2,044). The saving is
+*proportional to what is skipped*, and on this library that is all it is.
+
+**Why proportional rather than multiplicative, which is the finding worth
+keeping.** Skipping at descent avoids `read_dir`, `stat`, `sniff` and
+`member_pages` for a whole subtree, and that is real — but a flat root has no
+subtree to avoid descending into. Each excluded directory here costs one
+`read_dir` and its files' opens, so excluding *n* entries saves about *n*
+entries' worth of work. A library with deep junk subtrees would see more than
+this; this one cannot. **The feature's value is a property of the tree's
+shape, not of the feature.** Nothing in the design said otherwise, and nothing
+in it said this either.
+
+### §0.1's correction, tested rather than asserted
+
+The design's §0.1 corrected O92's own entry: an exclusion was thought to make
+`forget_unseen` drop `scan_entry` rows, derive produce fewer works, and
+progress and notes go with them. Three links of that chain do not exist. Run
+against 1,858 real works:
+
+| | entries | works | editions | members |
+|---|---|---|---|---|
+| before | 2,044 | 1,858 | 1,858 | 1,883 |
+| after `One Piece*` + derive | **1,778** | **1,858** | **1,858** | **1,883** |
+| after clearing the column + derive | 2,044 | 1,858 | 1,858 | 1,883 |
+
+**266 entries forgotten, and not one work, edition or member destroyed.** The
+scan reported `0 gone; 266 entries forgotten because a pattern now covers
+them` — the two facts stayed apart, which is what that counter exists for. The
+same derive that ran afterwards reported *"derived 124 series, 1616 works"*:
+that is what the pass **produced**, while the library went on holding 1,858.
+The 242 works under those five directories are standing and stale, exactly as
+§0.1 predicted, and clearing the column brought all 266 entries back.
+
+**What this run could not test.** This copy holds **no `progress` rows and no
+`note` rows**, so the half of §0.1's claim about reading positions and notes
+surviving is argued from the schema (`ON DELETE CASCADE` hangs them off
+`work`, and no `work` row was deleted) rather than observed. A copy carrying
+reading history would close that.
+
+### Isolation, proven afterwards
+
+`/home/davey/temp/manga-test/library.db` still carries its 2026-09-02
+05:51:48.853004102 mtime and its 3,534,848 bytes. Every write went to
+`o92.db`, `cold-base.db`, `cold-excl.db` and `tmp.db` under the session
+scratchpad.
+
+**One directory mtime did move, and it is the documented exception.**
+`find -newermt 2026-09-09` over the tree returns exactly one path: the root
+`Volumes` directory itself. `--add` runs `watch::probe`, which creates and
+removes a probe file — the one file the scanner ever writes to a library tree
+(`scan.rs`'s module doc says so). Confirmed it left nothing: the root holds 0
+non-directory entries and 0 dotfiles.
+
+**A first attempt at that proof reported success while erroring.**
+`find … -newermt '-2 hours'` is rejected by this machine's `find` (it is
+`bfs`, which wants ISO timestamps); the error went to stderr, the count came
+back `0`, and it read exactly like proof of no writes. Re-run with
+`-newermt 2026-09-09` it returns the one real hit above. Same shape as the
+gate whose exit status a trailing `echo` masked earlier the same day.
+
+### A correction to what this run assumed about the pattern, 2026-09-09
+
+The whole-branch review asked which of the pattern shapes the design measured
+its own leading example falls into, and the answer changes what the earlier
+`**/extras/**` runs mean.
+
+| pattern | `Naruto/extras` as a directory | `Naruto/extras/art.jpg` |
+|---|---|---|
+| `**/extras/**` | **not excluded** | excluded |
+| `extras/` | excluded | never reached — no descent |
+| `extras` | excluded | never reached — no descent |
+
+**`**/extras/**` — the value this project set on the real library on
+2026-09-08, and the design's own first example — excludes a directory's
+contents and not the directory.** The walk still descends into it, still
+records it as a `scan_entry` row, excludes its files one at a time, and
+reports `excluded_dirs: 0`. None of the descent saving happens.
+
+The `One Piece*` measurement above is unaffected: a bare name with a trailing
+`*` matches the directory itself, so those five directories genuinely were
+skipped at descent and the 12.3% figure stands. But it means **the saving
+measured there is the best case for this pattern language, not the typical
+one** — a `/**`-suffixed pattern saves strictly less, and reports nothing in
+the field C4 §3 asks for.
+
+Faithful gitignore, and not the matcher's fault. Recorded because the run
+above would otherwise read as evidence about a pattern shape it never tested.

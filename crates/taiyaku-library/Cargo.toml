@@ -25,6 +25,25 @@ authors.workspace = true
 [dependencies]
 argon2 = "0.5.3"
 base64 = "0.23.1"
+# O92's scanner half: `root.exclude_globs` applied to the walk. The matcher
+# behind ripgrep, taken whole rather than reimplemented — it reads a line
+# exactly as a `.gitignore` file holds it, so negation, anchoring,
+# directory-only patterns, comments and blank lines all arrive with it and
+# none of them is written here. `rules.rs` makes the same argument against
+# itself for `taiyaku_read::volume_number_marked`: a second, drifting
+# reimplementation is worse than a dependency.
+#
+# **Three crates, not the ten `cargo add` suggests** — `ignore`, `globset` and
+# `bstr`. `notify` already supplies `walkdir`, `same-file`, the `crossbeam-*`
+# trio and `winapi-util`; measured against this workspace's lock on
+# 2026-09-09. `globset` alone would have cost two of the same three and could
+# not express negation.
+#
+# **User-supplied patterns are safe here for the reason `regex` below is
+# safe**, and it is worth restating because it is not obvious it transfers:
+# `globset` compiles to `regex-automata`, which does not backtrack, so a
+# pattern typed into C4's box cannot produce catastrophic matching behaviour.
+ignore = "0.4.33"
 # §8 of the scanner spec: the watcher, where the probe says one works.
 notify = "8"
 rand = "0.10.2"
