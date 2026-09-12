@@ -17,6 +17,7 @@ import { artOffset, paintedBox, pointInSlot, type Box } from './notes'
 import { orderedEditions } from './session'
 import { cryptoRandom, ulid } from './ulid'
 import type { TruthDoc, TruthEdition, TruthRegion } from './truth'
+import { messageOf } from './message'
 
 /** `api.ts`'s `listWorks`/`getSidecar`/`getTruth`/`putTruth`, injected. */
 export interface TruthPorts {
@@ -201,9 +202,6 @@ export const truthWriteGate = (
 export type SaveOutcome =
   | { kind: 'written'; doc: TruthDoc; etag: string | undefined }
   | { kind: 'refused'; notice: string }
-
-const messageOf = (err: unknown) =>
-  err instanceof Error ? err.message : String(err)
 
 /**
  * Write a truth document. One attempt, no retry-and-merge: unlike notes,

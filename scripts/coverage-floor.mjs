@@ -206,17 +206,27 @@ const FORMATS = [
     /**
      * Two points below the lowest measured figure for each metric — the rule
      * these were set by, and no longer quite true of all four. Re-measured
-     * 2026-08-14: the margins are now 0.85 statements, 1.41 branches, 2.33
-     * functions and 1.02 lines. They are left where they are because every one
-     * still passes and lowering a floor to restore a margin is how a gate stops
-     * gating; `statements` is the one to watch, and the fix when it fires is a
-     * test for `Labeller.tsx` rather than an 89 here.
+     * 2026-09-12 (O103): the margins are **1.85 statements, 3.25 branches,
+     * 2.33 functions and 3.00 lines**, and the lowest file is `Shell.tsx` on
+     * the first two, `decode.ts` on functions and `users.ts` on lines. They
+     * are left where they are because every one still passes and lowering a
+     * floor to restore a margin is how a gate stops gating.
+     *
+     * **The two that moved are the argument for re-deriving these rather than
+     * reading them.** They read 0.85 statements and 1.41 branches on
+     * 2026-08-14, and by 2026-09-12 the branches figure was **0.78** — under
+     * the statements one this comment had named as the one to watch — because
+     * `Users.tsx` arrived at 78.78% against a floor of 78 and no run says so
+     * while it passes. One uncovered branch in that file would have failed
+     * CI. O103's nine guard tests are what moved it; the statements margin
+     * moved with them, and the fix that comment prescribed — a test for
+     * `Labeller.tsx`, not an 89 here — is the one that was written.
      */
     floors: {
-      statements: 91, // lowest measured: Labeller.tsx, 91.85
-      branches: 78, // lowest measured: api.ts, 79.41
-      functions: 91, // lowest measured: decode.ts, 93.33
-      lines: 92, // lowest measured: api.ts, 93.02
+      statements: 91, // derived from Labeller.tsx 91.85; lowest now Shell.tsx 92.85
+      branches: 78, // derived from api.ts 79.41; lowest now Shell.tsx 81.25
+      functions: 91, // derived from decode.ts 93.33; still decode.ts 93.33
+      lines: 92, // derived from api.ts 93.02; lowest now users.ts 95.00
     },
     check: 'the `coverage.include` and `coverage.exclude` lists in web/vite.config.ts',
     *entries(report) {

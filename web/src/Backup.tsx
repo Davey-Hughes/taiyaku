@@ -42,6 +42,7 @@ import {
   takeBackup,
 } from './backup'
 import { humanBytes } from './bytes'
+import { messageOf } from './message'
 
 export function Backup() {
   const [backups, setBackups] = useState<StoredBackup[] | undefined>()
@@ -84,7 +85,7 @@ export function Backup() {
       })
       .catch((err: unknown) => {
         if (seq !== latest.current) return
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
   }, [])
 
@@ -106,7 +107,7 @@ export function Backup() {
       .catch((err: unknown) => {
         inFlight.current = false
         setTaking(false)
-        setTakeFailure(err instanceof Error ? err.message : String(err))
+        setTakeFailure(messageOf(err))
       })
   }
 

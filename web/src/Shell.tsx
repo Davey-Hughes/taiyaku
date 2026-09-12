@@ -25,6 +25,7 @@ import { fieldChanged, sliceFor, sliceReset } from './module'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
 import { InboxRefreshContext, StatusContext } from './shell'
 import { Sidebar } from './Sidebar'
+import { messageOf } from './message'
 
 /**
  * `browseRegistry.all()`, hoisted once. `usePrefsMap`'s persistence effect
@@ -106,7 +107,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
     return () => {
       cancelled = true

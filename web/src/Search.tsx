@@ -26,6 +26,7 @@ import { debounce } from './debounce'
 import { EmptyState } from './EmptyState'
 import { search as fetchSearch, type SearchHits } from './library'
 import { SeriesGrid } from './SeriesGrid'
+import { messageOf } from './message'
 
 export function Search() {
   const [params, setParams] = useSearchParams()
@@ -50,7 +51,7 @@ export function Search() {
           })
           .catch((err: unknown) => {
             if (seq !== latest.current) return
-            setFailure(err instanceof Error ? err.message : String(err))
+            setFailure(messageOf(err))
           })
       }, 250),
     [],

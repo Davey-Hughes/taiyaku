@@ -321,10 +321,10 @@ describe('Shell', () => {
   })
 
   /**
-   * `fetchStatus().catch` reads `err instanceof Error ? err.message :
-   * String(err)`, and every other test in this file that reaches the
-   * `catch` rejects with a real `Error` — so the `String(err)` half has never
-   * run. A `fetch` rejection is not always an `Error`: a request `AbortController`
+   * `fetchStatus().catch` reads `message.ts`'s `messageOf`, and every other
+   * test in this file that reaches the `catch` rejects with a real `Error` —
+   * so its `String(err)` half runs here and nowhere else on this screen. A
+   * `fetch` rejection is not always an `Error`: a request `AbortController`
    * cancels, or a mock in another test, can reject with anything at all, and
    * this is what the reader sees when it does.
    */

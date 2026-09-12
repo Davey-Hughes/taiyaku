@@ -38,6 +38,7 @@ import {
   withPage,
   type PixelFrame,
 } from './truthWrite'
+import { messageOf } from './message'
 
 /**
  * How long a burst of box edits — or of page flips, which also count, see
@@ -105,9 +106,6 @@ const NO_PREFS: LabellerPrefs = { ...FIRST_BOX, edition: undefined, page: 0 }
 
 /** `App.tsx`'s `NO_WINDOW_WIDTH` — a desktop width, so a document-less environment gets the layout a real screen would rather than the narrowest one. */
 const NO_WINDOW_WIDTH = 1280
-
-const messageOf = (err: unknown) =>
-  err instanceof Error ? err.message : String(err)
 
 export interface LabellerProps {
   initialBoxes?: readonly LabelBox[]

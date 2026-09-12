@@ -15855,3 +15855,161 @@ reads 97.49 / 93.99 / 99.10 / 99.17 and the run above gives 97.42 / **92.80** /
 1.99 points of margin over its threshold of 92 to **0.80**, which is a judgement
 about whether that threshold still holds rather than a transcription error, and
 it does not belong on a branch whose one claim is the file count.
+
+*That judgement was made on 2026-09-12 and is **O103**, below: 92 did not move,
+the coverage did, and the cause turned out not to be in this document's guess at
+it — the old tree had not regressed at all. `docs/ci.md`'s four web aggregate
+rows now read the 2026-09-12 figures. The paragraph above is left as written.*
+
+## O103: the branches margin, and what was actually under it — 2026-09-12
+
+The web `branches` aggregate sat **0.80** points over its threshold of 92, down
+from the 2.38 it was set with on 2026-08-09 and the 1.99 recorded on
+2026-08-14. O98 measured **92.80** and deliberately left it: whether 92 still
+holds is a judgement, not a transcription. This is that judgement, measured
+first.
+
+### The slide is dilution, not regression
+
+Re-measured on `main` at `b6a1a0a`: 97.42 / **92.80** / 99.16 / 99.22 over 108
+files, branches **2619/2822**. Splitting that report against `git log` — the 42
+web source files added since 2026-08-15, none deleted and none renamed in the
+window, so the two sets are exactly the old tree and C4's three UI PRs:
+
+| set | files | branches | covered | uncovered |
+|---|---:|---:|---:|---:|
+| in the tree on 2026-08-14 | 66 | 1755 | 1649 | 106 |
+| added since | 42 | 1067 | 970 | 97 |
+| **total** | **108** | **2822** | **2619** | **203** |
+
+93.96% against **90.91%**. The old tree measured 93.99% on 2026-08-14 and
+measures 93.96% now — it did not move. Had the 42 new files landed at the tree's
+own rate, the total would read 93.96% and the margin 1.96, which is the two
+points the rule asks for. **The entire 1.19-point slide is new code arriving
+three points below the tree**, and the gate was green at every commit on the way
+down because an aggregate cannot see a marginal rate.
+
+### What the 203 uncovered branches actually were
+
+Classified by the source line each uncovered arm sits on:
+
+| shape | count |
+|---|---:|
+| `err instanceof Error ? err.message : String(err)` | **30** |
+| defensive early return (`if (!current) return`) | 38 |
+| `??` fallback | 35 |
+| race guard (`cancelled`, `seq !== latest.current`) | 26 |
+| everything else | 74 |
+
+The first is one idiom at **40 sites across 21 files**, 80 branch arms of which
+30 were uncovered — and four of those files had already grown a private one-line
+helper for it (`Labeller.tsx`, `RuleEditor.tsx`, `notesWrite.ts`,
+`truthWrite.ts`), three under the name `messageOf` and one under `message`. That
+is `bytes.ts`'s own argument arriving: a second formatter is one that drifts, and
+here there were forty.
+
+### Removing branches, then buying nine
+
+Collapsing the forty sites into `web/src/message.ts` removes 78 branch locations
+and 30 uncovered ones. Predicted before the edit and measured after:
+
+| | branches | pct | margin |
+|---|---|---:|---:|
+| `main` at `b6a1a0a` | 2619/2822 | 92.80 | 0.80 |
+| after `messageOf` | 2571/2744 | 93.69 | 1.69 |
+| after nine guard tests | 2580/2744 | 94.02 | 2.02 |
+| after the `Tab` test | 2581/2744 | **94.05** | **2.05** |
+
+94.00 is the figure at which the two-point rule re-derives the 92 that is
+already set, which is why it was the target rather than a number chosen to feel
+safe.
+
+**Which nine, and why not the other seventeen.** The `??` fallbacks and the
+`if (!current) return` guards are states the code refuses; a test for one asserts
+that an impossible thing is handled. The race guards are the opposite — each is
+reachable the moment two reads are in flight, and removing one changes what a
+person sees. Nine of those were pinned, each by holding the *first* call open
+with a deferred promise and settling it last (two `mockResolvedValueOnce`s
+resolve in call order, so the guard is never true and the branch is never taken):
+
+| file | branches | what a stale answer would do |
+|---|---:|---|
+| `Users.tsx` | 2 | the list as it was before the account was added |
+| `Library.tsx` | 2 | another root's grid under this root's heading |
+| `Series.tsx` | 2 | the series the reader just left, redrawn over the one they asked for |
+| `RuleEditor.tsx` | 2 | a Save button counting works for a rule list nobody is looking at |
+| `Search.tsx` | 1 | a red banner naming a query the box no longer holds |
+
+Every one hand-mutated and watched: the guard deleted, the suite run, exactly
+one test red, the file restored. The `RuleEditor` success guard had been
+*evaluated* 116 times and taken none.
+
+**The `cancelled`-on-unmount guards were left alone deliberately.** React 19
+warns on nothing when state is set after unmount, so a test for one of those
+passes with the guard removed — a test that passes against its own defect, which
+is the thing this repository keeps finding by hand-applying the defect. They stay
+uncovered and that is the honest reading.
+
+### Two things found while re-deriving, both worse than the item
+
+**The per-file branches floor was tighter than the aggregate and nothing said
+so.** `Users.tsx` measured **78.78%** against `coverage-floor.mjs`'s floor of 78
+— margin **0.78**, and at 26/33 branches a single uncovered one takes it to
+75.76% and fails CI. It had overtaken the statements margin that the script's own
+comment names as the one to watch. Found by re-deriving the table in
+`docs/ci.md`, not by a run: every run was green.
+
+**`docs/status.md`'s jsdom test count was two short before this branch.** It read
+934 against an actual 936 on `main` — the ungated half of the figure, exactly as
+the ritual predicts. Corrected to the measured **947** here rather than by adding
+a delta to a wrong number.
+
+### The one behaviour change, and the review pass that found it unpinned
+
+`Account.tsx`'s two Revoke handlers read
+`why instanceof Error ? \`That key was not revoked: ${why.message}\` : String(why)`
+— the clause naming the gesture was on the `Error` arm alone, so a rejection that
+was not an `Error` printed the bare reason under a row still sitting on screen.
+That is the same indistinguishability the case above it in `Account.test.tsx`
+exists to prevent (*"a revocation that did not happen must not look like one that
+did"*, found by the third whole-branch review), reached by the other arm.
+Collapsing the ternary made the prefix unconditional.
+
+**It shipped unpinned and a pass over the branch's own diff is what caught it.**
+The suite's existing non-`Error` case stubs `fetch` for POST and PUT only, and
+both revocations are DELETE — so nothing in the file reached the arm that
+changed. The test added for it asserts the whole sentence with `toBe` rather
+than matching on the reason, because a match on the reason alone passes against
+the defect. Hand-applied: restoring the pre-collapse ternary gives
+`Received: "the network went away"` against
+`Expected: "That key was not revoked: the network went away"`.
+
+### The eight margins, before and after
+
+| gate | before | after |
+|---|---:|---:|
+| aggregate statements | 1.42 | 1.72 |
+| aggregate **branches** | **0.80** | **2.05** |
+| aggregate functions | 2.16 | 2.16 |
+| aggregate lines | 2.22 | 2.31 |
+| per-file statements | 0.85 (`Labeller.tsx`) | 1.85 (`Shell.tsx`) |
+| per-file **branches** | **0.78** (`Users.tsx`) | **3.25** (`Shell.tsx`) |
+| per-file functions | 2.33 | 2.33 |
+| per-file lines | 3.00 | 3.00 |
+
+The tightest gate in the web half is now aggregate statements at 1.72, which is
+the one to watch next. **`Shell.tsx` is the lowest file on two metrics because
+of this branch, not despite it**: its `messageOf` ternary had *both* arms covered,
+so collapsing it took 2 covered branches out of 15/18 and left 13/16 — the
+refactor lowers a per-file figure wherever the idiom was fully tested, and raises
+the aggregate because the block as a whole was 62.5% covered against a tree at
+92.8%.
+
+One test was needed beyond the nine: `Labeller.tsx` lost a covered statement with
+its private helper, taking the per-file statements margin from 0.85 to 0.78. The
+fix is the one `coverage-floor.mjs`'s comment prescribed — *"a test for
+`Labeller.tsx` rather than an 89 here"* — and it turned out to be the one
+documented key nothing had ever pressed: **`Tab`**, handled ahead of every other
+binding and returning before them, with three statements behind it that had never
+run. It cycles the boxes under the *cursor* rather than through the list, which
+is how two stacked balloons are reached without clicking through the top one.

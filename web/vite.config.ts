@@ -145,19 +145,25 @@ export default defineConfig({
       // Read these from `coverage/coverage-summary.json`, not from the text
       // table — the table omits every file at 100% on all four metrics, and
       // showed 18 rows against the JSON's 57 files when these were set. The
-      // report holds 66 files as of 2026-08-14.
+      // report holds 109 files as of 2026-09-12.
       //
-      // **The margins have narrowed since these were set, and the figures below
-      // are re-measured rather than the ones they were derived from.** Every
-      // threshold still passes, but `statements` now sits 1.49 above its
-      // measured value rather than the two points the rule asks for. The
-      // thresholds were not lowered to restore it: the number to move when this
-      // fires is the coverage, not the bar.
+      // **The margins narrow on their own, and `branches` proved it.** Nothing
+      // regressed: the 66 files that existed on 2026-08-14 still measured
+      // 93.96% a month later, while the 42 that arrived in between measured
+      // 90.91% — and a tree diluted three points below its own rate had taken
+      // `branches` from 2.38 of margin to **0.80** without a single gate run
+      // going red. O103 put it back, and the sentence this comment has always
+      // carried is why it was put back rather than legislated away: **the
+      // number to move when this fires is the coverage, not the bar.** What
+      // moved the coverage was mostly *removing* branches — forty copies of
+      // `err instanceof Error ? err.message : String(err)` became one
+      // `messageOf` in `src/message.ts` — plus nine tests for the stale-answer
+      // guards no test had ever reached. `docs/ci.md` has the arithmetic.
       thresholds: {
-        statements: 96, // measured 97.52, was 98.03 when set
-        branches: 92, // measured 93.38, was 94.38 when set
-        functions: 97, // measured 99.08, was 99.29 when set
-        lines: 97, // measured 99.27, was 99.53 when set
+        statements: 96, // measured 97.72, was 98.03 when set
+        branches: 92, // measured 94.05, was 94.38 when set
+        functions: 97, // measured 99.16, was 99.29 when set
+        lines: 97, // measured 99.31, was 99.53 when set
         // **These are aggregate, and an aggregate cannot see one module go
         // dark.** Measured: skipping the whole of `pairing.test.ts` drops
         // `pairing.ts` from 100% to 83.58% and the total only 98.03% → 97.49%,

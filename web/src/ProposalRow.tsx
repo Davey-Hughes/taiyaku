@@ -85,6 +85,7 @@ import {
   type Side,
   strength,
 } from './curation'
+import { messageOf } from './message'
 
 /** Which end of the proposal a panel is drawing, as a word and as a label. */
 const SIDES = {
@@ -327,7 +328,7 @@ export function ProposalRow({
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
     return () => {
       cancelled = true
@@ -344,7 +345,7 @@ export function ProposalRow({
       })
       .catch((err: unknown) => {
         setDismissing(false)
-        setDismissal(err instanceof Error ? err.message : String(err))
+        setDismissal(messageOf(err))
       })
   }
 

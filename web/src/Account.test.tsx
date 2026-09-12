@@ -674,10 +674,80 @@ describe('Account', () => {
   })
 
   /**
+   * **The clause naming the gesture used to be on the `Error` arm alone.**
+   * Both Revoke handlers read
+   * `why instanceof Error ? `That key was not revoked: ${why.message}` : String(why)`,
+   * so a rejection that was not an `Error` — a cancelled request, a proxy
+   * closing the socket — printed the bare reason with no clause saying what had
+   * failed, under a row still sitting on screen. That is the same
+   * indistinguishability the case above this one exists to prevent, reached by
+   * the other arm. O103 collapsed the ternary into `messageOf` and the prefix
+   * became unconditional; this is what holds it there. The non-`Error` case
+   * further down drives the POST and PUT forms only and never reaches a DELETE.
+   */
+  it('still names the gesture when a revoke rejects with something that is not an Error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: string, init?: RequestInit) => {
+        if ((init?.method ?? 'GET') === 'DELETE')
+          return Promise.reject('the network went away')
+        if (input === '/api/keys')
+          return Promise.resolve(
+            json([
+              { id: 7, name: 'lost tablet', created: 'then', last_used: null },
+            ]),
+          )
+        return Promise.resolve(
+          json([
+            {
+              id: 'bb',
+              created: 'then',
+              last_seen: 'yesterday',
+              user_agent: 'Safari',
+              ip: null,
+              current: false,
+            },
+          ]),
+        )
+      }),
+    )
+    const host = mount(
+      <Account visible={true} onClose={noop} onSignedOut={noop} />,
+    )
+    await settle()
+
+    const revokes = () =>
+      [...host.querySelectorAll('button')].filter(
+        (b) => b.textContent === 'Revoke',
+      )
+    await act(async () => {
+      revokes()[0]?.click()
+      await Promise.resolve()
+    })
+    await settle()
+    // Both halves asserted: the reason *and* the clause that says what it was
+    // the reason for. A match on the reason alone passes against the defect.
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'That key was not revoked: the network went away',
+    )
+
+    await act(async () => {
+      revokes()[1]?.click()
+      await Promise.resolve()
+    })
+    await settle()
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'That session was not ended: the network went away',
+    )
+  })
+
+  /**
    * A rejection that is not an `Error` is still shown. Every handler here
-   * carries a `why instanceof Error ? why.message : String(why)`, and the second
-   * arm is the one nothing exercised — a `fetch` that rejects with a string, or
-   * a bare object, would otherwise render as nothing at all.
+   * routes its `catch` through `message.ts`'s `messageOf`, whose `String(err)`
+   * arm is the one nothing else exercises — a `fetch` that rejects with a
+   * string, or a bare object, would otherwise render as nothing at all. The
+   * arm is pinned directly in `message.test.ts`; this case is what proves it
+   * reaches the screen from a real handler, which a unit test cannot.
    */
   it('shows a rejection that is not an Error', async () => {
     vi.stubGlobal(

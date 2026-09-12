@@ -7,6 +7,7 @@ import * as library from './library'
 import type { LibraryStatus } from './library'
 import { Library } from './Library'
 import { StatusContext } from './shell'
+import { deferred, flush } from './testing/async'
 import { mount } from './testing/mount'
 
 vi.mock('./library', async (importOriginal) => ({
@@ -368,6 +369,75 @@ describe('the library screen', () => {
     // is gone — not merely replaced by a new one, which `.toBeNull()` alone
     // would not distinguish from "still broken, differently".
     expect(host.querySelector('[role="alert"]')).toBeNull()
+  })
+
+  /**
+   * **The two `cancelled` guards, which no test had reached.**
+   *
+   * The effect re-fires on `root`, so switching root while the first load is
+   * still in flight leaves two `Promise.all`s outstanding — and the store need
+   * not answer them in order. The cleanup's `cancelled = true` is what stops
+   * the *departed* root's answer from being drawn under the new root's
+   * heading, which is a grid of the wrong library showing rows the grant for
+   * this root may not include.
+   *
+   * Both tests hold the first load open with `deferred` rather than ordering
+   * two `mockResolvedValueOnce`s: mocked promises resolve in call order, so
+   * the guard is never true and the branch is never taken.
+   */
+  describe('a load for a root that has since been left', () => {
+    const twoRoots = async (first: Promise<library.Grid>) => {
+      const second = deferred<library.Grid>()
+      vi.mocked(library.grid)
+        .mockReturnValueOnce(first)
+        .mockReturnValueOnce(second.promise)
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(
+          <MemoryRouter initialEntries={['/?root=1']}>
+            <StatusContext.Provider value={defaultStatus}>
+              <div>
+                <Link to="/?root=2">the other root</Link>
+                <Library />
+              </div>
+            </StatusContext.Provider>
+          </MemoryRouter>,
+        )
+      })
+      await flush()
+      await act(async () => {
+        host.querySelector<HTMLAnchorElement>('a[href="/?root=2"]')?.click()
+      })
+      await flush(() =>
+        second.resolve({
+          series: [series({ id: 2, title: 'Two' })],
+          unfiled: [],
+        }),
+      )
+      expect(host.querySelector('ul.grid .title')?.textContent).toBe('Two')
+      return host
+    }
+
+    it('is not drawn when it answers after the root was changed', async () => {
+      const first = deferred<library.Grid>()
+      const host = await twoRoots(first.promise)
+      await flush(() =>
+        first.resolve({
+          series: [series({ id: 1, title: 'One' })],
+          unfiled: [],
+        }),
+      )
+      expect(host.textContent).not.toContain('One')
+      expect(host.querySelector('ul.grid .title')?.textContent).toBe('Two')
+    })
+
+    it('does not put its failure over the root that loaded', async () => {
+      const first = deferred<library.Grid>()
+      const host = await twoRoots(first.promise)
+      await flush(() => first.reject(new Error('root 1 is no longer mounted')))
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      expect(host.querySelector('ul.grid .title')?.textContent).toBe('Two')
+    })
   })
 
   /**

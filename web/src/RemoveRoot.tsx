@@ -40,6 +40,7 @@ import {
   type Root,
 } from './config'
 import { DeriveSection } from './ScanReport'
+import { messageOf } from './message'
 
 /**
  * `n` of a thing, in the number the count actually is.
@@ -96,7 +97,7 @@ export function RemoveRoot({ root, onCancel, onRemoved }: RemoveRootProps) {
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
     return () => {
       cancelled = true
@@ -112,7 +113,7 @@ export function RemoveRoot({ root, onCancel, onRemoved }: RemoveRootProps) {
       .catch((err: unknown) => {
         inFlight.current = false
         setRemoving(false)
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
   }
 

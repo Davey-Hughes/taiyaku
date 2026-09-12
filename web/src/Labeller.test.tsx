@@ -234,6 +234,45 @@ describe('Labeller keys', () => {
     ).toBe('')
   })
 
+  it('selects what the cursor is over when Tab is pressed', () => {
+    // **Tab was the one documented key nothing pressed.** It is handled ahead
+    // of every other binding and returns before them, which is exactly the
+    // shape the wiring test above warns a key can be swallowed by — and the
+    // three statements behind that `if` had never run.
+    //
+    // `cycleAt` reads the **cursor**, not the box list: Tab means "the next
+    // box under the pointer", which is how two stacked balloons are reached
+    // without clicking through the top one. So the pointer has to be put
+    // somewhere first, and jsdom has no layout to put it in — `stubRect` is
+    // the same accommodation the drag tests above already make.
+    const host = mount(<Labeller initialBoxes={one} />)
+    const page = host.querySelector('[data-testid="label-page"]') as HTMLElement
+    stubRect(page, { left: 0, top: 0, width: 400, height: 400 })
+    const readout = () =>
+      host.querySelector('[data-testid="kind-readout"]')?.textContent
+    expect(readout()).toBe('')
+
+    // 80 of 400 is 0.2, inside box `a`'s 0.1–0.3 on both axes.
+    act(() => {
+      page.dispatchEvent(
+        new PointerEvent('pointermove', {
+          clientX: 80,
+          clientY: 80,
+          bubbles: true,
+        }),
+      )
+    })
+    press('Tab')
+    expect(readout()).toBe('dialogue')
+
+    // One box under the cursor cycles to itself rather than to nothing —
+    // `(0 + 1) % 1`. The assertion is here because the obvious wrong
+    // implementation, advancing an index into `boxes`, clears the selection
+    // on the second press instead.
+    press('Tab')
+    expect(readout()).toBe('dialogue')
+  })
+
   it('selects the box it just drew, so the kind keys land on it', () => {
     // Draw, then tag, with nothing in between. Two steps per box across ~900
     // of them is the cost; the sharper problem is that the two-step version

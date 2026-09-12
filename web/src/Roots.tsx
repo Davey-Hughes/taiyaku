@@ -55,6 +55,7 @@ import {
   type Root,
 } from './config'
 import { RootRow } from './RootRow'
+import { messageOf } from './message'
 
 export function Roots() {
   const [roots, setRoots] = useState<Root[] | undefined>()
@@ -117,7 +118,7 @@ export function Roots() {
       })
       .catch((err: unknown) => {
         if (seq !== latest.current) return
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
   }, [])
 
@@ -152,7 +153,7 @@ export function Roots() {
       .catch((err: unknown) => {
         inFlight.current = false
         setAdding(false)
-        setAddFailure(err instanceof Error ? err.message : String(err))
+        setAddFailure(messageOf(err))
       })
   }
 

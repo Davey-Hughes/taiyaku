@@ -34,6 +34,7 @@ import {
   editionDownload,
   workCover,
 } from './library'
+import { messageOf } from './message'
 
 interface Loaded {
   series: SeriesCard
@@ -442,7 +443,7 @@ export function Series() {
         pending.current.delete(slug)
         setDetail((prev) => ({
           ...prev,
-          [slug]: { error: err instanceof Error ? err.message : String(err) },
+          [slug]: { error: messageOf(err) },
         }))
       })
   }
@@ -469,7 +470,7 @@ export function Series() {
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
     return () => {
       cancelled = true

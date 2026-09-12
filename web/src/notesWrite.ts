@@ -9,6 +9,7 @@
  */
 import type { FetchedNotes } from './api'
 import { mergeOver, type Note, type NotesDoc } from './notes'
+import { messageOf } from './message'
 
 /**
  * `api.ts`'s `putNotes` and `getNotes`, injected.
@@ -137,9 +138,6 @@ const STALE = 'changed since you read them'
 
 const KEPT_ON_TOP =
   'These notes changed on another device; yours were kept on top.'
-
-const messageOf = (err: unknown) =>
-  err instanceof Error ? err.message : String(err)
 
 /**
  * Write a notes document, and on a stale validator re-read, lay `notes` back

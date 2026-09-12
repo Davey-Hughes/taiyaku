@@ -1,5 +1,6 @@
 import { useState, type CSSProperties, type FormEvent } from 'react'
 import { login } from './api'
+import { messageOf } from './message'
 
 /**
  * The sign-in screen.
@@ -105,7 +106,7 @@ export function Login({ onSignedIn }: LoginProps) {
         onSignedIn()
       })
       .catch((why: unknown) => {
-        setFailure(why instanceof Error ? why.message : String(why))
+        setFailure(messageOf(why))
       })
       .finally(() => {
         setBusy(false)

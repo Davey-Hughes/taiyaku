@@ -126,6 +126,7 @@ import {
   type Side,
 } from './curation'
 import { debounce } from './debounce'
+import { messageOf } from './message'
 
 /**
  * The two `rules::RuleKind` values a rule written from a proposal can take.
@@ -220,7 +221,7 @@ export function AcceptForm({
           })
           .catch((err: unknown) => {
             if (seq !== latest.current) return
-            setPreviewFailure(err instanceof Error ? err.message : String(err))
+            setPreviewFailure(messageOf(err))
           })
       }, RESOLUTION_DEBOUNCE_MS),
     [id],
@@ -283,7 +284,7 @@ export function AcceptForm({
         // the row is not going anywhere, and a second attempt is the only
         // thing left to do.
         setAccepting(false)
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
   }
 

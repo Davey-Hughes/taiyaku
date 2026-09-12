@@ -79,6 +79,7 @@ import {
 } from './config'
 import { RemoveRoot } from './RemoveRoot'
 import { DeriveSection, ScanReport } from './ScanReport'
+import { messageOf } from './message'
 
 export interface RootRowProps {
   root: Root
@@ -295,7 +296,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
         onChanged()
       })
       .catch((err: unknown) => {
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
   }
 
@@ -306,7 +307,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
         onChanged()
       })
       .catch((err: unknown) => {
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
   }
 
@@ -378,7 +379,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
       .catch((err: unknown) => {
         inFlight.current = false
         setStarting(false)
-        const why = err instanceof Error ? err.message : String(err)
+        const why = messageOf(err)
         setFailure(why)
         // **A 409 is positive proof a scan is in flight**, so it starts the
         // poll rather than only complaining. Without this the card stayed
@@ -421,7 +422,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
           misses.current += 1
           if (misses.current < POLL_MISSES_ALLOWED) return
           setRunning(false)
-          setScanNotice(err instanceof Error ? err.message : String(err))
+          setScanNotice(messageOf(err))
         })
     }, SCAN_POLL_MS)
     return () => {
@@ -532,7 +533,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
                   // doc comment for why this box is controlled and the text
                   // ones are not.
                   setKeepsDocuments(!next)
-                  setFailure(err instanceof Error ? err.message : String(err))
+                  setFailure(messageOf(err))
                 })
             }}
           />

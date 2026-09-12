@@ -19,6 +19,7 @@ import { navigate, type ReadingState } from './reading'
 import { alignmentsOf, type Alignment } from './session'
 import { allSlots, type Session } from './startup'
 import type { Position, Resolver } from './resolver'
+import { messageOf } from './message'
 
 export interface Pending {
   /** The edition being read — the one whose slot `a` names. */
@@ -223,7 +224,7 @@ export async function submitCorrection(
       to,
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = messageOf(err)
     if (!message.includes(STALE)) return { kind: 'refused', notice: message }
     try {
       const fresh = await ports.sidecar(work)

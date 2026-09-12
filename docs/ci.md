@@ -405,23 +405,25 @@ signal a re-measurement was owed.*
 
 | gate | metric | measured | threshold | set in |
 | ---- | ------ | -------- | --------- | ------ |
-| web | statements, aggregate | 97.49% | 96 | `web/vite.config.ts` |
-| web | branches, aggregate | 93.99% | 92 | `web/vite.config.ts` |
-| web | functions, aggregate | 99.10% | 97 | `web/vite.config.ts` |
-| web | lines, aggregate | 99.17% | 97 | `web/vite.config.ts` |
+| web | statements, aggregate | 97.72% | 96 | `web/vite.config.ts` |
+| web | branches, aggregate | 94.05% | 92 | `web/vite.config.ts` |
+| web | functions, aggregate | 99.16% | 97 | `web/vite.config.ts` |
+| web | lines, aggregate | 99.31% | 97 | `web/vite.config.ts` |
 | Rust | lines, aggregate | 93.64% | 93 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
 | Rust | lines, **per file** | 74.48%, `taiyaku-serve/src/lib.rs` | 57 | `scripts/coverage-floor.mjs` |
-| web | **files in the report** | 108 | 101 | `scripts/coverage-floor.mjs` |
+| web | **files in the report** | 109 | 101 | `scripts/coverage-floor.mjs` |
 | Rust | **files in the report** | 82 | 40 | `scripts/coverage-floor.mjs` |
 
-**The web row for files is measured 2026-09-11; the four web *aggregate* rows
-above it are the 2026-08-14 measurement and have drifted.** The same run that
-re-derived `minFiles` reports 97.42 / **92.80** / 99.16 / 99.22, so `branches`
-has narrowed from 1.99 points over its threshold to **0.80**. The rows are left
-as they stand rather than quietly refreshed: whether 92 still holds is a
-judgement about that threshold, not a transcription, and it did not belong on
-the branch that closed O98. The figures are in `docs/notes.md` under
-"O98: re-running the `minFiles` experiment". The Rust *per-file* row moved with
+**The four web *aggregate* rows are measured 2026-09-12, on the branch that
+closed O103, and the margin they carry was worked for rather than found.** They
+read 97.49 / 93.99 / 99.10 / 99.17 on 2026-08-14 and 97.42 / **92.80** / 99.16 /
+99.22 a month later — `branches` down to **0.80** over its threshold from the
+2.38 it was set with. O98 left them as they stood, on the ground that whether 92
+still holds is a judgement rather than a transcription; O103 is that judgement,
+and it went the way this file's own rule says it must. **92 did not move.** The
+arithmetic is under "Why the branches margin narrowed" below and the run is in
+`docs/notes.md` under "O103: the branches margin, and what was actually under
+it". The Rust *per-file* row moved with
 the same run — `taiyaku-serve/src/lib.rs` at **74.48%** against a floor of 57 —
 and the second summary table further down had named `truth.rs` at 73.68% for it,
 a file that has since reached 100%. Two rows for one figure, disagreeing; both
@@ -440,7 +442,8 @@ without anything failing. That is the pattern `docs/status.md` warns about,
 appearing in the document that describes the gate.
 
 The four web per-file floors have their own table under "The other half" below,
-beside the lowest file each was derived from.
+beside the lowest file each was derived from **and the lowest file today**,
+which are not the same and stopped being the same without a run saying so.
 
 **The two minimums do not follow the two-points rule, and are not meant to.**
 They are counts, not percentages, and the failure they exist to catch is not a
@@ -497,6 +500,46 @@ unrelated change to which files a test imports moves the web figures by
 fractions; one point would make the gate flap. Five would let a whole module
 regress in silence. The margin is a compromise and the regression proofs below
 record exactly what it does and does not catch.
+
+### Why the branches margin narrowed, and what was actually under it
+
+**Nothing regressed.** Measured 2026-09-12, by splitting the report against
+`git log`: the 66 files that were in the tree on 2026-08-14 measure **93.96%**
+branches — the 93.99% recorded for them then — and the 42 that arrived in
+between measure **90.91%**, carrying 97 of the 203 uncovered branches on 38% of
+the branch mass. No web source file was deleted or renamed in that window, so
+the two sets are exactly the old tree and the new work. Had the 42 landed at the
+tree's own rate the total would still have read 93.96% and the margin 1.96. The
+whole 1.19-point slide is dilution by new code arriving three points below the
+tree, which is a thing a gate should notice and this one could not: the
+aggregate was green at every commit on the way down.
+
+**Half the uncovered branches were three idioms, and the largest was a
+duplicate.** Of the 203: **30** were the false arm of
+`err instanceof Error ? err.message : String(err)`, at 40 sites across 21 files
+— four of which had already grown a private one-line helper for it, three under
+the name `messageOf` and one under `message`. 26 were race guards
+(`if (cancelled) return`, `if (seq !== latest.current) return`), 35 were `??`
+fallbacks and 38 defensive early returns of the `if (!current) return` shape.
+
+**So the fix was mostly to remove branches rather than to test them.** The forty
+sites became one `messageOf` in `web/src/message.ts`, tested once: 78 fewer
+branch locations, 30 fewer uncovered, and the aggregate moved 92.80 → 93.69
+without a single assertion about an unreachable state. A branch that exists only
+because forty files spell the same ternary is not coverage the gate wants; it is
+a subtraction no test anybody would write could pay back.
+
+**The remaining nine were bought honestly, and the choice of which nine is the
+point.** The `?? fallback` and `if (!current) return` branches are states the
+code refuses, and a test for one asserts that an impossible thing is handled —
+the definition of the theatre this gate exists to avoid. The race guards are the
+opposite: each is reachable the moment two reads are in flight, and taking one
+out changes what a person sees. Nine were pinned (`Users.tsx` ×2, `Library.tsx`
+×2, `Series.tsx` ×2, `RuleEditor.tsx` ×2, `Search.tsx`), every one of them
+hand-mutated and watched to fail — see `docs/notes.md` for the list. The
+**`cancelled`-on-unmount** guards were deliberately left alone: React 19 warns
+on nothing when state is set after unmount, so a test for one would pass with
+the guard removed, which is a test that passes against its own defect.
 
 **Lines, not regions, for Rust.** llvm-cov reports regions below lines on
 `match`-heavy code — 90.65% against 93.64% here, re-measured 2026-08-18 (it
@@ -929,18 +972,27 @@ one number per metric.** Five in total across both languages, each two points
 below its metric's lowest honest figure on a clean tree, plus two file-count
 minimums:
 
-| format | metric | floor | lowest measured |
-| ------ | ------ | ----- | --------------- |
-| istanbul (web) | statements | 91 | `Labeller.tsx`, 91.85% |
-| istanbul (web) | branches | 78 | `api.ts`, 79.41% |
-| istanbul (web) | functions | 91 | `decode.ts`, 93.33% |
-| istanbul (web) | lines | 92 | `api.ts`, 93.02% |
-| llvm-cov (Rust) | lines | 57 | `taiyaku-serve/src/lib.rs`, 74.48% |
+| format | metric | floor | derived from | lowest now (2026-09-12) |
+| ------ | ------ | ----- | ------------ | ----------------------- |
+| istanbul (web) | statements | 91 | `Labeller.tsx`, 91.85% | `Shell.tsx`, 92.85% |
+| istanbul (web) | branches | 78 | `api.ts`, 79.41% | `Shell.tsx`, 81.25% |
+| istanbul (web) | functions | 91 | `decode.ts`, 93.33% | `decode.ts`, 93.33% |
+| istanbul (web) | lines | 92 | `api.ts`, 93.02% | `users.ts`, 95.00% |
+| llvm-cov (Rust) | lines | 57 | `taiyaku-serve/src/lib.rs`, 74.48% | unchanged |
 
 | format | files measured | `minFiles` |
 | ------ | -------------: | ---------: |
-| istanbul (web) | 108 | 101 |
+| istanbul (web) | 109 | 101 |
 | llvm-cov (Rust) | 82 | 40 |
+
+**A fifth column, because the fourth stopped being true and nothing said so.**
+The floors were derived from the fourth; the fifth is what a run measures today,
+and the two came apart quietly. On 2026-09-12 the web **branches** margin here
+was **0.78** — `Users.tsx` at 78.78% against a floor of 78, one uncovered branch
+away from a red gate — having overtaken the statements margin that
+`coverage-floor.mjs`'s own comment named as the one to watch. It was found by
+re-deriving this table rather than by any run, which is the same failure mode
+the aggregate rows above have had twice. O103's guard tests moved it to 3.25.
 
 **The count is checked ahead of the floors, deliberately.** If the report
 collapsed then every per-file finding under it is noise and the count is the real
@@ -983,9 +1035,12 @@ all, which is the one thing an aggregate provably cannot see. On the
       web/src/pairing.ts  functions 81.81% < 91%
       web/src/pairing.ts  lines 86.20% < 92%
 
-and on a clean tree it says what it measured rather than only that it passed:
+and on a clean tree it says what it measured rather than only that it passed
+(2026-09-12; it read `57 files (floor requires 50)` when this block was written,
+and the two numbers moving apart is the whole of what "The other half"'s fifth
+column is for):
 
-    coverage-floor: 57 files (floor requires 50), all above the per-file floor — istanbul json-summary
+    coverage-floor: 109 files (floor requires 101), all above the per-file floor — istanbul json-summary
 
 **Why a script and not more configuration.** vitest cannot express both halves.
 A glob entry in `coverage.thresholds` is aggregated over the files it matches —

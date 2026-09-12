@@ -2,6 +2,7 @@ import { act } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from './config'
 import { GateContext } from './gate'
+import { deferred, flush } from './testing/async'
 import { mount } from './testing/mount'
 import * as usersApi from './users'
 import { Users } from './Users'
@@ -252,5 +253,60 @@ describe('Users', () => {
     expect(host.querySelector('.grants')?.textContent).not.toContain(
       'no roots yet',
     )
+  })
+  // **The two `seq !== latest.current` guards, which no test had reached.**
+  // `reload` is handed to every card as `onChanged` and is also called after
+  // an add, so two list reads are routinely in flight at once — and the
+  // server need not answer them in order. Without the sequence check the
+  // *older* answer wins, and the screen settles on the list as it was before
+  // the write that triggered the newer read.
+  it('keeps the newer list when an older read answers after it', async () => {
+    const first = deferred<{ users: usersApi.User[] }>()
+    const second = deferred<{ users: usersApi.User[] }>()
+    vi.mocked(usersApi.listUsers)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    vi.mocked(usersApi.addUser).mockResolvedValue(user({ id: 2, name: 'sam' }))
+
+    const host = await settle()
+    await fill(host, 'new-name', 'sam')
+    await fill(host, 'new-password', 'hunter2')
+    await submitAdd(host)
+
+    await flush(() =>
+      second.resolve({ users: [user(), user({ id: 2, name: 'sam' })] }),
+    )
+    expect(host.querySelectorAll('li.user-row')).toHaveLength(2)
+
+    // The mount read finally answers, with the list as it was before `sam`
+    // existed. It is the stale one and must not be drawn.
+    await flush(() => first.resolve({ users: [user()] }))
+    expect(host.querySelectorAll('li.user-row')).toHaveLength(2)
+  })
+
+  it('keeps the newer list when an older read *fails* after it', async () => {
+    // The catch needs its own guard for the same reason and does not get one
+    // for free: a stale rejection would put a red alert over a list that was
+    // read successfully a moment later, and the failure slot is the same one
+    // the add form writes to.
+    const first = deferred<{ users: usersApi.User[] }>()
+    const second = deferred<{ users: usersApi.User[] }>()
+    vi.mocked(usersApi.listUsers)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    vi.mocked(usersApi.addUser).mockResolvedValue(user({ id: 2, name: 'sam' }))
+
+    const host = await settle()
+    await fill(host, 'new-name', 'sam')
+    await fill(host, 'new-password', 'hunter2')
+    await submitAdd(host)
+
+    await flush(() =>
+      second.resolve({ users: [user(), user({ id: 2, name: 'sam' })] }),
+    )
+    await flush(() => first.reject(new Error('/api/library/users: 503 gone')))
+
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.querySelectorAll('li.user-row')).toHaveLength(2)
   })
 })

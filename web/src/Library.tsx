@@ -36,6 +36,7 @@ import {
 } from './library'
 import { SeriesGrid } from './SeriesGrid'
 import { useLibraryStatus } from './shell'
+import { messageOf } from './message'
 
 const CHIPS: { id: Chip; label: string }[] = [
   { id: 'all', label: 'All' },
@@ -72,7 +73,7 @@ export function Library() {
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
     return () => {
       cancelled = true

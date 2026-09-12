@@ -36,6 +36,7 @@ import { listRoots, type Root } from './config'
 import { useGate } from './gate'
 import { addUser, listUsers, ROLES, type User } from './users'
 import { UserRow } from './UserRow'
+import { messageOf } from './message'
 
 export function Users() {
   const [users, setUsers] = useState<User[] | undefined>()
@@ -74,7 +75,7 @@ export function Users() {
       })
       .catch((err: unknown) => {
         if (seq !== latest.current) return
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
   }, [])
 
@@ -92,7 +93,7 @@ export function Users() {
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setRootsFailure(err instanceof Error ? err.message : String(err))
+        setRootsFailure(messageOf(err))
       })
     return () => {
       cancelled = true
@@ -118,7 +119,7 @@ export function Users() {
       .catch((err: unknown) => {
         inFlight.current = false
         setAdding(false)
-        setAddFailure(err instanceof Error ? err.message : String(err))
+        setAddFailure(messageOf(err))
       })
   }
 

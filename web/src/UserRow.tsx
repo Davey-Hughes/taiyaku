@@ -49,6 +49,7 @@ import {
   type User,
   type UserPatch,
 } from './users'
+import { messageOf } from './message'
 
 export interface UserRowProps {
   user: User
@@ -232,7 +233,7 @@ export function UserRow({
     inFlight.current = false
     setSaving(false)
     setRemoving(false)
-    setFailure(err instanceof Error ? err.message : String(err))
+    setFailure(messageOf(err))
   }
 
   const save = (patch: UserPatch, after?: () => void) => {
@@ -309,7 +310,7 @@ export function UserRow({
       })
       .catch((err: unknown) => {
         if (seq !== latestCost.current) return
-        setCostFailure(err instanceof Error ? err.message : String(err))
+        setCostFailure(messageOf(err))
       })
   }
 

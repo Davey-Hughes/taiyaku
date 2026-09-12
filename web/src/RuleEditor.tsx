@@ -166,9 +166,7 @@ import {
   saveRules,
   toDocument,
 } from './rules'
-
-const message = (err: unknown) =>
-  err instanceof Error ? err.message : String(err)
+import { messageOf } from './message'
 
 /**
  * Field-by-field, matching `RuleForm`'s own dirty-check comment. `Impact` is
@@ -303,7 +301,7 @@ export function RuleEditor() {
       .catch((err: unknown) => {
         if (seq !== latest.current) return
         setBusy(false)
-        setFailure(message(err))
+        setFailure(messageOf(err))
         // I2: a failed preview describes nothing — leaving the last
         // *successful* preview in place would keep Save enabled and stating
         // a number computed for a rule list that is no longer the one on
@@ -324,7 +322,7 @@ export function RuleEditor() {
         setFailure(undefined)
         runPreview(listed.rules, undefined)
       })
-      .catch((err: unknown) => setFailure(message(err)))
+      .catch((err: unknown) => setFailure(messageOf(err)))
   }, [runPreview])
 
   /** Every editor gesture lands here: set the rules, then preview once. */
@@ -432,7 +430,7 @@ export function RuleEditor() {
         held.current = undefined
         if (pending === undefined) {
           // Unchanged: nothing follows this, so `failure` survives to be read.
-          setFailure(message(err))
+          setFailure(messageOf(err))
           return
         }
         // O96, spec §5.1: the save wrote nothing, so the list is still the
@@ -452,7 +450,7 @@ export function RuleEditor() {
         // the very call meant to apply the edit it describes. Both land in
         // one React batch and the last write wins.
         setHeldNotice(
-          `The save failed: ${message(err)}. Your edit to rule ${pending.index + 1} ` +
+          `The save failed: ${messageOf(err)}. Your edit to rule ${pending.index + 1} ` +
             'arrived while it was running — it is applied to the list on screen and is ' +
             'unsaved.',
         )
@@ -530,7 +528,7 @@ export function RuleEditor() {
       // both writers dead for the session with a message and no way back.
       .catch((err: unknown) => {
         release()
-        setFailure(message(err))
+        setFailure(messageOf(err))
       })
   }
 
@@ -593,7 +591,7 @@ export function RuleEditor() {
         // malformed document), so the leak would be reached by the first
         // person who picked the wrong file.
         release()
-        setFailure(message(err))
+        setFailure(messageOf(err))
       })
 
   const exportDoc = () => {
@@ -606,10 +604,10 @@ export function RuleEditor() {
       // render it causes — for as long as a rule names a root this library
       // does not have, which is exactly as long as this catch keeps being
       // reached. React's own render-phase-update budget is not infinite: a
-      // bare `setFailure(message(err))` here crashed the whole screen with
+      // bare `setFailure(messageOf(err))` here crashed the whole screen with
       // "Too many re-renders" rather than showing the message, confirmed by
       // a minimal reproduction of the same pattern outside this component.
-      const reason = message(err)
+      const reason = messageOf(err)
       if (reason !== failure) setFailure(reason)
       return ''
     }

@@ -16,6 +16,7 @@ import {
   type ApiKey,
   type SessionRow,
 } from './api'
+import { messageOf } from './message'
 
 /**
  * The account screen: change a password, hold API keys, see what is signed in.
@@ -166,7 +167,7 @@ export function Account({ visible, onClose, onSignedOut }: AccountProps) {
         refresh()
       })
       .catch((why: unknown) => {
-        setFailure(why instanceof Error ? why.message : String(why))
+        setFailure(messageOf(why))
       })
       .finally(() => {
         setBusy(false)
@@ -189,7 +190,7 @@ export function Account({ visible, onClose, onSignedOut }: AccountProps) {
         refresh()
       })
       .catch((why: unknown) => {
-        setFailure(why instanceof Error ? why.message : String(why))
+        setFailure(messageOf(why))
       })
       .finally(() => {
         setBusy(false)
@@ -302,11 +303,7 @@ export function Account({ visible, onClose, onSignedOut }: AccountProps) {
                   void revokeKey(key.id)
                     .then(refresh)
                     .catch((why: unknown) => {
-                      setFailure(
-                        why instanceof Error
-                          ? `That key was not revoked: ${why.message}`
-                          : String(why),
-                      )
+                      setFailure(`That key was not revoked: ${messageOf(why)}`)
                     })
                 }}
               >
@@ -336,9 +333,7 @@ export function Account({ visible, onClose, onSignedOut }: AccountProps) {
                     .then(refresh)
                     .catch((why: unknown) => {
                       setFailure(
-                        why instanceof Error
-                          ? `That session was not ended: ${why.message}`
-                          : String(why),
+                        `That session was not ended: ${messageOf(why)}`,
                       )
                     })
                 }}
@@ -357,7 +352,7 @@ export function Account({ visible, onClose, onSignedOut }: AccountProps) {
                   // Said rather than swallowed: a sign-out that failed leaves
                   // the reader signed in, and a button that does nothing
                   // visible is the worst way to learn that.
-                  setFailure(why instanceof Error ? why.message : String(why))
+                  setFailure(messageOf(why))
                 })
             }}
           >

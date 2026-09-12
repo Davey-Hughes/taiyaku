@@ -89,6 +89,7 @@ import {
 import { EmptyState } from './EmptyState'
 import { ProposalRow } from './ProposalRow'
 import { useInboxRefresh } from './shell'
+import { messageOf } from './message'
 
 export function Proposals() {
   const [inbox, setInbox] = useState<Inbox | undefined>()
@@ -130,7 +131,7 @@ export function Proposals() {
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
     return () => {
       cancelled = true

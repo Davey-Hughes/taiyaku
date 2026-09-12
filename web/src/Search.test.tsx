@@ -161,6 +161,37 @@ describe('Search', () => {
     expect(host.querySelector('.grid .title')?.textContent).toBe('second')
   })
 
+  it('keeps those results when an earlier query fails after them', async () => {
+    // The mirror of the case above, for the `.catch`, which needs its own
+    // sequence check and had no test. Without it a *stale* rejection puts a
+    // red alert over results that were read successfully afterwards — and the
+    // alert names a failure for a query the box no longer holds.
+    let rejectSlow: (why: unknown) => void = () => {}
+    vi.mocked(library.search)
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectSlow = reject
+          }),
+      )
+      .mockResolvedValueOnce({
+        series: [card({ title: 'second' })],
+        unfiled: [],
+        query: 'b',
+      })
+
+    const host = await settle()
+    await type(host, 'aaa')
+    await type(host, 'bbb')
+    await act(async () => {
+      rejectSlow(new Error('/api/library/search: 500'))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.querySelector('.grid .title')?.textContent).toBe('second')
+  })
+
   it('cancels a pending search if the box is cleared inside the debounce window', async () => {
     const host = await settle()
     await setValue(host, '花嫁')

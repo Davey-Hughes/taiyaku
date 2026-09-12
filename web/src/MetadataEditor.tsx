@@ -44,6 +44,7 @@ import {
   type StampPlan,
   stampPlan,
 } from './stamp'
+import { messageOf } from './message'
 
 /**
  * How many archives, as one phrase. Four places print this count — the plan's
@@ -412,7 +413,7 @@ export function MetadataEditor({
       })
       .catch((err: unknown) => {
         settlePlan(seq, () => {
-          setPlanFailure(err instanceof Error ? err.message : String(err))
+          setPlanFailure(messageOf(err))
         })
       })
   }
@@ -475,7 +476,7 @@ export function MetadataEditor({
       .catch((err: unknown) => {
         inFlight.current = false
         setWriting(undefined)
-        setStampFailure(err instanceof Error ? err.message : String(err))
+        setStampFailure(messageOf(err))
       })
   }
 
@@ -494,7 +495,7 @@ export function MetadataEditor({
       })
       .catch((err: unknown) => {
         setSaving(false)
-        setFailure(err instanceof Error ? err.message : String(err))
+        setFailure(messageOf(err))
       })
   }
 

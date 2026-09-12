@@ -6,6 +6,7 @@ import { BrowsePrefsContext, browseModule } from './browseModule'
 import { GateContext } from './gate'
 import * as library from './library'
 import { Series } from './Series'
+import { deferred, flush } from './testing/async'
 import { mount } from './testing/mount'
 
 vi.mock('./library', async (importOriginal) => ({
@@ -1170,5 +1171,84 @@ describe('Series, the alignment panel', () => {
     const text = host.querySelector('.alignment-panel')?.textContent
     expect(text).not.toContain('one edition')
     expect(text).toContain('taiyaku align')
+  })
+})
+
+/**
+ * **The effect's two `cancelled` guards, which no test had reached.**
+ *
+ * The load re-fires on `[seriesId, id]`, and since Task 10's search screen a
+ * link from one series to another reuses this instance rather than remounting
+ * it — the same thing the edition-selector test above drives. So two loads are
+ * outstanding, and the store need not answer them in order. The cleanup's
+ * `cancelled = true` is what stops the *departed* series being drawn under the
+ * heading of the one the reader asked for.
+ *
+ * `deferred` rather than two `mockResolvedValueOnce`s: mocked promises resolve
+ * in call order, the guard is never true, and the branch is never taken.
+ */
+describe('Series, a load for a series the reader has already left', () => {
+  const twoSeries = async (
+    first: Promise<{ series: library.SeriesCard; works: library.WorkCard[] }>,
+  ) => {
+    const second = deferred<{
+      series: library.SeriesCard
+      works: library.WorkCard[]
+    }>()
+    vi.mocked(library.oneSeries)
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(second.promise)
+
+    let navigate: ReturnType<typeof useNavigate> | undefined
+    function Nav() {
+      navigate = useNavigate()
+      return (
+        <Routes>
+          <Route path="/series/:id" element={<Series />} />
+        </Routes>
+      )
+    }
+    let host!: HTMLElement
+    await act(async () => {
+      host = mount(
+        <BrowsePrefsContext.Provider value={browseModule.defaults}>
+          <MemoryRouter initialEntries={['/series/7']}>
+            <Nav />
+          </MemoryRouter>
+        </BrowsePrefsContext.Provider>,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await flush(() => navigate?.('/series/9'))
+    await flush(() =>
+      second.resolve({
+        series: card({ id: 9, title: 'A Different Series' }),
+        works: [work({ id: 4, slug: 'different-v01' })],
+      }),
+    )
+    expect(host.querySelector('h1')?.textContent).toBe('A Different Series')
+    return host
+  }
+
+  it('is not drawn when it answers after the reader has moved on', async () => {
+    const first = deferred<{
+      series: library.SeriesCard
+      works: library.WorkCard[]
+    }>()
+    const host = await twoSeries(first.promise)
+    await flush(() => first.resolve({ series: card(), works: [work()] }))
+    expect(host.querySelector('h1')?.textContent).toBe('A Different Series')
+  })
+
+  it('does not put its failure over the series that loaded', async () => {
+    const first = deferred<{
+      series: library.SeriesCard
+      works: library.WorkCard[]
+    }>()
+    const host = await twoSeries(first.promise)
+    await flush(() => first.reject(new Error('/api/library/series/7: 500')))
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.querySelector('h1')?.textContent).toBe('A Different Series')
   })
 })

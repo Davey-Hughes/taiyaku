@@ -5,6 +5,7 @@ import * as curation from './curation'
 import { RuleEditor } from './RuleEditor'
 import * as rulesApi from './rules'
 import type { Impact, Override, Preview, Rule, Saved } from './rules'
+import { deferred, flush } from './testing/async'
 import { mount } from './testing/mount'
 
 vi.mock('./rules', async (importOriginal) => ({
@@ -1704,5 +1705,60 @@ describe('RuleEditor', () => {
       const host = await selectAndDelete(0, 2) // A open, delete C
       expect(openPattern(host)).toBe('A/.*')
     })
+  })
+})
+
+/**
+ * **`runPreview`'s two `seq !== latest.current` guards, which no test had
+ * reached** — 116 calls went through the first of them and not one was stale.
+ *
+ * Every edit fires a preview and a preview is the slow call on this screen
+ * (~281 ms is the figure the design quotes), so two are routinely outstanding
+ * and the server need not answer them in order. A stale answer landing last is
+ * a Save button stating a count derived for a rule list nobody is looking at.
+ */
+describe('RuleEditor, a preview overtaken by a newer one', () => {
+  /** Select rule 2 against a held preview, then rule 1 against a prompt one. */
+  const overtaken = async (first: Promise<Preview>) => {
+    const host = await render()
+    vi.mocked(rulesApi.previewRules)
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(
+        Promise.resolve(previewBody({ impact: impact({ works_rehomed: 12 }) })),
+      )
+    await act(async () => {
+      host.querySelectorAll<HTMLElement>('.rule-row button.select')[1].click()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      host.querySelectorAll<HTMLElement>('.rule-row button.select')[0].click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.save')?.textContent).toContain('12')
+    return host
+  }
+
+  it('does not draw the older answer over the newer one', async () => {
+    const slow = deferred<Preview>()
+    const host = await overtaken(slow.promise)
+    await flush(() =>
+      slow.resolve(previewBody({ impact: impact({ works_rehomed: 99 }) })),
+    )
+    const save = host.querySelector('.save')?.textContent ?? ''
+    expect(save).toContain('12')
+    expect(save).not.toContain('99')
+  })
+
+  it("does not let the older answer's failure invalidate the newer one", async () => {
+    // The catch clears `preview` as well as setting the banner — I2's rule,
+    // and the reason this guard is not merely cosmetic: a stale rejection
+    // without it disables Save over a preview that succeeded afterwards.
+    const slow = deferred<Preview>()
+    const host = await overtaken(slow.promise)
+    await flush(() => slow.reject(new Error('/api/library/rules/preview: 500')))
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.querySelector('.save')?.textContent).toContain('12')
+    expect(host.querySelector<HTMLButtonElement>('.save')?.disabled).toBe(false)
   })
 })
