@@ -141,48 +141,68 @@ const FORMATS = [
     // report as "not an istanbul summary". It still failed, but it failed
     // saying the wrong thing. `total` is a count and is `0` there.
     detect: (report) => typeof report?.total?.lines?.total === 'number',
-    // **66 files measured on a clean tree, 2026-08-14; seven of margin.** The
+    // **108 files measured on a clean tree, 2026-09-11; seven of margin.** The
     // margin has only to cover a deliberate exclusion, and the block this guards
     // names its exclusions one file at a time on purpose — three named files and
     // one directory today, beside three test-and-declaration wildcards. Counted
     // rather than recalled: an earlier version of this comment said "three
     // entries and one directory", which matched no reading of the list.
     //
-    // Seven rather than seventeen, because the failure to catch is not only the
-    // bare collapse. Measured, by mutating `coverage.include` and re-running:
+    // Seven rather than fifty, because the failure to catch is not only the bare
+    // collapse. Measured, by mutating `coverage.include` and re-running — the
+    // three rows below were first run 2026-08-14 and **re-run 2026-09-11**, and
+    // each still behaves the way it did, at the counts the larger tree gives:
     //
     //   ['nope/**/*.ts']       →  0 files. Vitest prints `Unknown% ( 0/0 )` for
     //                             all four metrics and **exits 0**.
-    //   ['src/*.ts']           → 52 files. One deleted `*`, and all 14 files of
-    //                             `src/modules` leave the gate. Vitest reports
-    //                             97.20/93.52/99.00/99.09 — every threshold
-    //                             passed, because a file that is absent is a
-    //                             file no per-file check visits.
-    //   ['src/**/*.ts']        → 66 files, unchanged. Dropping the `.tsx` glob
+    //   ['src/*.ts']           → 94 files (was 52). One deleted `*`, and all 14
+    //                             files of `src/modules` leave the gate. Vitest
+    //                             reports 97.25/92.43/99.11/99.18 — every
+    //                             threshold passed, because a file that is
+    //                             absent is a file no per-file check visits.
+    //   ['src/**/*.ts']        → 108 files, unchanged. Dropping the `.tsx` glob
     //                             costs nothing: vitest's coverage `include`
     //                             resolves `*.ts` across its extension list, so
     //                             it still matches `.tsx`. Assumed otherwise
     //                             first; measured, and it was wrong.
     //
-    // **This number was 50 and had gone stale into a hole, which is the thing it
-    // exists to prevent.** It was derived when the clean tree held 57 files, so
-    // it tolerated seven lost and caught the 44-file near-miss above. web/src has
-    // since grown to 66 and the near-miss with it, to 52 — above 50, so the
-    // second row of that table passed this check on 2026-08-14: fourteen files
-    // left the gate, every vitest threshold stayed green, and so did this script.
-    // Re-derived by re-running the experiment rather than by scaling the old
-    // number: 66 measured, seven of margin, **59**, which catches 52 with room.
+    // **This number has now gone stale into a hole twice, which is the thing it
+    // exists to prevent, and the second time is the one worth reading.** It was
+    // 50 first, derived when the clean tree held 57 files; web/src reached 66,
+    // the near-miss reached 52, and on 2026-08-14 that middle row passed this
+    // check — fourteen files left the gate, every vitest threshold stayed green,
+    // and so did this script. Re-derived then to **59**.
+    //
+    // It went stale the same way again. web/src grew to 108 across spec C4's
+    // three UI PRs and the two branches after them, so 59 tolerated **49** files
+    // leaving rather than seven, and the middle row passed again on 2026-09-11:
+    // 94 files, vitest green on all four thresholds, `coverage-floor` green at
+    // "94 files (floor requires 59)". That is the whole of O98, and the interval
+    // between the two staleness events was three and a half weeks.
+    //
+    // **101, and it is derived rather than scaled.** Scaling 59 by 108/66 gives
+    // 96, which would catch 94 — but with two files of room instead of seven, a
+    // margin nobody measured, which is what this file refuses everywhere else.
+    // The measured derivation is the same arithmetic as last time: clean tree
+    // 108, near-miss 94, and the fourteen between them split seven and seven.
+    // That it lands on the same split as 2026-08-14 is structural rather than
+    // lucky — the near-miss *is* `src/modules` leaving the gate, and that
+    // directory held 14 files then and holds 14 now, so the gap it opens has not
+    // widened with the tree. `src/modules` is also the only subdirectory of
+    // `src` in the report (`src/testing` is excluded, `__screenshots__` holds no
+    // source), so "drop a directory" has exactly one meaning here.
     //
     // The lesson is in the arithmetic, not the number. A fixed `minFiles` against
     // a growing tree loosens on its own, silently, and nothing here derives it —
     // so re-run the three rows above when web/src grows by roughly ten files, and
     // treat "the near-miss still trips it" as the property to check rather than
-    // "the count is still above the floor".
+    // "the count is still above the floor". Twice now the *count* was
+    // comfortably above the floor at the moment the floor had stopped working.
     //
     // If a deliberate exclusion ever does trip this, that is the check working:
     // re-derive the number beside the exclusion rather than widening it on
     // reflex.
-    minFiles: 59,
+    minFiles: 101,
     /**
      * Two points below the lowest measured figure for each metric — the rule
      * these were set by, and no longer quite true of all four. Re-measured

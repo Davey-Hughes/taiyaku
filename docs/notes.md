@@ -15801,3 +15801,57 @@ the field C4 §3 asks for.
 
 Faithful gitignore, and not the matcher's fault. Recorded because the run
 above would otherwise read as evidence about a pattern shape it never tested.
+
+## O98: re-running the `minFiles` experiment — 2026-09-11
+
+`scripts/coverage-floor.mjs`'s web `minFiles` held **59**, derived 2026-08-14
+against a 66-file tree. The constant's own comment asks for the experiment to be
+re-run — not for the number to be scaled — when `web/src` grows by roughly ten
+files. It had grown by forty-two. Measured by mutating `coverage.include` in
+`web/vite.config.ts` and running `pnpm -C web run test:coverage`, reading the
+count out of `web/coverage/coverage-summary.json` rather than the text table,
+then running `node scripts/coverage-floor.mjs` against each report.
+
+| `coverage.include` | files | vitest | at 59 | at 101 |
+|---|---:|---|:--:|:--:|
+| `['nope/**/*.ts']` | 0 | `Unknown% ( 0/0 )` ×4, **exit 0** | exit 1 | exit 1 |
+| `['src/*.ts']` | **94** | 97.25 / 92.43 / 99.11 / 99.18, **exit 0** | **exit 0** | **exit 1** |
+| `['src/**/*.ts']` | 108 | 97.42 / 92.80 / 99.16 / 99.22, **exit 0** | exit 0 | exit 0 |
+| `['src/**/*.ts', 'src/**/*.tsx']` (clean) | 108 | as above | exit 0 | exit 0 |
+
+**The middle row is O98.** At 59 it printed `coverage-floor: 94 files (floor
+requires 59), all above the per-file floor` and exited 0 — fourteen files, 13%
+of the gate, left it silently while every vitest threshold stayed green.
+This is the second time the constant has passed its own near-miss; the first was
+2026-08-14 at `minFiles: 50`, against a 52-file near-miss.
+
+**The near-miss is the same shape both times, and that is why the arithmetic
+repeats.** `['src/*.ts']` drops exactly `src/modules` — `annotations`, `borrow`,
+`credits`, `direction`, `fit`, `help`, `layout`, `motion`, `prefetch`,
+`readouts`, `registry`, `regroup`, `settings`, `zoom`, counted off disk — which
+held 14 files in August and holds 14 now. So the gap between the clean tree and
+the near-miss is 14 at both measurements even though the tree grew by 42, and
+splitting it seven-and-seven gives 59 then and **101** now. It is also the only
+"drop a directory" available: `src/modules` is the sole subdirectory of `src` in
+the report, since `src/testing` is excluded by the block above and
+`__screenshots__` holds no source.
+
+**Scaling would have been wrong and is worth recording as the rejected answer.**
+59 × 108/66 = 96. It catches the 94 near-miss, so it would have looked fine, but
+with two files of room rather than the seven that were measured — a margin
+nobody derived, which is what this gate refuses everywhere else.
+
+**The third row reconfirms, for a third measurement, that the `.tsx` glob is
+inert**: `['src/**/*.ts']` alone reports the same 108 files and the same four
+figures, because vitest's coverage `include` resolves a `*.ts` pattern across its
+whole extension list. 57 files in August 2026-08-10, 66 on 2026-08-14, 108 now.
+
+**Two figures found stale while checking this one, and only one is fixed here.**
+`docs/ci.md`'s gate summary read "≥32 files in the report" for the Rust half
+against the script's own `minFiles: 40`; corrected, since it sits in the row pair
+the web number lives in. Its four web *aggregate* rows are also stale — the table
+reads 97.49 / 93.99 / 99.10 / 99.17 and the run above gives 97.42 / **92.80** /
+99.16 / 99.22 — and are deliberately **left alone**: `branches` has narrowed from
+1.99 points of margin over its threshold of 92 to **0.80**, which is a judgement
+about whether that threshold still holds rather than a transcription error, and
+it does not belong on a branch whose one claim is the file count.
