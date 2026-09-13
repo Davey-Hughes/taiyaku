@@ -1,13 +1,19 @@
 //! Write a file so a crash cannot publish half of one.
 //!
-//! **Eight call sites**, from `rg -n 'atomic::write' crates/` on 2026-08-14
-//! rather than from anyone's memory: in `taiyaku-serve`, `progress::store`,
-//! `notes::store`, `truth::store`, the sidecar rewritten by a correction in
-//! `routes.rs`, and **two** in `cover.rs`; in `taiyaku-cli`, `write_sidecar`
-//! — behind both `align --write` and `credits --write` — and `regions.rs`.
+//! **Seven call sites**, from `rg -n 'atomic::write\(' crates/` on 2026-09-12
+//! with comment lines and tests set aside, rather than from anyone's memory:
+//! in `taiyaku-serve`, the sidecar rewritten by a correction in `routes.rs`
+//! and **two** in `cover.rs`; in `taiyaku-library`, `hand::save` and
+//! `export`; in `taiyaku-cli`, `write_sidecar` — behind both `align --write`
+//! and `credits --write` — and `regions.rs`. It said eight, naming
+//! `progress::store`, `notes::store` and `truth::store`, all of which had
+//! since moved into the database, and it had never gained the two in
+//! `taiyaku-library`.
 //!
-//! **This tally has now been wrong three times, and the third is the reason
-//! the instruction below is phrased as a command.** It said "three" while it
+//! **This tally has now been wrong four times, and the third is the reason
+//! the instruction below is phrased as a command.** The fourth, above, is the
+//! one that command cannot catch: callers came and went in other crates while
+//! nobody touched this file. It said "three" while it
 //! was four, then "four" while it was five, and then sat at five through
 //! `truth.rs` landing on 2026-08-11 — so it was five while it was six, for
 //! three days, in a comment whose entire subject is that it keeps being
@@ -60,7 +66,7 @@ pub fn temp_path(path: &Path, extension: &str) -> PathBuf {
 /// did this unconditionally for the same reason; both failure paths now get
 /// the same treatment here.
 ///
-/// **Both errors name `path` — the file the caller asked for — and never the
+/// **Every error names `path` — the file the caller asked for — and never the
 /// temporary.** That was O29: the staging branch used to name the temporary,
 /// which is a filename this module invents, that no caller typed, that is
 /// deleted before the error is returned, and that therefore cannot be looked
@@ -81,32 +87,63 @@ pub fn temp_path(path: &Path, extension: &str) -> PathBuf {
 /// this crate, and it is writing the very file the paragraph above names as the
 /// worst thing to lose half of.
 ///
+/// **The temporary is synced before the rename, and the directory after it.**
+/// That was O104: a rename replaces the destination atomically only for bytes
+/// already on disk, and without the sync the rename can be journalled first —
+/// XFS, which the NAS's array disks run, does nothing to force the data out
+/// ahead of it — so a crash could leave `path` naming data never written, with
+/// the old file already gone. The module's first line was a promise this
+/// function did not keep until then. The directory sync is what makes the
+/// rename itself survive the crash.
+///
 /// # Errors
 ///
-/// Returns an error if writing the temporary file beside `path` fails — a
-/// full disk or a missing parent directory, most often — or if renaming that
-/// temporary onto `path` fails, such as `path` naming a directory rather than
-/// a file. Both messages name `path`, the file the caller asked for, and
-/// never the temporary, which is deleted before either error is returned.
+/// Returns an error if writing or syncing the temporary file beside `path`
+/// fails — a full disk or a missing parent directory, most often — if
+/// renaming that temporary onto `path` fails, such as `path` naming a
+/// directory rather than a file, or if syncing `path`'s directory after the
+/// rename fails. Every message names `path`, the file the caller asked for,
+/// and never the temporary, which is deleted before either of the first two
+/// errors is returned and no longer exists by the third.
 pub fn write(path: &Path, bytes: &[u8], extension: &str) -> Result<(), String> {
     let temporary = temp_path(path, extension);
-    if let Err(e) = std::fs::write(&temporary, bytes) {
+    let staged = std::fs::File::create(&temporary).and_then(|mut file| {
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.sync_all()
+    });
+    if let Err(e) = staged {
         let _ = std::fs::remove_file(&temporary);
         return Err(format!(
             "{}: staging a temporary beside it: {e}",
             path.display()
         ));
     }
-    match std::fs::rename(&temporary, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&temporary);
-            Err(format!(
-                "{}: renaming the temporary into place: {e}",
-                path.display()
-            ))
-        }
+    if let Err(e) = std::fs::rename(&temporary, path) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!(
+            "{}: renaming the temporary into place: {e}",
+            path.display()
+        ));
     }
+    sync_directory_of(path).map_err(|e| {
+        format!(
+            "{}: syncing its directory after the rename: {e}",
+            path.display()
+        )
+    })
+}
+
+/// Sync the directory holding `path`, so a rename into it survives a crash.
+///
+/// # Errors
+///
+/// Returns the error opening or syncing that directory.
+pub fn sync_directory_of(path: &Path) -> std::io::Result<()> {
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    std::fs::File::open(dir)?.sync_all()
 }
 
 #[cfg(test)]

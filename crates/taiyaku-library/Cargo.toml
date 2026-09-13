@@ -83,3 +83,7 @@ workspace = true
 # binary that serves pages.
 [dev-dependencies]
 rusqlite = { version = "0.38", features = ["trace"] }
+# `test-support` on the same terms, for O104: `stamp`'s tests assert the
+# syscalls `rewrite_one` makes, through the one strace parser `atomic`'s tests
+# already use rather than a second copy of it.
+taiyaku-read = { path = "../taiyaku-read", features = ["test-support"] }

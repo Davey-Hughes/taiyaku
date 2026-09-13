@@ -177,20 +177,41 @@ jobs:
           echo "bc2a998567816eef7b087b920036f49fb89aa2a8a603f6a3d84098be160b62c5  /tmp/nextest.tar.gz" | sha256sum -c -
           tar -xzf /tmp/nextest.tar.gz -C /usr/local/bin
           cargo nextest --version
+      - name: Install strace
+        # O104's three tests assert the syscalls `atomic::write` and
+        # `stamp::rewrite_one` make — the staged file synced before the
+        # rename, its directory after — by re-running themselves under strace,
+        # and they **fail rather than skip** when it is missing. So this step
+        # is what keeps them measuring, not a convenience.
+        #
+        # From Debian's archive rather than a checksummed tarball, and the
+        # reason is the one the comments above turn on: those pin a GitHub
+        # release asset its owner can replace in place, while apt verifies every
+        # package against the archive's signed Release file. Nor does the
+        # version matter the way it does for node — the tests use `-f`, `-qq`,
+        # `-y` and `-o`, all far older than bookworm's strace 6.1.
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends strace
+          strace -V
       - name: Tests, with coverage
         # `cargo llvm-cov nextest` runs the tests — this is the test step, not
         # an addition to it, and the `nextest` subcommand is what applies
-        # `.config/nextest.toml`'s per-test timeout. Eleven files are ignored,
+        # `.config/nextest.toml`'s per-test timeout. Thirteen files are ignored,
         # in three groups: gated one-off measurement modules, the ones that
-        # cannot execute without TAIYAKU_CORPUS which CI does not have, and two
-        # `#[cfg(test)] pub(crate) mod test_support` modules. Counted from the
+        # cannot execute without TAIYAKU_CORPUS which CI does not have, and three
+        # `test_support` modules — two `#[cfg(test)] pub(crate)` in taiyaku-serve
+        # and one in taiyaku-read that its `test-support` feature also exposes to
+        # taiyaku-library's tests, since O104. Counted from the
         # reports rather than from the nine alternations in the regex, which is
         # what the "four" here used to say — `band_sweep.rs`,
         # `borrow_frequency.rs`, `geometry_experiment.rs`, `model_experiment.rs`,
         # `region_experiment.rs`, `score_corpus.rs` and `truth_population.rs` in
-        # taiyaku-cli, plus `corpus.rs` in both taiyaku-cli and taiyaku-serve and
-        # `test_support.rs` in taiyaku-serve twice, which is two alternations
-        # matching two files each.
+        # taiyaku-cli, plus `corpus.rs` in taiyaku-cli, taiyaku-serve and
+        # taiyaku-library, and `test_support.rs` twice in taiyaku-serve and once
+        # in taiyaku-read, which is two alternations matching three files each.
+        # This said eleven while twelve matched, from the day
+        # taiyaku-library's `corpus.rs` landed until O104 added the thirteenth.
         #
         # `test_support` is named here only because cargo-llvm-cov's own default
         # exclusion misses it: that default drops a source file whose basename
@@ -202,13 +223,13 @@ jobs:
         # Note the regex matches `/corpus.rs` by path segment, so a *new*
         # `corpus.rs` added to some crate that is not corpus-gated would be
         # silently excluded too. Nothing like that exists today — the whole
-        # workspace holds exactly these eleven matching files — but a coverage
+        # workspace holds exactly these thirteen matching files — but a coverage
         # exclusion that grows on its own is the failure this list is shaped to
         # avoid. This used to ask the reader to check the file count by hand when
         # adding a crate; the "Coverage floor, per file" step below now asserts
-        # it (53 files today, 40 required — re-measured 2026-08-17 once the
-        # library store and its Minor fixes landed), so a regex that quietly swallows more
-        # than these eleven fails the job. They are named with a reason each in
+        # it (82 files on 2026-09-13, 40 required), so a regex that quietly
+        # swallows more than these thirteen fails the job. They are named with a
+        # reason each in
         # docs/ci.md, "The coverage gates".
         #
         # `--fail-under-lines 93` is the gate. It was derived as the measured

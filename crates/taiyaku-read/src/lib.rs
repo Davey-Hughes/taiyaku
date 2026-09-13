@@ -44,5 +44,9 @@ pub use pages::{
 /// `taiyaku-serve` bounds its concurrency separately.
 pub const MAX_DECODE_ALLOC: u64 = 3 * 1024 * 1024 * 1024;
 
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_support;
+
 #[cfg(test)]
 mod tests;

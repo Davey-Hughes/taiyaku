@@ -273,6 +273,15 @@ jobs:
           tar -xJf /tmp/node.tar.xz -C /opt
           ln -s /opt/node-v26.7.0-linux-x64/bin/node /usr/local/bin/node
           node --version
+      - name: Install strace
+        # For the same three O104 tests `ci.yml`'s test job installs it for, and
+        # for a sharper reason here: they fail without it, so a sweep of
+        # `taiyaku-read` or `taiyaku-library` would fail its baseline run and
+        # report no verdict at all. See that step's comment for why apt.
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends strace
+          strace -V
       # One crate. `--gitignore=true` is inside the script and is not optional:
       # without it every mutant build copies the gitignored corpus. There is no
       # corpus on the runner, but the flag also decides whether `target/` is

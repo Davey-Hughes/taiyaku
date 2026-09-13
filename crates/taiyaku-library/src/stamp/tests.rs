@@ -983,3 +983,48 @@ fn a_stamp_moves_the_hand_document_to_the_works_new_address() {
         "and it is the same document, not a fresh one"
     );
 }
+
+/// O104, for the archive itself. `rewrite_one` stages a whole new archive
+/// beside the original and renames it over the top, and its own doc promises
+/// that "a crash leaves either the old archive or the new one, never a
+/// half-written file". That holds only for bytes that reached the disk: the
+/// rename can be journalled first, and on the NAS's XFS array nothing forces
+/// the data out ahead of it. Measured there on 2026-09-12, a synced same-disk
+/// copy of the library's largest archive (2.39 GB) takes 55.3 s on the parity
+/// array, which is roughly how long a crash after a stamp written there could
+/// leave a reader's only copy of a volume naming data that was never written.
+///
+/// The same ordering `atomic::write` is held to, asserted the same way — on
+/// the real syscalls, in a child process under strace — because a stamp is
+/// the one writer in this tree that replaces a file nothing can regenerate.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_rewrite_syncs_the_staged_archive_before_the_rename_and_the_directory_after_it() {
+    use taiyaku_read::test_support::{assert_replaced_durably, traced};
+
+    const CHILD: &str = "TAIYAKU_TEST_STAMP_O104_CHILD";
+    if let Some(path) = std::env::var_os(CHILD) {
+        super::rewrite_one(std::path::Path::new(&path), b"<ComicInfo/>")
+            .expect("the traced rewrite");
+        return;
+    }
+
+    let temp = crate::tests::tempdir("stamp-o104");
+    let dir = std::fs::canonicalize(&temp.path).expect("the test directory resolves");
+    let path = dir.join("Series - v01.cbz");
+    crate::scan::tests::write_archive(&path, 2);
+    let before = digest_of(&path);
+
+    let calls = traced(
+        "stamp::tests::a_rewrite_syncs_the_staged_archive_before_the_rename_and_the_directory_after_it",
+        (CHILD, path.as_os_str()),
+        &dir.join("strace.log"),
+    );
+
+    assert_ne!(
+        digest_of(&path),
+        before,
+        "the traced child must actually have rewritten the archive"
+    );
+    assert_replaced_durably(&calls, &path, &dir);
+}

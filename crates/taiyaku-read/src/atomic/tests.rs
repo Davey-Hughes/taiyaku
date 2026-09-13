@@ -130,3 +130,109 @@ fn two_temp_paths_for_one_destination_differ() {
     let path = std::path::Path::new("/tmp/taiyaku-test-atomic/thing.json");
     assert_ne!(temp_path(path, "json"), temp_path(path, "json"));
 }
+
+/// O104. A rename replaces the destination atomically only for bytes that
+/// have reached the disk. Without a sync first, the rename can be journalled
+/// before the data it points at is written — XFS, which the NAS's array disks
+/// run, has no equivalent of ext4's `auto_da_alloc` to force it — and a crash
+/// in that window leaves the destination naming data that never existed,
+/// with the old file already unlinked. The module doc's promise, "a crash
+/// cannot publish half of one", did not hold.
+///
+/// So the temporary must be synced **before** the rename, and the directory
+/// **after** it, or the rename itself may not survive the crash either.
+/// Asserted on the syscalls the real function makes, because nothing else a
+/// test can read tells a synced file from an unsynced one.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_temporary_is_synced_before_the_rename_and_the_directory_after_it() {
+    use crate::test_support::{assert_replaced_durably, traced};
+
+    const CHILD: &str = "TAIYAKU_TEST_ATOMIC_O104_CHILD";
+    if let Some(path) = std::env::var_os(CHILD) {
+        write(std::path::Path::new(&path), b"new", "json").expect("the traced write");
+        return;
+    }
+
+    // Per process, since the traced child widens the window in which two
+    // concurrent runs — cargo-mutants' jobs, a second worktree — would
+    // delete each other's directory.
+    let dir = std::env::temp_dir().join(format!(
+        "taiyaku-test-atomic-o104-sync-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(&dir).unwrap();
+    let path = dir.join("thing.json");
+    std::fs::write(&path, b"old").unwrap();
+
+    let calls = traced(
+        "atomic::tests::the_temporary_is_synced_before_the_rename_and_the_directory_after_it",
+        (CHILD, path.as_os_str()),
+        &dir.join("strace.log"),
+    );
+    let read_back = std::fs::read_to_string(&path).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(
+        read_back, "new",
+        "the traced child must actually have written"
+    );
+    assert_replaced_durably(&calls, &path, &dir);
+}
+
+/// O104's directory sync, for a destination named with no directory at all.
+/// `Path::new("thing.json").parent()` is `Some("")` rather than `None`, and
+/// opening `""` fails — so without the fallback to the current directory,
+/// `taiyaku align --write out.json` would write the sidecar and then report
+/// that it had not.
+///
+/// Through strace rather than an `is_ok()`, because an `is_ok()` also passes
+/// for a fallback that syncs the wrong directory. The child changes into the
+/// test directory first, which is safe only because it is a process running
+/// this one test and nothing else.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_bare_filename_syncs_the_directory_it_was_written_into() {
+    use crate::test_support::{Call, traced};
+
+    const CHILD: &str = "TAIYAKU_TEST_ATOMIC_O104_BARE_CHILD";
+    if let Some(dir) = std::env::var_os(CHILD) {
+        std::env::set_current_dir(&dir).expect("the child enters the test directory");
+        write(std::path::Path::new("thing.json"), b"new", "json").expect("the traced write");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "taiyaku-test-atomic-o104-bare-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(&dir).unwrap();
+
+    let calls = traced(
+        "atomic::tests::a_bare_filename_syncs_the_directory_it_was_written_into",
+        (CHILD, dir.as_os_str()),
+        &dir.join("strace.log"),
+    );
+    let read_back = std::fs::read_to_string(dir.join("thing.json")).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(
+        read_back, "new",
+        "the traced child must actually have written"
+    );
+    let renamed = calls
+        .iter()
+        .position(|c| matches!(c, Call::Rename { to, .. } if to.as_os_str() == "thing.json"))
+        .unwrap_or_else(|| panic!("nothing was renamed onto the bare name: {calls:?}"));
+    assert!(
+        calls[renamed + 1..]
+            .iter()
+            .any(|c| matches!(c, Call::Sync(p) if *p == dir)),
+        "{} was not synced after a rename onto a bare filename inside it: {calls:?}",
+        dir.display()
+    );
+}

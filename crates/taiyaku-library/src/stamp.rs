@@ -344,17 +344,30 @@ pub fn apply(
 /// `taiyaku-cli`'s `credits.rs` already reads it with `eq_ignore_ascii_case`,
 /// so this is that module's existing answer rather than a second one.
 ///
-/// **Staged as a sibling and renamed**, so the replacement is atomic and a
-/// crash leaves either the old archive or the new one, never a half-written
-/// file. The sibling shares the target's own directory deliberately: staging
-/// under a temp directory elsewhere would put the rename across a filesystem
-/// boundary, where it stops being atomic and becomes a copy.
+/// **Staged as a sibling, synced, and renamed**, so the replacement is atomic
+/// and a crash leaves either the old archive or the new one, never a
+/// half-written file. The sibling shares the target's own directory
+/// deliberately: staging under a temp directory elsewhere would put the rename
+/// across a filesystem boundary, where it stops being atomic and becomes a
+/// copy.
+///
+/// **The sync is O104, and the sentence above was false without it.** The
+/// rename can reach the journal before the staged bytes reach the disk, and a
+/// crash in between leaves the archive's path naming data that was never
+/// written — the one file in this tree nothing can regenerate. So the staged
+/// archive is synced before the rename and its directory after it, the same
+/// ordering `taiyaku_read::atomic::write` keeps. It can also be most of a
+/// stamp's cost: on the NAS's parity array a synced same-disk copy of the
+/// library's largest archive took 55.3 s, though the library share as
+/// configured stages new files on NVMe, where the flush is cheap.
 ///
 /// # Errors
 ///
-/// Returns an error if the archive cannot be read or written, or if the
-/// rename fails. On any error the staging file is removed and the original is
-/// left exactly as it was.
+/// Returns an error if the archive cannot be read, written or synced, if the
+/// rename fails, or if syncing the directory after the rename fails. On any
+/// error before the rename the staging file is removed and the original is
+/// left exactly as it was; the last error arrives with the new archive already
+/// in place, and says so.
 fn rewrite_one(path: &std::path::Path, document: &[u8]) -> Result<String, String> {
     use std::io::Read as _;
 
@@ -390,6 +403,7 @@ fn rewrite_one(path: &std::path::Path, document: &[u8]) -> Result<String, String
                 .map_err(|e| format!("{}: {e}", staged.display()))?;
             writer
                 .finish()
+                .and_then(|out| out.sync_all().map_err(zip::result::ZipError::Io))
                 .map_err(|e| format!("{}: {e}", staged.display()))?;
         }
 
@@ -418,6 +432,12 @@ fn rewrite_one(path: &std::path::Path, document: &[u8]) -> Result<String, String
 
         std::fs::rename(&staged, path)
             .map_err(|e| format!("renaming {} onto {}: {e}", staged.display(), path.display()))?;
+        taiyaku_read::atomic::sync_directory_of(path).map_err(|e| {
+            format!(
+                "{}: renamed into place, but syncing its directory failed: {e}",
+                path.display()
+            )
+        })?;
         Ok(digest)
     })();
 

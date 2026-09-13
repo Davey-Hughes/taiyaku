@@ -260,10 +260,11 @@ const FORMATS = [
     // **53 files measured on a clean tree, across six crates; thirteen of
     // margin.** The count can only fall three ways: the
     // `--ignore-filename-regex` widens, a crate leaves the workspace, or files
-    // are merged. Twelve files are excluded by name today — counted from the
+    // are merged. Thirteen files are excluded by name today — counted from the
     // reports, against the same nine alternations in the regex, because
-    // `/corpus` now matches three (`taiyaku-cli`, `taiyaku-serve` and the new
-    // `taiyaku-library`) and `test_support` still matches two — so the margin
+    // `/corpus` now matches three (`taiyaku-cli`, `taiyaku-serve` and
+    // `taiyaku-library`) and `test_support` three since O104 put one in
+    // `taiyaku-read` — so the margin
     // leaves room for that list to grow a little without a coverage edit
     // becoming a gate edit.
     //

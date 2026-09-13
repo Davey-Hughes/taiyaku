@@ -154,9 +154,13 @@ pub(crate) async fn perform(
         tokio::task::spawn_blocking(move || -> Result<serde_json::Value, NoAnswer> {
             // **Tried, never waited for**, exactly as a rule save does it: a
             // stamp is the second-longest thing this server does to a library
-            // after a scan — 299 ms per 319 MB archive, measured — and a
-            // caller queued silently behind a scan cannot tell "still
-            // rewriting" from "hung". See `ServeState::library_job`.
+            // after a scan — 299 ms per 319 MB archive on the workstation with
+            // the file in page cache, and, once O104 made it sync, up to about a
+            // minute for the library's largest archive on the NAS's parity
+            // array, going by a synced same-disk copy that took 55.3 s there —
+            // and a caller queued
+            // silently behind a scan cannot tell "still rewriting" from
+            // "hung". See `ServeState::library_job`.
             //
             // It matters more here than for a save. A scan re-derives while
             // this rewrites the very archives it is walking, and `derive` can

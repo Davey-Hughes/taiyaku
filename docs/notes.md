@@ -16013,3 +16013,250 @@ documented key nothing had ever pressed: **`Tab`**, handled ahead of every other
 binding and returning before them, with three statements behind it that had never
 run. It cycles the boxes under the *cursor* rather than through the list, which
 is how two stacked balloons are reached without clicking through the top one.
+
+## O104: nothing synced before a rename, measured where it would bite — 2026-09-12
+
+Found while sizing the write-back design's §11 against the host that will run
+it, and the measurement is recorded here because it is both how the defect was
+found and how large it is.
+
+### The defect, from the code
+
+`stamp::rewrite_one` stages a whole archive beside the original and
+`std::fs::rename`s it over the top; `taiyaku_read::atomic::write` does the same
+for sidecars, hand documents, exports and covers. **Neither synced anything
+first, and `rg -n 'sync_all|sync_data' crates/` returned nothing** outside
+tests. Both doc comments promised crash atomicity — "a crash leaves either the
+old archive or the new one, never a half-written file" and "write a file so a
+crash cannot publish half of one". A rename is atomic for bytes already on
+disk; without a sync the rename can reach the journal before the data does,
+and a crash in between leaves the path naming data that was never written,
+with the old file already unlinked. ext4 carries a heuristic
+(`auto_da_alloc`) for exactly this replace-by-rename pattern; the NAS's array
+disks are XFS, which does not.
+
+### The host, measured
+
+taiyaku will run in a Docker container on the Unraid NAS, bind-mounting
+`/mnt/user` — the Manga share spans `disk1` and `disk4` with no cache pool, so
+no single-disk mount sees the whole library and `shfs` is in the path. For a
+bind mount the container layer adds nothing to I/O, so these were taken on the
+host. Load average 4.2–5.8 throughout.
+
+*Wrong in one respect, found the next day: the NAS has a cache pool —
+`/mnt/nvme_cache`, which a check for `/mnt/cache*` and `/mnt/*pool*` missed —
+and the library share stages new files on it. The figures in this section are
+the parity array's; see "The library share writes to NVMe first" below.*
+
+| | |
+| --- | --- |
+| array filesystem (`disk1`, `disk4`) | xfs |
+| RAM / page cache | 62 GB / 46 GB |
+| `dirty_ratio` / `dirty_background_ratio` | 5 / 3 |
+| `dirty_expire_centisecs` | 1000 (10 s) |
+
+`dd if=/dev/zero bs=1M count=2048 conv=fdatasync`, into a scratch directory
+inside an existing share on a named disk, deleted after:
+
+| target | throughput |
+| --- | --- |
+| `disk1` (93% full) | **41.2 MB/s** |
+| `disk4` (88% full) | 56.8 MB/s |
+| `/mnt/user` (shfs) | 58.9 MB/s |
+
+`shfs` costs nothing measurable for a sequential write.
+
+**A stamp's own I/O pattern, on the largest archive in the library**: a
+same-disk copy of `Monster - The Perfect Edition - v09.cbz` (2,394,270,047
+bytes, on `disk1`), its page cache dropped first with `dd iflag=nocache
+count=0`, written with `conv=fdatasync` — **55.3 s, 43.3 MB/s**. The prediction
+that reading the original would stack on the write, since both land on one
+spindle, was wrong: parity bounds the copy, so the write-only figure was
+accurate rather than optimistic. The source's coldness was advised, not
+verified with `fincore`; a warm read would only make a true cold stamp slower.
+
+**So the exposure**: a stamp of that archive left about a minute in which a
+crash would destroy a reader's only copy of a volume, and a median archive
+(218 MB) about fifteen seconds. `atomic::write`'s files are small and their
+window is the 10 s writeback delay, but one of them is a sidecar, which its own
+doc calls the alignment of every edition in the work. *That is the exposure
+on the parity array; the library share as configured writes a stamp's staged
+copy to NVMe instead — see below.*
+
+**Directory sync through `shfs`**, checked before making it strict, since a
+directory `fsync` that errors on FUSE would fail every stamp in production:
+`perl`'s `IO::Handle::sync` on an `O_DIRECTORY` handle succeeded on
+`/mnt/user/miscellaneous`, `/mnt/user/media 1/Manga` and
+`/mnt/disk1/miscellaneous`.
+
+**Isolation, proven afterwards**: no `taiyaku-measure-*` directory left under
+any disk or `/mnt/user`, free space identical before and after (1.4T / 2.3T /
+23T), share count unchanged at 14, and the source archive's size and mtime
+identical before and after the copy.
+
+### The fix, and the tests that fail without it
+
+Both functions now sync the staged file before the rename and the directory
+after it, through one `atomic::sync_directory_of`. Nothing a test can read
+tells a synced file from an unsynced one, so each test re-runs itself as a
+child under `strace -f -qq -y` — `-y` prints the path behind each descriptor,
+so a sync names its file without tracking `openat` — and asserts on the order
+of the calls. The harness is `taiyaku_read::test_support`, reached from
+`taiyaku-library` through a dev-dependency feature.
+
+Every defect the tests name was hand-applied, run, and the file restored
+byte-identical:
+
+| applied to both `atomic::write` and `rewrite_one` | fails at |
+| --- | --- |
+| no file sync | "renamed … without being synced after its last write" |
+| no directory sync | "not synced after the rename" |
+| directory synced *before* the rename | "not synced after the rename" |
+| file synced *after* the rename, through the destination | "renamed … without being synced after its last write" |
+| file synced *before* its bytes are written — `atomic`'s empty temporary; `stamp`'s archive through a clone, before `finish` writes the central directory | "renamed … without being synced after its last write" |
+| `atomic` only: the same bytes written again to the destination after the rename | "written to after the rename" |
+| the child's `--exact` name no longer matching | "the traced child must actually have rewritten" |
+| `strace` absent from `PATH` | the `expect` naming strace, exit 101 |
+| `atomic` only: no fallback for a bare filename's empty parent | the child's own write fails |
+| `atomic` only: a fallback to the wrong directory | "not synced after a rename onto a bare filename" |
+
+The fourth matters because libtest exits 0 when `--exact` matches nothing, so
+strace reports success and the only thing standing between that and a pass is
+the assertion that the child wrote.
+
+**The last two rows came from the coverage report, not from the plan.** The
+first gate run listed `atomic.rs` among the files under the aggregate, and one
+of its uncovered lines was `sync_directory_of`'s fallback: `Path::new("out.json")
+.parent()` is `Some("")`, and opening `""` fails, so without it `taiyaku align
+--write out.json` writes the sidecar and then reports that it failed. The
+line was written before any test reached it, so the test was written after and
+proven the other way round — both defects applied by hand and watched red.
+What stays uncovered is the directory-sync error arm in both functions, which
+no unprivileged test can reach: making a directory unopenable after a rename
+into it needs a permission the CI container, running as root, ignores.
+
+**What the fix costs**: the sync is now most of a stamp. Before it the request
+returned once the new archive was in page cache — `dirty_ratio` is 5% of
+dirtyable memory, roughly 2.4–3.1 GB on this host, which every archive fits
+except perhaps the 2.39 GB largest — and flushed afterwards. Now the
+largest archive holds the request for about 55 s *on the array*. taiyaku sets no timeout of
+its own (no `TimeoutLayer`, no `AbortSignal` in `performStamp`, and the screen
+shows a `writing` state), so this is only a failure if something in front of
+the container cuts a request sooner. If one does, the stamp still completes —
+`spawn_blocking` is not cancelled by a dropped connection — and the screen
+reports an error for a stamp that succeeded. No Dockerfile or proxy
+configuration exists in this repository to say which.
+
+### The whole-branch review, and what it found in the tests
+
+**The first version of these tests passed against the defect they exist for.**
+They asserted that *some* sync of the staged path came before the rename, and
+never that nothing was written to it after that sync. Syncing `atomic`'s empty
+temporary and then writing the bytes left all six `atomic` tests green; syncing
+a clone of a stamp's staged archive before `writer.finish()` — so the central
+directory and end-of-central-directory record land after the sync — left all 24
+`stamp` tests green. After a crash on XFS that archive has no central directory,
+which is O104 exactly. Found by the review, and reproduced here before anything
+was changed: both mutations applied, the three O104 tests run, all three
+`PASS`.
+
+**The fix traces every syscall that can put bytes into a file** — `write`,
+`writev`, `pwrite64`, `pwritev`, `pwritev2`, `copy_file_range`, `sendfile`,
+`splice`, `ftruncate`, `fallocate` — and `assert_replaced_durably` requires, in
+order: at least one write to the staged file (or the ordering would be vacuous
+for a write syscall nobody listed), a sync after the last of them, the rename,
+no write to the destination afterwards, and a sync of the directory. Two parser
+details it needed. A data string can hold `<` and `>` of its own — a ComicInfo
+document is XML — so only the destination descriptor's `-y` decoration is read,
+except for the three calls whose arguments are all descriptors. And tracing
+writes makes strace's `<unfinished ...>`/`<... resumed>` split likelier, so the
+two halves are rejoined per pid before parsing.
+
+**The mutation table above was then re-run in full, and the first run of it was
+itself a test that could not fail.** The script read nextest's stdout, where
+nextest writes nothing; with no `PASS` line to see, every mutation classified
+as red. Caught by running the untouched tree through the same classifier as a
+control, which it would also have called red. Rewritten to read both streams
+and to require a `FAIL` line for red. **One row then failed for the wrong
+reason**: appending to the destination after the rename tripped the
+content assertion before the new one, so the check that it existed for was
+never reached — rewritten to write the identical bytes, and it fails at
+"written to after the rename". Every row now fails at the assertion it names.
+
+**Checked and left, with the reasons.** A directory-sync failure after a
+successful rename is a hard error; the review measured `EINVAL` from directory
+`fsync` only on `/proc`, `/sys` and cgroup2, and ext4, XFS, tmpfs, vfat and FUSE
+return 0, so no filesystem a library lives on reaches it. In that unreachable
+case `export::work` would skip `record_absorbed` for a file it did write — read,
+not triggered. `hand::rename_for_rekey`'s bare rename is not synced; a lost one
+leaves the document at its old key, which `reconcile` reports as an orphan,
+with the hand fields still in the database. And the `perl` check through `shfs`
+proves a directory `fsync` does not error there, not that FUSE forwards it —
+the file sync is the half that protects data, and `dd`'s 58.9 MB/s through
+`/mnt/user` with `conv=fdatasync` says those reach the disk.
+
+**Not settled here, and not a defect: whether cache writes should pay the
+sync.** `atomic::write` also writes the cover, page and filmstrip cache, where
+two `fsync`s now stand before every first view, and `hand::save` calls it while
+holding the library connection's mutex, twice per sibling on a series edit. The
+review measured the same syscall sequence on this workstation's NVMe at a
+median 10.0–10.2 ms against 0.04 ms without the syncs; on the NAS it is
+unmeasured. *Measured the next day, below: about 1.1 ms.*
+
+### The library share writes to NVMe first — 2026-09-13
+
+Measuring what the sync costs a cache write turned up what the section above
+got wrong. **The shares' own configuration decides which disk a write reaches**,
+read from `/boot/config/shares/*.cfg`:
+
+| share | `shareUseCache` | pool | include |
+| --- | --- | --- | --- |
+| `media 1` (the library) | **yes** | `nvme_cache` | `disk1` |
+| `appdata` | prefer | `nvme_cache` | `disk1` |
+| `miscellaneous` | no | — | `disk1,disk4,disk10` |
+
+`/mnt/nvme_cache` is btrfs on a non-rotational NVMe device, 1.9T. So a file
+created through `/mnt/user/media 1/…` — a stamp's staged archive, a hand
+document's temporary — lands on NVMe, and the mover takes it to `disk1` later;
+and `appdata`, where a container's `$XDG_CACHE_HOME` conventionally maps, stays
+on NVMe.
+
+**What a rename does across the two**, probed in `mirrors`, whose configuration
+matches `media 1`'s (`cache=yes` on `nvme_cache`, include `disk1`), so the
+library was not written to. An original `a.dat` created directly on
+`/mnt/disk1/mirrors/…`; `a.dat.tmp` created and synced through `/mnt/user`,
+which placed it on NVMe; `rename` through `/mnt/user` onto `a.dat`:
+
+| | |
+| --- | --- |
+| the temporary landed on | NVMe only |
+| `rename` | succeeded |
+| `a.dat` through `/mnt/user` afterwards | the new content |
+| `a.dat` on NVMe | the new content |
+| `a.dat` on `disk1` | **gone** |
+
+So `shfs` carries out a rename onto a file held by another branch as a rename on
+one filesystem and an unlink on the other — two operations, not one, and what a
+crash between them leaves was not measured. **This does not change O104's fix**:
+a share's cache setting is not something taiyaku can rely on, `miscellaneous`
+has none, and the mover puts every archive back on the array. **It does change
+the exposure and latency figures above**, which are the array's: a stamp on the
+library as configured writes its staged copy to NVMe, where the flush is cheap,
+and is more likely bounded by reading the original off `disk1` — unmeasured.
+
+**What the sync costs on this path**, `write`, `fsync`, `rename` and a
+directory `fsync` in `perl` through `/mnt/user/mirrors`, against the same
+sequence without the two syncs. Three interleaved rounds of 30 for new files,
+two of 20 for replacing an original on `disk1`; load average 13.5–17.2
+throughout, which can only inflate these:
+
+| case | without syncs, median | with syncs, median |
+| --- | --- | --- |
+| new, 4 KB | 0.50–0.61 ms | 1.54–1.72 ms |
+| new, 165 KB | 1.28–1.57 ms | 2.53–2.62 ms |
+| replacing a `disk1` original, 4 KB | 0.54–0.72 ms | 1.69–1.71 ms |
+
+**About 1.1 ms a write**, against 96–221 ms to decode a cover and roughly ten
+times less than the review's figure for this workstation's ext4. Every scratch
+directory was removed from both branches and `ls -d /mnt/*/mirrors/taiyaku-measure-*`
+returned nothing.

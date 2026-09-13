@@ -231,6 +231,24 @@ with no subdirectory to strip, and `cargo nextest --version` then reports
 after `cargo-llvm-cov`, `node` and `wasm-pack`, a fourth install sized and
 checksummed the same way as those three.
 
+`strace` is the one tool this workflow takes from Debian's archive rather than
+a pinned tarball, installed in the `test` job and in `mutants.yml`'s sweep.
+O104's three tests — two of `atomic`'s and one of `stamp`'s — prove that a
+staged file is synced after its last write and before it is renamed into
+place, and its directory after, and nothing a
+test can read tells a synced file from an unsynced one, so each re-runs itself
+as a child under `strace -f -qq -y` and asserts on the syscalls. **They fail
+rather than skip without it**, unlike the `NOT MEASURED:` shape `format`'s
+`tar` test uses, because they are the only guard on a crash destroying a
+reader's file and a skip is a green run that measured nothing. So in the sweep
+the install is not optional either: without it the baseline run of
+`taiyaku-read` or `taiyaku-library` fails and the sweep reports no verdict.
+The checksum reasoning above does not carry over — it exists because a GitHub
+release asset can be replaced in place, while apt checks every package against
+the archive's signed Release file — and neither does the version reasoning,
+since the four flags the tests use all predate bookworm's strace 6.1 by a
+decade.
+
 **Not measured:** no timing comparison against `cargo install cargo-nextest`
 was taken. The only paragraph on this pattern that measured the alternative
 it beat is `wasm-pack`'s above — a multi-minute compile, rejected in favour
@@ -455,7 +473,7 @@ it**: the same near miss reached 52 files and 50 let it through. Seven is the
 rule; the number under it has to be re-derived as web/src grows.
 Rust carries twenty (40 against 60) because the count there can only fall three
 ways — the `--ignore-filename-regex` widens, a crate leaves the workspace, or
-files merge — and twelve files are excluded by name today, so the margin leaves
+files merge — and thirteen files are excluded by name today, so the margin leaves
 that list room to grow without a coverage edit becoming a gate edit.
 Forty also trips when either of the two largest crates leaves the report:
 `taiyaku-serve` is 17 files and `taiyaku-cli` 15, though `taiyaku-library` at 14
@@ -487,7 +505,7 @@ measured 2026-08-14: 72.22% regions on `taiyaku-serve/src/truth.rs` and
 **25.00%** instantiations on `stump/cache.rs`), so they would need their own
 numbers for no signal the line floor does not already give.
 
-The Rust figure is the workspace total with the eleven files below ignored;
+The Rust figure is the workspace total with the thirteen files below ignored;
 without them it is **71.46%** lines, and the difference is not work anyone did
 — it is code nobody intends to run in CI, which is the whole reason the
 exclusions exist. `taiyaku-cli/src/main.rs`, this branch's long pole, went from
@@ -568,6 +586,7 @@ from the day it landed until this one. Here they are, with a reason each:
 | `taiyaku-cli/src/score_corpus.rs` | the same |
 | `taiyaku-serve/src/test_support.rs` | `#[cfg(test)]` scaffolding, and a third category rather than a gated module: cargo-llvm-cov's default exclusion drops a file whose basename contains `tests` and so misses this one, for want of an `s` |
 | `taiyaku-serve/src/stump/http/test_support.rs` | the same |
+| `taiyaku-read/src/test_support.rs` | the same, and the one of the three that is not only `#[cfg(test)]`: `taiyaku-read`'s `test-support` feature exposes it to `taiyaku-library`'s tests, since O104's strace harness serves `stamp` as well as `atomic`. Matched by the existing alternation from the day it landed, and listed the same day |
 
 **The regex matches `/corpus.rs` by path segment, and that is the sharp edge.**
 A *new* `corpus.rs` added to a crate that is **not** corpus-gated would be
@@ -575,7 +594,9 @@ excluded silently, and its coverage would leave the number without leaving a
 trace. Nothing like that exists today — verified, not assumed, and **re-measured
 on 2026-08-14 from `cargo llvm-cov report --json` with and without the flag: 54
 files without the regex, 43 with it, and the eleven that disappear are exactly
-the eleven above.** The workspace reads **71.46%** lines without the regex
+the eleven above.** *The table has since grown to thirteen — `taiyaku-library`'s
+`corpus.rs` on 2026-08-18 and `taiyaku-read`'s `test_support.rs` with O104 — and
+the 2026-08-14 figures in this paragraph are left as measured.* The workspace reads **71.46%** lines without the regex
 (7,573 of 10,598) against **93.95%** with it (6,735 of 7,169), both
 re-measured the same way.
 
@@ -606,7 +627,7 @@ for, arriving in the one document that explains that script. **A per-site list
 is checkable; a count is not** — and the fourth drift shows the converse edge:
 the list is only authoritative if something puts new entries *into* it, which is
 why the diff below is worth running when a file joins the regex and not only
-when a crate joins the workspace. The eleven rows above are the list; every
+when a crate joins the workspace. The thirteen rows above are the list; every
 number
 in this paragraph is derived from them and was re-measured, not carried
 forward.
@@ -614,8 +635,8 @@ forward.
 **That check is now half a gate rather than wholly a ritual.** This paragraph
 used to end "re-run that diff when adding a crate", and asking a reader to
 remember a thing is the weakest form of a check there is. The per-file floor
-script now asserts the file count itself — 43 today, 32 required — so a regex
-that quietly swallows more than these eleven fails the job instead of waiting to
+script now asserts the file count itself — 82 on 2026-09-13, 40 required — so a
+regex that quietly swallows more than these thirteen fails the job instead of waiting to
 be noticed. Only *half*, because the automated half sees the count and not the
 names: a regex that dropped one file while a new crate added one would net to
 zero and pass. So the diff is still worth running when adding a crate, and it is
