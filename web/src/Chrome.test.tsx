@@ -102,7 +102,28 @@ describe('Chrome', () => {
     expect(Number(leave.style.zIndex)).toBeGreaterThanOrEqual(3)
   })
 
-  it('hides the way back to the library while correcting — CorrectionBanner spans the same top edge, and no zIndex clears that', () => {
+  it('docks the way back just above the strip, not on the top edge where App’s layout buttons sit', () => {
+    const host = mount(<Chrome {...baseProps} />)
+    const leave = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Library',
+    ) as HTMLElement
+
+    // O65: at `top: 16` this button sat over `App.tsx`'s `single` and `two`
+    // mode buttons, which lay out in normal flow at 8,8, so a click meant for
+    // either one left the reader. `App.browser.test.tsx` measures that with a
+    // real layout; jsdom has none, so what this pins is the declared
+    // geometry — no `top` at all, and a `bottom` that clears the strip's own
+    // top edge, read from the strip's style rather than copied from it.
+    expect(leave.style.top).toBe('')
+    const strip = host.querySelector('[role="status"]')
+      ?.previousElementSibling as HTMLElement
+    const stripTop =
+      Number.parseFloat(strip.style.bottom) +
+      Number.parseFloat(strip.style.height)
+    expect(Number.parseFloat(leave.style.bottom)).toBeGreaterThan(stripTop)
+  })
+
+  it('hides the way back to the library while correcting, when the hover preview stands in its band', () => {
     const host = mount(<Chrome {...baseProps} correcting={{ to: 'ed2' }} />)
     const leave = [...host.querySelectorAll('button')].find(
       (b) => b.textContent === 'Library',

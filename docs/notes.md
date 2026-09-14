@@ -12860,6 +12860,9 @@ nothing and the work vanishes in silence.
 
 ### O65 — the reader chrome's `Library` button covers two layout buttons
 
+*O65 has since closed — see "O65: the Library button moves above the strip"
+below.*
+
 Reproduced by opening any volume in the reader and pressing `Tab` to show the
 chrome. `Chrome.tsx`'s `leaveButtonStyle` (`position: absolute; z-index: 3`,
 `top`/`left` at the module's `inset` constant, 16) sits over the layout-mode
@@ -17048,3 +17051,128 @@ the first server, at 2026-09-14T00:23:48-07:00. After the last run, with every
 server stopped, `find corpus -newermt 2026-09-14T00:23:48-07:00` returned
 nothing, and the default library database kept its modification time of
 2026-08-31.
+
+## O65: the Library button moves above the strip — 2026-09-14
+
+The browser pass of 2026-08-21 ("O64 and O65" above) found the reader chrome's
+`Library` button over the `single` and `two` layout buttons. No fix shape was
+recorded — not in the row, the section above, or that pass's session record —
+so three were put to the user: dock it just above the strip, dock it under the
+toolbar, or move it into the toolbar row. The first was chosen. The button now
+sits at the left end of the band above the strip, on `Chrome.tsx`'s
+`aboveStrip`, which is the `bottom` the hover preview already used.
+
+### Before and after, in production bundles
+
+Fixture: the browser pass's own `target/browser-check/library.db`, its shelf
+hardlinked from `corpus/`, served by `target/release/taiyaku serve` on
+127.0.0.1:8137 with `--insecure-cookies` and a scratch `--cache`; no crate
+changes on this branch. Two bundles were built into scratch with `vite build`:
+`dist-before` with `main`'s `Chrome.tsx` (`0ae0eaf`) copied over the branch's
+for the build and restored after (checked with `cmp`), and `dist-after` from
+the branch. `web/src` differs from `main` only in `Chrome.tsx` and two test
+files, and no test file is part of a bundle. Each was served by `vite preview`,
+on 5291 and 5292, proxying to that server — the recipe O110 recorded.
+
+One Playwright script drove both, in a browser reporting `Chrome/153.0.0.0` on
+Linux: sign in over `/api/session`, open
+`/read/go-toubun-no-hanayome---full-color-edition---v01--2021--cbz`, dispatch
+`Tab` on `window`, wait 1.5 s for the fade, then read
+`document.elementFromPoint` at each button's centre and every button's
+`getBoundingClientRect`. When it measured, all 195 thumbnails and both pages on
+screen had decoded.
+
+| bundle | viewport | at `single` | at `two` | at `scroll` | `Library` box | at `Library` | buttons its box overlaps |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| before | 1440×900 | `Library` | `Library` | `scroll` | 16,16–88.5,48.4 | `Library` | `single`, `two` |
+| before | 768×1024 | `Library` | `Library` | `scroll` | 16,16–88.5,48.4 | `Library` | `single`, `two` |
+| after | 1440×900 | `single` | `two` | `scroll` | 16,643.6–88.5,676 | `Library` | none |
+| after | 768×1024 | `single` | `two` | `scroll` | 16,767.6–88.5,800 | `Library` | none |
+
+The layout buttons' own boxes were the same in all four runs — `single` x
+8–58.8, `two` 66.8–103.6, `scroll` 111.6–158.7, all at y 8–29 — and match the
+browser pass's table to the tenth of a pixel. After the fix the button's bottom
+edge stands 224 px above the viewport's (900 − 676, 1024 − 800), which is
+`aboveStrip`: the 32 px readout row, the 8 px gap over it, the 176 px strip and
+8 px clear of it. The two 1440×900 screenshots were looked at: before, the
+button's dark pill covers the lower part of `single` and `two`; after, the
+toolbar is clear and the pill stands just above the strip's left end.
+
+`date -Iseconds` was stamped at 2026-09-14T14:39:27-07:00, before the first
+bundle build and the first server. After the servers were stopped by PID,
+`find corpus target/browser-check/shelf -newermt` that stamp returned nothing,
+and no `.taiyaku` exists under the shelf.
+
+### The tests, watched
+
+Two tests pin it. `Chrome.test.tsx`'s new case runs in jsdom, so CI runs it, and
+it can only pin the declared geometry: no `top`, and a `bottom` greater than
+the strip's own `bottom` plus `height`. `App.browser.test.tsx` mounts the real
+`App` behind `App.test.tsx`'s mocks, shows the chrome, and takes the
+measurement above at the same two sizes; CI does not run the browser project.
+
+Each mutation was a copy of the fixed `Chrome.tsx` with one substitution in
+`leaveButtonStyle`; after each, the fix was copied back and compared with `cmp`
+before the next run.
+
+| `leaveButtonStyle` | `Chrome.test.tsx` | `App.browser.test.tsx` |
+| --- | --- | --- |
+| `bottom: aboveStrip` (the fix) | 14 passed | 4 passed |
+| `top: inset` (the defect) | red: `expected '16px' to be ''` | 4 red: `single: expected 'Library' to be 'single'` and `expected [ 'single', 'two' ] to deeply equal []` |
+| `bottom: readoutHeight + gapAboveReadout` (over the strip) | red: `expected 40 to be greater than 216` | fixture read `rtl`: **4 passed**; read `ltr`: 2 red, `expected [ 'page 1', 'page 2', 'page 3', …(3) ] to deeply equal []` |
+
+The last row is the one worth keeping. The browser test's first fixture was
+`App.test.tsx`'s six pages read `rtl`, and with the button docked over the
+strip every case passed: its box overlapped no button. Read `ltr`, the same
+mutation names the tiles it covers. An intermediate `ltr` run with forty pages
+listed them as `null`, since a tile has no text, so the list now falls back to
+each tile image's `alt`; forty then went back to six, since `ltr` alone had
+decided it.
+
+Web tests move from 2,107 to 2,108 (jsdom 950 → 951, node unchanged at 1,157)
+and the browser project from 24 to 28, all passing — read off
+`vitest run --project jsdom`, `--project node` and `pnpm -C web run
+test:browser`.
+
+### The note list below the page, measured before merging
+
+Asked before merging whether anything else sits in the band the button moved
+into. Nothing else *docks* there: no other style, inline or in `index.css`,
+positions anything in the reader against its bottom edge. But `NoteList`,
+placed below the page, is in flow at the foot of
+`App.tsx`'s column with `maxHeight: '28%'`, so a long enough list reaches up
+past the strip. A throwaway browser-project probe, deleted afterwards, measured
+it: `App.browser.test.tsx`'s harness and six `ltr` pages, `n` notes with no
+region on the slot on screen, `taiyaku.prefs.annotations` set to `reveal: true,
+notesList: 'below'`, and the chrome shown. For each row whose centre lies
+inside the list's visible box, it asked `elementFromPoint` what a click at the
+row's centre, and 20 px in from its left edge, would reach. It ran against the
+branch's `Chrome.tsx` and against `main`'s copied in, each swap checked by
+grepping for the style it should hold, and `Chrome.tsx` was checked against
+`HEAD` afterwards.
+
+| viewport | notes | visible rows | rows under `Library`'s box, branch | clicks at the centre reaching the row, `main` → branch | clicks 20 px in, `main` → branch |
+| --- | --- | --- | --- | --- | --- |
+| 1440×900 | 4 | 4 | 0 | 0 → 0 | 0 → 0 |
+| 1440×900 | 10 | 10 | 2 | 3 → 3 | 3 → 2 |
+| 1440×900 | 16 | 10 | 2 | 3 → 3 | 3 → 2 |
+| 768×1024 | 4 | 4 | 0 | 0 → 0 | 0 → 0 |
+| 768×1024 | 10 | 10 | 2 | 2 → 2 | 2 → 0 |
+| 768×1024 | 16 | 11 | 2 | 3 → 3 | 3 → 2 |
+
+On `main`, no row was under the button at any size. So the fix costs something
+here, and it is small: at ten notes or more the button covers the left end —
+the number and the start of the text — of the top one or two rows the strip
+leaves visible, and every row that took a click at its centre on `main` still
+does. The table shows something larger beside it that predates this branch:
+with the chrome open, the strip (from 216 px above the bottom edge) and the
+readout row cover the rest of the list, so at four notes not one row takes a
+click, on `main` or here. That is not O65, and it is not fixed here.
+
+### Not measured
+
+- Any other browser, Safari and iPad Safari included. `aboveStrip` is
+  `Chrome.tsx`'s own arithmetic, but only this one browser's layout was read.
+- The correcting state. The button is hidden there, as it was before; that the
+  hover preview's box contains its corner is read from `previewStyle`, not
+  driven.

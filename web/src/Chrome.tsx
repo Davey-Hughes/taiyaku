@@ -47,6 +47,12 @@ const stripHeight = 160 + 6 * 2 + 2 * 2
 /// candidates, one at a time, at human speed.
 const previewMaxHeight = '55vh'
 
+/// Where the band just above the strip begins, measured from the reader's
+/// bottom edge: the readout row, the gap over it, the strip, and 8px clear of
+/// the strip's top. The hover preview stands on it while correcting, and the
+/// `Library` button docks on it otherwise.
+const aboveStrip = readoutHeight + gapAboveReadout + stripHeight + 8
+
 // `position: absolute` against the nearest positioned ancestor — `App.tsx`'s
 // root, which carries `position: relative` for exactly this — rather than a
 // flex child of the toolbar/page-area column those sit in. An absolutely
@@ -76,7 +82,7 @@ const previewStyle: CSSProperties = {
   position: 'absolute',
   left: inset,
   right: inset,
-  bottom: readoutHeight + gapAboveReadout + stripHeight + 8,
+  bottom: aboveStrip,
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'center',
@@ -134,30 +140,40 @@ const readoutStyle: CSSProperties = {
   textOverflow: 'ellipsis',
 }
 
-// The reader's own way back to the library, docked opposite `CreditsPanel`,
-// `Help` and `NotePanel`'s shared shell — all three dock at `top: 16, right:
-// 16, zIndex: 3` (see e.g. `NotePanel.tsx`'s `panelStyle`), which used to sit
-// directly under this button when any of them was open, and their explicit
-// `zIndex: 3` always beat this button's implicit `auto`. `left: inset`
-// rather than a higher `zIndex` on this side: stacking above an open panel
-// would only trade "hidden behind the panel" for "drawn on top of the
-// panel's own content", which is not reachable either, just differently
-// broken. `left` is a corner none of the three touches.
+// The reader's own way back to the library, docked at the left end of the
+// band just above the strip.
 //
-// It is not, though, a corner `CorrectionBanner` (`CorrectionBanner.tsx`)
-// leaves alone: that banner spans `left: 16` to `right: 16` at `top: 16`,
-// the full width of the viewport at this same top edge, so `top: inset,
-// left: inset` sits inside it, not beside it. No `zIndex` here can fix that
-// the way it fixes the three panels — this button and the banner both claim
-// real width at the same edge, so any stacking order just decides which one
-// gets obscured. What actually clears it is below, in `Chrome` itself: the
-// button only renders while `filmstrip.correcting` is unset. A correction is
-// a transient, task-focused state with nothing for a "back to the library"
-// control to offer — the reader is choosing a counterpart page, not
-// browsing — and every other corner is already spoken for, so hiding the
-// button is the one move that does not cost another surface its own corner.
-// The `L` key stays live throughout regardless — see `Chrome`'s own comment
-// on the button below.
+// Not the top-right corner `CreditsPanel`, `Help` and `NotePanel`'s shared
+// shell all dock at (`top: 16, right: 16, zIndex: 3` — see e.g.
+// `NotePanel.tsx`'s `panelStyle`). This button used to sit there, directly
+// under whichever of them was open, and their explicit `zIndex: 3` always
+// beat its implicit `auto`. A higher `zIndex` here would only trade "hidden
+// behind the panel" for "drawn on top of the panel's own content", which is
+// not reachable either, just differently broken.
+//
+// And not the top-left corner it moved to next (O65 in `docs/status.md`).
+// `App.tsx`'s layout-mode buttons lay out in normal flow along the top edge
+// from 8,8, and at `top: 16, left: 16` this button, stacked above them, sat
+// over the centres of `single` and `two`: with the chrome open, a click on
+// either one left the reader. Clearing them from the top would mean tracking
+// the toolbar's rendered height, which depends on the browser's own button
+// styles rather than on anything in this codebase. `aboveStrip` comes from
+// this file's own constants, so the button moves with the strip it sits on.
+//
+// Nothing else docks in that band while reading, but one thing can reach up
+// into it: a note list placed below the page (`NoteList`'s `belowStyle`). At
+// ten notes the left ends of its top one or two visible rows sat under this
+// button, and at four nothing did; every row that took a click at its centre
+// before still does (`docs/notes.md`, "O65"). While correcting, the hover
+// preview (`previewStyle`) docks there outright: it stands on the same
+// `aboveStrip` in a box running from `left: inset` to `right: inset`, so this
+// corner is inside it and a wide enough preview draws over it. That is one of
+// two reasons the button only renders while `filmstrip.correcting` is unset,
+// below in `Chrome` itself. The other is that a correction is a transient,
+// task-focused state with nothing for a "back to the library" control to
+// offer — the reader is choosing a counterpart page, not browsing. The `L`
+// key stays live throughout regardless — see `Chrome`'s own comment on the
+// button below.
 //
 // Styled to match, rather than left as a bare native `<button>`: this floats
 // directly over artwork with nothing behind it, unlike the panels' own
@@ -170,11 +186,11 @@ const readoutStyle: CSSProperties = {
 // a reader deliberately dark regardless of theme.
 const leaveButtonStyle: CSSProperties = {
   position: 'absolute',
-  top: inset,
+  bottom: aboveStrip,
   left: inset,
   // At the panels' own `zIndex: 3`, so a future change that ever shares
   // their corner again loses no stacking fight the way the implicit `auto`
-  // used to. Does nothing for `CorrectionBanner` — see the comment above.
+  // used to.
   zIndex: 3,
   border: 'none',
   borderRadius: 8,
@@ -345,10 +361,9 @@ export function Chrome({
       <div style={{ ...readoutStyle, ...fade }} role="status">
         {row}
       </div>
-      {/* Hidden while correcting rather than restacked against
-          `CorrectionBanner` — see `leaveButtonStyle`'s own comment above for
-          why no `zIndex` can clear a banner that claims this same edge.
-          `onLeave` is still one keystroke away regardless: `L` (`keys.ts`,
+      {/* Hidden while correcting, when the hover preview stands in this
+          button's band — see `leaveButtonStyle`'s own comment above for
+          both reasons. `onLeave` is still one keystroke away regardless: `L` (`keys.ts`,
           listed on the generated help screen) keeps working during a
           correction. That is deliberate, not an oversight matching this
           button — the key is the documented path, and a reader who presses
