@@ -292,6 +292,58 @@ fn each_page_of_a_member_gets_its_own_tile() {
     );
 }
 
+/// O106's fix-round review: a tile's cache path changes with each parameter
+/// it was generated under, one at a time. That is the hole O106's own review
+/// found in the reading-page key, one function over. Only the offset was ever
+/// varied alone (`each_page_of_a_member_gets_its_own_tile`), so a path without
+/// the hash, `THUMB_LONG_EDGE` or `FORMAT_VERSION` passed every test. Without
+/// the hash, page N of every member shares one tile file. Without either of
+/// the others, a change to how tiles are made leaves every old tile served as
+/// the new one.
+///
+/// The name is pinned for the page key's reason: every tile already cached is
+/// named this way, and renaming them regenerates them all. It is built from
+/// the constants, so changing one still passes.
+#[test]
+fn changing_any_tile_parameter_changes_the_tile_path() {
+    let dir = Path::new("/cache");
+    let current = thumb_keyed_path(dir, "abc", 7, THUMB_LONG_EDGE, FORMAT_VERSION);
+
+    assert_eq!(
+        current,
+        thumb_cache_path(dir, "abc", 7),
+        "thumb_cache_path must use the real constants, not copies of them"
+    );
+    assert_eq!(
+        current,
+        dir.join(format!("abc-p7-{THUMB_LONG_EDGE}v{FORMAT_VERSION}.jpg")),
+        "the name every cached tile already has"
+    );
+    for (changed, other) in [
+        (
+            "sha256",
+            thumb_keyed_path(dir, "abd", 7, THUMB_LONG_EDGE, FORMAT_VERSION),
+        ),
+        (
+            "offset",
+            thumb_keyed_path(dir, "abc", 8, THUMB_LONG_EDGE, FORMAT_VERSION),
+        ),
+        (
+            "long edge",
+            thumb_keyed_path(dir, "abc", 7, THUMB_LONG_EDGE + 1, FORMAT_VERSION),
+        ),
+        (
+            "format version",
+            thumb_keyed_path(dir, "abc", 7, THUMB_LONG_EDGE, FORMAT_VERSION + 1),
+        ),
+    ] {
+        assert_ne!(
+            current, other,
+            "a changed {changed} must change the tile path"
+        );
+    }
+}
+
 /// A second request for the same tile reads the cache rather than decoding
 /// again. Pinned by counting generations, not by timing.
 #[test]
@@ -730,6 +782,58 @@ fn a_second_acquisition_waits_until_the_held_permit_is_released() {
         observed_after_release.load(Ordering::SeqCst),
         "the second acquire must not succeed before the first permit was released"
     );
+}
+
+/// O106: a reading page's key changes with each parameter it was rendered
+/// under. `page_key_at` takes the version as an argument for `keyed_path`'s
+/// reason: a test can vary it without a second copy of `PAGE_FORMAT_VERSION`.
+///
+/// The key is both the cache file's name and the page's `ETag`, and
+/// `routes`' `a_resized_page_tag_is_the_cache_key_it_was_rendered_under`
+/// holds the tag to it. A key missing a parameter gives two renderings one
+/// file and one tag: without the offset, every page of a member at one width
+/// is served whichever page was cached first, and validates the others' tags.
+///
+/// **Each parameter changes on its own.** The first version of this test
+/// changed only the version, and `a_reading_page_and_a_tile_never_share_a_cache_path`
+/// changes offset and edge together, so a key without the offset passed every
+/// test. The whole-branch review of O106 found it.
+///
+/// **The name's shape is pinned too**, because O106 promised it would not
+/// change: every page already cached is named `<sha256>-p<offset>-r<edge>v2.jpg`,
+/// and a key in any other shape regenerates all of them. Swapping offset and
+/// edge is the case that needs it, since the swapped key still tells every
+/// page apart. The version is left out of the pin so that a bump still passes.
+#[test]
+fn changing_any_rendering_parameter_changes_the_page_key() {
+    let dir = std::path::Path::new("/cache");
+    let current = page_key_at("abc", 3, 800, PAGE_FORMAT_VERSION);
+
+    assert_eq!(
+        current,
+        page_key("abc", 3, 800),
+        "page_key must use the real constant, not a copy of it"
+    );
+    assert_eq!(
+        page_cache_path(dir, "abc", 3, 800),
+        dir.join(format!("{current}.jpg")),
+        "the cache file is named by the key"
+    );
+    assert!(
+        current.starts_with("abc-p3-r800v"),
+        "the name every cached page already has: {current}"
+    );
+    for (changed, other) in [
+        ("sha256", page_key_at("abd", 3, 800, PAGE_FORMAT_VERSION)),
+        ("offset", page_key_at("abc", 4, 800, PAGE_FORMAT_VERSION)),
+        ("long edge", page_key_at("abc", 3, 801, PAGE_FORMAT_VERSION)),
+        (
+            "format version",
+            page_key_at("abc", 3, 800, PAGE_FORMAT_VERSION + 1),
+        ),
+    ] {
+        assert_ne!(current, other, "a changed {changed} must change the key");
+    }
 }
 
 /// Two different outputs must never share one path. `page_cache_path` and

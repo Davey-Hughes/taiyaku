@@ -857,6 +857,88 @@ async fn a_validator_from_one_size_does_not_satisfy_a_request_for_another() {
     assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
 }
 
+/// O106: a resized page's tag is its cache key in quotes. Both used to be
+/// built separately, and they drifted apart. The cache file name has carried
+/// `PAGE_FORMAT_VERSION` since #35, and the tag never did. So bumping the
+/// version would regenerate every cached page while every browser kept
+/// validating against its old copy and got a `304` for it.
+///
+/// Compared with the file name, not with a typed-out string, so that a
+/// parameter later added to one side must reach the other.
+#[test]
+fn a_resized_page_tag_is_the_cache_key_it_was_rendered_under() {
+    let path = crate::cover::page_cache_path(std::path::Path::new("/cache"), "abc", 3, 800);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap();
+    assert_eq!(page_etag("abc", 3, Some(800)), format!("\"{stem}\""));
+}
+
+/// O106, from the client's side: a tag issued before the format version was
+/// part of it must not validate. Until O106 a resized page's tag was
+/// `"<sha256>-p<offset>-r<edge>"`, and every browser that has read a page at
+/// a size is holding one. Under O105 the bytes behind it could have been an
+/// empty file. Answering that tag with `304` would keep such a browser drawing
+/// nothing after the server was fixed.
+///
+/// The old tag is built from the full-size tag, `"<sha256>-p<offset>"`, which
+/// O106 does not change. The first assertion checks that the full-size tag
+/// still has that shape, so the old tag below is the one browsers really hold.
+#[tokio::test]
+async fn a_resized_page_tag_from_before_the_format_version_is_not_honoured() {
+    let (state, _fixture) = crate::test_support::state_with_real_pages();
+    let app = build_router(state);
+
+    let full = etag_of(&app, "/api/works/w/a/pages/0").await;
+    assert!(full.ends_with("-p0\""), "the full-size tag's shape: {full}");
+    let old = format!("{}-r8\"", full.trim_end_matches('"'));
+
+    let response = app
+        .oneshot(
+            Request::get("/api/works/w/a/pages/0?w=8")
+                .header(header::IF_NONE_MATCH, old.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{old} names a rendering from before the format version was in the tag"
+    );
+    assert_ne!(response.headers()[header::ETAG], old.as_str());
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert!(
+        body.starts_with(b"\xff\xd8\xff"),
+        "the page itself, resized"
+    );
+}
+
+/// O106 review: a resized page's tag is built from the clamped width, which
+/// is the width its cache file is written under. Built from `?w=` as sent, a
+/// request above `MAX_FIT_LONG_EDGE` would be served the ceiling's rendering
+/// under a tag of its own. Raising the ceiling would then change what that
+/// request is served and leave its tag alone, which is this item's defect
+/// again. Nothing tested it: the tag-equals-key test calls `page_etag` with
+/// literal arguments and never goes through `get_page`.
+#[tokio::test]
+async fn a_width_above_the_ceiling_carries_the_ceilings_tag() {
+    let (state, _fixture) = crate::test_support::state_with_real_pages();
+    let app = build_router(state);
+    let ceiling = crate::cover::MAX_FIT_LONG_EDGE;
+
+    let at = etag_of(&app, &format!("/api/works/w/a/pages/0?w={ceiling}")).await;
+    let above = etag_of(&app, &format!("/api/works/w/a/pages/0?w={}", ceiling + 1)).await;
+
+    assert!(
+        at.contains(&format!("-r{ceiling}v")),
+        "the ceiling's own tag: {at}"
+    );
+    assert_eq!(above, at, "a width above the ceiling is served the ceiling");
+}
+
 /// A width outside the sensible range is clamped rather than refused: a
 /// hand-typed URL or a client bug should still draw a page. The ceiling is
 /// what stops one cache entry per pixel value.

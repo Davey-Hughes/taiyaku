@@ -125,9 +125,19 @@ pub(crate) fn locate_member(
 /// a day with nothing to point at. `None` is the full-size request and keeps
 /// the tag it always had, so a client holding a page cached before this
 /// existed still validates against it.
+///
+/// **A resized tag is `cover::page_key`, quoted, and so carries the format
+/// version as well (O106).** The same trap applies: a resized page is a
+/// rendering, and a bump of `PAGE_FORMAT_VERSION` is a new rendering under an
+/// unchanged size. Until O106 the tag was built here by hand without the
+/// version, while the cache file name had it. Adding it changed every resized
+/// tag once, so each browser re-fetches each resized page one time. That
+/// re-fetch also replaces any empty page a browser was served before O105. The
+/// full-size tag is left alone: the member's own bytes do not depend on how
+/// this server resizes anything.
 pub(crate) fn page_etag(sha256: &str, offset: u32, long_edge: Option<u32>) -> String {
     match long_edge {
-        Some(edge) => format!("\"{sha256}-p{offset}-r{edge}\""),
+        Some(edge) => format!("\"{}\"", crate::cover::page_key(sha256, offset, edge)),
         None => format!("\"{sha256}-p{offset}\""),
     }
 }

@@ -73,8 +73,23 @@ pub fn cache_path(dir: &Path, sha256: &str) -> PathBuf {
 /// edition-flat index, so a tile survives the edition gaining a member ahead
 /// of this one.
 pub fn thumb_cache_path(dir: &Path, sha256: &str, offset: u32) -> PathBuf {
+    thumb_keyed_path(dir, sha256, offset, THUMB_LONG_EDGE, FORMAT_VERSION)
+}
+
+/// `thumb_cache_path`, with the generation parameters as arguments, for
+/// `keyed_path`'s reason: a test can vary each one alone without a second copy
+/// of `THUMB_LONG_EDGE` or `FORMAT_VERSION`. Split out after O106's fix-round
+/// review found that dropping any of the hash, the long edge or the version
+/// from this name left every test green.
+fn thumb_keyed_path(
+    dir: &Path,
+    sha256: &str,
+    offset: u32,
+    long_edge: u32,
+    format_version: u32,
+) -> PathBuf {
     dir.join(format!(
-        "{sha256}-p{offset}-{THUMB_LONG_EDGE}v{FORMAT_VERSION}.jpg"
+        "{sha256}-p{offset}-{long_edge}v{format_version}.jpg"
     ))
 }
 
@@ -95,9 +110,28 @@ fn keyed_path(dir: &Path, sha256: &str, long_edge: u32, format_version: u32) -> 
 /// failure a content-addressed cache must not have. A tile is cropped to a
 /// strip's proportions in the reader; this is the whole page.
 pub fn page_cache_path(dir: &Path, sha256: &str, offset: u32, long_edge: u32) -> PathBuf {
-    dir.join(format!(
-        "{sha256}-p{offset}-r{long_edge}v{PAGE_FORMAT_VERSION}.jpg"
-    ))
+    dir.join(format!("{}.jpg", page_key(sha256, offset, long_edge)))
+}
+
+/// The name of one reading-sized rendering of a page: the member, the page's
+/// offset within it, the long edge and the format version.
+///
+/// **It is both the cache file's name and the page's `ETag`** (see
+/// `routes::page_etag`), and O106 is why there is one function for both.
+/// They used to be built separately, and #35 put `PAGE_FORMAT_VERSION` into
+/// the file name and not into the tag. Its own bump from version 1 to 2, for a
+/// new resize filter, regenerated every cached page on the server under an
+/// unchanged tag, so a browser holding an old rendering would be answered
+/// `304` once its copy went stale, and keep it. A parameter added here reaches
+/// both.
+pub(crate) fn page_key(sha256: &str, offset: u32, long_edge: u32) -> String {
+    page_key_at(sha256, offset, long_edge, PAGE_FORMAT_VERSION)
+}
+
+/// `page_key`, with the format version as an argument, for `keyed_path`'s
+/// reason: a test can vary the version without a second copy of the constant.
+fn page_key_at(sha256: &str, offset: u32, long_edge: u32, format_version: u32) -> String {
+    format!("{sha256}-p{offset}-r{long_edge}v{format_version}")
 }
 
 /// `FORMAT_VERSION`'s counterpart for reading-sized pages, versioned separately

@@ -16371,3 +16371,103 @@ browser that had already cached an empty page would keep showing it after the
 server was fixed. Covers and tiles are sent with `private, no-cache` and no
 `ETag`, so a browser re-fetches them in full and recovers. Given the cache
 check above, no browser can hold an empty page today.
+
+*O106 has since added the format version to every resized tag, which changes
+each one once and so replaces such a page. See the O106 entry below.*
+
+## O106: a resized page's tag left out the format version — 2026-09-13
+
+Found by reviewing what O105's fix left behind: O105 found that a browser
+holding an empty page would get `304` for it, and the cause was in the tag.
+
+### The defect, from the code and its history
+
+`cover::page_cache_path` named a cached page
+`<sha256>-p<offset>-r<edge>v<PAGE_FORMAT_VERSION>.jpg`. `routes::page_etag`
+built the tag for the same rendering separately, as
+`"<sha256>-p<offset>-r<edge>"`, without the version.
+
+**It was reached once, on the branch that introduced it.** The first version
+of this entry said it had never been reached, on the strength of `git log -S`
+on `main`: the resized tag and `PAGE_FORMAT_VERSION = 2` arrive in the same
+commit, `f81913d` (#35), and there is no `= 1` on `main` at all. But `main`
+holds only #35's squash. The whole-branch review read the PR's own commits,
+which `refs/pull/35/head` keeps:
+
+| commit | time, 2026-08-09 | cached page | tag |
+| --- | --- | --- | --- |
+| `69eb898` "Serve pages at reading size" | 00:49 | `…-r<edge>v1.jpg` (`FORMAT_VERSION`, shared with covers) | `"<sha256>-p<offset>-r<edge>"` |
+| `08daa05` "reading pages get a real resize filter" | 01:48 | `…-r<edge>v2.jpg` (the new `PAGE_FORMAT_VERSION`) | unchanged |
+
+`web/.taiyaku-cache/thumbs` still holds 312 version-1 reading pages from that
+night, all whole JPEGs, so resized pages were served at version 1. After the
+bump, a browser holding one would have revalidated with the unchanged tag,
+been answered `304`, and kept the old filter's rendering. That is the same
+lesson as `refs/pull/*` keeping every commit of every PR, from the other side:
+a search of `main` sees the squash and not the hour the branch spent at
+version 1.
+
+### The drive, before and after
+
+The drive used the same copy of the real library and the same scratch cache
+as O105's, with page 5 of `akame-ga-kill----v01--2015--cbz` (edition `raw`)
+and the member's hash written as `<sha>`:
+
+| | O105's binary | O106's binary |
+| --- | --- | --- |
+| tag for `?w=300` | `"<sha>-p5-r300"` | `"<sha>-p5-r300v2"` |
+| tag for the full-size page | `"<sha>-p5"` | `"<sha>-p5"` |
+| `?w=300` with `If-None-Match: "<sha>-p5-r300"` | **304, 0 B** | 200, 22091 B |
+| `?w=300` with `If-None-Match: "<sha>-p5-r300v2"` | 200, 22091 B | 304, 0 B |
+| full size with `If-None-Match: "<sha>-p5"` | 304, 0 B | 304, 0 B |
+
+The page file O105's binary had cached,
+`<sha>-p5-r300v2.jpg`, kept its nanosecond mtime across every request to
+O106's binary, so the file name did not change and nothing was regenerated.
+Isolation checks afterwards: the real `library.db` kept its mtime, and
+`find -newermt` from this drive's start time found nothing under the real
+library or `~/.cache/taiyaku`.
+
+**What it costs.** Every resized tag changes once. Each browser re-fetches
+each resized page it holds one time, from the server's cache, which is still
+warm because no file name changed. The only server so far is this
+workstation, so the cost falls on the browsers that have read from it, the
+test devices included.
+
+### The review of the fix round
+
+**The first corrections made the wording worse in two places.** This entry and
+the O106 row said a browser "was answered `304`". That was never observed. At
+`08daa05` pages were sent with `private, max-age=86400`, so a browser holding
+a version-1 page would not have asked at all for a day, and would then have
+been answered `304`. The row now says so. The key test's doc and the row said
+a key without the offset would serve "page 0's picture". It would serve
+whichever page of the member was cached first.
+
+**The same hole was one function over.** `thumb_cache_path` built a tile's
+name as `<sha256>-p<offset>-<THUMB_LONG_EDGE>v<FORMAT_VERSION>.jpg`, and only
+its offset was ever varied on its own (`each_page_of_a_member_gets_its_own_tile`).
+Dropping the hash, the long edge or the version from that format string passed
+all 559 `taiyaku-serve` tests. Without the hash, page N of every member shares
+one tile file. It now goes through `thumb_keyed_path`, which takes the
+parameters as arguments, and
+`changing_any_tile_parameter_changes_the_tile_path` changes each one alone
+and pins the name every cached tile already has: all 758 tiles in the three
+caches above have the shape `<sha256>-p<offset>-160v1.jpg`.
+
+**Routes could use a page's index where its offset belongs.** Hand-applied at
+the tip of this branch, each of these left every test green:
+
+| site | change |
+| --- | --- |
+| `get_page`, the `ETag` | `offset` → `index` |
+| `get_page`, the reading-page cache key | `offset` → `index` |
+| `get_thumb`, the tile key | `offset` → `index` |
+| `opds::stream_page`, the `ETag` | `offset` → `index` |
+| `get_page`, the resize and its cache key | the clamped width → the raw `?w=` |
+
+Every route fixture asks for pages whose index equals their offset, and its
+16×16 page never resizes where the raw and clamped widths differ. The shipped
+code is right at all five. Opened as O108, because closing it needs a
+multi-member fixture and a route test that reads the cache, which is a branch
+of its own.
