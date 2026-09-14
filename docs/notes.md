@@ -17167,7 +17167,8 @@ leaves visible, and every row that took a click at its centre on `main` still
 does. The table shows something larger beside it that predates this branch:
 with the chrome open, the strip (from 216 px above the bottom edge) and the
 readout row cover the rest of the list, so at four notes not one row takes a
-click, on `main` or here. That is not O65, and it is not fixed here.
+click at its centre, on `main` or here. That is not O65, and it is not fixed here;
+it is filed as O112.
 
 ### Not measured
 
