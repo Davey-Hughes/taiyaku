@@ -179,6 +179,11 @@ pub fn fit_at(page: &[u8], long_edge: u32) -> Result<Option<Vec<u8>>, String> {
 /// archive does. A per-request header parse is the price, and it is
 /// microseconds.
 ///
+/// **The paragraph above is wrong, and O107 records how.** The caller does
+/// not have the bytes: `page()` runs below, inside the permit, its bytes are
+/// dropped on `None`, and `routes::get_page` reads the page again. A page
+/// that already fits is read out of its archive twice.
+///
 /// Shares `GENERATION_LIMIT` with covers and tiles rather than taking a bound
 /// of its own. All three do the same expensive thing — decode a page at up to
 /// `MAX_DECODE_ALLOC` — so one budget over all of them is what actually bounds
@@ -192,7 +197,7 @@ pub fn cached_or_generated_page(
     page: impl FnOnce() -> Result<Vec<u8>, String>,
 ) -> Result<Option<Vec<u8>>, String> {
     let path = page_cache_path(dir, sha256, offset, long_edge);
-    if let Ok(found) = std::fs::read(&path) {
+    if let Some(found) = cached(&path) {
         return Ok(Some(found));
     }
     let generated = {
@@ -209,6 +214,37 @@ pub fn cached_or_generated_page(
         let _ = taiyaku_read::atomic::write(&path, &bytes, "jpg");
     }
     Ok(Some(bytes))
+}
+
+/// The cached file at `path`, if there is one and it is a whole JPEG.
+///
+/// **O105: a hit used to be any file `fs::read` could open.** An empty file
+/// was served as a cover, and nothing ever replaced it, because the path is
+/// content-addressed and never changes. `None` for a broken file makes the
+/// caller treat it as a miss. The caller then regenerates and
+/// `atomic::write` renames the new file over the broken one, so the next
+/// request is a real hit.
+///
+/// Every file in these caches came out of `encode_jpeg`, which always starts
+/// with the SOI marker and ends with EOI. So "starts `FF D8 FF`, ends
+/// `FF D9`" rejects nothing this module wrote. On 2026-09-13 every file in the
+/// caches the server had written on the development workstation passed:
+/// 1,156 across three directories, covers, tiles and reading pages of both
+/// page format versions (`docs/notes.md`, under O105). What it rejects is an
+/// empty file, a zero-filled one, and one cut short. Those are the shapes a
+/// crash can leave when a rename reaches the disk before the data does, which
+/// `atomic::write` allowed until O104. They are also what a copy that was cut
+/// off leaves.
+///
+/// A marker check rather than a decode, because the hit is the cheap path.
+/// It runs outside `GENERATION_LIMIT` so that a warm grid stays fully
+/// parallel, and a decode here would cost a warm request about as much as a
+/// cold one. The bytes are already in memory, so checking five of them adds
+/// nothing. **Damage between the two markers is not caught.** Catching it
+/// would take that decode.
+fn cached(path: &Path) -> Option<Vec<u8>> {
+    let found = std::fs::read(path).ok()?;
+    (found.starts_with(b"\xff\xd8\xff") && found.ends_with(b"\xff\xd9")).then_some(found)
 }
 
 /// How many cover generations — fetching a page and decoding it — may run at
@@ -397,7 +433,7 @@ fn at_path(
     page: impl FnOnce() -> Result<Vec<u8>, String>,
     generate: impl FnOnce(Vec<u8>) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {
-    if let Ok(found) = std::fs::read(path) {
+    if let Some(found) = cached(path) {
         return Ok(found);
     }
     let generated = {

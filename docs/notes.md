@@ -16260,3 +16260,114 @@ throughout, which can only inflate these:
 times less than the review's figure for this workstation's ext4. Every scratch
 directory was removed from both branches and `ls -d /mnt/*/mirrors/taiyaku-measure-*`
 returned nothing.
+
+## O105: the cover cache served whatever file it found — 2026-09-13
+
+Found by the whole-branch review of O104. The reviewer's throwaway test put an
+empty file at a reading page's cache path and got back `Some` of zero bytes.
+
+### The defect, from the code
+
+`cover::at_path` serves every cover and filmstrip tile, and
+`cover::cached_or_generated_page` serves reading-sized pages. Both began with
+an `if let Ok(found) = std::fs::read(…)` that returned `found`. #124's "What
+remains" named only the second. The series cover redirects to a tile, so every
+surface that serves a generated image went through one of those two lines. The
+path is keyed on the member's `sha256` and the generation parameters. Neither
+changes, so a broken file at that path was served on every request and never
+replaced.
+
+### What the real caches hold
+
+No taiyaku container runs on the NAS: `docker ps -a` there lists none, and
+`/mnt/user/appdata` has no `covers` or `thumbs` directory. This workstation has
+three caches the server wrote before this work began (the drives and reviews
+below used scratch caches of their own). Every file in them was read and checked for a
+JPEG start marker (`FF D8 FF`) at the beginning and an end marker (`FF D9`) at
+the end:
+
+| cache | covers | tiles | reading pages | made | whole |
+| --- | --- | --- | --- | --- | --- |
+| `~/.cache/taiyaku` | 7 | 336 | 74 (`v2`) | 2026-08-11 to 2026-09-09 | 417 of 417 |
+| `web/.taiyaku-cache` | — | — | 312 (`v1`) | 2026-08-09 | 312 of 312 |
+| `.superpowers/sdd/scratch/cache` | — | 422 | 5 (`v2`) | 2026-08-13 | 427 of 427 |
+
+None of the 1,156 is empty. So the marker check the fix applies rejects
+nothing this server has written, under either page format version. Nothing
+ever replaced a broken file before O105, so a broken file served to a client
+would still be on disk unless someone deleted the cache by hand. None is, which
+means no client has been served one from these caches. That matters for the `ETag` finding below.
+
+**The first count said one cache and 417 files, and it was wrong.** The search
+for cache directories used `fd`, which skips anything `.gitignore` names, and
+both other caches sit under ignored paths in the repository. The whole-branch
+review found them. `fd --no-ignore` finds all three. `web/.taiyaku-cache` is
+what the relative default left before `cache_root` existed.
+
+### The drive, before and after
+
+The drive used a copy of the real library's `library.db` in scratch, a key
+minted against the copy, and `serve --cache` pointed at a scratch directory.
+Three requests for `akame-ga-kill----v01--2015--cbz`, edition `raw`: the OPDS
+cover, the tile for page 5, and page 5 at `?w=300`.
+
+| | cover | tile | page `?w=300` |
+| --- | --- | --- | --- |
+| cold, pre-fix binary | 200, 36843 B | 200, 7678 B | 200, 22091 B |
+| all three files emptied, pre-fix binary | **200, 0 B** | **200, 0 B** | **200, 0 B** |
+| the same empty files, fixed binary | 200, 36843 B | 200, 7678 B | 200, 22091 B |
+| cut in half / zero-filled / one byte short, fixed binary | 200, 36843 B | 200, 7678 B | 200, 22091 B |
+
+Every body the fixed binary served was a whole JPEG, and each file on disk was
+back at its original size. A third round of requests left every file's
+nanosecond mtime unchanged, so those requests were served from the cache and
+not regenerated. Isolation checks afterwards: the real `library.db` kept its
+mtime (2026-09-02 05:51:48), and `find -newermt` from the drive's start time
+returned nothing under the real library or `~/.cache/taiyaku`.
+
+### The permit tests, and the deadlock their first version had
+
+The whole-branch review found that moving the cache hit inside
+`GENERATION_LIMIT`, in either `at_path` or `cached_or_generated_page`, left
+every test green. The fix added two tests that hold every permit and require a
+warm hit within five seconds. **The review of that fix round found they could
+hang each other.** `.cargo/mutants.toml` runs sweeps with plain `cargo test`,
+where tests are threads in one process sharing the static semaphore. The
+helper takes the two permits one at a time, so the two tests could each take
+one and wait forever for the second, with every other test that needs a permit
+queued behind them. The reviewer attached gdb to a hung run and found both
+helpers inside `Semaphore::acquire` on their second acquisition.
+
+| run under plain `cargo test` | hung (timeout) |
+| --- | --- |
+| `cover::tests`, before the fix, 60 s limit | **5 of 6** |
+| `cover::tests`, a lock held for the whole helper, 60 s limit | 0 of 30 |
+| the whole `taiyaku-serve` lib, the same lock, 180 s limit | 0 of 10 |
+
+With the lock, a hit moved inside the permit still fails its test in about
+five seconds: 5.1 s under nextest for `at_path`, and 5.8 s under plain
+`cargo test` for the page site.
+
+**The same review found the permit's other half untested.** Deleting
+`let _permit = GENERATION_LIMIT.acquire();` in `at_path` or in
+`cached_or_generated_page` left every test green, and cargo-mutants never
+generates that mutant because it does not delete statements. Two tests now
+hold every permit, through the same lock, and require a cold generation not
+to have fetched its page after 300 ms and to have fetched it once the permits
+are released. Hand-applied: deleting the permit in `at_path` fails the cover
+test, deleting it in `cached_or_generated_page` fails the page test, and
+building `GENERATION_LIMIT` with `MAX_CONCURRENT_GENERATIONS + 1` fails both.
+Setting `MAX_CONCURRENT_GENERATIONS` to 64 passes, deliberately: the tests
+hold however many permits it names, and its value is a tuning choice
+justified in its own doc comment. After adding them, under plain
+`cargo test`: 0 of 20 runs of `cover::tests` and 0 of 5 of the whole crate failed or hung.
+
+### What the fix does not reach
+
+A reading page's `ETag` is `"<sha256>-p<offset>-r<edge>"`, which is the cache
+key and not a digest of the bytes. After the fix, a request for the page above
+that sent back the tag its empty response had carried got **304**. So a
+browser that had already cached an empty page would keep showing it after the
+server was fixed. Covers and tiles are sent with `private, no-cache` and no
+`ETag`, so a browser re-fetches them in full and recovers. Given the cache
+check above, no browser can hold an empty page today.

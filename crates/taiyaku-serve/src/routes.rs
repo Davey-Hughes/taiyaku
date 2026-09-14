@@ -775,7 +775,8 @@ async fn get_page(
     // Resizing blocks harder still — it decodes — so it belongs on this same
     // thread rather than in a second `spawn_blocking` behind it. A cache hit
     // never reaches the fetch at all: `cached_or_generated_page` reads the
-    // cached file first, and only a miss pays for the member.
+    // cached file first, and only a miss pays for the member. (O107: and a
+    // page that already fits pays twice — see the `None` arm below.)
     //
     // `PageSource` stays synchronous deliberately. The boundary belongs here,
     // where there is exactly one of it, rather than in each implementation.
@@ -797,6 +798,9 @@ async fn get_page(
             }),
             // Already within the requested edge: the original bytes are the
             // right answer, so this costs one header parse and no resize.
+            // O107: not so. `cached_or_generated_page` already read this page,
+            // inside a generation permit, and dropped the bytes, so this reads
+            // it out of the archive a second time.
             None => state.page(found, &edition, index),
         }
     })
