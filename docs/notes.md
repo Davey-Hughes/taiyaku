@@ -16594,3 +16594,301 @@ rerun against it: the tile key from `index` still fails at page 2 of `ab`
 (`"blue"` where `"red"` belongs), and the tile cached in `cache_dir` still fails
 at the first cache read, as does
 `tests::serve_caches_covers_and_tiles_under_the_resolved_root`.
+
+## O107: a page that already fits is read once — 2026-09-13
+
+Opened by the whole-branch review of O105, which counted archive opens under
+`strace` and found a `?w=` request for a page that already fits read out of its
+archive twice. `cover::cached_or_generated_page` fetched the page inside a
+generation permit to learn that it fit, and dropped the bytes when `fit_at`
+answered `None`. `routes::get_page` then read the page again to serve it. The
+row deferred the fix until a page turn had been timed on the editions it names.
+
+**Substrate.** Everything below ran on the development workstation: 32 cores,
+the corpus on local NVMe with a warm page cache, a release build of `4ff7c6a`
+serving a scratch copy of `gotoubun-v01`'s sidecar with every member path made
+absolute, and a scratch database and cache. It is **not** the production host,
+which is a container on the Unraid NAS. The 1-minute load average is given
+beside each timing. Another session's gate finished before any timing began.
+
+### Which requests reach the arm that serves a page that fits
+
+Every page header in three editions, read out of the archives:
+
+| edition | pages | shapes | fit at 768 | 1024 | 1536 | 2048 | 3072 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `raw-mono` | 195 | all baseline JPEG, 685×1024 | 0 | 195 | 195 | 195 | 195 |
+| `en-fan` | 235 | c001, c003, c004: JPEG 950×1364; c000, c002, c005, c005.5: mostly PNG 1070×1600 or 1114×1600; a few spreads and credits | 4 | 5 | 112 | 234 | 234 |
+| `en-mono` | 187 | progressive JPEG 2146 or 2147×3056, one PNG, seven 4294×3056 spreads | 0 | 0 | 0 | 0 | 180 |
+
+`pageSize.ts` asks for the smallest rung at or above the box's long edge
+times `devicePixelRatio`. In `two` mode the box is the larger of half the
+window's width and its height. In `single` mode it is the larger of the width
+and the height. So at `devicePixelRatio` 1, any window taller than 768 CSS
+pixels asks for at least 1024 in either mode, and every `raw-mono` page fits.
+In `single` mode, a window whose larger dimension is over 1536 asks for 2048,
+and nearly every `en-fan` page fits. `raw-mono` is missed only by a window no
+taller than 768 and no wider than 768 in `single` mode, or 1536 in `two`. At
+`devicePixelRatio` 3, a phone asks for 3072, and 180 of `en-mono`'s pages fit
+too. The browser confirmed two points of this: 1440×900 in `two` mode asked
+for `?w=1024`, and 1600×900 in `single` mode asked for `?w=2048`.
+
+### The reads, counted
+
+`strace -f -e trace=openat` on the pre-fix server, counting opens of the member
+archive for each request:
+
+| request | archive opens | served |
+| --- | --- | --- |
+| `raw-mono` page 10, full size | 1 | `image/jpeg`, 197077 B |
+| the same at `?w=1024` (fits) | 2 | the same bytes |
+| the same at `?w=1024` again | 2 | the same bytes |
+| the same at `?w=2048` (fits) | 2 | the same bytes |
+| the same at `?w=768` (resize) | 1 | `image/jpeg`, 83482 B |
+| the same at `?w=768` again (cache hit) | 0 | the same |
+| `en-fan` page 49 (c001), full size / `?w=1536` fits / `?w=1024` resize / hit | 1 / 2 / 1 / 0 | JPEG 639744 B / same / 166292 B / same |
+| `en-fan` page 10 (c000), full size / `?w=2048` fits / `?w=1536` resize / hit | 1 / 2 / 1 / 0 | **PNG** 462228 B / **PNG**, same / JPEG 410656 B / same |
+
+The row's counts hold, and one thing the row did not say: nothing is cached
+for a page that fits, so the double read is paid **on every request** for it,
+not once.
+
+### What the second read costs the server
+
+Keep-alive requests from Python, 20 pages × 20 rounds, with full size and
+`?w=` interleaved and each page requested at both URLs once before timing.
+Milliseconds, n = 400 each:
+
+| pages | rung | full size TTFB median / p90 | fits TTFB median / p90 | difference in medians | load |
+| --- | --- | --- | --- | --- | --- |
+| `raw-mono` JPEG 685×1024 | 1024 | 1.349 / 1.621 | 2.545 / 2.909 | 1.196 | 6.60–7.11 |
+| `raw-mono` JPEG 685×1024 | 2048 | 1.357 / 1.573 | 2.574 / 2.957 | 1.217 | 7.11 |
+| `en-fan` c001 JPEG 950×1364 | 1536 | 1.606 / 1.895 | 3.005 / 3.449 | 1.399 | 7.11 |
+| `en-fan` c000 PNG 1114×1600 | 2048 | 0.438 / 0.606 | 0.711 / 1.065 | 0.273 | 7.11 |
+
+The difference is the second read, plus the header parse and the cache lookup
+that misses. The fix removes only the second read, so the table after the fix,
+below, is what separates them. Why the PNG member reads three times faster than
+the JPEG ones was not looked into.
+
+### What a page turn costs, in the browser
+
+Playwright's Chromium against vite, proxying to the pre-fix server. Keypress to
+the first animation frame after every cell holds the new `src` and has finished
+loading. Synthetic `keydown` on `window`, 700 ms between turns, a
+`PerformanceObserver` on resource entries and a `MutationObserver` on `src`.
+
+| run | window, mode, rung | turns | median | p90 | worst | load |
+| --- | --- | --- | --- | --- | --- | --- |
+| `raw-mono` p17 → p56, first visit | 1440×900, `two`, 1024 | 20 | 52.5 ms | 55.2 ms | 85.9 ms | 1.63 |
+| `en-fan` c001 p71 → p90, browser cache cleared | 1600×900, `single`, 2048 | 20 | 53.3 ms | 54.5 ms | 58.7 ms | 2.94 |
+| `en-fan` c002 PNG p97 → p116, browser cache cleared | 1600×900, `single`, 2048 | 20 | 54.0 ms | 77.2 ms | 96.5 ms | 1.94 |
+
+Most turns land near 36 or 53 ms, a frame apart, which is frame quantisation. **Every
+one of the 60 turns requested its page's `?w=` URL after the keypress**, so the
+double read landed on the turn itself, not on prefetch. The browser also gives
+a comparison within the same turns. Prefetch requested the next pages at full
+size within about a millisecond of the turn's `?w=` request. Both went through
+the same proxy and both were cold:
+
+| run | `?w=` TTFB median / p90 (two reads) | full-size prefetch TTFB median / p90 (one read) |
+| --- | --- | --- |
+| `raw-mono` | 5.9 / 11.2 ms, n = 39 | 4.2 / 10.0 ms, n = 39 |
+| `en-fan` c001 | 5.6 / 9.3 ms, n = 20 | 3.6 / 8.2 ms, n = 21 |
+| `en-fan` c002 PNG | 7.6 / 10.7 ms, n = 20 | 8.5 / 10.6 ms, n = 20 |
+
+So on this machine the second read is about a millisecond of a 50 ms turn,
+smaller than the 17 ms frame the turn is counted in.
+
+**Found on the way, and not fixed here: prefetch warms URLs the reader never
+draws.** `App.tsx`'s prefetch effect builds `pageUrl(work, edition, page)`
+with no long edge, while the cells ask for `pageUrl(…, pageLongEdge)`. Every
+prefetch request in these runs was a full-size URL. So prefetch does not warm
+the turn, the turn's `?w=` request is always cold on a first visit, and a page
+is sent to the browser twice, once whole and once at reading size. It is a web
+defect with its own measurement to make, and is reported rather than widened
+into this branch.
+
+**One run measured nothing, and one measured something else.** `gotoubun-v01`
+reads right to left, and `stepFor` maps ArrowRight to a step back, so twenty
+ArrowRight presses from page 0 left the reader where it was. Each wait timed
+out at ten seconds. Every result after that used ArrowLeft. The first `en-fan`
+run then reached its start with a 42-page flick back through the pages it went
+on to turn. That flick had already requested every `?w=` URL on the way: all
+20 turns were `304`s, which `get_page` answers before reading anything (median
+36.5 ms, p90 53.2 ms). It shows a repeat visit never reaches the double read,
+because pages are sent `private, no-cache` with a tag. It does not time the
+double read. The two cold `en-fan` runs cleared Chromium's cache over CDP first
+and started without a flick.
+
+### The permit wait
+
+A cold filmstrip holds both generation permits, and a page that fits was fetched
+inside one. Staged with Python: the tile cache wiped, all 187 `en-mono` tiles
+requested over six connections, as a browser would. 300 ms in, a fitting
+`raw-mono` page at `?w=1024`, the same page at full size, and a cache hit at
+`?w=768` were requested in turn, every 50 ms for three seconds. Milliseconds:
+
+| run | filmstrip | fits `?w=1024` median / p90 / max | full size median / p90 / max | cache hit median / p90 / max | n | load |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | no | 2.93 / 3.29 / 8.73 | 1.38 / 1.54 / 1.77 | 0.18 / 0.26 / 0.54 | 55 | 5.14 |
+| 2 | yes, 7.1 s, tiles 225 ms median | **164.28 / 212.62 / 220.50** | 1.80 / 2.24 / 8.51 | 0.32 / 0.39 / 0.70 | 14 | 4.73 |
+| 3 | no | 3.07 / 3.96 / 8.56 | 1.52 / 1.93 / 2.15 | 0.25 / 0.35 / 0.55 | 55 | 4.51 |
+| 4 | yes, 7.0 s, tiles 220 ms | **166.49 / 201.92 / 250.24** | 1.61 / 1.84 / 8.82 | 0.28 / 0.46 / 0.52 | 14 | 4.31 |
+| 5 | no | 3.04 / 3.47 / 8.24 | 1.51 / 1.74 / 6.98 | 0.25 / 0.34 / 16.16 | 55 | 4.28 |
+| 6 | yes, 7.0 s, tiles 223 ms | **163.82 / 209.77 / 242.74** | 1.60 / 1.95 / 1.95 | 0.25 / 0.41 / 0.55 | 14 | 4.02 |
+
+**The wait shows, and it is over a hundred times the second read.** While a
+filmstrip generates, a request for a page that already fits queues for a
+permit, and the full-size request and the cache hit beside it do not. The fix
+below does not change that, because the fetch and the header parse still run
+inside the permit. Moving them out is a separate change, and its memory
+question is narrower than bounding how many pages are held. A full-size request
+already fetches with no permit at all, and the permit's own doc comment
+justifies it by decode memory (`MAX_DECODE_ALLOC`). What would change is that
+a request needing a resize would hold its fetched page while it queues for the
+decode.
+
+### The fix
+
+`cached_or_generated_page` returns `cover::Fitted<P>`, where `P` is whatever
+the caller's fetch returned. `Resized(Vec<u8>)` is a JPEG from the cache or
+just made. `Original(P)` is the fetched page, handed back when it already fits.
+`get_page` now passes `state.page(…)` whole and serves `Original(page)` as it
+is, content type included. `ServedPage` implements `AsRef<[u8]>` so the header
+parse can read its bytes. The fetch is still an `FnOnce`, so it happens once.
+The permit is untouched.
+
+`test_support::CountingSource` wraps `LocalLibrary` and records every read as
+the member's path and the offset within it. The route test makes the four
+requests `strace` counted above, against O108's shared-member fixture: full size,
+a page that fits, a resize and a cache hit. They must read once, once, once and
+not at all, and each read must be `b.cbz`'s first page. Before the fix it failed
+on the second request with `[("b.cbz", 0), ("b.cbz", 0)]`. A cover test hands
+back a page that is not a bare `Vec`, so "as it was fetched" covers the field
+beside the bytes, and requires that nothing is cached for it.
+
+### Every break, watched
+
+Each change was applied by hand to the fixed tree and run against all 571
+`taiyaku-serve` tests under nextest. The file was then restored and its
+SHA-256 checked. A control run passed 571 of 571 before the six and again after.
+
+| break | red | failing assertion |
+| --- | --- | --- |
+| the second read put back in `get_page`'s arm for a page that fits | `a_page_that_already_fits_the_width_is_read_once` only | two reads of `("b.cbz", 0)` where one belongs |
+| that arm serving `image/jpeg` over the original bytes | the new route test; `a_page_that_already_fits_the_width_is_read_by_its_index`; `a_width_larger_than_the_page_serves_the_original_bytes_untouched` | `image/jpeg` where `image/png` belongs |
+| the second read put back, by offset | `…_read_by_its_index`; the new route test | `"grey"` where `"red"` belongs; the new test stops first at the bytes |
+| the one fetch made by offset | `…_read_by_its_index`; the new route test; `a_resized_page_is_cached_under_its_offset_in_its_member_not_its_index` | `"grey"` where `"red"` belongs |
+| a page that fits written to the cache | `a_page_that_already_fits_is_fetched_once_and_handed_back` only | "and nothing is cached for it" |
+| a page that fits answered as `Resized` of its own bytes | the cover test; the new route test; `…_read_by_its_index`; `…_serves_the_original_bytes_untouched` | the cover test's `Original`; `image/jpeg` where `image/png` belongs |
+
+The first row is O107's defect in the new shape, and no test from before this
+branch goes red under it. That reproduces the review's finding that nothing
+could see it. "Fetch twice" has no row at the cover level because `page` is
+`FnOnce`: a second call does not compile. Under plain `cargo test`, which
+mutation sweeps use, the crate passed 571 of 571 three times, in 15.4 to
+15.7 s, with no hang.
+
+### What the mutation sweep could and could not see
+
+`scripts/mutants.sh --since main` found eight mutants: four caught, none
+missed, and four unviable, with no survivor outside the baseline. **All four
+unviable mutants are `cached_or_generated_page`'s**, and this branch is why.
+It returns `Fitted<P>`, which has no constructor, `From`, `FromIterator` or
+`Default`, so each whole-function replacement cargo-mutants tried fails to
+compile. With the old `Option<Vec<u8>>` it would have built `Ok(None)` and
+`Ok(Some(vec![]))`. The sweep therefore made no viable mutant of the one
+function this item changed. It also made none of the match arms, the permit
+or `get_page`'s arm for a page that fits, since it does not mutate statements.
+The two whole-function replacements it could not build were applied by hand
+instead. `Ok(Fitted::Resized(Vec::new()))` and `Ok(Fitted::Resized(vec![0]))`
+each turned 11 of 571 tests red, three in `cover` and eight in `routes`, among
+them both new tests.
+
+### After the fix
+
+The same `strace` requests against the release build of the fix:
+
+| request | archive opens before | after |
+| --- | --- | --- |
+| full size, `raw-mono`, `en-fan` c001, `en-fan` c000 | 1 | 1 |
+| a page that fits, each of the four | **2** | **1** |
+| a resize | 1 | 1 |
+| a cache hit | 0 | 0 |
+
+Every response was byte for byte what it had been, and `en-fan` page 10 at
+`?w=2048` is still served as `image/png`.
+
+The server A/B again, on the fix and then on the pre-fix build straight after,
+so a quieter machine cannot pass for the fix. TTFB medians in milliseconds,
+n = 400 each, load 6.40 falling to 5.97:
+
+| pages | rung | fix: full size / fits / difference | pre-fix again: full size / fits / difference |
+| --- | --- | --- | --- |
+| `raw-mono` JPEG | 1024 | 1.222 / 1.260 / 0.038 | 1.223 / 2.311 / 1.088 |
+| `raw-mono` JPEG | 2048 | 1.283 / 1.327 / 0.044 | 1.254 / 2.339 / 1.085 |
+| `en-fan` c001 JPEG | 1536 | 1.480 / 1.512 / 0.032 | 1.500 / 2.809 / 1.309 |
+| `en-fan` c000 PNG | 2048 | 0.437 / 0.431 / −0.006 | 0.430 / 0.718 / 0.288 |
+
+The pre-fix repeat's difference is within 0.14 ms of the first pre-fix run's
+in every case, and the difference that remains after the fix is about
+0.04 ms. So the header parse and the missed cache lookup cost next to nothing,
+and the millisecond was the second read.
+
+The permit wait is unchanged, as expected. Two more pairs of runs against the
+fix, with a filmstrip: a page that fits waited a median 170.13 and 169.72 ms
+(p90 214.54 and 204.93), with full size at 1.65 and 1.68 ms and the cache hit
+at 0.31 ms. Load was 5.24–5.38.
+
+The page turns again, against the fix through the same vite, with the same
+starting pages and the browser cache cleared before each run:
+
+| run | before: median / p90 / worst | after: median / p90 / worst | load after |
+| --- | --- | --- | --- |
+| `raw-mono` from 17\|16, `two`, `?w=1024` | 52.5 / 55.2 / 85.9 ms | 41.3 / 52.9 / 53.7 ms | 2.19 |
+| `en-fan` c001 p71 → p90, `single`, `?w=2048` | 53.3 / 54.5 / 58.7 ms | 54.6 / 60.0 / 72.5 ms | 1.61 |
+
+**The turn did not measurably change, and was never going to at this size.**
+Both `raw-mono` runs have nearly every turn on a frame boundary near 36 or 52 ms. The
+median moved because more turns landed on the earlier frame, which a
+millisecond of server time can tip but twenty turns cannot attribute. `en-fan`
+moved the other way. What did change is visible one level down. In the same
+turns, the proxy's time to first byte for a fitting `?w=` request now matches
+the full-size prefetch beside it: 4.7 against 4.4 ms on `raw-mono` and 8.2
+against 8.2 on `en-fan`, where before the fix it trailed by 1.7 and 2.0 ms.
+
+### What remains
+
+- **The permit wait**, measured above at a 164–170 ms median while a cold
+  filmstrip generates, before the fix and after it. The fetch of a page that
+  fits, and the header parse that decides it fits, still run inside
+  `GENERATION_LIMIT`. Taking them out would let a page that fits skip the queue.
+  A request that needs a resize would then hold its fetched page while it
+  queues for the decode, which it does not today. That is narrower than it
+  sounds: a full-size request already fetches with no permit at all, and the
+  permit's own doc comment justifies it by decode memory. That trade is its
+  own item.
+- **Prefetch warms full-size URLs** the reader then never requests at that size
+  when it draws a page fit-whole, above. On a first visit every turn fetches its page cold, and a page is sent
+  twice.
+- **The production host is unmeasured.** On the NAS a read is a disk seek
+  behind a parity array, not a warm NVMe page cache, so the second read this
+  removes was likely dearer there than the millisecond measured here. That is
+  an expectation, not a measurement, and the permit wait was not measured
+  there either.
+
+### Isolation
+
+The corpus was read and never written. Every server served a scratch copy of
+the sidecar, with its database and its `--cache` in scratch, so progress
+writes, tiles and reading pages landed there. `date -Iseconds` was stamped
+before the first request, at 2026-09-13T21:39:53-07:00. After every server,
+browser and permit run had finished,
+`find corpus -newermt 2026-09-13T21:39:53-07:00` returned nothing.
+The corpus volumes' own `.taiyaku-cache` directories kept their August
+modification times. The standing corpus checks ran after that, 24 of 24
+passing, and the same `find` at 22:26:17 still returned nothing, as did one
+over the repository-root `.taiyaku-cache` those checks share with `align`.
+Their only new file was the one they write by design,
+`/tmp/taiyaku-corpus-star.json`.

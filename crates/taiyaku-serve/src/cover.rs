@@ -205,41 +205,60 @@ pub fn fit_at(page: &[u8], long_edge: u32) -> Result<Option<Vec<u8>>, String> {
     Ok(Some(encode_jpeg(scaled, "fit")?))
 }
 
+/// A reading-sized page, or the page itself when it already fits.
+///
+/// `P` is whatever the caller's fetch returned, and **`Original` hands it back
+/// untouched. O107 is why.** This was an `Option<Vec<u8>>`, and its `None`
+/// meant "already fits" and dropped the page that had just been read to find
+/// that out. `routes::get_page` then read the page out of its archive again
+/// to serve it. Handing back the fetched page lets the caller serve that one
+/// read, with whatever came with its bytes. The route's content type is what
+/// needs this.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Fitted<P> {
+    /// A JPEG at the requested long edge, from the cache or just made.
+    Resized(Vec<u8>),
+    /// The page as `page` returned it, because it is already within the
+    /// requested long edge.
+    Original(P),
+}
+
 /// Read a cached reading-sized page, or make one and cache it.
 ///
-/// `None` from `fit_at` is passed straight through and **nothing is cached**:
-/// the correct output for that request is the member's own bytes, which the
-/// caller already has and which no cache could hold more cheaply than the
-/// archive does. A per-request header parse is the price, and it is
-/// microseconds.
+/// A page that `fit_at` says already fits comes back as `Fitted::Original`
+/// and **nothing is cached**: the correct output for that request is the
+/// member's own bytes, which no cache could hold more cheaply than the archive
+/// does. `page` runs at most once, so a page that fits is read once.
 ///
-/// **The paragraph above is wrong, and O107 records how.** The caller does
-/// not have the bytes: `page()` runs below, inside the permit, its bytes are
-/// dropped on `None`, and `routes::get_page` reads the page again. A page
-/// that already fits is read out of its archive twice.
+/// **Only a cache hit skips the permit.** The fetch runs inside it, and so does
+/// the header parse that decides a page fits, so a request for a page that
+/// fits queues behind a cold filmstrip like any generation. `docs/notes.md`
+/// measures that wait under O107. Moving the fetch out of the permit is a
+/// separate change.
 ///
 /// Shares `GENERATION_LIMIT` with covers and tiles rather than taking a bound
 /// of its own. All three do the same expensive thing — decode a page at up to
 /// `MAX_DECODE_ALLOC` — so one budget over all of them is what actually bounds
 /// peak memory; separate budgets would each be safe alone and add up to
 /// something that is not.
-pub fn cached_or_generated_page(
+pub fn cached_or_generated_page<P: AsRef<[u8]>>(
     dir: &Path,
     sha256: &str,
     offset: u32,
     long_edge: u32,
-    page: impl FnOnce() -> Result<Vec<u8>, String>,
-) -> Result<Option<Vec<u8>>, String> {
+    page: impl FnOnce() -> Result<P, String>,
+) -> Result<Fitted<P>, String> {
     let path = page_cache_path(dir, sha256, offset, long_edge);
     if let Some(found) = cached(&path) {
-        return Ok(Some(found));
+        return Ok(Fitted::Resized(found));
     }
-    let generated = {
+    let bytes = {
         let _permit = GENERATION_LIMIT.acquire();
-        fit_at(&page()?, long_edge)?
-    };
-    let Some(bytes) = generated else {
-        return Ok(None);
+        let fetched = page()?;
+        match fit_at(fetched.as_ref(), long_edge)? {
+            Some(bytes) => bytes,
+            None => return Ok(Fitted::Original(fetched)),
+        }
     };
     if std::fs::create_dir_all(dir).is_ok() {
         // Discarded for `at_path`'s reason: the page was generated and the
@@ -247,7 +266,7 @@ pub fn cached_or_generated_page(
         // than broken.
         let _ = taiyaku_read::atomic::write(&path, &bytes, "jpg");
     }
-    Ok(Some(bytes))
+    Ok(Fitted::Resized(bytes))
 }
 
 /// The cached file at `path`, if there is one and it is a whole JPEG.

@@ -30,6 +30,15 @@ pub struct ServedPage {
     pub bytes: Vec<u8>,
 }
 
+/// The bytes, so a page can be handed to `cover::cached_or_generated_page`
+/// whole. It reads them to decide whether the page fits, and gives the page
+/// back, content type included, when it does (O107).
+impl AsRef<[u8]> for ServedPage {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 /// Where a reader's page images come from.
 ///
 /// One member at a time, deliberately. Which member holds page N of an

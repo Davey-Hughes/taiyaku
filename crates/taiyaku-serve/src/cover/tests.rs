@@ -497,8 +497,8 @@ fn a_broken_cached_reading_page_is_regenerated_and_replaced() {
 
         assert_eq!(calls.load(Ordering::SeqCst), 1, "{kind}: must regenerate");
         assert_eq!(
-            served.as_deref(),
-            Some(expected.as_slice()),
+            served,
+            Fitted::Resized(expected.clone()),
             "{kind}: must serve the regenerated page"
         );
         assert_eq!(
@@ -506,13 +506,13 @@ fn a_broken_cached_reading_page_is_regenerated_and_replaced() {
             expected,
             "{kind}: must replace the broken file"
         );
-        let again = cached_or_generated_page(dir.path(), "abc", 3, 8, || {
+        let again = cached_or_generated_page(dir.path(), "abc", 3, 8, || -> Result<Vec<u8>, _> {
             panic!("{kind}: the replacement must be a hit")
         })
         .unwrap();
         assert_eq!(
-            again.as_deref(),
-            Some(expected.as_slice()),
+            again,
+            Fitted::Resized(expected.clone()),
             "{kind}: must serve the replacement"
         );
     }
@@ -624,20 +624,22 @@ fn a_cached_cover_is_served_while_every_generation_permit_is_held() {
 #[test]
 fn a_cached_reading_page_is_served_while_every_generation_permit_is_held() {
     let dir = tempdir_for_test();
-    let warm = cached_or_generated_page(dir.path(), "abc", 3, 8, || Ok(real_page_bytes()))
-        .unwrap()
-        .expect("a 16x16 page resized to 8 is cached");
+    let warm = cached_or_generated_page(dir.path(), "abc", 3, 8, || Ok(real_page_bytes())).unwrap();
+    assert!(
+        matches!(warm, Fitted::Resized(_)),
+        "a 16x16 page resized to 8 is cached"
+    );
 
     let served = served_while_every_permit_is_held(|| {
-        cached_or_generated_page(dir.path(), "abc", 3, 8, || {
+        cached_or_generated_page(dir.path(), "abc", 3, 8, || -> Result<Vec<u8>, _> {
             panic!("a cache hit must not regenerate")
         })
         .unwrap()
     });
 
     assert_eq!(
-        served.flatten().as_deref(),
-        Some(warm.as_slice()),
+        served,
+        Some(warm),
         "a warm reading page must not wait for a generation permit"
     );
 }
@@ -698,14 +700,65 @@ fn a_cold_reading_page_waits_for_a_generation_permit() {
 #[test]
 fn a_cached_reading_page_is_not_regenerated() {
     let dir = tempdir_for_test();
-    let first = cached_or_generated_page(dir.path(), "abc", 3, 8, || Ok(real_page_bytes()))
-        .unwrap()
-        .expect("a 16x16 page resized to 8 is cached");
-    let second = cached_or_generated_page(dir.path(), "abc", 3, 8, || {
+    let first =
+        cached_or_generated_page(dir.path(), "abc", 3, 8, || Ok(real_page_bytes())).unwrap();
+    assert!(
+        matches!(first, Fitted::Resized(_)),
+        "a 16x16 page resized to 8 is cached"
+    );
+    let second = cached_or_generated_page(dir.path(), "abc", 3, 8, || -> Result<Vec<u8>, _> {
         panic!("a cache hit must not regenerate")
     })
     .unwrap();
-    assert_eq!(second.as_deref(), Some(first.as_slice()));
+    assert_eq!(second, first);
+}
+
+/// O107: a page that already fits is fetched once, handed back as it was
+/// fetched, and not cached.
+///
+/// This returned `Option<Vec<u8>>`, and `None` dropped the page it had just
+/// fetched, so `get_page` read the page again to serve it. The page here is
+/// not a bare `Vec`, so "as it was fetched" means more than the same bytes:
+/// the field beside them has to come back too. That field is what lets
+/// `get_page` keep the content type. The route test
+/// `a_page_that_already_fits_the_width_is_read_once` counts the reads.
+#[test]
+fn a_page_that_already_fits_is_fetched_once_and_handed_back() {
+    #[derive(Debug, PartialEq)]
+    struct Fetched {
+        bytes: Vec<u8>,
+        content_type: &'static str,
+    }
+    impl AsRef<[u8]> for Fetched {
+        fn as_ref(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
+
+    let dir = tempdir_for_test();
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let fitted = cached_or_generated_page(dir.path(), "abc", 3, 16, || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Fetched {
+            bytes: real_page_bytes(),
+            content_type: "image/png",
+        })
+    })
+    .unwrap();
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "fetched once");
+    assert_eq!(
+        fitted,
+        Fitted::Original(Fetched {
+            bytes: real_page_bytes(),
+            content_type: "image/png",
+        }),
+        "a 16x16 page fits a long edge of 16 and comes back as it was fetched"
+    );
+    assert!(
+        !page_cache_path(dir.path(), "abc", 3, 16).exists(),
+        "and nothing is cached for it"
+    );
 }
 
 /// Acquiring takes a permit, and the count says so.

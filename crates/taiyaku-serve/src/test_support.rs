@@ -362,10 +362,19 @@ pub(crate) fn state_with_real_pages() -> (std::sync::Arc<ServeState>, Fixture) {
 /// `work` read from disk by `LocalLibrary`, caching under `fixture`'s
 /// directory so that the cache goes when the fixture does.
 fn local_state(work: Work, fixture: &Fixture) -> std::sync::Arc<ServeState> {
+    state_over(work, fixture, std::sync::Arc::new(crate::LocalLibrary))
+}
+
+/// [`local_state`], reading pages through `source`.
+fn state_over(
+    work: Work,
+    fixture: &Fixture,
+    source: std::sync::Arc<dyn crate::PageSource>,
+) -> std::sync::Arc<ServeState> {
     std::sync::Arc::new(ServeState {
         library: library(),
         works: vec![work],
-        source: std::sync::Arc::new(crate::LocalLibrary),
+        source,
         cache_dir: fixture.path().join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
@@ -398,6 +407,57 @@ fn local_state(work: Work, fixture: &Fixture) -> std::sync::Arc<ServeState> {
 /// width treat differently: a 16×16 page fits inside both and is served
 /// untouched either way.
 pub(crate) fn state_with_a_shared_member() -> (std::sync::Arc<ServeState>, Fixture) {
+    let (work, fixture) = work_with_a_shared_member();
+    (local_state(work, &fixture), fixture)
+}
+
+/// Every page a [`CountingSource`] was asked for, in order, as the member's
+/// path and the page's offset within it.
+pub(crate) type Reads = std::sync::Arc<std::sync::Mutex<Vec<(String, u32)>>>;
+
+/// `LocalLibrary`, recording every page it reads.
+///
+/// O107: a page that already fits a `?w=` was read out of its archive twice,
+/// and no test could see it. Both reads served the same bytes, so nothing a
+/// test asserted about the response told one read from two. This records the
+/// reads themselves. It records the member and the offset rather than a
+/// count, so a test can say which page was read as well as how often.
+#[derive(Debug, Default)]
+pub(crate) struct CountingSource {
+    reads: Reads,
+}
+
+impl crate::PageSource for CountingSource {
+    fn page(
+        &self,
+        root: &std::path::Path,
+        member: &taiyaku_core::Member,
+        within: u32,
+    ) -> Result<crate::ServedPage, String> {
+        self.reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((member.path.clone(), within));
+        crate::PageSource::page(&crate::LocalLibrary, root, member, within)
+    }
+}
+
+/// [`state_with_a_shared_member`], reading through a [`CountingSource`], and
+/// the record of what it read.
+pub(crate) fn state_with_a_shared_member_and_its_reads()
+-> (std::sync::Arc<ServeState>, Fixture, Reads) {
+    let (work, fixture) = work_with_a_shared_member();
+    let source = CountingSource::default();
+    let reads = std::sync::Arc::clone(&source.reads);
+    (
+        state_over(work, &fixture, std::sync::Arc::new(source)),
+        fixture,
+        reads,
+    )
+}
+
+/// The work and the archives behind [`state_with_a_shared_member`].
+fn work_with_a_shared_member() -> (Work, Fixture) {
     let fixture = Fixture::new("taiyaku-test-shared-member");
     let root = fixture.path();
 
@@ -453,7 +513,7 @@ pub(crate) fn state_with_a_shared_member() -> (std::sync::Arc<ServeState>, Fixtu
         path,
         taiyaku_core::Sidecar::from_json(json).unwrap(),
     );
-    (local_state(work, &fixture), fixture)
+    (work, fixture)
 }
 
 /// Which of red, green, blue and grey a served page is, read from its centre

@@ -1234,11 +1234,14 @@ async fn a_width_above_the_ceiling_is_resized_and_cached_at_the_ceiling() {
 /// O108's review: a page that already fits inside `?w=` is served its own
 /// bytes, read by its index in the edition.
 ///
-/// `get_page` reads such a page a second time to serve it (O107), and that read
-/// takes the index where the tag and the cache key take the offset. Every other
-/// resized request in these tests is smaller than its page, so reading by the
-/// offset in that arm served page 0 of `ab`, grey, with every test green. The
-/// review of this branch found it. A width of 16 is the page's own size.
+/// The read that serves such a page takes the index where the tag and the cache
+/// key take the offset. Every other resized request in these tests is smaller
+/// than its page. So when `get_page` still read a page that fits a second time
+/// in an arm of its own, reading by the offset there served page 0 of `ab`,
+/// grey, with every test green, and the review of O108's branch found it.
+/// Since O107 there is no second read: the page is served from the fetch that
+/// found it fits, and this still pins that fetch to the index. A width of 16
+/// is the page's own size.
 #[tokio::test]
 async fn a_page_that_already_fits_the_width_is_read_by_its_index() {
     let (state, _fixture) = crate::test_support::state_with_a_shared_member();
@@ -1256,6 +1259,65 @@ async fn a_page_that_already_fits_the_width_is_read_by_its_index() {
         crate::test_support::colour_of(&body),
         "red",
         "page 2 of `ab` is b.cbz's first page"
+    );
+}
+
+/// O107: a page that already fits `?w=` is read out of its archive once.
+///
+/// It used to be read twice. `cached_or_generated_page` read the page to learn
+/// that it fit and dropped the bytes, and `get_page` read it again to serve it.
+/// Both reads served the same bytes, so no assertion on the response could see
+/// the second one. This counts the reads through `CountingSource`.
+///
+/// The four requests are the four `strace` counted on the real corpus before
+/// the fix: one archive open at full size, two for a page that fits, one for a
+/// resize and none for a cache hit. They run here in that order and must read
+/// once, once, once and not at all. Each read is `b.cbz`'s first page, because
+/// page 2 of `ab` is that page.
+#[tokio::test]
+async fn a_page_that_already_fits_the_width_is_read_once() {
+    let (state, _fixture, reads) = crate::test_support::state_with_a_shared_member_and_its_reads();
+    let app = build_router(state);
+    let taken = || {
+        std::mem::take(
+            &mut *reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    };
+    let first_page_of_b = [("b.cbz".to_string(), 0)];
+
+    let (status, headers, original) = fetch(&app, "/api/works/m/ab/pages/2", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+    assert_eq!(taken(), first_page_of_b, "a full-size page is read once");
+
+    let (status, headers, body) = fetch(&app, "/api/works/m/ab/pages/2?w=16", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers[header::CONTENT_TYPE],
+        "image/png",
+        "a page that fits is served with the type its archive gave it"
+    );
+    assert_eq!(body, original, "and the bytes");
+    assert_eq!(
+        taken(),
+        first_page_of_b,
+        "a page that already fits is read once"
+    );
+
+    let (status, headers, resized) = fetch(&app, "/api/works/m/ab/pages/2?w=8", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(taken(), first_page_of_b, "a resize reads its page once");
+
+    let (status, _, again) = fetch(&app, "/api/works/m/ab/pages/2?w=8", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(again, resized);
+    assert_eq!(
+        taken(),
+        Vec::<(String, u32)>::new(),
+        "a cache hit reads nothing"
     );
 }
 
