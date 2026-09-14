@@ -16709,6 +16709,8 @@ is sent to the browser twice, once whole and once at reading size. It is a web
 defect with its own measurement to make, and is reported rather than widened
 into this branch.
 
+*Filed as O110 on 2026-09-13, with no code change.*
+
 **One run measured nothing, and one measured something else.** `gotoubun-v01`
 reads right to left, and `stepFor` maps ArrowRight to a step back, so twenty
 ArrowRight presses from page 0 left the reader where it was. Each wait timed
@@ -16870,8 +16872,8 @@ against 8.2 on `en-fan`, where before the fix it trailed by 1.7 and 2.0 ms.
   permit's own doc comment justifies it by decode memory. That trade is its
   own item.
 - **Prefetch warms full-size URLs** the reader then never requests at that size
-  when it draws a page fit-whole, above. On a first visit every turn fetches its page cold, and a page is sent
-  twice.
+  when it draws a page fit-whole, above. On a first visit every turn fetches
+  its page cold, and a page is sent twice. *Filed as O110 on 2026-09-13.*
 - **The production host is unmeasured.** On the NAS a read is a disk seek
   behind a parity array, not a warm NVMe page cache, so the second read this
   removes was likely dearer there than the millisecond measured here. That is
