@@ -16751,6 +16751,8 @@ justifies it by decode memory (`MAX_DECODE_ALLOC`). What would change is that
 a request needing a resize would hold its fetched page while it queues for the
 decode.
 
+*Filed as O111 on 2026-09-13, with no code change.*
+
 ### The fix
 
 `cached_or_generated_page` returns `cover::Fitted<P>`, where `P` is whatever
@@ -16870,7 +16872,7 @@ against 8.2 on `en-fan`, where before the fix it trailed by 1.7 and 2.0 ms.
   queues for the decode, which it does not today. That is narrower than it
   sounds: a full-size request already fetches with no permit at all, and the
   permit's own doc comment justifies it by decode memory. That trade is its
-  own item.
+  own item. *Filed as O111 on 2026-09-13.*
 - **Prefetch warms full-size URLs** the reader then never requests at that size
   when it draws a page fit-whole, above. On a first visit every turn fetches
   its page cold, and a page is sent twice. *Filed as O110 on 2026-09-13.*
