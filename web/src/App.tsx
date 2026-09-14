@@ -1129,6 +1129,31 @@ function App({ work, onLeave }: AppProps) {
     session?.state.viewing,
   )
 
+  // How large a page to ask for — `pageSize.ts` holds the rule and the
+  // measurement behind it. `1 / view.w` is the magnification: `view` is a
+  // normalised rect over the group, so fit-whole (`WHOLE`, `w: 1`) is 1x and a
+  // rect a quarter as wide is 4x. Once magnification wants more pixels than the
+  // ladder offers this answers `undefined`, which asks for the original — so
+  // zoom is sharp without a separate branch for it.
+  //
+  // Computed at render from values that already trigger one: `viewportWidth`
+  // is state updated on resize, `mode` and `view` are state. `innerHeight` is
+  // read directly rather than tracked, since every resize that changes it
+  // changes `viewportWidth` too on any real window manager, and a height-only
+  // change costs at most one rung until the next render.
+  //
+  // Declared here, ahead of the `if (!session) return null` below, because the
+  // prefetch effect that follows builds its URLs from it, just as every cell
+  // does, and the two have to match: the browser caches a page once per `?w=`,
+  // so a page warmed at any other size warms nothing the reader draws. Until
+  // O110 prefetch asked for every page at full size, and a first visit fetched
+  // every page it drew twice, once whole and once at reading size.
+  const pageLongEdge = requestedLongEdge(
+    pageBoxLongEdge(viewportWidth, window.innerHeight, mode),
+    window.devicePixelRatio,
+    1 / view.w,
+  )
+
   // Warms the browser's own cache for the slots `modules/prefetch.ts`'s
   // `window` names either side of wherever the reader is looking, so an
   // arrow key that lands there finds `PageView`'s own decode (`decodeTo`,
@@ -1143,8 +1168,12 @@ function App({ work, onLeave }: AppProps) {
   // while disabled (`prefetchPrefs.enabled`) or mid-gap (nothing paired to
   // prefetch around).
   //
+  // Each URL carries `pageLongEdge`, the size a cell asks for, and the window
+  // is warmed again whenever a resize or a zoom moves it a rung: the page a
+  // turn lands on is drawn at the new size, so the old one warms nothing.
+  //
   // Declared here, ahead of the `if (!session) return null` below, for the
-  // same reason `currentGroupRef`'s effect just above is: hooks must run in
+  // same reason `currentGroupRef`'s effect above is: hooks must run in
   // the same order on every render, so this reads `sessionRef.current`
   // (kept fresh by the effect near the top of this component) rather than
   // the `session`/`shown`/`resolver` bindings this function only creates
@@ -1180,13 +1209,19 @@ function App({ work, onLeave }: AppProps) {
       return superseded(queuedFor, now && display(now.state, now.resolver))
     }
     for (const target of targets) {
-      const url = pageUrl(current.work, queuedFor.edition, target.page)
+      const url = pageUrl(
+        current.work,
+        queuedFor.edition,
+        target.page,
+        pageLongEdge,
+      )
       void prefetchQueue.run(() =>
         stale() ? Promise.resolve() : decodeTo(new Image(), url),
       )
     }
   }, [
     mode,
+    pageLongEdge,
     session?.state.authority,
     session?.state.slot,
     session?.state.viewing,
@@ -1861,28 +1896,8 @@ function App({ work, onLeave }: AppProps) {
     },
   )
 
-  // `pageUrl` takes a page index, not a slot index — they diverge from the
-  // first joined spread onward, so every slot is converted through the
-  // `Resolver`-derived `slots` array before it reaches a URL.
-  // How large a page to ask for — `pageSize.ts` holds the rule and the
-  // measurement behind it. `1 / view.w` is the magnification: `view` is a
-  // normalised rect over the group, so fit-whole (`WHOLE`, `w: 1`) is 1x and a
-  // rect a quarter as wide is 4x. Once magnification wants more pixels than the
-  // ladder offers this answers `undefined`, which asks for the original — so
-  // zoom is sharp without a separate branch for it.
-  //
-  // Computed at render from values that already trigger one: `viewportWidth`
-  // is state updated on resize, `mode` and `view` are state. `innerHeight` is
-  // read directly rather than tracked, since every resize that changes it
-  // changes `viewportWidth` too on any real window manager, and a height-only
-  // change costs at most one rung until the next render.
-  const pageLongEdge = requestedLongEdge(
-    pageBoxLongEdge(viewportWidth, window.innerHeight, mode),
-    window.devicePixelRatio,
-    1 / view.w,
-  )
-  // The same question for a **borrowed** page, and neither of the two inputs
-  // above is right for one — which is why this is a second binding rather than
+  // `pageLongEdge`'s question for a **borrowed** page, and neither of its two
+  // inputs is right for one — which is why this is a second binding rather than
   // a reuse of `pageLongEdge`.
   //
   // `1 / view.w` would be a magnification the page can never be drawn at.
@@ -1907,6 +1922,9 @@ function App({ work, onLeave }: AppProps) {
     window.devicePixelRatio,
     1,
   )
+  // `pageUrl` takes a page index, not a slot index — they diverge from the
+  // first joined spread onward, so every slot is converted through the
+  // `Resolver`-derived `slots` array before it reaches a URL.
   const pageAt = (slot: number) =>
     pageUrl(work, shown.edition, slots[slot].page, pageLongEdge)
   // 1-based — `alt` text is read by a person (directly, or by a screen

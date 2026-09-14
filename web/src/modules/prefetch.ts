@@ -45,6 +45,12 @@ export const prefetchModule: ReaderModule<PrefetchPrefs> = {
   // against 3 in 14) rather than better. More decode in flight is more
   // eviction, not more readiness.
   //
+  // **All of those runs warmed pages at full size.** Prefetch built its URLs
+  // with no long edge until O110 closed on 2026-09-14, so each `en-mono` page
+  // it warmed decoded to about 26 MB, where one fetched at 1024 decodes to
+  // about 6 MB (`pageSize.ts`'s table). Neither depth nor `maxConcurrent` has
+  // been measured against the smaller decode.
+  //
   // `behind: 1` rather than `0`, though the two measure alike forward: a
   // reversal is the single most likely correction after a forward press, and
   // the run above that reversed every fourth turn is the one `behind` exists

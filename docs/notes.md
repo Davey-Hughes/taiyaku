@@ -16709,7 +16709,8 @@ is sent to the browser twice, once whole and once at reading size. It is a web
 defect with its own measurement to make, and is reported rather than widened
 into this branch.
 
-*Filed as O110 on 2026-09-13, with no code change.*
+*Filed as O110 on 2026-09-13, with no code change, and closed on 2026-09-14 —
+see "O110" below.*
 
 **One run measured nothing, and one measured something else.** `gotoubun-v01`
 reads right to left, and `stepFor` maps ArrowRight to a step back, so twenty
@@ -16875,7 +16876,8 @@ against 8.2 on `en-fan`, where before the fix it trailed by 1.7 and 2.0 ms.
   own item. *Filed as O111 on 2026-09-13.*
 - **Prefetch warms full-size URLs** the reader then never requests at that size
   when it draws a page fit-whole, above. On a first visit every turn fetches
-  its page cold, and a page is sent twice. *Filed as O110 on 2026-09-13.*
+  its page cold, and a page is sent twice. *Filed as O110 on 2026-09-13, and
+  closed on 2026-09-14.*
 - **The production host is unmeasured.** On the NAS a read is a disk seek
   behind a parity array, not a warm NVMe page cache, so the second read this
   removes was likely dearer there than the millisecond measured here. That is
@@ -16896,3 +16898,153 @@ passing, and the same `find` at 22:26:17 still returned nothing, as did one
 over the repository-root `.taiyaku-cache` those checks share with `align`.
 Their only new file was the one they write by design,
 `/tmp/taiyaku-corpus-star.json`.
+
+## O110: prefetch warms the page a turn draws — 2026-09-14
+
+Opened while timing O107, which saw every prefetch request in its browser runs
+ask for a page at full size while each turn asked for its page at `?w=`.
+`App.tsx`'s prefetch effect built `pageUrl(work, edition, page)` with no long
+edge, and a cell builds it with `pageLongEdge`. The browser caches a page once
+per URL, so prefetch warmed nothing a turn drew. The row asked for a page turn
+on `en-mono`, where decode dominates, timed before the fix and after it.
+
+**Substrate.** The development workstation: 32 cores, the corpus on local NVMe
+with a warm page cache, and a release build of `3e06320`, which this branch
+does not change. It served a scratch copy of `gotoubun-v01`'s sidecar with
+every member path made absolute, a scratch database, and a new, empty
+`--cache` for every run. It is **not** the production host. The reader was the
+production bundle, built with `vite build` once from `3e06320` and once from
+this branch, each served by `vite preview` through the same `/api` proxy. The
+browser, driven by Playwright, reported itself as Chrome 153 on Linux. The
+1-minute load average read 2.13, 2.43 and 2.74 before the first, second and
+fourth runs.
+
+### A page turn, before and after
+
+Each run cleared the browser's cache over CDP, signed in, recorded `en-mono`
+slot 20 as the position, set `two` mode, and opened the reader at 1440×900 and
+a `devicePixelRatio` of 1, which asks for `?w=1024`. It waited for the pages to
+load and two seconds more, then dispatched `ArrowLeft` twenty times on
+`window`, waiting 700 ms after each turn had painted. `gotoubun-v01` reads
+right to left, so that steps forward. A turn's time runs from the keypress to
+the first animation frame in which the page images' `src`s have changed and
+every one of them has loaded. A drawn page counts as requested after the
+keypress when the first resource timing entry for its URL started after it.
+The runs alternated: before, after, before, after.
+
+| run | build | median | p90 | worst | drawn pages requested after the keypress | page requests, full size / `?w=1024` | transferred |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `3e06320` | 229.5 ms | 339.9 ms | 341.6 ms | 36 of 36 | 55 / 38 | 91.78 MB |
+| 2 | this branch | 3.8 ms | 6.9 ms | 16.2 ms | 0 of 36 | 0 / 44 | 6.86 MB |
+| 3 | `3e06320` | 210.6 ms | 325.7 ms | 381.0 ms | 36 of 36 | 55 / 38 | 91.78 MB |
+| 4 | this branch | 3.1 ms | 7.4 ms | 7.5 ms | 0 of 36 | 0 / 42 | 6.86 MB |
+
+Twenty turns drew 36 pages: sixteen landed on a pair and four on a page drawn
+alone. The p90 is the second slowest of twenty. Requests and bytes cover the
+whole visit, the first load included, read 2.2 s after the last turn, and the
+bytes are resource timing's `transferSize` summed over page requests.
+
+Before the fix, every page a turn drew was requested only after its keypress,
+in both runs. After it, none was, and the median turn fell from 210–230 ms to
+3–4 ms, in line with the 4 ms median `modules/prefetch.ts` records for its
+default window.
+
+### What the server saw
+
+The request log (`--log-requests`) for the same four runs. Its `micros` runs
+from a request's arrival to its response being recorded.
+
+| run | full size, 200 / 304 | `?w=1024`, 200 / 304 | distinct pages | pages sent both whole and resized | `?w=1024` 200s, median / p90 / max |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 42 / 13 | 38 / 0 | 42 | 38 | 122.2 / 156.1 / 261.6 ms |
+| 2 | 0 / 0 | 42 / 2 | 42 | 0 | 125.7 / 243.5 / 369.2 ms |
+| 3 | 42 / 13 | 38 / 0 | 42 | 38 | 123.6 / 145.1 / 254.8 ms |
+| 4 | 0 / 0 | 42 / 0 | 42 | 0 | 125.4 / 242.7 / 381.6 ms |
+
+Before the fix, all 38 pages the reader drew were sent twice, once whole to
+prefetch and once resized for the cell that drew them. The other four were
+prefetched whole and never drawn. A resize took a median of 122–124 ms of the
+server's time, a little over half the median turn. After the fix, nothing was sent
+whole. The 304s are requests for a URL the browser already held: thirteen
+full-size ones a visit before the fix, and two `?w=` ones in run 2. `status.md`'s
+O1 entry records one way the reader makes them, prefetch's throwaway `Image`
+and then the swap's own decode asking for the same URL, but whether that
+accounts for these was not checked.
+
+**The resize now waits longer, but ahead of the reader rather than on a
+turn.** The `?w=1024` p90 rose from 145–156 ms to 243 ms, and the worst from
+255–262 ms to 369–382 ms. The likely reason, not isolated here: prefetch runs
+up to three decodes at once (`maxConcurrent: 3`), each now a resize, and
+`GENERATION_LIMIT` admits two, so the third queues. No turn waited on it: the
+slowest turn after the fix took 16.2 ms.
+
+### The fix
+
+`pageLongEdge` moved up in `App.tsx` to sit ahead of the prefetch effect, and
+so ahead of the component's `if (!session) return null`, where the effect can
+read it. The effect builds each URL with it and lists it among its
+dependencies, so a resize or a zoom that moves the rung warms the window again
+at the new size. A turn carries the zoom, since `readerIntent` applies
+`clampRect` rather than resetting the view, so the page a turn lands on is
+drawn at the rung the reader is already at. Cells and prefetch now build their
+URLs from one binding.
+
+A borrowed page needs no rung of its own here. `prefetchTargets` answers
+nothing unless the reader is `at` a page, and every target is a page of the
+edition being viewed, which a cell draws with `pageLongEdge`.
+
+### Every break, watched
+
+Three tests in `App.test.tsx` stub `Image` to record every URL handed to an
+off-screen image, turn a page, and require that the URL the turn draws was
+recorded before the keypress. One turns from the page the reader opened on,
+one resizes the window from 1024 to 2000 CSS pixels first, and one zooms a
+step first. The last two also require that the rung moved, or the warm-up at
+mount would satisfy them. The first requires that the drawn URL carries a
+`?w=`, or a full-size prefetch would satisfy it.
+
+All three failed before the fix, each on the assertion that its drawn URL,
+`/raw/pages/3?w=1024`, `?w=2048` or `?w=1536`, had been recorded. Two breaks
+were then applied to the fix by hand:
+
+| break | tests red |
+| --- | --- |
+| the prefetch URL built without the long edge | all three |
+| `pageLongEdge` left out of the effect's dependencies | the resize and zoom tests; the first still passes, since the rung at mount is right |
+
+`App.tsx` was restored from a copy and compared byte for byte. The web suite
+now counts 1,157 tests in `node` and 950 in `jsdom`, three more than before,
+and `check-all.sh` ended `all green, except NOT MEASURED: standing corpus
+checks (TAIYAKU_CORPUS unset)`. No Rust changed, so the mutation harness has
+nothing to sweep.
+
+### What remains
+
+- **A new rung does not drop the old one's queued work.** `superseded` compares
+  the position a job was queued for and not its size, so after a resize or a
+  zoom the jobs already queued at the old rung still run. A wheel zoom through
+  several rungs can warm the neighbours at every size it passes. Not measured.
+- **Prefetch now spends generation permits.** Its full-size requests took no
+  permit. Its `?w=` requests take `GENERATION_LIMIT` whenever the page is not
+  already cached, so prefetch now queues for the same two permits as a cold
+  filmstrip. O111's wait was measured before that. *Added to O111's entry.*
+- **The prefetch window was tuned against full-size decodes.** `ahead: 1`,
+  `behind: 1` and `maxConcurrent: 3` were settled by #35's runs, when every
+  page prefetch warmed decoded at 2147×3056, about 26 MB. Fetched at 1024 an
+  `en-mono` page decodes to about 6 MB (`pageSize.ts`'s table), and the window
+  has not been measured against that. *Noted in `modules/prefetch.ts`.*
+- **The production host is unmeasured.** On the NAS a resize reads its page
+  behind a parity array, so the turn this saves is expected to be longer
+  there. That is an expectation, not a measurement.
+- **Only one configuration was timed**: `en-mono`, `two` mode, 1440×900 at a
+  `devicePixelRatio` of 1. `single` mode, a zoomed reader and the other
+  editions were not.
+
+### Isolation
+
+The corpus was read and never written. Every server ran with `--db` and
+`--cache` in scratch. `date -Iseconds` was stamped before the release build and
+the first server, at 2026-09-14T00:23:48-07:00. After the last run, with every
+server stopped, `find corpus -newermt 2026-09-14T00:23:48-07:00` returned
+nothing, and the default library database kept its modification time of
+2026-08-31.

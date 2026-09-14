@@ -2020,6 +2020,95 @@ describe('carrying the view across a swap', () => {
   })
 })
 
+// ---- prefetch ---------------------------------------------------------------
+
+describe('prefetch', () => {
+  /**
+   * Every URL handed to an off-screen `Image`, in order.
+   *
+   * Two things in the reader build one, `App.tsx`'s prefetch effect and
+   * `PageView`'s own decode, and the `<img>` elements on screen are React's,
+   * which never pass through the constructor. So before a keypress, a URL for
+   * any page other than the one on screen can only be prefetch's.
+   */
+  function recordImages(): string[] {
+    const requested: string[] = []
+    class RecordingImage {
+      private url = ''
+      get src() {
+        return this.url
+      }
+      set src(value: string) {
+        this.url = value
+        requested.push(value)
+      }
+      decode() {
+        return Promise.resolve()
+      }
+    }
+    vi.stubGlobal('Image', RecordingImage)
+    return requested
+  }
+
+  /** The `?w=` a page URL asks for, or `null` for full size. */
+  const rung = (url: string) =>
+    new URL(url, 'http://reader.test').searchParams.get('w')
+
+  /**
+   * Turn one page, and answer what had been warmed before the keypress and
+   * what the turn then draws. `ArrowLeft` steps forward in this `rtl` work,
+   * from slot 2 to slot 3, which the window around slot 2 names.
+   */
+  async function turn(host: HTMLElement, requested: string[]) {
+    const warmed = [...requested]
+    press('ArrowLeft')
+    await settle()
+    const [drawn] = pages(host)
+    return { warmed, drawn }
+  }
+
+  it('warms the URL the next page is drawn at', async () => {
+    const requested = recordImages()
+    const host = await open()
+    const { warmed, drawn } = await turn(host, requested)
+    // A rung, not full size: jsdom's 1024×768 window at a `devicePixelRatio`
+    // of 1 asks for one. Were it ever to ask for full size, the full-size URL
+    // prefetch used to build would satisfy the assertion below.
+    expect(drawn).toMatch(/\/raw\/pages\/3\?w=\d+$/)
+    expect(warmed).toContain(drawn)
+  })
+
+  it('warms again when a resize moves the rung', async () => {
+    const requested = recordImages()
+    const host = await open()
+    const before = pages(host)[0]
+    vi.stubGlobal('innerWidth', 2000)
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+    await settle()
+    const { warmed, drawn } = await turn(host, requested)
+    // The resize has to have moved the rung, or the warm-up at mount would
+    // satisfy the assertion below without the effect ever running again.
+    expect(rung(drawn)).not.toBe(rung(before))
+    expect(warmed).toContain(drawn)
+  })
+
+  it('warms again when a zoom moves the rung', async () => {
+    const requested = recordImages()
+    const host = await open()
+    const before = pages(host)[0]
+    measure(pageArea(host), { w: 800, h: 600 })
+    press('=')
+    await settle()
+    const { warmed, drawn } = await turn(host, requested)
+    // A turn carries the zoom (`readerIntent`'s `clampRect`), so the page it
+    // lands on is drawn at the zoomed rung, and that is the one to warm.
+    expect(rung(drawn)).not.toBe(rung(before))
+    expect(warmed).toContain(drawn)
+  })
+})
+
 // ---- the panels' own controls ----------------------------------------------
 
 describe('the panels, driven by pointer rather than key', () => {
