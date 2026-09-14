@@ -15610,6 +15610,8 @@ even when the import fails and the list is therefore unchanged, where O96's
 failed **save** keeps the held edit for exactly that reason. The first two are **O100**, the third **O101**, both opened and
 closed the day of the drive.
 
+*The decision was filed as O109 on 2026-09-13, with no code change.*
+
 **Fixing the third closed a window that was not its own, and cost a test its
 scenario.** With the gate taken inside the discrete `change` event — which
 React flushes synchronously — `frozen` and `writer.current` change together,
