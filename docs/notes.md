@@ -16471,3 +16471,124 @@ Every route fixture asks for pages whose index equals their offset, and its
 code is right at all five. Opened as O108, because closing it needs a
 multi-member fixture and a route test that reads the cache, which is a branch
 of its own.
+
+*O108 has since closed — see "O108: route tests that can tell a page's index
+from its offset" below. The first clause of the paragraph above is wrong: route
+tests did ask for pages whose index and offset differ, and that section says
+what was missing instead.*
+
+## O108: route tests that can tell a page's index from its offset — 2026-09-13
+
+Opened by the review of O105's and O106's fix rounds, above, which found five
+changes to the routes that left every test green. The shipped code was right at
+all five, so this closed with tests and a fixture and no production change.
+
+### The fixture
+
+`test_support::state_with_a_shared_member` builds work `m` from two archives:
+
+| edition | members | page 2 is |
+| --- | --- | --- |
+| `ab` | `a.cbz` (2 pages), `b.cbz` (3) | `b.cbz`'s first page, red |
+| `b` | `b.cbz` (3) | `b.cbz`'s third page, blue |
+
+Page 2 of `ab` and page 0 of `b` are one page, and page 2 of `b` is a different
+page at the same index. A route that keys by index gives page 2 of `ab` what
+belongs to page 2 of `b`: its tag and its cached renderings. The pages are solid
+colours because a resize and a JPEG encoding keep a colour where they would blur
+a pattern, and `test_support::colour_of` reads the colour back from the centre
+pixel. `a.cbz`'s second page is `MAX_FIT_LONG_EDGE + 4` pixels wide, so a
+request for `MAX_FIT_LONG_EDGE + 8` resizes it only if the width is clamped.
+
+### Every break, watched
+
+Each change below was applied by hand to the tree with the new tests, run with
+`cargo nextest run -p taiyaku-serve --all-features --no-fail-fast` over all 567
+tests, and the file restored byte for byte afterwards. A control run of the
+unchanged tree passed 567 of 567, once before the breaks and again after
+`rustfmt` reformatted the new tests.
+
+| applied | red | failing assertion |
+| --- | --- | --- |
+| `get_page`'s `ETag` from `index` | the tag test | `304` for page 2 of `b`'s tag |
+| `get_page`'s cache key from `index` | the resized-page cache test; the tag test | `"blue"` served where `"red"` belongs, in both |
+| `get_thumb`'s tile key from `index` | the tile cache test | `"blue"` served where `"red"` belongs |
+| `opds::stream_page`'s `ETag` from `index` | the PSE tag test | `304` for page 2 of `b`'s tag |
+| `get_page`'s resize given `?w=` unclamped, its `> 1` filter kept | the ceiling test | `image/png`: the page served whole |
+| `get_page` caching in `cache_dir` rather than `thumbs` | the resized-page cache test; the ceiling test | the cache file is missing |
+| `get_thumb` caching in `cache_dir` rather than `thumbs` | the tile cache test; `tests::serve_caches_covers_and_tiles_under_the_resolved_root` | the cache file is missing |
+| `get_page`'s tag from `?w=` unclamped, its `> 1` filter kept | the ceiling test; `a_width_above_the_ceiling_carries_the_ceilings_tag` | the tag names `r4104` and the cache file `r4096` |
+
+No test from before this branch went red under any of the first five rows, which
+reproduces the review's finding on this tree. The tag test goes red under the
+cache-key break because its resized request is served the wrong picture too.
+
+**The first try at the width break was wider than the defect.** It handed the
+resize `query.w` as sent, which also dropped the filter that treats `?w=0` and
+`?w=1` as absent, so `a_width_of_one_is_absent_rather_than_a_one_pixel_page`
+went red beside the new test. The table's row is the rerun with only the clamp
+removed.
+
+**The two cache-directory rows are not among O108's five, and they are why the
+cache tests read the files.** Under an index break, both cache tests fail first on the colour
+they were served, so the index rows cannot show that reading the cache adds
+anything. Pointing a route's cache at the covers directory serves the right
+picture from a cache in the wrong place. For tiles, an earlier test already
+pinned the directory. For reading pages, nothing did until these tests read the
+file.
+
+**The last row checks the ceiling test's own last assertion.** Its clamp break
+fails first on the content type, so nothing above reaches the assertion that the
+tag is the cache file's name. Building the tag from the unclamped width does,
+with every earlier assertion in that test still passing. The O106 test that pins
+the ceiling's tag catches the same break.
+
+### The review of this branch
+
+A whole-branch review reproduced every row of the table above and every count
+in `docs/status.md`, and found three more mutants that left all 567 tests green.
+Each was rerun here with the same result:
+
+| mutant | site |
+| --- | --- |
+| a page that already fits is read by `offset` | `get_page`, the arm that serves the original bytes |
+| a tile's hash is taken from the edition's last member | `get_thumb` |
+| a cover's hash is taken from the edition's last member | the OPDS cover route, which predates this branch |
+
+The first is the same mix-up of index and offset, one line from the sites O108
+named. Every resized request in the new tests was smaller than its page, so none
+reached the arm that serves a page that already fits. The second was hidden by
+the tile test asking only for pages of `b.cbz`, the last member of both
+editions. The third route's only test has one member with pages, and it is the
+last.
+
+**It also found the O108 entry's reason wrong, and this branch had repeated it**
+in the status row and the fixture's doc. Route tests did ask for pages whose
+index and offset differ: `test_support::work`'s `raw` edition is two members of
+two pages each, and `the_reader_can_list_a_work_read_its_sidecar_and_fetch_a_page`
+and `a_stale_validator_gets_the_page_rather_than_a_304` ask for its page 2. What
+no fixture did was put one member at two positions. A name built from the index
+is still unique within one edition, `state_with_two_editions` gives both its
+editions the same members in the same order, and `work`'s pages cannot be
+decoded, so none of its requests reached a resize or a tile.
+
+`cargo mutants --list --in-diff` over this branch's diff says "No mutants to
+filter", where O106's diff lists mutants in `cover.rs` and `routes.rs`. So the
+reasoning above about `mutants.sh` holds, now measured.
+
+**After the fix round each of the three fails a test.** Run against 569 tests,
+after a control that passed 569 of 569:
+
+| mutant | red | failing assertion |
+| --- | --- | --- |
+| a page that already fits is read by `offset` | `a_page_that_already_fits_the_width_is_read_by_its_index` | `"grey"` served where `"red"` belongs |
+| a tile's hash is taken from the last member | the tile cache test | page 0 of `ab` served `"red"` where `"grey"` belongs |
+| a cover's hash is taken from the last member | `each_edition_s_cover_is_cached_under_the_member_its_first_page_is_in` | the cover cache file under `a.cbz`'s hash is missing |
+
+No other test went red under any of the three. `colour_of` now names grey, so
+the assertions about `a.cbz`'s first page state the colour rather than the
+absence of the other three. The tile test changed, so its two earlier breaks were
+rerun against it: the tile key from `index` still fails at page 2 of `ab`
+(`"blue"` where `"red"` belongs), and the tile cached in `cache_dir` still fails
+at the first cache read, as does
+`tests::serve_caches_covers_and_tiles_under_the_resolved_root`.

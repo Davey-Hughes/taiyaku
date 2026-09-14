@@ -1053,6 +1053,212 @@ async fn two_pages_of_one_member_have_different_etags() {
     );
 }
 
+/// A GET through `router`: its status, headers and body, sent with an
+/// `If-None-Match` when there is a tag to send.
+async fn fetch(
+    router: &axum::Router,
+    uri: &str,
+    if_none_match: Option<&str>,
+) -> (StatusCode, axum::http::HeaderMap, axum::body::Bytes) {
+    let mut request = Request::get(uri);
+    if let Some(tag) = if_none_match {
+        request = request.header(header::IF_NONE_MATCH, tag);
+    }
+    let response = router
+        .clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, headers, body)
+}
+
+/// O108: a page's tag names its member and its offset within that member,
+/// not its index in the edition, at full size and resized alike.
+///
+/// Page 2 of `ab` and page 0 of `b` are one page of one archive (see
+/// `test_support::state_with_a_shared_member`), so a client holding either
+/// holds the other. Page 2 of `b` is a different page of that archive, at the
+/// index that page 2 of `ab` has. A tag built from the index would answer that
+/// page's tag with `304`, and the client would go on drawing the wrong picture.
+#[tokio::test]
+async fn a_page_tag_names_its_offset_in_its_member_not_its_index_in_the_edition() {
+    let (state, _fixture) = crate::test_support::state_with_a_shared_member();
+    let app = build_router(state);
+
+    for size in ["", "?w=8"] {
+        let same_page = etag_of(&app, &format!("/api/works/m/b/pages/0{size}")).await;
+        let same_index = etag_of(&app, &format!("/api/works/m/b/pages/2{size}")).await;
+        let uri = format!("/api/works/m/ab/pages/2{size}");
+
+        let (status, _, body) = fetch(&app, &uri, Some(&same_index)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{uri} sent page 2 of `b`'s tag {same_index}, which is a different page"
+        );
+        assert_eq!(crate::test_support::colour_of(&body), "red", "{uri}");
+
+        let (status, _, _) = fetch(&app, &uri, Some(&same_page)).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_MODIFIED,
+            "{uri} sent page 0 of `b`'s tag {same_page}, which is the same page"
+        );
+    }
+}
+
+/// O108: a reading-sized page is cached under its member's hash and its
+/// offset within that member.
+///
+/// Page 2 of `b` is rendered first. A cache keyed by index would then already
+/// hold a file under page 2 of `ab`'s key, and would serve it: `b.cbz`'s third
+/// page, blue, in place of its first, red. The cache files are read afterwards,
+/// so the test says where each rendering went as well as what the reader got.
+#[tokio::test]
+async fn a_resized_page_is_cached_under_its_offset_in_its_member_not_its_index() {
+    let (state, _fixture) = crate::test_support::state_with_a_shared_member();
+    let dir = state.thumb_cache_dir();
+    let app = build_router(state);
+    let colour_of = crate::test_support::colour_of;
+
+    let (_, _, third) = fetch(&app, "/api/works/m/b/pages/2?w=8", None).await;
+    assert_eq!(
+        colour_of(&third),
+        "blue",
+        "page 2 of `b` is b.cbz's third page"
+    );
+    let (status, headers, first) = fetch(&app, "/api/works/m/ab/pages/2?w=8", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg", "resized");
+    assert_eq!(
+        colour_of(&first),
+        "red",
+        "page 2 of `ab` is b.cbz's first page"
+    );
+
+    for (offset, colour) in [(0, "red"), (2, "blue")] {
+        let path = crate::cover::page_cache_path(&dir, "sha-b", offset, 8);
+        let cached = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(colour_of(&cached), colour, "{}", path.display());
+    }
+}
+
+/// O108: a filmstrip tile is cached under its member's hash and its offset
+/// within that member, for the reason the resized page's test above gives.
+///
+/// It also asks for page 0 of `ab`, which is in `a.cbz`. Every other page it
+/// asks for is in `b.cbz`, the last member of both editions, so without that
+/// request a hash taken from the last member passed every test. The review of
+/// this branch found that.
+#[tokio::test]
+async fn a_tile_is_cached_under_its_offset_in_its_member_not_its_index() {
+    let (state, _fixture) = crate::test_support::state_with_a_shared_member();
+    let dir = state.thumb_cache_dir();
+    let app = build_router(state);
+    let colour_of = crate::test_support::colour_of;
+
+    let (_, _, third) = fetch(&app, "/api/works/m/b/pages/2/thumb", None).await;
+    assert_eq!(
+        colour_of(&third),
+        "blue",
+        "page 2 of `b` is b.cbz's third page"
+    );
+    let (status, _, first) = fetch(&app, "/api/works/m/ab/pages/2/thumb", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        colour_of(&first),
+        "red",
+        "page 2 of `ab` is b.cbz's first page"
+    );
+    let (_, _, other_member) = fetch(&app, "/api/works/m/ab/pages/0/thumb", None).await;
+    assert_eq!(
+        colour_of(&other_member),
+        "grey",
+        "page 0 of `ab` is a.cbz's first page"
+    );
+
+    for (sha, offset, colour) in [
+        ("sha-b", 0, "red"),
+        ("sha-b", 2, "blue"),
+        ("sha-a", 0, "grey"),
+    ] {
+        let path = crate::cover::thumb_cache_path(&dir, sha, offset);
+        let cached = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(colour_of(&cached), colour, "{}", path.display());
+    }
+}
+
+/// O108: a width above the ceiling is resized to the ceiling, cached under
+/// the ceiling, and tagged with that cache file's name.
+///
+/// `a_width_above_the_ceiling_carries_the_ceilings_tag` pins the tag, which
+/// `get_page` builds before it reads anything. The resize and its cache file
+/// come later, and given the width as sent they would still pass every other
+/// test, because a 16×16 page fits inside the ceiling and inside any width
+/// above it, and is served untouched either way. Page 1 of `ab` is wider than
+/// the ceiling and narrower than the width asked for here, so only the clamped
+/// width resizes it.
+#[tokio::test]
+async fn a_width_above_the_ceiling_is_resized_and_cached_at_the_ceiling() {
+    let (state, _fixture) = crate::test_support::state_with_a_shared_member();
+    let dir = state.thumb_cache_dir();
+    let app = build_router(state);
+    let ceiling = crate::cover::MAX_FIT_LONG_EDGE;
+
+    let uri = format!("/api/works/m/ab/pages/1?w={}", ceiling + 8);
+    let (status, headers, body) = fetch(&app, &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers[header::CONTENT_TYPE],
+        "image/jpeg",
+        "{uri} must be resized to the ceiling, not served whole"
+    );
+    let decoded = image::load_from_memory(&body).expect("a decodable page");
+    assert_eq!(decoded.width().max(decoded.height()), ceiling, "{uri}");
+
+    let path = crate::cover::page_cache_path(&dir, "sha-a", 1, ceiling);
+    let cached = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert_eq!(
+        cached, body,
+        "the page served is the one cached at the ceiling"
+    );
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap();
+    assert_eq!(headers[header::ETAG], format!("\"{stem}\"").as_str());
+}
+
+/// O108's review: a page that already fits inside `?w=` is served its own
+/// bytes, read by its index in the edition.
+///
+/// `get_page` reads such a page a second time to serve it (O107), and that read
+/// takes the index where the tag and the cache key take the offset. Every other
+/// resized request in these tests is smaller than its page, so reading by the
+/// offset in that arm served page 0 of `ab`, grey, with every test green. The
+/// review of this branch found it. A width of 16 is the page's own size.
+#[tokio::test]
+async fn a_page_that_already_fits_the_width_is_read_by_its_index() {
+    let (state, _fixture) = crate::test_support::state_with_a_shared_member();
+    let app = build_router(state);
+
+    let uri = "/api/works/m/ab/pages/2?w=16";
+    let (status, headers, body) = fetch(&app, uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers[header::CONTENT_TYPE],
+        "image/png",
+        "{uri} fits, so it is served the original bytes"
+    );
+    assert_eq!(
+        crate::test_support::colour_of(&body),
+        "red",
+        "page 2 of `ab` is b.cbz's first page"
+    );
+}
+
 #[tokio::test]
 async fn a_thumb_route_answers_a_jpeg_and_404s_a_page_that_does_not_exist() {
     let (state, _fixture) = crate::test_support::state_with_real_pages();

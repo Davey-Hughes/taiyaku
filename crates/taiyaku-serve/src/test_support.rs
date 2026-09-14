@@ -229,11 +229,15 @@ fn channel(v: u32) -> u8 {
 /// across the module boundary that keeps `cover`'s test helpers private
 /// to `cover`.
 fn real_page_bytes() -> Vec<u8> {
-    let page = image::RgbImage::from_fn(16, 16, |x, y| {
+    png(image::RgbImage::from_fn(16, 16, |x, y| {
         let r = channel(x * 16);
         let g = channel(y * 16);
         image::Rgb([r, g, 200])
-    });
+    }))
+}
+
+/// `page` encoded as PNG, the format these fixtures' archives hold.
+fn png(page: image::RgbImage) -> Vec<u8> {
     let mut encoded = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgb8(page)
         .write_to(&mut encoded, image::ImageFormat::Png)
@@ -352,7 +356,13 @@ pub(crate) fn work_with_real_pages() -> (Work, Fixture) {
 /// and the directory goes when the test does.
 pub(crate) fn state_with_real_pages() -> (std::sync::Arc<ServeState>, Fixture) {
     let (work, fixture) = work_with_real_pages();
-    let state = std::sync::Arc::new(ServeState {
+    (local_state(work, &fixture), fixture)
+}
+
+/// `work` read from disk by `LocalLibrary`, caching under `fixture`'s
+/// directory so that the cache goes when the fixture does.
+fn local_state(work: Work, fixture: &Fixture) -> std::sync::Arc<ServeState> {
+    std::sync::Arc::new(ServeState {
         library: library(),
         works: vec![work],
         source: std::sync::Arc::new(crate::LocalLibrary),
@@ -361,8 +371,117 @@ pub(crate) fn state_with_real_pages() -> (std::sync::Arc<ServeState>, Fixture) {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-    });
-    (state, fixture)
+    })
+}
+
+/// O108's fixture: one archive that is the second member of one edition and
+/// the whole of another, so a page's index in its edition and its offset in
+/// its member differ.
+///
+/// Work `m`. Edition `ab` is `a.cbz` (two pages) then `b.cbz` (three), and
+/// edition `b` is `b.cbz` alone. So page 2 of `ab` is `b.cbz`'s first page,
+/// the same page as page 0 of `b`, while page 2 of `b` is `b.cbz`'s third. A
+/// route that keyed a page by its index would give page 2 of `ab` the tag, the
+/// cached rendering and the tile of page 2 of `b`, which is a different
+/// picture. No fixture before this one put one member at two positions. `work`'s
+/// edition does reach pages whose index and offset differ, but a name built
+/// from the index is still unique within one edition, the one fixture with two
+/// editions gives both the same members in the same order, and `work`'s pages
+/// cannot be decoded, so none of its requests reached a resize or a tile.
+///
+/// `b.cbz`'s pages are solid red, green and blue, in that order, so a test can
+/// say which one it was served after a resize or a tile's JPEG encoding
+/// (`colour_of`). `a.cbz`'s first page is grey.
+///
+/// `a.cbz`'s second page is 4 pixels wider than `cover::MAX_FIT_LONG_EDGE`.
+/// It is the one page here that a width above the ceiling and the clamped
+/// width treat differently: a 16×16 page fits inside both and is served
+/// untouched either way.
+pub(crate) fn state_with_a_shared_member() -> (std::sync::Arc<ServeState>, Fixture) {
+    let fixture = Fixture::new("taiyaku-test-shared-member");
+    let root = fixture.path();
+
+    let solid = |colour: [u8; 3]| png(image::RgbImage::from_pixel(16, 16, image::Rgb(colour)));
+    let wide = png(image::RgbImage::from_pixel(
+        crate::cover::MAX_FIT_LONG_EDGE + 4,
+        4,
+        image::Rgb([128, 128, 128]),
+    ));
+    for (name, pages) in [
+        ("a.cbz", vec![solid([128, 128, 128]), wide]),
+        (
+            "b.cbz",
+            vec![
+                solid([220, 40, 40]),
+                solid([40, 220, 40]),
+                solid([40, 40, 220]),
+            ],
+        ),
+    ] {
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(root.join(name)).unwrap());
+        for (n, bytes) in pages.iter().enumerate() {
+            zip.start_file(
+                format!("p{}.png", n + 1),
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    let json = r#"{
+          "taiyaku": 1,
+          "work": { "title": "M", "reading": "rtl" },
+          "editions": {
+            "ab": { "label": "AB", "members": [
+              { "path": "a.cbz", "sha256": "sha-a", "pages": 2 },
+              { "path": "b.cbz", "sha256": "sha-b", "pages": 3 }
+            ], "spreads": [] },
+            "b": { "label": "B", "members": [
+              { "path": "b.cbz", "sha256": "sha-b", "pages": 3 }
+            ], "spreads": [] }
+          },
+          "hub": "ab",
+          "alignments": []
+        }"#;
+    let path = root.join("taiyaku.json");
+    std::fs::write(&path, json).unwrap();
+
+    let work = Work::new(
+        "m".into(),
+        path,
+        taiyaku_core::Sidecar::from_json(json).unwrap(),
+    );
+    (local_state(work, &fixture), fixture)
+}
+
+/// Which of red, green, blue and grey a served page is, read from its centre
+/// pixel.
+///
+/// For `state_with_a_shared_member`'s solid pages, whose colour survives a
+/// resize and a JPEG encoding where a finer pattern would not. A channel counts
+/// only when it leads both others by more than JPEG's drift, and grey is all
+/// three within a little of each other.
+pub(crate) fn colour_of(bytes: &[u8]) -> &'static str {
+    let page = image::load_from_memory(bytes)
+        .expect("a decodable page")
+        .to_rgb8();
+    let image::Rgb([r, g, b]) = *page.get_pixel(page.width() / 2, page.height() / 2);
+    let leads = |one: u8, other: u8, another: u8| {
+        one > other.saturating_add(64) && one > another.saturating_add(64)
+    };
+    if leads(r, g, b) {
+        "red"
+    } else if leads(g, r, b) {
+        "green"
+    } else if leads(b, r, g) {
+        "blue"
+    } else if r.abs_diff(g) <= 16 && g.abs_diff(b) <= 16 && r.abs_diff(b) <= 16 {
+        "grey"
+    } else {
+        "none of red, green, blue and grey"
+    }
 }
 
 /// The fixture work, but with its `"raw"` edition renamed to a

@@ -295,6 +295,101 @@ async fn the_pse_stream_also_carries_an_etag_and_answers_a_matching_request_304(
     );
 }
 
+/// O108: the PSE stream's tag names a page's member and its offset within
+/// that member, as the `/api/…` page route's does and for the reason
+/// `routes::tests::a_page_tag_names_its_offset_in_its_member_not_its_index_in_the_edition`
+/// gives. Panels reaches pages through this route and not that one.
+#[tokio::test]
+async fn the_pse_stream_tag_names_a_page_offset_in_its_member_not_its_index() {
+    async fn fetch(
+        app: &axum::Router,
+        uri: &str,
+        if_none_match: Option<&str>,
+    ) -> (StatusCode, Option<String>, axum::body::Bytes) {
+        let mut request = Request::get(uri);
+        if let Some(tag) = if_none_match {
+            request = request.header(header::IF_NONE_MATCH, tag);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let tag = response
+            .headers()
+            .get(header::ETAG)
+            .map(|tag| tag.to_str().unwrap().to_string());
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, tag, body)
+    }
+
+    let (state, _fixture) = crate::test_support::state_with_a_shared_member();
+    let app = feed_router().with_state(state);
+
+    let (_, same_page, _) = fetch(&app, "/opds/v1.2/works/m/b/pages/0", None).await;
+    let same_page = same_page.expect("an ETag");
+    let (_, same_index, _) = fetch(&app, "/opds/v1.2/works/m/b/pages/2", None).await;
+    let same_index = same_index.expect("an ETag");
+    let uri = "/opds/v1.2/works/m/ab/pages/2";
+
+    let (status, _, body) = fetch(&app, uri, Some(&same_index)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{uri} sent page 2 of `b`'s tag {same_index}, which is a different page"
+    );
+    assert_eq!(crate::test_support::colour_of(&body), "red", "{uri}");
+
+    let (status, _, _) = fetch(&app, uri, Some(&same_page)).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_MODIFIED,
+        "{uri} sent page 0 of `b`'s tag {same_page}, which is the same page"
+    );
+}
+
+/// O108's review: an edition's cover is cached under the hash of the member its
+/// page 0 is in.
+///
+/// Page 0 of `ab` is in `a.cbz`, and page 0 of `b` is in `b.cbz`, which is the
+/// last member of both editions (see `test_support::state_with_a_shared_member`).
+/// The fixture of `the_cover_cache_key_follows_locate_past_a_pageless_first_member`
+/// has one member with pages, and it is the last, so a hash taken from the last
+/// member passed every test. Here that would cache `ab`'s grey cover under
+/// `b.cbz`'s hash and serve it as `b`'s. The review of this branch found it,
+/// and it predates the branch.
+#[tokio::test]
+async fn each_edition_s_cover_is_cached_under_the_member_its_first_page_is_in() {
+    let (state, _fixture) = crate::test_support::state_with_a_shared_member();
+    let dir = state.cache_dir.clone();
+    let app = feed_router().with_state(state);
+    let colour_of = crate::test_support::colour_of;
+
+    for (edition, sha, colour) in [("ab", "sha-a", "grey"), ("b", "sha-b", "red")] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/opds/v1.2/works/m/{edition}/cover"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "`{edition}`'s cover");
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert_eq!(colour_of(&body), colour, "`{edition}`'s cover");
+
+        let path = crate::cover::cache_path(&dir, sha);
+        let cached = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(colour_of(&cached), colour, "{}", path.display());
+    }
+}
+
 /// A feed for a work this server does not hold says so, rather than
 /// returning an empty feed a client renders as an empty library.
 #[tokio::test]
