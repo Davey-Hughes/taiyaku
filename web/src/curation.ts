@@ -88,9 +88,10 @@ export interface Side {
    * arrive as a single rendered sentence and stopped.
    *
    * **Empty where nothing currently resolves to this series' title** — not
-   * only "never scanned". A renamed `sort_title` or an edited rule can leave
-   * a series with a real `volume_count` and `first_volume` while nothing in
-   * the live rule set resolves to it any more.
+   * only "never scanned". An edited rule, or a series a document minted under
+   * a title no rule resolves, can leave a series with a real `volume_count`
+   * and `first_volume` while nothing in the live rule set resolves to it any
+   * more.
    */
   directories: string[]
   volume_count: number

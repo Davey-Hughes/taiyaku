@@ -802,3 +802,78 @@ async fn a_series_titles_read_corrected_and_sent_back_whole_keep_every_other_tit
         OSHINOKO,
     );
 }
+
+/// **O114.** O83's drive, as a test: Kaguya's derived romaji title corrected
+/// through `PATCH /api/library/series/{id}` and the root scanned again. The
+/// correction moved `series.sort_title`, `derive::reconcile_series` finds a
+/// series by `sort_title`, and the rescan minted a second Kaguya under the
+/// scanned name and moved its volume onto it, leaving the corrected titles on
+/// a series holding no work.
+#[tokio::test]
+async fn a_rescan_after_a_series_titles_correction_keeps_the_series_its_work_and_its_titles() {
+    let (router, state, _fixture) = test_support::router_over_three_unrelated_series();
+    let ids = plant_titles(&router, &state).await;
+    let corrected = "Kaguya-sama wa Kokurasetai: Tensai-tachi no Ren'ai Zunousen";
+
+    let mut titles = titles_of(&router, ids.kaguya).await;
+    assert_eq!(
+        titles[0]["title"], "Kaguya-sama wa Kokurasetai",
+        "the first entry is the text the files gave the series: {titles:?}"
+    );
+    titles[0]["title"] = corrected.into();
+    let response = test_support::send_json(
+        &router,
+        axum::http::Method::PATCH,
+        &format!("/api/library/series/{}", ids.kaguya),
+        &serde_json::json!({ "titles": titles }),
+    )
+    .await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+
+    {
+        let conn = state.library.conn();
+        for root in taiyaku_library::scan::roots(&conn).expect("reads the roots") {
+            taiyaku_library::scan::scan_root(&conn, &root).expect("rescans the root");
+        }
+        taiyaku_library::derive::derive(&conn).expect("derives again");
+    }
+
+    let grid = get_json(&router, "/api/library/series").await;
+    let mut listed: Vec<i64> = grid["series"]
+        .as_array()
+        .expect("the grid lists series")
+        .iter()
+        .map(|series| series["id"].as_i64().expect("a series id"))
+        .collect();
+    listed.sort_unstable();
+    let mut want = vec![ids.gotoubun, ids.kaguya, ids.oshinoko];
+    want.sort_unstable();
+    assert_eq!(
+        listed, want,
+        "the same three series, and no second Kaguya: {grid}"
+    );
+    let one = get_json(&router, &format!("/api/library/series/{}", ids.kaguya)).await;
+    assert_eq!(
+        one["works"].as_array().map(Vec::len),
+        Some(1),
+        "Kaguya's volume stays on series {}: {one}",
+        ids.kaguya
+    );
+    assert_titles(
+        ids.kaguya,
+        &titles_of(&router, ids.kaguya).await,
+        &[(corrected, "romaji", true), KAGUYA[1], KAGUYA[2]],
+    );
+    assert_titles(
+        ids.gotoubun,
+        &titles_of(&router, ids.gotoubun).await,
+        GOTOUBUN,
+    );
+    assert_titles(
+        ids.oshinoko,
+        &titles_of(&router, ids.oshinoko).await,
+        OSHINOKO,
+    );
+}

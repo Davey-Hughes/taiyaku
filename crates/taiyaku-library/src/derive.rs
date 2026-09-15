@@ -1281,6 +1281,12 @@ pub(crate) fn parent_of(rel_path: &str) -> &str {
 /// would orphan every dismissal a person has made, and §6's "a dismissal has
 /// to persist" would quietly stop being true.
 ///
+/// **`sort_title` is the name the files gave the series, and a correction does
+/// not move it — O114.** `librarydoc::set_series_titles` and `apply_series`'s
+/// matched branch leave it alone. When either moved this column, the next pass
+/// found nothing under the scanned name, minted a second series and moved every
+/// volume onto it.
+///
 /// **A `SELECT` then an `INSERT`, not `INSERT … ON CONFLICT DO NOTHING`.**
 /// There is no unique constraint on `series.sort_title` — `001_initial.sql`
 /// declares the column bare, and migrations here are append-only — so an
@@ -1312,8 +1318,14 @@ fn reconcile_series(conn: &Connection, sort_title: &str) -> Result<i64, String> 
             .map_err(|e| format!("inserting the series `{sort_title}`: {e}"))?;
         conn.last_insert_rowid()
     };
+    // **Only onto a series holding no title — O114.** A correction through
+    // `librarydoc::set_series_titles` replaces the whole set and may drop this
+    // text; writing it back on every pass returned a removed spelling as a
+    // second primary title. A series minted just above holds none.
     conn.execute(
-        "INSERT OR IGNORE INTO series_title (series_id, title, is_primary) VALUES (?1, ?2, 1)",
+        "INSERT INTO series_title (series_id, title, is_primary)
+         SELECT ?1, ?2, 1
+          WHERE NOT EXISTS (SELECT 1 FROM series_title WHERE series_id = ?1)",
         rusqlite::params![series_id, sort_title],
     )
     .map_err(|e| format!("recording the title of series `{sort_title}`: {e}"))?;

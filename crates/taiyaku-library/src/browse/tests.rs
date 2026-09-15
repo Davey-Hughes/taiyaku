@@ -1945,3 +1945,54 @@ fn opens_substitutes_the_first_visible_edition_when_the_grant_hides_the_hub() {
          this one instead"
     );
 }
+
+/// **O114.** `PATCH /api/library/series/{id}` accepts a title list with no
+/// entry marked primary, and the grid showed its first title because
+/// `set_series_titles` wrote that one into `sort_title`. `sort_title` is the
+/// scan's key and a correction no longer moves it, so the grid falls back to
+/// the first title the series holds before the scanned name — text the
+/// correction may have removed.
+#[test]
+fn a_series_with_no_primary_title_is_shown_by_its_first_title_not_its_scanned_name() {
+    let tree = crate::scan::tests::fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("derive");
+    let series_id: i64 = conn
+        .query_row(
+            "SELECT id FROM series WHERE sort_title = 'Go-Toubun no Hanayome'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the scanned series");
+    crate::librarydoc::set_series_titles(
+        &conn,
+        series_id,
+        &[
+            crate::librarydoc::SeriesTitle {
+                title: "五等分の花嫁".to_string(),
+                kind: crate::librarydoc::TitleKind::Native,
+                primary: false,
+            },
+            crate::librarydoc::SeriesTitle {
+                title: "The Quintessential Quintuplets".to_string(),
+                kind: crate::librarydoc::TitleKind::English,
+                primary: false,
+            },
+        ],
+    )
+    .expect("corrects the titles");
+
+    let cards = series(&conn, &[], 1, None).expect("lists");
+    let card = cards
+        .iter()
+        .find(|card| card.id == series_id)
+        .unwrap_or_else(|| panic!("series {series_id} is on the grid: {cards:?}"));
+    assert_eq!(
+        card.title, "五等分の花嫁",
+        "the first title written — not `The Quintessential Quintuplets`, which \
+         sorts first, nor `Go-Toubun no Hanayome`, which the series no longer holds"
+    );
+}

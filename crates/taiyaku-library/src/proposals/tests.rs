@@ -4543,3 +4543,58 @@ fn reopened_ids_names_every_proposal_a_derivation_put_back() {
         "the count is the list's own length, not a second definition of what reopened means"
     );
 }
+
+/// **O114, through a proposal.** `proposals` finds a series by `sort_title`
+/// wherever it starts from a name the rules resolved — `raise_attach_chapters`,
+/// the evidence sweep, a candidate rule's reach — so a correction that moved
+/// `sort_title` left a proposal about a series nothing resolved to: its
+/// evidence named no directory, and the next scan asked the same question
+/// again about a second series minted under the scanned name.
+#[test]
+fn a_title_correction_leaves_an_attach_chapters_proposal_about_the_same_series() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add root");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("derive");
+    let open = proposals::open(&conn, 0.0).expect("open");
+    assert_eq!(open.len(), 1, "{open:?}");
+    let (id, subject) = (open[0].id, open[0].subject_id);
+    let before = proposals::evidence(&conn, id).expect("evidence").subject;
+    assert!(
+        !before.directories.is_empty(),
+        "the fixture's chapters directory is where the subject's material sits: {before:?}"
+    );
+
+    crate::librarydoc::set_series_titles(
+        &conn,
+        subject,
+        &[crate::librarydoc::SeriesTitle {
+            title: "かぐや様は告らせたい".to_string(),
+            kind: crate::librarydoc::TitleKind::Native,
+            primary: true,
+        }],
+    )
+    .expect("corrects the subject's title");
+
+    let after = proposals::evidence(&conn, id).expect("evidence").subject;
+    assert_eq!(
+        after.directories, before.directories,
+        "the correction changed nothing on disk, so the subject's material sits \
+         where it did: {after:?}"
+    );
+
+    scan::scan_root(&conn, &root).expect("rescan");
+    derive::derive(&conn).expect("re-derive");
+    let open: Vec<(i64, String, i64)> = proposals::open(&conn, 0.0)
+        .expect("open")
+        .into_iter()
+        .map(|p| (p.id, p.kind, p.subject_id))
+        .collect();
+    assert_eq!(
+        open,
+        vec![(id, "attach-chapters".to_string(), subject)],
+        "one proposal, the same one, still about series {subject}"
+    );
+}

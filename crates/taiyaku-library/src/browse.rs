@@ -417,9 +417,12 @@ fn aligned_clause(roots: &[i64], only: Option<i64>) -> String {
 ///
 /// `is_primary` picks the display title; `series_title` holds several names per
 /// series so the romaji, the native title and the English one all find the same
-/// shelf. A series with no primary title falls back to `sort_title`, which is
-/// NOT NULL — without that fallback a series whose titles were all written with
-/// `is_primary = 0` would be invisible.
+/// shelf. A series with no primary title shows the first title it holds, in
+/// `rowid` order — the order `librarydoc::set_series_titles` writes a list in —
+/// and only then `sort_title`, which is NOT NULL, so every series has a title to
+/// show. **Not `sort_title` second — O114.** That column is the scan's key and
+/// a correction no longer moves it, so a list sent with no primary would show
+/// text the correction may have removed.
 ///
 /// # Errors
 ///
@@ -457,7 +460,10 @@ pub fn series(
     // only `COUNT(DISTINCT …)` everywhere else was hiding.
     let sql = format!(
         "SELECT s.id,
-                COALESCE(MAX(CASE WHEN st.is_primary = 1 THEN st.title END), s.sort_title),
+                COALESCE(MAX(CASE WHEN st.is_primary = 1 THEN st.title END),
+                         (SELECT title FROM series_title WHERE series_id = s.id
+                           ORDER BY rowid LIMIT 1),
+                         s.sort_title),
                 COUNT(DISTINCT w.id),
                 COUNT(DISTINCT e.id),
                 COUNT(DISTINCT CASE WHEN {aligned} THEN w.id END),

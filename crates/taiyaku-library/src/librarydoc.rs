@@ -715,12 +715,13 @@ pub fn apply(conn: &Connection, work_id: i64, doc: &LibraryDoc) -> Result<(), St
 ///
 /// **`doc.series.reading` is still written, directly onto `series_id`.**
 /// Unlike titles, a reading direction carries no identity to resolve —
-/// writing it is a plain `UPDATE … WHERE id = series_id`, the same shape
-/// [`set_series_titles`] already uses for `sort_title`, and no more unsafe to
-/// repeat on every work in a series-wide edit's loop than that one already
-/// is. `apply_series`'s own matched branch is the only other writer of this
-/// column, and this function does not reach it, so this is the one this
-/// function's own caller needs instead.
+/// writing it is a plain `UPDATE … WHERE id = series_id`, and no more unsafe
+/// to repeat on every work in a series-wide edit's loop than any other
+/// idempotent `UPDATE`. *(This named `set_series_titles`' own `sort_title`
+/// write as the same shape until O114 removed that write.)* `apply_series`'s
+/// own matched branch is the only other writer of this column, and this
+/// function does not reach it, so this is the one this function's own caller
+/// needs instead.
 ///
 /// **Idempotent, for the same reason [`apply`] is.** Every sub-write this
 /// function performs — the reading-direction `UPDATE`, [`apply_external`],
@@ -852,13 +853,18 @@ fn apply_series(
 
     let series_id = match find_series_by_title(conn, &series.titles)? {
         Some(id) => {
+            // **Not `sort_title` — O114.** A series this document found by
+            // one of its titles keeps its `sort_title`, the key
+            // `derive::reconcile_series` finds it by: writing the document's
+            // primary title here made the next scan mint a second series under
+            // the scanned name. A series minted below has no scanned name, so
+            // it takes the primary title.
             conn.execute(
                 "UPDATE series
-                    SET sort_title   = ?1,
-                        reading_hand = ?2,
-                        reading      = COALESCE(?2, reading)
-                  WHERE id = ?3",
-                params![sort_title, reading, id],
+                    SET reading_hand = ?1,
+                        reading      = COALESCE(?1, reading)
+                  WHERE id = ?2",
+                params![reading, id],
             )
             .map_err(|e| format!("updating series {id}: {e}"))?;
             id
@@ -1073,9 +1079,17 @@ fn find_series_by_title(conn: &Connection, titles: &[SeriesTitle]) -> Result<Opt
 /// `series_fts` in step with no `recursive_triggers` gate needed — see
 /// [`forget_orphaned_series`]'s own comment on why an explicit `DELETE`
 /// differs from the implicit one an `INSERT OR REPLACE` conflict performs)
-/// before `titles` is written back. `series.sort_title` is refreshed from
-/// whichever of `titles` is primary, or the first if none is — the same rule
-/// [`apply_series`]'s own matched branch applies.
+/// before `titles` is written back.
+///
+/// **`series.sort_title` is left alone — O114.** It is the key
+/// `derive::reconcile_series` and `proposals` find a series by — for a scanned
+/// series, the name its files gave it. This function used to move it to the
+/// primary title, or the first where none is primary, and the next scan then
+/// found nothing under the scanned name, minted a second series and moved
+/// every volume onto it.
+/// [`crate::browse::series`] shows the primary title, or the first one
+/// written where none is primary, so the correction is still what the grid
+/// shows.
 ///
 /// **`work.series_id` and the `series` row itself are untouched.** Deciding
 /// which series a work belongs to — moving it, or clearing it — is
@@ -1100,7 +1114,7 @@ fn find_series_by_title(conn: &Connection, titles: &[SeriesTitle]) -> Result<Opt
 /// in turn.
 ///
 /// **Refuses more than one title marked `primary`.** `browse.rs`'s own
-/// `COALESCE(MAX(CASE WHEN st.is_primary = 1 THEN st.title END), s.sort_title)`
+/// `MAX(CASE WHEN st.is_primary = 1 THEN st.title END)`
 /// picks whichever of them sorts lexically greater when more than one row
 /// has the flag — C1's second-shape symptom (a corrected spelling landing
 /// beside the one it was meant to replace, so the reader-facing title
@@ -1127,17 +1141,15 @@ pub fn set_series_titles(
     series_id: i64,
     titles: &[SeriesTitle],
 ) -> Result<(), String> {
-    let Some(primary) = titles.iter().find(|t| t.primary).or_else(|| titles.first()) else {
+    if titles.is_empty() {
         return Err("a series must keep at least one title".to_string());
-    };
+    }
     if titles.iter().filter(|t| t.primary).count() > 1 {
         return Err(format!(
             "series {series_id} would have more than one primary title; \
              a series must have at most one"
         ));
     }
-    let sort_title = primary.title.clone();
-
     // `crate::Nested`, not `unchecked_transaction` directly. No production
     // caller today reaches this function with a transaction already open on
     // `conn` — `metadata::patch_series` calls it on `Library::conn()` before
@@ -1166,12 +1178,6 @@ pub fn set_series_titles(
             ));
         }
     }
-
-    tx.execute(
-        "UPDATE series SET sort_title = ?1 WHERE id = ?2",
-        params![sort_title, series_id],
-    )
-    .map_err(|e| format!("updating series {series_id}: {e}"))?;
 
     tx.execute("DELETE FROM series_title WHERE series_id = ?1", [series_id])
         .map_err(|e| format!("clearing titles for series {series_id}: {e}"))?;

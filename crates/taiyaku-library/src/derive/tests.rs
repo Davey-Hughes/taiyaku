@@ -594,7 +594,7 @@ fn a_comicinfo_chapter_number_survives_a_re_derive_that_still_resolves_one() {
 
 #[test]
 fn a_derived_series_is_findable_by_title_so_a_document_does_not_mint_a_second_one() {
-    // `series.sort_title` is not what anything looks a series up by:
+    // `series.sort_title` is not what a document looks a series up by:
     // `librarydoc::find_series_by_title` reads `series_title`, and
     // `series_fts` is fed from it by trigger. A series row with no title row
     // is invisible to both, so applying a `taiyaku.library.json` over a
@@ -4301,5 +4301,180 @@ fn write_roots_propagates_a_non_foreign_key_error_rather_than_treating_it_as_a_v
     assert_eq!(
         report.root_removed_mid_derive, 0,
         "a store fault is not a vanished root and must not be counted as one"
+    );
+}
+
+/// One `series_title` entry, as `PATCH /api/library/series/{id}` sends it.
+fn corrected_title(
+    title: &str,
+    kind: crate::librarydoc::TitleKind,
+    primary: bool,
+) -> crate::librarydoc::SeriesTitle {
+    crate::librarydoc::SeriesTitle {
+        title: title.to_string(),
+        kind,
+        primary,
+    }
+}
+
+/// `scan::tests::fixture()` scanned and derived, Go-Toubun's titles replaced
+/// with `corrected` through `librarydoc::set_series_titles` — what
+/// `PATCH /api/library/series/{id}` calls — and the root scanned and derived
+/// again. Answers the library and Go-Toubun's series id from before the
+/// correction.
+fn rescanned_after_correcting_gotoubun(
+    corrected: &[crate::librarydoc::SeriesTitle],
+) -> (Library, i64) {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let series_id = {
+        let conn = library.conn();
+        let root = scan::add_root(&conn, &tree.path).expect("add");
+        scan::scan_root(&conn, &root).expect("scan");
+        derive::derive(&conn).expect("first derive");
+        let series_id: i64 = conn
+            .query_row(
+                "SELECT id FROM series WHERE sort_title = 'Go-Toubun no Hanayome'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the scanned series");
+        crate::librarydoc::set_series_titles(&conn, series_id, corrected)
+            .expect("corrects the titles");
+        scan::scan_root(&conn, &root).expect("rescan");
+        derive::derive(&conn).expect("second derive");
+        series_id
+    };
+    (library, series_id)
+}
+
+/// What a rescan after a title correction must leave: the fixture's two
+/// series and no third, both Go-Toubun volumes still on `series_id`, and
+/// exactly `corrected` as its titles, in the order they were written.
+fn assert_the_correction_survived(
+    conn: &Connection,
+    series_id: i64,
+    corrected: &[crate::librarydoc::SeriesTitle],
+) {
+    let series: Vec<(i64, String)> = conn
+        .prepare("SELECT id, sort_title FROM series ORDER BY id")
+        .expect("prepare")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("rows");
+    assert_eq!(
+        series.len(),
+        2,
+        "Go-Toubun and the chapters directory, and no second Go-Toubun minted \
+         under the scanned name: {series:?}"
+    );
+    let shelved: Vec<Option<i64>> = conn
+        .prepare("SELECT series_id FROM work ORDER BY id")
+        .expect("prepare")
+        .query_map([], |r| r.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("rows");
+    assert_eq!(
+        shelved,
+        vec![Some(series_id); 2],
+        "both Go-Toubun volumes stay on series {series_id}: {series:?}"
+    );
+    assert_eq!(
+        crate::librarydoc::series_titles(conn, series_id).expect("reads the titles"),
+        corrected,
+        "series {series_id} holds exactly the corrected titles — none dropped, \
+         and the scanned text not written back beside them"
+    );
+}
+
+/// **O114, the measured case.** A correction replacing the text the files gave
+/// a series — O83's drive corrected Kaguya's romaji spelling — moved
+/// `series.sort_title` with it, and `reconcile_series` finds a series by
+/// `sort_title`, so the next scan found nothing under the scanned name, minted
+/// a second series and moved every volume onto it.
+#[test]
+fn a_rescan_after_a_correction_replacing_the_scanned_title_keeps_the_series() {
+    use crate::librarydoc::TitleKind;
+    let corrected = [
+        corrected_title("Go-Tōbun no Hanayome", TitleKind::Romaji, true),
+        corrected_title("五等分の花嫁", TitleKind::Native, false),
+    ];
+    let (library, series_id) = rescanned_after_correcting_gotoubun(&corrected);
+    assert_the_correction_survived(&library.conn(), series_id, &corrected);
+}
+
+/// **O114, the scanned text kept and no longer primary.** Adding a native
+/// title and making it the primary one moved `sort_title` to it just the same.
+#[test]
+fn a_rescan_after_a_correction_making_another_title_primary_keeps_the_series() {
+    use crate::librarydoc::TitleKind;
+    let corrected = [
+        corrected_title("Go-Toubun no Hanayome", TitleKind::Romaji, false),
+        corrected_title("五等分の花嫁", TitleKind::Native, true),
+    ];
+    let (library, series_id) = rescanned_after_correcting_gotoubun(&corrected);
+    assert_the_correction_survived(&library.conn(), series_id, &corrected);
+}
+
+/// **O114, the case its row left unmeasured.** A correction keeping the
+/// scanned text as the primary title never moved `sort_title`, so it survived
+/// a rescan before the fix too. Pinned beside the other two because the title
+/// derivation writes on every pass must land on the row already holding that
+/// text rather than beside it.
+#[test]
+fn a_rescan_after_a_correction_keeping_the_scanned_primary_keeps_the_series() {
+    use crate::librarydoc::TitleKind;
+    let corrected = [
+        corrected_title("Go-Toubun no Hanayome", TitleKind::Romaji, true),
+        corrected_title("The Quintessential Quintuplets", TitleKind::English, false),
+    ];
+    let (library, series_id) = rescanned_after_correcting_gotoubun(&corrected);
+    assert_the_correction_survived(&library.conn(), series_id, &corrected);
+}
+
+/// **O114, the second writer.** `librarydoc::apply` resolves a document's
+/// series by any title text the two share, and its matched branch wrote the
+/// document's primary title into `sort_title` — reached by
+/// `PATCH /api/library/works/{slug}` and by `derive` reading a hand document
+/// back. A document naming the scanned text beside a native primary moved the
+/// key exactly as `set_series_titles` did.
+#[test]
+fn a_rescan_after_a_document_names_another_primary_title_keeps_the_series() {
+    use crate::librarydoc::TitleKind;
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, &tree.path).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+    let (series_id, work_id): (i64, i64) = conn
+        .query_row(
+            "SELECT s.id, MIN(w.id) FROM series s JOIN work w ON w.series_id = s.id
+              WHERE s.sort_title = 'Go-Toubun no Hanayome'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the scanned series and its first work");
+    let doc = crate::librarydoc::LibraryDoc::from_json(
+        r#"{"taiyaku_library":1,"updated":"2026-09-15T00:00:00Z",
+            "series":{"titles":[
+              {"title":"Go-Toubun no Hanayome","kind":"romaji"},
+              {"title":"五等分の花嫁","kind":"native","primary":true}]}}"#,
+    )
+    .expect("parses");
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applies the document");
+
+    scan::scan_root(&conn, &root).expect("rescan");
+    derive::derive(&conn).expect("second derive");
+
+    assert_the_correction_survived(
+        &conn,
+        series_id,
+        &[
+            corrected_title("Go-Toubun no Hanayome", TitleKind::Romaji, false),
+            corrected_title("五等分の花嫁", TitleKind::Native, true),
+        ],
     );
 }

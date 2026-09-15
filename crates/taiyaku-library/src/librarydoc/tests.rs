@@ -298,7 +298,7 @@ fn applying_the_fixture_writes_series_editions_members_tags_and_external() {
         .expect("series row");
     assert_eq!(
         sort_title, "五等分の花嫁",
-        "sort_title follows the primary title"
+        "a series a document mints takes its primary title as `sort_title`"
     );
     assert_eq!(reading.as_deref(), Some("rtl"));
 
@@ -879,9 +879,8 @@ fn set_series_titles_refuses_an_empty_title_list() {
 }
 
 /// **Minor, delta review of the fix waves (`f133b3e..910b15a`).**
-/// `browse.rs`'s own `COALESCE(MAX(CASE WHEN st.is_primary = 1 THEN st.title
-/// END), s.sort_title)` picks whichever of more than one `is_primary` row
-/// sorts lexically greater — C1's second-shape symptom (a corrected spelling
+/// `browse.rs`'s own `MAX(CASE WHEN st.is_primary = 1 THEN st.title END)`
+/// picks whichever of more than one `is_primary` row sorts lexically greater — C1's second-shape symptom (a corrected spelling
 /// landing beside, not instead of, the one it replaced) by a different door.
 /// Not a regression: nothing produced this state before `set_series_titles`
 /// existed. But it is the one writer that could, so it is the natural place

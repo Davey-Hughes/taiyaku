@@ -1871,9 +1871,10 @@ pub struct Side {
     /// disk, verbatim". One element for the ordinary case, several where
     /// this series' entries span directories or roots, and **empty where
     /// nothing currently resolves to this series' title** — which is not
-    /// only "never scanned": a renamed `sort_title` or an edited rule can
-    /// leave a series with `volume_count: 1` and a real `first_volume` while
-    /// nothing in the live rule set resolves to it any more.
+    /// only "never scanned": an edited rule, or a series a document minted
+    /// under a title no rule resolves, can leave a series with
+    /// `volume_count: 1` and a real `first_volume` while nothing in the live
+    /// rule set resolves to it any more.
     ///
     /// **A list, because a count is not a path.** This was one `String`, and
     /// a side spanning two directories rendered as `"{root} (2 directories)"`

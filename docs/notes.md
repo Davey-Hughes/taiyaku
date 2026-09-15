@@ -18701,7 +18701,8 @@ This branch changes neither function. No open row in `docs/status.md` names
 `series_id_hand` or `forget_orphaned_series`, or a second series being minted,
 so it is recorded here and not opened.
 
-*Opened as O114 on 2026-09-14, with no code change.*
+*Opened as O114 on 2026-09-14, with no code change. Closed on 2026-09-15 — see
+"O114: a title correction keeps the scan's key".*
 
 ### Not changed
 
@@ -18789,3 +18790,145 @@ nothing has been re-derived, plus a line for any accepted proposal reopened,
 and gives no count of rules added or removed. `RuleEditor.tsx`'s import
 section says "Import replaces every rule with the document’s". The partial
 import that dropped the seeded rules is "O78", "On real material".
+
+## O114: a title correction keeps the scan's key — 2026-09-15
+
+O114 recorded that a rescan after `PATCH /api/library/series/{id}` minted a
+second series under the scanned name and moved every volume onto it, because
+`librarydoc::set_series_titles` moved `series.sort_title` and
+`derive::reconcile_series` finds a series by it, and it left the fix as a
+choice of key. The user chose on 2026-09-15: `sort_title` stays the scan's own
+key, and a correction changes only `series_title`.
+
+### Writers and readers of `series.sort_title`, read
+
+Writers on `main`: `derive::reconcile_series` inserts the scanned name;
+`librarydoc::apply_series` inserts a document's primary title for a series it
+mints, and its matched branch, for a series it found by any shared title,
+updated the column to that primary; `set_series_titles` updated it to the
+primary title, or the first where none is primary.
+
+Readers that find a series by it: `reconcile_series`;
+`proposals::series_id_by_sort_title`, behind a candidate rule's reach and
+`raise_attach_chapters`; `proposals::all_series`, behind `raise_edition_of`'s
+` - ` prefix and `raise_same_series`'s match against another series' titles;
+and `proposals::series_title`, behind `preview`, `offered_rule` (whose
+`set_series` is that text), `answers`, `evidence`, `edition_of_signals` and `raise_same_series`'s reason.
+
+Readers that show it, and what a person sees once a series' titles are
+corrected:
+
+| reader | shows | on `main` | on this branch |
+| --- | --- | --- | --- |
+| `browse::series`: the grid, a series page's heading, search's series | the primary title, else `sort_title` | the corrected primary | the corrected primary |
+| the same, for a list sent with no primary | — | its first title, because `sort_title` held it | its first title, read in `rowid` order before `sort_title` |
+| `download.rs`'s file name, `comicinfo::read`'s `Series` | a title ordered `is_primary DESC, title`, else `sort_title` | a title row: `set_series_titles` refuses an empty list, so `sort_title` is not reached | the same |
+| `preview::grouping` | the primary title, else `series {id}` | not `sort_title` | not `sort_title` |
+| `proposals::list`'s two titles (`ProposalRow.tsx`), `evidence`'s `Side.title` | `sort_title` | the corrected text, and the evidence sweep found no directory | the scanned name, and the sweep finds the directory |
+| `works::summary`'s `series`, `GET /api/works` | `sort_title` | the corrected text | the scanned name; `label.tsx` maps the list to slugs, and no screen shows it |
+
+**The list with no primary** keeps what the grid showed, without storing a
+`primary` the caller did not send or refusing a list the route accepts today.
+
+**The proposal readers stay on `sort_title`.** Each names a series the way the
+rule an accept writes does — `offered_rule` puts `series_title`'s answer into
+`set_series` — and a row naming one text while its rule names another is the
+less honest of the two. Whether a row should also show a corrected title is not
+decided here.
+
+### A second defect behind the first
+
+`reconcile_series` ran `INSERT OR IGNORE INTO series_title (series_id, title,
+is_primary) VALUES (?1, ?2, 1)` on every pass. On `main` a correction that
+replaced the scanned text sent the next pass to a new series, so that row landed
+there. With the key frozen it lands on the corrected series: the text the
+correction removed returns, marked primary, beside the corrected primary.
+Found by reading while writing the fix, and M3 below is it put back. The row is now
+written only onto a series holding no title, which a series minted in the same
+call always is.
+
+### Red on `main`
+
+The seven tests, added to `main`'s code with nothing else changed:
+
+| test | on `main` |
+| --- | --- |
+| `derive::tests::a_rescan_after_a_correction_replacing_the_scanned_title_keeps_the_series` | failed: 3 series against 2 |
+| `derive::tests::a_rescan_after_a_correction_making_another_title_primary_keeps_the_series` | failed: 3 series against 2 |
+| `derive::tests::a_rescan_after_a_correction_keeping_the_scanned_primary_keeps_the_series` | passed |
+| `derive::tests::a_rescan_after_a_document_names_another_primary_title_keeps_the_series` | failed: 3 series against 2 |
+| `proposals::tests::a_title_correction_leaves_an_attach_chapters_proposal_about_the_same_series` | failed: after the correction the evidence named `[]` against the chapters directory |
+| `browse::tests::a_series_with_no_primary_title_is_shown_by_its_first_title_not_its_scanned_name` | passed |
+| `library_api::tests::a_rescan_after_a_series_titles_correction_keeps_the_series_its_work_and_its_titles` | failed: the grid's ids `[1, 3, 4]` against `[1, 2, 3]` |
+
+The kept-primary case answers what the row left unmeasured: a correction that
+keeps the scanned text primary survived a rescan before the fix. The grid's
+test pins the fallback this branch adds, which `main` did not need.
+
+### Watched red
+
+Each change was put back by a script that checked its text occurred once, ran
+`cargo nextest run --workspace --all-features --no-fail-fast`, restored the
+file and compared its bytes. `git diff -- crates web`, saved before the first,
+was byte-identical after the last. Every run compiled, and the fixed code
+counted 2160 passed.
+
+| put back | failed, of 2160 | at |
+| --- | --- | --- |
+| M1: `set_series_titles` writes `sort_title` | 4: replacing the scanned text, making another primary, the `attach-chapters` proposal, the `PATCH` drive | the series count, `derive/tests.rs:4366`, twice; the evidence's directories, `proposals/tests.rs:4582`; the grid's ids, `library_api/tests.rs:853` |
+| M2: `apply_series`'s matched branch writes `sort_title` | 1: the document | the series count, `derive/tests.rs:4366` |
+| M3: `reconcile_series` writes the scanned title on every pass | 2: replacing the scanned text, the `PATCH` drive | the titles, `derive/tests.rs:4384`, where the removed spelling came back as a second primary; the title count in `assert_titles`, `library_api/tests.rs:729`, 4 against 3 |
+| M4: the grid falls back to `sort_title` before the first title | 1: the grid's | the card's title, `browse/tests.rs:1993` |
+
+### Over real archives
+
+**Substrate.** This workstation. The mutation runs rebuild
+`target/debug/taiyaku`, so it was rebuilt from the restored branch at 01:22:06
+and driven after that; every later change to the Rust source is to comments,
+checked by comparing the diff's non-comment lines before the drive and at
+commit. A scratch library under `target/scratch/o114/lib` held
+the four `en-mono` archives O83's drive used, hardlinked from `corpus/` —
+`gotoubun-v01`, `kaguya-v01`, `kaguya-v03` and `oshinoko-v01` — in directories
+named `Go-Toubun no Hanayome`, `Kaguya-sama` and `Oshi no Ko`. `library scan
+--add` answered `8 added, 0 updated, 0 gone` and `derived 3 series, 4 works, 4
+editions, 4 members; 0 proposal(s) raised`, as O83's did, and Kaguya was series
+2. `library user promote local` read its password from standard input; `taiyaku
+serve --db … --addr 127.0.0.1:18114 --cache …` served the library, and `curl`
+signed in and sent `Origin` on every write.
+
+| step | request | answer |
+| --- | --- | --- |
+| 1 | `GET /api/library/series/2` | one entry, the scanned text, `alt`, `primary: true` |
+| 2 | `PATCH` series 2: that entry re-kinded `romaji`, plus `かぐや様は告らせたい` `native` and `Kaguya-sama: Love Is War` `alt` | 200 |
+| 3 | `GET` series 2 | the three entries as sent |
+| 4 | `PATCH` series 2: the romaji entry's text changed to `Kaguya-sama wa Kokurasetai: Tensai-tachi no Ren'ai Zunousen` | 200 |
+| 5 | `GET` series 2 | the three entries, the corrected one primary; `series.title` the corrected text; two works |
+| 6 | `library scan --db …`, the server still running | `0 added, 0 updated, 0 gone`; `derived 3 series, 4 works, 4 editions, 4 members; 0 proposal(s) raised` |
+| 7 | `GET /api/library/series` | ids 3, 1 and 2, holding 1, 1 and 2 works; series 2 titled with the corrected text |
+| 8 | `GET` series 2, then 1 and 3 | 200 JSON: the three corrected entries and the v01 and v03 works; series 1 and 3 one derived entry each |
+
+The database, read with `sqlite3 -readonly` after the server stopped:
+
+| table | rows |
+| --- | --- |
+| `series` | 1 `Go-Toubun no Hanayome`; 2 `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen`; 3 `[Oshi no Ko]` |
+| `series_title` | series 2: the corrected romaji title, primary, then the native and alt ones, all `hand = 1`; series 1 and 3: their derived title, `alt`, primary, `hand = 0` |
+| `work` | 1 under series 1; 2 and 3 under series 2; 4 under series 3; `series_id_hand` NULL on all four |
+
+On `main` the same rescan derived `… 1 series holding no work`, minted series 4
+under the scanned title and moved both Kaguya volumes onto it ("O83", "A rescan
+after the correction, seen and not acted on").
+
+`target/scratch/o114/start-marker` was touched at 01:22:49, before any archive
+was linked. After the drive, with the server stopped by PID, `find corpus
+-newer` that file printed nothing.
+
+### Not changed
+
+- `apply_series`'s insert branch still sets `sort_title` to a document's
+  primary title: a series a document mints has no scanned name.
+- `proposals` and `works::summary` still read `sort_title`, as the table above
+  says.
+- `download.rs` and `comicinfo::read` still order by `is_primary DESC, title`,
+  so for a list with no primary they name the alphabetically first title where
+  the grid names the first written. That disagreement is as it was on `main`.
