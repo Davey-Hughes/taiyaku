@@ -877,3 +877,148 @@ async fn a_rescan_after_a_series_titles_correction_keeps_the_series_its_work_and
         OSHINOKO,
     );
 }
+
+/// The principal `auth::guard` leaves for the fixture account demoted to a
+/// reader and granted `roots`, for a handler called directly. An
+/// administrator's grant is always empty (O86), so a reader is what makes
+/// `roots: vec![1]` a restriction.
+fn a_reader_granted(roots: Vec<i64>) -> crate::auth::Principal {
+    crate::auth::Principal {
+        user_id: 1,
+        role: crate::auth::Role::User,
+        can_download: true,
+        can_stream: true,
+        can_stamp: false,
+        roots,
+    }
+}
+
+/// **No browse route stalls the runtime** — O116: the property
+/// `routes::tests::no_works_route_stalls_the_runtime` and
+/// `curation::tests::no_curation_route_stalls_the_runtime` hold for their
+/// modules, held for this one.
+///
+/// Each of the seven handlers took `state.library.conn()` in its own body, on
+/// the async worker, for every request. `docs/notes.md`, "O115", "Found beside
+/// it, not changed", measured `work` stalling for a reader granted root 1 and
+/// for an empty grant alike; the other six were read, not measured.
+///
+/// **Both grants, because neither is spared here.** An empty grant is answered
+/// without the library by `routes::on_the_grant`, but `browse` applies a grant
+/// in SQL, so every browse request reads the library whatever the caller
+/// holds.
+///
+/// **Every call is asserted to answer as it does for a reader who can see the
+/// series**, so none is free for having been refused. Every member of the
+/// series' one work is under root 1.
+///
+/// **The watchdog measures each call's first wait on the library's mutex**
+/// ([`test_support::the_runtime_stalls_on`]). `series` and `one_series` each
+/// ask two questions, so a second wait on the async worker after the first
+/// would pass here; each asks both in one trip.
+#[tokio::test(flavor = "current_thread")]
+async fn no_browse_route_stalls_the_runtime() {
+    use crate::library_api::{GridQuery, SearchQuery};
+    use axum::extract::{Extension, Path as AxPath, Query, State};
+    use axum::http::StatusCode;
+    use std::sync::Arc;
+
+    let (_router, state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
+    // Read before any watchdog holds the mutex: this is the fixture, not the
+    // measurement.
+    let slug: String = {
+        let conn = state.library.conn();
+        conn.execute_batch(
+            "INSERT INTO root (id, path) VALUES (1, '/held');
+             UPDATE member SET root_id = 1;",
+        )
+        .expect("puts every member under root 1");
+        conn.query_row("SELECT slug FROM work", [], |row| row.get(0))
+            .expect("the fixture's one work")
+    };
+    let library = Arc::clone(&state.library);
+    let mut stalled_on = Vec::new();
+
+    for (grant, roots) in [("granted root 1", vec![1]), ("an empty grant", Vec::new())] {
+        let who = || Extension(a_reader_granted(roots.clone()));
+        let calls: Vec<(&str, StatusCode, _)> = vec![
+            (
+                "home",
+                StatusCode::OK,
+                Box::pin(crate::library_api::home(State(Arc::clone(&state)), who()))
+                    as std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>>,
+            ),
+            (
+                "series",
+                StatusCode::OK,
+                Box::pin(crate::library_api::series(
+                    State(Arc::clone(&state)),
+                    who(),
+                    Query(GridQuery { root: None }),
+                )),
+            ),
+            (
+                "one_series",
+                StatusCode::OK,
+                Box::pin(crate::library_api::one_series(
+                    State(Arc::clone(&state)),
+                    who(),
+                    AxPath(1),
+                )),
+            ),
+            (
+                "work",
+                StatusCode::OK,
+                Box::pin(crate::library_api::work(
+                    State(Arc::clone(&state)),
+                    who(),
+                    AxPath(slug.clone()),
+                )),
+            ),
+            (
+                "search",
+                StatusCode::OK,
+                Box::pin(crate::library_api::search(
+                    State(Arc::clone(&state)),
+                    who(),
+                    Query(SearchQuery {
+                        q: "Scanned".to_string(),
+                    }),
+                )),
+            ),
+            (
+                "cover",
+                StatusCode::TEMPORARY_REDIRECT,
+                Box::pin(crate::library_api::cover(
+                    State(Arc::clone(&state)),
+                    who(),
+                    AxPath(1),
+                )),
+            ),
+            (
+                "status",
+                StatusCode::OK,
+                Box::pin(crate::library_api::status(State(Arc::clone(&state)), who())),
+            ),
+        ];
+        for (handler, expected, call) in calls {
+            let (stalled, response) = test_support::the_runtime_stalls_on(&library, call).await;
+            let call = format!("library_api::{handler}, {grant}");
+            if stalled {
+                stalled_on.push(call.clone());
+            }
+            let status = response.status();
+            assert_eq!(
+                status,
+                expected,
+                "{call}: {}",
+                test_support::body_string(response).await
+            );
+        }
+    }
+
+    assert!(
+        stalled_on.is_empty(),
+        "these took the library on the async worker: {stalled_on:?}"
+    );
+}

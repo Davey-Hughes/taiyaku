@@ -17952,7 +17952,7 @@ and in each run every handler before the moved one passed.
   `search`, `cover` and `status` — take `state.library.conn()` on the async
   worker and hold no `spawn_blocking` at all. That is O8 and O12's failure class
   on the browse routes. It is outside this row, and it was read, not measured.
-  *Filed as O116 on 2026-09-14.*
+  *Filed as O116 on 2026-09-14. Closed 2026-09-15; see "O116".*
 - The other modules whose handlers use `spawn_blocking` have no stall test:
   `config_api` (14 calls), `session` (9), `users_api` (6), `metadata` (4),
   `backup_api` (3), and `download`, `opds` and `stamp` (2 each). `curation` (6)
@@ -18761,7 +18761,8 @@ three are re-read here on `332a5ca`.
 handlers — `home`, `series`, `one_series`, `work`, `search`, `cover` and
 `status` — and seven `let conn = state.library.conn();` lines, one in each.
 `rg -c spawn_blocking` over the file prints nothing. Nothing was timed, and no
-stall test was pointed at them.
+stall test was pointed at them. *(All seven were measured stalling, and moved,
+on 2026-09-15 — see "O116".)*
 
 ### O117: the fixed temp names, counted
 
@@ -19068,7 +19069,8 @@ unchanged:
 - `library_api::work` stalls whatever the grant, because it takes
   `state.library.conn()` on the async worker for every request. That is O116's
   class, measured here for one of its seven handlers; the other six were not
-  measured.
+  measured. *(All seven measured and closed as O116 on 2026-09-15 — see
+  "O116".)*
 
 ### Also changed
 
@@ -19286,7 +19288,7 @@ synchronous functions among them.
 | `users_api::user_patch_from_json` | `patch.roots`, a field of the request body | no library |
 
 Nothing but the two feeds and O116's handlers takes the library's mutex on the
-async worker.
+async worker. *(O116 has since closed, on 2026-09-15 — see "O116".)*
 
 ### The fix
 
@@ -19363,7 +19365,145 @@ after the last.
   recorded, so a second wait added on the async worker after either feed's
   check would pass.
 - `library_api.rs`'s seven handlers take the library's mutex on the async
-  worker for every request: O116, unchanged here.
+  worker for every request: O116, unchanged here. *(Closed 2026-09-15 — see
+  "O116".)*
 - `work_feed`'s `advertised_type` asks the filesystem about a one-member
   edition on the async worker. It is not the library's mutex, and it was not
   measured.
+
+## O116: the browse handlers read the library on the blocking pool — 2026-09-15
+
+O116 recorded that `library_api.rs`'s seven handlers take `state.library.conn()`
+in their own bodies, on the async worker, read and not measured, and that it
+waited on a measurement: O71's watchdog for whether each stalls, and O42's for
+how long it matters. O115's branch had already measured one, `work`, stalling
+for a reader granted root 1 and for an empty grant ("O115", "Found beside it,
+not changed").
+
+This branch takes the first measurement for all seven and not the second. A
+handler that waits on the mutex on the async worker holds that thread for as
+long as the wait lasts, however long that is, and O115 and O119 moved the same
+wait off it in ten handlers without timing it either.
+
+### What takes the library on the async worker, on `main`
+
+O119's table ("O119") was read on O115's branch (`67f2f5b`), not on `main` as
+it stands, so it was not reused. A script over `crates/taiyaku-serve/src/` at
+`a57fde4`, read through `git show` with test files and `test_support.rs`
+excluded, blanked comments and string literals, found the parentheses of every
+`spawn_blocking(` call, and listed every `.conn()` and `.working()` on a
+library outside them: 28 of 79. A second script placed every call of the
+synchronous functions among them the same way. What neither script settled was
+read by hand: `run_scan`'s call, inside the scan route's `spawn_blocking`;
+`serve`'s four calls, before the listener binds; and `taiyaku-cli`'s
+`serve_works`, which calls `works::from_library` before the server starts. A
+grep for `.conn()` and `.working()` on a line without `library` found one more,
+`backup_api::create_backup`'s `.working()` on a line of its own, inside a
+`spawn_blocking` and among the 79.
+
+| where | calls | where it runs |
+| --- | --- | --- |
+| `library_api.rs`'s `home`, `series`, `one_series`, `work`, `search`, `cover` and `status` | 7 | **the async worker, whatever the grant**: this item |
+| `auth::from_basic` | 6 | `auth::resolve`, inside `auth::guard`'s `spawn_blocking` |
+| `session::from_cookie` | 1 | the same |
+| `download::prepare` | 2 | inside `download::edition`'s `spawn_blocking` |
+| `notes`, `progress` and `truth`: `load` and `store` | 6 | inside the `routes.rs` handlers' `spawn_blocking`, all eight calls |
+| `serve`, in `lib.rs` | 4 | once, before the listener binds |
+| `config_api::run_scan_inner` | 1 | `library.working()`, a second connection rather than the mutex, reached through `run_scan` inside the scan route's `spawn_blocking` |
+| `works::from_library` | 1 | at startup, from `taiyaku-cli`'s `serve_works` |
+
+Nothing but the seven browse handlers takes the library's mutex on the async
+worker.
+
+### The fix
+
+Each handler's body moves, unchanged apart from taking `conn` as an argument,
+into a closure passed to `library_api::on_the_library`, which runs it on the
+blocking pool over `state.library.conn()` and awaits the response it builds. A
+panic in it is a 500 through the module's own `failed`, naming what was being
+read.
+
+`series` and `one_series` each ask two questions, and ask both in the one trip,
+on one connection. `cover` built its redirect after `drop(conn)`; it now builds
+it inside the trip, so the mutex is held for that `format!` as well. Every
+other handler already built its response while it held the connection, and
+still does.
+
+### The test, red on `main`
+
+`library_api::tests::no_browse_route_stalls_the_runtime` calls all seven
+handlers directly under `test_support::the_runtime_stalls_on`, as a reader
+granted root 1 and then with an empty grant. It asserts each call answers as it
+does for a reader who can see the series, 307 from `cover` and 200 from the
+rest, and collects the calls that stalled.
+
+- **Both grants, because neither is spared.** `routes::on_the_grant` answers an
+  empty grant without the library, but `browse` applies a grant in SQL, so
+  these handlers read the library whatever the caller holds.
+- **`test_support::router_over_a_scanned_work_in_a_series`, not O115's
+  fixture.** `state_whose_grant_waits_on_the_library`'s work belongs to no
+  series, so `one_series` and `cover` would answer 404 over it. The test
+  inserts root 1 and moves every member under it, because a scanned member's
+  `root_id` is NULL here too, and no grant admits one.
+
+With only the test added to `a57fde4`, it failed at its last assertion, so all
+fourteen calls had answered as asserted:
+
+```
+these took the library on the async worker: ["library_api::home, granted root 1", "library_api::series, granted root 1", "library_api::one_series, granted root 1", "library_api::work, granted root 1", "library_api::search, granted root 1", "library_api::cover, granted root 1", "library_api::status, granted root 1", "library_api::home, an empty grant", "library_api::series, an empty grant", "library_api::one_series, an empty grant", "library_api::work, an empty grant", "library_api::search, an empty grant", "library_api::cover, an empty grant", "library_api::status, an empty grant"]
+```
+
+### Watched red
+
+A script applied each change to the final code, ran `cargo nextest run
+--workspace --all-features --no-fail-fast` with `TAIYAKU_CORPUS` unset, and
+wrote the file back from a saved copy, comparing sha256; every copy matched.
+Each "on the async worker" change pointed one handler's call at a copy of
+`on_the_library` that calls `read` without `spawn_blocking`, appended to
+`library_api.rs` for that run only. Every run compiled. The control passed
+2170, with 4 skipped, and each red run 2169.
+
+| applied to the final code | failed | naming |
+| --- | --- | --- |
+| nothing, the control | nothing | — |
+| `home` on the async worker | `library_api::tests::no_browse_route_stalls_the_runtime` | `["library_api::home, granted root 1", "library_api::home, an empty grant"]` |
+| `series` on the async worker | the same test | `series`, both grants |
+| `one_series` on the async worker | the same test | `one_series`, both grants |
+| `work` on the async worker | the same test | `work`, both grants |
+| `search` on the async worker | the same test | `search`, both grants |
+| `cover` on the async worker | the same test | `cover`, both grants |
+| `status` on the async worker | the same test | `status`, both grants |
+| `on_the_library` calling `read` without `spawn_blocking` | the same test | all fourteen calls |
+| the test's `UPDATE member SET root_id = 1` removed | the same test | `library_api::one_series, granted root 1: no series 1`, 404 for 200 |
+
+### Flake runs
+
+The new test alone, 20 times through `cargo nextest run -p taiyaku-serve`: 20
+passed, each in 0.161–0.164 s. The one-minute load average read 9.81 before
+the first and the sixth run, and 9.27 before the eleventh and the sixteenth and
+after the last.
+
+### The mutation sweep
+
+`scripts/mutants.sh --since main` on `081cd83`: 8 mutants, 8 caught, none
+unviable or timed out. Each replaced one handler or `on_the_library` with
+`Default::default()`. It generates no mutant that moves a read back onto the
+async worker, which is what the changes applied by hand above are for.
+
+### What remains
+
+- The watchdog holds the library's mutex once and lets it go when the canary
+  runs, so it measures a call's first wait on that mutex, as O115 recorded. A
+  handler that went back to the library on the async worker after its trip
+  would pass. None of the seven does: each returns what its trip built.
+- No test reaches `on_the_library`'s panic arm.
+- O42's one connection behind one mutex is unchanged. A browse request still
+  waits for it, on a blocking thread rather than on the async worker.
+- `opds::work_feed`'s `download::advertised_type` asks the filesystem on the
+  async worker ("O119", "What remains"). It is not the library's mutex, and it
+  is not changed here.
+
+### Counts
+
+Rust 2169 → 2170: one new test, in `library_api/tests.rs`, counted by the
+control run above. `web/` was not changed.
