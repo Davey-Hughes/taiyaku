@@ -318,7 +318,8 @@ impl IntoResponse for NoSuchWork {
 /// stream, a work feed. `ServeState::work_or_missing` is the one place that
 /// decides the wording; this just wraps it in the `Response`-carrying type
 /// `get_sidecar` — the one handler here that touches no disk, and so is the
-/// one that still runs on the async worker — wants.
+/// one that still runs on the async worker, its grant check aside (O115) —
+/// wants.
 fn work<'a>(state: &'a ServeState, id: &str) -> Result<&'a Work, NoSuchWork> {
     state.work_or_missing(id).map_err(NoSuchWork)
 }
@@ -457,29 +458,88 @@ async fn list_works(
 ///
 /// An empty grant is unrestricted and short-circuits inside
 /// `browse::edition_visible` without touching the database, so the ordinary
-/// single-reader deployment pays nothing for this.
+/// single-reader deployment pays nothing for this. A grant that names roots
+/// is asked on the blocking pool, through [`on_the_grant`] (O115).
 ///
 /// **Progress, notes and truth are deliberately not guarded here.** They are
 /// per-user state keyed on a work rather than the library's material, a
 /// reader can only write their own, and widening the check to them is a
 /// question about what a grant *means* rather than about what it leaks —
 /// recorded as an open item rather than answered in a fix round.
-pub(crate) fn refuse_if_hidden(
+pub(crate) async fn refuse_if_hidden(
     state: &Arc<ServeState>,
     extensions: &axum::http::Extensions,
     slug: &str,
     edition: &str,
 ) -> Option<Response> {
-    let principal = extensions.get::<crate::auth::Principal>()?;
-    if principal.roots.is_empty() {
-        return None;
-    }
-    let conn = state.library.conn();
-    match taiyaku_library::browse::edition_visible(&conn, &principal.roots, slug, edition) {
+    let (slug, edition) = (slug.to_string(), edition.to_string());
+    on_the_grant(state, extensions, None, move |conn, principal| {
+        edition_refusal(conn, &principal.roots, &slug, &edition)
+    })
+    .await
+    .unwrap_or_else(Some)
+}
+
+/// [`refuse_if_hidden`]'s question, asked on a connection the caller already
+/// holds: the refusal to send when `slug`'s `edition` keeps no member under
+/// `roots`.
+fn edition_refusal(
+    conn: &rusqlite::Connection,
+    roots: &[i64],
+    slug: &str,
+    edition: &str,
+) -> Option<Response> {
+    match taiyaku_library::browse::edition_visible(conn, roots, slug, edition) {
         Ok(true) => None,
         Ok(false) => Some(not_found(format!("no work `{slug}`"))),
         Err(why) => Some((StatusCode::INTERNAL_SERVER_ERROR, why).into_response()),
     }
+}
+
+/// `check`, asked of the library for a reader whose grant names roots, on the
+/// blocking pool; `unrestricted` for anyone else, without asking.
+///
+/// **Off the async worker, because the library is a mutex — O115.** A grant is
+/// answered in SQL, and until O115 closed [`refuse_if_hidden`] and
+/// [`visible_editions_or_refuse`] took `state.library.conn()` in the handler
+/// itself. For a reader with roots, every request that asked waited on that
+/// mutex on the thread serving every other request, before its own
+/// `spawn_blocking` ran. `get_page`'s reasoning about the async worker applies
+/// to the check as it does to the read behind it.
+///
+/// **An empty grant never leaves the async worker**: it is answered without
+/// the library, so the unrestricted reader pays for neither the query nor the
+/// trip to the pool.
+///
+/// `Err` is the refusal to send when `check` panicked.
+#[expect(
+    clippy::result_large_err,
+    reason = "the `Err` carries a `Response`, for `visible_editions_or_refuse`'s reason: a \
+              routing handler's refusal path, called once per request"
+)]
+async fn on_the_grant<T: Send + 'static>(
+    state: &Arc<ServeState>,
+    extensions: &axum::http::Extensions,
+    unrestricted: T,
+    check: impl FnOnce(&rusqlite::Connection, &crate::auth::Principal) -> T + Send + 'static,
+) -> Result<T, Response> {
+    let Some(principal) = extensions.get::<crate::auth::Principal>() else {
+        return Ok(unrestricted);
+    };
+    if principal.roots.is_empty() {
+        return Ok(unrestricted);
+    }
+    let state = Arc::clone(state);
+    let principal = principal.clone();
+    tokio::task::spawn_blocking(move || check(&state.library.conn(), &principal))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("checking the grant panicked: {e}"),
+            )
+                .into_response()
+        })
 }
 
 /// **403, not 404, and that is the design.** `refuse_if_hidden` above answers
@@ -571,7 +631,8 @@ pub(crate) fn refuse_if_cannot_stamp(extensions: &axum::http::Extensions) -> Opt
 /// `Ok(None)`: an unrestricted caller — no [`crate::auth::Principal`] at
 /// all, or an empty grant (every account in an un-migrated library holds
 /// one, spec C1 §5.1) — and the database is never touched, the same
-/// short-circuit `refuse_if_hidden` applies.
+/// short-circuit `refuse_if_hidden` applies. A restricted caller is asked on
+/// the blocking pool, through [`on_the_grant`] (O115).
 /// `Ok(Some(keys))`: a restricted caller; `keys` is `slug`'s visible
 /// edition set, and a caller with nothing to filter still gets a real
 /// (possibly full) set rather than `None`, so it cannot be mistaken for
@@ -588,25 +649,72 @@ pub(crate) fn refuse_if_cannot_stamp(extensions: &axum::http::Extensions) -> Opt
               handler's own refusal path, called once per request, not a hot loop, so the 128 \
               bytes clippy measures are not worth an indirection at every call site"
 )]
-fn visible_editions_or_refuse(
+async fn visible_editions_or_refuse(
     state: &Arc<ServeState>,
     extensions: &axum::http::Extensions,
     slug: &str,
 ) -> Result<Option<HashSet<String>>, Response> {
-    let Some(principal) = extensions.get::<crate::auth::Principal>() else {
-        return Ok(None);
-    };
-    if principal.roots.is_empty() {
-        return Ok(None);
-    }
-    let conn = state.library.conn();
-    match taiyaku_library::browse::work(&conn, &principal.roots, principal.user_id, slug) {
-        Ok(Some(detail)) => Ok(Some(
-            detail.card.editions.into_iter().map(|e| e.key).collect(),
-        )),
+    let slug = slug.to_string();
+    on_the_grant(state, extensions, Ok(None), move |conn, principal| {
+        visible_editions(conn, principal, &slug).map(Some)
+    })
+    .await
+    .and_then(|answer| answer)
+}
+
+/// [`visible_editions_or_refuse`]'s question, asked on a connection the caller
+/// already holds, for a caller whose grant names roots.
+#[expect(
+    clippy::result_large_err,
+    reason = "the `Err` carries a `Response`, for `visible_editions_or_refuse`'s reason"
+)]
+fn visible_editions(
+    conn: &rusqlite::Connection,
+    principal: &crate::auth::Principal,
+    slug: &str,
+) -> Result<HashSet<String>, Response> {
+    match taiyaku_library::browse::work(conn, &principal.roots, principal.user_id, slug) {
+        Ok(Some(detail)) => Ok(detail.card.editions.into_iter().map(|e| e.key).collect()),
         Ok(None) => Err(not_found(format!("no work `{slug}`"))),
         Err(why) => Err((StatusCode::INTERNAL_SERVER_ERROR, why).into_response()),
     }
+}
+
+/// [`visible_editions_or_refuse`] for `patch_alignments`, and then
+/// [`refuse_if_hidden`]'s question for each side of the correction, in one
+/// trip to the blocking pool on one connection.
+///
+/// **One trip rather than three.** It takes the library's mutex once rather
+/// than three times, and it keeps all three questions inside what
+/// `routes::tests::no_grant_check_stalls_the_runtime` measures, which is a
+/// call's first wait on that mutex. They are asked in the order the three
+/// separate calls were: the work, then `from`, then `to`.
+///
+/// `sides` is `None` for a body that did not parse. The handler refuses that
+/// body only after this has answered, so a hidden work is still refused
+/// before a malformed correction is.
+#[expect(
+    clippy::result_large_err,
+    reason = "the `Err` carries a `Response`, for `visible_editions_or_refuse`'s reason"
+)]
+async fn visible_editions_for_a_correction(
+    state: &Arc<ServeState>,
+    extensions: &axum::http::Extensions,
+    slug: &str,
+    sides: Option<(String, String)>,
+) -> Result<Option<HashSet<String>>, Response> {
+    let slug = slug.to_string();
+    on_the_grant(state, extensions, Ok(None), move |conn, principal| {
+        let visible = visible_editions(conn, principal, &slug)?;
+        for side in sides.iter().flat_map(|(from, to)| [from, to]) {
+            if let Some(refusal) = edition_refusal(conn, &principal.roots, &slug, side) {
+                return Err(refusal);
+            }
+        }
+        Ok(Some(visible))
+    })
+    .await
+    .and_then(|answer| answer)
 }
 
 /// A copy of `sidecar` with every edition and alignment outside `visible`
@@ -655,7 +763,7 @@ async fn get_sidecar(
     // The document lists every edition, so a grant that hides the whole work
     // must refuse it, and a grant that only hides *some* of it must filter
     // the rest — `visible_editions_or_refuse` answers both.
-    let visible = match visible_editions_or_refuse(&state, &request_extensions, &id) {
+    let visible = match visible_editions_or_refuse(&state, &request_extensions, &id).await {
         Ok(visible) => visible,
         Err(refusal) => return refusal,
     };
@@ -731,7 +839,7 @@ async fn get_page(
     headers: HeaderMap,
     request_extensions: axum::http::Extensions,
 ) -> Response {
-    if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &edition) {
+    if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &edition).await {
         return refusal;
     }
     if let Some(refusal) = refuse_if_cannot_stream(&request_extensions) {
@@ -852,7 +960,7 @@ async fn get_thumb(
     AxPath((id, edition, raw)): AxPath<(String, String, String)>,
     request_extensions: axum::http::Extensions,
 ) -> Response {
-    if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &edition) {
+    if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &edition).await {
         return refusal;
     }
     let index = match page_index(&raw, &edition) {
@@ -1566,18 +1674,19 @@ fn one_slot(text: &str, side: &str) -> Result<taiyaku_core::Slot, Response> {
 /// is then served from. That is worse than the response leak this function
 /// closed first: a read leak costs the caller who triggered it a fact they
 /// should not have; this write would have cost every other reader a fact
-/// they did not ask this caller to assert. Closed with two calls to
-/// [`refuse_if_hidden`] — the exact per-edition question `/pages`, `/thumb`
-/// and the download routes already ask, reused rather than a third spelling
-/// of it — before the body is otherwise parsed.
+/// they did not ask this caller to assert. Closed by asking each side
+/// [`refuse_if_hidden`]'s question — the exact per-edition one `/pages`,
+/// `/thumb` and the download routes already ask, through the same
+/// [`edition_refusal`] rather than a third spelling of it — before the body is
+/// otherwise parsed, in [`visible_editions_for_a_correction`].
 ///
 /// **What is stored is never filtered — only what is returned.** `visible`
 /// is read once, before the write, and used solely to shape the HTTP
 /// response; the file and the `alignment`/`run` rows below always hold the
 /// complete, unfiltered document, because a correction is shared library
 /// truth and a caller-specific projection of it must never reach disk. The
-/// `refuse_if_hidden` calls above are what keep an invisible edition from
-/// reaching that write at all, rather than a filter on it afterward.
+/// per-side checks above are what keep an invisible edition from reaching
+/// that write at all, rather than a filter on it afterward.
 ///
 /// `#[allow(clippy::result_large_err)]` because everything under this
 /// handler — `one_slot`'s calls, the `spawn_blocking` closure and the
@@ -1593,30 +1702,34 @@ async fn patch_alignments(
     request_extensions: axum::http::Extensions,
     body: axum::body::Bytes,
 ) -> Response {
-    let visible = match visible_editions_or_refuse(&state, &request_extensions, &id) {
-        Ok(visible) => visible,
-        Err(refusal) => return refusal,
-    };
-    let correction: Correction = match serde_json::from_slice(&body) {
+    // Parsed before the grant is asked and refused after it, so a hidden work
+    // is still refused before a malformed body: the body lends the grant check
+    // the two editions it names, when it names two.
+    let parsed: Result<Correction, _> = serde_json::from_slice(&body);
+    let sides = parsed
+        .as_ref()
+        .ok()
+        .map(|correction| (correction.from.clone(), correction.to.clone()));
+    // **The write-authorization half of Finding 1, not merely its response
+    // leak.** `visible` only shapes what this handler sends back; on its own
+    // it never asks whether the correction's own `from`/`to` are inside the
+    // grant. A reader granted only `en` on a work that also holds a withheld
+    // `raw` could name `raw` on either side and have it written into the
+    // shared `alignment`/`run` rows every other reader of this work is served
+    // from — worse than a read leak, because the write is not scoped to the
+    // caller who made it. Each side is asked `refuse_if_hidden`'s question,
+    // the exact per-edition one `/pages`, `/thumb` and the download routes
+    // already ask, through the same `edition_refusal` rather than a second
+    // spelling of it.
+    let visible =
+        match visible_editions_for_a_correction(&state, &request_extensions, &id, sides).await {
+            Ok(visible) => visible,
+            Err(refusal) => return refusal,
+        };
+    let correction: Correction = match parsed {
         Ok(correction) => correction,
         Err(why) => return bad_request(format!("this is not a correction: {why}")),
     };
-    // **The write-authorization half of Finding 1, not merely its response
-    // leak.** `visible` above only shapes what this handler sends back; it
-    // was read once and never asked whether the correction's own `from`/`to`
-    // are inside the grant. A reader granted only `en` on a work that also
-    // holds a withheld `raw` could name `raw` on either side and have it
-    // written into the shared `alignment`/`run` rows every other reader of
-    // this work is served from — worse than a read leak, because the write
-    // is not scoped to the caller who made it. `refuse_if_hidden` is the
-    // exact per-edition question `/pages`, `/thumb` and the download routes
-    // already ask; reused here rather than a second spelling of it.
-    if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &correction.from) {
-        return refusal;
-    }
-    if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &correction.to) {
-        return refusal;
-    }
     let a = match one_slot(&correction.a, "a") {
         Ok(slot) => slot,
         Err(refusal) => return refusal,

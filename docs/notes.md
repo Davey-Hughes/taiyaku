@@ -17935,7 +17935,7 @@ names; the stall comes first. `curation/tests.rs`'s doc on
 "in every handler but `get_sidecar`" and names only `get_sidecar` for this. The
 new test uses an empty grant so that this does not decide it.
 
-*Filed as O115 on 2026-09-14, with no code change.*
+*Filed as O115 on 2026-09-14, with no code change. Closed 2026-09-15; see "O115".*
 
 ### Flake runs
 
@@ -18932,3 +18932,157 @@ was linked. After the drive, with the server stopped by PID, `find corpus
 - `download.rs` and `comicinfo::read` still order by `is_primary DESC, title`,
   so for a list with no primary they name the alphabetically first title where
   the grid names the first written. That disagreement is as it was on `main`.
+
+## O115: a grant is asked on the blocking pool — 2026-09-15
+
+O115 recorded that for a reader whose grant names roots, `refuse_if_hidden`
+and `visible_editions_or_refuse` call `state.library.conn()` in the handler,
+on the async worker, before any `spawn_blocking`, in four `routes.rs`
+handlers. "O71", "A reader with a grant", measured it with the handlers
+unchanged.
+
+### Eight handlers, not four
+
+`refuse_if_hidden` is `pub(crate)`. A search for both names across `crates/`
+on `aaacc2b` finds four callers besides the four the row named:
+`opds::stream_page`, `opds::cover`, `download::edition` and
+`download::member`, each asking `refuse_if_hidden` first in the handler,
+before its own `spawn_blocking`. Nothing else calls either check.
+
+The stall test below, run with only the tests, their fixture and `pub(crate)`
+on the two OPDS handlers added to `aaacc2b`, failed with every one of the
+eight stalled, and every call answered 200:
+
+```
+for a reader whose grant names roots, these asked it on the async worker: ["get_sidecar", "get_page", "get_thumb", "patch_alignments", "opds::stream_page", "opds::cover", "download::edition", "download::member"]
+```
+
+### Where the check went
+
+Not into each handler's closure, as the row proposed. `get_page`,
+`get_sidecar` and `opds::stream_page` each answer a matching `If-None-Match`
+with 304 before their closures run, and a hidden work has to be refused before
+that answer. In the closure, the check would have come after the 304.
+
+Both checks now go through `routes::on_the_grant`. With no principal, or a
+principal whose grant is empty, it returns the unrestricted answer on the
+async worker without touching the library, as before. For a grant that names
+roots it clones the principal and runs the check on the blocking pool. Each
+handler awaits the check where it called it before.
+
+`patch_alignments` asked three times: `visible_editions_or_refuse`, then, once
+the body had parsed, `refuse_if_hidden` for `from` and for `to`. It now parses
+the body first, keeping the `Result`, asks all three in one trip through
+`visible_editions_for_a_correction` on one connection, and refuses a body that
+did not parse only after the trip has answered. A hidden work is still refused
+before a malformed body, and a hidden side before a malformed slot. One trip
+rather than three also keeps all three inside what the stall test measures.
+
+### The tests
+
+- `routes::tests::no_grant_check_stalls_the_runtime` calls all eight handlers
+  directly under `test_support::the_runtime_stalls_on`, as a reader granted
+  root 1. Its fixture, `test_support::state_whose_grant_waits_on_the_library`,
+  is O71's with two changes: every member moved under root 1, because an
+  imported member's `root_id` is NULL and no grant admits one, and the work's
+  four archives written, because the download routes read them. Every call is
+  asserted to answer 200. The stalls are collected, so a failing run names
+  every handler that stalled.
+- `a_hidden_work_is_refused_before_its_validator_is_answered` sends `get_page`,
+  `get_sidecar` and `opds::stream_page` the tag each answers 304 to. Granted
+  root 2, which holds nothing, each must answer 404; granted root 1, 304.
+- `a_hidden_work_is_refused_before_its_correction_is_read` sends
+  `patch_alignments` the body `not a correction`: 404 for root 2, 400 for
+  root 1.
+
+The second and third also pass on `aaacc2b`'s handlers. They hold an order the
+fix had to keep, not one it changed.
+
+**What the stall test cannot see.** The watchdog holds the library's mutex
+once and releases it when the canary runs, so it measures a call's first wait
+on that mutex. For each handler here that wait is the grant check. A second
+wait on the async worker after the check would pass.
+
+### Watched red
+
+Each change was applied to the final code by a script that checked it replaced
+exactly one occurrence, or the named one of two. The script then ran
+`cargo test --workspace --all-features --no-fail-fast`, restored the file and
+compared its sha256. The eight "back on the async worker" changes call a
+synchronous copy of the check as `aaacc2b` had it, appended to `routes.rs` for
+that run only. Every run compiled. The control counted 2156 passed and 0
+failed, and each red run 2156 less the failures listed.
+
+| applied to the final code | failed | with |
+| --- | --- | --- |
+| nothing, the control | nothing | 2156 passed |
+| `get_sidecar`'s check back on the async worker | `no_grant_check_stalls_the_runtime` | `["get_sidecar"]` |
+| `get_page`'s | `no_grant_check_stalls_the_runtime` | `["get_page"]` |
+| `get_thumb`'s | `no_grant_check_stalls_the_runtime` | `["get_thumb"]` |
+| `patch_alignments`' three, on one connection | `no_grant_check_stalls_the_runtime` | `["patch_alignments"]` |
+| `opds::stream_page`'s | `no_grant_check_stalls_the_runtime` | `["opds::stream_page"]` |
+| `opds::cover`'s | `no_grant_check_stalls_the_runtime` | `["opds::cover"]` |
+| `download::edition`'s | `no_grant_check_stalls_the_runtime` | `["download::edition"]` |
+| `download::member`'s | `no_grant_check_stalls_the_runtime` | `["download::member"]` |
+| `on_the_grant` calling the check without `spawn_blocking` | `no_grant_check_stalls_the_runtime` | all eight |
+| `get_page` asking after its 304 | `a_hidden_work_is_refused_before_its_validator_is_answered` | `get_page, granted root 2`: 304 for 404 |
+| `get_sidecar` asking after its 304 | `a_hidden_work_is_refused_before_its_validator_is_answered` | `get_sidecar, granted root 2`: 304 for 404 |
+| `opds::stream_page` asking after its 304 | `a_hidden_work_is_refused_before_its_validator_is_answered` | `opds::stream_page, granted root 2`: 304 for 404 |
+| `patch_alignments` refusing the body before the trip | `a_hidden_work_is_refused_before_its_correction_is_read` | `patch_alignments, granted root 2`: 400 for 404 |
+| neither side of a correction asked | `auth::tests`' `a_correction_naming_the_withheld_edition_on_the_from_side_is_still_refused`, `patch_alignments_refuses_a_correction_naming_a_withheld_edition` and `every_route_declares_its_grant_posture` | 200 for 404, each |
+| only `from` asked | `patch_alignments_refuses_a_correction_naming_a_withheld_edition` and `every_route_declares_its_grant_posture` | 200 for 404, each |
+| only `to` asked | `a_correction_naming_the_withheld_edition_on_the_from_side_is_still_refused` | 200 for 404 |
+| the fixture's `UPDATE` removed, leaving every member under no root | all three new tests | 404 at each test's first call: `get_sidecar` for 200, `get_page` granted root 1 for 304, `patch_alignments` granted root 1 for 400 |
+
+The three "side" rows are about the one-trip rewrite rather than the stall:
+they show `auth::tests`' existing correction tests still reach each side's
+check through `visible_editions_for_a_correction`.
+
+### Flake runs
+
+The stall test alone, 30 times through `cargo test -- --exact`: 30 passed,
+each in 0.23–0.25 s, at one-minute load averages from 17.29 to 14.12 on 32
+CPUs, read before the first run and after every tenth.
+
+### Found beside it, not changed
+
+A throwaway test in `opds/tests.rs`, removed afterwards and the file compared
+by sha256, called three more handlers under the same fixture and watchdog,
+unchanged:
+
+| call | grant | stalled | status |
+| --- | --- | --- | --- |
+| `opds::works` | empty | false | 200 |
+| `opds::works` | root 1 | true | 200 |
+| `opds::work_feed` | empty | false | 200 |
+| `opds::work_feed` | root 1 | true | 200 |
+| `library_api::work` | empty | true | 200 |
+| `library_api::work` | root 1 | true | 200 |
+
+- OPDS's `works` and `work_feed` ask a grant that names roots on the async
+  worker through their own code, `opds::visible_editions_by_work` and an
+  inline `browse::work`, not through the two checks this row moved. They are
+  O115's failure in two more handlers. Not filed.
+- `library_api::work` stalls whatever the grant, because it takes
+  `state.library.conn()` on the async worker for every request. That is O116's
+  class, measured here for one of its seven handlers; the other six were not
+  measured.
+
+### Also changed
+
+- `routes/tests.rs`'s `as_the_fixture_account` doc said a principal with roots
+  stalls on the async worker. It now says why the empty grant is still chosen:
+  with roots, a call's first wait is its grant check.
+- `curation/tests.rs`'s doc on `no_curation_route_stalls_the_runtime` said
+  `get_sidecar`'s `visible_editions_or_refuse` still takes the mutex on the
+  async worker.
+- Two `auth/tests.rs` docs named the mutation
+  `refuse_if_hidden(&correction.from)`, a call that no longer exists. They now
+  name the check on `correction.from`.
+- `opds::stream_page` and `opds::cover` are `pub(crate)`, so the stall test can
+  call them.
+
+### Counts
+
+Rust 2153 → 2156: three new tests, all in `routes/tests.rs`, counted by the
+control run above. `web/` was not changed.

@@ -1303,9 +1303,9 @@ fn an_administrator() -> crate::auth::Principal {
 /// quoted against a row count is a figure about whichever synthetic paths
 /// that harness generated. Any number here would be the same claim again.
 /// That is O8/O12's failure class, which `routes.rs` answers with
-/// `spawn_blocking` in every handler but `get_sidecar` — whose
-/// `visible_editions_or_refuse` still takes `state.library.conn()` on the
-/// async worker, for any principal carrying root restrictions — and which
+/// `spawn_blocking` in every handler but `get_sidecar`, which answers from
+/// memory and, since O115, asks a grant that names roots on the blocking
+/// pool — and which
 /// `auth::guard` answers for the middleware every request already passes
 /// through.
 ///

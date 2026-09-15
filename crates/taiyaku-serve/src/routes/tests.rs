@@ -511,12 +511,12 @@ async fn the_last_slot_of_a_spread_carrying_edition_is_in_range() {
 /// account, for a handler called directly.
 ///
 /// **An empty grant, and that is chosen.** For a principal carrying roots,
-/// `refuse_if_hidden` and `visible_editions_or_refuse` take
-/// `state.library.conn()` on the async worker before any `spawn_blocking`, so
-/// under the watchdog `get_page`, `get_thumb` and `patch_alignments` stall
-/// whatever their closures do, as `get_sidecar` does. That is a question about
-/// those two helpers, not about the closures this test is for, and
-/// `docs/notes.md`, "O71", records it measured.
+/// `get_page`, `get_thumb` and `patch_alignments` wait on the library's mutex
+/// first for their grant check, and the watchdog measures a call's first wait,
+/// so it would measure that check rather than the closures this test is for.
+/// The check has its own test, `no_grant_check_stalls_the_runtime`, since O115.
+/// Until O115 closed it ran on the async worker, and `docs/notes.md`, "O71",
+/// records those stalls measured.
 fn as_the_fixture_account() -> axum::http::Extensions {
     let mut extensions = axum::http::Extensions::new();
     extensions.insert(crate::auth::Principal {
@@ -763,6 +763,307 @@ async fn no_works_route_stalls_the_runtime() {
     );
     let status = response.status();
     assert_eq!(status, StatusCode::OK, "{}", body_string(response).await);
+}
+
+/// The extensions `auth::guard` leaves on a request from a reader granted
+/// `roots`, for a handler called directly: the fixture account as
+/// [`crate::test_support::grant_root`] leaves it, demoted, because an
+/// administrator's grant is always empty (O86).
+fn as_a_reader_granted(roots: Vec<i64>) -> axum::http::Extensions {
+    let mut extensions = axum::http::Extensions::new();
+    extensions.insert(crate::auth::Principal {
+        user_id: 1,
+        role: crate::auth::Role::User,
+        can_download: true,
+        can_stream: true,
+        can_stamp: false,
+        roots,
+    });
+    extensions
+}
+
+/// `response`'s status, or a panic naming `handler` and quoting the body.
+async fn assert_answered(handler: &str, response: Response, expected: StatusCode) {
+    let status = response.status();
+    assert_eq!(
+        status,
+        expected,
+        "{handler}: {}",
+        crate::test_support::body_string(response).await
+    );
+}
+
+/// **No grant check stalls the runtime** — O115: the property
+/// [`no_works_route_stalls_the_runtime`] holds for a handler's own work, held
+/// for the check that runs before it.
+///
+/// For a reader whose grant names roots, `refuse_if_hidden` and
+/// `visible_editions_or_refuse` read the library to answer. Until O115 closed,
+/// 2026-09-15, both took `state.library.conn()` in the handler itself, on the
+/// async worker, before any `spawn_blocking`. The test above drives an empty
+/// grant, which never reaches the library, so it could not see that.
+///
+/// **Every handler that calls either check, not the four O115 named.** The
+/// item listed `get_page`, `get_thumb`, `get_sidecar` and `patch_alignments`.
+/// `refuse_if_hidden` is `pub(crate)`, and `opds::stream_page`, `opds::cover`,
+/// `download::edition` and `download::member` call it the same way.
+///
+/// **The watchdog measures each call's first wait on the library's mutex**:
+/// [`crate::test_support::the_runtime_stalls_on`] holds it once and lets it go
+/// when the canary runs. For every handler here that first wait is the grant
+/// check, and a second wait on the async worker after it would pass. That is
+/// why `patch_alignments` asks its three questions, the work and then each
+/// side of the correction, in one trip rather than three.
+///
+/// **Every call is asserted to succeed**, because a handler refused before its
+/// check reached the library would be free for the wrong reason. Root 1 holds
+/// every member of the fixture's work. The stalls are collected rather than
+/// asserted one at a time, so a failing run names every handler that stalled.
+#[tokio::test(flavor = "current_thread")]
+async fn no_grant_check_stalls_the_runtime() {
+    use crate::test_support::the_runtime_stalls_on;
+    use axum::body::Bytes;
+    use axum::extract::{Path as AxPath, Query, State};
+    use axum::http::HeaderMap;
+
+    let (state, _fixture) = crate::test_support::state_whose_grant_waits_on_the_library();
+    let library = Arc::clone(&state.library);
+    let granted = || as_a_reader_granted(vec![1]);
+    let w = || AxPath("w".to_string());
+    let edition = || AxPath(("w".to_string(), "raw".to_string()));
+    let page = || AxPath(("w".to_string(), "raw".to_string(), "0".to_string()));
+    let mut stalled_on = Vec::new();
+
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        get_sidecar(State(Arc::clone(&state)), w(), HeaderMap::new(), granted()),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("get_sidecar");
+    }
+    assert_answered("get_sidecar", response, StatusCode::OK).await;
+
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        get_page(
+            State(Arc::clone(&state)),
+            page(),
+            Query(PageQuery { w: None }),
+            HeaderMap::new(),
+            granted(),
+        ),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("get_page");
+    }
+    assert_answered("get_page", response, StatusCode::OK).await;
+
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        get_thumb(State(Arc::clone(&state)), page(), granted()),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("get_thumb");
+    }
+    assert_answered("get_thumb", response, StatusCode::OK).await;
+
+    let tag = sidecar_etag(
+        &state
+            .work_or_missing("w")
+            .expect("the fixture work")
+            .sidecar(),
+    );
+    let mut if_match = HeaderMap::new();
+    if_match.insert(
+        header::IF_MATCH,
+        tag.parse().expect("an ETag is a header value"),
+    );
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        patch_alignments(
+            State(Arc::clone(&state)),
+            w(),
+            if_match,
+            granted(),
+            Bytes::from_static(br#"{"from":"raw","to":"en","a":"2","b":"1","note":"checked"}"#),
+        ),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("patch_alignments");
+    }
+    assert_answered("patch_alignments", response, StatusCode::OK).await;
+
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        crate::opds::stream_page(
+            State(Arc::clone(&state)),
+            page(),
+            HeaderMap::new(),
+            granted(),
+        ),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("opds::stream_page");
+    }
+    assert_answered("opds::stream_page", response, StatusCode::OK).await;
+
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        crate::opds::cover(State(Arc::clone(&state)), edition(), granted()),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("opds::cover");
+    }
+    assert_answered("opds::cover", response, StatusCode::OK).await;
+
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        crate::download::edition(
+            State(Arc::clone(&state)),
+            edition(),
+            HeaderMap::new(),
+            granted(),
+        ),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("download::edition");
+    }
+    assert_answered("download::edition", response, StatusCode::OK).await;
+
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        crate::download::member(
+            State(Arc::clone(&state)),
+            page(),
+            HeaderMap::new(),
+            granted(),
+        ),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("download::member");
+    }
+    assert_answered("download::member", response, StatusCode::OK).await;
+
+    assert!(
+        stalled_on.is_empty(),
+        "for a reader whose grant names roots, these asked it on the async worker: {stalled_on:?}"
+    );
+}
+
+/// **A hidden work is refused before its validator is answered.** `get_page`,
+/// `get_sidecar` and `opds::stream_page` each answer a matching
+/// `If-None-Match` with a 304 before reading anything, and each asks the grant
+/// first, so a reader granted a root holding nothing of the work is told the
+/// work does not exist rather than that the tag it sent is current. O115 moved
+/// that check off the async worker; this holds the order it had to keep.
+///
+/// **Granted root 1, which holds the work, the same requests answer 304.**
+/// That half shows the tags are the real ones: a tag that matched nothing
+/// would be refused by a hidden work whichever order a handler asked in.
+#[tokio::test]
+async fn a_hidden_work_is_refused_before_its_validator_is_answered() {
+    use axum::extract::{Path as AxPath, Query, State};
+    use axum::http::HeaderMap;
+
+    let (state, _fixture) = crate::test_support::state_whose_grant_waits_on_the_library();
+    let found = state.work_or_missing("w").expect("the fixture work");
+    let (sha256, offset) = locate_member(found, "raw", 0).expect("page 0 of `raw`");
+    let page_tag = page_etag(&sha256, offset, None);
+    let sidecar_tag = sidecar_etag(&found.sidecar());
+    let if_none_match = |tag: &str| {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::IF_NONE_MATCH,
+            tag.parse().expect("an ETag is a header value"),
+        );
+        headers
+    };
+    let page = || AxPath(("w".to_string(), "raw".to_string(), "0".to_string()));
+
+    for (root, expected) in [(1, StatusCode::NOT_MODIFIED), (2, StatusCode::NOT_FOUND)] {
+        let response = get_page(
+            State(Arc::clone(&state)),
+            page(),
+            Query(PageQuery { w: None }),
+            if_none_match(&page_tag),
+            as_a_reader_granted(vec![root]),
+        )
+        .await;
+        assert_answered(
+            &format!("get_page, granted root {root}"),
+            response,
+            expected,
+        )
+        .await;
+
+        let response = get_sidecar(
+            State(Arc::clone(&state)),
+            AxPath("w".to_string()),
+            if_none_match(&sidecar_tag),
+            as_a_reader_granted(vec![root]),
+        )
+        .await;
+        assert_answered(
+            &format!("get_sidecar, granted root {root}"),
+            response,
+            expected,
+        )
+        .await;
+
+        let response = crate::opds::stream_page(
+            State(Arc::clone(&state)),
+            page(),
+            if_none_match(&page_tag),
+            as_a_reader_granted(vec![root]),
+        )
+        .await;
+        assert_answered(
+            &format!("opds::stream_page, granted root {root}"),
+            response,
+            expected,
+        )
+        .await;
+    }
+}
+
+/// **A hidden work is refused before its correction is read.**
+/// `patch_alignments` parses the body before it asks the grant, to lend the
+/// check the two editions a correction names, and refuses a body that did not
+/// parse only once the grant has answered. So a reader granted a root holding
+/// nothing of the work is told the work does not exist rather than that its
+/// body is malformed. Granted root 1, which holds the work, the same body is
+/// refused as malformed, which shows the body is one the handler refuses.
+#[tokio::test]
+async fn a_hidden_work_is_refused_before_its_correction_is_read() {
+    use axum::body::Bytes;
+    use axum::extract::{Path as AxPath, State};
+    use axum::http::HeaderMap;
+
+    let (state, _fixture) = crate::test_support::state_whose_grant_waits_on_the_library();
+    for (root, expected) in [(1, StatusCode::BAD_REQUEST), (2, StatusCode::NOT_FOUND)] {
+        let response = patch_alignments(
+            State(Arc::clone(&state)),
+            AxPath("w".to_string()),
+            HeaderMap::new(),
+            as_a_reader_granted(vec![root]),
+            Bytes::from_static(b"not a correction"),
+        )
+        .await;
+        assert_answered(
+            &format!("patch_alignments, granted root {root}"),
+            response,
+            expected,
+        )
+        .await;
+    }
 }
 
 /// The other half of what progress has to get right. A slot means nothing

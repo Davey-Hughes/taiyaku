@@ -1461,7 +1461,7 @@ fn one_work_two_editions_split_across_roots(dir: &str) -> (axum::Router, Arc<Ser
 /// or filter were removed:
 ///
 /// - `raw → en`, straight across — lets a correction naming `raw` on the
-///   `from` side actually succeed if `refuse_if_hidden(&correction.from)`
+///   `from` side actually succeed if the check on `correction.from`
 ///   were disabled, rather than failing on `NoPath` regardless.
 /// - `en → fr`, straight across — a correction between two *visible*
 ///   editions, so `patch_alignments`'s response-filter can be proven without
@@ -2863,8 +2863,8 @@ async fn a_correction_between_visible_editions_omits_the_withheld_one_from_its_r
 /// (c) **Both write guards are covered**, not only the one every existing
 /// test drove. `patch_alignments_refuses_a_correction_naming_a_withheld_edition`
 /// above only ever sent the withheld edition on `to`; this sends it on
-/// `from` instead. Disabling `refuse_if_hidden(&correction.from)` — the
-/// first of the two guard calls — makes this assertion fail: `raw → en` is a
+/// `from` instead. Disabling the check on `correction.from` — the
+/// first of the two per-side checks — makes this assertion fail: `raw → en` is a
 /// real, seeded edge, so the correction would succeed (200) rather than 404.
 /// This has no other coverage anywhere in the suite — which is exactly why
 /// it is its own test rather than a third assertion after `(a)` and `(b)`:

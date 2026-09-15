@@ -414,7 +414,7 @@ async fn work_feed(
         .into_response()
 }
 
-async fn stream_page(
+pub(crate) async fn stream_page(
     State(state): State<Arc<ServeState>>,
     // `String` rather than `u32` — see `routes::page_index`. A malformed
     // number on the PSE stream is refused in this server's own words, and in
@@ -430,7 +430,8 @@ async fn stream_page(
     // `get_page` sends for the `/api/…` page route; reused rather than
     // reimplemented, because a second spelling of this rule is exactly what
     // spec C1's whole-branch review warned about.
-    if let Some(refusal) = crate::routes::refuse_if_hidden(&state, &extensions, &id, &edition) {
+    if let Some(refusal) = crate::routes::refuse_if_hidden(&state, &extensions, &id, &edition).await
+    {
         return refusal;
     }
     if let Some(refusal) = crate::routes::refuse_if_cannot_stream(&extensions) {
@@ -510,7 +511,7 @@ async fn stream_page(
     }
 }
 
-async fn cover(
+pub(crate) async fn cover(
     State(state): State<Arc<ServeState>>,
     AxPath((id, edition)): AxPath<(String, String)>,
     extensions: axum::http::Extensions,
@@ -519,7 +520,8 @@ async fn cover(
     // check beside it: `refuse_if_cannot_stream`'s own doc says covers and
     // thumbnails follow browse, not `can_stream` — an account that may not
     // read pages here must still be able to see what it could download.
-    if let Some(refusal) = crate::routes::refuse_if_hidden(&state, &extensions, &id, &edition) {
+    if let Some(refusal) = crate::routes::refuse_if_hidden(&state, &extensions, &id, &edition).await
+    {
         return refusal;
     }
     let fetched = tokio::task::spawn_blocking(move || {

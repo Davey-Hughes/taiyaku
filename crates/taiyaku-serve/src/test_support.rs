@@ -800,6 +800,47 @@ pub(crate) fn state_whose_pages_wait_on_the_library() -> (std::sync::Arc<ServeSt
     (state, fixture)
 }
 
+/// [`state_whose_pages_wait_on_the_library`]'s work under a root, with its
+/// archives on disk: what `routes::tests::no_grant_check_stalls_the_runtime`
+/// calls every handler that asks a grant against.
+///
+/// **Root 1 holds every member and root 2 holds none**, so a reader granted
+/// root 1 sees the whole work and one granted root 2 sees none of it. An
+/// imported member's `root_id` is NULL, which no grant admits: without the
+/// `UPDATE` a reader with any grant is refused every call, and a refusal says
+/// nothing about where the handler did its work.
+///
+/// **The archives are written because the download routes read them**, and
+/// nothing else here does: pages still come through
+/// [`PagesWaitOnTheLibrary`]. Each holds two entries whose bytes are their own
+/// names, [`work`]'s shape.
+///
+/// # Panics
+///
+/// Panics if the fixture cannot be written or its rows updated.
+pub(crate) fn state_whose_grant_waits_on_the_library() -> (std::sync::Arc<ServeState>, Fixture) {
+    let (state, fixture) = state_whose_pages_wait_on_the_library();
+    for name in ["c1.cbz", "c2.cbz", "d1.cbz", "d2.cbz"] {
+        let file = std::fs::File::create(fixture.path().join(name)).expect("creating an archive");
+        let mut zip = zip::ZipWriter::new(file);
+        for entry in ["1.jpg", "2.jpg"] {
+            zip.start_file(entry, zip::write::SimpleFileOptions::default())
+                .expect("starting an entry");
+            zip.write_all(entry.as_bytes()).expect("writing an entry");
+        }
+        zip.finish().expect("finishing an archive");
+    }
+    state
+        .library
+        .conn()
+        .execute_batch(
+            "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/withheld');
+             UPDATE member SET root_id = 1;",
+        )
+        .expect("puts every member under root 1");
+    (state, fixture)
+}
+
 /// A page source that waits on the library's mutex before every read, then
 /// serves a real page whatever it was asked for.
 ///

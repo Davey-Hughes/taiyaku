@@ -524,7 +524,8 @@ pub(crate) async fn edition(
     headers: HeaderMap,
     extensions: axum::http::Extensions,
 ) -> Response {
-    if let Some(refusal) = crate::routes::refuse_if_hidden(&state, &extensions, &slug, &edition_key)
+    if let Some(refusal) =
+        crate::routes::refuse_if_hidden(&state, &extensions, &slug, &edition_key).await
     {
         return refusal;
     }
@@ -1189,7 +1190,8 @@ pub(crate) async fn member(
     headers: HeaderMap,
     extensions: axum::http::Extensions,
 ) -> Response {
-    if let Some(refusal) = crate::routes::refuse_if_hidden(&state, &extensions, &slug, &edition_key)
+    if let Some(refusal) =
+        crate::routes::refuse_if_hidden(&state, &extensions, &slug, &edition_key).await
     {
         return refusal;
     }
