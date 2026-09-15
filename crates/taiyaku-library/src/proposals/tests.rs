@@ -1,5 +1,24 @@
+use crate::proposals::Offer;
 use crate::scan::tests::{fixture, write_pages};
 use crate::{Library, derive, proposals, scan};
+
+/// What a write made, where the test needs it made: a refusal or a store
+/// failure fails the test with what it said.
+fn made<T: std::fmt::Debug>(answered: Result<Offer<T>, String>) -> T {
+    match answered {
+        Ok(Offer::Made(made)) => made,
+        other => panic!("expected the write to be made, got {other:?}"),
+    }
+}
+
+/// The sentence a write refused with. A store failure fails the test as
+/// surely as a write that was made: those two are what O70 separated.
+fn refusal_of<T: std::fmt::Debug>(answered: Result<Offer<T>, String>) -> String {
+    match answered {
+        Ok(Offer::Refused(why)) => why,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
 
 /// A library holding one series per title, **derived from a real scanned
 /// tree** rather than from hand-inserted rows — one directory per title,
@@ -233,7 +252,7 @@ fn a_dismissed_proposal_stays_dismissed_across_a_rescan() {
     proposals::raise(&conn).expect("first");
     let first = proposals::open(&conn, 0.0).expect("open");
     assert_eq!(first.len(), 1);
-    proposals::dismiss(&conn, first[0].id).expect("dismiss");
+    made(proposals::dismiss(&conn, first[0].id));
 
     let newly_open = proposals::raise(&conn).expect("second");
 
@@ -263,7 +282,7 @@ fn accepting_writes_a_rule_and_un_accepting_removes_it() {
     assert_eq!(kind, "prefix", "narrow: this exact directory");
     assert!(pattern.contains("Full Color"), "{pattern}");
 
-    proposals::unaccept(&conn, proposal.id).expect("unaccept");
+    made(proposals::unaccept(&conn, proposal.id));
 
     let rules: i64 = conn
         .query_row("SELECT count(*) FROM rule WHERE id = ?1", [rule_id], |r| {
@@ -349,7 +368,7 @@ fn preview_refuses_exactly_what_accept_refuses() {
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
     let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
-    proposals::dismiss(&conn, proposal.id).expect("dismiss");
+    made(proposals::dismiss(&conn, proposal.id));
 
     let refused = proposals::preview(&conn, proposal.id);
 
@@ -372,7 +391,7 @@ fn accept_with_writes_the_rule_it_was_handed_not_one_it_derived() {
     rule.set_edition_key = Some("en-color".to_string());
     rule.set_language = Some("en".to_string());
 
-    let rule_id = proposals::accept_with(&conn, proposal.id, &rule).expect("accept");
+    let rule_id = made(proposals::accept_with(&conn, proposal.id, &rule));
 
     let (key, language): (Option<String>, Option<String>) = conn
         .query_row(
@@ -397,10 +416,10 @@ fn accept_with_still_refuses_a_pattern_that_would_move_another_series() {
     let mut rule = proposals::preview(&conn, proposal.id).expect("preview");
     rule.pattern = "Publisher/".to_string();
 
-    let refused = proposals::accept_with(&conn, proposal.id, &rule);
+    let refused = refusal_of(proposals::accept_with(&conn, proposal.id, &rule));
 
     assert!(
-        refused.is_err_and(|e| e.contains("would move that material too")),
+        refused.contains("would move that material too"),
         "a widened pattern that reaches an unrelated series is still refused",
     );
     let rules: i64 = conn
@@ -429,12 +448,12 @@ fn accept_with_refuses_a_proposal_preview_would_never_have_offered() {
     // Previewed while still open, so the rule handed in below is a perfectly
     // good one: the only thing wrong is the proposal's state.
     let rule = proposals::preview(&conn, proposal.id).expect("preview");
-    proposals::dismiss(&conn, proposal.id).expect("dismiss");
+    made(proposals::dismiss(&conn, proposal.id));
 
-    let refused = proposals::accept_with(&conn, proposal.id, &rule);
+    let refused = refusal_of(proposals::accept_with(&conn, proposal.id, &rule));
 
     assert!(
-        refused.is_err_and(|e| e.contains("not open")),
+        refused.contains("not open"),
         "the state guard is `accept_with`'s too, not only `preview`'s",
     );
     let state: String = conn
@@ -493,10 +512,10 @@ fn accept_with_refuses_an_attach_chapters_proposal_handed_a_rule_directly() {
         note: "hand-written, as an admin's request body would be".to_string(),
     };
 
-    let refused = proposals::accept_with(&conn, proposal.id, &rule);
+    let refused = refusal_of(proposals::accept_with(&conn, proposal.id, &rule));
 
     assert!(
-        refused.is_err_and(|e| e.contains("taiyaku align raw-v01.cbz")),
+        refused.contains("taiyaku align raw-v01.cbz"),
         "the refusal names the command that can answer the question",
     );
     let rules: i64 = conn
@@ -532,10 +551,10 @@ fn accept_with_names_a_regex_rules_collateral_rather_than_refusing_to_look() {
     rule.kind = "regex".to_string();
     rule.pattern = "^Publisher/".to_string();
 
-    let refused = proposals::accept_with(&conn, proposal.id, &rule);
+    let refused = refusal_of(proposals::accept_with(&conn, proposal.id, &rule));
 
     assert!(
-        refused.is_err_and(|e| e.contains("Kaguya-sama wa Kokurasetai")),
+        refused.contains("Kaguya-sama wa Kokurasetai"),
         "a regex rule's collateral is named, not waved through and not shrugged at",
     );
     let rules: i64 = conn
@@ -571,10 +590,10 @@ fn accept_with_refuses_a_parent_matched_rule_that_decides_nothing() {
     let mut rule = proposals::preview(&conn, proposal.id).expect("preview");
     rule.match_on = "parent".to_string();
 
-    let refused = proposals::accept_with(&conn, proposal.id, &rule);
+    let refused = refusal_of(proposals::accept_with(&conn, proposal.id, &rule));
 
     assert!(
-        refused.is_err_and(|e| e.contains("on parent) matched no scan_entry")),
+        refused.contains("on parent) matched no scan_entry"),
         "the rule is measured against the string the engine gives `parent`, not the path",
     );
     let rules: i64 = conn
@@ -1238,7 +1257,7 @@ fn double_accept_is_refused_rather_than_orphaning_the_first_rule() {
         "a refused second accept must not add a second rule"
     );
 
-    proposals::unaccept(&conn, proposal.id).expect("unaccept");
+    made(proposals::unaccept(&conn, proposal.id));
     let remaining: i64 = conn
         .query_row(
             "SELECT count(*) FROM rule WHERE id = ?1",
@@ -1261,7 +1280,7 @@ fn dismiss_refuses_an_accepted_proposal_rather_than_orphaning_its_rule() {
     let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
     let rule_id = proposals::accept(&conn, proposal.id).expect("accept");
 
-    let err = proposals::dismiss(&conn, proposal.id).expect_err("refused");
+    let err = refusal_of(proposals::dismiss(&conn, proposal.id));
     assert!(err.contains("un-accept"), "{err}");
 
     let rules: i64 = conn
@@ -1623,16 +1642,148 @@ fn accept_refuses_when_the_subjects_own_directory_is_spelled_the_same_in_two_roo
 fn dismissing_an_unknown_proposal_is_an_error() {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    assert!(proposals::dismiss(&conn, 999).is_err());
+    let err = proposals::dismiss(&conn, 999).expect_err("an id naming no proposal");
+    assert!(err.contains("there is no such proposal"), "{err}");
 }
 
 #[test]
-fn unaccepting_a_never_accepted_proposal_is_an_error() {
+fn unaccepting_a_never_accepted_proposal_is_refused() {
     let library = library_with_two_suffixed_series();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
     let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
-    assert!(proposals::unaccept(&conn, proposal.id).is_err());
+    let why = refusal_of(proposals::unaccept(&conn, proposal.id));
+    assert!(why.contains("no accepted rule"), "{why}");
+}
+
+/// A trigger that fails one statement a write makes with SQLite's own error,
+/// which is what a full disk or a locked database looks like from here:
+/// nothing about the library's state that a caller could change.
+fn a_store_fault_on(conn: &rusqlite::Connection, on: &str) {
+    conn.execute_batch(&format!(
+        "CREATE TRIGGER a_store_fault {on} \
+         BEGIN SELECT RAISE(ABORT, 'a simulated store fault'); END;"
+    ))
+    .expect("installs the trigger");
+}
+
+fn state_of(conn: &rusqlite::Connection, id: i64) -> String {
+    conn.query_row("SELECT state FROM proposal WHERE id = ?1", [id], |r| {
+        r.get(0)
+    })
+    .expect("state")
+}
+
+/// **O70, at the store.** A write `accept_with` cannot perform is `Err`, and
+/// an accept it declines is `Ok(Offer::Refused)` — two outcomes one
+/// `Result<i64, String>` used to carry together, which `taiyaku-serve`
+/// answered 409 alike.
+///
+/// The fault is a trigger on the `INSERT INTO rule` the previewed rule
+/// reaches once every refusal has passed. The refusal is the state guard over
+/// a proposal already accepted: a real refused state, reached by the store's
+/// own code.
+#[test]
+fn accept_with_answers_a_failed_write_as_an_error_and_a_refusal_as_refused() {
+    let library = library_with_two_suffixed_series();
+    let conn = library.conn();
+    proposals::raise(&conn).expect("raise");
+    let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
+    let rule = proposals::preview(&conn, proposal.id).expect("preview");
+
+    a_store_fault_on(&conn, "BEFORE INSERT ON rule");
+    let err = proposals::accept_with(&conn, proposal.id, &rule)
+        .expect_err("a write that failed is an error, not a refusal");
+    assert!(err.contains("a simulated store fault"), "{err}");
+    assert_eq!(accepted_rules(&conn), 0, "and nothing was written");
+    assert_eq!(state_of(&conn, proposal.id), "open");
+
+    conn.execute_batch("DROP TRIGGER a_store_fault")
+        .expect("drops the trigger");
+    made(proposals::accept_with(&conn, proposal.id, &rule));
+    let why = refusal_of(proposals::accept_with(&conn, proposal.id, &rule));
+    assert!(why.contains("not open"), "{why}");
+    assert_eq!(
+        accepted_rules(&conn),
+        1,
+        "a refused second accept writes nothing"
+    );
+}
+
+/// A **read** `accept_with` cannot make is `Err` as well: the dry run's
+/// sweep, which reaches the caller through `resolves` rather than through the
+/// transaction.
+#[test]
+fn accept_with_answers_a_failed_read_as_an_error_rather_than_a_refusal() {
+    let library = library_with_two_suffixed_series();
+    let conn = library.conn();
+    proposals::raise(&conn).expect("raise");
+    let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
+    let rule = proposals::preview(&conn, proposal.id).expect("preview");
+    conn.execute_batch("PRAGMA writable_schema = ON; DROP TABLE scan_entry;")
+        .expect("drops the table the dry run sweeps");
+
+    let err = proposals::accept_with(&conn, proposal.id, &rule)
+        .expect_err("a read that failed is an error, not a refusal");
+    assert!(err.contains("scan_entry"), "{err}");
+}
+
+/// `unaccept`: nothing to un-accept is `Refused`, and a write that fails is
+/// `Err`. The fault is on the `DELETE FROM rule` that follows the reopening
+/// `UPDATE` inside one transaction, so the proposal still reading `accepted`
+/// is the rollback's doing too.
+#[test]
+fn unaccept_answers_a_failed_write_as_an_error_and_a_refusal_as_refused() {
+    let library = library_with_two_suffixed_series();
+    let conn = library.conn();
+    proposals::raise(&conn).expect("raise");
+    let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
+
+    let why = refusal_of(proposals::unaccept(&conn, proposal.id));
+    assert_eq!(
+        why,
+        format!("proposal {} has no accepted rule to remove", proposal.id)
+    );
+
+    proposals::accept(&conn, proposal.id).expect("accept");
+    a_store_fault_on(&conn, "BEFORE DELETE ON rule");
+    let err = proposals::unaccept(&conn, proposal.id)
+        .expect_err("a write that failed is an error, not a refusal");
+    assert!(err.contains("a simulated store fault"), "{err}");
+    assert_eq!(accepted_rules(&conn), 1, "the rule is still there");
+    assert_eq!(state_of(&conn, proposal.id), "accepted");
+}
+
+/// `dismiss`: a write that fails is `Err`, and an accepted proposal is
+/// `Refused`.
+#[test]
+fn dismiss_answers_a_failed_write_as_an_error_and_a_refusal_as_refused() {
+    let library = library_with_two_suffixed_series();
+    let conn = library.conn();
+    proposals::raise(&conn).expect("raise");
+    let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
+
+    a_store_fault_on(
+        &conn,
+        "BEFORE UPDATE OF state ON proposal WHEN NEW.state = 'dismissed'",
+    );
+    let err = proposals::dismiss(&conn, proposal.id)
+        .expect_err("a write that failed is an error, not a refusal");
+    assert!(err.contains("a simulated store fault"), "{err}");
+    assert_eq!(state_of(&conn, proposal.id), "open");
+
+    conn.execute_batch("DROP TRIGGER a_store_fault")
+        .expect("drops the trigger");
+    proposals::accept(&conn, proposal.id).expect("accept");
+    let why = refusal_of(proposals::dismiss(&conn, proposal.id));
+    assert_eq!(
+        why,
+        format!(
+            "proposal {} is accepted — un-accept it first, then dismiss",
+            proposal.id
+        )
+    );
+    assert_eq!(state_of(&conn, proposal.id), "accepted");
 }
 
 // --- what the mutation sweep found unpinned --------------------------------
@@ -1783,7 +1934,7 @@ fn a_rescan_does_not_rescore_a_proposal_someone_has_already_dismissed() {
 
     proposals::raise(&conn).expect("first raise");
     let raised = proposals::open(&conn, 0.0).expect("open").remove(0);
-    proposals::dismiss(&conn, raised.id).expect("dismiss");
+    made(proposals::dismiss(&conn, raised.id));
 
     // The same facts change that `raise_refreshes_...` proves *does* rescore
     // an open proposal: both sides gain three volumes, so the volume signal
@@ -1987,7 +2138,10 @@ fn a_regex_rule_s_collateral_is_computed_with_regex_semantics() {
         resolution.collateral,
     );
     assert!(
-        proposals::accept_with(&conn, proposal.id, &rule).is_err(),
+        matches!(
+            proposals::accept_with(&conn, proposal.id, &rule),
+            Ok(Offer::Refused(_))
+        ),
         "and the accept is refused, not merely warned about",
     );
 }
@@ -2039,7 +2193,10 @@ fn a_rule_that_reaches_another_proposals_subject_without_answering_it_is_collate
         resolution.collateral,
     );
     assert!(
-        proposals::accept_with(&conn, first.id, &rule).is_err(),
+        matches!(
+            proposals::accept_with(&conn, first.id, &rule),
+            Ok(Offer::Refused(_))
+        ),
         "and the widest possible widening is refused, not accepted for six series at once",
     );
 }
@@ -2055,7 +2212,7 @@ fn accepting_a_widened_rule_accepts_every_proposal_it_resolves() {
     rule.pattern = "^(?<series>.+) - Full Color Edition/".to_string();
     rule.root_id = None;
 
-    let rule_id = proposals::accept_with(&conn, first.id, &rule).expect("accept");
+    let rule_id = made(proposals::accept_with(&conn, first.id, &rule));
 
     let still_open = proposals::open(&conn, 0.0).expect("open");
     assert!(
@@ -2085,9 +2242,9 @@ fn un_accepting_one_of_a_widened_group_reopens_all_of_them() {
     rule.kind = "regex".to_string();
     rule.pattern = "^(?<series>.+) - Full Color Edition/".to_string();
     rule.root_id = None;
-    proposals::accept_with(&conn, first.id, &rule).expect("accept");
+    made(proposals::accept_with(&conn, first.id, &rule));
 
-    proposals::unaccept(&conn, first.id).expect("unaccept");
+    made(proposals::unaccept(&conn, first.id));
 
     let reopened = proposals::open(&conn, 0.0).expect("open");
     assert_eq!(
@@ -2145,8 +2302,8 @@ fn a_narrow_accept_still_succeeds_under_a_root_that_carries_a_default() {
         "a rule matching one directory reaches nobody else's material: {:?}",
         resolution.collateral,
     );
-    proposals::accept_with(&conn, proposal.id, &rule)
-        .expect("the narrow accept succeeds under a root that carries a default");
+    // The narrow accept succeeds under a root that carries a default.
+    made(proposals::accept_with(&conn, proposal.id, &rule));
 }
 
 /// A candidate that matches only a container directory: it decides nothing
@@ -2179,11 +2336,9 @@ fn a_container_only_rule_is_refused(pattern: &str) {
         "`{pattern}` reaches no material this proposal is about: {resolution:?}",
     );
 
-    let refused = proposals::accept_with(&conn, proposal.id, &rule);
+    let refused = refusal_of(proposals::accept_with(&conn, proposal.id, &rule));
     assert!(
-        refused
-            .as_ref()
-            .is_err_and(|e| e.contains("none of them this proposal's own subject")),
+        refused.contains("none of them this proposal's own subject"),
         "`{pattern}` is refused, and says why: {refused:?}",
     );
 
@@ -2402,12 +2557,10 @@ fn a_pattern_that_will_not_compile_is_an_error_not_a_clean_bill_of_health() {
         err.contains("unclosed group"),
         "and it carries `regex`'s own diagnosis rather than a message of ours: {err}",
     );
-    let refused = proposals::accept_with(&conn, proposal.id, &rule);
+    let refused = refusal_of(proposals::accept_with(&conn, proposal.id, &rule));
     assert!(
-        refused
-            .as_ref()
-            .is_err_and(|e| e.contains("this pattern will not compile")),
-        "and the accept refuses for the same reason: {refused:?}",
+        refused.contains("this pattern will not compile"),
+        "and the accept refuses for the same reason, rather than failing: {refused:?}",
     );
 }
 
@@ -2491,7 +2644,7 @@ fn the_targets_reached_refusal_names_every_target_and_agrees_in_number() {
         "and none of it is collateral, so the targets refusal is the one that fires: {resolution:?}",
     );
 
-    let err = proposals::accept_with(&conn, first.id, &rule).expect_err("refused");
+    let err = refusal_of(proposals::accept_with(&conn, first.id, &rule));
 
     assert_eq!(
         err,
@@ -2556,13 +2709,11 @@ fn a_group_member_judged_under_the_accept_fails_it_rather_than_orphaning_its_rul
     rule.pattern = "^(?<series>.+) - Full Color Edition/".to_string();
     rule.root_id = None;
 
-    let refused = proposals::accept_with(&conn, first.id, &rule);
+    let refused = refusal_of(proposals::accept_with(&conn, first.id, &rule));
 
     assert!(
-        refused.as_ref().is_err_and(|e| {
-            e.contains(&format!("proposal {stolen}, which this rule also answers"))
-                && e.contains("stopped being open")
-        }),
+        refused.contains(&format!("proposal {stolen}, which this rule also answers"))
+            && refused.contains("stopped being open"),
         "the accept fails, naming the proposal that moved under it: {refused:?}",
     );
     assert_eq!(
@@ -2588,12 +2739,10 @@ fn a_proposal_judged_under_its_own_accept_fails_it_rather_than_writing_twice() {
     steal_a_proposal_when_the_rule_lands(&conn, first.id);
     let rule = proposals::preview(&conn, first.id).expect("preview");
 
-    let refused = proposals::accept_with(&conn, first.id, &rule);
+    let refused = refusal_of(proposals::accept_with(&conn, first.id, &rule));
 
     assert!(
-        refused
-            .as_ref()
-            .is_err_and(|e| { e.contains(&format!("proposal {} stopped being open", first.id)) }),
+        refused.contains(&format!("proposal {} stopped being open", first.id)),
         "the accept fails rather than writing over the other judgement: {refused:?}",
     );
     assert_eq!(accepted_rules(&conn), 0, "and leaves no rule behind");
@@ -2639,11 +2788,9 @@ fn a_rule_that_moves_nothing_is_refused(widen: impl FnOnce(&mut proposals::Propo
         "while nothing moves at all: {resolution:?}",
     );
 
-    let refused = proposals::accept_with(&conn, proposal.id, &rule);
+    let refused = refusal_of(proposals::accept_with(&conn, proposal.id, &rule));
     assert!(
-        refused
-            .as_ref()
-            .is_err_and(|e| e.contains("moves none of them")),
+        refused.contains("moves none of them"),
         "a rule that changes nothing is refused, and says so: {refused:?}",
     );
 
@@ -2721,11 +2868,9 @@ fn a_rule_that_moves_another_proposals_subject_but_not_this_ones_is_still_refuse
         "but none of it is this proposal's own subject: {resolution:?}",
     );
 
-    let refused = proposals::accept_with(&conn, ours, &rule);
+    let refused = refusal_of(proposals::accept_with(&conn, ours, &rule));
     assert!(
-        refused
-            .as_ref()
-            .is_err_and(|e| e.contains("none of them this proposal's own subject")),
+        refused.contains("none of them this proposal's own subject"),
         "so the subject guard is what refuses it: {refused:?}",
     );
     assert_eq!(accepted_rules(&conn), 0, "and no rule was written");
@@ -2831,7 +2976,8 @@ fn works_moved_counts_moving_members_not_work_rows_that_change_series() {
         "one work holds the member that moves — work {spanning}: {resolution:?}",
     );
 
-    proposals::accept_with(&conn, proposal, &rule).expect("the root-scoped accept succeeds");
+    // The root-scoped accept succeeds.
+    made(proposals::accept_with(&conn, proposal, &rule));
     derive::derive(&conn).expect("re-derive");
 
     let series_after = work_series(&conn);
@@ -2933,7 +3079,7 @@ fn the_targets_reached_refusal_does_not_name_an_edition_key_the_rule_has_not_got
         "and nothing else, so the targets refusal is the one that fires: {resolution:?}",
     );
 
-    let err = proposals::accept_with(&conn, proposal.id, &rule).expect_err("refused");
+    let err = refusal_of(proposals::accept_with(&conn, proposal.id, &rule));
 
     assert_eq!(
         err,
@@ -2958,7 +3104,7 @@ fn list_filters_by_state_and_kind_and_keeps_open_as_it_was() {
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
     let first = proposals::open(&conn, 0.0).expect("open").remove(0);
-    proposals::dismiss(&conn, first.id).expect("dismiss");
+    made(proposals::dismiss(&conn, first.id));
 
     let dismissed = proposals::list(
         &conn,
@@ -3184,7 +3330,7 @@ fn list_with_no_filter_returns_every_state_and_kind_in_score_order() {
         "same-series's CERTAIN score must outrank edition-of for the ordering \
          assertion below to mean anything: {open_proposals:?}"
     );
-    proposals::dismiss(&conn, edition_of.id).expect("dismiss");
+    made(proposals::dismiss(&conn, edition_of.id));
 
     let all = proposals::list(
         &conn,
@@ -3275,7 +3421,7 @@ fn counts_by_kind_separates_kinds_and_respects_state() {
         .into_iter()
         .find(|p| p.kind == "edition-of")
         .expect("an edition-of proposal is open");
-    proposals::dismiss(&conn, one_edition.id).expect("dismiss");
+    made(proposals::dismiss(&conn, one_edition.id));
 
     let open_counts = proposals::counts_by_kind(&conn, "open", 0.0).expect("counts");
     assert_eq!(

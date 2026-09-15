@@ -1092,7 +1092,13 @@ pub fn delete(conn: &Connection, id: i64) -> Result<Deleted, String> {
         .map_err(|e| format!("reading the proposals rule {id} came from: {e}"))?;
 
     let existed = if let Some(&first) = reopened_proposals.first() {
-        crate::proposals::unaccept(conn, first)?;
+        // A refusal means `first` stopped carrying this rule between the
+        // lookup above and this call — another connection un-accepted it —
+        // and it stays this function's error, as it was while `unaccept`
+        // answered a refusal through its `Err`.
+        if let crate::proposals::Offer::Refused(why) = crate::proposals::unaccept(conn, first)? {
+            return Err(why);
+        }
         true
     } else {
         conn.execute("DELETE FROM rule WHERE id = ?1", [id])

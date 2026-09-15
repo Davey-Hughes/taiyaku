@@ -22,6 +22,14 @@
 //! library it would be applied to, and the body names the series it would have
 //! moved.
 //!
+//! A store that fails during any of the three writes is **500**, as a store
+//! failing anywhere else here is. It was a 409 until O70: `accept_with`,
+//! `unaccept` and `dismiss` answered a refusal and a failure through one
+//! `Result<_, String>`, so their handlers mapped one type onto one status.
+//! They answer `Result<Offer<_>, String>` now — [`made`] turns the refusal
+//! into [`NoAnswer::Refused`], and each handler turns the `Err` beside it into
+//! [`NoAnswer::Failed`] — and nothing here reads the sentence to decide which.
+//!
 //! An `id` naming no proposal is **404**, on every route here that takes one
 //! — see [`NoAnswer::Missing`] for what it was before, and [`present`] for
 //! what makes answering it possible without reading the store's error text.
@@ -55,7 +63,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use taiyaku_library::proposals::{self, Filter, ProposedRule};
+use taiyaku_library::proposals::{self, Filter, Offer, ProposedRule};
 
 use crate::{ServeState, auth::Principal};
 
@@ -88,18 +96,19 @@ enum NoAnswer {
     /// for the enumeration.
     Missing(i64),
     /// A refusal about the state of the library — see this module's own doc
-    /// comment for why that is a 409 — **or a store fault raised while a
-    /// write was being performed**, which is not one.
+    /// comment for why that is a 409 — and nothing else: the sentence of an
+    /// `Offer::Refused` from `accept_with`, `unaccept` or `dismiss`, handed to
+    /// the client whole by [`made`].
     ///
-    /// The two are not separable here and this doc will not pretend they
-    /// are: `accept_with`, `unaccept` and `dismiss` each answer both through
-    /// one `Result<_, String>`, so what reaches this variant is whatever they
-    /// refused *or* failed with, and telling them apart would mean matching
-    /// on the store's own sentence — which `proposals::Reason`'s doc comment
-    /// refuses to make a client do and is no better done in-process. The one
-    /// condition that could be separated without that is [`Self::Missing`],
-    /// and it is; separating the rest is a change to those three functions'
-    /// signatures rather than to this module.
+    /// **It collected their store faults too, until O70.** Those three
+    /// answered a refusal and a failure through one `Result<_, String>`, so
+    /// whatever they refused *or* failed with reached this variant, and
+    /// telling the two apart here would have meant matching on the store's own
+    /// sentence. Measured on `main` at `6a2e72d`: a trigger failing the
+    /// accept's `INSERT INTO rule`, the un-accept's `DELETE FROM rule` or the
+    /// dismiss's `UPDATE`, and a dropped `scan_entry` under the accept's dry
+    /// run, each answered 409. The split is in those functions' signatures
+    /// now, which is where this doc said it would have to be.
     Refused(String),
     /// A store failure, which is a 500 rather than anything a caller can fix.
     ///
@@ -164,6 +173,21 @@ fn present(conn: &rusqlite::Connection, id: i64) -> Result<(), NoAnswer> {
         Err(why) => Err(NoAnswer::Failed(why)),
     }
 }
+
+/// What a write came to once its store call answered at all: what it made,
+/// or its refusal as a 409 carrying the store's sentence whole.
+///
+/// **Handed the `Offer` alone, never the `Result` around it.** Each handler
+/// maps that `Err` to [`NoAnswer::Failed`] before calling this, so a store
+/// that failed cannot arrive here, and this is the one place a refusal
+/// becomes a status.
+fn made<T>(offer: Offer<T>) -> Result<T, NoAnswer> {
+    match offer {
+        Offer::Made(made) => Ok(made),
+        Offer::Refused(why) => Err(NoAnswer::Refused(why)),
+    }
+}
+
 /// One proposal, as the detail route echoes it back inside its evidence.
 fn proposal_json(p: &proposals::Proposal) -> serde_json::Value {
     serde_json::json!({
@@ -478,7 +502,7 @@ pub(crate) async fn accept(
     let written = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
         present(&conn, id)?;
-        let rule_id = proposals::accept_with(&conn, id, &rule).map_err(NoAnswer::Refused)?;
+        let rule_id = made(proposals::accept_with(&conn, id, &rule).map_err(NoAnswer::Failed)?)?;
         Ok::<_, NoAnswer>(serde_json::json!({ "rule_id": rule_id }))
     })
     .await;
@@ -509,7 +533,7 @@ pub(crate) async fn unaccept(
     let undone = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
         present(&conn, id)?;
-        proposals::unaccept(&conn, id).map_err(NoAnswer::Refused)
+        made(proposals::unaccept(&conn, id).map_err(NoAnswer::Failed)?)
     })
     .await;
 
@@ -538,7 +562,7 @@ pub(crate) async fn dismiss(
     let dismissed = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
         present(&conn, id)?;
-        proposals::dismiss(&conn, id).map_err(NoAnswer::Refused)
+        made(proposals::dismiss(&conn, id).map_err(NoAnswer::Failed)?)
     })
     .await;
 

@@ -1648,8 +1648,10 @@ fn deleting_a_widened_rule_reports_and_reopens_every_proposal_it_answered() {
     rule.pattern = "^(?<series>.+) - Full Color Edition/".to_string();
     rule.root_id = None;
 
-    let rule_id =
-        crate::proposals::accept_with(&conn, first.id, &rule).expect("the widened accept");
+    let rule_id = match crate::proposals::accept_with(&conn, first.id, &rule) {
+        Ok(crate::proposals::Offer::Made(rule_id)) => rule_id,
+        other => panic!("the widened accept: {other:?}"),
+    };
     let accepted_ids: Vec<i64> = conn
         .prepare("SELECT id FROM proposal WHERE created_rule_id = ?1 ORDER BY id")
         .unwrap()

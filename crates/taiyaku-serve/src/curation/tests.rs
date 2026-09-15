@@ -552,9 +552,14 @@ async fn deleting_an_accept_removes_the_rule_and_reopens_the_proposal() {
     let accept = format!("/api/library/proposals/{id}/accept");
     let nothing = serde_json::json!({});
 
-    // Nothing to undo yet, and that is a refusal rather than a silent 204.
+    // Nothing to undo yet, and that is a refusal rather than a silent 204 —
+    // one that says why, since a 409 with an empty body is a status to
+    // render and nothing to act on.
     let response = send_json(&router, Method::DELETE, &accept, &nothing).await;
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let status = response.status();
+    let body = test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("no accepted rule"), "{body}");
 
     let rule = previewed_rule(&router, id).await;
     let response = send_json(&router, Method::POST, &accept, &rule).await;
@@ -901,6 +906,178 @@ async fn dismissing_an_accepted_proposal_is_refused_rather_than_reported_as_a_fa
         "accepted",
         "a refused dismiss leaves the row where it was"
     );
+}
+
+/// A trigger that fails one statement a write route makes, the way a full
+/// disk or a locked database fails it: SQLite's own error, raised from inside
+/// the statement, with nothing about the library's state that a caller could
+/// change. `on` is the trigger's event, `ON` clause and `WHEN` included.
+fn a_store_fault_on(state: &crate::ServeState, on: &str) {
+    let conn = state.library.conn();
+    conn.execute_batch(&format!(
+        "CREATE TRIGGER a_store_fault {on} \
+         BEGIN SELECT RAISE(ABORT, 'a simulated store fault'); END;"
+    ))
+    .expect("installs the trigger");
+}
+
+/// A store fault **during an accept** is a 500, not the 409 a refusal gets.
+///
+/// `proposals::accept_with` answered its refusals and its store failures
+/// through one `Result<_, String>`, and this route mapped that one type onto
+/// `NoAnswer::Refused`: measured on `main` at `6a2e72d` with this test, the
+/// `INSERT INTO rule` below failing answered **409** with the trigger's own
+/// sentence, telling a client the library's state was in the way when the
+/// store had failed. O70.
+///
+/// The rule is the one the server previewed, so every refusal an accept makes
+/// is passed before the write is reached: what fails is the write itself.
+#[tokio::test]
+async fn a_store_fault_during_an_accept_is_a_500_rather_than_a_conflict() {
+    let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
+    let id = the_one_open_proposal(&state);
+    let rule = previewed_rule(&router, id).await;
+    a_store_fault_on(&state, "BEFORE INSERT ON rule");
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        &format!("/api/library/proposals/{id}/accept"),
+        &rule,
+    )
+    .await;
+    let status = response.status();
+    let body = test_support::body_string(response).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(
+        body.contains("a simulated store fault"),
+        "and it is the write that failed, not a refusal before it: {body}"
+    );
+    assert_eq!(accepted_rules(&state), 0, "a failed accept writes no rule");
+    assert_eq!(proposal_state(&state, id), "open");
+}
+
+/// A **read** that fails during an accept is a 500 too.
+///
+/// The fault above is on the write; this one is in the dry run `accept_with`
+/// makes before it — `resolves`' sweep of `scan_entry` — which reaches the
+/// route through a different `?`. Measured on `main` at `6a2e72d` with this
+/// test: **409**, quoting `reading scan entries for the dry run: no such
+/// table: scan_entry`.
+#[tokio::test]
+async fn a_failed_read_during_an_accept_is_a_500_rather_than_a_conflict() {
+    let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
+    let id = the_one_open_proposal(&state);
+    let rule = previewed_rule(&router, id).await;
+    {
+        let conn = state.library.conn();
+        conn.execute_batch("PRAGMA writable_schema = ON; DROP TABLE scan_entry;")
+            .expect("drops the table the dry run sweeps");
+    }
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        &format!("/api/library/proposals/{id}/accept"),
+        &rule,
+    )
+    .await;
+    let status = response.status();
+    let body = test_support::body_string(response).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(body.contains("scan_entry"), "{body}");
+    assert_eq!(accepted_rules(&state), 0);
+    assert_eq!(proposal_state(&state, id), "open");
+}
+
+/// A store fault **during an un-accept** is a 500, not a 409.
+///
+/// Measured on `main` at `6a2e72d` with this test: **409**. The fault is on
+/// the `DELETE FROM rule` that follows the reopening `UPDATE` inside one
+/// transaction, so the state assertion below is also the rollback's.
+#[tokio::test]
+async fn a_store_fault_during_an_unaccept_is_a_500_rather_than_a_conflict() {
+    let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
+    let id = the_one_open_proposal(&state);
+    let rule = previewed_rule(&router, id).await;
+    let accept = format!("/api/library/proposals/{id}/accept");
+    let response = send_json(&router, Method::POST, &accept, &rule).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    a_store_fault_on(&state, "BEFORE DELETE ON rule");
+
+    let response = send_json(&router, Method::DELETE, &accept, &serde_json::json!({})).await;
+    let status = response.status();
+    let body = test_support::body_string(response).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(body.contains("a simulated store fault"), "{body}");
+    assert_eq!(accepted_rules(&state), 1, "the rule is still there");
+    assert_eq!(
+        proposal_state(&state, id),
+        "accepted",
+        "and the reopen before the failed delete was rolled back with it"
+    );
+}
+
+/// A store fault **during a dismiss** is a 500, not a 409.
+///
+/// Measured on `main` at `6a2e72d` with this test: **409**.
+#[tokio::test]
+async fn a_store_fault_during_a_dismiss_is_a_500_rather_than_a_conflict() {
+    let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
+    let id = the_one_open_proposal(&state);
+    a_store_fault_on(
+        &state,
+        "BEFORE UPDATE OF state ON proposal WHEN NEW.state = 'dismissed'",
+    );
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        &format!("/api/library/proposals/{id}/dismiss"),
+        &serde_json::json!({}),
+    )
+    .await;
+    let status = response.status();
+    let body = test_support::body_string(response).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(body.contains("a simulated store fault"), "{body}");
+    assert_eq!(proposal_state(&state, id), "open");
+}
+
+/// A rule the engine cannot evaluate, handed to the **accept** route, is still
+/// a 409 naming why.
+///
+/// Not the 400 the dry run answers for the same rule: this route has never
+/// asked `proposals::evaluable` first, and `accept_with` refuses such a rule
+/// itself. What this pins is that the refusal stayed a refusal once
+/// `accept_with`'s store failures became `Err` — the check lives in
+/// `resolves`' sweep, whose `Err` is a failed read, so an `accept_with` that
+/// left it there would answer 500 for a typo in a pattern.
+#[tokio::test]
+async fn a_rule_that_cannot_be_evaluated_is_still_refused_by_the_accept_route() {
+    let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
+    let id = the_one_open_proposal(&state);
+    let mut rule = previewed_rule(&router, id).await;
+    rule["kind"] = serde_json::json!("regex");
+    rule["pattern"] = serde_json::json!("(unclosed");
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        &format!("/api/library/proposals/{id}/accept"),
+        &rule,
+    )
+    .await;
+    let status = response.status();
+    let body = test_support::body_string(response).await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("this pattern will not compile"), "{body}");
+    assert_eq!(accepted_rules(&state), 0);
 }
 
 /// The failure `spawn_blocking` itself hands back is a **500 naming what was

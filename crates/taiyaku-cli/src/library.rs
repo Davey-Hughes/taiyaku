@@ -1003,15 +1003,29 @@ fn proposals(args: &[String]) -> Result<(), String> {
         println!("accepted proposal {id}: wrote rule {rule_id}");
         return Ok(());
     }
+    // **A refusal is this command's error, unreworded**, as it was while
+    // `dismiss` and `unaccept` answered one through their `Err`. They answer
+    // it as `Offer::Refused` since O70, for `taiyaku-serve`, which gives a
+    // refusal and a store failure different statuses; this command prints
+    // either and exits 1, so it folds the two back together here, as
+    // `proposals::accept` does for `--accept`.
     if let Some(id) = dismiss_id {
         let id = parse_proposal_id(id)?;
-        taiyaku_library::proposals::dismiss(&conn, id)?;
+        if let taiyaku_library::proposals::Offer::Refused(why) =
+            taiyaku_library::proposals::dismiss(&conn, id)?
+        {
+            return Err(why);
+        }
         println!("dismissed proposal {id}");
         return Ok(());
     }
     if let Some(id) = unaccept_id {
         let id = parse_proposal_id(id)?;
-        taiyaku_library::proposals::unaccept(&conn, id)?;
+        if let taiyaku_library::proposals::Offer::Refused(why) =
+            taiyaku_library::proposals::unaccept(&conn, id)?
+        {
+            return Err(why);
+        }
         println!("un-accepted proposal {id}, and removed the rule it had written");
         return Ok(());
     }

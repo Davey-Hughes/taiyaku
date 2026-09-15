@@ -18314,3 +18314,186 @@ The control ran 2139 Rust tests, ten more than 2129, all ten in `fold::tests`.
 `date -Iseconds` was stamped at 2026-09-14T21:42:57-07:00, before the first
 hardlink. After the last drive, at 21:51:10, `find corpus -newermt
 2026-09-14T21:42:57-07:00` returned nothing. No server was started.
+
+## O70: a refusal is an offer, and a store fault is a 500 — 2026-09-14
+
+O70 recorded that `proposals::{evidence, resolves, accept_with, unaccept,
+dismiss}` report "no such row", "the library refuses this" and "the read
+failed" as one `Err(String)`. After `lookup` and `evaluable`, what was left
+was the write half: a store fault during an accept answered 409, because
+`curation.rs` mapped the one type `accept_with` returned onto
+`NoAnswer::Refused`.
+
+### What each `Err` was, on `main`
+
+Read from `proposals.rs` at `6a2e72d`, following each function's own `?` and
+every helper it reaches. *Refusal* is a state the library declines, *missing*
+is no such proposal, and *store* is an error SQLite returned.
+
+| function | where | class |
+| --- | --- | --- |
+| `accept_with` | `acceptable_proposal`, through `one` and `lookup` | missing, or store |
+| | `acceptable`: not `open`, `attach-chapters`, no `target_id` | refusal, three |
+| | `resolves`' own `SELECT subject_id, target_id` | missing only if the row goes between `one` and it; otherwise store |
+| | `resolves`, through `engine_parts`: an unknown `kind` or `match_on`, a `regex` that will not compile | refusal: the rule cannot be evaluated |
+| | `resolves`, through `rules::read`, `scan::roots`, the `scan_entry` sweep, `series_id_by_sort_title`, `open`, `answers` and `works_moved` | store |
+| | collateral, a target reached, nothing matched, the subject not reached, nothing moved | refusal, five |
+| | `unchecked_transaction`, the ordinal query, `INSERT INTO rule`, both `UPDATE proposal` statements, `commit` | store, six |
+| | this proposal, or another the rule answers, no longer `open` at its `UPDATE` | refusal, two |
+| `unaccept` | `one` | missing, or store |
+| | no `created_rule_id` | refusal |
+| | `unchecked_transaction`, the reopening `UPDATE`, `DELETE FROM rule`, `commit` | store, four |
+| `dismiss` | `one` | missing, or store |
+| | `state = 'accepted'` | refusal |
+| | `UPDATE proposal` | store |
+| `evidence` | `one` | missing, or store |
+| | `series_title`, `rel_paths_by_series`, `side`'s reads, `scored_reasons`, `offered_rule`'s reads | store |
+| | every refusal `offered_rule` makes | not an `Err`: `rule: None` |
+| `resolves` | its own `SELECT` | missing, or store |
+| | `engine_parts` | the rule cannot be evaluated |
+| | every read after it | store |
+| | collateral and the other four | not an `Err`: fields of `Resolution` |
+
+So `evidence` and `resolves` had nothing left to split: their `Err` is a
+missing row or a failed read, plus, for `resolves`, a rule the caller wrote
+that cannot be evaluated, which the dry-run route asks `evaluable` about
+first. The three writes had all three classes in one type.
+
+### The row, against the code
+
+Two of its claims did not hold in `791df0a` (#88), the commit that filed the
+row and added `Offer`, and do not hold on `main`:
+
+- `evidence` did not report "the library refuses this" as an `Err`. It read
+  `offered_rule` and answered `Offer::Refused(_) => None`, so its `Err`
+  carried only a missing row or a failed read.
+- "All three functions are public API with `taiyaku-cli` callers."
+  `taiyaku-cli` calls `dismiss` and `unaccept`, and reaches `accept_with` only
+  through `accept`. `rules::delete` also calls `unaccept`, and the row does not
+  name it; `config_api::delete_rule` reaches it from the server.
+
+### On `main`, driven
+
+The tests were written first and run against `main`'s `proposals.rs` and
+`curation.rs`. A trigger raises `ABORT` with the text `a simulated store
+fault`.
+
+| route | fault | status on `main` |
+| --- | --- | --- |
+| `POST …/{id}/accept` | trigger `BEFORE INSERT ON rule` | **409**: `writing the rule for proposal 1: a simulated store fault` |
+| `POST …/{id}/accept` | `DROP TABLE scan_entry` | **409**: `reading scan entries for the dry run: no such table: scan_entry` |
+| `DELETE …/{id}/accept`, after an accept | trigger `BEFORE DELETE ON rule` | **409**: `removing the rule proposal 1 wrote: a simulated store fault` |
+| `POST …/{id}/dismiss` | trigger `BEFORE UPDATE OF state ON proposal WHEN NEW.state = 'dismissed'` | **409**: `dismissing proposal 1: a simulated store fault` |
+| `GET …/{id}` and `POST …/{id}/resolution` | `DROP TABLE scan_entry` | 500 on both: `a_store_fault_under_a_real_id_is_a_500_on_both_routes_that_read_beneath_it` passed |
+| all five id-addressed routes | id 9999 | 404: `an_unknown_id_is_a_404_on_every_route_that_takes_one` passed |
+
+The un-accept fault sits on the `DELETE` that follows the reopening `UPDATE`
+in one transaction, so a proposal still reading `accepted` afterwards also
+shows the rollback. The two new CLI tests passed on `main`: a refused
+`--unaccept` and a refused `--dismiss` each exit 1 with `taiyaku: ` and the
+library's sentence on their own line, and print no success line. That is the
+behaviour the change had to keep.
+
+### The shape
+
+`Offer<T>` was private, for `preview`. It is `pub` now, derives `PartialEq`
+and carries `#[must_use]`, and the three writes return it inside their
+`Result`:
+
+- `accept_with(conn, id, rule) -> Result<Offer<i64>, String>`
+- `unaccept(conn, id) -> Result<Offer<()>, String>`
+- `dismiss(conn, id) -> Result<Offer<()>, String>`
+- `evidence` and `resolves` are unchanged.
+
+A missing row stays in the `Err`, worded by `one`. No third variant was added
+for it: every write handler calls `present` first and answers 404 from
+`lookup`, and the CLI prints either. `acceptable` reads nothing, so it returns
+a bare `Offer`. `accept_with` calls `engine_parts` before `resolves`, because
+`resolves`' `Err` folds a rule it cannot evaluate with a failed read. Without
+that call, a mistyped pattern sent to the accept route would come back as a
+failed store and a 500. `accept` keeps `Result<i64, String>` and folds a
+refusal into its `Err` with `or_refusal`, as `preview` does. It is not one of
+the five, and outside tests its only caller is the CLI's `--accept`.
+
+In `curation.rs`, each write handler maps the `Err` to `NoAnswer::Failed` and
+hands the `Offer` to `made`, which maps `Refused` to `NoAnswer::Refused`.
+Nothing reads the sentence to decide which. The CLI's `--dismiss` and
+`--unaccept` turn `Refused(why)` into `Err(why)`, which `main` prints as
+`taiyaku: {why}` before exiting 1. `rules::delete` returns it as its own
+error, as it did.
+
+### The tests, watched red
+
+A script applied each defect, checking that every edit replaced exactly one
+occurrence, and ran `cargo nextest run --workspace --all-features`. It then
+restored each file and checked it byte for byte against a saved copy. A run
+with no defect applied came before the first and after the last, and passed
+2140 of 2140 both times. `git diff -- crates` was the same before and after the
+whole sweep.
+
+| | defect | fails | with |
+| --- | --- | --- | --- |
+| M1a | the accept handler maps the store's `Err` to `NoAnswer::Refused` | `a_store_fault_during_an_accept_is_a_500_rather_than_a_conflict`, `a_failed_read_during_an_accept_is_a_500_rather_than_a_conflict` | `left: 409`, `right: 500` |
+| M1b | the same, in the un-accept handler | `a_store_fault_during_an_unaccept_is_a_500_rather_than_a_conflict` | `left: 409`, `right: 500` |
+| M1c | the same, in the dismiss handler | `a_store_fault_during_a_dismiss_is_a_500_rather_than_a_conflict` | `left: 409`, `right: 500` |
+| M1x | `made` maps `Refused` to `NoAnswer::Failed` | `a_rule_that_would_move_an_unrelated_series_is_refused_with_its_name`, `a_rule_that_cannot_be_evaluated_is_still_refused_by_the_accept_route`, `deleting_an_accept_removes_the_rule_and_reopens_the_proposal`, `dismissing_an_accepted_proposal_is_refused_rather_than_reported_as_a_failure` | `left: 500`, `right: 409` |
+| M2a | `accept_with` returns `acceptable`'s refusal as `Err` | `accept_with_answers_a_failed_write_as_an_error_and_a_refusal_as_refused`, `accept_with_refuses_a_proposal_preview_would_never_have_offered`, `accept_with_refuses_an_attach_chapters_proposal_handed_a_rule_directly` | expected a refusal, got `Err` naming `not open`, or the `attach-chapters` sentence |
+| M2b | `accept_with` returns the collateral refusal as `Err` | `accept_with_still_refuses_a_pattern_that_would_move_another_series`, `accept_with_names_a_regex_rules_collateral_rather_than_refusing_to_look`, `a_regex_rule_s_collateral_is_computed_with_regex_semantics`, `a_rule_that_reaches_another_proposals_subject_without_answering_it_is_collateral`, and the route's `a_rule_that_would_move_an_unrelated_series_is_refused_with_its_name` | expected a refusal, got `Err`; at the route `left: 500`, `right: 409` |
+| M2c | `unaccept` returns its refusal as `Err` | `unaccept_answers_a_failed_write_as_an_error_and_a_refusal_as_refused`, `unaccepting_a_never_accepted_proposal_is_refused`, `deleting_an_accept_removes_the_rule_and_reopens_the_proposal` | expected a refusal, got `Err`; at the route `left: 500`, `right: 409` |
+| M2d | `dismiss` returns its refusal as `Err` | `dismiss_answers_a_failed_write_as_an_error_and_a_refusal_as_refused`, `dismiss_refuses_an_accepted_proposal_rather_than_orphaning_its_rule`, `dismissing_an_accepted_proposal_is_refused_rather_than_reported_as_a_failure` | expected a refusal, got `Err`; at the route `left: 500`, `right: 409` |
+| M3a | `accept_with` returns a failed `INSERT INTO rule` as `Refused` | `accept_with_answers_a_failed_write_as_an_error_and_a_refusal_as_refused`, `a_store_fault_during_an_accept_is_a_500_rather_than_a_conflict` | `Refused("writing the rule for proposal 1: a simulated store fault")`; at the route `left: 409` |
+| M3b | `accept_with` returns a failed dry-run read as `Refused` | `accept_with_answers_a_failed_read_as_an_error_rather_than_a_refusal`, `a_failed_read_during_an_accept_is_a_500_rather_than_a_conflict` | `Refused("reading scan entries for the dry run: …")`; at the route `left: 409` |
+| M3c | `unaccept` returns a failed `DELETE FROM rule` as `Refused` | `unaccept_answers_a_failed_write_as_an_error_and_a_refusal_as_refused`, `a_store_fault_during_an_unaccept_is_a_500_rather_than_a_conflict` | `Refused("removing the rule proposal 1 wrote: …")`; at the route `left: 409` |
+| M3d | `dismiss` returns a failed `UPDATE` as `Refused` | `dismiss_answers_a_failed_write_as_an_error_and_a_refusal_as_refused`, `a_store_fault_during_a_dismiss_is_a_500_rather_than_a_conflict` | `Refused("dismissing proposal 1: …")`; at the route `left: 409` |
+| M4 | `made` drops the refusal's sentence: `NoAnswer::Refused(String::new())` | the four route tests M1x fails | each at its body assertion, with an empty body |
+| M5a | `--dismiss` rewords its refusal as `dismissing proposal 1 failed: …` | `proposals_dismiss_surfaces_the_accepted_refusal_unreworded`, `library_proposals_refusals_exit_one_with_the_librarys_own_sentence` | `left` the reworded sentence; no stderr line equal to the library's |
+| M5b | `--dismiss` swallows its refusal and prints success | both of the above | `unwrap_err()` on an `Ok`; `left: Some(0)`, `right: Some(1)` |
+| M5c | `--unaccept` rewords its refusal | `library_proposals_refusals_exit_one_with_the_librarys_own_sentence` | no stderr line equal to the library's |
+| M5d | `--unaccept` swallows its refusal and prints success | `library_proposals_refusals_exit_one_with_the_librarys_own_sentence`, `proposals_dismiss_and_unaccept_reach_the_library_crate` | `left: Some(0)`, `right: Some(1)`; `unwrap_err()` on an `Ok` |
+| M6 | `accept_with`'s `engine_parts` call removed | `a_pattern_that_will_not_compile_is_an_error_not_a_clean_bill_of_health`, `a_rule_that_cannot_be_evaluated_is_still_refused_by_the_accept_route` | expected a refusal, got `Err("this pattern will not compile: …")`; at the route 500 where 409 |
+| M7 | `rules::delete` discards a refusal from `unaccept` | **survived**: 2140 passed | |
+| M8 | `accept` answers a refusal as rule 0 | `accept_refuses_when_the_directory_also_holds_another_series`, `accept_refuses_when_the_subjects_files_sit_directly_in_the_root`, `accept_refuses_by_name_when_the_only_other_series_under_the_pattern_is_the_target` | `refused: 0` |
+
+`proposals_dismiss_and_unaccept_reach_the_library_crate` passes M5c because it
+asserts `contains("no accepted rule")`, which the reworded message still
+contains. The binary test is what compares the whole line.
+
+M1a's first run also failed six `taiyaku-cli` `tests::serve_works_*` tests,
+each with `opening the library: creating meta: disk I/O error`. They write
+fixed names under `std::env::temp_dir()` with no process id in them, such as
+`taiyaku-test-serve-works-single.db`, and four other worktrees on this machine
+were running the same suite. `/tmp` had 25 GB free. Run again alone, M1a
+failed only the two accept tests above, and both runs with no defect applied
+passed all six.
+
+### The survivor
+
+M7 is a refusal a test cannot reach on one connection. `rules::delete` looks up
+`SELECT id FROM proposal WHERE created_rule_id = ?1` and calls `unaccept` on
+the first id, and `unaccept` refuses only when `one` reads no
+`created_rule_id` for that row. With nothing between the two reads, the row
+the lookup matched still carries it. Reaching the refusal takes a second
+connection that un-accepts the proposal in that window. On `main` the same
+line propagated the refusal with `?` and was no better covered. It is left
+returning the refusal as `rules::delete`'s error, and
+`config_api::delete_rule` answers that error 500, as it did.
+
+### Not changed
+
+- `evidence` and `resolves` keep their types, since neither returns a refusal
+  as `Err`.
+- `accept` keeps `Result<i64, String>`.
+- `rules::delete` keeps `Result<Deleted, String>`.
+- `web/`. `sendJson` throws `` `${path}: ${res.status} ${body}` `` for any
+  status that is not ok, and `ProposalRow` and `AcceptForm` render
+  `messageOf(err)`. So a store fault during a write now reads `500` where it
+  read `409`, and nothing branches on either.
+- The `serve_works_*` tests' fixed temporary names.
+
+### Counts
+
+Rust 2129 → 2140: five tests in `curation::tests`, four in
+`proposals::tests`, one in `library::tests` and one in `tests/cli.rs`.
+`unaccepting_a_never_accepted_proposal_is_an_error` is now
+`unaccepting_a_never_accepted_proposal_is_refused`. `web/` is unchanged. No
+server ran, and `corpus/` was not read.

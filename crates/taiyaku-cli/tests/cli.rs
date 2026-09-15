@@ -626,6 +626,81 @@ fn library_proposals_lists_and_accepts_over_real_stdout() {
     assert_eq!(rules, 1, "the accept must have written a real rule");
 }
 
+/// A refused `--unaccept` or `--dismiss` **exits 1 with the library's own
+/// sentence** on stderr, and prints no success line.
+///
+/// Pinned at the binary because of what changed underneath it (O70):
+/// `proposals::unaccept` and `proposals::dismiss` answered a refusal as
+/// `Err(String)`, which `main` prints as `taiyaku: {message}` before exiting
+/// 1, and they answer it as `Ok(Offer::Refused(why))` now — so this command
+/// turns the refusal back into that error itself. An arm that printed the
+/// success line instead, or reworded the sentence on the way, is a changed
+/// exit code or a changed message, and the exact line is what tells.
+#[test]
+fn library_proposals_refusals_exit_one_with_the_librarys_own_sentence() {
+    let dir = std::env::temp_dir().join("taiyaku-cli-test-proposals-refusals");
+    let _ = std::fs::remove_dir_all(&dir);
+    let base = dir
+        .join("Go-Toubun no Hanayome")
+        .join("Go-Toubun no Hanayome - v01");
+    let colour = dir
+        .join("Go-Toubun no Hanayome - Full Color Edition")
+        .join("Go-Toubun no Hanayome - Full Color Edition - v01");
+    std::fs::create_dir_all(&base).expect("mkdir base");
+    std::fs::create_dir_all(&colour).expect("mkdir colour");
+    std::fs::write(base.join("000.jpg"), b"page").expect("write base page");
+    std::fs::write(colour.join("000.jpg"), b"page").expect("write colour page");
+    let db = db_path("proposals-refusals");
+
+    let scan_out = taiyaku_output(&[
+        "library",
+        "scan",
+        "--add",
+        dir.to_str().unwrap(),
+        "--db",
+        &db,
+    ]);
+    assert!(scan_out.contains("; 1 proposal(s) raised"), "{scan_out}");
+    let list_out = taiyaku_output(&["library", "proposals", "--db", &db]);
+    let id: &str = list_out
+        .split_whitespace()
+        .next()
+        .expect("the listing's first token is the proposal id");
+
+    // Never accepted, so there is nothing to un-accept.
+    let run = taiyaku()
+        .args(["library", "proposals", "--unaccept", id, "--db", &db])
+        .output()
+        .expect("the binary runs");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(1), "a refusal is a failing exit");
+    let expected = format!("taiyaku: proposal {id} has no accepted rule to remove");
+    assert!(
+        stderr.lines().any(|line| line == expected),
+        "the library's sentence, unreworded, on its own line: {stderr}"
+    );
+    assert!(!stdout.contains("un-accepted"), "{stdout}");
+
+    let accept_out = taiyaku_output(&["library", "proposals", "--accept", id, "--db", &db]);
+    assert!(accept_out.contains("accepted proposal"), "{accept_out}");
+
+    // Accepted, so a dismiss is refused rather than orphaning the rule.
+    let run = taiyaku()
+        .args(["library", "proposals", "--dismiss", id, "--db", &db])
+        .output()
+        .expect("the binary runs");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(1), "a refusal is a failing exit");
+    let expected = format!("taiyaku: proposal {id} is accepted — un-accept it first, then dismiss");
+    assert!(
+        stderr.lines().any(|line| line == expected),
+        "the library's sentence, unreworded, on its own line: {stderr}"
+    );
+    assert!(!stdout.contains("dismissed proposal"), "{stdout}");
+}
+
 /// **`if !reopened.is_empty()`, not `if reopened.is_empty()`.** An import
 /// that orphans an accepted proposal's rule must say so; `library.rs`'s own
 /// unit tests call `rules` directly and this crate has no stdout-capturing

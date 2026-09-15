@@ -563,25 +563,41 @@ struct AcceptableProposal {
     target_id: i64,
 }
 
-/// What a preview worked out: the rule, or the sentence saying why there is
-/// not one.
+/// What this module made of a request about one proposal: the thing asked
+/// for, or the sentence saying why the library declines it.
 ///
 /// **A refusal is a different outcome from a failure**, and one
-/// `Result<_, String>` cannot tell them apart. [`evidence`] needs to: it
+/// `Result<_, String>` cannot tell them apart. [`evidence`] needed to first: it
 /// answers `rule: None` for every proposal that cannot be accepted and still
 /// shows the row, and it did that with `preview(conn, id).ok()` — which
 /// turned a database read that *failed* into the same `None`, presenting a
-/// fault as "this cannot be accepted". Here `Err` means a read failed and
-/// nothing else; a proposal this module declines to offer an accept for is
-/// `Refused`, with the sentence [`preview`] hands back as its error.
-#[derive(Debug)]
-enum Offer<T> {
+/// fault as "this cannot be accepted".
+///
+/// **The three writes needed to next (O70).** [`accept_with`], [`unaccept`]
+/// and [`dismiss`] answered their refusals and their store failures through
+/// one `Result<_, String>`, and `taiyaku-serve` can only map a status onto the
+/// type it is handed: a trigger failing the `INSERT INTO rule` inside an
+/// accept answered **409**, a refusal about the library's state, for a store
+/// that had failed. Each answers `Result<Offer<_>, String>` now.
+///
+/// Beside a `Result`, `Err` means a read or a write failed — or, for a
+/// function reading its proposal by id, that there is no such proposal, which
+/// [`lookup`] tells apart without reading the sentence. `Refused` means the
+/// library declines and nothing was written, in a sentence written for the
+/// person who asked.
+#[derive(Debug, PartialEq)]
+#[must_use = "a refusal is not an error, so dropping this drops a refusal silently"]
+pub enum Offer<T> {
+    /// What was asked for: the rule worked out, or the write done.
     Made(T),
+    /// Why the library declines, for the person who asked. Nothing was
+    /// written.
     Refused(String),
 }
 
 impl<T> Offer<T> {
-    /// The refusal as an error, which is [`preview`]'s public contract.
+    /// The refusal as an error, which is [`preview`]'s public contract and
+    /// [`accept`]'s.
     fn or_refusal(self) -> Result<T, String> {
         match self {
             Self::Made(made) => Ok(made),
@@ -597,10 +613,10 @@ impl<T> Offer<T> {
 ///
 /// # Errors
 ///
-/// Returns an error if `id` names no proposal, if the read fails, or on any
-/// of [`acceptable`]'s three refusals.
-fn acceptable_proposal(conn: &Connection, id: i64) -> Result<AcceptableProposal, String> {
-    acceptable(&one(conn, id)?)
+/// Returns an error if `id` names no proposal or if the read fails. Each of
+/// [`acceptable`]'s three refusals is [`Offer::Refused`].
+fn acceptable_proposal(conn: &Connection, id: i64) -> Result<Offer<AcceptableProposal>, String> {
+    Ok(acceptable(&one(conn, id)?))
 }
 
 /// Refuse `proposal` if an accept must not proceed: not `open`,
@@ -617,12 +633,9 @@ fn acceptable_proposal(conn: &Connection, id: i64) -> Result<AcceptableProposal,
 /// **Over a `Proposal` already read, rather than reading its own row.** That
 /// is what lets [`evidence`] — which has one in hand — tell these three
 /// refusals apart from a read that failed without expressing them a second
-/// time: no read happens here, so every `Err` this returns is a refusal.
-///
-/// # Errors
-///
-/// On any of the three refusals above.
-fn acceptable(proposal: &Proposal) -> Result<AcceptableProposal, String> {
+/// time: no read happens here, so it has no failure to report, and its
+/// answer is an [`Offer`] with no `Result` around it.
+fn acceptable(proposal: &Proposal) -> Offer<AcceptableProposal> {
     let Proposal {
         id,
         kind,
@@ -639,20 +652,20 @@ fn acceptable(proposal: &Proposal) -> Result<AcceptableProposal, String> {
     // invisible to the proposal that made it, while the proposal reads
     // `open`. That is exactly what `created_rule_id` exists to prevent.
     if state != STATE_OPEN {
-        return Err(format!(
+        return Offer::Refused(format!(
             "proposal {id} is `{state}`, not open — accept only applies to an open proposal"
         ));
     }
     if kind == KIND_ATTACH_CHAPTERS {
-        return Err(format!("proposal {id}: {ATTACH_CHAPTERS_REFUSAL}"));
+        return Offer::Refused(format!("proposal {id}: {ATTACH_CHAPTERS_REFUSAL}"));
     }
     let Some(target_id) = *target_id else {
-        return Err(format!(
+        return Offer::Refused(format!(
             "proposal {id} (kind `{kind}`) has no target series to write a rule against"
         ));
     };
 
-    Ok(AcceptableProposal { kind, target_id })
+    Offer::Made(AcceptableProposal { kind, target_id })
 }
 
 /// The rule [`accept`] would write for proposal `id`, without writing it.
@@ -679,7 +692,7 @@ pub fn preview(conn: &Connection, id: i64) -> Result<ProposedRule, String> {
     // and finding them costs a pass over every `scan_entry` row in the
     // library. A proposal that cannot be accepted at all must not pay for
     // one to be told so.
-    acceptable(&proposal)?;
+    acceptable(&proposal).or_refusal()?;
     let subject_title = series_title(conn, proposal.subject_id)?;
     let paths = crate::derive::rel_paths_for_series(conn, &subject_title)?;
     offered_rule(conn, &proposal, &subject_title, &paths)?.or_refusal()
@@ -709,8 +722,8 @@ fn offered_rule(
 ) -> Result<Offer<ProposedRule>, String> {
     let id = proposal.id;
     let AcceptableProposal { kind, target_id } = match acceptable(proposal) {
-        Ok(acceptable) => acceptable,
-        Err(why) => return Ok(Offer::Refused(why)),
+        Offer::Made(acceptable) => acceptable,
+        Offer::Refused(why) => return Ok(Offer::Refused(why)),
     };
 
     let target_title = series_title(conn, target_id)?;
@@ -790,10 +803,9 @@ fn offered_rule(
 /// or, where the guards cannot evaluate its semantics at all, refused rather
 /// than waved through.
 ///
-/// # Errors
-///
-/// If `id` names no proposal, if it is not `open`, if it is
-/// `attach-chapters`, if it has no target series — the three
+/// Answers [`Offer::Made`] with the written rule's id. Answers
+/// [`Offer::Refused`], with nothing written, if the proposal is not `open`,
+/// if it is `attach-chapters`, if it has no target series — the three
 /// [`acceptable_proposal`] refuses on — if `rule`'s `kind` or `match_on` is
 /// not one `rules.rs` knows or its pattern will not compile, if `rule`
 /// reaches a series no proposal it answers named — naming it — if it reaches
@@ -803,7 +815,13 @@ fn offered_rule(
 /// is rolled back rather than left deciding nothing — or if this proposal, or
 /// one of the others the same rule answers, stopped being `open` between the
 /// dry run and the write.
-pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<i64, String> {
+///
+/// # Errors
+///
+/// If `id` names no proposal — [`lookup`] tells that apart — or if a read or
+/// a write fails, the dry run's reads included. A refusal is not an error:
+/// see [`Offer`] for what a caller answered while it was one.
+pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Offer<i64>, String> {
     // The three refusals about the *proposal* rather than the rule, made
     // here as well as in `preview` and `offered_rule`: this is a `pub fn`,
     // and C3's accept route hands it a rule out of a request body without
@@ -813,7 +831,9 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<i6
     // Its answer is dropped: what the rule would decide, and whose material
     // that is, is `resolves`' question now, and it reads the proposal's own
     // two ends itself.
-    acceptable_proposal(conn, id)?;
+    if let Offer::Refused(why) = acceptable_proposal(conn, id)? {
+        return Ok(Offer::Refused(why));
+    }
 
     // **"Matches something" is not "matches only the subject".** A rule
     // decides for everything it matches, not only the paths that derived it —
@@ -833,13 +853,24 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<i6
     // so it evaluates the candidate with whatever semantics its `kind`,
     // `match_on` and `root_id` actually carry — which is what earns the right
     // to stop refusing them.
+    //
+    // **Except that a rule it cannot evaluate is refused here, before it.**
+    // `resolves` makes that check first, but answers it through the same
+    // `Err(String)` as the reads that follow — see [`evaluable`] — and this
+    // function's own `Err` is kept for a proposal that is not there and a
+    // store that failed, neither of them a refusal. Left to `resolves`, a typo
+    // in a widened pattern would reach `taiyaku-serve` as a failed store and a
+    // person as a 500.
+    if let Err(why) = engine_parts(rule) {
+        return Ok(Offer::Refused(why));
+    }
     let resolution = resolves(conn, id, rule)?;
     if !resolution.collateral.is_empty() {
-        return Err(format!(
+        return Ok(Offer::Refused(format!(
             "proposal {id}'s rule also decides for {}, so accepting it would move that \
              material too. Narrow the pattern or write the rule by hand.",
             resolution.collateral.join(", ")
-        ));
+        )));
     }
     if !resolution.targets_reached.is_empty() {
         // The target is part of the CHECK — if the rule reaches it,
@@ -884,11 +915,11 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<i6
         } else {
             format!("apply every column this rule sets to {those} own volumes too")
         };
-        return Err(format!(
+        return Ok(Offer::Refused(format!(
             "proposal {id}'s rule also reaches {named} {itself} — the series it would be \
              accepted into — so accepting it would {would}. Narrow the pattern or write the \
              rule by hand."
-        ));
+        )));
     }
 
     // **I5: one transaction for the write, the verify and the state
@@ -901,8 +932,8 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<i6
     // different road. Wrapped here, a failure anywhere in this block rolls
     // the whole thing back — including the `INSERT` — via `Transaction`'s own
     // `Drop`, which is also why the "matched nothing" branch below no longer
-    // deletes the rule by hand: returning `Err` without `commit` already
-    // undoes it.
+    // deletes the rule by hand: returning without `commit` already undoes it,
+    // whether what is returned is an `Err` or a refusal.
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("starting the accept transaction for proposal {id}: {e}"))?;
@@ -957,7 +988,7 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<i6
     // itself to `root_id` (I6) because [`crate::rules::Engine::resolve`]
     // does.
     if resolution.entries_matched == 0 {
-        // **No manual `DELETE` here any more.** Returning `Err` without
+        // **No manual `DELETE` here any more.** Returning without
         // `tx.commit()` rolls the whole transaction back — the `INSERT`
         // above included — which is I5's whole point: a rule that decides
         // nothing must never be left standing, and now it structurally
@@ -987,9 +1018,9 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<i6
                 rule.pattern, rule.match_on
             )
         };
-        return Err(format!(
+        return Ok(Offer::Refused(format!(
             "proposal {id}: {why} — refusing rather than leaving an accepted proposal whose rule decides nothing"
-        ));
+        )));
     }
 
     // **"Matches something" is not "matches any of the subject's material".**
@@ -1019,13 +1050,13 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<i6
     // at all fails this too, and "matched no scan_entry" is the more specific
     // thing to say about it.
     if !resolution.subject_reached {
-        return Err(format!(
+        return Ok(Offer::Refused(format!(
             "proposal {id}: the rule this would write matches {} scan_entry row(s), none of \
              them this proposal's own subject — accepting would take the question out of the \
              inbox without deciding it. Widen the pattern to reach the subject's own material, \
              or write the rule by hand.",
             resolution.entries_matched
-        ));
+        )));
     }
 
     // **And reaching the subject is not moving it.** `works_moved` is counted
@@ -1051,13 +1082,13 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<i6
     // fails this too, and "none of them this proposal's own subject" is the
     // more specific thing to say about it.
     if resolution.works_moved == 0 {
-        return Err(format!(
+        return Ok(Offer::Refused(format!(
             "proposal {id}: the rule this would write matches {} scan_entry row(s) and moves \
              none of them — every one already resolves to the series this rule would give it, \
              so accepting would take the question out of the inbox without changing anything. \
              Check `set_series`, and any `series` capture in the pattern, which overrides it.",
             resolution.entries_matched
-        ));
+        )));
     }
 
     // **`AND state = 'open'`, and the row count is checked.** This project
@@ -1077,11 +1108,11 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<i6
         )
         .map_err(|e| format!("marking proposal {id} accepted: {e}"))?;
     if marked != 1 {
-        return Err(format!(
+        return Ok(Offer::Refused(format!(
             "proposal {id} stopped being open while this accept was working out what it would \
              do — another process has judged it since. Nothing was written; read it again and \
              retry."
-        ));
+        )));
     }
 
     // **A widened rule answers every proposal it resolves, and each records
@@ -1105,18 +1136,18 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<i6
             )
             .map_err(|e| format!("recording proposal {other} against rule {rule_id}: {e}"))?;
         if marked != 1 {
-            return Err(format!(
+            return Ok(Offer::Refused(format!(
                 "proposal {other}, which this rule also answers, stopped being open while this \
                  accept was working out what it would do — another process has judged it since. \
                  Nothing was written; read them again and retry."
-            ));
+            )));
         }
     }
 
     tx.commit()
         .map_err(|e| format!("committing the accept of proposal {id}: {e}"))?;
 
-    Ok(rule_id)
+    Ok(Offer::Made(rule_id))
 }
 
 /// Accept proposal `id` with the rule [`preview`] derives for it.
@@ -1126,9 +1157,14 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<i6
 ///
 /// # Errors
 ///
-/// As [`preview`] and [`accept_with`].
+/// As [`preview`], and as [`accept_with`] with its refusal returned as the
+/// error — the fold [`preview`] makes of its own. That is this function's
+/// contract because its one caller outside tests, `taiyaku library proposals
+/// --accept`, prints either and exits 1 on it. A caller answering a refusal
+/// and a failure differently calls [`accept_with`] itself, as `taiyaku-serve`
+/// does.
 pub fn accept(conn: &Connection, id: i64) -> Result<i64, String> {
-    accept_with(conn, id, &preview(conn, id)?)
+    accept_with(conn, id, &preview(conn, id)?)?.or_refusal()
 }
 
 /// What a candidate rule would do, before it does it.
@@ -1688,18 +1724,22 @@ fn root_paths(
 /// Undo [`accept`]: delete the rule it wrote and reopen every proposal that
 /// rule answered.
 ///
+/// Answers [`Offer::Refused`], with nothing written, if that proposal has no
+/// `created_rule_id` — never accepted, or already un-accepted.
+///
 /// # Errors
 ///
-/// Returns an error if `id` names no proposal, if that proposal has no
-/// `created_rule_id` (never accepted, or already un-accepted), or if the
-/// delete or the update fails.
-pub fn unaccept(conn: &Connection, id: i64) -> Result<(), String> {
+/// Returns an error if `id` names no proposal — [`lookup`] tells that apart —
+/// or if the read, the update or the delete fails.
+pub fn unaccept(conn: &Connection, id: i64) -> Result<Offer<()>, String> {
     // Through [`one`] rather than a `SELECT created_rule_id` of its own, so
     // that an `id` naming no proposal reads the same sentence here, in
     // [`dismiss`] and in [`accept_with`] — and so that [`lookup`]'s split
     // between a missing row and a failed read covers all three.
     let Some(rule_id) = one(conn, id)?.created_rule_id else {
-        return Err(format!("proposal {id} has no accepted rule to remove"));
+        return Ok(Offer::Refused(format!(
+            "proposal {id} has no accepted rule to remove"
+        )));
     };
 
     // **One transaction, the same argument I5 makes about `accept_with`.**
@@ -1734,7 +1774,7 @@ pub fn unaccept(conn: &Connection, id: i64) -> Result<(), String> {
 
     tx.commit()
         .map_err(|e| format!("committing the un-accept of proposal {id}: {e}"))?;
-    Ok(())
+    Ok(Offer::Made(()))
 }
 
 /// Dismiss proposal `id`. Confirms the outcome doing nothing already has —
@@ -1751,16 +1791,19 @@ pub fn unaccept(conn: &Connection, id: i64) -> Result<(), String> {
 /// also delete a rule out from under a decision — [`unaccept`] is the
 /// command that does that, explicitly.
 ///
+/// Answers [`Offer::Refused`], with nothing written, if it is currently
+/// `accepted` — un-accept it first.
+///
 /// # Errors
 ///
-/// Returns an error if `id` names no proposal, if it is currently
-/// `accepted` — un-accept it first — or if the update fails.
-pub fn dismiss(conn: &Connection, id: i64) -> Result<(), String> {
+/// Returns an error if `id` names no proposal — [`lookup`] tells that apart —
+/// or if the read or the update fails.
+pub fn dismiss(conn: &Connection, id: i64) -> Result<Offer<()>, String> {
     // Through [`one`], for the reason [`unaccept`] reads that way.
     if one(conn, id)?.state == STATE_ACCEPTED {
-        return Err(format!(
+        return Ok(Offer::Refused(format!(
             "proposal {id} is accepted — un-accept it first, then dismiss"
-        ));
+        )));
     }
 
     conn.execute(
@@ -1768,7 +1811,7 @@ pub fn dismiss(conn: &Connection, id: i64) -> Result<(), String> {
         rusqlite::params![STATE_DISMISSED, id],
     )
     .map_err(|e| format!("dismissing proposal {id}: {e}"))?;
-    Ok(())
+    Ok(Offer::Made(()))
 }
 
 // --- evidence ----------------------------------------------------------------
@@ -2016,7 +2059,7 @@ pub fn evidence(conn: &Connection, id: i64) -> Result<Evidence, String> {
 /// routes answered an unknown id 409 on three routes and 500 on a fourth,
 /// each quoting the same sentence, because the only way to tell from the
 /// outside was to match on the store's own words. This is the same split
-/// [`Offer`] makes for [`preview`], made for a read.
+/// [`Offer`] makes for [`preview`] and the three writes, made for a read.
 ///
 /// # Errors
 ///

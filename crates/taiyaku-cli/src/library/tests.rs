@@ -2851,6 +2851,57 @@ fn proposals_dismiss_and_unaccept_reach_the_library_crate() {
     assert!(err.contains("no accepted rule"), "{err}");
 }
 
+/// A dismiss the library refuses reaches this command's error **word for
+/// word**, and writes nothing.
+///
+/// `proposals::dismiss` answers "un-accept it first" as a refusal —
+/// `Ok(Offer::Refused(why))` since O70, where it was an `Err` — so `proposals`
+/// turns it back into its own `Err`, which `main` prints and exits 1 on. Equal
+/// rather than `contains`, because a refusal reworded on its way out would
+/// still contain the phrase.
+#[test]
+fn proposals_dismiss_surfaces_the_accepted_refusal_unreworded() {
+    let db = db_with_one_open_proposal("proposals-dismiss-accepted");
+    let library = Library::open(&db).expect("reopens");
+    let id = {
+        let conn = library.conn();
+        taiyaku_library::proposals::open(&conn, 0.0)
+            .expect("open")
+            .remove(0)
+            .id
+    };
+    drop(library);
+    let db_arg = db.to_str().unwrap().to_string();
+
+    proposals(&[
+        "--accept".to_string(),
+        id.to_string(),
+        "--db".to_string(),
+        db_arg.clone(),
+    ])
+    .expect("accepts");
+    let err = proposals(&[
+        "--dismiss".to_string(),
+        id.to_string(),
+        "--db".to_string(),
+        db_arg,
+    ])
+    .unwrap_err();
+
+    assert_eq!(
+        err,
+        format!("proposal {id} is accepted — un-accept it first, then dismiss")
+    );
+    let library = Library::open(&db).expect("reopens");
+    let conn = library.conn();
+    let state: String = conn
+        .query_row("SELECT state FROM proposal WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .expect("state");
+    assert_eq!(state, "accepted", "a refused dismiss changes nothing");
+}
+
 /// A bare path handed to a command that takes none is refused by name, not
 /// ignored.
 ///
