@@ -99,4 +99,29 @@ describe('the sidebar', () => {
     const withoutAdmin = at(<Sidebar roots={[]} showRoots={false} />)
     expect(withoutAdmin.querySelector('a[href="/config"]')).toBeNull()
   })
+
+  it('offers a reader the account screen, which the two entries above do not', () => {
+    // O94. The account screen is where every account changes its own
+    // password, so this link takes no `admin &&` — and copying the guard the
+    // configuration link sits behind is the easy mistake, since the two are
+    // neighbours. Both non-admin shapes: `admin={false}`, and the prop absent,
+    // which is `gate.ts`'s "no account known".
+    const asReader = at(<Sidebar roots={[]} showRoots={false} admin={false} />)
+    expect(asReader.querySelector('a[href="/account"]')?.textContent).toBe(
+      'Account',
+    )
+
+    const unstated = at(<Sidebar roots={[]} showRoots={false} />)
+    expect(unstated.querySelector('a[href="/account"]')?.textContent).toBe(
+      'Account',
+    )
+  })
+
+  it('offers an admin the account screen too', () => {
+    // The other half: a guard inverted to `!admin &&` passes the test above.
+    const host = at(<Sidebar roots={[]} showRoots={false} admin />)
+    expect(host.querySelector('a[href="/account"]')?.textContent).toBe(
+      'Account',
+    )
+  })
 })

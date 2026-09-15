@@ -1,6 +1,8 @@
 import { act, useEffect } from 'react'
 import { MemoryRouter, useNavigate, useParams } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as api from './api'
+import { GateContext } from './gate'
 import * as library from './library'
 import { AppRoutes } from './Routes'
 import { flush } from './testing/async'
@@ -84,6 +86,18 @@ vi.mock('./library', () => ({
 vi.mock('./curation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./curation')>()),
   listProposals: vi.fn().mockResolvedValue({ proposals: [], counts: {} }),
+}))
+// O94 wires `/account` to `Account`, which lists this account's keys and
+// sessions on mount — a route this file exercises (`/account`, below). Its own
+// behaviour is `Account.test.tsx`'s job; these only have to resolve, the same
+// reason `oneSeries`, `search` and `listProposals` above exist. `logout` is
+// for the sign-out test, which belongs here because the arrow handing the
+// gate's `signOut` to `Account` is `Routes.tsx`'s.
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
+  listKeys: vi.fn().mockResolvedValue([]),
+  listSessions: vi.fn().mockResolvedValue([]),
+  logout: vi.fn().mockResolvedValue(undefined),
 }))
 
 // `Shell` and `Library` both fetch on mount, and every mock above resolves at
@@ -201,6 +215,66 @@ describe('the routes', () => {
     expect(host.querySelector('.library')).not.toBeNull()
     expect(host.querySelector('.sidebar')).not.toBeNull()
     expect(host.querySelector('.proposals')).not.toBeNull()
+  })
+
+  /**
+   * O94. The same trap again, so the screen is found by what only `Account`
+   * draws — its labelled section, directly inside the shell's `<main>`, and
+   * the current-password box — and by `listKeys`, which only its effect asks.
+   * **The library this file mocks holds no work at all**: `grid` answers no
+   * series and nothing unfiled, and `status` no roots. That is the row's own
+   * case — `Account` used to mount only inside `/read/:work`, so an account
+   * in a library with nothing readable had no way to it.
+   */
+  it('routes /account into the account screen inside the shell, in a library with no works', async () => {
+    const host = at('/account')
+    await flush()
+    expect(host.querySelector('[data-testid="reader"]')).toBeNull()
+    expect(host.querySelector('.sidebar')).not.toBeNull()
+    const screen = host.querySelector(
+      '.library > main > section[aria-label="Account"]',
+    )
+    expect(screen).not.toBeNull()
+    expect(
+      screen?.querySelector('input[autocomplete="current-password"]'),
+    ).not.toBeNull()
+    expect(host.querySelector('[role="dialog"]')).toBeNull()
+    expect(vi.mocked(api.listKeys)).toHaveBeenCalled()
+  })
+
+  it('signs out from /account through the gate above the routes', async () => {
+    const signOut = vi.fn()
+    const host = mount(
+      <MemoryRouter initialEntries={['/account']}>
+        <GateContext
+          value={{
+            who: {
+              user_id: 2,
+              admin: false,
+              can_download: false,
+              can_stream: false,
+              can_stamp: false,
+            },
+            signOut,
+          }}
+        >
+          <AppRoutes />
+        </GateContext>
+      </MemoryRouter>,
+    )
+    await flush()
+    const button = [...host.querySelectorAll('.library > main button')].find(
+      (b) => b.textContent === 'Sign out',
+    )
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error('no Sign out button on the account screen')
+    }
+    await act(async () => {
+      button.click()
+      await Promise.resolve()
+    })
+    await flush()
+    expect(signOut).toHaveBeenCalledTimes(1)
   })
 
   it('sends a reader route with no :work back to the library rather than crashing', async () => {

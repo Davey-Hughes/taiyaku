@@ -2764,6 +2764,7 @@ by itself.** Two rows want a sentence rather than a tick, and both are the
   account panel visible to a person: `UserRow` says "open any work and press
   A" because there is nowhere else to send them. The row stays **open**; add
   the sentence naming the screen that now depends on it.
+  *O94 has since closed — see its entry in `docs/status.md`.*
 - **O97** — untouched by this branch; named here only so a reader does not
   expect it closed.
 

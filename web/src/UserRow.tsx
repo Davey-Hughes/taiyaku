@@ -19,12 +19,12 @@
  * card that disabled only Remove leaves the identical accident one dropdown
  * away.
  *
- * **The self-password refusal names a screen with no URL of its own.**
+ * **The self-password refusal links to the screen that gets it right.**
  * `/api/password` is the route that keeps the session making the change, and
- * the screen that calls it is `Account.tsx` — mounted from `App.tsx` on
- * `/read/:work` and reachable only by opening a work and pressing `A`. That is
- * O94, and it is stated rather than worked around: the fix is a route, and it
- * belongs to the reader's chrome rather than to this branch.
+ * the screen that calls it is `Account.tsx`, at `/account`. Until O94 closed
+ * that screen had no URL — it mounted from `App.tsx` on `/read/:work`, behind
+ * `A` — and this card said "open any work and press A", which an administrator
+ * of a library with no readable work could not do.
  *
  * **Grants are sent whole.** There is no route that grants or revokes one
  * root; `account::Patch::roots` replaces the list, an absent key leaves it
@@ -36,6 +36,7 @@
  * `users_api` calls the second-most destructive in the product.
  */
 import { useRef, useState } from 'react'
+import { Link } from 'react-router'
 import type { Root } from './config'
 import {
   onlyAdminWhoCanLogIn,
@@ -484,8 +485,8 @@ export function UserRow({
             You cannot reset your own password here: this ends every session the
             account has, and yours is the session making the change. The server
             refuses it and names <code>/api/password</code>, which keeps the
-            session making the change. That is the account panel — open any work
-            and press A. It has no URL of its own yet (O94).
+            session making the change. Change your own on{' '}
+            <Link to="/account">your account screen</Link>.
           </p>
         ) : (
           <p className="why">

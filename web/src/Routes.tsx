@@ -19,8 +19,10 @@
  * *page* and a remount costs a sidecar fetch and a resolver construction.
  */
 import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router'
+import { Account } from './Account'
 import App from './App'
 import { Config } from './Config'
+import { useGate } from './gate'
 import { Library } from './Library'
 import { Proposals } from './Proposals'
 import { Search } from './Search'
@@ -33,6 +35,24 @@ function Reader() {
   const navigate = useNavigate()
   if (!work) return <Navigate to="/" replace />
   return <App key={work} work={work} onLeave={() => void navigate('/')} />
+}
+
+/**
+ * The account screen at a URL of its own — O94.
+ *
+ * From spec A2 until this route, `Account` mounted only inside `App`, behind
+ * `A`: the one screen where an account changes its own password could be
+ * reached only by opening a work, and not at all in a library with no work to
+ * open — while `UserRow` refuses an administrator's reset of their own
+ * password and has to send them somewhere. One component draws both; here it
+ * is a page in `Shell`'s `<main>` rather than an overlay over a reader.
+ *
+ * Sign-out is the gate's, exactly as it is for the reader's panel. The `?.` is
+ * the no-gate case, which only a test mounting these routes on their own meets.
+ */
+function AccountScreen() {
+  const gate = useGate()
+  return <Account placement="page" onSignedOut={() => gate?.signOut()} />
 }
 
 export function AppRoutes() {
@@ -84,6 +104,20 @@ export function AppRoutes() {
         element={
           <Shell>
             <Config />
+          </Shell>
+        }
+      />
+      {/*
+        O94. Every signed-in account's rather than an administrator's, so the
+        sidebar draws its link for everyone: `Account`'s own doc comment says
+        no route it calls names another account. It needs no work in the
+        library, which is the case the reader's panel could never reach.
+      */}
+      <Route
+        path="/account"
+        element={
+          <Shell>
+            <AccountScreen />
           </Shell>
         }
       />

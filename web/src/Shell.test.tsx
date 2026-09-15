@@ -192,6 +192,25 @@ describe('Shell', () => {
   })
 
   /**
+   * O94: the account link is the one sidebar entry that follows no account's
+   * role. `Sidebar.test.tsx` pins it against the prop; this pins it through
+   * the chrome a signed-in reader actually gets, with the gate's `admin` bit
+   * false — so a later change that gated it on anything `Shell` knows about
+   * the account is red here as well as there.
+   */
+  it('offers a signed-in reader the account screen', async () => {
+    const asReader = await settle(
+      <Shell>
+        <p>x</p>
+      </Shell>,
+      who({ admin: false }),
+    )
+    expect(
+      asReader.querySelector('.sidebar a[href="/account"]')?.textContent,
+    ).toBe('Account')
+  })
+
+  /**
    * The count itself. `Sidebar.test.tsx` pins that a number handed to
    * `Sidebar` is drawn; nothing there can pin that `Shell` fetches one, or
    * *which* one — deleting this effect leaves every sidebar test green and

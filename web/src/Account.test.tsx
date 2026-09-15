@@ -65,6 +65,67 @@ describe('Account', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  /**
+   * **The same screen at `/account`, drawn as a page** — O94. Inside `Shell`'s
+   * `<main>` there is no reader under it to cover and nothing to close: the
+   * sidebar beside it is how a person leaves. And the panel's fixed dark
+   * palette does not come with it. `.library` follows the viewer's colour
+   * scheme, and on its light canvas that palette draws the "Password changed"
+   * notice in `#a8ffb4` on white — so the check runs after a change, with the
+   * notice on screen, and finds no element carrying a colour of its own.
+   */
+  it('draws as a page with no overlay, no Close and no palette of its own', async () => {
+    vi.stubGlobal(
+      'fetch',
+      server({
+        '/api/keys': () =>
+          json([{ id: 1, name: 'Panels', created: 'then', last_used: null }]),
+        '/api/sessions': () => json([]),
+        'PUT /api/password': () => new Response(null, { status: 204 }),
+      }),
+    )
+    const host = mount(<Account placement="page" onSignedOut={noop} />)
+    await settle()
+
+    const screen = host.firstElementChild
+    if (!(screen instanceof HTMLElement)) throw new Error('nothing drawn')
+    expect(screen.tagName).toBe('SECTION')
+    expect(screen.getAttribute('aria-label')).toBe('Account')
+    expect(host.querySelector('[role="dialog"]')).toBeNull()
+    expect(buttonSaying(host, 'Close')).toBeUndefined()
+    // The key list loaded: its one row's Revoke is the only one drawn.
+    expect(buttonSaying(host, 'Revoke')).toBeDefined()
+
+    const current = host.querySelector<HTMLInputElement>(
+      'input[autocomplete="current-password"]',
+    )
+    const next = host.querySelector<HTMLInputElement>(
+      'input[autocomplete="new-password"]',
+    )
+    if (!current || !next) throw new Error('missing password fields')
+    type(current, 'old')
+    type(next, 'new')
+    await act(async () => {
+      current.form?.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      )
+      await Promise.resolve()
+    })
+    await settle()
+    const notice = [...screen.querySelectorAll('p')].find((p) =>
+      (p.textContent ?? '').startsWith('Password changed'),
+    )
+    expect(notice).toBeDefined()
+
+    // Read off the `style` attribute React wrote, element by element.
+    const painted = [...screen.querySelectorAll('*')]
+      .filter((el) =>
+        /\b(color|background|border)/.test(el.getAttribute('style') ?? ''),
+      )
+      .map((el) => `${el.tagName}: ${el.getAttribute('style')}`)
+    expect(painted).toEqual([])
+  })
+
   it('lists the account’s keys and sessions', async () => {
     vi.stubGlobal(
       'fetch',

@@ -1618,6 +1618,47 @@ body {
   padding: 0.25rem 0;
 }
 
+/* O94's account screen at `/account`: the `Account` the reader draws as an
+   overlay, drawn here inside `.library`'s `<main>`. System colours, per this
+   file's rule. The panel's palette is fixed dark to sit over a page, and on a
+   light `Canvas` it would draw the "Password changed" notice in pale green on
+   white, so `Account` hands this placement no colour at all. */
+.account {
+  max-width: 40rem;
+}
+
+.account > h2 {
+  margin: 0;
+}
+
+.account section {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid ButtonBorder;
+}
+
+.account input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0.25rem 0 0.5rem;
+  padding: 0.3rem 0.5rem;
+  font: inherit;
+}
+
+.account button {
+  margin-top: 0.5rem;
+}
+
+.account .secret {
+  margin-top: 0.6rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid ButtonBorder;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  word-break: break-all;
+}
+
 .backup .backup-list .when,
 .backup .backup-list .size {
   opacity: 0.8;

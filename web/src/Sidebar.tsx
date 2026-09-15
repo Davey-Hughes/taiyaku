@@ -38,6 +38,13 @@
  * non-admin who types `/config` reaches it and is shown the server's own
  * sentence, which is exactly what `/proposals` already does.
  *
+ * **`/account` is drawn for everyone, and takes no prop at all.** O94: the
+ * account screen — this account's password, API keys and sessions — was
+ * reachable only from inside the reader until it had a route, and the users
+ * screen refuses an administrator's reset of their own password by sending
+ * them there. Every account has a password to change, so the two admin-only
+ * entries beside it are the exception here, not the pattern to copy.
+ *
  * **`openProposals` is the count spec C3 §6 and the build design's
  * file-structure table both asked for, and this entry shipped without.** The
  * deviation was recorded rather than silently taken, and its stated cost was
@@ -114,6 +121,9 @@ export function Sidebar({
             <Link to="/config">Configuration</Link>
           </li>
         )}
+        <li>
+          <Link to="/account">Account</Link>
+        </li>
       </ul>
       {showRoots && roots.length > 0 && (
         <>

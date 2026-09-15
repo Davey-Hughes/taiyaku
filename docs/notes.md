@@ -17965,3 +17965,154 @@ renamed. `check-all.sh` exited 0 and ended `all green, except NOT MEASURED:`,
 with `standing corpus checks (TAIYAKU_CORPUS unset)` the only thing listed, and
 `status-test-count` found 2130 at both of its sites. `web/` was not changed:
 `test:coverage` ran 2,112 tests and `test:browser` 28.
+
+## O94: the account screen has a URL of its own — 2026-09-14
+
+O94 recorded that `Account.tsx`, the one screen where an account changes its
+own password, was mounted only by `App.tsx`, which `Routes.tsx` mounts on
+`/read/:work` alone, and that C4 PR C's `UserRow` sends an administrator there
+when `users_api::patch_user` refuses a reset of their own password.
+
+### The premise, on `main` (`6a2e72d`)
+
+- `Routes.tsx` declared seven routes: `/`, `/series/:id`, `/search`,
+  `/proposals`, `/config/*`, `/read/:work` and `*`. None was an account route.
+- `git grep '<Account' 6a2e72d -- web/src` found it rendered in `App.tsx`
+  alone outside the tests, which are `Account.test.tsx`'s mounts and a comment
+  in `App.test.tsx`. `App.tsx` renders it unconditionally with `visible={accountOpen}`, and
+  `accountOpen` is set by `keyPlan`'s `open-account`, which `keys.ts` binds to
+  `A`.
+- `UserRow.tsx`'s refusal read "That is the account panel — open any work and
+  press A. It has no URL of its own yet (O94)."
+- `users_api::patch_user` answers a password patch whose target is the caller
+  with a refusal whose sentence names `/api/password`.
+- What `Account` took from the reader was three props: `visible`, `onClose`,
+  and `onSignedOut`, which `App` passes as `gate?.signOut()`. Its data come from
+  `api.ts`'s `listKeys`, `listSessions`, `createKey`, `revokeKey`,
+  `revokeSession`, `changePassword` and `logout`, none of which names a work.
+  `Shell` provides the sidebar, `BrowseSettings`, `<main>`,
+  `BrowsePrefsContext`, `InboxRefreshContext` and `StatusContext`, and hands
+  `Sidebar` the gate's `admin` bit, which draws Proposals and Configuration only
+  when it is true.
+
+All of it held, and nothing in the row was found wrong.
+
+### What the specs say
+
+None names a URL or a placement. C4's screens design lists "a general account
+screen outside the reader" as out of scope, and §6.1 says making the panel
+reachable "is a change to the reader's chrome and is out of scope here. Worth
+an open item on the way out." C1's browse design sketches the sidebar in §2
+with no account entry. A2's auth design says in §9 that A2 ships "an account
+screen", and names no route. C1's shell plan mentions the account only in
+`keyplan`'s `accountOpen` guard and the key table's account row. So `/account`, linked beside `/config`, was
+chosen, and the reader's panel was kept, since nothing asks for its removal.
+
+### The fix
+
+`/account` mounts `<Shell><AccountScreen /></Shell>`, and `AccountScreen`
+hands `Account` the gate's `signOut`. The sidebar's Account link follows
+Configuration and takes no guard. `Account` takes a `placement`. `'panel'`, the
+default, is what `App` renders, and is unchanged. `'page'` renders a
+`<section class="account" aria-label="Account">` holding a heading and the same
+three sections, with no overlay and no Close. The panel's colours —
+`sectionStyle`, `fieldStyle`, `secretStyle`, the alert's `#ffb4a8` and the
+notice's `#a8ffb4` — moved into `LOOKS.panel`, and `LOOKS.page` is empty;
+`index.css`'s `.account` block borders in `ButtonBorder` and inherits the
+text colour. `UserRow`'s refusal now ends "Change your own on your account
+screen", with the last three words a link to `/account`. `gate.ts`'s doc for
+`signOut` named only the panel's Sign out button, and now names both.
+
+A first `.account label` rule drew biome's `noDescendingSpecificity` warning
+against `.root-row .fields label`. It was replaced by a margin on
+`.account input`, after which `biome check` reported nothing.
+
+### The tests, watched red
+
+Written before the fix and run against `main`'s components, all seven failed:
+
+| test | failed with |
+| --- | --- |
+| `Routes.test.tsx`, "routes /account into the account screen inside the shell, in a library with no works" | `expected null not to be null` |
+| `Routes.test.tsx`, "signs out from /account through the gate above the routes" | `no Sign out button on the account screen` |
+| `Sidebar.test.tsx`, "offers a reader the account screen, which the two entries above do not" | `expected undefined to be 'Account'` |
+| `Sidebar.test.tsx`, "offers an admin the account screen too" | `expected undefined to be 'Account'` |
+| `Shell.test.tsx`, "offers a signed-in reader the account screen" | `expected undefined to be 'Account'` |
+| `UserRow.test.tsx`, "will not let an administrator reset their own password, and links to where to" | `expected undefined to be '/account'` |
+| `Account.test.tsx`, "draws as a page with no overlay, no Close and no palette of its own" | `nothing drawn` |
+
+The `UserRow` test replaces one that asserted the whole card's `textContent`
+contained "press A"; it now asserts on the refusal's own paragraph and on its
+link. `UserRow.test.tsx` and `Users.test.tsx` mount under a `MemoryRouter`,
+because the card now links.
+
+Each break below was applied to the final code by a script that checked its
+text occurred once, ran the six test files under `--reporter=default`,
+restored the file and compared it byte for byte with a saved copy, which was
+identical every time. A control run first passed all 110, and `App.test.tsx`'s
+"opens the account panel on A and closes it on Escape" passed on its own.
+
+| applied to the final code | failed | at |
+| --- | --- | --- |
+| the `/account` route deleted | both route tests | `Routes.test.tsx:237`, `expected null not to be null`; `:270`, `no Sign out button on the account screen` |
+| the sidebar's Account link deleted | both `Sidebar.test.tsx` tests and the `Shell.test.tsx` one | `Sidebar.test.tsx:110` and `:123`, `Shell.test.tsx:210`, each `expected undefined to be 'Account'` |
+| the link wrapped in `admin &&` | the reader `Sidebar.test.tsx` test and the `Shell.test.tsx` one; the admin test passed | `Sidebar.test.tsx:110`, `Shell.test.tsx:210` |
+| `UserRow`'s old sentence put back | the `UserRow.test.tsx` test | `UserRow.test.tsx:207`, `expected undefined to be '/account'` |
+| the page given `LOOKS.panel` | the `Account.test.tsx` page test | `Account.test.tsx:126`, nine painted elements where none were expected |
+
+None survived. cargo-mutants does not cover `web/`, so these are the mutation
+evidence.
+
+### In a browser
+
+**Substrate.** The development workstation. `taiyaku serve` ran from
+`target/debug/taiyaku`, built from this branch, on `127.0.0.1:18094`, with a
+scratch database, a scratch `--cache` and `--log-requests`; `vite` in
+development ran on `127.0.0.1:5194` with `TAIYAKU_SERVE` pointed at it. The
+browser, driven by Playwright, reported `Chrome/153.0.0.0` on Linux.
+`taiyaku library user list --db` created the database and listed
+`1 local (admin)  (no password set)`, `library user password local` set a
+password, and `serve` started with "holds no works yet". Everything in the
+table was read from the DOM, and the last column from the request log.
+
+| step | the DOM | the server |
+| --- | --- | --- |
+| open `/`, signed out | the sign-in form | `/api/me` 401 |
+| sign in as `local` | at `/`, "No library yet"; the sidebar's links Library, Search, Proposals, Configuration and Account (`/account`) | `POST /api/session` 204 |
+| click Account | at `/account`, `.library > main > section.account` headed Account, with sections Password, API keys and Signed in; no `[role="dialog"]` and no Close; the Account link focused; no element with an inline colour, background or border; the first section's top border computed `solid rgb(0, 0, 0)` | `/api/keys` and `/api/sessions` 200 |
+| change the password | "Password changed. Every other signed-in browser has been signed out; API keys still work.", with no `style` attribute and computed `rgb(0, 0, 0)`; both fields cleared | `PUT /api/password` 204 |
+| Sign out | the sign-in form, still at `/account` | `DELETE /api/session` 204 |
+| sign in with the old password | "That name and password did not match." | `POST /api/session` 401 |
+| sign in with the new one | at `/account`, the account screen again, listing one session, "(this one)" | `POST /api/session` 204 |
+
+The computed colours are the light scheme's.
+
+**The reader's panel.** `gotoubun-v01`'s `raw-mono` archive was hardlinked into
+a scratch root and read with `library scan --add`, which derived one work,
+`go-toubun-no-hanayome---v01-cbz`. The running server, started with
+none, answered `GET /api/works/go-toubun-no-hanayome---v01-cbz` with 404. It was
+stopped by PID and started again, listed the work at startup, and served it. At
+`/read/go-toubun-no-hanayome---v01-cbz` page 1 was drawn and there was no
+dialog. After `A` there was a `[role="dialog"][aria-label="Account"]` whose
+inline style carries `background: rgba(24, 24, 24, 0.96)`, inside a
+`position: fixed` overlay, with a Close button, the same three sections and the
+current session. After
+`Escape` there was no dialog, and page 1 was still drawn.
+
+### Counts, and isolation
+
+`--project node` counts 1,157 tests, unchanged, and `--project jsdom` 961, six
+more: six of the seven tests above are new, and `UserRow`'s replaces one. No
+browser test was added, and no Rust changed.
+
+`date -Iseconds` was stamped at 2026-09-14T21:30:42-07:00, before the archive
+was hardlinked. After the last drive, with both servers stopped by PID,
+`find corpus -newermt 2026-09-14T21:30:42-07:00` returned nothing. The
+Playwright tool writes its snapshots and console logs to the main checkout's
+`.playwright-mcp/`, which `.gitignore` names.
+
+### Not checked
+
+- A non-admin account in the browser: the link for one is pinned in jsdom only.
+- The page in a dark colour scheme, and on a touch device.
+- The production host.

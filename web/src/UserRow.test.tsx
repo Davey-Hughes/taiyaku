@@ -1,4 +1,5 @@
 import { act } from 'react'
+import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 import type { Root } from './config'
 import { mount, rerender } from './testing/mount'
@@ -61,15 +62,18 @@ async function show(
   const changed = over.onChanged ?? vi.fn()
   let host: HTMLElement | undefined
   await act(async () => {
+    // A router because the self-reset refusal links to `/account` (O94).
     host = mount(
-      <UserRow
-        user={who}
-        users={everyone}
-        // `null` asks for the unread state; absent means one ordinary root.
-        roots={over.roots === null ? undefined : (over.roots ?? [root()])}
-        actingAs={over.actingAs}
-        onChanged={changed}
-      />,
+      <MemoryRouter>
+        <UserRow
+          user={who}
+          users={everyone}
+          // `null` asks for the unread state; absent means one ordinary root.
+          roots={over.roots === null ? undefined : (over.roots ?? [root()])}
+          actingAs={over.actingAs}
+          onChanged={changed}
+        />
+      </MemoryRouter>,
     )
     await Promise.resolve()
   })
@@ -187,16 +191,21 @@ describe('the actor rule', () => {
     expect(host.textContent).toContain('another administrator has to do it')
   })
 
-  it('will not let an administrator reset their own password, and says where to', async () => {
-    // The fourth refusal, and the one whose advice names a screen with no URL:
-    // `Account.tsx` mounts from inside the reader. O94.
+  it('will not let an administrator reset their own password, and links to where to', async () => {
+    // The fourth refusal, and the one whose advice names another screen. Until
+    // O94 that screen had no URL, and this said "open any work and press A";
+    // it links to `/account` now. Asserted on the refusal's own paragraph and
+    // on the link as an element, so a sentence that merely spells out
+    // `/account` does not pass for a way a person can follow.
     const me = user()
     const { host } = await show(me, [me, sam()], { actingAs: 1 })
     expect(
       control<HTMLInputElement>(host, 'input[name="password"]').disabled,
     ).toBe(true)
-    expect(host.textContent).toContain('/api/password')
-    expect(host.textContent).toContain('press A')
+    const why = control(host, 'form.reset .why')
+    expect(why.querySelector('code')?.textContent).toBe('/api/password')
+    expect(why.querySelector('a')?.getAttribute('href')).toBe('/account')
+    expect(why.textContent).not.toContain('press A')
   })
 
   it("resets somebody else's password and says what that ends", async () => {
@@ -664,13 +673,15 @@ describe('a revocation answering after a fresher list', () => {
     })
     await act(async () => {
       rerender(
-        <UserRow
-          user={fresher}
-          users={[user(), fresher]}
-          roots={[root()]}
-          actingAs={1}
-          onChanged={vi.fn()}
-        />,
+        <MemoryRouter>
+          <UserRow
+            user={fresher}
+            users={[user(), fresher]}
+            roots={[root()]}
+            actingAs={1}
+            onChanged={vi.fn()}
+          />
+        </MemoryRouter>,
       )
       await Promise.resolve()
     })
@@ -778,13 +789,15 @@ describe('removal', () => {
     const remade = user({ id: 7, name: 'sam', role: 'user' })
     await act(async () => {
       rerender(
-        <UserRow
-          user={remade}
-          users={[me, remade]}
-          roots={[root()]}
-          actingAs={1}
-          onChanged={vi.fn()}
-        />,
+        <MemoryRouter>
+          <UserRow
+            user={remade}
+            users={[me, remade]}
+            roots={[root()]}
+            actingAs={1}
+            onChanged={vi.fn()}
+          />
+        </MemoryRouter>,
       )
       await Promise.resolve()
     })

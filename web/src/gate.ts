@@ -15,8 +15,8 @@ export interface Gated {
   /** Who the server resolved this browser to, and what it may do. */
   who: Me
   /**
-   * Back to the sign-in screen — the account panel's "Sign out" button, and
-   * nothing else. **Not the 401 path**: `api.ts`'s `whenSignedOut` carries
+   * Back to the sign-in screen — the account screen's "Sign out" button, in
+   * the reader's panel or at `/account`, and nothing else. **Not the 401 path**: `api.ts`'s `whenSignedOut` carries
    * that, and the gate subscribes to it itself precisely so no screen has to
    * remember to.
    */

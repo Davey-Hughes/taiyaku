@@ -109,6 +109,9 @@ the server half's §1 made for its own ordering, one layer up.
 - **A general account screen outside the reader.** `Account.tsx` mounts from
   `App.tsx` and is reachable only from inside a work. §6 records what that
   costs the users screen and does not fix it.
+  *O94 has since closed — 2026-09-14, see its entry in `docs/status.md`.
+  `Account` is routed at `/account` under `Shell`, the sidebar links to it for
+  every signed-in account, and `UserRow`'s refusal links there.*
 - **A watcher, an interval scheduler, or an in-server backup timer.** The
   server half declined all three; nothing here reopens them. The roots screen
   shows `watch::probe`'s answer and the interval; a cron entry runs
@@ -542,7 +545,8 @@ not.
 own password at the account panel" is advice a person cannot follow from
 `/config/users`. The screen says where it is; making it reachable is a change
 to the reader's chrome and is out of scope here. Worth an open item on the way
-out.
+out. *That item was O94, closed on 2026-09-14. The fix was a route under `Shell`
+rather than a change to the reader's chrome, whose panel still opens on `A`.*
 
 ### 6.2 The users screen
 

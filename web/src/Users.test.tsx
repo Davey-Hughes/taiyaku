@@ -1,4 +1,5 @@
 import { act } from 'react'
+import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from './config'
 import { GateContext } from './gate'
@@ -47,10 +48,14 @@ const who = {
 async function settle(signedInAs = who) {
   let host: HTMLElement | undefined
   await act(async () => {
+    // A router because a card for the signed-in account links to `/account`
+    // (O94), and that card is drawn whenever `signedInAs` is in the list.
     host = mount(
-      <GateContext value={{ who: signedInAs, signOut: () => undefined }}>
-        <Users />
-      </GateContext>,
+      <MemoryRouter>
+        <GateContext value={{ who: signedInAs, signOut: () => undefined }}>
+          <Users />
+        </GateContext>
+      </MemoryRouter>,
     )
     await Promise.resolve()
     await Promise.resolve()
