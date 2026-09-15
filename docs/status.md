@@ -3971,10 +3971,10 @@ the page area, not on the page".
 
 What remains: the forty-eight open items tabled above — twenty-one of them found by
 a whole-branch review or by the review of one's own fixes (O42 and O44 among
-them, O96 from the *third* such pass over one branch, which is the most any
+them — **O44 has since closed, on 2026-08-29, and is no longer one of them** — O96 from the *third* such pass over one branch, which is the most any
 change here has had — **it has since closed, on 2026-09-06, and is no longer one
 of the items this sentence is counting** — O45 through O53 all from the scanner branch's own whole-branch
-review or from a fix round inside it — **O47 has since closed, on 2026-09-14, and is no longer one of them** — O57 and O58 from spec A2's fourth, O59 from the mutation workflow's first sharded run, O74 from spec C3's whole-branch one, and O109 from the fix round of O100, filed five days after it surfaced), and
+review or from a fix round inside it — **O53 and O47 have since closed, on 2026-08-29 and 2026-09-14, and are no longer among them** — O57 and O58 from spec A2's fourth, O59 from the mutation workflow's first sharded run, O74 from spec C3's whole-branch one, and O109 from the fix round of O100, filed five days after it surfaced), and
 O69 through O72 from spec C3's own
 per-task reviews rather than from a whole-branch one, and O67 opened
 by driving a real OPDS client against a real library rather than found by a
