@@ -17713,3 +17713,79 @@ standing corpus checks (TAIYAKU_CORPUS unset)`.
 `date -Iseconds` was stamped at 2026-09-14T19:36:26-07:00, before the first
 server started. After the last run, with every server stopped by PID,
 `find corpus -newermt 2026-09-14T19:36:26-07:00` returned nothing.
+
+## O77 and O51: two rows the code had moved past — 2026-09-14
+
+Neither row closes. Each describes a gap the code has since partly filled, so
+each keeps its prose as written and gains an in-place note saying what moved.
+Both were flagged while classifying the open rows on 2026-09-14 and are
+re-measured here on `6a2e72d`. The same pass escapes seven rows whose cells did
+not render.
+
+### O77: the mutant is caught, and not on purpose
+
+The row's substitution, `&&` to `||` in `derive::unattached_chapter_dirs`'s
+`admitted.resolved.volume.is_none() && admitted.resolved.chapter.is_some()`,
+applied by hand in place (one match), then
+`cargo test -p taiyaku-library --no-fail-fast`, then `git checkout` of the file
+and an empty `git status`:
+
+- 785 tests ran: 784 passed, 1 failed, 4 ignored. The row recorded 521 run and
+  none failed.
+- The failure is `preview::tests::a_preview_and_a_real_save_produce_the_same_structure`,
+  at its literal `Impact`: `proposals_raised: 1` against `0`.
+- The extra proposal came through `proposals::raise_attach_chapters`, the
+  function's only caller outside tests, which raises one proposal per series
+  holding a directory it names. `derive`'s own `report.unattached_chapter_dirs`
+  does not call it: that figure is `chapter_dirs.len()`, collected by derive's
+  own sorting pass.
+
+The test pins a preview against a real save (spec C4 §4.1) and does not name the
+guard. The `derive/tests.rs` assertions on `report.unattached_chapter_dirs`
+cannot see it at all, for the reason above. The catch holds for as long as that
+fixture's impact includes such a directory, so the deliberate assertion the row
+asks for is still what remains.
+
+`docs/mutants-baseline.md` still lists the mutant as UNTRIAGED at `:1451`, and
+the guard now sits at line 2356. That file records sweeps, so it is left for
+the next one.
+
+### O51: both columns are written
+
+- `git log -S'UPDATE root SET last_scan_at' -- crates` names one commit,
+  `46bf9e1` (#105).
+- `scan_root`'s callers outside tests are `taiyaku-cli`'s `library scan`,
+  `taiyaku-serve`'s `POST /api/library/roots/{id}/scan`, and the corpus check in
+  `corpus.rs`.
+- `scan::tests::a_scan_records_when_it_ran_and_how_it_went` asserts `ok`,
+  `a_refused_empty_scan_records_the_refusal_rather_than_nothing` asserts
+  `refused`, and `a_failed_scan_records_failed_rather_than_ok_or_nothing`
+  covers `failed`.
+
+What still stands is the first sentence. Outside tests, `scan_interval_secs` is
+read into `scan::Root`, written once by `add_root_checked` from
+`watch::interval_for`, patchable through `update_root` and
+`PATCH /api/library/roots/{id}`, sent in the roots JSON, and drawn by
+`web/src/config.ts::regimeLine` as "scanning every …". No timer, task or loop in
+`taiyaku-serve` reads it, so the roots screen now states an interval nothing
+keeps.
+
+### Seven rows that did not render
+
+A table row splits on every unescaped `|`, code spans included, and the forge
+drops cells past the header's five. O38, O64, O76, O77, O96, O97 and O104 each
+had one or more inside a code span, and each is now written `\|`, as O105's
+already was. Checked two ways:
+
+- Every `| O<n> |` row now has exactly six unescaped pipes. Those seven had
+  between seven and twelve.
+- Each row, rendered through the forge's `POST /api/v1/markdown` (`gfm`) under
+  the table's real header and separator: on `main`, all seven ended in a cell
+  that was not their Opened-by text. Escaped, all seven end in it, and the What
+  cell shows the literal pipe.
+
+Not fixed here: `docs/mutants-baseline.md`'s run log has blank lines inside its
+table. Rendered the same way, only the eleven rows above the first blank line
+form the table (12 `<tr>` with the header), and the eleven rows from 2026-08-29
+on are not table rows at all. Three of those eleven also carry a pipe in a code span,
+so joining the table back up needs the same escape.
