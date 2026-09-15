@@ -647,7 +647,8 @@ fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
 /// other. `unattached_chapter_dirs` and `unreadable` print only when
 /// non-zero, and so do `suppressed`, `rekeyed`, `kept_editions`, `merged`,
 /// `unrecognised_kinds`, `emptied_works` (with the counts of what its fold
-/// wrote, what stopped existing, and what it discarded), `unfolded_works`,
+/// wrote, what stopped existing, what it dropped as a copy the target already
+/// held identically, and what it discarded), `unfolded_works`,
 /// `unreadable_hand`, `series_holding_no_work`, `repaired_documents`,
 /// `unwritable_documents`, `orphan_documents`, `declined_documents` and
 /// `stale_documents`:
@@ -732,13 +733,14 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
         let _ = write!(
             line,
             ", {} work(s) folded away ({} position(s) written, {} position(s) lost, \
-             {} note(s) and {} truth page(s) moved, {} truth page(s) already held, \
-             {} row(s) discarded)",
+             {} note(s) and {} truth page(s) moved, {} identical note(s) dropped, \
+             {} truth page(s) already held, {} row(s) discarded)",
             report.emptied_works,
             report.moved_positions,
             report.lost_positions,
             report.moved_notes,
             report.moved_truth_pages,
+            report.dropped_notes,
             report.moved_truth_collisions,
             report.discarded_rows,
         );

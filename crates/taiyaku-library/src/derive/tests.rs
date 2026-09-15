@@ -3075,16 +3075,16 @@ fn write_the_fold_rule(conn: &Connection) {
 /// this branch is that their place survives a rescan they never asked for.
 ///
 /// **Every counter gets its own number, and that is the point of the
-/// fixture's shape.** `derive` fans one `fold::Moved` out into seven report
+/// fixture's shape.** `derive` fans one `fold::Moved` out into eight report
 /// fields, and this is the only test that goes through that fan-out. An
 /// earlier version of it planted one position and one note and asserted
 /// `(1, 0, 1, 1)` — so swapping the two assignments passed, and
 /// `moved_truth_pages`, `moved_truth_collisions` and `discarded_rows` were
 /// asserted nowhere at all: deleting `report.discarded_rows += …` broke
 /// nothing. Two readers who move, three notes, four pages moved, five pages
-/// the target already held, six discarded rows and seven readings destroyed
-/// make every one of the seven pinned by the number in it rather than by
-/// luck.
+/// the target already held, six discarded rows, seven readings destroyed and
+/// eight identical note copies dropped make every one of the eight pinned by
+/// the number in it rather than by luck.
 ///
 /// **`lost_positions` was the last one still exempt from that rule**, and
 /// asserting it as `0` was the exemption: `usize::default()` is `0`, so
@@ -3096,6 +3096,12 @@ fn write_the_fold_rule(conn: &Connection) {
 /// work about to be folded, which is exactly the shape
 /// `fold::move_positions`' `WHERE excluded.updated > progress.updated` makes
 /// a silent no-op, and `Moved::lost_positions` exists to see.
+///
+/// **`dropped_notes` is the eighth field, and O78 added it.** Reader 2 holds
+/// eight notes on both works in identical copies, so the fold drops eight and
+/// moves none of them — a number no other field here carries — and the
+/// target's own eight rows are read back by `rowid`, because a dropped copy
+/// and a dropped original leave the same columns behind.
 #[test]
 fn deriving_after_a_fold_moves_the_reader_onto_the_target_and_deletes_the_work() {
     let tree = crate::tests::tempdir("derive-fold-emptied");
@@ -3170,6 +3176,25 @@ fn deriving_after_a_fold_moves_the_reader_onto_the_target_and_deletes_the_work()
             "01JEXAMPLE0000000000000003",
         ],
     );
+    // Eight notes reader 2 holds on both works, identical copies of each
+    // other: `seed_notes` writes one slot, no region, no colour, a body per id
+    // and one pair of timestamps, and the target's copies sit under the key
+    // the fold maps `raw` onto — grandfathered there the way the truth pages
+    // below are. O78: the fold drops the eight on the folded work and keeps
+    // the target's, and none of them is a note moved.
+    let identical: Vec<String> = (1..=8)
+        .map(|n| format!("01JIDENTICAL0000000000000{n}"))
+        .collect();
+    let identical: Vec<&str> = identical.iter().map(String::as_str).collect();
+    seed_notes(&conn, colour, 2, "raw", &identical);
+    seed_notes(&conn, base, 2, "full-color", &identical);
+    let targets_copies: Vec<i64> = conn
+        .prepare("SELECT rowid FROM note WHERE user_id = 2 AND work_id = ?1 ORDER BY id")
+        .and_then(|mut s| {
+            s.query_map([base], |r| r.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .expect("the target's copies");
     // Nine labelled pages on the work that is about to be folded away, and
     // five of the same nine already labelled on the target under the edition
     // the fold will map onto — so four move and five are left as the target's.
@@ -3210,12 +3235,14 @@ fn deriving_after_a_fold_moves_the_reader_onto_the_target_and_deletes_the_work()
             second.moved_truth_collisions,
             second.discarded_rows,
             second.lost_positions,
+            second.dropped_notes,
         ),
-        (1, 0, 2, 3, 4, 5, 6, 7),
+        (1, 0, 2, 3, 4, 5, 6, 7, 8),
         "the Full Color work folded away; two places and three notes moved, \
          four labelled pages moved and five stayed the target's, six rows \
          the fold does not move were counted before the delete took them, \
-         and seven readings the newer target place overrode stopped existing"
+         seven readings the newer target place overrode stopped existing, \
+         and eight identical note copies were dropped rather than moved"
     );
     assert!(
         second.unfoldable.is_empty(),
@@ -3244,7 +3271,7 @@ fn deriving_after_a_fold_moves_the_reader_onto_the_target_and_deletes_the_work()
          archive they were actually reading"
     );
     let notes: Vec<(i64, String)> = conn
-        .prepare("SELECT work_id, edition FROM note ORDER BY id")
+        .prepare("SELECT work_id, edition FROM note WHERE user_id = 1 ORDER BY id")
         .and_then(|mut s| {
             s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()
@@ -3254,6 +3281,22 @@ fn deriving_after_a_fold_moves_the_reader_onto_the_target_and_deletes_the_work()
         notes,
         vec![(survivor, "full-color".to_string()); 3],
         "and so are all three of their notes, on the same edition"
+    );
+    let second_readers: Vec<(i64, i64)> = conn
+        .prepare("SELECT rowid, work_id FROM note WHERE user_id = 2 ORDER BY id")
+        .and_then(|mut s| {
+            s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .expect("reader 2's notes");
+    assert_eq!(
+        second_readers,
+        targets_copies
+            .iter()
+            .map(|rowid| (*rowid, survivor))
+            .collect::<Vec<_>>(),
+        "reader 2 is left holding the target's own eight rows, under their own \
+         rowids, and none of the copies from the folded work"
     );
 }
 

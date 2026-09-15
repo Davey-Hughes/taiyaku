@@ -400,7 +400,9 @@ export function consequence(
  * that the fold always succeeds — it still cannot: `fold::absorb` refuses
  * per work, leaving it standing, wherever moving a reader's own state would
  * not be safe (an edition key nothing maps, a note id one reader holds on
- * both works). That refusal is the rarer path now rather than the only one,
+ * both works in two copies that differ — two copies identical in every
+ * column are one note, and since O78 the fold keeps the surviving work's and
+ * goes ahead). That refusal is the rarer path now rather than the only one,
  * which is why it is named here in a clause rather than carrying its own
  * line.
  *

@@ -178,8 +178,11 @@ pub struct DeriveReport {
     ///
     /// A refusal is not always a mapping failure. `fold::absorb` also refuses
     /// a work carrying a reader's row on an edition key it no longer holds; a
-    /// pair where one reader holds one note id on both works, which `note`'s
-    /// key was widened to permit and which the move would collide on; and a
+    /// pair where one reader holds one note id on both works and the two
+    /// copies differ, which `note`'s key was widened to permit and which the
+    /// move would collide on (copies identical in every column are dropped
+    /// from the superseded work instead, and counted in
+    /// [`Self::dropped_notes`]); and a
     /// pair whose ground truth on a mapped edition was drawn against different
     /// archives on the two sides. All three are the reader's own state or the
     /// library's ground truth, and none is this fold's to destroy or to
@@ -311,7 +314,27 @@ pub struct DeriveReport {
     pub lost_positions: usize,
     /// Notes moved onto the target's matching edition by a fold, `edition`
     /// rewritten with them.
+    ///
+    /// **Rows moved, and only those.** A copy the fold dropped because the
+    /// target already held it identically is [`Self::dropped_notes`], never
+    /// here.
     pub moved_notes: usize,
+    /// Notes a fold deleted from the superseded work because the target
+    /// already held the same note, under the same id, for the same reader —
+    /// `fold::Moved::dropped_notes`, summed.
+    ///
+    /// **O78.** "The same" is every column but the two a fold rewrites: body,
+    /// slot, region, colour, `created` and `updated` equal, and the target's
+    /// edition exactly the one the superseded work's edition maps onto. Those
+    /// two rows are one fact written twice — the ordinary result of one
+    /// sidecar imported against both volumes — and until 2026-09-14 they
+    /// refused the whole fold. Copies that differ in anything still refuse,
+    /// and are named in [`Self::unfoldable`].
+    ///
+    /// A field rather than a silence, under the rule [`Self::suppressed`] and
+    /// [`Self::rekeyed`] state: a reader who counts their notes after a fold
+    /// finds these gone, and [`Self::moved_notes`] cannot say why.
+    pub dropped_notes: usize,
     /// Labelled truth pages, with their boxes, moved onto the target.
     pub moved_truth_pages: usize,
     /// Truth pages a fold left behind because the target already held them.
@@ -639,6 +662,7 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
                 report.moved_positions += moved.positions;
                 report.lost_positions += moved.lost_positions;
                 report.moved_notes += moved.notes;
+                report.dropped_notes += moved.dropped_notes;
                 report.moved_truth_pages += moved.truth_pages;
                 report.moved_truth_collisions += moved.collisions;
                 report.discarded_rows += moved.discarded;

@@ -18116,3 +18116,201 @@ Playwright tool writes its snapshots and console logs to the main checkout's
 - A non-admin account in the browser: the link for one is pinned in jsdom only.
 - The page in a dark colour scheme, and on a touch device.
 - The production host.
+
+## O78: a fold drops a note copy the target already holds — 2026-09-14
+
+O78 recorded that `fold::absorb` refuses the whole fold whenever one reader
+holds one note id on both works, whatever the two rows hold, and that the
+identical case — "same id, same body, and the same anchor once the mapped
+edition's slot rewrite is accounted for" — loses nothing when the source's copy
+is dropped, and nothing does it.
+
+### The premise, checked
+
+`fold::shared_note_ids` joined `note` to itself on `user_id` and `id` and
+returned every id it found; `absorb` refused on a non-empty list. On `main`,
+all 25 `fold::tests` passed, and one of them,
+`the_shared_note_refusal_counts_the_ids_and_shows_a_few`, wrote five ids
+identical in every column on both works and asserted a refusal. Migration 005's
+rationale is as the row quotes it.
+
+**There is no slot rewrite.** `move_notes` is `UPDATE note SET work_id = ?2,
+edition = ?4 WHERE work_id = ?1 AND edition = ?3`. `edition_map` pairs editions
+whose members carry the same digests in the same `ordinal` order, so slot and
+region carry across unchanged and the edition key is the only part of an
+anchor a fold rewrites.
+
+**The row's definition left three columns unsettled.** `PRAGMA
+table_info(note)`, read in sqlite3 3.53.4 after replaying all thirteen
+migrations, gives `user_id`, `id`, `work_id`, `edition`, `slot`, `rx`, `ry`,
+`rw`, `rh`, `color`, `body`, `created` and `updated`, keyed
+`(user_id, work_id, id)`; no migration after 005 names `note`. "Same body, same
+anchor" says nothing about `color`, which the reader can change on an existing
+note, or `created` and `updated`, which the client mints and
+`state::merge_notes` reads to choose between two copies. Work stopped there and
+the question went to the user, who answered: every column matches.
+
+**"No ordinary path back out" is not supported.** `notes::validate` exempts an
+anchor already stored and unchanged from the edition and slot checks, so a note
+on a key a re-solve renamed survives later writes. But `absorb` runs `stranded`
+before `shared_note_ids`, and `stranded` refuses any note on a key the edition
+map does not hold, so a note the grandfathering keeps never reaches the shared-id
+check. Deleting one copy through the app was not tried.
+
+### The rule, and NULL
+
+Two copies of one id, for one reader, are one note when `body`, `slot`, `rx`,
+`ry`, `rw`, `rh`, `color`, `created` and `updated` are equal and the target's
+`edition` is exactly the key `edition_map` sends the source's edition to. The
+comparison is a derived `PartialEq` over a Rust struct of those nine columns,
+beside `map.get(&from_key) == Some(&into_key)`.
+
+It is in Rust rather than SQL because of NULL. The ordinary note — the whole
+slot, the default colour — carries NULL in all five nullable columns. In the
+same sqlite3:
+
+| expression | result |
+| --- | --- |
+| `NULL = NULL` | NULL |
+| `NULL IS NULL` | 1 |
+| `CASE WHEN NULL = NULL THEN 'true' ELSE 'not true' END` | `not true` |
+| `1 AND (NULL = NULL)` | NULL |
+
+A comparison written with `=` calls two whole-slot copies different. Rust's
+`None == None` is `true`.
+
+### Order
+
+The source's identical copies are deleted after the last of `absorb`'s five
+refusal checks — the truth-provenance one — and before the move loop, whose
+`UPDATE` would otherwise collide on those ids. Every refusal therefore stays a
+`SELECT`. The transaction's rollback would also undo a delete made before a
+refusal, so a test comparing the table before and after cannot see that
+ordering; the refusal tests create triggers that raise on any insert, update or
+delete of `note` before calling `absorb`, so such a write comes back as an
+`Err`.
+
+### What reports it
+
+`Moved::dropped_notes` counts the deleted copies and `Moved::notes` still counts
+only rows moved. `derive` sums the first into a new `DeriveReport::dropped_notes`;
+the CLI's `derive_summary` prints it inside the fold's parenthesis as
+"identical note(s) dropped"; `config_api::derive_report_json` sends
+`dropped_notes`; and `ScanReport.tsx` draws it as "Identical notes dropped",
+beside "Notes moved". The web `Derived` type and the four test fixtures that
+build one needed the field as well, and the comments counting its fields moved
+from twenty-nine to thirty. `preview::preview_with_rows` runs the real derive
+in a transaction it rolls back and reads only `report.raised` from it, so a
+rule preview carries no fold figure for a dropped copy to disagree with.
+
+A refusal now names only the ids whose copies differ, and says so: "one reader
+holds N note id(s) on both work A and work B whose two copies differ".
+
+### The tests
+
+`one_note_id_held_on_both_works_refuses_the_fold` became
+`a_note_id_whose_two_copies_sit_on_different_slots_refuses_the_fold`, since its
+two copies differ only in slot. `the_shared_note_refusal_counts_the_ids_and_shows_a_few`
+wrote identical copies and asserted a refusal, which the rule now contradicts;
+each work's copy now carries its own body, and the count and the three-ids
+message are still asserted.
+
+New in `fold::tests`: an identical whole-slot pair folding, with two other notes
+moving beside it and the target's row read back by `rowid`; a pair with a sized
+region and a colour on keys that map onto each other; one refusal each for body,
+colour, `updated`, `created`, region and an edition key that does not map; one
+identical id and one that differs, refused whole; and a second reader holding
+the same id on the superseded work only. `derive`'s fan-out test gained an
+eighth field, eight identical copies on both works, and
+`derive_summary_says_what_a_fold_moved_and_what_its_delete_took` a fifty-five.
+`ScanReport.test.tsx` counts forty-two fields and pairs "Identical notes
+dropped" with its number per element.
+
+With `dropped_notes` added and `absorb` unchanged, four of the new fold tests
+failed. The three that expect a fold panicked with "the fold was refused: one
+reader holds 1 note id(s) on both work 2 and work 1"; the mixed test's message
+read "holds 2 note id(s)", naming the identical id beside the one that differs.
+
+### The tests, watched against each defect
+
+A script applied each change as a replacement that had to match exactly once,
+ran `cargo nextest run --workspace --no-fail-fast` with `TAIYAKU_CORPUS` unset,
+restored every file it had touched and compared it byte for byte. A control
+with no change ran first and passed all 2139. Afterwards, `git diff` outside
+`docs/` matched a snapshot taken before the run, apart from two edits made
+after the snapshot: `fold.rs`'s `Moved` literal, which clippy asked for, and a
+doc comment in `curation.ts`. Paths below are in `crates/taiyaku-library/src/`.
+
+| defect | tests that failed | where, and with |
+| --- | --- | --- |
+| compare `body` alone | the refusals over slot, region, colour, `updated`, `created` and an unmapped key | `fold/tests.rs:1703`: "dropping the identical copy of note `01JSHARED…` off work 2: a fold that should have refused wrote to note" |
+| compare the raw edition keys | the two identical folds, the mixed fold, the second reader, the unmapped key, `derive`'s fan-out | `fold/tests.rs:112`: "the fold was refused … whose two copies differ"; `fold/tests.rs:1973`: "holds 2 note id(s)"; the unmapped key at `:1703` |
+| ignore the edition | the unmapped key | `fold/tests.rs:1703` |
+| drop copies that differ | all seven single-difference refusals, the mixed fold, the count test | `fold/tests.rs:1703`; `:1559`: "five note ids collided, yet it folded: Moved { … dropped_notes: 5 … }" |
+| drop the target's copy | the two identical folds, the second reader, `derive`'s fan-out | `fold/tests.rs:1808` and `:1843`: the target's row under another rowid; `:2042`: `(2, 1)` against `(1, 1)` |
+| drop before the last refusal | the mixed fold | `fold/tests.rs:1703` |
+| the same, with the test's triggers removed | none | 2139 passed |
+| ignore `color` | the colour refusal | `fold/tests.rs:1703` |
+| ignore `updated` | the `updated` refusal | `fold/tests.rs:1703` |
+| ignore `created` | the `created` refusal | `fold/tests.rs:1703` |
+| NULL regions compare unequal | the whole-slot fold, the second reader, the mixed fold, `derive`'s fan-out | `fold/tests.rs:112`: "the fold was refused"; `:1973`: "holds 2 note id(s)" |
+| count dropped copies as moved | the two identical folds, the second reader, `derive`'s fan-out | `fold/tests.rs:1814`: `(3, 1)` against `(2, 1)`; `:1848`: `(1, 1)` against `(0, 1)` |
+| the delete without `user_id` | the second reader | `fold/tests.rs:2037`: reader 2's rows differ |
+| the match without `user_id` | the second reader | `fold/tests.rs:2037` |
+| `derive` never adds `dropped_notes` | the fan-out | `derive/tests.rs:3228` |
+| the CLI summary's two new arguments swapped | `derive_summary_says_what_a_fold_moved_and_what_its_delete_took` | `taiyaku-cli`'s `library/tests.rs:1601`: "55 truth page(s) moved, 8 identical note(s) dropped" |
+| `ScanReport.tsx`'s row reads `moved_notes` | "draws identical notes dropped apart from notes moved" | `expected '3' to be '7'` |
+| `ScanReport.tsx`'s row removed | that test and "draws every field of both reports" | "dropped_notes must be drawn: expected null not to be null" |
+
+Under "NULL regions compare unequal" the mapped-key fold, whose copies carry a
+sized region, stayed green; every fixture that failed holds whole-slot copies,
+which is the case that defect breaks. The two
+`ScanReport.tsx` changes ran `ScanReport.test.tsx` alone under
+`--reporter=default`.
+
+**One failure was not the defect.** The run that dropped the target's copy also
+failed `taiyaku-serve`'s `auth::tests::every_route_refuses_an_anonymous_request`,
+at `test_support.rs:23` with `NotFound`. That helper deletes and recreates a
+fixed directory under `std::env::temp_dir()`, which every checkout on this
+machine shares, and other worktrees on the machine were building and testing
+the same workspace at the time; whether one ran that test at that moment was
+not checked. It passed in the other sixteen runs and again alone.
+
+### On real material
+
+`corpus/kaguya-v01`'s `raw-mono` (213 pages) and `raw-color` (214) were
+hardlinked into a scratch root as `Kaguya/Kaguya - v01` and
+`Kaguya - Full Color/Kaguya - Full Color - v01`. `taiyaku library scan --add`
+into a scratch database derived two works with a `raw` edition each. sqlite3
+then wrote five notes for user 1, `local`: two ids on both works — the colour
+work's under `raw`, the base work's under `full-color` — one with a sized region
+and `amber` and one whole-slot, and a third id on the colour work only. A rule,
+`prefix` on `Kaguya - Full Color/` setting series `Kaguya` and edition key
+`full-color`, went in through `library rules --import`, and `library scan` ran
+again. The binary was `target/debug/taiyaku`, rebuilt after the mutation run
+had restored every file.
+
+The first attempt imported that one rule alone. `rules::import_json` replaces
+the whole table, so the four seeded rules went with it: the rescan derived "1
+series, 1 works, 1 editions, 1 members", put `full-color` on the colour work
+itself, and folded nothing. Both drives below exported the rules first,
+appended the fold rule and imported the five, each over fresh hardlinks and a
+fresh database.
+
+| the base work's copy of the second id | the second scan printed | note rows after |
+| --- | --- | --- |
+| identical | "1 work(s) folded away (0 position(s) written, 0 position(s) lost, 1 note(s) and 0 truth page(s) moved, 2 identical note(s) dropped, 0 truth page(s) already held, 0 row(s) discarded)" | rowids 2 and 4, the base work's own copies, unchanged; rowid 5 on work 1 `full-color`; rowids 1 and 3 gone |
+| a different body | "1 superseded work(s) left standing: one reader holds 1 note id(s) on both work 2 and work 1 whose two copies differ — `01JDRIVESECOND000000000002`; …" | all five as written, and work 2 standing |
+
+`main`'s binary was not built, so what `main` does with the first drive is
+unverified here; the unit test above that asserted a refusal over identical
+copies is the evidence for it.
+
+### Counts, and isolation
+
+The control ran 2139 Rust tests, ten more than 2129, all ten in `fold::tests`.
+`vitest list` counts 1,157 in `node`, unchanged, and 956 in `jsdom`, one more.
+
+`date -Iseconds` was stamped at 2026-09-14T21:42:57-07:00, before the first
+hardlink. After the last drive, at 21:51:10, `find corpus -newermt
+2026-09-14T21:42:57-07:00` returned nothing. No server was started.

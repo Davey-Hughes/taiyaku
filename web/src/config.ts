@@ -134,7 +134,7 @@ export interface Walk {
 /**
  * `derive::DeriveReport` — what derivation made of the walk.
  *
- * **All twenty-nine fields, because the server sends all twenty-nine.** The
+ * **All thirty fields, because the server sends all thirty.** The
  * route destructures both reports with no `..` precisely so a field cannot go
  * missing on the way out; a client type that omitted one would undo that at
  * the last step. C4 §3's discipline is that a scan names what it did not do.
@@ -161,6 +161,7 @@ export interface Derived {
   moved_positions: number
   lost_positions: number
   moved_notes: number
+  dropped_notes: number
   moved_truth_pages: number
   moved_truth_collisions: number
   discarded_rows: number

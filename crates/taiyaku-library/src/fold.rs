@@ -33,9 +33,11 @@
 //! four questions of its own — which edition of the target holds each edition
 //! of the superseded work's archives; whether anything the reader owns is on
 //! a key neither side can name; whether one reader holds one note id on both
-//! works; and whether the ground truth meeting on a mapped edition was drawn
-//! against the same archives on the two sides — and refuses the whole fold
-//! when the answer to any of them is wrong.
+//! works with two copies that differ; and whether the ground truth meeting on
+//! a mapped edition was drawn against the same archives on the two sides —
+//! and refuses the whole fold when the answer to any of them is wrong. Two
+//! copies of one note id that agree in every column are not a wrong answer:
+//! they are one note, and the superseded work's copy is dropped (O78).
 //!
 //! **A refusal is recoverable, a delete is not, and an `Err` is neither.** A
 //! refused fold leaves a volume visibly duplicated, which an operator can see
@@ -64,7 +66,24 @@ pub struct Moved {
     /// over the whole fold for precisely that reason. This one says how many
     /// times the fold wrote.
     pub positions: usize,
+    /// Rows this fold moved off `from_work` onto `into_work`'s `note`.
+    ///
+    /// **Rows moved, and nothing else.** A source copy [`absorb`] dropped
+    /// because the target already held the identical note is not in here;
+    /// it is [`Self::dropped_notes`].
     pub notes: usize,
+    /// Source notes this fold deleted because the target already held the
+    /// same note under the same id, for the same reader.
+    ///
+    /// **"The same" is every column** but the two a fold rewrites: `body`,
+    /// `slot`, the four region columns, `color`, `created` and `updated` equal,
+    /// and the target's `edition` exactly the key the source's edition maps
+    /// to. See [`shared_note_ids`], which is the only thing that decides it.
+    /// Two rows that agree on all of that are one fact written twice, and the
+    /// target's row is what the reader keeps. Counted apart from
+    /// [`Self::notes`] because a reader who counts their notes after the
+    /// fold finds these copies gone, not moved.
+    pub dropped_notes: usize,
     pub truth_pages: usize,
     /// Truth pages the target already held, kept as the target's.
     ///
@@ -403,7 +422,70 @@ fn stranded(
     Ok(found)
 }
 
-/// Note ids one reader holds on **both** works, in id order.
+/// Everything one `note` row says apart from whose it is and where it is kept
+/// — the columns two copies under one id must agree on to be one note.
+///
+/// **Every column of `note` as of migration 13 but four.** `user_id` and `id`
+/// are what [`shared_note_ids`] joins the two copies on, so they are equal by
+/// construction; `work_id` and `edition` are the two [`move_notes`] rewrites,
+/// and `edition` is compared through the map instead. Nothing else is left
+/// out: `color` is a reader's choice, and `created` and `updated` are the
+/// client's own timestamps, which `state::merge_notes` reads to decide
+/// between two copies — so two rows differing only there are not one fact.
+///
+/// **Compared here, in Rust, and not in SQL, for NULL's sake.** Five of these
+/// columns are nullable, and all five are NULL on the ordinary note — the
+/// whole slot, the default colour. Rust's `Option` equality answers
+/// `None == None` as true, which is what two whole-slot notes are. SQL's `=`
+/// answers `NULL = NULL` as NULL, which is not true: a comparison written that
+/// way calls every whole-slot pair different and refuses exactly the fold this
+/// type exists to allow. `IS` would be right in SQL; this avoids needing it.
+///
+/// A new column on `note` is not covered until it is added here.
+#[derive(Debug, PartialEq)]
+struct NoteContent {
+    slot: i64,
+    rx: Option<f64>,
+    ry: Option<f64>,
+    rw: Option<f64>,
+    rh: Option<f64>,
+    color: Option<String>,
+    body: String,
+    created: String,
+    updated: String,
+}
+
+/// [`NoteContent`] out of nine consecutive columns of `row`, starting at `at`,
+/// in the order the struct declares them.
+fn note_content(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<NoteContent> {
+    Ok(NoteContent {
+        slot: row.get(at)?,
+        rx: row.get(at + 1)?,
+        ry: row.get(at + 2)?,
+        rw: row.get(at + 3)?,
+        rh: row.get(at + 4)?,
+        color: row.get(at + 5)?,
+        body: row.get(at + 6)?,
+        created: row.get(at + 7)?,
+        updated: row.get(at + 8)?,
+    })
+}
+
+/// Note ids one reader holds on both works, split by whether the two copies
+/// are one note. See [`shared_note_ids`].
+#[derive(Debug, Default)]
+struct SharedNotes {
+    /// `(user_id, id)` of each copy on `from_work` that the target already
+    /// holds identically, in id order: the rows [`drop_identical_notes`]
+    /// deletes once every refusal has been passed.
+    identical: Vec<(i64, String)>,
+    /// Ids whose two copies differ for at least one reader, in id order and
+    /// each once — the ids [`absorb`] refuses the whole fold over.
+    conflicting: BTreeSet<String>,
+}
+
+/// Note ids one reader holds on **both** works, in id order, each marked as
+/// identical on the two works or not.
 ///
 /// **The state is one migration 5 widened `note`'s key to permit**, and its
 /// own rationale names the routes: "copying a `taiyaku.notes.json` between
@@ -423,6 +505,25 @@ fn stranded(
 /// for precisely this and catching the error after the write has begun would
 /// give up the "a refusal costs the database nothing" property as well.
 ///
+/// **Identical is every column: O78.** Until 2026-09-14 every shared id was
+/// refused, whatever the two rows held — including the rows the route above
+/// actually writes, one sidecar imported against both works, which agree in
+/// everything. Two copies are one note when their [`NoteContent`] is equal
+/// and the target's `edition` is exactly the key `map` sends the source's
+/// edition to. **There is no slot rewrite to account for**: [`edition_map`]
+/// pairs editions holding the same digests in the same order, so slot and
+/// region carry across unchanged and the edition key is the only part of the
+/// anchor that moves. The raw keys are the wrong thing to compare — the
+/// source's `raw` and the target's `raw` can be two different books, and the
+/// source's `raw` and the target's `full-color` the same one. Anything short
+/// of that — a body, a colour, a timestamp, a coordinate, a key — is two
+/// notes, and choosing between them is not this fold's to do.
+///
+/// **Per reader, and `user_id` is in both the join and the result.** Two
+/// readers holding one id is migration 5's first case and is not a collision
+/// at all, so a copy is only ever compared with the same reader's copy, and
+/// the drop names the reader whose copy it is.
+///
 /// The whole work rather than the mapped edition, and that is exact rather
 /// than approximate: [`stranded`] has already refused any note on a key the
 /// map does not hold, so every note still on `from_work` at this point is one
@@ -431,22 +532,71 @@ fn shared_note_ids(
     conn: &Connection,
     from_work: i64,
     into_work: i64,
-) -> Result<Vec<String>, String> {
-    conn.prepare(
-        "SELECT DISTINCT s.id
-           FROM note s
-           JOIN note t ON t.user_id = s.user_id AND t.id = s.id AND t.work_id = ?2
-          WHERE s.work_id = ?1
-          ORDER BY s.id",
-    )
-    .and_then(|mut statement| {
-        statement
-            .query_map(rusqlite::params![from_work, into_work], |row| {
-                row.get::<_, String>(0)
-            })?
-            .collect::<rusqlite::Result<Vec<String>>>()
-    })
-    .map_err(|e| format!("reading the note ids work {from_work} and work {into_work} share: {e}"))
+    map: &BTreeMap<String, String>,
+) -> Result<SharedNotes, String> {
+    let reading = || format!("reading the note ids work {from_work} and work {into_work} share");
+    let mut statement = conn
+        .prepare(
+            "SELECT s.user_id, s.id, s.edition, t.edition,
+                    s.slot, s.rx, s.ry, s.rw, s.rh, s.color, s.body, s.created, s.updated,
+                    t.slot, t.rx, t.ry, t.rw, t.rh, t.color, t.body, t.created, t.updated
+               FROM note s
+               JOIN note t ON t.user_id = s.user_id AND t.id = s.id AND t.work_id = ?2
+              WHERE s.work_id = ?1
+              ORDER BY s.id, s.user_id",
+        )
+        .map_err(|e| format!("{}: {e}", reading()))?;
+    let rows = statement
+        .query_map(rusqlite::params![from_work, into_work], |row| {
+            let from_key: String = row.get(2)?;
+            let into_key: String = row.get(3)?;
+            let identical = map.get(&from_key) == Some(&into_key)
+                && note_content(row, 4)? == note_content(row, 13)?;
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, identical))
+        })
+        .map_err(|e| format!("{}: {e}", reading()))?;
+    let mut shared = SharedNotes::default();
+    for row in rows {
+        let (user_id, id, identical) = row.map_err(|e| format!("{}: {e}", reading()))?;
+        if identical {
+            shared.identical.push((user_id, id));
+        } else {
+            shared.conflicting.insert(id);
+        }
+    }
+    Ok(shared)
+}
+
+/// Delete each source copy [`shared_note_ids`] found identical to the
+/// target's, returning how many rows went.
+///
+/// **The source's copy, never the target's.** The two agree in every column
+/// a reader can see, so the table after either delete reads the same — but
+/// the target's row is the one this reader's notes on the surviving work
+/// already are, and the source's is about to be moved onto it or deleted with
+/// its work. Keyed by `user_id` as well as `id`, so another reader's note
+/// under the same id is never reached.
+///
+/// **Called only after every refusal in [`absorb`]**, which is what keeps
+/// every refusal a `SELECT`: a fold that dropped the identical copies and then
+/// refused over a conflicting one would depend on the rollback to undo it.
+fn drop_identical_notes(
+    conn: &Connection,
+    from_work: i64,
+    identical: &[(i64, String)],
+) -> Result<usize, String> {
+    let mut statement = conn
+        .prepare("DELETE FROM note WHERE user_id = ?1 AND work_id = ?2 AND id = ?3")
+        .map_err(|e| format!("preparing the identical-note drop: {e}"))?;
+    let mut dropped = 0;
+    for (user_id, id) in identical {
+        dropped += statement
+            .execute(rusqlite::params![user_id, from_work, id])
+            .map_err(|e| {
+                format!("dropping the identical copy of note `{id}` off work {from_work}: {e}")
+            })?;
+    }
+    Ok(dropped)
 }
 
 /// The digests one work's ground truth on one edition was drawn against, in
@@ -611,12 +761,17 @@ fn truth_provenance_clashes(
 ///    [`stranded`], which is where the reasoning for refusing rather than
 ///    counting it lives. This is the one arm that is about a *row* rather
 ///    than an edition, and the guarantee the module makes is per row.
-/// 4. **One note id held by one reader on both works** — see
-///    [`shared_note_ids`]. `note`'s key is `(user_id, work_id, id)` and
-///    migration 5 widened it to that *specifically to permit* this state, so
-///    [`move_notes`]' bare `UPDATE` collides on a shape the schema calls
-///    supported. Refused rather than re-keyed: the id is one the reader's own
-///    sidecar names, and rewriting it silently is worse than declining.
+/// 4. **One note id held by one reader on both works, with two copies that
+///    differ** — see [`shared_note_ids`]. `note`'s key is
+///    `(user_id, work_id, id)` and migration 5 widened it to that
+///    *specifically to permit* this state, so [`move_notes`]' bare `UPDATE`
+///    collides on a shape the schema calls supported. Refused rather than
+///    re-keyed: the id is one the reader's own sidecar names, and rewriting it
+///    silently is worse than declining. **Copies that agree in every column
+///    are not refused (O78)**: they are one note, and the superseded work's
+///    copy is dropped — after the fifth check below, so that a fold refused
+///    over anything has written nothing — and counted in
+///    [`Moved::dropped_notes`].
 /// 5. **Ground truth meeting on one target edition that cannot be given one
 ///    provenance** — see [`truth_provenance_clashes`]. Identical `member`
 ///    digests do not imply identical `truth_member` digests, and moving boxes
@@ -712,8 +867,14 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
     // Every note still on `from_work` here is on a key the map holds, so the
     // whole-work read below is asking about exactly the rows `move_notes` is
     // about to carry across — no per-edition loop, and nothing missed.
-    let shared = shared_note_ids(&tx, from_work, into_work)?;
-    if !shared.is_empty() {
+    //
+    // **Only the ids whose copies differ refuse.** Copies identical in every
+    // column are one note and are dropped from the source further down —
+    // after the last refusal, not here, so that a fold refused over one
+    // conflicting id has written nothing, identical copies included.
+    let shared = shared_note_ids(&tx, from_work, into_work, &map)?;
+    let conflicting = &shared.conflicting;
+    if !conflicting.is_empty() {
         // **A count and the first few, not the whole list.** The realistic
         // instance is a reader who imported one `taiyaku.notes.json` against
         // both works — `shared_note_ids`' own rationale names that route —
@@ -722,8 +883,8 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
         // `derive_summary`'s single line of output. A few are enough to go
         // and grep for; the count is what says how large the overlap is.
         const SHOWN: usize = 3;
-        let listed: Vec<&str> = shared.iter().take(SHOWN).map(String::as_str).collect();
-        let rest = shared.len() - listed.len();
+        let listed: Vec<&str> = conflicting.iter().take(SHOWN).map(String::as_str).collect();
+        let rest = conflicting.len() - listed.len();
         let and_more = if rest > 0 {
             format!(" and {rest} more")
         } else {
@@ -731,10 +892,11 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
         };
         return Ok(Outcome::Refused(format!(
             "one reader holds {} note id(s) on both work {from_work} and work \
-             {into_work} — `{}`{and_more}; moving them would collide on `note`'s \
-             (user_id, work_id, id) key, and re-keying an id the reader's own sidecar \
-             names is not this fold's to do; nothing was moved and nothing was deleted",
-            shared.len(),
+             {into_work} whose two copies differ — `{}`{and_more}; moving them would \
+             collide on `note`'s (user_id, work_id, id) key, and choosing one copy over \
+             the other, or re-keying an id the reader's own sidecar names, is not this \
+             fold's to do; nothing was moved and nothing was deleted",
+            conflicting.len(),
             listed.join("`, `"),
         )));
     }
@@ -757,7 +919,15 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
         )));
     }
 
-    let mut moved = Moved::default();
+    // **The identical note copies go first, and only now.** After the last
+    // refusal above, so every refusal is still a `SELECT` and a fold refused
+    // over one conflicting id has not touched the identical ones beside it;
+    // before `move_notes`, whose `UPDATE` would otherwise collide on exactly
+    // these ids. See `shared_note_ids` for what "identical" is.
+    let mut moved = Moved {
+        dropped_notes: drop_identical_notes(&tx, from_work, &shared.identical)?,
+        ..Moved::default()
+    };
 
     // **The two halves of the position identity, read before the first
     // write.** Other works hold positions too, but no statement in this loop
@@ -915,8 +1085,10 @@ fn positions_on(conn: &Connection, work_id: i64) -> Result<usize, String> {
 /// the routes, "copying a `taiyaku.notes.json` between volumes, or importing
 /// one sidecar against two works", and a fold pair is by construction two
 /// works over the same volume. The `UPDATE` below then fails outright, so
-/// [`absorb`] reads for that state first and refuses; see
-/// [`shared_note_ids`].
+/// [`absorb`] reads for that state first: it refuses where the two copies
+/// differ, and where they agree in every column it has already dropped the
+/// source's copy by the time this runs, so nothing here collides; see
+/// [`shared_note_ids`] and [`drop_identical_notes`].
 fn move_notes(
     conn: &Connection,
     from_work: i64,

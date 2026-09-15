@@ -5,7 +5,7 @@
  * and the derivation are two different passes over the library, and keeping
  * them apart is what lets this draw "what the walk found" and "what
  * derivation made of it" rather than making a reader work out which of
- * forty-one keys came from which pass. `finished_scan_json`'s own doc
+ * forty-two keys came from which pass. `finished_scan_json`'s own doc
  * comment makes the same argument from the other side.
  *
  * **Every field is drawn, including the collections that are empty this
@@ -197,7 +197,7 @@ function WalkSection({ walk }: { walk: Walk }) {
  * so that "nothing a removal's re-derive found ever reached a caller" would
  * stop being true — and `RemoveRoot` rendering only its three counts put that
  * straight back. One component, two callers, rather than a second rendering of
- * twenty-nine fields that could drift from this one.
+ * thirty fields that could drift from this one.
  */
 export function DeriveSection({ derive }: { derive: Derived }) {
   return (
@@ -298,6 +298,11 @@ export function DeriveSection({ derive }: { derive: Derived }) {
           n={derive.moved_positions}
         />
         <Count field="moved_notes" label="Notes moved" n={derive.moved_notes} />
+        <Count
+          field="dropped_notes"
+          label="Identical notes dropped"
+          n={derive.dropped_notes}
+        />
         <Count
           field="moved_truth_pages"
           label="Truth pages moved"

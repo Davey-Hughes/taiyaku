@@ -5,7 +5,7 @@ use taiyaku_core::{Kind, RegionMember, TruthDoc, TruthEdition, TruthRegion};
 
 use super::{Moved, Outcome, absorb};
 use crate::state::{progress, put_notes, put_progress, put_truth};
-use crate::{Note, Notes, Progress};
+use crate::{Note, Notes, Progress, Region};
 
 /// A migrated database **with foreign keys actually on**, asserted rather
 /// than assumed.
@@ -813,6 +813,7 @@ fn folding_a_work_that_carries_nothing_by_hand_discards_nothing() {
         Moved {
             positions: 0,
             notes: 0,
+            dropped_notes: 0,
             truth_pages: 0,
             collisions: 0,
             lost_positions: 0,
@@ -1014,8 +1015,8 @@ fn a_work_cannot_be_folded_into_itself() {
     );
 }
 
-/// One reader holding the same note id on both works stops the fold rather
-/// than killing the derive.
+/// One reader holding the same note id on both works, on two different slots,
+/// stops the fold rather than killing the derive.
 ///
 /// **`note`'s key is `(user_id, work_id, id)` and migration 5 widened it to
 /// that specifically to permit this state.** That migration's own rationale
@@ -1040,21 +1041,24 @@ fn a_work_cannot_be_folded_into_itself() {
 /// note rather than update the one they edited. `seed_note` uses one fixed id
 /// for user 1, which is why every other test here folds two works whose notes
 /// happen to share it and none of them reached this.
+///
+/// **Renamed from `one_note_id_held_on_both_works_refuses_the_fold` when O78
+/// closed**, because that stopped being true: two copies that agree in every
+/// column fold, the source's copy dropped. These two differ in `slot` alone
+/// — 33 against 11, on editions that map onto each other — which is the
+/// anchor still differing once the fold has rewritten the edition key.
 #[test]
-fn one_note_id_held_on_both_works_refuses_the_fold() {
+fn a_note_id_whose_two_copies_sit_on_different_slots_refuses_the_fold() {
     let (conn, from, into) = folded_pair();
     seed_note(&conn, from, "raw", 33);
     seed_note(&conn, into, "full-color", 11);
 
-    let outcome = absorb(&conn, from, into).expect("the scan must not die of this");
+    let why = refused_leaving_every_note(&conn, from, into);
 
-    match outcome {
-        Outcome::Folded(moved) => panic!("the note ids collided, yet it folded: {moved:?}"),
-        Outcome::Refused(why) => assert!(
-            why.contains("01JEXAMPLE0000000000000000"),
-            "the refusal must name the id the reader's own sidecar names: {why}"
-        ),
-    }
+    assert!(
+        why.contains("01JEXAMPLE0000000000000000"),
+        "the refusal must name the id the reader's own sidecar names: {why}"
+    );
 }
 
 /// Provenance that differs between the two sides is not mergeable and is not
@@ -1508,6 +1512,14 @@ fn the_stranded_message_pairs_each_count_with_the_table_it_came_from() {
 /// shares *every* note in the document. The message travels through
 /// `DeriveReport::unfoldable` onto `derive_summary`'s single line, so the
 /// unbounded join put hundreds of ULIDs where an operator reads a summary.
+///
+/// **The two copies of each id differ in `body`, and until O78 closed they did
+/// not.** This fixture wrote every column the same on both works — one sidecar
+/// imported against both, unedited — and asserted a refusal, which is exactly
+/// the case O78 found losslessly resolvable: those copies now fold, the
+/// source's dropped. So each work's copy now carries its own body, the shape
+/// of that sidecar edited on one volume afterwards, and the count and the
+/// "shows a few" message are still what is asserted.
 #[test]
 fn the_shared_note_refusal_counts_the_ids_and_shows_a_few() {
     let (conn, from, into) = folded_pair();
@@ -1529,7 +1541,9 @@ fn the_shared_note_refusal_counts_the_ids_and_shows_a_few() {
                         slot: 3,
                         region: None,
                         color: None,
-                        body: "one sidecar imported against both works".to_string(),
+                        body: format!(
+                            "one sidecar imported against both works, then edited on work {work}"
+                        ),
                         created: "2026-08-27T09:00:00Z".to_string(),
                         updated: "2026-08-27T09:00:00Z".to_string(),
                     })
@@ -1558,4 +1572,476 @@ fn the_shared_note_refusal_counts_the_ids_and_shows_a_few() {
             );
         }
     }
+}
+
+// --- O78: one note id on both works ----------------------------------------
+
+/// The id reader 1 holds on both works in the tests below.
+const SHARED: &str = "01JSHARED00000000000000000";
+
+/// The note under [`SHARED`] as one sidecar imported against both works
+/// writes it: the whole slot, the default colour, one pair of timestamps.
+fn shared_note(edition: &str) -> Note {
+    Note {
+        id: SHARED.to_string(),
+        edition: edition.to_string(),
+        slot: 3,
+        region: None,
+        color: None,
+        body: "the shop sign reads 'closed on Tuesdays'".to_string(),
+        created: "2026-08-27T09:00:00Z".to_string(),
+        updated: "2026-08-27T09:00:00Z".to_string(),
+    }
+}
+
+/// [`shared_note`] with a sized region and a colour, so both nullable groups
+/// carry a value rather than NULL.
+fn sized_note(edition: &str) -> Note {
+    Note {
+        region: Some(Region {
+            x: 0.25,
+            y: 0.5,
+            w: 0.125,
+            h: 0.0625,
+        }),
+        color: Some("amber".to_string()),
+        ..shared_note(edition)
+    }
+}
+
+/// One reader's whole notes document on one work, through `put_notes`.
+fn write_notes(conn: &Connection, work_id: i64, user_id: i64, notes: Vec<Note>) {
+    put_notes(
+        conn,
+        work_id,
+        user_id,
+        &Notes {
+            work: "ignored".to_string(),
+            notes,
+        },
+    )
+    .expect("a reader's notes");
+}
+
+/// One `note` row, every column and its `rowid`.
+///
+/// **The `rowid` is what tells the target's row from a copy of it.** Two
+/// identical notes are identical in every column a reader can see, so a fold
+/// that deleted the target's row and moved the source's into its place leaves
+/// a table no column comparison can tell apart from the right answer. `note`
+/// is a rowid table and `move_notes` is an `UPDATE`, so the row's `rowid`
+/// survives a move and does not survive a delete.
+#[derive(Debug, Clone, PartialEq)]
+struct NoteRow {
+    rowid: i64,
+    user_id: i64,
+    id: String,
+    work_id: i64,
+    edition: String,
+    slot: i64,
+    region: [Option<f64>; 4],
+    color: Option<String>,
+    body: String,
+    created: String,
+    updated: String,
+}
+
+/// Every `note` row in the library, in `rowid` order — so "nothing was
+/// written" and "this is what is left" are comparisons of the whole table
+/// rather than a count, which any other rows of the same number would satisfy.
+fn every_note(conn: &Connection) -> Vec<NoteRow> {
+    conn.prepare(
+        "SELECT rowid, user_id, id, work_id, edition, slot, rx, ry, rw, rh,
+                color, body, created, updated
+           FROM note ORDER BY rowid",
+    )
+    .and_then(|mut statement| {
+        statement
+            .query_map([], |r| {
+                Ok(NoteRow {
+                    rowid: r.get(0)?,
+                    user_id: r.get(1)?,
+                    id: r.get(2)?,
+                    work_id: r.get(3)?,
+                    edition: r.get(4)?,
+                    slot: r.get(5)?,
+                    region: [r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?],
+                    color: r.get(10)?,
+                    body: r.get(11)?,
+                    created: r.get(12)?,
+                    updated: r.get(13)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<NoteRow>>>()
+    })
+    .expect("every note in the library")
+}
+
+/// [`absorb`], expected to refuse, with every write to `note` made to fail
+/// first and every row compared afterwards.
+///
+/// **The triggers are what make "nothing was written" observable.** A refusal
+/// returns out of `absorb`'s transaction, and its `Drop` rolls back whatever
+/// that transaction wrote, so a fold that dropped identical copies *before*
+/// deciding to refuse would leave the table exactly as it found it — and a
+/// before-and-after comparison alone would pass it. The module's promise is
+/// stronger than the rollback: every refusal arm is a `SELECT`. With a trigger
+/// raising on any insert, update or delete of `note`, a write before the
+/// refusal comes back as an `Err` rather than vanishing.
+fn refused_leaving_every_note(conn: &Connection, from: i64, into: i64) -> String {
+    let before = every_note(conn);
+    conn.execute_batch(
+        "CREATE TRIGGER note_insert_refused BEFORE INSERT ON note
+           BEGIN SELECT RAISE(ABORT, 'a fold that should have refused wrote to note'); END;
+         CREATE TRIGGER note_update_refused BEFORE UPDATE ON note
+           BEGIN SELECT RAISE(ABORT, 'a fold that should have refused wrote to note'); END;
+         CREATE TRIGGER note_delete_refused BEFORE DELETE ON note
+           BEGIN SELECT RAISE(ABORT, 'a fold that should have refused wrote to note'); END;",
+    )
+    .expect("making every write to `note` fail");
+
+    let outcome = absorb(conn, from, into).expect(
+        "a refusal writes nothing, so no trigger on `note` fires; an `Err` here is a \
+         write, from a fold that went ahead or from a refusal that wrote first",
+    );
+
+    let why = match outcome {
+        Outcome::Folded(moved) => {
+            panic!("two copies of one note id that differ, yet it folded: {moved:?}")
+        }
+        Outcome::Refused(why) => why,
+    };
+    assert_eq!(
+        every_note(conn),
+        before,
+        "every note row — every column, and its rowid — is as it was"
+    );
+    let works: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM work WHERE id IN (?1, ?2)",
+            params![from, into],
+            |r| r.get(0),
+        )
+        .expect("counting");
+    assert_eq!(works, 2, "and both works still stand");
+    why
+}
+
+/// Reader 1 holds [`SHARED`] on both works of [`folded_pair`], as `source` on
+/// the superseded work's `raw` and as `target` on the target, and the fold is
+/// refused over it.
+fn refused_over(source: Note, target: Note) -> String {
+    let (conn, from, into) = folded_pair();
+    write_notes(&conn, from, 1, vec![source]);
+    write_notes(&conn, into, 1, vec![target]);
+
+    let why = refused_leaving_every_note(&conn, from, into);
+
+    assert!(
+        why.contains(SHARED),
+        "the refusal must name the id whose copies differ: {why}"
+    );
+    why
+}
+
+/// Two copies of one note, one on each work, agreeing in every column but the
+/// two a fold rewrites: the source's copy is dropped, the target's row stays
+/// exactly as it was, and the fold goes ahead.
+///
+/// **O78.** This shape used to refuse the whole fold, and it is the ordinary
+/// one — the route migration 5's own rationale names, "importing one sidecar
+/// against two works", writes exactly these rows — so a fold pair whose reader
+/// had done that could never fold. Two rows equal in `body`, `slot`, region,
+/// `color`, `created` and `updated`, on editions the fold maps onto each other,
+/// are one fact written twice; dropping one loses nothing.
+///
+/// **Whole-slot and default colour, so all five nullable columns are NULL on
+/// both sides.** SQL's `=` answers NULL for `NULL = NULL`, which is not true,
+/// so a comparison written that way would call these two different and
+/// refuse. [`copies_on_two_edition_keys_that_map_onto_each_other_are_one_note`]
+/// is the same fold with every one of those columns set.
+///
+/// **Two more notes move beside it**, so the counts are three different facts
+/// rather than a number any mistake could reach: two rows moved, one copy
+/// dropped. The target's row is identified by `rowid`, for [`NoteRow`]'s reason.
+#[test]
+fn an_identical_copy_of_a_note_on_both_works_is_dropped_and_the_fold_goes_ahead() {
+    let (conn, from, into) = folded_pair();
+    write_notes(
+        &conn,
+        from,
+        1,
+        vec![
+            shared_note("raw"),
+            Note {
+                id: "01JONLYSOURCE0000000000001".to_string(),
+                ..shared_note("raw")
+            },
+            Note {
+                id: "01JONLYSOURCE0000000000002".to_string(),
+                slot: 4,
+                ..shared_note("raw")
+            },
+        ],
+    );
+    write_notes(&conn, into, 1, vec![shared_note("full-color")]);
+    let before = every_note(&conn);
+
+    let moved = folded(&conn, from, into);
+
+    let mut expected: Vec<NoteRow> = before
+        .into_iter()
+        .filter(|n| !(n.work_id == from && n.id == SHARED))
+        .map(|n| {
+            if n.work_id == from {
+                NoteRow {
+                    work_id: into,
+                    edition: "full-color".to_string(),
+                    ..n
+                }
+            } else {
+                n
+            }
+        })
+        .collect();
+    expected.sort_by_key(|n| n.rowid);
+    assert_eq!(
+        every_note(&conn),
+        expected,
+        "the target's own row stands untouched under its own rowid, the \
+         source's copy of it is gone, and the other two notes moved"
+    );
+    assert_eq!(
+        (moved.notes, moved.dropped_notes),
+        (2, 1),
+        "two notes moved and one identical copy dropped — the copy is not a move"
+    );
+}
+
+/// The same fold with a sized region and a colour on both copies, and the
+/// edition keys differing: `raw` on the superseded work, `full-color` on the
+/// target, which is where `raw`'s archive lives.
+///
+/// **There is no slot rewrite.** `edition_map` pairs editions whose members
+/// carry the same digests in the same order, so slot 3 is slot 3 on both, and
+/// the only part of a note's anchor a fold rewrites is its edition key. "The
+/// same anchor" is therefore the target's key being exactly the one the
+/// source's key maps to, with `slot` and all four region columns equal. A
+/// comparison of the raw keys calls these two different and refuses.
+#[test]
+fn copies_on_two_edition_keys_that_map_onto_each_other_are_one_note() {
+    let (conn, from, into) = folded_pair();
+    write_notes(&conn, from, 1, vec![sized_note("raw")]);
+    write_notes(&conn, into, 1, vec![sized_note("full-color")]);
+    let target: Vec<NoteRow> = every_note(&conn)
+        .into_iter()
+        .filter(|n| n.work_id == into)
+        .collect();
+
+    let moved = folded(&conn, from, into);
+
+    assert_eq!(
+        every_note(&conn),
+        target,
+        "the target's row, region and colour included, is all that is left"
+    );
+    assert_eq!((moved.notes, moved.dropped_notes), (0, 1));
+}
+
+/// Same id, same anchor, different words: not one note, and not this fold's to
+/// choose between.
+#[test]
+fn a_note_id_whose_two_copies_say_different_things_refuses_the_fold() {
+    refused_over(
+        shared_note("raw"),
+        Note {
+            body: "the shop sign reads 'closed on Wednesdays'".to_string(),
+            ..shared_note("full-color")
+        },
+    );
+}
+
+/// A colour is something a reader chose, so two copies differing in it are
+/// two different notes even where every word and every coordinate agrees.
+#[test]
+fn a_note_id_whose_two_copies_differ_in_colour_refuses_the_fold() {
+    refused_over(
+        shared_note("raw"),
+        Note {
+            color: Some("amber".to_string()),
+            ..shared_note("full-color")
+        },
+    );
+}
+
+/// `updated` alone differing is an edit on one side — a recolour or a nudged
+/// box put back — and `state::merge_notes` reads `updated` to pick a winner,
+/// so it is a fact about the note rather than a formatting detail.
+#[test]
+fn a_note_id_whose_two_copies_differ_in_updated_refuses_the_fold() {
+    refused_over(
+        shared_note("raw"),
+        Note {
+            updated: "2026-09-01T10:00:00Z".to_string(),
+            ..shared_note("full-color")
+        },
+    );
+}
+
+/// `created` differing means two notes that were written separately and happen
+/// to carry one id, whatever else agrees.
+#[test]
+fn a_note_id_whose_two_copies_differ_in_created_refuses_the_fold() {
+    refused_over(
+        shared_note("raw"),
+        Note {
+            created: "2026-08-26T09:00:00Z".to_string(),
+            ..shared_note("full-color")
+        },
+    );
+}
+
+/// One coordinate of the region differing, both copies sized: a box dragged
+/// on one volume and not the other.
+#[test]
+fn a_note_id_whose_two_copies_differ_in_region_refuses_the_fold() {
+    refused_over(
+        sized_note("raw"),
+        Note {
+            region: Some(Region {
+                x: 0.25,
+                y: 0.5,
+                w: 0.125,
+                h: 0.125,
+            }),
+            ..sized_note("full-color")
+        },
+    );
+}
+
+/// Every column equal, and the edition key equal too — `raw` on both — but
+/// the superseded work's `raw` holds the archive the target calls
+/// `full-color`, and the target's own `raw` is a different book.
+///
+/// **So the raw keys agreeing is the wrong answer.** After the fold the source's
+/// note would be on `full-color` and the target's is on `raw`: two anchors.
+/// A comparison of the keys as stored calls these one note and drops a note
+/// about one book because a note about another agreed with it.
+#[test]
+fn a_note_id_whose_edition_does_not_map_to_the_targets_refuses_the_fold() {
+    refused_over(shared_note("raw"), shared_note("raw"));
+}
+
+/// One id with identical copies and one whose copies differ, in the same fold:
+/// refused whole, and the identical copy is not dropped on the way.
+///
+/// **Watched with the drop moved above the refusal, restored.** The
+/// transaction rolls that write back, so without
+/// [`refused_leaving_every_note`]'s triggers this test passed against it.
+#[test]
+fn one_identical_copy_and_one_that_differs_refuse_the_fold_whole() {
+    let differs = "01JDIFFERS0000000000000000";
+    let (conn, from, into) = folded_pair();
+    write_notes(
+        &conn,
+        from,
+        1,
+        vec![
+            shared_note("raw"),
+            Note {
+                id: differs.to_string(),
+                ..shared_note("raw")
+            },
+        ],
+    );
+    write_notes(
+        &conn,
+        into,
+        1,
+        vec![
+            shared_note("full-color"),
+            Note {
+                id: differs.to_string(),
+                body: "edited on the colour volume".to_string(),
+                ..shared_note("full-color")
+            },
+        ],
+    );
+
+    let why = refused_leaving_every_note(&conn, from, into);
+
+    assert!(
+        why.contains("holds 1 note id(s)") && why.contains(differs),
+        "the refusal counts and names the one id whose copies differ: {why}"
+    );
+    assert!(
+        !why.contains(SHARED),
+        "the identical pair is not a conflict and is not named as one: {why}"
+    );
+}
+
+/// A second reader's notes are theirs: the first reader's identical pair is
+/// resolved per reader, and nothing of the second's is dropped or disturbed.
+///
+/// **Reader 2 holds [`SHARED`] on the superseded work too**, in every column
+/// the same as reader 1's copy on the target — their own note, which happens
+/// to carry the id — and a note under a different id on the target. For
+/// reader 2 that id is on one work only, so it moves. A match or a delete that
+/// left `user_id` out would find reader 1's target copy, call reader 2's note
+/// identical to it and drop it.
+#[test]
+fn a_second_readers_notes_are_not_touched_by_the_first_readers_identical_copy() {
+    let (conn, from, into) = folded_pair();
+    conn.execute(
+        "INSERT INTO user (id, name, password_hash, role) VALUES (2, 'second', '!', 'user')",
+        [],
+    )
+    .expect("a second reader");
+    write_notes(&conn, from, 1, vec![shared_note("raw")]);
+    write_notes(&conn, into, 1, vec![shared_note("full-color")]);
+    write_notes(&conn, from, 2, vec![shared_note("raw")]);
+    write_notes(
+        &conn,
+        into,
+        2,
+        vec![Note {
+            id: "01JSECONDREADER00000000000".to_string(),
+            ..shared_note("full-color")
+        }],
+    );
+    let second_before: Vec<NoteRow> = every_note(&conn)
+        .into_iter()
+        .filter(|n| n.user_id == 2)
+        .collect();
+
+    let moved = folded(&conn, from, into);
+
+    let second_after: Vec<NoteRow> = every_note(&conn)
+        .into_iter()
+        .filter(|n| n.user_id == 2)
+        .collect();
+    let expected: Vec<NoteRow> = second_before
+        .into_iter()
+        .map(|n| {
+            if n.work_id == from {
+                NoteRow {
+                    work_id: into,
+                    edition: "full-color".to_string(),
+                    ..n
+                }
+            } else {
+                n
+            }
+        })
+        .collect();
+    assert_eq!(
+        second_after, expected,
+        "reader 2's note on the superseded work moved under its own rowid, and \
+         their note on the target is untouched"
+    );
+    assert_eq!(
+        (moved.notes, moved.dropped_notes),
+        (1, 1),
+        "reader 2's note moved; reader 1's copy was the only one dropped"
+    );
 }

@@ -27,7 +27,7 @@ const root: config.Root = {
  * A whole `DeriveReport`, because the dialog now renders one.
  *
  * `{} as Derived` was enough while only `removed` was drawn; it stops being
- * enough the moment a component reads the twenty-nine fields, and a cast that
+ * enough the moment a component reads the thirty fields, and a cast that
  * lies about a shape is exactly the fixture this repo keeps getting caught by.
  */
 const derived = (over: Partial<config.Derived> = {}): config.Derived => ({
@@ -52,6 +52,7 @@ const derived = (over: Partial<config.Derived> = {}): config.Derived => ({
   moved_positions: 0,
   lost_positions: 0,
   moved_notes: 0,
+  dropped_notes: 0,
   moved_truth_pages: 0,
   moved_truth_collisions: 0,
   discarded_rows: 0,

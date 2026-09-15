@@ -1576,11 +1576,16 @@ fn derive_summary_prints_unrecognised_kinds_when_nonzero_and_omits_them_when_zer
 /// place it matters most, `emptied_works` being the only outcome in the
 /// project that deletes a `work` row.
 ///
-/// **Seven distinct numbers, deliberately**, for the reason
+/// **Eight distinct numbers, deliberately**, for the reason
 /// `derive_summary_names_the_four_headline_counts_and_the_proposal_count`
-/// gives: six counts travel inside one parenthesis here, and a fixture that
+/// gives: seven counts travel inside one parenthesis here, and a fixture that
 /// repeated a value would let two of them swap places and print the identical
 /// line.
+///
+/// **`dropped_notes` beside `moved_notes`, and not inside it — O78.** A note
+/// copy the fold dropped because the target already held it identically is
+/// not a note moved, and a reader counting their notes afterwards finds one
+/// fewer than a sum would promise.
 #[test]
 fn derive_summary_says_what_a_fold_moved_and_what_its_delete_took() {
     let mut report = derive_report();
@@ -1591,12 +1596,13 @@ fn derive_summary_says_what_a_fold_moved_and_what_its_delete_took() {
     report.lost_positions = 13;
     report.moved_truth_collisions = 21;
     report.discarded_rows = 34;
+    report.dropped_notes = 55;
     let line = derive_summary(&report, 0);
     assert!(
         line.contains(
             "2 work(s) folded away (3 position(s) written, 13 position(s) lost, \
-             5 note(s) and 8 truth page(s) moved, 21 truth page(s) already held, \
-             34 row(s) discarded)"
+             5 note(s) and 8 truth page(s) moved, 55 identical note(s) dropped, \
+             21 truth page(s) already held, 34 row(s) discarded)"
         ),
         "{line}"
     );
@@ -1604,6 +1610,7 @@ fn derive_summary_says_what_a_fold_moved_and_what_its_delete_took() {
     assert!(!quiet.contains("folded"), "{quiet}");
     assert!(!quiet.contains("discarded"), "{quiet}");
     assert!(!quiet.contains("lost"), "{quiet}");
+    assert!(!quiet.contains("dropped"), "{quiet}");
 }
 
 /// A superseded work the fold could not map is left standing and duplicated,

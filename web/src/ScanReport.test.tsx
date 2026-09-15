@@ -41,6 +41,7 @@ const derived = (over: Partial<Derived> = {}): Derived => ({
   moved_positions: 0,
   lost_positions: 0,
   moved_notes: 0,
+  dropped_notes: 0,
   moved_truth_pages: 0,
   moved_truth_collisions: 0,
   discarded_rows: 0,
@@ -71,12 +72,34 @@ describe('ScanReport', () => {
   })
 
   it('draws every field of both reports', () => {
-    // Forty-one fields: twelve from the walk, twenty-nine from the derive.
+    // Forty-two fields: twelve from the walk, thirty from the derive.
     // Counted rather than spot-checked, because the failure this guards is a
     // field quietly dropped on the way out — which is exactly what happened
     // once already on the server side.
     const host = mount(<ScanReport outcome={finished()} />)
-    expect(host.querySelectorAll('[data-field]')).toHaveLength(41)
+    expect(host.querySelectorAll('[data-field]')).toHaveLength(42)
+  })
+
+  it('draws identical notes dropped apart from notes moved', () => {
+    // O78: a fold drops a note copy the surviving work already holds
+    // identically, and that is not a move. Per element, with a different
+    // number in each, so a label paired with the other row's count fails.
+    const host = mount(
+      <ScanReport
+        outcome={finished({
+          derive: derived({ moved_notes: 3, dropped_notes: 7 }),
+        })}
+      />,
+    )
+    for (const [field, label, n] of [
+      ['moved_notes', 'Notes moved', '3'],
+      ['dropped_notes', 'Identical notes dropped', '7'],
+    ]) {
+      const row = host.querySelector(`[data-field="${field}"]`)
+      expect(row, `${field} must be drawn`).not.toBeNull()
+      expect(row?.querySelector('dt')?.textContent).toBe(label)
+      expect(row?.querySelector('dd')?.textContent).toBe(n)
+    }
   })
 
   it('puts what the scan did not do before what it did', () => {
