@@ -17935,6 +17935,8 @@ names; the stall comes first. `curation/tests.rs`'s doc on
 "in every handler but `get_sidecar`" and names only `get_sidecar` for this. The
 new test uses an empty grant so that this does not decide it.
 
+*Filed as O115 on 2026-09-14, with no code change.*
+
 ### Flake runs
 
 The new test alone, 30 times, on this workstation while four other worktrees
@@ -17950,6 +17952,7 @@ and in each run every handler before the moved one passed.
   `search`, `cover` and `status` — take `state.library.conn()` on the async
   worker and hold no `spawn_blocking` at all. That is O8 and O12's failure class
   on the browse routes. It is outside this row, and it was read, not measured.
+  *Filed as O116 on 2026-09-14.*
 - The other modules whose handlers use `spawn_blocking` have no stall test:
   `config_api` (14 calls), `session` (9), `users_api` (6), `metadata` (4),
   `backup_api` (3), and `download`, `opds` and `stamp` (2 each). `curation` (6)
@@ -18275,6 +18278,7 @@ fixed directory under `std::env::temp_dir()`, which every checkout on this
 machine shares, and other worktrees on the machine were building and testing
 the same workspace at the time; whether one ran that test at that moment was
 not checked. It passed in the other sixteen runs and again alone.
+*Filed as O117 on 2026-09-14.*
 
 ### On real material
 
@@ -18296,6 +18300,8 @@ series, 1 works, 1 editions, 1 members", put `full-color` on the colour work
 itself, and folded nothing. Both drives below exported the rules first,
 appended the fold rule and imported the five, each over fresh hardlinks and a
 fresh database.
+
+*Filed as O118 on 2026-09-14, with no code change.*
 
 | the base work's copy of the second id | the second scan printed | note rows after |
 | --- | --- | --- |
@@ -18465,6 +18471,8 @@ fixed names under `std::env::temp_dir()` with no process id in them, such as
 were running the same suite. `/tmp` had 25 GB free. Run again alone, M1a
 failed only the two accept tests above, and both runs with no defect applied
 passed all six.
+
+*Filed as O117 on 2026-09-14, with no code change.*
 
 ### The survivor
 
@@ -18693,6 +18701,8 @@ This branch changes neither function. No open row in `docs/status.md` names
 `series_id_hand` or `forget_orphaned_series`, or a second series being minted,
 so it is recorded here and not opened.
 
+*Opened as O114 on 2026-09-14, with no code change.*
+
 ### Not changed
 
 - The grid and search answer the tile alone.
@@ -18730,3 +18740,52 @@ this one.
 `target/scratch/start-marker` was touched at 21:11:43, before any library was
 built or server started. After the last run, with the server stopped by PID,
 `find corpus -newer` that file printed nothing.
+
+## O114–O118: five items met past the edges of tonight's rows — 2026-09-14
+
+Five findings from the O70, O71, O78 and O83 branches were recorded in those
+branches' notes and not opened, because each would have moved the open count on
+a branch that was closing something else. They are opened here with no code
+change. Two already carry their measurement where they were found. The other
+three are re-read here on `332a5ca`.
+
+- **O114**, a rescan minting a second series after a title correction: "O83",
+  "A rescan after the correction, seen and not acted on".
+- **O115**, a reader with a grant stalling the runtime: "O71", "A reader with a
+  grant".
+
+### O116: the browse handlers, read
+
+`crates/taiyaku-serve/src/library_api.rs` holds seven `pub(crate) async fn`
+handlers — `home`, `series`, `one_series`, `work`, `search`, `cover` and
+`status` — and seven `let conn = state.library.conn();` lines, one in each.
+`rg -c spawn_blocking` over the file prints nothing. Nothing was timed, and no
+stall test was pointed at them.
+
+### O117: the fixed temp names, counted
+
+`rg -c 'temp_dir\(\)\.join\("'` over `crates/` counts 87 lines, 83 of them in
+test files (`tests.rs`, `tests/`, `test_support.rs`). The `join(format!(`
+form counts 26, 25 of them in test files. The rest are the standing corpus
+checks' own (`taiyaku-cli/src/corpus.rs`, `score_corpus.rs`,
+`taiyaku-serve/src/corpus.rs`). The most are in `taiyaku-cli/src/tests.rs`
+(36) and `taiyaku-read/src/pages/tests.rs` (15). `taiyaku-serve`'s
+`test_support::work(dir)` runs `remove_dir_all` and then `create_dir_all` on
+`temp_dir().join(dir)`, and its callers pass literal names:
+`taiyaku-test-composite`, `taiyaku-test-source` and nine more in
+`composite/tests.rs`. `taiyaku-read/src/format/tests.rs` defines a `TempDir`
+with a `Drop` impl.
+
+The two failures behind the row are "O70" (six `serve_works_*` tests, `disk
+I/O error`) and "O78" (`every_route_refuses_an_anonymous_request`,
+`NotFound` at `test_support.rs:23`). Each passed alone, and neither was
+reproduced on purpose.
+
+### O118: what an import says
+
+`rules::import_json`'s doc names `replace_all` as what "clears and rewrites
+`rule`". After an import the CLI prints `imported rules from {path}` and that
+nothing has been re-derived, plus a line for any accepted proposal reopened,
+and gives no count of rules added or removed. `RuleEditor.tsx`'s import
+section says "Import replaces every rule with the document’s". The partial
+import that dropped the seeded rules is "O78", "On real material".
