@@ -717,6 +717,25 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
 pub(crate) fn router_over_a_library_with_two_editions()
 -> (axum::Router, std::sync::Arc<ServeState>, i64, Fixture) {
     let fixture = Fixture::new("taiyaku-test-correction-rows");
+    let (state, work_id) =
+        two_editions_in_a_library(&fixture, |_| std::sync::Arc::new(crate::LocalLibrary));
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
+    (router, state, work_id, fixture)
+}
+
+/// The document, the library and the state behind
+/// [`router_over_a_library_with_two_editions`], reading pages through whatever
+/// `source` builds from that library.
+///
+/// Extracted rather than copied into
+/// [`state_whose_pages_wait_on_the_library`], which needs the same work with a
+/// different source — [`seed_fixture_account`]'s reason for being extracted.
+fn two_editions_in_a_library(
+    fixture: &Fixture,
+    source: impl FnOnce(
+        &std::sync::Arc<taiyaku_library::Library>,
+    ) -> std::sync::Arc<dyn crate::PageSource>,
+) -> (std::sync::Arc<ServeState>, i64) {
     let path = fixture.path().join("taiyaku.json");
     let json = r#"{
           "taiyaku": 1,
@@ -745,18 +764,75 @@ pub(crate) fn router_over_a_library_with_two_editions()
         taiyaku_library::import::sidecar(&conn, &doc, &path).expect("import")
     };
     let works = works_in(&library);
+    let source = source(&library);
     let state = std::sync::Arc::new(ServeState {
         library,
         works,
-        source: std::sync::Arc::new(crate::LocalLibrary),
+        source,
         cache_dir: fixture.path().join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
     });
-    let router = authenticating(crate::build_router(state.clone()), &state.library);
-    (router, state, work_id, fixture)
+    (state, work_id)
+}
+
+/// [`router_over_a_library_with_two_editions`]'s work with no router, reading
+/// its pages through [`PagesWaitOnTheLibrary`]: what
+/// `routes::tests::no_works_route_stalls_the_runtime` calls every handler
+/// against.
+///
+/// The two editions and their solved edge are for `patch_alignments`, which
+/// needs a pairing to correct; the imported row is what progress, notes and
+/// truth read and write against.
+///
+/// # Panics
+///
+/// Panics if the fixture cannot be written or imported.
+pub(crate) fn state_whose_pages_wait_on_the_library() -> (std::sync::Arc<ServeState>, Fixture) {
+    let fixture = Fixture::new("taiyaku-test-pages-wait-on-the-library");
+    let (state, _work_id) = two_editions_in_a_library(&fixture, |library| {
+        std::sync::Arc::new(PagesWaitOnTheLibrary {
+            library: std::sync::Arc::clone(library),
+        })
+    });
+    (state, fixture)
+}
+
+/// A page source that waits on the library's mutex before every read, then
+/// serves a real page whatever it was asked for.
+///
+/// **What brings `get_page` and `get_thumb` into
+/// [`the_runtime_stalls_on`]'s view.** For an unrestricted reader neither
+/// handler touches `state.library`: what blocks in them is the page read — a
+/// zip decompression from disk, or a round trip to Stump — which a watchdog
+/// holding the mutex does not reach. Waiting on the same mutex here makes a
+/// page read last exactly as long as the watchdog decides, the way a FIFO did
+/// for the progress stall test this crate had before Task 13.
+/// `docs/notes.md`, "O71", records both handlers passing, with their closures
+/// on the async worker, under a source that did not wait.
+///
+/// The page is [`real_page_bytes`], so a tile can be decoded from it; none of
+/// the fixture's archives exist on disk.
+#[derive(Debug)]
+pub(crate) struct PagesWaitOnTheLibrary {
+    library: std::sync::Arc<taiyaku_library::Library>,
+}
+
+impl crate::PageSource for PagesWaitOnTheLibrary {
+    fn page(
+        &self,
+        _root: &std::path::Path,
+        _member: &taiyaku_core::Member,
+        _within: u32,
+    ) -> Result<crate::ServedPage, String> {
+        drop(self.library.conn());
+        Ok(crate::ServedPage {
+            content_type: "image/png".to_string(),
+            bytes: real_page_bytes(),
+        })
+    }
 }
 
 /// The correction fixture of [`router_over_a_library_with_two_editions`], for
@@ -1759,6 +1835,100 @@ pub(crate) fn from_a_browser() -> axum::http::Extensions {
     let mut extensions = axum::http::Extensions::new();
     extensions.insert(crate::auth::By::Cookie);
     extensions
+}
+
+/// Drive one handler, called directly, while another thread holds the
+/// library's mutex, and report whether the runtime was free to poll anything
+/// else meanwhile.
+///
+/// **Moved here from `curation/tests.rs` by O71**, when
+/// `routes::tests::no_works_route_stalls_the_runtime` became its second
+/// caller. Its body is as it was.
+///
+/// `auth::tests::the_guard_does_not_stall_the_runtime`'s watchdog — named
+/// `routes::tests::a_progress_read_does_not_stall_the_runtime` when this was
+/// modelled on it — with its two arguments unchanged: `Library::conn()` is a
+/// `MutexGuard<'_, Connection>`, so a thread holding it blocks any handler
+/// that calls it for a controlled span the way that test's FIFO once did; and
+/// the block's release is gated on the canary rather than on a fixed sleep,
+/// so how long it lasts is decided by whether the reactor was ever free to
+/// run anything else — the property under test — rather than by a duration
+/// picked in advance.
+///
+/// **The handler is called directly rather than through the router**, which
+/// is the one difference and it is load-bearing. Every request through the
+/// router passes `auth::guard` first, and that middleware reads the same
+/// library inside its own `spawn_blocking`: it would take the mutex wait onto
+/// a blocking thread, free the reactor, let the canary run and let the
+/// watchdog release the guard — all before the handler under test ever
+/// touched SQLite. The measurement would then come back clean for a handler
+/// doing every byte of its work on the async worker, which is a fixture where
+/// right and wrong render the same.
+///
+/// **It sees only a handler that waits on the library's mutex.** A handler
+/// whose blocking work is something else — a page read out of an archive — is
+/// free whatever the watchdog holds, and passes whether it runs behind
+/// `spawn_blocking` or not. [`PagesWaitOnTheLibrary`] is how the page routes
+/// are brought into view.
+///
+/// # Panics
+///
+/// Panics if the handler panics, or the canary or the watchdog thread does.
+pub(crate) async fn the_runtime_stalls_on(
+    library: &std::sync::Arc<taiyaku_library::Library>,
+    call: impl std::future::Future<Output = axum::response::Response> + Send + 'static,
+) -> (bool, axum::response::Response) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let canary_ran = std::sync::Arc::new(AtomicBool::new(false));
+    let rescued_by_deadline = std::sync::Arc::new(AtomicBool::new(false));
+    let (lock_taken_tx, lock_taken_rx) = std::sync::mpsc::channel();
+
+    let watchdog = {
+        let library = std::sync::Arc::clone(library);
+        let canary_ran = std::sync::Arc::clone(&canary_ran);
+        let rescued_by_deadline = std::sync::Arc::clone(&rescued_by_deadline);
+        std::thread::spawn(move || {
+            let guard = library.conn();
+            lock_taken_tx
+                .send(())
+                .expect("the test thread is still waiting on this channel");
+            // Half a second for a task on an idle runtime to be polled once.
+            // Passing costs the first 10 ms of it; only a failure waits the
+            // whole way out.
+            let mut waited = 0;
+            while !canary_ran.load(Ordering::SeqCst) && waited < 50 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                waited += 1;
+            }
+            if !canary_ran.load(Ordering::SeqCst) {
+                rescued_by_deadline.store(true, Ordering::SeqCst);
+            }
+            drop(guard);
+        })
+    };
+    // Do not call the handler until the guard is confirmed held — otherwise
+    // its own blocking closure could win the mutex first and this would
+    // measure nothing.
+    lock_taken_rx
+        .recv()
+        .expect("the watchdog thread is still running");
+
+    // Spawned before the canary, so the runtime polls it first: by the time
+    // the canary would be scheduled, a handler behind `spawn_blocking` has
+    // already blocked on the mutex and a handler on the async worker has
+    // stopped the thread the canary would be polled by.
+    let request = tokio::spawn(call);
+    let canary = tokio::spawn({
+        let canary_ran = std::sync::Arc::clone(&canary_ran);
+        async move { canary_ran.store(true, Ordering::SeqCst) }
+    });
+
+    let response = request.await.expect("the handler did not panic");
+    canary.await.unwrap();
+    watchdog.join().unwrap();
+
+    (rescued_by_deadline.load(Ordering::SeqCst), response)
 }
 
 /// Wrap a router so every request presents a real **browser session** — the

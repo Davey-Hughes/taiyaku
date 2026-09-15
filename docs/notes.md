@@ -17789,3 +17789,179 @@ table. Rendered the same way, only the eleven rows above the first blank line
 form the table (12 `<tr>` with the header), and the eleven rows from 2026-08-29
 on are not table rows at all. Three of those eleven also carry a pipe in a code span,
 so joining the table back up needs the same escape.
+
+## O71: the works handlers are tested directly, and the guard keeps its test — 2026-09-14
+
+O71 recorded that `routes/tests.rs`'s `a_progress_read_does_not_stall_the_runtime`
+passed with `get_progress` moved wholly onto the async worker. The request it
+drives passes `auth::guard` first, and the guard's own `spawn_blocking` frees
+the reactor before any handler touches SQLite. It named the ten `routes.rs`
+handlers that do their work inside `spawn_blocking` as having nothing else
+guarding that, and `curation/tests.rs`'s direct-call test as the shape of a fix.
+
+### How a handler was moved
+
+Each change replaced `tokio::task::spawn_blocking(` on one line with
+`on_the_async_worker(`, and appended to the file
+
+```rust
+async fn on_the_async_worker<T>(f: impl FnOnce() -> T) -> Result<T, tokio::task::JoinError> {
+    Ok(f())
+}
+```
+
+so the closure runs where the handler is polled, and the `.await` and the
+`JoinError` arm after it still compile. A script checked that the line held a
+`spawn_blocking`, ran `cargo nextest run --workspace --all-features
+--no-fail-fast`, copied the saved file back and compared it byte for byte.
+Every run below restored cleanly, and `git diff -- crates/` hashed the same
+before the ten handler runs and after the last run of this section.
+
+### The premise, re-proved
+
+On `6a2e72d`'s code, with `get_progress`'s closure moved (`routes.rs` line
+1323): `2129 tests run: 2129 passed, 4 skipped`, and
+`a_progress_read_does_not_stall_the_runtime` passed in 0.045 s. Nothing else in
+the workspace saw it.
+
+### The handlers, enumerated
+
+`routes.rs` at `6a2e72d` holds ten `tokio::task::spawn_blocking(` calls, one in
+each of `list_works` (line 410), `get_page` (793), `get_thumb` (864),
+`get_notes` (995), `put_notes` (1066), `get_truth` (1177), `put_truth` (1246),
+`get_progress` (1323), `put_progress` (1364) and `patch_alignments` (1647).
+`routes/` holds only `tests.rs`. The row's list is complete and current. The
+one other handler, `get_sidecar`, has no closure: it answers from the sidecar in
+memory.
+
+Two of the ten do no store work in theirs. `get_page`'s closure reads the page
+through `ServeState::page`, which is the `PageSource`, and `get_thumb`'s reads
+the tile cache and then the page. Neither calls `state.library.conn()`, and for
+a reader with an empty grant nothing before the closure does either.
+
+### What the old test does see
+
+With `auth::guard`'s resolution moved instead (`auth.rs` line 432):
+`2129 tests run: 2128 passed, 1 failed, 4 skipped`. The one failure was
+`routes::tests::a_progress_read_does_not_stall_the_runtime`, at
+`routes/tests.rs:633`: "the runtime polled nothing else for half a second: the
+progress read is running on the async worker rather than behind
+spawn_blocking". No test outside `routes/tests.rs` and `curation/tests.rs` runs
+a canary, and `auth.rs`'s doc on `guard` already said this test caught the
+middleware doing it when the guard was first written.
+
+So the test was kept. It moved to `auth/tests.rs` as
+`the_guard_does_not_stall_the_runtime`, its body unchanged but for the failure
+message, which named a progress read and now names the guard. Its `PUT`, and the
+`GET` that reads the position back once the block lifts, came with it.
+
+### The new test
+
+`routes::tests::no_works_route_stalls_the_runtime` calls all ten handlers
+directly under `the_runtime_stalls_on`. That helper moved from
+`curation/tests.rs` to `test_support.rs`, and its 56 lines from the signature
+down compare identical with `main`'s; `no_curation_route_stalls_the_runtime`
+calls it from there. Each call asserts `!stalled` with a message naming the
+handler and its route, then the status it succeeds with, since a handler refused
+before its closure would be free for the wrong reason. The order lets each
+succeed:
+
+- `list_works`;
+- `put_progress`, then `get_progress`, which also asserts one position, `raw`,
+  slot 1 — the old test's read-back;
+- `get_notes`, then `put_notes` with its `ETag` as `If-Match` and its body;
+- `get_truth`, then `put_truth`, the same way;
+- `get_page` and `get_thumb`, for page 0 of `raw`;
+- `patch_alignments`, with the sidecar's `ETag` and the correction
+  `a_correction_reaches_the_library_rows_without_a_restart` sends.
+
+The principal is the fixture account with an empty grant. The fixture,
+`test_support::state_whose_pages_wait_on_the_library`, is
+`router_over_a_library_with_two_editions`'s work without the router: the
+construction both share was extracted into `two_editions_in_a_library`, which
+takes the page source. Its source is `PagesWaitOnTheLibrary`, which takes
+`library.conn()`, drops it, and serves `real_page_bytes()` for any page.
+
+### The source has to wait
+
+Throwaway, restored and compared afterwards: `PagesWaitOnTheLibrary` with its
+`drop(self.library.conn())` line removed, and `get_page`'s and `get_thumb`'s
+closures both moved onto the async worker. The new test alone:
+`1 test run: 1 passed, 571 skipped`. A watchdog that holds only the mutex does
+not see either page route.
+
+### Each handler, watched red
+
+Each run was the whole workspace, over the branch's `crates/`. The test stops at
+its first failure, so in each run the handlers before the moved one passed their
+assertions and those after it were not reached.
+
+| handler moved | `routes.rs` line | the new test fails at `routes/tests.rs` | with |
+| --- | --- | --- | --- |
+| `list_works` | 410 | 605 | "list_works (GET /api/works) ran on the async worker" |
+| `get_page` | 793 | 725 | "get_page (GET /api/works/{work}/{edition}/pages/{index}) ran on the async worker" |
+| `get_thumb` | 864 | 736 | "get_thumb (GET /api/works/{work}/{edition}/pages/{index}/thumb) ran on the async worker" |
+| `get_notes` | 995 | 660 | "get_notes (GET /api/works/{work}/notes) ran on the async worker" |
+| `put_notes` | 1066 | 679 | "put_notes (PUT /api/works/{work}/notes) ran on the async worker" |
+| `get_truth` | 1177 | 690 | "get_truth (GET /api/works/{work}/truth) ran on the async worker" |
+| `put_truth` | 1246 | 708 | "put_truth (PUT /api/works/{work}/truth) ran on the async worker" |
+| `get_progress` | 1323 | 634 | "get_progress (GET /api/works/{work}/progress) ran on the async worker" |
+| `put_progress` | 1364 | 623 | "put_progress (PUT /api/works/{work}/progress) ran on the async worker" |
+| `patch_alignments` | 1647 | 760 | "patch_alignments (PATCH /api/works/{work}/alignments) ran on the async worker" |
+
+Every one of the ten ended `2130 tests run: 2129 passed, 1 failed, 4 skipped`,
+and the one failure was always this test. None survived.
+
+### A reader with a grant
+
+Throwaway, restored and compared afterwards: the same fixture and watchdog,
+handlers unchanged, and a principal with `roots: vec![1]`.
+
+| call | stalled | status |
+| --- | --- | --- |
+| `get_page`, empty grant | false | 200 |
+| `get_page` | true | 404 |
+| `get_thumb` | true | 404 |
+| `patch_alignments` | true | 404 |
+| `get_sidecar` | true | 404 |
+| `get_sidecar`, empty grant | false | 200 |
+
+With roots, `refuse_if_hidden` (in `get_page` and `get_thumb`, and twice in
+`patch_alignments`) and `visible_editions_or_refuse` (in `get_sidecar`, and
+first in `patch_alignments`) take `state.library.conn()` on the async worker
+before any closure. The 404s are the grant refusing a work under no root it
+names; the stall comes first. `curation/tests.rs`'s doc on
+`no_curation_route_stalls_the_runtime` says `routes.rs` uses `spawn_blocking`
+"in every handler but `get_sidecar`" and names only `get_sidecar` for this. The
+new test uses an empty grant so that this does not decide it.
+
+### Flake runs
+
+The new test alone, 30 times, on this workstation while four other worktrees
+built: 30 passed, each in 0.125–0.130 s, at one-minute load averages from 11.28
+to 12.42. During the ten handler runs, where it ran in parallel with the whole
+workspace, five `uptime` readings gave one-minute averages from 33.84 to 46.77,
+and in each run every handler before the moved one passed.
+
+### Not changed
+
+- The reader with a grant, above.
+- `library_api.rs`'s seven handlers — `home`, `series`, `one_series`, `work`,
+  `search`, `cover` and `status` — take `state.library.conn()` on the async
+  worker and hold no `spawn_blocking` at all. That is O8 and O12's failure class
+  on the browse routes. It is outside this row, and it was read, not measured.
+- The other modules whose handlers use `spawn_blocking` have no stall test:
+  `config_api` (14 calls), `session` (9), `users_api` (6), `metadata` (4),
+  `backup_api` (3), and `download`, `opds` and `stamp` (2 each). `curation` (6)
+  and now `routes` (10) do, and `auth::guard` (1) does through the router.
+- `get_page` is called without `?w=`, so what blocks under the watchdog is the
+  plain page read, not the resize. Moving the closure moves both, so this does
+  not change what fails.
+
+### Counts
+
+Rust 2129 → 2130: the new test is one more, and the old one moved and was
+renamed. `check-all.sh` exited 0 and ended `all green, except NOT MEASURED:`,
+with `standing corpus checks (TAIYAKU_CORPUS unset)` the only thing listed, and
+`status-test-count` found 2130 at both of its sites. `web/` was not changed:
+`test:coverage` ran 2,112 tests and `test:browser` 28.

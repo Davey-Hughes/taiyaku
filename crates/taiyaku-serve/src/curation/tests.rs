@@ -1104,85 +1104,6 @@ fn an_administrator() -> crate::auth::Principal {
     }
 }
 
-/// Drive one curation handler while another thread holds the library's
-/// mutex, and report whether the runtime was free to poll anything else
-/// meanwhile.
-///
-/// `routes::tests::a_progress_read_does_not_stall_the_runtime`'s watchdog,
-/// with its two arguments unchanged: `Library::conn()` is a
-/// `MutexGuard<'_, Connection>`, so a thread holding it blocks any handler
-/// that calls it for a controlled span the way that test's FIFO once did; and
-/// the block's release is gated on the canary rather than on a fixed sleep,
-/// so how long it lasts is decided by whether the reactor was ever free to
-/// run anything else — the property under test — rather than by a duration
-/// picked in advance.
-///
-/// **The handler is called directly rather than through the router**, which
-/// is the one difference and it is load-bearing. Every request through the
-/// router passes `auth::guard` first, and that middleware reads the same
-/// library inside its own `spawn_blocking`: it would take the mutex wait onto
-/// a blocking thread, free the reactor, let the canary run and let the
-/// watchdog release the guard — all before the handler under test ever
-/// touched SQLite. The measurement would then come back clean for a handler
-/// doing every byte of its work on the async worker, which is a fixture where
-/// right and wrong render the same.
-async fn the_runtime_stalls_on(
-    library: &std::sync::Arc<taiyaku_library::Library>,
-    call: impl std::future::Future<Output = axum::response::Response> + Send + 'static,
-) -> (bool, axum::response::Response) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    let canary_ran = std::sync::Arc::new(AtomicBool::new(false));
-    let rescued_by_deadline = std::sync::Arc::new(AtomicBool::new(false));
-    let (lock_taken_tx, lock_taken_rx) = std::sync::mpsc::channel();
-
-    let watchdog = {
-        let library = std::sync::Arc::clone(library);
-        let canary_ran = std::sync::Arc::clone(&canary_ran);
-        let rescued_by_deadline = std::sync::Arc::clone(&rescued_by_deadline);
-        std::thread::spawn(move || {
-            let guard = library.conn();
-            lock_taken_tx
-                .send(())
-                .expect("the test thread is still waiting on this channel");
-            // Half a second for a task on an idle runtime to be polled once.
-            // Passing costs the first 10 ms of it; only a failure waits the
-            // whole way out.
-            let mut waited = 0;
-            while !canary_ran.load(Ordering::SeqCst) && waited < 50 {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                waited += 1;
-            }
-            if !canary_ran.load(Ordering::SeqCst) {
-                rescued_by_deadline.store(true, Ordering::SeqCst);
-            }
-            drop(guard);
-        })
-    };
-    // Do not call the handler until the guard is confirmed held — otherwise
-    // its own blocking closure could win the mutex first and this would
-    // measure nothing.
-    lock_taken_rx
-        .recv()
-        .expect("the watchdog thread is still running");
-
-    // Spawned before the canary, so the runtime polls it first: by the time
-    // the canary would be scheduled, a handler behind `spawn_blocking` has
-    // already blocked on the mutex and a handler on the async worker has
-    // stopped the thread the canary would be polled by.
-    let request = tokio::spawn(call);
-    let canary = tokio::spawn({
-        let canary_ran = std::sync::Arc::clone(&canary_ran);
-        async move { canary_ran.store(true, Ordering::SeqCst) }
-    });
-
-    let response = request.await.expect("the handler did not panic");
-    canary.await.unwrap();
-    watchdog.join().unwrap();
-
-    (rescued_by_deadline.load(Ordering::SeqCst), response)
-}
-
 /// **No curation route does its SQLite work on the async worker.**
 ///
 /// Every handler here held `state.library.conn()` — a `MutexGuard` — across
@@ -1233,7 +1154,7 @@ async fn no_curation_route_stalls_the_runtime() {
         crate::curation::rule_from_json(&previewed_rule(&router, id).await).expect("a rule");
     let library = Arc::clone(&state.library);
 
-    let (stalled, response) = the_runtime_stalls_on(
+    let (stalled, response) = test_support::the_runtime_stalls_on(
         &library,
         crate::curation::list(
             State(Arc::clone(&state)),
@@ -1253,7 +1174,7 @@ async fn no_curation_route_stalls_the_runtime() {
     );
     assert_eq!(response.status(), StatusCode::OK);
 
-    let (stalled, response) = the_runtime_stalls_on(
+    let (stalled, response) = test_support::the_runtime_stalls_on(
         &library,
         crate::curation::detail(
             State(Arc::clone(&state)),
@@ -1269,7 +1190,7 @@ async fn no_curation_route_stalls_the_runtime() {
     );
     assert_eq!(response.status(), StatusCode::OK);
 
-    let (stalled, response) = the_runtime_stalls_on(
+    let (stalled, response) = test_support::the_runtime_stalls_on(
         &library,
         crate::curation::resolution(
             State(Arc::clone(&state)),
@@ -1286,7 +1207,7 @@ async fn no_curation_route_stalls_the_runtime() {
     );
     assert_eq!(response.status(), StatusCode::OK);
 
-    let (stalled, response) = the_runtime_stalls_on(
+    let (stalled, response) = test_support::the_runtime_stalls_on(
         &library,
         crate::curation::accept(
             State(Arc::clone(&state)),
@@ -1304,7 +1225,7 @@ async fn no_curation_route_stalls_the_runtime() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(accepted_rules(&state), 1, "and the accept did happen");
 
-    let (stalled, response) = the_runtime_stalls_on(
+    let (stalled, response) = test_support::the_runtime_stalls_on(
         &library,
         crate::curation::unaccept(
             State(Arc::clone(&state)),
@@ -1320,7 +1241,7 @@ async fn no_curation_route_stalls_the_runtime() {
     );
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
-    let (stalled, response) = the_runtime_stalls_on(
+    let (stalled, response) = test_support::the_runtime_stalls_on(
         &library,
         crate::curation::dismiss(
             State(Arc::clone(&state)),

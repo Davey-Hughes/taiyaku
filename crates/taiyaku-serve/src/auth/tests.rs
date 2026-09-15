@@ -3248,3 +3248,151 @@ fn a_reader_may_stamp_only_when_the_column_says_so() {
     account.can_stamp = true;
     assert!(Principal::from_account(&account, vec![]).can_stamp);
 }
+
+/// **`auth::guard` resolves a request behind `spawn_blocking`, not on the async
+/// worker** — which is what this test observes, and not what it was named for.
+///
+/// ***Named `routes::tests::a_progress_read_does_not_stall_the_runtime` until
+/// O71 closed, 2026-09-14, and moved here then with its body unchanged but for
+/// its failure message.*** Its request passes this middleware first, and the
+/// guard's own `spawn_blocking` takes the mutex wait onto a blocking thread, so
+/// the canary runs and the watchdog lets go before `get_progress` touches
+/// SQLite. Measured both ways (`docs/notes.md`, "O71"): with `get_progress`'s
+/// closure moved onto the async worker, the whole workspace passed, this test
+/// included; with the guard's resolution moved there instead, this was the one
+/// test in the workspace that failed. It is kept for that. Whether each handler
+/// does its own work off the async worker is
+/// `routes::tests::no_works_route_stalls_the_runtime`, which calls them
+/// directly. **Do not model a handler's stall test on this one.**
+///
+/// The paragraphs below are the test's own, kept as written and marked where
+/// O71 found them wrong.
+///
+/// Restores `a_progress_read_does_not_stall_the_runtime`, removed when Task
+/// 13 moved progress off files and onto `taiyaku-library`'s SQLite
+/// connection, on the premise — recorded then, and wrong — that "an
+/// in-memory SQLite call has no comparable primitive to block a thread on
+/// for a controlled duration." `Library::conn()` returns a
+/// `MutexGuard<'_, Connection>` from a `Mutex<Connection>`
+/// (`taiyaku-library/src/lib.rs`): a lock a spawned thread can hold for a
+/// controlled span exactly as the old test held a FIFO open, and any
+/// handler that calls `library.conn()` inside its `spawn_blocking` closure
+/// blocks on it for as long as the guard is held. `get_progress` does
+/// exactly that (`crate::progress::load` → `library.conn()`), so this is
+/// O8's failure class — a blocking call inside an async handler stalling
+/// the reactor — proven on the same code path, with the mutex standing in
+/// for the FIFO as the controlled block. *(Not on that path: the guard frees
+/// the reactor before `get_progress` runs — O71, above.)*
+///
+/// **The block's release is gated on the canary, not a fixed sleep.** A
+/// fixed sleep shorter than the watchdog's own deadline would let an
+/// unwrapped handler's block happen to end before the deadline fires,
+/// passing for the wrong reason — the same trap a fixed duration would set
+/// here that the old FIFO test avoided by having its own watchdog decide
+/// when to open the FIFO. Here the watchdog thread is the one holding
+/// `library.conn()`: it waits for the canary or half a second, whichever
+/// comes first, and only then drops the guard — so how long the block
+/// actually lasts is decided by whether the reactor was ever free to run
+/// anything else, which is the property under test, rather than by a
+/// duration picked in advance.
+#[tokio::test(flavor = "current_thread")]
+async fn the_guard_does_not_stall_the_runtime() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let (router, state) = crate::test_support::router_over_a_library().await;
+
+    // A position to read back, so the eventual read proves more than "no
+    // content" — it proves the value written before the block still comes
+    // back correctly once the block lifts.
+    let put = router
+        .clone()
+        .oneshot(
+            Request::put("/api/works/w/progress")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"edition":"raw","slot":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put.status(), StatusCode::NO_CONTENT);
+
+    let canary_ran = Arc::new(AtomicBool::new(false));
+    let rescued_by_deadline = Arc::new(AtomicBool::new(false));
+    let (lock_taken_tx, lock_taken_rx) = std::sync::mpsc::channel();
+
+    let watchdog = {
+        let library = Arc::clone(&state.library);
+        let canary_ran = Arc::clone(&canary_ran);
+        let rescued_by_deadline = Arc::clone(&rescued_by_deadline);
+        std::thread::spawn(move || {
+            let guard = library.conn();
+            lock_taken_tx
+                .send(())
+                .expect("the test thread is still waiting on this channel");
+            // Half a second for a task on an idle runtime to be polled
+            // once. Passing costs the first 10 ms of it; only a failure
+            // waits the whole way out.
+            let mut waited = 0;
+            while !canary_ran.load(Ordering::SeqCst) && waited < 50 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                waited += 1;
+            }
+            if !canary_ran.load(Ordering::SeqCst) {
+                rescued_by_deadline.store(true, Ordering::SeqCst);
+            }
+            drop(guard);
+        })
+    };
+    // Do not fire the request until the guard is confirmed held — otherwise
+    // the request's own `spawn_blocking` closure could win the mutex first
+    // and this would measure nothing.
+    lock_taken_rx
+        .recv()
+        .expect("the watchdog thread is still running");
+
+    // Spawned before the canary, so the runtime polls it first: by the time
+    // the canary would be scheduled, a read behind `spawn_blocking` has
+    // already blocked on the mutex.
+    let request = tokio::spawn({
+        let router = router.clone();
+        async move {
+            router
+                .oneshot(
+                    Request::get("/api/works/w/progress")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+    });
+    let canary = tokio::spawn({
+        let canary_ran = Arc::clone(&canary_ran);
+        async move { canary_ran.store(true, Ordering::SeqCst) }
+    });
+
+    let response = request.await.unwrap();
+    canary.await.unwrap();
+    watchdog.join().unwrap();
+
+    assert!(
+        !rescued_by_deadline.load(Ordering::SeqCst),
+        "the runtime polled nothing else for half a second: something on the request's \
+             path through the router is blocking the async worker, and auth::guard is the \
+             part of that path that reads the library"
+    );
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 16)
+        .await
+        .unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let positions = doc["positions"].as_array().expect("positions is an array");
+    assert_eq!(positions.len(), 1, "one write, one position");
+    assert_eq!(positions[0]["edition"].as_str().unwrap(), "raw");
+    assert_eq!(
+        positions[0]["slot"].as_u64().unwrap(),
+        1,
+        "the value written before the block still comes back correctly"
+    );
+}

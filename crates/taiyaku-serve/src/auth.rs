@@ -413,9 +413,11 @@ fn refuse(path: &str) -> Response {
 /// handler in `routes.rs` does: it reads SQLite through `state.library`, whose
 /// `conn()` is a `MutexGuard`, and a password additionally costs an argon2
 /// verify measured at 11.9 ms. Doing either on the async worker stalls the whole
-/// runtime — which `routes::tests::a_progress_read_does_not_stall_the_runtime`
-/// asserts, and which it caught this middleware doing when the guard was first
-/// written. A guard is the one piece of middleware every request passes through,
+/// runtime — which `auth::tests::the_guard_does_not_stall_the_runtime` asserts
+/// (named `routes::tests::a_progress_read_does_not_stall_the_runtime` until
+/// O71, which found that the guard, not a progress read, is what it sees), and
+/// which it caught this middleware doing when the guard was first written. A
+/// guard is the one piece of middleware every request passes through,
 /// so it is the worst possible place to block.
 pub(crate) async fn guard(
     State(state): State<Arc<ServeState>>,
