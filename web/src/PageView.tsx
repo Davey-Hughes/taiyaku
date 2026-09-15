@@ -142,9 +142,11 @@ export interface PageViewProps {
  * visible one — a race that could flash a stale frame onto screen after the
  * reader had already moved past it, which is precisely the bug this
  * component exists to close. A fresh probe per attempt has no such shared
- * mutable node to race over: whichever attempt is current when its decode
- * settles is the only one `presentWhenDecoded`'s `stale()` check lets touch
- * the one real `<img>`'s `src`.
+ * mutable node to race over. Which settled decode may then touch the one real
+ * `<img>`'s `src` is decided by `ordering.ts`, not by `presentWhenDecoded`'s
+ * `stale()` check: since #35 that function presents a superseded decode too,
+ * so a flick shows pages on the way, and this component hands it `inOrder`,
+ * which draws an attempt only if nothing newer has been drawn (O113).
  */
 export function PageView({
   src,
@@ -172,33 +174,47 @@ export function PageView({
   // `shown` deliberately does not join this array: it changes as a *result*
   // of this effect (via `setShown` below, once a decode settles), and
   // depending on it would tear the in-flight decode's own effect down and
-  // re-run this one the moment that happens — pointless, since the `src ===
-  // shown` guard already makes the effect a no-op by then. `src` and
-  // `buffered` are the only true inputs to "should a new decode start".
+  // re-run this one the moment that happens — pointless, since by then `src ===
+  // shown` and the effect would only record that page as drawn a second time.
+  // `src` and `buffered` are the only true inputs to "should a new decode
+  // start".
   // biome-ignore lint/correctness/useExhaustiveDependencies: shown changes as a result of this effect; adding it would tear the in-flight decode down and restart it the moment it settles. See above.
   useEffect(() => {
     latestRef.current = src
-    if (!buffered) {
-      // Keeps `shown` from going stale while unbuffered — `displayed` below
-      // ignores it in this branch (it reads `src` directly), but a caller
-      // is free to flip `buffered` back on for an instance React keeps
-      // mounted, and that transition must not resume from whatever `shown`
-      // last held before it went unbuffered.
-      setShown(src)
+    // The number this `src` occupies among this instance's own `src` changes —
+    // the only thing that can order two finished decodes. See `ordering.ts` for
+    // why `decode.ts` cannot do it and what goes wrong without it.
+    const attempt = order.next()
+    // **A `src` that starts no decode takes a number too, and is drawn under
+    // it.** Two cases start none: a return to the page already drawn, and the
+    // unbuffered path. Both used to return without a number, which left
+    // `ordering.ts` nothing newer to drop a decode still in flight against. A
+    // reader who turned and turned back before the page they left had decoded
+    // got that page drawn over the one they came back to, and kept it until
+    // `src` next changed; `=` then `0` inside the zoomed decode left the zoomed
+    // rung drawn at fit-whole, and `-` then `=` left the lower rung drawn
+    // zoomed. `decode.ts` shows a superseded decode on the promise that it "can
+    // never paint over a newer one", and a return is the newest request there
+    // is. Measured and tested under O113 in `docs/notes.md`.
+    //
+    // Unbuffered, this is also what keeps `shown` from going stale —
+    // `displayed` below ignores it in this branch (it reads `src` directly),
+    // but a caller is free to flip `buffered` back on for an instance React
+    // keeps mounted, and that transition must not resume from whatever `shown`
+    // last held before it went unbuffered. That includes a buffered decode
+    // that settled in the meantime, which the number is what drops.
+    if (!buffered || src === shown) {
+      order.inOrder(attempt, src, setShown)
       return
     }
-    if (src === shown) return
-    // The number this attempt occupies among this instance's own `src` changes
-    // — the only thing that can order two finished decodes. See `ordering.ts`
-    // for why `decode.ts` cannot do it and what goes wrong without it.
-    const attempt = order.next()
     // Joining the cohort happens here, inside the effect body, which is what
     // puts both cells of a pair in the same one: React flushes a commit's
     // effects in one synchronous pass, so the sibling's `run` call lands before
     // `cohort.ts`'s deferred close can fire. Returning above — on `src ===
     // shown`, or unbuffered — deliberately joins nothing: a cell whose page did
     // not change has nothing to present and must not make the cell beside it
-    // wait on a decode that will never start.
+    // wait on a decode that will never start. It does take a number first, and
+    // a number orders only what this one cell draws.
     void presentWhenDecoded(
       makeImage ?? newImage,
       decodeQueue ?? unboundedDecodeQueue,

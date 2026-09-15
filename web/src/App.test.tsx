@@ -791,6 +791,21 @@ describe('the reader keys', () => {
     press('0')
     expect(transform()).toBe(fitWhole)
     await settle()
+    // `0` asked for the fit-whole rung again. The two zoomed decodes settle
+    // after it and are older than that request, so neither is drawn.
+    expect(pages(host)).toEqual([
+      expect.stringContaining('/raw/pages/2?w=1024'),
+    ])
+  })
+
+  it('a turn and a turn back before the page decodes leave the page the reader is on', async () => {
+    const host = await open()
+    press('ArrowLeft')
+    press('ArrowRight')
+    await settle()
+    // Slot 3's decode settles after the reader is back on slot 2, and is older
+    // than the return.
+    expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/2?')])
   })
 
   it('= is inert in scroll mode, where nothing is drawn to zoom', async () => {
@@ -1115,6 +1130,46 @@ describe('the preference keys', () => {
     expect(prefsFor('regroup').breaks).toEqual({ raw: [] })
     await settle()
     expect(new Set(pages(host)).size).toBe(2)
+  })
+
+  it('in two mode, a turn onto a solo page and back leaves both halves of the pair', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.layout',
+      JSON.stringify({ mode: 'two' }),
+    )
+    // A break at slot 5 leaves slot 4 a group of its own, so the turn from the
+    // pair at slots 2 and 3 lands on one page, mirrored into both cells.
+    localStorage.setItem(
+      'taiyaku.prefs.regroup',
+      JSON.stringify({ breaks: { raw: [5] } }),
+    )
+    const host = await open()
+    // Whether each cell is hidden. `secondCellAlone` hides the second one when
+    // both cells report drawing the same page, which is what they report after
+    // a solo page's decode.
+    const hidden = () =>
+      [...host.querySelectorAll('img')]
+        .filter((img) => !(img.getAttribute('src') ?? '').includes('/thumb'))
+        .map(
+          (img) =>
+            img.parentElement?.parentElement?.getAttribute('aria-hidden') ===
+            'true',
+        )
+    const pair = pages(host)
+    expect(pair).toEqual([
+      expect.stringContaining('/raw/pages/'),
+      expect.stringContaining('/raw/pages/'),
+    ])
+    expect(new Set(pair).size).toBe(2)
+    expect(hidden()).toEqual([false, false])
+
+    press('ArrowLeft')
+    press('ArrowRight')
+    await settle()
+    // The solo page's decodes settle after the return, one per cell. Drawn,
+    // they would show one page in both cells and hide the second.
+    expect(pages(host)).toEqual(pair)
+    expect(hidden()).toEqual([false, false])
   })
 
   it('the settings panel writes the same slice the key does', async () => {

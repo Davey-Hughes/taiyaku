@@ -17266,11 +17266,15 @@ un-acted update could have landed before one of its assertions.
 
 "= and - and 0" ends back at fit-whole — `0` puts the rect back — and the page
 it shows after the settle is the `?w=1536` one. Whether that is the width it
-asks for there was not looked into.
+asks for there was not looked into. *(Looked into under O113, below: it is not.
+Fit-whole asks for `?w=1024` there, and the `?w=1536` page was a superseded
+decode drawn after `0`.)*
 
 Each now ends in an `act`-scoped settle — `flush()` from `testing/async.ts` in
 the route tests, the file's own `settle()` in the reader tests — with nothing
 asserted after it, so no verdict can move; the table's last row is its effect.
+*(O113 has since given one of the seven, "= and - and 0", an assertion after
+its settle: see below.)*
 
 Each settle was then removed on its own, with the control in the run and the
 file compared with its original after each. Its own test warned again — 5 in
@@ -17510,3 +17514,202 @@ marker would be refused by each of the three that open theirs with
   returns that message, so the last row of the table above read "missing field
   `edition` at line 4 column 44" for a document whose positions all carried an
   `edition`.
+
+## O113: a return to the drawn page drops the decode it superseded — 2026-09-14
+
+Opened and closed on one branch. O75's section above, under "None of the seven
+was passing on timing", recorded that `App.test.tsx`'s "= and - and 0 move the
+drawn rect, and 0 puts it back" ends showing the `?w=1536` page after its
+trailing settle, and left open whether that is the width it asks for there. It
+is not, and the same cause reaches a page turn.
+
+### In jsdom, logged
+
+Logging was added for one run and removed afterwards: in `App.tsx`,
+`pageLongEdge`'s inputs and `borrowedLongEdge` at every render; in
+`PageView.tsx`, each run of its effect and each present; in `decode.ts`, each
+job's skip decision and each settled decode; and in the test, the drawn rect
+and every page image's `src` after each key. It ran under `--reporter=default`
+with a control `console.error` in the same test, whose line printed. jsdom's
+window is 1024×768 at a `devicePixelRatio` of 1, and its `Image` has no
+`decode` method, so `decodeTo` settles on the `TypeError` it swallows. The
+reader opened in `single` mode, so the box's long edge was 1024 at every step.
+
+| step | `view.w` | magnification | `pageLongEdge` | `PageView`'s effect | page `src` after the step |
+| --- | --- | --- | --- | --- | --- |
+| open | 1 | 1 | 1024 | `src === shown`, returned | `?w=1024` |
+| `=` | 0.8696 | 1.15 | 1536 | attempt 1, decode started | `?w=1024` |
+| `-` | 1 | 1 | 1024 | `src === shown`, returned | `?w=1024` |
+| `=` | 0.8696 | 1.15 | 1536 | attempt 2, decode started | `?w=1024` |
+| `=` | 0.7561 | 1.3225 | 1536 | `src` unchanged, so the effect did not run | `?w=1024` |
+| `0` | 1 | 1 | 1024 | `src === shown`, returned | `?w=1024` |
+| settle | | | | attempts 1 and 2 presented, both drawn | `?w=1536` |
+| a second settle | | | | | `?w=1536` |
+
+`borrowedLongEdge` read 1024 at every render. A second logged test settled
+between one `=` and `0`, and ended on `?w=1024`: `0` found `shown` at
+`?w=1536`, took attempt 2 and decoded. So fit-whole asks for `?w=1024` in
+jsdom, and the `?w=1536` page was a superseded request drawn after the reader
+had gone back.
+
+### The cause
+
+`presentWhenDecoded` presents a decode whether or not it has been superseded.
+Its doc makes ordering `present`'s job: `PageView` "hands in a callback that
+ignores anything older than what it is already drawing, so a frame the reader
+has moved past can be shown *on the way* and can never paint over a newer one."
+That callback is `ordering.ts`'s `inOrder`, which drops an attempt only if it is
+older than the one last drawn. `PageView`'s effect took an attempt number only
+on the path that starts a decode. When `src` came back to `shown`, and on the
+unbuffered path, it returned without one, so there was nothing newer to drop the
+decode still in flight, and it was drawn when it settled.
+
+The `src === shown` return is already in `PageView.tsx` at #10 (`5172922`).
+There, and at `f81913d^`, `presentWhenDecoded` called `present` only
+`if (!stale())`, and `stale` is true once `latestRef` has moved off the request,
+so a return was safe. #35 (`f81913d`) removed that gate so a flick shows
+intermediate pages, and added the ordering: `git log -S` on `main` finds "does
+not gate this" in `decode.ts` and `inOrder` in `PageView.tsx` first in
+`f81913d`.
+
+### In a browser, before and after
+
+**Substrate.** The development workstation, not the production host.
+`taiyaku serve` ran from `target/release/taiyaku`, built 2026-09-14 at 00:24;
+the only commit to touch `crates/` since is #136, `library scan --add`. It
+served a scratch copy of `gotoubun-v01`'s sidecar with every member path made
+absolute, a scratch database and a scratch `--cache`. A forwarding proxy
+between vite's `/api` proxy and the server held any request whose URL matched a
+pattern, for a set time, before forwarding it, and logged when it held, sent
+and got each answer back. The browser, driven by Playwright, reported
+`Chrome/153.0.0.0` on Linux. Before the fix the reader was `vite` in
+development at `19a6988`. After it, the reader was two production bundles,
+built with `vite build` from `19a6988` and from this branch and served by
+`vite preview` through the same proxy, with the server restarted on a new
+`--cache`.
+
+Every drive set a new `en-mono` slot as the position, cleared the browser's
+cache over CDP, and opened the reader in `single` mode at 1000×700 and a
+`devicePixelRatio` of 1. It waited for the page to load and 1.5 s more,
+dispatched keydowns on `window`, and read each page image's `src`,
+`currentSrc`, `naturalWidth` and `naturalHeight` and the drawn rect from the
+DOM, with a `MutationObserver` recording every change to a page image's `src`.
+At that size fit-whole asks for `?w=1024`, from a long edge of 1000, and one
+`=` asks for `?w=1536`, from 1150. At Playwright's default width of 1280,
+fit-whole would ask for `?w=1536` already. In `pages/N`, `N` is the page's
+zero-based index, and the image's `alt` counts from one.
+
+The proxy's log shows a hold doing what it says. In the first held drive,
+`pages/47?w=1536` was held at 02:46:32.285Z, sent at 02:46:35.285Z and answered
+at 02:46:35.445Z.
+
+| drive | before the fix, drawn at the end | after the fix |
+| --- | --- | --- |
+| `=`, then `0` 2.5 s later; nothing held | `?w=1024`, 719×1024, at fit-whole | not rerun |
+| `=`, then `0` 5 ms later; nothing held | `?w=1536`, 1079×1536, at fit-whole: drawn 163 ms after `=`, still there at 4.5 s | 3 ms apart: `?w=1024`, 719×1024, at 4.5 s; `?w=1536` fetched by 146 ms and never drawn |
+| `=`, then `0` 57 ms later; nothing held | `?w=1536`, 1079×1536, at fit-whole, at 4.6 s | not rerun |
+| `=`, then `0` 4.5 s later; `?w=1536` held 3 s | `?w=1536` drawn at 3,174 ms while zoomed, then `?w=1024` on `0` | not rerun |
+| `=`, then `0` 307 ms later; `?w=1536` held 3 s | `?w=1536`, 1079×1536, at fit-whole, at 6.8 s | 304 ms apart: `?w=1024`, 719×1024, at 6.8 s |
+| a turn, and a turn back 155 ms later; `pages/70` and `pages/72` held 4 s | `pages/72` drawn with `alt` "page 72", which is `pages/71`'s, at 7.2 s | 154 ms apart: `pages/71`, `alt` "page 72", at 7.2 s |
+| `=` four times to 1.749×, then `-` and `=` 157 ms apart; `?w=1536` held 20 s | `?w=1536`, 1079×1536, at 1.749×, at 26.3 s | 155 ms apart: `?w=2048`, 1439×2048, at 26.3 s |
+
+`gotoubun-v01` reads right to left, so the turn's `ArrowLeft` stepped forward,
+to `pages/72`, and `ArrowRight` stepped back. The reader's saved position after
+the turn was the slot it opened on, both times. At 1.749× the reader asks for
+`?w=2048`, and before the fix the page drawn there was the 1536 one.
+
+### A flick, before and after
+
+Twelve `ArrowLeft` presses 25 ms apart at fit-whole with nothing held, once per
+bundle, over pages the restarted server had not resized before that run. Before
+the fix, from
+`pages/95`, the image's `src` changed eight times, to `pages/96`, 97, 98, 99,
+101, 102, 106 and 107, ending on `pages/107` at 533 ms with seven intermediate
+pages drawn. After it, from `pages/124`, nine times, to 125, 126, 127, 128, 129,
+131, 134, 135 and 136, ending on `pages/136` at 609 ms with eight. A flick in
+one direction never returns to the drawn page, and after the fix it still draws
+pages on the way. The two runs used different pages of the edition.
+
+### The fix
+
+`PageView`'s effect now takes an attempt number for every `src` before
+anything else. In the two cases that start no decode, a return to `shown` and
+the unbuffered path, it draws `src` through `inOrder` under that number at
+once. A decode issued before the return has a lower number, so `inOrder` drops
+it when it settles. The return still joins no cohort, and a number only orders
+what one cell draws. The unbuffered path called `setShown(src)` directly; it
+now calls it through `inOrder`, which is what drops a buffered decode that
+settles while unbuffered.
+
+`PageView`'s own doc comment said `presentWhenDecoded`'s `stale()` check
+decides which attempt may touch the image, which has not been so since #35:
+`f81913d^` presents only `if (!stale())`, and `f81913d` presents every decode
+that settles. It now names `ordering.ts` and `inOrder` instead.
+
+`PageView.tsx` stays at 100% on all four coverage measures. The web aggregate
+reads 97.72% statements, 94.05% branches, 99.16% functions and 99.31% lines
+with `main`'s three files and with this branch's, and `coverage-floor.mjs`
+found every file above its floor both times.
+
+### The tests, watched red
+
+| | test | failing assertion, against the defect |
+| --- | --- | --- |
+| T1 | `PageView.test.tsx`, "drops a decode that settles after src came back to the page already drawn" | line 186: `b.png` where `a.png` was expected |
+| T2 | `PageView.test.tsx`, "drops a decode that settles while unbuffered, so buffering again resumes from the current src" | line 209: `b.png` where `c.png` was expected |
+| T3 | `App.test.tsx`, "= and - and 0 move the drawn rect, and 0 puts it back", given an assertion after its settle | line 796: `?w=1536` where `?w=1024` was expected |
+| T4 | `App.test.tsx`, "a turn and a turn back before the page decodes leave the page the reader is on" | line 808: `pages/3` where `pages/2` was expected |
+| T5 | `App.test.tsx`, "in two mode, a turn onto a solo page and back leaves both halves of the pair" | line 1171: `pages/4` in both cells where `pages/3` and `pages/2` were expected |
+
+All five were written before the fix and failed. Each break below was then
+applied by hand to the final code, the five run under `--reporter=default`,
+and the file put back and compared byte for byte:
+
+| applied to the final code | T1 | T2 | T3 | T4 | T5 |
+| --- | --- | --- | --- | --- | --- |
+| `main`'s `PageView.tsx` | red | red | red | red | red |
+| the number taken but not drawn under: `setShown(src)` in place of `inOrder` | red | red | red | red | red |
+| the unbuffered path alone put back | passes | red | passes | passes | passes |
+| the return to `shown` alone put back | red | passes | red | red | red |
+
+Each red test failed at the line and value in the first table. cargo-mutants
+does not cover `web/`, so these are the mutation evidence. T3 now asserts after
+its settle, which the O75 section above says none of its seven tests did.
+
+### `two` mode, and the unbuffered path
+
+Two throwaway tests, run once against the unfixed code and deleted:
+
+- **`two` mode.** A break at slot 5 left slot 4 a group of its own. From the
+  pair at slots 2 and 3, a turn and a turn back before settling left both cells
+  drawing `pages/4`, and the second cell carried `aria-hidden="true"`.
+  `GroupView` sets that when `secondCellAlone` answers true, and it compares
+  what each cell last reported through `onShown`, so the defect reached
+  `drawnSrcs` and hid the reader's second page. T5 pins this.
+- **The unbuffered path.** `App.tsx` computes `buffered` as
+  `mode !== 'scroll' && prefetchPrefs.enabled`, and scroll mode is a different
+  arm of the page area's ternary, so switching the Prefetch module off is what
+  makes a mounted cell unbuffered. A turn to slot 3 started a decode. Switched
+  off through the settings panel, the cell drew `pages/3` unbuffered. A turn
+  drew `pages/4`, and a settle let the slot-3 decode finish while the cell was
+  unbuffered. Switched back on, the reader drew `pages/3` until a settle, and
+  then `pages/4`. T2 pins the mechanism at the component, where the late decode
+  is what `shown` holds when buffering resumes.
+
+### Not checked
+
+- The production host, a touch device, and the wheel or a pinch.
+- `two` mode and the unbuffered path in a browser: both were seen in jsdom only.
+- How often reading returns to the drawn page before its decode settles. The
+  drives above chose the timing.
+
+### Counts, and isolation
+
+The web suite now counts 1,157 tests in `node`, unchanged, and 955 in `jsdom`,
+four more: T1, T2, T4 and T5 are new and T3 is an existing test. The `browser`
+project still counts 28. `check-all.sh` ended `all green, except NOT MEASURED:
+standing corpus checks (TAIYAKU_CORPUS unset)`.
+
+`date -Iseconds` was stamped at 2026-09-14T19:36:26-07:00, before the first
+server started. After the last run, with every server stopped by PID,
+`find corpus -newermt 2026-09-14T19:36:26-07:00` returned nothing.

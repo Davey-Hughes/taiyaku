@@ -166,6 +166,50 @@ describe('PageView', () => {
     expect(imgOf(host).getAttribute('src')).toBe('c.png')
   })
 
+  it('drops a decode that settles after src came back to the page already drawn', async () => {
+    const { makeImage, images } = controlledImages()
+    const host = mount(
+      <PageView src="a.png" alt="p" buffered makeImage={makeImage} />,
+    )
+
+    rerender(<PageView src="b.png" alt="p" buffered makeImage={makeImage} />)
+    // Back to what is on screen before b has decoded: a turn and a turn back.
+    // a is drawn already, so no decode starts for it...
+    rerender(<PageView src="a.png" alt="p" buffered makeImage={makeImage} />)
+    expect(images).toHaveLength(1)
+
+    // ...and b, settling now, is older than the return. Drawn, it would put the
+    // page the reader left over the one they came back to, until their next
+    // turn.
+    images[0]?.resolve()
+    await flush()
+    expect(imgOf(host).getAttribute('src')).toBe('a.png')
+  })
+
+  it('drops a decode that settles while unbuffered, so buffering again resumes from the current src', async () => {
+    const { makeImage, images } = controlledImages()
+    const host = mount(
+      <PageView src="a.png" alt="p" buffered makeImage={makeImage} />,
+    )
+    rerender(<PageView src="b.png" alt="p" buffered makeImage={makeImage} />)
+    expect(images).toHaveLength(1)
+
+    // Unbuffered while b is still decoding, and moved on to c, which is drawn
+    // straight away. b settles after that.
+    rerender(
+      <PageView src="c.png" alt="p" buffered={false} makeImage={makeImage} />,
+    )
+    images[0]?.resolve()
+    await flush()
+    expect(imgOf(host).getAttribute('src')).toBe('c.png')
+
+    // Buffered again on c. b is older than c, so it is not what `shown` holds:
+    // c stays on screen and nothing needs decoding.
+    rerender(<PageView src="c.png" alt="p" buffered makeImage={makeImage} />)
+    expect(imgOf(host).getAttribute('src')).toBe('c.png')
+    expect(images).toHaveLength(1)
+  })
+
   it('re-syncs shown to src while unbuffered, so a later re-buffer does not resume a stale frame', () => {
     const host = mount(<PageView src="a.png" alt="p" buffered={false} />)
     rerender(<PageView src="b.png" alt="p" buffered={false} />)
