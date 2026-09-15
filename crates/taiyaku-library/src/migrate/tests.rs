@@ -191,6 +191,93 @@ fn a_progress_json_that_does_not_parse_is_reported_and_skipped() {
     );
 }
 
+/// **A database error partway through a document writes no position at all,
+/// and the next import applies the whole document** (O79).
+///
+/// Each position used to be written by its own statement, so a refusal at the
+/// second of three left the first written. The outcome was `Malformed` and no
+/// marker was recorded, both as intended — but the next import's "already
+/// holds a position" check then found that one row and answered
+/// `AlreadyPresent`, and the other two were never read again.
+///
+/// **The refusal is a trigger, because nothing in the schema can refuse a
+/// later position once an earlier one was accepted.** `progress` has no
+/// `CHECK`; every value the insert binds is non-null; both foreign keys name
+/// the same work and reader for every position; and a repeated edition is an
+/// upsert rather than a conflict. A malformed position is no trigger either:
+/// `progressdoc::from_json` parses the whole document before the loop writes
+/// anything, which `a_progress_json_that_does_not_parse_is_reported_and_skipped`
+/// covers. What is left is SQLite refusing one statement partway through,
+/// which a test cannot otherwise place at one position.
+///
+/// The message is asserted so the failure is known to be the trigger at the
+/// second position, and not something earlier that would leave nothing written
+/// for a different reason.
+#[test]
+fn a_database_error_partway_through_a_progress_json_writes_nothing_and_is_retried() {
+    let root = scratch("progress-fails-partway");
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let (work_id, path) = a_work(&conn, &root);
+    write_sibling(
+        &root,
+        "progress.json",
+        r#"{"taiyaku_progress":1,"positions":[
+             {"edition":"raw-mono","slot":7,"updated":"2026-08-27 09:00:00"},
+             {"edition":"full-color","slot":33,"updated":"2026-08-27 09:24:41"},
+             {"edition":"en-fan","slot":2,"updated":"2026-08-27 09:30:00"}]}"#,
+    );
+    conn.execute_batch(
+        "CREATE TRIGGER refuse_full_color BEFORE INSERT ON progress
+           WHEN NEW.edition = 'full-color'
+         BEGIN SELECT RAISE(ABORT, 'refusing full-color'); END;",
+    )
+    .expect("creating the trigger");
+
+    let first = work(&conn, work_id, THE_READER, &path).expect("does not fail the import");
+    match &first.progress {
+        Some(ProgressOutcome::Malformed(msg)) => assert!(
+            msg.contains("refusing full-color"),
+            "the trigger at the second position is what failed: {msg}"
+        ),
+        other => panic!("expected Malformed, got {other:?}"),
+    }
+    assert_eq!(
+        state::progress(&conn, work_id, THE_READER).expect("reads"),
+        Vec::new(),
+        "the position before the refusal must not be left written"
+    );
+    assert_eq!(
+        marker(&conn, work_id, PROGRESS).expect("reads the marker"),
+        None,
+        "a document that failed to apply is not settled"
+    );
+
+    conn.execute_batch("DROP TRIGGER refuse_full_color")
+        .expect("dropping the trigger");
+    let second = work(&conn, work_id, THE_READER, &path).expect("migrates");
+    assert_eq!(
+        second.progress,
+        Some(ProgressOutcome::Applied),
+        "the next import applies the document rather than reading a partial \
+         write as a position already held"
+    );
+    let by_edition: BTreeMap<String, u32> = state::progress(&conn, work_id, THE_READER)
+        .expect("reads")
+        .into_iter()
+        .map(|p| (p.edition, p.slot))
+        .collect();
+    assert_eq!(
+        by_edition,
+        BTreeMap::from([
+            ("en-fan".to_string(), 2),
+            ("full-color".to_string(), 33),
+            ("raw-mono".to_string(), 7),
+        ]),
+        "every position the document holds"
+    );
+}
+
 // -- notes --------------------------------------------------------------
 
 #[test]

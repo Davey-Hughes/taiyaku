@@ -17381,3 +17381,132 @@ All twenty `library::tests::scan*` tests pass on the branch.
   was: `git log -S'add_root('` over the CLI's `library.rs` and `main.rs` finds
   one commit, `cec59e2`, which added `scan`'s call, and over
   `taiyaku-library`'s `import` module finds none. Corrected.
+
+## O79: a progress document commits once — 2026-09-14
+
+O79 recorded that `migrate::apply_progress` writes each position of a
+`taiyaku.progress.json` with no transaction around the loop, so a failure
+partway leaves the positions before it written; `migrate_progress` returns
+`Malformed` and records no marker, and the next import's `holds_state` finds
+the partial rows and answers `Kept`, so the rest of the document is never read
+again. It named two failures that get there: "one malformed position later in
+the document, or a database error".
+
+### Half the premise was wrong
+
+`progressdoc::from_json` deserialises the whole text — as a `ProgressDoc`, and
+failing that as the bare legacy `Progress` — and returns before
+`apply_progress`'s loop begins, so a malformed position anywhere in a document
+fails with nothing written. The function is the same in `91b08d8`, the commit
+that filed O79, as on `main`; in that commit the loop already called
+`state::put_progress_at`, not the `state::put_progress` the row names.
+`a_progress_json_that_does_not_parse_is_reported_and_skipped` already asserted
+that an unreadable file writes nothing. What reaches the loop is a statement
+SQLite refuses after an earlier position has been written.
+
+### Nothing in the schema refuses a later position
+
+`progress` was last created by `schema/009_progress_per_edition.sql`, and no
+later migration names it. It has no `CHECK`. Every value `put_progress_at`
+binds is non-null — two ids, a `String`, a `u32` and `coalesce(?5,
+datetime('now'))`; both foreign keys name the one work and the one reader that
+every position in a document shares; and the insert upserts on `(user_id,
+work_id, edition)`, so a repeated edition updates its row rather than
+conflicting. So the test creates a trigger — `BEFORE INSERT ON progress WHEN
+NEW.edition = 'full-color'`, raising `ABORT` — over a versioned document
+holding `raw-mono`, `full-color` and `en-fan`, in that order.
+
+### Before and after
+
+On `main`'s `migrate.rs`, with the test added, the first import returned
+`Malformed` naming the refusal, and `state::progress` read back `[Position {
+edition: "raw-mono", slot: 7, updated: "2026-08-27 09:00:00" }]` — the test
+failed there. With that one assertion removed, the next one passed, finding no
+`migrated_document` row, and the second import, trigger dropped, returned
+`AlreadyPresent` where the test expects `Applied`. Each link of the chain O79
+describes was observed.
+
+With one `unchecked_transaction` around the loop, committed after it, all 19
+`migrate::tests` pass: the first import returns `Malformed` naming the
+refusal, no row and no marker remain, and the second returns `Applied` with
+all three positions.
+
+### The test, watched
+
+Each change was applied by a script that checked its text replaced exactly one
+occurrence, ran `migrate::tests`, restored the file and compared it with a
+saved copy. The same script over the untouched fix passed all 19.
+
+| change | the test fails at | with |
+| --- | --- | --- |
+| no transaction — `main`'s loop | no rows | `left: [Position { edition: "raw-mono", slot: 7, … }]` |
+| a transaction committed before the loop | no rows | the same |
+| a transaction per position | no rows | the same |
+| the transaction committed when a position fails, then the error returned | no rows | the same |
+| no commit after the loop | every position, after the retry | `left: {}`; `a_progress_json_beside_the_sidecar_migrates_the_reading_position` and `a_versioned_progress_json_migrates_every_position` fail too |
+| a failing position's error discarded, the rest committed | the first outcome | `expected Malformed, got Some(Applied)` |
+| the fix, with `migrate_progress`'s `Err` arm recording the document settled | no marker | `left: Some(false)`, `right: None` |
+| `main`'s loop, with the no-rows assertion removed | the retry's outcome | `left: Some(AlreadyPresent)`, `right: Some(Applied)` |
+| the fix, with `updated` removed from the fixture's third position | the message | a parse error, not the trigger |
+
+The first four stop at the same assertion, and each of the other five fails
+at a different one, so every assertion in the test has been seen to fail.
+The last is a change to the test rather than the code: a document that fails
+to parse writes nothing either, and the message assertion is what says the
+trigger was the failure.
+
+### No caller holds a transaction open
+
+A bare `BEGIN`, which `unchecked_transaction` sends, is refused while a
+transaction is already open — `crate::Nested`'s doc in `lib.rs` records it.
+`migrate::work` is called by `taiyaku-cli`'s `library::import_canonical`,
+which `library import` and `serve`'s `serve_work` call, and by
+`export/tests.rs`. `import_canonical` holds `library.conn()` and calls
+`import::reimport` first; the `Nested` scope `import_with` opens is a local of
+that function, so it has ended before `reimport` returns. `taiyaku-serve`
+depends on `taiyaku-library` and not on `taiyaku-cli`, and nothing in it calls
+into `migrate`. And the next thing `migrate::work` does is `migrate_notes`,
+whose apply reaches `state::put_notes`, which opens `unchecked_transaction` on
+the same connection.
+
+Three `taiyaku-cli` tests import a `taiyaku.progress.json` through
+`import_canonical` and assert `progress=migrated` —
+`importing_a_work_with_all_four_siblings_present_migrates_every_one`,
+`a_malformed_sibling_is_reported_and_skipped_and_the_sidecar_still_imports` and
+`a_work_whose_siblings_all_read_cleanly_produces_no_warning_at_all` — and all
+three passed with the fix, in the gate's run of 2129.
+
+### `record_settled`, measured and left
+
+`migrate_progress` writes the marker with `record_settled` once
+`apply_progress` has returned, so outside its transaction. A throwaway test,
+deleted afterwards, put a one-position document beside a work and a trigger
+refusing an insert into `migrated_document` for `progress` with `absorbed = 1`;
+a second, without the trigger, was the control.
+
+| | first import | then | second import, trigger dropped | in-place `export::work` |
+| --- | --- | --- | --- | --- |
+| trigger | `Err`: "recording `progress` as migrated for work 1: refusing the progress marker" | the position written, no marker | `AlreadyPresent`, marker `absorbed` false | `taiyaku.progress.json` in `kept`, its bytes unchanged |
+| control | `Applied` | marker `absorbed` true | — | `taiyaku.progress.json` written, its bytes changed |
+
+The rows are whole, so no reading is lost, and it is not O79. What it costs is
+the file: `absorbed` false is also what a sibling left unread because the rows
+already held state carries, and an in-place export leaves such a file where it
+is and reports it in `Exported::kept` until the reader moves it aside
+(`export.rs`, "What an export will not touch"). The same order — apply, then
+marker — is on all four documents' `Ok` arms, and each apply commits a
+transaction of its own before the marker is written: `apply_progress` now,
+`state::put_notes` and `state::put_truth` with `unchecked_transaction`,
+`librarydoc::apply` with a `Nested` scope. A transaction opened around apply and
+marker would be refused by each of the three that open theirs with
+`unchecked_transaction`, so it would change `state::put_notes` and
+`state::put_truth` as well as `apply_progress`; it is left as found.
+
+### Not changed
+
+- The order above, on all four documents.
+- A versioned document with a position missing `updated` is reported with the
+  legacy form's error: `from_json` falls back to reading a bare `Progress` and
+  returns that message, so the last row of the table above read "missing field
+  `edition` at line 4 column 44" for a document whose positions all carried an
+  `edition`.

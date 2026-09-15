@@ -558,16 +558,32 @@ fn apply_progress(
     // and hands `getProgress` an arbitrary edition to resume into. The legacy
     // bare form records no time, so it gets the stamp: see
     // `state::put_progress_at`.
+    //
+    // **One transaction around every position, so a failure partway writes
+    // none of them (O79).** Each position used to commit on its own: a
+    // statement refused at the second position left the first written, this
+    // returned `Malformed` and no marker was recorded — and the next import's
+    // `holds_state` found that one row and answered `Kept`, so the rest of the
+    // document was never read again. Rolled back, the rows stay empty and the
+    // next import applies the whole document. A malformed *position* never
+    // reaches this loop: `progressdoc::from_json` has already parsed the whole
+    // document above. `unchecked_transaction`, as `state::put_notes` opens for
+    // the next document on this same connection: nothing calls `work` with a
+    // transaction already open.
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("starting progress transaction: {e}"))?;
     for position in &recorded {
         state::put_progress_at(
-            conn,
+            &tx,
             work_id,
             user_id,
             &position.place,
             position.updated.as_deref(),
         )?;
     }
-    Ok(())
+    tx.commit()
+        .map_err(|e| format!("committing progress for work {work_id}, user {user_id}: {e}"))
 }
 
 fn migrate_notes(
