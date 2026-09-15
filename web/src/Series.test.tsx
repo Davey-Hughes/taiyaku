@@ -47,7 +47,9 @@ const who = (over: Partial<Me> = {}): Me => ({
   ...over,
 })
 
-const card = (over: Partial<library.SeriesCard> = {}): library.SeriesCard => ({
+const card = (
+  over: Partial<library.SeriesDetail> = {},
+): library.SeriesDetail => ({
   id: 7,
   title: 'Go-Toubun no Hanayome',
   works: 3,
@@ -56,6 +58,7 @@ const card = (over: Partial<library.SeriesCard> = {}): library.SeriesCard => ({
   added: 3,
   unread: 2,
   cover: '/api/library/series/7/cover',
+  titles: [{ title: 'Go-Toubun no Hanayome', kind: 'romaji', primary: true }],
   ...over,
 })
 
@@ -1189,10 +1192,10 @@ describe('Series, the alignment panel', () => {
  */
 describe('Series, a load for a series the reader has already left', () => {
   const twoSeries = async (
-    first: Promise<{ series: library.SeriesCard; works: library.WorkCard[] }>,
+    first: Promise<{ series: library.SeriesDetail; works: library.WorkCard[] }>,
   ) => {
     const second = deferred<{
-      series: library.SeriesCard
+      series: library.SeriesDetail
       works: library.WorkCard[]
     }>()
     vi.mocked(library.oneSeries)
@@ -1233,7 +1236,7 @@ describe('Series, a load for a series the reader has already left', () => {
 
   it('is not drawn when it answers after the reader has moved on', async () => {
     const first = deferred<{
-      series: library.SeriesCard
+      series: library.SeriesDetail
       works: library.WorkCard[]
     }>()
     const host = await twoSeries(first.promise)
@@ -1243,7 +1246,7 @@ describe('Series, a load for a series the reader has already left', () => {
 
   it('does not put its failure over the series that loaded', async () => {
     const first = deferred<{
-      series: library.SeriesCard
+      series: library.SeriesDetail
       works: library.WorkCard[]
     }>()
     const host = await twoSeries(first.promise)

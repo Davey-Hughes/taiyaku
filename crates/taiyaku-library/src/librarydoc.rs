@@ -359,15 +359,60 @@ fn series_info_of(conn: &Connection, series_id: i64) -> Result<SeriesInfo, Strin
         .map_err(|e| format!("reading series {series_id}: {e}"))?;
     let reading = reading.as_deref().map(parse_direction).transpose()?;
 
+    let titles = titles_where(
+        conn,
+        series_id,
+        // `hand = 1` only — derivation inserts an `is_primary` row for
+        // every series it mints, and projecting those made every scanned
+        // work's document non-empty (O53's recorded consequence, and the
+        // same defect as O80 one level up).
+        "SELECT title, kind, is_primary FROM series_title \
+         WHERE series_id = ?1 AND hand = 1 ORDER BY rowid",
+    )?;
+
+    // `chosen` is `of`'s to set: it is a fact about a work, and this function
+    // is given only a series.
+    Ok(SeriesInfo {
+        titles,
+        reading,
+        chosen: false,
+    })
+}
+
+/// Every title `series_id` holds, in the order they were written: the list
+/// `GET /api/library/series/{id}` answers, and the set [`set_series_titles`]
+/// replaces whole. O83.
+///
+/// **Every row, derivation's included, which is where this differs from
+/// [`of`].** A document carries only `hand = 1` titles (O80), but
+/// [`set_series_titles`] deletes every row for the series before it writes
+/// the list it is given. A caller that read a document's list, corrected one
+/// entry and sent it back would delete the title derivation gave the series,
+/// so this answers the whole set that function replaces.
+///
+/// **`rowid` order**, as [`of`] reads. [`set_series_titles`] inserts in the
+/// order it is given, so a list read, edited in place and sent back reads
+/// back in that same order.
+///
+/// # Errors
+///
+/// Returns an error if SQLite fails, or if a row's `kind` is not one of
+/// [`TitleKind`]'s.
+pub fn series_titles(conn: &Connection, series_id: i64) -> Result<Vec<SeriesTitle>, String> {
+    titles_where(
+        conn,
+        series_id,
+        "SELECT title, kind, is_primary FROM series_title \
+         WHERE series_id = ?1 ORDER BY rowid",
+    )
+}
+
+/// The titles `sql` selects: `title`, `kind` and `is_primary`, in that
+/// order, with `series_id` bound as `?1`. [`series_info_of`] and
+/// [`series_titles`] differ only in which rows they ask for.
+fn titles_where(conn: &Connection, series_id: i64, sql: &str) -> Result<Vec<SeriesTitle>, String> {
     let mut stmt = conn
-        .prepare(
-            // `hand = 1` only — derivation inserts an `is_primary` row for
-            // every series it mints, and projecting those made every scanned
-            // work's document non-empty (O53's recorded consequence, and the
-            // same defect as O80 one level up).
-            "SELECT title, kind, is_primary FROM series_title \
-             WHERE series_id = ?1 AND hand = 1 ORDER BY rowid",
-        )
+        .prepare(sql)
         .map_err(|e| format!("preparing series titles: {e}"))?;
     let rows = stmt
         .query_map([series_id], |row| {
@@ -381,8 +426,7 @@ fn series_info_of(conn: &Connection, series_id: i64) -> Result<SeriesInfo, Strin
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("reading series titles: {e}"))?;
 
-    let titles = rows
-        .into_iter()
+    rows.into_iter()
         .map(|(title, kind, primary)| {
             Ok(SeriesTitle {
                 title,
@@ -390,15 +434,7 @@ fn series_info_of(conn: &Connection, series_id: i64) -> Result<SeriesInfo, Strin
                 primary,
             })
         })
-        .collect::<Result<Vec<_>, String>>()?;
-
-    // `chosen` is `of`'s to set: it is a fact about a work, and this function
-    // is given only a series.
-    Ok(SeriesInfo {
-        titles,
-        reading,
-        chosen: false,
-    })
+        .collect()
 }
 
 fn editions_meta_of(

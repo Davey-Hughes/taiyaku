@@ -12,6 +12,7 @@
  * browser already holds — and a pure function is the part worth testing.
  */
 import { getJson } from './api'
+import type { SeriesTitle } from './metadata'
 
 export interface EditionCard {
   key: string
@@ -72,6 +73,20 @@ export interface SeriesCard {
   cover: string
 }
 
+/**
+ * One series as `/api/library/series/{id}` answers it: the tile, and every
+ * title the series holds (O83).
+ *
+ * `titles` is the list `metadata.ts`'s `patchSeries` sends and the server
+ * replaces whole, in the order it was written, derivation's own title
+ * included — `title` above is only the primary title. `primary` is
+ * always present here, `false` included. The grid and search answer a
+ * `SeriesCard`, without it.
+ */
+export interface SeriesDetail extends SeriesCard {
+  titles: Required<SeriesTitle>[]
+}
+
 /** A grid, or a search over one: series, and the works that belong to none. */
 export interface Grid {
   series: SeriesCard[]
@@ -109,7 +124,7 @@ export const grid = (root?: number) =>
   )
 
 export const oneSeries = (id: number) =>
-  getJson<{ series: SeriesCard; works: WorkCard[] }>(
+  getJson<{ series: SeriesDetail; works: WorkCard[] }>(
     `/api/library/series/${id}`,
   )
 

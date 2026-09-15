@@ -569,3 +569,236 @@ async fn status_answers_the_two_facts_a_first_run_screen_needs() {
     assert!(body["roots"].is_array(), "roots is a list: {body}");
     assert!(body["scanned"].is_boolean(), "scanned is a bool: {body}");
 }
+
+/// The three series [`test_support::router_over_three_unrelated_series`]
+/// scans, by id, once [`plant_titles`] has given each more than one title.
+struct Titled {
+    gotoubun: i64,
+    kaguya: i64,
+    oshinoko: i64,
+}
+
+/// Each series' titles as `/api/library/series/{id}` must carry them, in the
+/// order they were written: `(title, kind, primary)`. The first entry of each
+/// is the row derivation wrote.
+const GOTOUBUN: &[(&str, &str, bool)] = &[
+    ("Go-Toubun no Hanayome", "romaji", false),
+    ("五等分の花嫁", "native", true),
+    ("The Quintessential Quintuplets", "english", false),
+];
+const KAGUYA: &[(&str, &str, bool)] = &[
+    ("Kaguya-sama wa Kokurasetai", "romaji", true),
+    ("かぐや様は告らせたい", "native", false),
+    ("Kaguya-sama: Love Is War", "alt", false),
+];
+const OSHINOKO: &[(&str, &str, bool)] = &[
+    ("Oshi no Ko", "alt", true),
+    ("【推しの子】", "native", false),
+];
+
+/// Titles planted beside the one derivation gave each series.
+///
+/// **Derivation's own row stays in, on every series.** It is `hand = 0` with
+/// `kind` at its `alt` default; Go-Toubun's and Kaguya's are re-kinded, and
+/// Oshi no Ko's is left exactly as `derive` wrote it. `librarydoc::of`
+/// projects only `hand = 1` titles (O80), while `set_series_titles` deletes
+/// every row, derivation's included — so a read path answering the
+/// document's list would drop the one title nobody typed, and the round trip
+/// below would delete it.
+///
+/// **The ids are checked against the grid, not assumed.** A native primary
+/// title sorts after every romaji one, so Go-Toubun, derived first with the
+/// lowest id, lists last. The assertion at the end is what says no series' id
+/// equals its position in the grid, counted from nought or from one, so a read
+/// that found a series by its place in a list could not pass by coincidence.
+///
+/// **Nor does a work's id equal its series' id**, for Kaguya and Oshi no Ko:
+/// the fixture's second Go-Toubun volume moves them apart, and the check below
+/// says so. Go-Toubun's first work keeps id 1 beside series 1, which is why the
+/// check names the other two and the shape test reads all three.
+async fn plant_titles(router: &axum::Router, state: &crate::ServeState) -> Titled {
+    let titled = {
+        let conn = state.library.conn();
+        let id = |sort_title: &str| -> i64 {
+            conn.query_row(
+                "SELECT id FROM series WHERE sort_title = ?1",
+                [sort_title],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|e| panic!("the fixture's `{sort_title}` series: {e}"))
+        };
+        let titled = Titled {
+            gotoubun: id("Go-Toubun no Hanayome"),
+            kaguya: id("Kaguya-sama wa Kokurasetai"),
+            oshinoko: id("Oshi no Ko"),
+        };
+        for series_id in [titled.kaguya, titled.oshinoko] {
+            let sharing: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM work WHERE series_id = ?1 AND id = ?1",
+                    [series_id],
+                    |row| row.get(0),
+                )
+                .expect("counts the series' works that carry its id");
+            assert_eq!(
+                sharing, 0,
+                "series {series_id} holds a work with its own id, so a read that \
+                 took a work's id for the series' would find the right titles by \
+                 coincidence"
+            );
+        }
+        for (series_id, primary) in [(titled.gotoubun, false), (titled.kaguya, true)] {
+            let rekinded = conn
+                .execute(
+                    "UPDATE series_title SET kind = 'romaji', is_primary = ?1
+                      WHERE series_id = ?2 AND hand = 0",
+                    rusqlite::params![primary, series_id],
+                )
+                .expect("re-kinds derivation's title");
+            assert_eq!(rekinded, 1, "series {series_id} holds one derived title");
+        }
+        for (series_id, want) in [
+            (titled.gotoubun, GOTOUBUN),
+            (titled.kaguya, KAGUYA),
+            (titled.oshinoko, OSHINOKO),
+        ] {
+            for (title, kind, primary) in &want[1..] {
+                conn.execute(
+                    "INSERT INTO series_title (series_id, title, kind, is_primary, hand)
+                     VALUES (?1, ?2, ?3, ?4, 1)",
+                    rusqlite::params![series_id, title, kind, primary],
+                )
+                .expect("plants a hand title");
+            }
+        }
+        titled
+    };
+
+    let grid = get_json(router, "/api/library/series").await;
+    let listed = grid["series"].as_array().expect("the grid lists series");
+    assert_eq!(listed.len(), 3, "the fixture's three series: {grid}");
+    for (at, series) in listed.iter().enumerate() {
+        let id = series["id"].as_i64().expect("a series id");
+        let at = i64::try_from(at).expect("a small position");
+        assert!(
+            id != at && id != at + 1,
+            "series {id} lists at position {at}, so a read that looked a series \
+             up by its place in a list would find the right one by coincidence: \
+             {grid}"
+        );
+    }
+    titled
+}
+
+/// `series.titles` from `/api/library/series/{id}`, panicking with the whole
+/// body when it is not an array.
+async fn titles_of(router: &axum::Router, series_id: i64) -> Vec<serde_json::Value> {
+    let body = get_json(router, &format!("/api/library/series/{series_id}")).await;
+    body["series"]["titles"]
+        .as_array()
+        .unwrap_or_else(|| panic!("series {series_id} carries no `titles` array: {body}"))
+        .clone()
+}
+
+/// Each entry of `got` against `want`, field by field, with nothing beside
+/// those three fields, then the count.
+fn assert_titles(series_id: i64, got: &[serde_json::Value], want: &[(&str, &str, bool)]) {
+    for (at, (title, kind, primary)) in want.iter().enumerate() {
+        let entry = got
+            .get(at)
+            .unwrap_or_else(|| panic!("series {series_id} has no title {at}, `{title}`: {got:?}"));
+        assert_eq!(
+            entry["title"], *title,
+            "series {series_id}, title {at}: its text: {entry}"
+        );
+        assert_eq!(
+            entry["kind"], *kind,
+            "series {series_id}, title {at}: its kind: {entry}"
+        );
+        assert_eq!(
+            entry["primary"], *primary,
+            "series {series_id}, title {at}: whether it is primary: {entry}"
+        );
+        assert_eq!(
+            entry.as_object().map(serde_json::Map::len),
+            Some(3),
+            "series {series_id}, title {at}: exactly `title`, `kind` and \
+             `primary`: {entry}"
+        );
+    }
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "series {series_id}'s titles: {got:?}"
+    );
+}
+
+/// **O83.** `/api/library/series/{id}` carries every title the series holds,
+/// each in the `{title, kind, primary}` shape `PATCH /api/library/series/{id}`
+/// takes. That route replaces the whole set, and `SeriesCard.title` is one
+/// string, the primary title, so without this a screen could only send a list that drops
+/// the series' other titles.
+///
+/// All three series are asked for, so a read answering a fixed id, or a
+/// neighbour's titles, is wrong for at least two of them.
+#[tokio::test]
+async fn one_series_carries_each_of_its_titles_in_the_shape_the_patch_route_takes() {
+    let (router, state, _fixture) = test_support::router_over_three_unrelated_series();
+    let titled = plant_titles(&router, &state).await;
+
+    for (series_id, want) in [
+        (titled.gotoubun, GOTOUBUN),
+        (titled.kaguya, KAGUYA),
+        (titled.oshinoko, OSHINOKO),
+    ] {
+        assert_titles(series_id, &titles_of(&router, series_id).await, want);
+    }
+}
+
+/// **O83's round trip.** Read a series' titles, correct the romaji one, send
+/// the whole list back, and read again: the native and alt titles come back
+/// as they went, `kind` and `primary` included, and neither other series'
+/// titles move.
+#[tokio::test]
+async fn a_series_titles_read_corrected_and_sent_back_whole_keep_every_other_title() {
+    let (router, state, _fixture) = test_support::router_over_three_unrelated_series();
+    let ids = plant_titles(&router, &state).await;
+    let corrected = "Kaguya-sama wa Kokurasetai: Tensai-tachi no Ren'ai Zunousen";
+
+    let mut titles = titles_of(&router, ids.kaguya).await;
+    let romaji: Vec<usize> = titles
+        .iter()
+        .enumerate()
+        .filter(|(_, title)| title["kind"] == "romaji")
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(romaji, [0], "one romaji title, first: {titles:?}");
+    titles[0]["title"] = corrected.into();
+
+    let response = test_support::send_json(
+        &router,
+        axum::http::Method::PATCH,
+        &format!("/api/library/series/{}", ids.kaguya),
+        &serde_json::json!({ "titles": titles }),
+    )
+    .await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+
+    assert_titles(
+        ids.kaguya,
+        &titles_of(&router, ids.kaguya).await,
+        &[(corrected, "romaji", true), KAGUYA[1], KAGUYA[2]],
+    );
+    assert_titles(
+        ids.gotoubun,
+        &titles_of(&router, ids.gotoubun).await,
+        GOTOUBUN,
+    );
+    assert_titles(
+        ids.oshinoko,
+        &titles_of(&router, ids.oshinoko).await,
+        OSHINOKO,
+    );
+}

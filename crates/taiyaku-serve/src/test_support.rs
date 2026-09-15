@@ -1045,7 +1045,21 @@ fn router_over_a_scanned_tree(
         };
         write_pages(&under.join(title).join(format!("{title} - v01")), pages);
     }
+    router_over_a_written_tree(prefix, fixture)
+}
 
+/// [`router_over_a_scanned_tree`]'s second half, for a fixture that has
+/// already written its tree: add the fixture's directory as a root that keeps
+/// documents, scan it, derive, and serve the result.
+///
+/// # Panics
+///
+/// Panics if the scan or the derive fails, which means the fixture itself is
+/// broken.
+fn router_over_a_written_tree(
+    prefix: &str,
+    fixture: Fixture,
+) -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
     let library = library();
     {
         let conn = library.conn();
@@ -1257,6 +1271,41 @@ pub(crate) fn router_over_a_shared_publisher_directory()
             "Kaguya-sama wa Kokurasetai",
         ],
     )
+}
+
+/// Three unrelated series side by side at the root, the first with two
+/// volumes — what `library_api::tests`' series-title read path needs: more
+/// than one series, so a read that answers some other series' titles is wrong
+/// for at least one of them. The tests give each series its titles themselves.
+///
+/// **Two volumes of the first, so a work's id is not its series' id.**
+/// Derivation mints series and works in one order, and with a volume each,
+/// work 2 sat under series 2 and work 3 under series 3: a read that took a
+/// work's id for a series' id answered the right titles and passed every test
+/// that read them, which a hand mutation showed. The second Go-Toubun volume
+/// moves every later work's id past its series'.
+///
+/// Keeps documents, for the reason [`router_over_a_scanned_tree`] gives — the
+/// round trip there ends in a `PATCH`, which saves every work's document.
+pub(crate) fn router_over_three_unrelated_series()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let prefix = "taiyaku-test-three-unrelated-series";
+    let fixture = Fixture::new(prefix);
+    for (pages, (title, volume)) in (2_usize..).zip([
+        ("Go-Toubun no Hanayome", "v01"),
+        ("Go-Toubun no Hanayome", "v02"),
+        ("Kaguya-sama wa Kokurasetai", "v01"),
+        ("Oshi no Ko", "v01"),
+    ]) {
+        write_pages(
+            &fixture
+                .path()
+                .join(title)
+                .join(format!("{title} - {volume}")),
+            pages,
+        );
+    }
+    router_over_a_written_tree(prefix, fixture)
 }
 
 /// Two scanned roots, each holding an unrelated, single-volume series — the

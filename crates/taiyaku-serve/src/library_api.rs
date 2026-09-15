@@ -127,6 +127,20 @@ pub(crate) async fn series(
 }
 
 /// `GET /api/library/series/{id}` — one series and its works.
+///
+/// **`series.titles` is on this response and on no other — O83.** Every title
+/// the series holds, each `{title, kind, primary}`: the list
+/// `PATCH /api/library/series/{id}` takes and replaces whole
+/// (`librarydoc::set_series_titles`). `series.title` is one string, the
+/// primary title, so a caller holding only that could send back a list of one
+/// and delete the rest. A `false` `primary` is sent, where a document's own
+/// `SeriesTitle` leaves it out, so the list goes back with nothing to fill
+/// in. The grid and search answer the tile alone.
+///
+/// **Read only once `browse` has answered that this caller can see the
+/// series**, so the 404 below still covers one the grant hides.
+/// `series_title` has no per-root column to filter on, the same as
+/// `series.title` itself.
 pub(crate) async fn one_series(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -134,11 +148,28 @@ pub(crate) async fn one_series(
 ) -> Response {
     let conn = state.library.conn();
     match browse::one_series(&conn, &principal.roots, principal.user_id, id) {
-        Ok(Some((card, works))) => Json(serde_json::json!({
-            "series": series_json(&card),
-            "works": works.iter().map(work_json).collect::<Vec<_>>(),
-        }))
-        .into_response(),
+        Ok(Some((card, works))) => {
+            let titles = match taiyaku_library::librarydoc::series_titles(&conn, card.id) {
+                Ok(titles) => titles,
+                Err(why) => return failed("the series titles", &why),
+            };
+            let mut series = series_json(&card);
+            series["titles"] = serde_json::json!(
+                titles
+                    .iter()
+                    .map(|t| serde_json::json!({
+                        "title": t.title,
+                        "kind": t.kind,
+                        "primary": t.primary,
+                    }))
+                    .collect::<Vec<_>>()
+            );
+            Json(serde_json::json!({
+                "series": series,
+                "works": works.iter().map(work_json).collect::<Vec<_>>(),
+            }))
+            .into_response()
+        }
         // **404 rather than 403 for a series the grant hides.** Telling an
         // unauthorised caller which ids are real is the enumeration this
         // project refuses elsewhere; `browse` answers `None` for both cases

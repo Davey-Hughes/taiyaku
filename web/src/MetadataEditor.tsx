@@ -18,12 +18,15 @@
  * spec also asks for — a series page correcting its own title — would have
  * to replace `LibraryDoc.series.titles` wholesale (`librarydoc::set_series_titles`
  * in `taiyaku-library`, which `patch_series` calls, replaces a series' whole
- * title set rather than merging into it), and nothing the browse API returns
- * for a series carries that array back — `SeriesCard.title` is already the
- * merged display string, never the underlying `{ title, kind, primary }`
- * entries. Wiring that up here would silently drop a series' native/alt
- * titles the moment anyone corrected the romaji one, so it is not wired up
- * until a read path exists to carry the current array back.
+ * title set rather than merging into it), and until O83 closed nothing the
+ * browse API returned for a series carried that array back — `SeriesCard.title`
+ * is one display string, the primary title, never the underlying
+ * `{ title, kind, primary }` entries, so wiring it up would have silently
+ * dropped a series' native/alt titles the moment anyone corrected the romaji
+ * one. **The read path exists now and no screen uses it:** `library.ts`'s
+ * `oneSeries` answers `SeriesDetail.titles` in the shape `patchSeries` sends,
+ * but this component edits one string and hands `onPatch` a `WorkEdit`, so a
+ * series page that edits its own titles is still to be built.
  *
  * **`persisted: false` is stated, not hidden, and it is not an alarm.**
  * `metadata.ts`'s own module doc is explicit that this answer is not a

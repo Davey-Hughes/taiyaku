@@ -18497,3 +18497,236 @@ Rust 2129 → 2140: five tests in `curation::tests`, four in
 `unaccepting_a_never_accepted_proposal_is_an_error` is now
 `unaccepting_a_never_accepted_proposal_is_refused`. `web/` is unchanged. No
 server ran, and `corpus/` was not read.
+
+## O83: a series answers its own titles — 2026-09-14
+
+O83 recorded that `PATCH /api/library/series/{id}` replaces a series' whole
+title set and that nothing a series GET answers carries that set back, so a
+series page could only send the one display string it holds and would delete
+every other title. It asked for a read path, not a screen.
+
+### The premise, checked against the code
+
+- `librarydoc::set_series_titles` updates `series.sort_title` to the primary
+  title, runs `DELETE FROM series_title WHERE series_id = ?1`, and inserts each
+  title it was given with `hand = 1`. It replaces; it does not merge.
+- The routes that answer a series, from `routes.rs`'s route table: `GET
+  /api/library/series` and `GET /api/library/search` answer `series_json` per
+  tile, `GET /api/library/series/{id}` answers `series_json` beside the works,
+  `/api/library/series/{id}/cover` is a 307, and `PATCH
+  /api/library/series/{id}` answers the re-projected document. `GET
+  /api/works` carries a series only as `series.sort_title`, a proposal side
+  carries `series_id` and one `title`, and OPDS has no series. No GET carried
+  the `{title, kind, primary}` entries.
+- The PATCH answer does carry `series.titles`, as `librarydoc::of` projects
+  them: `hand = 1` rows only, since O80, and `SeriesTitle` skips a `false`
+  `primary`. The first PATCH in the drive below answered
+  `{"kind":"native","title":"かぐや様は告らせたい"}`, with no `primary`.
+- `SeriesCard.title` is `COALESCE(MAX(CASE WHEN st.is_primary = 1 THEN
+  st.title END), s.sort_title)`: one string, the primary title or `sort_title`.
+  The row calls it merged; it is chosen, and marked so in place.
+- `MetadataEditor` is mounted once, in `Series.tsx`, inside a volume row's open
+  panel, with `onPatch={patchWork}`.
+- `PATCH /api/library/series/{id}` takes `SeriesEdit`: `titles`, `reading`,
+  `tags` and `external`, each optional. `titles` is a list of `SeriesTitle`:
+  `title`, `kind` from the closed set `romaji`, `native`, `english`, `alt`, and
+  `primary`, defaulting to false.
+- The row says a title edit means sending `LibraryDoc.series.titles` whole. The
+  body's `titles` has that field's type but not its rows: the document holds
+  only `hand = 1` titles, and `set_series_titles` deletes derivation's row as
+  well, so sending the document's list whole would still drop one. That is why
+  the read below answers every row rather than the document's, and it is
+  marked in place.
+- The row's "since C1's fix retired the old resolve-by-title path" matches what
+  #91's commit body describes — the whole-branch review's finding and the delta
+  review of its fixes — though the body does not use the label "C1".
+
+### Red on `main`
+
+The two tests below were written first, against `main`'s handler and
+`librarydoc.rs`. Both failed in `titles_of`, after the fixture's titles were
+planted and its id checks passed:
+
+```
+series 1 carries no `titles` array: {"series":{"added":1,"aligned":0,"cover":"/api/library/series/1/cover","editions":1,"id":1,"title":"五等分の花嫁","unread":1,"works":1},"works":[…]}
+series 2 carries no `titles` array: {"series":{"added":2,"aligned":0,"cover":"/api/library/series/2/cover","editions":1,"id":2,"title":"Kaguya-sama wa Kokurasetai","unread":1,"works":1},"works":[…]}
+```
+
+That run's fixture still had one volume a series; the fixture is described as
+it ended, under the tests.
+
+### The fix
+
+`librarydoc::series_titles` reads `SELECT title, kind, is_primary FROM
+series_title WHERE series_id = ?1 ORDER BY rowid`, sharing its row parsing with
+`series_info_of`, whose query differs only by `AND hand = 1`. `rowid` order is
+the order `set_series_titles` inserted, so a list read, edited in place and
+sent back reads back in that order.
+
+`library_api::one_series` calls it only in the arm where `browse::one_series`
+answered the series, so a series the grant hides stays a 404, and adds
+`series.titles` with each entry built as `{title, kind, primary}`, a `false`
+`primary` included. `series_title` has no per-root column, the same as the
+`series.title` beside it. The grid and search are unchanged.
+
+`library.ts` gains `SeriesDetail`, a `SeriesCard` with `titles:
+Required<SeriesTitle>[]`, and `oneSeries` answers it. `Series.test.tsx`'s
+fixture is typed to match. `MetadataEditor.tsx`'s module comment said no read
+path existed, and now says one does and no screen uses it.
+
+### The tests
+
+`library_api::tests::one_series_carries_each_of_its_titles_in_the_shape_the_patch_route_takes`
+reads all three series and checks each entry's `title`, `kind` and `primary`,
+that the entry holds exactly those three keys, and the count.
+`library_api::tests::a_series_titles_read_corrected_and_sent_back_whole_keep_every_other_title`
+reads Kaguya's titles, corrects the romaji entry, sends the whole list as
+`PATCH`, and reads all three series again.
+
+`test_support::router_over_three_unrelated_series` scans `Go-Toubun no
+Hanayome` v01 and v02, `Kaguya-sama wa Kokurasetai` v01 and `Oshi no Ko` v01.
+`plant_titles` keeps derivation's row on each series — `hand = 0`, re-kinded
+`romaji` on Go-Toubun and Kaguya, left `alt` on Oshi no Ko — and plants hand
+rows beside it, so each series holds two or three titles and Go-Toubun's
+primary is its native title. It then checks two things rather than assuming
+them: no series' id equals its position in the grid, counted from nought or
+one — Kaguya, id 2, lists first, Oshi no Ko, id 3, second, and Go-Toubun, id 1,
+last, because a native title sorts after the romaji ones — and neither
+Kaguya's nor Oshi no Ko's work carries its series' id.
+
+### The tests, watched red
+
+Each change was applied by a script that checked its text replaced exactly one
+occurrence, ran `cargo test --workspace --all-features`, restored the file and
+compared it byte for byte; after the last, `git diff -- crates` was
+byte-identical to the one saved before the first. Every run compiled: each red
+one counted 2129 passed and 2 failed, and the control 2131 passed.
+
+`shape` is `one_series_carries_each_of_its_titles_in_the_shape_the_patch_route_takes`,
+`round trip` is `a_series_titles_read_corrected_and_sent_back_whole_keep_every_other_title`,
+and the lines are in `library_api/tests.rs`.
+
+| applied to the final code | `shape` fails at | `round trip` fails at |
+| --- | --- | --- |
+| nothing — the control | passes | passes |
+| `"kind"` left out of each entry | line 714, series 1 title 0's kind: `{"primary":false,"title":"Go-Toubun no Hanayome"}` | line 775, one romaji title: no entry has a `kind` |
+| only the primary entry, `AND is_primary = 1` | line 710, series 1 title 0's text: `五等分の花嫁` | line 709, after the PATCH: "series 2 has no title 1, `かぐや様は告らせたい`" |
+| another series' titles, `series_id != ?1` | line 710, series 1 title 0's text: `Kaguya-sama wa Kokurasetai` | line 787, the PATCH's status: 409, "series 2 would have more than one primary title" |
+| the display string as the one entry, `kind` romaji, primary | line 710, series 1 title 0's text: `五等分の花嫁` | line 709, after the PATCH: "series 2 has no title 1" |
+| a work's id read as the series', `works[0].id` | line 710, series 2 title 0's text: `Oshi no Ko` | line 775, one romaji title: Oshi no Ko's two entries |
+| `hand = 1` rows only, as a document reads | line 710, series 1 title 0's text: `五等分の花嫁` | line 775, one romaji title: only the native and alt entries |
+| a `false` `primary` left out, `serde_json::to_value(&titles)` | line 718, series 1 title 0's `primary`: `{"kind":"romaji","title":"Go-Toubun no Hanayome"}` | line 718, series 2 title 1's `primary` |
+
+The first four rows are the defects the item's closing had to be seen to
+catch; the last three were added because each is a way this read could be
+written wrong and still look right. Two of them, the display string and only
+the primary entry, fail the round trip after the PATCH has already deleted the
+titles it did not send, which is O83's own consequence observed.
+
+**A first pass let one through.** The fixture then held one volume a series,
+and derivation minted series and works in the same order, so work 2 sat under
+series 2 and work 3 under series 3. With `works[0].id` in place of `card.id`
+all 2131 tests passed. A second `Go-Toubun no Hanayome` volume moved Kaguya's
+work to id 3 and Oshi no Ko's to 4, `plant_titles` now asserts that neither
+shares its series' id. The other six mutants failed both tests in the first
+pass as well.
+
+The table above is the third pass. The second ran on the two-volume fixture,
+and the third after the round trip's `titled` binding was renamed `ids`, which
+`clippy::pedantic`'s advisory `similar_names` had flagged beside `titles`. Both
+gave the lines in the table, for every row.
+
+### Over real archives
+
+**Substrate.** This workstation. `target/debug/taiyaku` was built from this
+branch at 21:25:56, after the last change to the Rust source at that point; the
+fixture change after it touched only tests. A scratch library under
+`target/scratch/lib` held four `en-mono` archives hardlinked from `corpus/` —
+`kaguya-v01`, `kaguya-v03`, `gotoubun-v01` and `oshinoko-v01` — each in a
+directory named for its series. `library scan --add` answered `8 added, 0
+updated, 0 gone` and `derived 3 series, 4 works, 4 editions, 4 members; 0
+proposal(s) raised`; the root keeps no documents, migration 012's default.
+`taiyaku serve --db … --addr 127.0.0.1:18083 --cache …` served it, and `curl`
+signed in as `local` and sent every request, with `Origin` on the writes.
+
+The scan named two series from their archives, not their directories: the grid
+answered `[Oshi no Ko]` (id 3) first, `Go-Toubun no Hanayome` (id 1) second and
+`Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen` (id 2) third. The
+drive's first run looked the ids up by directory name, found none and sent both
+PATCHes to `/api/library/series/`, which answered 404 and wrote nothing; it was
+rerun matching by substring.
+
+| step | request | answer |
+| --- | --- | --- |
+| 1 | `GET /api/library/series/2` | `titles`: `[{"kind":"alt","primary":true,"title":"Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen"}]`; keys `added aligned cover editions id title titles unread works` |
+| 1 | `GET` series 1 and 3 | one derived entry each, `alt`, `primary: true` |
+| 2 | `PATCH` series 2: step 1's entry re-kinded `romaji`, plus `かぐや様は告らせたい` `native` and `Kaguya-sama: Love Is War` `alt` | 200, `persisted: true` |
+| 3 | `GET` series 2 | the three entries as sent, `primary` `true`, `false`, `false` |
+| 4 | `PATCH` series 2: step 3's list, the romaji entry's text changed to `Kaguya-sama wa Kokurasetai: Tensai-tachi no Ren'ai Zunousen` | 200 |
+| 5 | `GET` series 2 | `[{"kind":"romaji","primary":true,"title":"Kaguya-sama wa Kokurasetai: Tensai-tachi no Ren'ai Zunousen"},{"kind":"native","primary":false,"title":"かぐや様は告らせたい"},{"kind":"alt","primary":false,"title":"Kaguya-sama: Love Is War"}]`, and `series.title` the corrected text |
+| 5 | `GET` series 1 and 3 | unchanged from step 1 |
+| 6 | `GET /api/library/series/9999` | 404, `no series 9999` |
+
+### A rescan after the correction, seen and not acted on
+
+After step 5 the drive ran `library scan --db …` over the same root. It
+answered `0 added, 0 updated, 0 gone` and `derived 3 series, 4 works, 4
+editions, 4 members, 1 series holding no work; 0 proposal(s) raised`, and the
+grid then listed Kaguya as id 4 under the scanned title. `GET
+/api/library/series/2` no longer answered JSON — `jq` could not parse the body,
+which the drive did not print. The database, read with `sqlite3 -readonly`
+after the server stopped:
+
+| table | rows |
+| --- | --- |
+| `series` | 1 `Go-Toubun no Hanayome`; 2 `Kaguya-sama wa Kokurasetai: Tensai-tachi no Ren'ai Zunousen`; 3 `[Oshi no Ko]`; 4 `Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen` |
+| `series_title` | series 2 holds the three corrected rows, `hand = 1`; series 4 holds the scanned title, `alt`, primary, `hand = 0` |
+| `work` | both Kaguya volumes, ids 2 and 3, under series 4, `series_id_hand` NULL |
+
+`set_series_titles` had moved series 2's `sort_title` to the corrected primary
+title, and `derive::reconcile_series` looks a series up by `sort_title`, so the
+scanned name found nothing, a new series was minted, and the works followed it.
+Step 2, which kept the primary text, was not followed by a rescan, so whether a
+correction that leaves the primary text alone survives one was not measured.
+This branch changes neither function. No open row in `docs/status.md` names
+`set_series_titles`, `reconcile_series`, `sort_title`, `patch_series`,
+`series_id_hand` or `forget_orphaned_series`, or a second series being minted,
+so it is recorded here and not opened.
+
+### Not changed
+
+- The grid and search answer the tile alone.
+- The PATCH answer is still the document's projection.
+- Reading direction, tags and external ids have no read path on the series
+  response. Read in `librarydoc::apply`, not driven: a series `tags` edit
+  replaces each work's `work_tag` rows whole, the same hazard as titles, while
+  `external_id` is upserted per provider rather than cleared first.
+- No screen edits a series' titles. Spec C3 §5 designs one — "a series page
+  edits series-level fields", titles and their `kind`, which is primary,
+  reading direction, tags and external ids — and `MetadataEditor` edits one
+  string, hands `onPatch` a `WorkEdit`, and carries the ComicInfo section, which
+  is a work's. A series page needs a list editor of its own, mounted from
+  `Series.tsx` with `SeriesDetail.titles` and the series id, re-reading
+  `oneSeries` after a save, since the PATCH answers a document rather than a
+  `SeriesDetail`.
+
+### Counts, and isolation
+
+`cargo test --workspace --all-features` passed 2131 with 4 ignored, the two new
+tests added to 2129. The web suite, run per project with `--reporter=default`,
+counts 1,157 in `node` and 955 in `jsdom`, unchanged; `Series.test.tsx` passed
+55 and `library.test.ts` 17, and `tsc -b` passed.
+
+`check-all.sh` ran twice, before the rename and after it, and exited 0 both
+times, ending `all green, except NOT MEASURED:` with `standing corpus checks
+(TAIYAKU_CORPUS unset)` beneath it; `status-test-count` found 2131 at both of
+`docs/status.md`'s sites. The first run's advisory `clippy::pedantic` step
+flagged `similar_names` on the round trip's `titled` beside `titles`, and after
+the rename `cargo clippy -p taiyaku-serve --all-targets --all-features -- -W
+clippy::pedantic` flagged nothing in these tests. The only edits after the
+second run are this section's own prose: the paragraph on the third pass, and
+this one.
+
+`target/scratch/start-marker` was touched at 21:11:43, before any library was
+built or server started. After the last run, with the server stopped by PID,
+`find corpus -newer` that file printed nothing.
