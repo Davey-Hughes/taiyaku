@@ -8513,6 +8513,8 @@ A third was caught only by reading the output: React logged "the current testing
 environment is not configured to support `act`" while the tests passed anyway.
 `act` was not flushing effects, so a test could have passed by observing state
 React had not committed. `browser-setup.ts` sets `IS_REACT_ACT_ENVIRONMENT`.
+*The flushing half of that was read off the warning rather than measured, and
+it is wrong: `act` flushes with the flag unset. See "O75" below.*
 
 ## The mutation baseline, and the minus sign nothing was testing
 
@@ -17177,3 +17179,112 @@ it is filed as O112.
 - The correcting state. The button is hidden there, as it was before; that the
   hover preview's box contains its corner is read from `previewStyle`, not
   driven.
+
+## O75: what the act flag changes, counted with the output visible — 2026-09-14
+
+O75 recorded that `vite.config.ts` loads `browser-setup.ts`, which sets
+`IS_REACT_ACT_ENVIRONMENT`, for the `browser` project alone, and quoted that
+file's doc for the cost: without the flag "`act` does not actually flush
+effects synchronously". It left open how many `jsdom` tests turning the flag on
+would surface. Both were measured, and the quoted cost is not what the flag
+does.
+
+### What the flag does, on React 19.2.8
+
+A throwaway `jsdom` test, deleted afterwards, mounted a component whose
+`useEffect` sets state, through `createRoot` inside `act`, then made a second
+update outside `act` — once with the flag deleted and once with it `true`,
+recording `console.error` through a spy. The text is `effect:outside`.
+
+| flag | text when `act` returned | errors inside `act` | text straight after the outside update | a macrotask later | messages |
+| --- | --- | --- | --- | --- | --- |
+| unset | `1:0` | 2 | `1:0` | `1:1` | "not configured to support act(...)" ×3, the third from the unmount |
+| `true` | `1:0` | 0 | `1:0` | `1:1` | "An update to %s inside a test was not wrapped in act(...)" ×1 |
+
+`1:0` is the effect's update committed: `act` flushed it either way. The source
+agrees. In `react-dom-client.development.js` the flag is read in one function,
+`isConcurrentActEnvironment`, which prints the "not configured" message itself
+and whose two callers print "not wrapped in act" and "a suspended resource
+finished loading … not wrapped in act"; `scheduleCallback$1` pushes work onto
+the act queue whenever one exists, without reading the flag; and
+`react.development.js`, where `act` lives, never names it. The profiling build
+has the same function and the same two callers. The flag and the claim entered
+together in `f81913d` (2026-08-09), with `react` already at `^19.2.8`, and this
+file's record of that ("`act` was not flushing effects") was read off the
+warning.
+
+So what the `jsdom` project was missing was not the flush but the report: with
+the flag unset, React says nothing about an update made outside `act`, which is
+the case O75 was about.
+
+### The first count could not see the output
+
+Every run in this section passed every test; the question was only what React
+printed. The first full `jsdom` run printed no `stderr |` block at all, though
+every `mount()` renders inside `act` and the probe shows each such render
+logging with the flag unset. A control test that calls
+`console.error('O75-CONTROL-ERROR')` and passes printed nothing either, and a
+full run with `--silent=false` printed none of the thousands of "not
+configured" messages the `default` reporter showed for the same tests. Vitest 4.1 resolves its reporter as
+`isAgent ? "agent" : "default"` when none is given (`coverage.DM_a_rWm.js`), and
+the same control printed its line with `CLAUDECODE` and `AI_AGENT` unset and
+printed nothing with them set. So a run under Claude Code shows no console
+output from a passing test, whatever React logs. Every count below is from
+`--reporter=default`, with the control in the run and its line checked present,
+and the control deleted afterwards.
+
+### Counted over the whole `jsdom` project
+
+| state | passed | "not configured to support act" | "not wrapped in act(...)", control's excluded |
+| --- | --- | --- | --- |
+| `main`: flag unset | 951 | 6,819, the control's own among them | 0 |
+| flag set, tests unchanged | 951 | 0 | 20, in 7 tests |
+| flag set, the 7 settled | 951 | 0 | 0 |
+
+The twenty were 9 updates to `Library` and 6 to `Shell` in three
+`Routes.test.tsx` tests — "does not mount the reader anywhere else", "answers
+an unknown path with the library rather than the reader" and "sends a reader
+route with no :work back to the library rather than crashing" — and 5 to
+`PageView` in four `App.test.tsx` tests: "= and - and 0 move the drawn rect,
+and 0 puts it back", "a shift-press pans, and a zero box moves nothing", "is
+claimed and prevented while there is a page to zoom" and "waits for the
+incoming page to decode, then applies the carried swap".
+
+### None of the seven was passing on timing
+
+In each, the update landed after the last assertion. The three route tests are
+synchronous: they assert straight after `mount()` and return, and the mocked
+fetches answer afterwards. The four reader tests change the zoom — with keys,
+with a zoom key before a pan, with a wheel, and with a carried swap applied on
+`load` — inside `act`, assert on `drawnRect`, which that dispatch committed,
+and return without settling. `PageView`'s only state is `shown`, set when the
+decode of a new `src` settles, so an update to it there is the page arriving at
+a new `?w=`; logged either side of each trailing settle, the page's `src` went
+from `?w=1024` to `?w=1536` in the first three and from `?w=1536` to `?w=1024`
+in the carried swap. None of the seven awaits anything outside `act`, so no
+un-acted update could have landed before one of its assertions.
+
+"= and - and 0" ends back at fit-whole — `0` puts the rect back — and the page
+it shows after the settle is the `?w=1536` one. Whether that is the width it
+asks for there was not looked into.
+
+Each now ends in an `act`-scoped settle — `flush()` from `testing/async.ts` in
+the route tests, the file's own `settle()` in the reader tests — with nothing
+asserted after it, so no verdict can move; the table's last row is its effect.
+
+Each settle was then removed on its own, with the control in the run and the
+file compared with its original after each. Its own test warned again — 5 in
+each route test (3 `Library`, 2 `Shell`), 2 in "= and - and 0" and 1 in each
+other reader test — and no other test did. With all seven in place, the two
+files warned nothing but the control.
+
+### Not done
+
+- **Nothing fails on either warning.** Making React's act warnings fail the
+  test was put to the user with this item and declined: the flag and the seven
+  settles only. A new test that updates state outside `act` prints the warning
+  under the `default` reporter and passes, and under the `agent` reporter it
+  prints nothing.
+- `browser-setup.ts` keeps its name, though the `jsdom` project loads it too.
+- The `browser` project was not counted for warnings. `browser-setup.ts`
+  changed there only in its doc, and its 28 tests passed in the gate.

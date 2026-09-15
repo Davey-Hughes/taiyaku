@@ -76,6 +76,10 @@ export default defineConfig({
           // browser project, which is why both exist.
           name: 'jsdom',
           environment: 'jsdom',
+          // The same flag the `browser` project sets. Without it React says
+          // nothing about a state update made outside `act`, so a test making
+          // one passes in silence — see `browser-setup.ts`'s own doc.
+          setupFiles: ['./src/browser-setup.ts'],
           include: ['src/**/*.test.tsx'],
           exclude: ['src/**/*.browser.test.tsx'],
         },
@@ -120,7 +124,8 @@ export default defineConfig({
         // above, for the same reason: a handful of lines binding `Labeller`
         // to the real ports and calling `createRoot`, nothing to assert.
         'src/label.tsx',
-        // The vitest browser harness, not application code.
+        // The act-environment setup the `browser` and `jsdom` projects load,
+        // not application code.
         'src/browser-setup.ts',
         // The shared mount/rerender helper: test harness, the same category
         // `browser-setup.ts` is excluded for. Counting it would put test

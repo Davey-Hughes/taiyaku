@@ -3,6 +3,7 @@ import { MemoryRouter, useNavigate, useParams } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as library from './library'
 import { AppRoutes } from './Routes'
+import { flush } from './testing/async'
 import { mount } from './testing/mount'
 
 // Populated by the mocked `App` below, from a `useEffect` with an empty
@@ -85,6 +86,12 @@ vi.mock('./curation', async (importOriginal) => ({
   listProposals: vi.fn().mockResolvedValue({ proposals: [], counts: {} }),
 }))
 
+// `Shell` and `Library` both fetch on mount, and every mock above resolves at
+// once — so a test that lands on the library and asserts straight after `at()`
+// still has those answers arriving the moment it returns, outside `act`, where
+// React reports "An update to Library inside a test was not wrapped in
+// act(...)". Such a test ends in `flush()`: nothing it asserts depends on the
+// answers, and the flush only moves them inside `act`.
 const at = (path: string) =>
   mount(
     <MemoryRouter initialEntries={[path]}>
@@ -115,7 +122,7 @@ describe('the routes', () => {
     )
   })
 
-  it('does not mount the reader anywhere else', () => {
+  it('does not mount the reader anywhere else', async () => {
     const host = at('/')
     // Negative half: the reader is absent. On its own this would also pass
     // if the router rendered nothing at all, so the positive half below —
@@ -124,14 +131,16 @@ describe('the routes', () => {
     expect(host.querySelector('[data-testid="reader"]')).toBeNull()
     expect(host.querySelector('.library')).not.toBeNull()
     expect(host.querySelector('.sidebar')).not.toBeNull()
+    await flush()
   })
 
-  it('answers an unknown path with the library rather than the reader', () => {
+  it('answers an unknown path with the library rather than the reader', async () => {
     const host = at('/nonsense')
     // Asserted structurally rather than by text: the `Library` this task
     // mounts is Task 8's placeholder and has no text content yet.
     expect(host.querySelector('main')).not.toBeNull()
     expect(host.querySelector('[data-testid="reader"]')).toBeNull()
+    await flush()
   })
 
   it('routes a series id into the series page inside the shell', async () => {
@@ -194,7 +203,7 @@ describe('the routes', () => {
     expect(host.querySelector('.proposals')).not.toBeNull()
   })
 
-  it('sends a reader route with no :work back to the library rather than crashing', () => {
+  it('sends a reader route with no :work back to the library rather than crashing', async () => {
     // Nothing in this route table can actually put `Reader` on screen with
     // `work` missing: `path="/read/:work"` makes the segment mandatory, so
     // e.g. `matchPath('/read/:work', '/read/')` is `null` and that URL falls
@@ -207,6 +216,7 @@ describe('the routes', () => {
     const host = at('/read/gotoubun-v01')
     expect(host.querySelector('[data-testid="reader"]')).toBeNull()
     expect(host.querySelector('.library')).not.toBeNull()
+    await flush()
   })
 
   it('leaving the reader navigates back to the library', async () => {

@@ -272,6 +272,13 @@ const realSetTimeout = globalThis.setTimeout
  * A load is five awaited promises deep and a page turn goes through
  * `decode.ts`'s queue and `cohort.ts`'s deferred close, so a bare
  * `await Promise.resolve()` is not enough to see the `<img>` change.
+ *
+ * **A test that changes the zoom and returns without settling ends in one.** A
+ * zoom can change the `?w=` the page is requested at, and `PageView` shows the
+ * page at its new width only once that decode settles — after the test's last
+ * assertion, outside `act`, where React reports "An update to PageView inside a
+ * test was not wrapped in act(...)". Nothing such a test asserts depends on
+ * that update; the trailing `settle()` only moves it inside `act`.
  */
 async function settle() {
   await act(async () => {
@@ -783,6 +790,7 @@ describe('the reader keys', () => {
     expect(transform()).not.toBe(fitWhole)
     press('0')
     expect(transform()).toBe(fitWhole)
+    await settle()
   })
 
   it('= is inert in scroll mode, where nothing is drawn to zoom', async () => {
@@ -1859,6 +1867,7 @@ describe('the pointer on the page', () => {
     const panned = drawnRect(host)
     pointer(area, 'pointermove', { x: 200, y: 200 })
     expect(drawnRect(host)).toBe(panned)
+    await settle()
   })
 })
 
@@ -1892,6 +1901,7 @@ describe('the wheel over the page', () => {
     expect(drawnRect(host)).not.toContain('scale(1, 1)')
     wheel(area, 120)
     expect(drawnRect(host)).toContain('scale(1, 1)')
+    await settle()
   })
 
   it('is left to the browser in a gap, where nothing is drawn', async () => {
@@ -1984,6 +1994,7 @@ describe('carrying the view across a swap', () => {
     // arithmetic, which is `viewport.ts`'s. (`-0%` or `0%` — the sign of zero
     // survives the arithmetic and says nothing about the rect.)
     expect(drawnRect(host)).toMatch(/^scale\(1, 1\) translate\(-?0%, -?0%\)$/)
+    await settle()
   })
 
   it('drops a swap that lands on a gap', async () => {
