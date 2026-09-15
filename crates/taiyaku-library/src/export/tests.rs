@@ -8,41 +8,15 @@
 const THE_READER: i64 = 1;
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use taiyaku_read::test_support::TempDir;
 
 use super::*;
 use taiyaku_core::{RegionMember, Sidecar, TruthDoc, TruthEdition};
 
-/// A directory unique to one test, removed when the test ends.
-///
-/// No `tempfile` dependency, matching `taiyaku-serve/src/test_support.rs`'s
-/// own `Fixture`: the workspace's dependency set is deliberately short
-/// enough to quote in `docs/status.md`, and this is the whole of what that
-/// crate would be used for here. `Drop` rather than an end-of-test cleanup
-/// call for the same reason `Fixture` gives — the runs that leak are the
-/// ones that panic before reaching their own last line.
-struct TempDir {
-    path: std::path::PathBuf,
-}
-
-impl TempDir {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
+/// A directory unique to one test, removed when the test ends: O117's shared
+/// [`TempDir`], which this file carried its own copy of until then.
 fn tempdir() -> TempDir {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("taiyaku-test-export-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&path).unwrap();
-    TempDir { path }
+    TempDir::new("export")
 }
 
 fn doc(title: &str, sha256: &str) -> Sidecar {

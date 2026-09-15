@@ -10,7 +10,8 @@ use super::*;
 /// fake this — the two entries must differ.
 #[test]
 fn a_log_records_what_was_in_flight_alongside_it() {
-    let (log, path) = crate::test_support::log("taiyaku-test-reqlog-in-flight");
+    let tmp = crate::test_support::Fixture::new("reqlog-in-flight");
+    let (log, path) = crate::test_support::log(&tmp);
 
     let first = log.begin(BTreeMap::new());
     let second = log.begin(BTreeMap::new());
@@ -18,7 +19,6 @@ fn a_log_records_what_was_in_flight_alongside_it() {
     log.finish(first, "GET", "/a", 200, 10);
 
     let entries = crate::test_support::logged_lines(&path);
-    let _ = std::fs::remove_file(&path);
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0]["path"], "/b");
     assert_eq!(
@@ -102,8 +102,8 @@ fn to_json_line_survives_backslashes_and_control_characters_in_the_path() {
 /// hour of reading on an iPad.
 #[test]
 fn opening_the_log_fails_loudly_when_the_directory_does_not_exist() {
-    let missing_dir = std::env::temp_dir().join("taiyaku-test-reqlog-missing-dir-does-not-exist");
-    let _ = std::fs::remove_dir_all(&missing_dir);
+    let scratch = crate::test_support::Fixture::new("reqlog-missing-dir");
+    let missing_dir = scratch.join("does-not-exist");
     let path = missing_dir.join("nested").join("req.jsonl");
 
     let err = Log::new(&path).unwrap_err();
@@ -122,8 +122,8 @@ fn opening_the_log_fails_loudly_when_the_directory_does_not_exist() {
 /// what is left is the narrower and more useful claim about the keys.
 #[test]
 fn entries_written_to_disk_are_valid_json_lines_with_the_expected_keys() {
-    let path = std::env::temp_dir().join("taiyaku-test-reqlog-disk.jsonl");
-    let _ = std::fs::remove_file(&path);
+    let dir = crate::test_support::Fixture::new("reqlog-disk");
+    let path = dir.join("reqlog-disk.jsonl");
     let log = Log::new(&path).unwrap();
 
     let a = log.begin(BTreeMap::new());
@@ -132,7 +132,6 @@ fn entries_written_to_disk_are_valid_json_lines_with_the_expected_keys() {
     log.finish(b, "GET", "/api/works/t/raw/pages/3?width=1536", 200, 4321);
 
     let contents = std::fs::read_to_string(&path).unwrap();
-    let _ = std::fs::remove_file(&path);
 
     let lines: Vec<&str> = contents.lines().collect();
     assert_eq!(lines.len(), 2, "one line per finished request");
@@ -162,7 +161,8 @@ fn entries_written_to_disk_are_valid_json_lines_with_the_expected_keys() {
 /// response.
 #[test]
 fn dropping_an_in_flight_request_without_finishing_it_decrements_but_records_nothing() {
-    let (log, path) = crate::test_support::log("taiyaku-test-reqlog-cancelled");
+    let tmp = crate::test_support::Fixture::new("reqlog-cancelled");
+    let (log, path) = crate::test_support::log(&tmp);
 
     let cancelled = log.begin(BTreeMap::new());
     assert_eq!(cancelled.share, 1);
@@ -176,7 +176,6 @@ fn dropping_an_in_flight_request_without_finishing_it_decrements_but_records_not
     log.finish(after, "GET", "/a", 200, 1);
 
     let entries = crate::test_support::logged_lines(&path);
-    let _ = std::fs::remove_file(&path);
     assert_eq!(
         entries.len(),
         1,
@@ -189,8 +188,8 @@ fn dropping_an_in_flight_request_without_finishing_it_decrements_but_records_not
 /// they read the log's *contents*, and the difference is on stderr.
 #[test]
 fn only_the_first_write_failure_is_reported() {
-    let log =
-        Log::new(&std::env::temp_dir().join("taiyaku-test-reqlog-once.jsonl")).expect("opens");
+    let dir = crate::test_support::Fixture::new("reqlog-once");
+    let log = Log::new(&dir.join("reqlog-once.jsonl")).expect("opens");
 
     assert!(log.first_write_failure(), "the first failure is reported");
     assert!(
@@ -198,8 +197,6 @@ fn only_the_first_write_failure_is_reported() {
         "and no later one is, or a full disk buries the terminal"
     );
     assert!(!log.first_write_failure());
-
-    let _ = std::fs::remove_file(std::env::temp_dir().join("taiyaku-test-reqlog-once.jsonl"));
 }
 
 /// The timestamp is what orders a session, and `now_micros` could return

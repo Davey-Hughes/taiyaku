@@ -3,34 +3,16 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 
-/// A directory unique to one test, removed when the test ends — the same
-/// shape, and for the same reason, as `export/tests.rs`'s own: this
-/// workspace's dependency list is short enough to quote in `docs/status.md`,
-/// and a `tempfile` dependency would earn its place for about fifteen lines.
+/// A directory unique to one test, removed when the test ends: O117's shared
+/// [`TempDir`], under this crate's own `lib-` label. It was a copy of the same
+/// fifteen lines until then, one of four.
 ///
 /// `pub(crate)` for `schema/tests.rs`, which needs two connections onto one
-/// real file to reproduce two processes migrating together, and would
-/// otherwise carry a fourth copy of these fifteen lines.
-pub(crate) struct TempDir {
-    pub(crate) path: std::path::PathBuf,
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
+/// real file to reproduce two processes migrating together.
+pub(crate) use taiyaku_read::test_support::TempDir;
 
 pub(crate) fn tempdir(label: &str) -> TempDir {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "taiyaku-test-lib-{label}-{}-{n}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&path).expect("creating the test directory");
-    TempDir { path }
+    TempDir::new(&format!("lib-{label}"))
 }
 
 /// A library on disk, holding one derived work with a hand-set title recorded
@@ -53,7 +35,7 @@ impl FixtureLibrary {
     }
 
     pub(crate) fn root_path(&self) -> &Path {
-        &self.dir.path
+        self.dir.path()
     }
 }
 
@@ -65,12 +47,12 @@ impl FixtureLibrary {
 /// takes its own snapshot of the tree.
 pub(crate) fn library_with_a_kept_document() -> FixtureLibrary {
     let dir = tempdir("derive-documents-policy");
-    crate::scan::tests::write_archive(&dir.path.join("Series").join("Series - v01.cbz"), 3);
+    crate::scan::tests::write_archive(&dir.path().join("Series").join("Series - v01.cbz"), 3);
 
     let library = Library::open_in_memory().expect("an in-memory library opens");
     {
         let conn = library.conn();
-        let root = crate::scan::add_root(&conn, &dir.path).expect("adding the root");
+        let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
         crate::scan::scan_root(&conn, &root).expect("the first scan");
         crate::derive::derive(&conn).expect("the first derive");
         conn.execute(
@@ -161,13 +143,14 @@ pub(crate) fn add_a_page(fixture: &FixtureLibrary, name: &str) {
 /// otherwise collide with an unrelated row.
 pub(crate) fn library_with_two_roots() -> FixtureLibrary {
     let dir = tempdir("preview-two-roots");
-    std::fs::create_dir_all(dir.path.join("_unused_a")).expect("the first placeholder directory");
-    std::fs::create_dir_all(dir.path.join("_unused_b")).expect("the second placeholder directory");
-    std::fs::create_dir_all(dir.path.join("_unused_c")).expect("the third placeholder directory");
+    std::fs::create_dir_all(dir.path().join("_unused_a")).expect("the first placeholder directory");
+    std::fs::create_dir_all(dir.path().join("_unused_b"))
+        .expect("the second placeholder directory");
+    std::fs::create_dir_all(dir.path().join("_unused_c")).expect("the third placeholder directory");
 
-    let root_a_dir = dir.path.join("root-a");
+    let root_a_dir = dir.path().join("root-a");
     crate::scan::tests::write_archive(&root_a_dir.join("Beta").join("Beta - v01.cbz"), 3);
-    let root_b_dir = dir.path.join("root-b");
+    let root_b_dir = dir.path().join("root-b");
     // **`v02`, not `v01`, and `root_c`'s `Alpha` below is `v03`.** Every
     // series sets the same `series` via the widening `.*` rule the preview
     // tests append, and `derive`'s own `GroupKey` is `(series, volume, ..)`
@@ -177,7 +160,7 @@ pub(crate) fn library_with_two_roots() -> FixtureLibrary {
     // distinct works under the merged series, which is what `works_rehomed`
     // actually means to count.
     crate::scan::tests::write_archive(&root_b_dir.join("Gamma").join("Gamma - v02.cbz"), 4);
-    let root_c_dir = dir.path.join("root-c");
+    let root_c_dir = dir.path().join("root-c");
     // **`Alpha`, not a third arbitrary name.** `crate::tests::a_rule_setting_series`
     // is always called with `"Alpha"` in this fixture's own tests — the
     // widest possible edit, applied last — so a work whose series already
@@ -190,11 +173,11 @@ pub(crate) fn library_with_two_roots() -> FixtureLibrary {
     let library = Library::open_in_memory().expect("an in-memory library opens");
     {
         let conn = library.conn();
-        crate::scan::add_root(&conn, &dir.path.join("_unused_a"))
+        crate::scan::add_root(&conn, &dir.path().join("_unused_a"))
             .expect("adding the first placeholder root");
-        crate::scan::add_root(&conn, &dir.path.join("_unused_b"))
+        crate::scan::add_root(&conn, &dir.path().join("_unused_b"))
             .expect("adding the second placeholder root");
-        crate::scan::add_root(&conn, &dir.path.join("_unused_c"))
+        crate::scan::add_root(&conn, &dir.path().join("_unused_c"))
             .expect("adding the third placeholder root");
 
         let root_a = crate::scan::add_root(&conn, &root_a_dir).expect("adding root a");
@@ -254,9 +237,9 @@ pub(crate) fn library_with_two_roots() -> FixtureLibrary {
 /// derived."
 pub(crate) fn library_with_two_roots_and_a_reading_position() -> FixtureLibrary {
     let dir = tempdir("scan-removal-two-roots");
-    let root_a_dir = dir.path.join("root-a");
+    let root_a_dir = dir.path().join("root-a");
     crate::scan::tests::write_archive(&root_a_dir.join("Alpha").join("Alpha - v01.cbz"), 3);
-    let root_b_dir = dir.path.join("root-b");
+    let root_b_dir = dir.path().join("root-b");
     crate::scan::tests::write_archive(&root_b_dir.join("Beta").join("Beta - v01.cbz"), 4);
 
     let library = Library::open_in_memory().expect("an in-memory library opens");
@@ -366,7 +349,7 @@ pub(crate) fn a_rule_setting_series(series: &str) -> crate::rules::Rule {
 pub(crate) fn library_with_the_seeded_defaults() -> FixtureLibrary {
     let dir = tempdir("preview-seeded-defaults");
     crate::scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Manga (RAW)")
             .join("Go-Toubun no Hanayome - Full Color")
             .join("Go-Toubun no Hanayome - Full Color - v01.cbz"),
@@ -376,7 +359,7 @@ pub(crate) fn library_with_the_seeded_defaults() -> FixtureLibrary {
     let library = Library::open_in_memory().expect("an in-memory library opens");
     {
         let conn = library.conn();
-        let root = crate::scan::add_root(&conn, &dir.path).expect("adding the root");
+        let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
         crate::scan::scan_root(&conn, &root).expect("scanning the root");
 
         let mut rules = crate::rules::read(&conn)
@@ -452,13 +435,13 @@ pub(crate) fn library_with_colour_edition_directories() -> FixtureLibrary {
             "Chainsaw Man v01.cbz",
         ),
     ] {
-        crate::scan::tests::write_archive(&dir.path.join(directory).join(file), 3);
+        crate::scan::tests::write_archive(&dir.path().join(directory).join(file), 3);
     }
 
     let library = Library::open_in_memory().expect("an in-memory library opens");
     {
         let conn = library.conn();
-        let root = crate::scan::add_root(&conn, &dir.path).expect("adding the root");
+        let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
         crate::scan::scan_root(&conn, &root).expect("scanning the root");
     }
     FixtureLibrary { library, dir }
@@ -481,7 +464,7 @@ pub(crate) fn library_with_colour_edition_directories() -> FixtureLibrary {
 pub(crate) fn library_with_a_name_that_parses_as_not_a_number() -> FixtureLibrary {
     let dir = tempdir("preview-not-a-number");
     crate::scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Nanatsu no Taizai")
             .join("Nanatsu no Taizai v01.cbz"),
         3,
@@ -490,7 +473,7 @@ pub(crate) fn library_with_a_name_that_parses_as_not_a_number() -> FixtureLibrar
     let library = Library::open_in_memory().expect("an in-memory library opens");
     {
         let conn = library.conn();
-        let root = crate::scan::add_root(&conn, &dir.path).expect("adding the root");
+        let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
         crate::scan::scan_root(&conn, &root).expect("scanning the root");
     }
     FixtureLibrary { library, dir }
@@ -514,13 +497,13 @@ pub(crate) fn library_with_a_name_that_parses_as_not_a_number() -> FixtureLibrar
 pub(crate) fn library_with_two_colour_editions() -> FixtureLibrary {
     let dir = tempdir("preview-two-colour-editions");
     crate::scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Yu Yu Hakusho - Full Color")
             .join("Yu Yu Hakusho - Full Color - v01.cbz"),
         3,
     );
     crate::scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Yu Yu Hakusho - Colored (Colored Council)")
             .join("Yu Yu Hakusho - Colored (Colored Council) - v01.cbz"),
         3,
@@ -529,7 +512,7 @@ pub(crate) fn library_with_two_colour_editions() -> FixtureLibrary {
     let library = Library::open_in_memory().expect("an in-memory library opens");
     {
         let conn = library.conn();
-        let root = crate::scan::add_root(&conn, &dir.path).expect("adding the root");
+        let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
         crate::scan::scan_root(&conn, &root).expect("scanning the root");
         crate::derive::derive(&conn).expect("deriving the colour-edition fixture");
     }
@@ -592,12 +575,12 @@ pub(crate) fn a_colour_edition_rule() -> crate::rules::Rule {
 /// last.
 pub(crate) fn library_with_two_competing_rules() -> FixtureLibrary {
     let dir = tempdir("rules-two-competing");
-    crate::scan::tests::write_archive(&dir.path.join("Series").join("Series - v01.cbz"), 3);
+    crate::scan::tests::write_archive(&dir.path().join("Series").join("Series - v01.cbz"), 3);
 
     let library = Library::open_in_memory().expect("an in-memory library opens");
     {
         let conn = library.conn();
-        let root = crate::scan::add_root(&conn, &dir.path).expect("adding the root");
+        let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
         crate::scan::scan_root(&conn, &root).expect("scanning the root");
 
         let rules = vec![
@@ -695,13 +678,13 @@ pub(crate) fn library_with_two_competing_rules() -> FixtureLibrary {
 pub(crate) fn library_with_an_accepted_proposal() -> (FixtureLibrary, Vec<crate::rules::Rule>) {
     let dir = tempdir("proposal-accepted");
     crate::scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01.cbz"),
         3,
     );
     crate::scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome - Full Color Edition")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01.cbz"),
         3,
@@ -710,7 +693,7 @@ pub(crate) fn library_with_an_accepted_proposal() -> (FixtureLibrary, Vec<crate:
     let library = Library::open_in_memory().expect("an in-memory library opens");
     let base_rules = {
         let conn = library.conn();
-        let root = crate::scan::add_root(&conn, &dir.path).expect("adding the root");
+        let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
         crate::scan::scan_root(&conn, &root).expect("scanning the root");
         crate::derive::derive(&conn)
             .expect("the first derive, which raises the edition-of proposal");
@@ -728,9 +711,12 @@ pub(crate) fn library_with_an_accepted_proposal() -> (FixtureLibrary, Vec<crate:
         // Scanned, not derived: `raise` has never run over this pair, so
         // `preview`'s own derivation — the only one that ever reaches it — is
         // what opens it fresh rather than finding it already open.
-        crate::scan::tests::write_archive(&dir.path.join("Series C").join("Series C - v01.cbz"), 2);
         crate::scan::tests::write_archive(
-            &dir.path
+            &dir.path().join("Series C").join("Series C - v01.cbz"),
+            2,
+        );
+        crate::scan::tests::write_archive(
+            &dir.path()
                 .join("Series C - Remaster")
                 .join("Series C - Remaster - v01.cbz"),
             2,
@@ -770,16 +756,22 @@ pub(crate) fn library_with_an_accepted_proposal() -> (FixtureLibrary, Vec<crate:
 pub(crate) fn library_with_a_surviving_and_a_dropped_accept()
 -> (FixtureLibrary, Vec<crate::rules::Rule>) {
     let dir = tempdir("proposal-surviving-and-dropped");
-    crate::scan::tests::write_archive(&dir.path.join("Series One").join("Series One - v01.cbz"), 3);
     crate::scan::tests::write_archive(
-        &dir.path
+        &dir.path().join("Series One").join("Series One - v01.cbz"),
+        3,
+    );
+    crate::scan::tests::write_archive(
+        &dir.path()
             .join("Series One - Full Color Edition")
             .join("Series One - Full Color Edition - v01.cbz"),
         3,
     );
-    crate::scan::tests::write_archive(&dir.path.join("Series Two").join("Series Two - v01.cbz"), 2);
     crate::scan::tests::write_archive(
-        &dir.path
+        &dir.path().join("Series Two").join("Series Two - v01.cbz"),
+        2,
+    );
+    crate::scan::tests::write_archive(
+        &dir.path()
             .join("Series Two - Full Color Edition")
             .join("Series Two - Full Color Edition - v01.cbz"),
         2,
@@ -788,7 +780,7 @@ pub(crate) fn library_with_a_surviving_and_a_dropped_accept()
     let library = Library::open_in_memory().expect("an in-memory library opens");
     let base_rules = {
         let conn = library.conn();
-        let root = crate::scan::add_root(&conn, &dir.path).expect("adding the root");
+        let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
         crate::scan::scan_root(&conn, &root).expect("scanning both pairs together");
         crate::derive::derive(&conn)
             .expect("the one derive, which raises both edition-of proposals at once");
@@ -918,10 +910,10 @@ pub(crate) fn tree_snapshot_stamps_normalised(root: &Path) -> BTreeMap<PathBuf, 
 #[test]
 fn normalising_the_stamp_hides_a_second_and_hides_nothing_else() {
     let dir = tempdir("stamp-normalisation");
-    let document = dir.path.join(".taiyaku").join("abc.library.json");
+    let document = dir.path().join(".taiyaku").join("abc.library.json");
     std::fs::create_dir_all(document.parent().expect("the document has a parent"))
         .expect("creating .taiyaku/");
-    let archive = dir.path.join("Series - v01.cbz");
+    let archive = dir.path().join("Series - v01.cbz");
     std::fs::write(&archive, b"PK\x03\x04 not really a zip").expect("writing the archive");
 
     let write_document = |updated: &str, title: &str| {
@@ -935,24 +927,24 @@ fn normalising_the_stamp_hides_a_second_and_hides_nothing_else() {
     };
 
     write_document("2026-09-06T21:28:49Z", "Hand-Set Title");
-    let earlier = tree_snapshot_stamps_normalised(&dir.path);
-    let earlier_strict = tree_snapshot(&dir.path);
+    let earlier = tree_snapshot_stamps_normalised(dir.path());
+    let earlier_strict = tree_snapshot(dir.path());
 
     write_document("2026-09-06T21:28:50Z", "Hand-Set Title");
     assert_ne!(
-        tree_snapshot(&dir.path),
+        tree_snapshot(dir.path()),
         earlier_strict,
         "the two documents must really differ on disk, or nothing below is proved"
     );
     assert_eq!(
-        tree_snapshot_stamps_normalised(&dir.path),
+        tree_snapshot_stamps_normalised(dir.path()),
         earlier,
         "a second between two projections of an unchanged work is not a change"
     );
 
     write_document("2026-09-06T21:28:50Z", "A Different Title");
     assert_ne!(
-        tree_snapshot_stamps_normalised(&dir.path),
+        tree_snapshot_stamps_normalised(dir.path()),
         earlier,
         "normalising the stamp must not hide the fields beside it"
     );
@@ -994,7 +986,7 @@ fn normalising_the_stamp_hides_a_second_and_hides_nothing_else() {
 #[test]
 fn an_import_waits_for_another_writer_rather_than_failing_on_the_lock() {
     let dir = tempdir("busy");
-    let db = dir.path.join("library.db");
+    let db = dir.path().join("library.db");
     let holder = Library::open(&db).expect("the first library opens");
     let waiter = Library::open(&db).expect("a second library opens on the same file");
     let doc = taiyaku_core::Sidecar::from_json(
@@ -1082,7 +1074,7 @@ fn every_connection_carries_the_busy_timeout() {
 #[test]
 fn a_first_open_waits_for_the_file_rather_than_failing_to_set_wal() {
     let dir = tempdir("wal-busy");
-    let db = dir.path.join("library.db");
+    let db = dir.path().join("library.db");
     let holder = rusqlite::Connection::open(&db).expect("a plain connection opens the file");
     holder
         .execute_batch("CREATE TABLE seed (x)")
@@ -1140,7 +1132,7 @@ fn a_first_open_waits_for_the_file_rather_than_failing_to_set_wal() {
 #[test]
 fn several_first_opens_of_one_fresh_library_at_once_all_succeed() {
     let dir = tempdir("first-open-race");
-    let db = dir.path.join("library.db");
+    let db = dir.path().join("library.db");
 
     std::thread::scope(|scope| {
         let opens: Vec<_> = (0..4)
@@ -1185,7 +1177,7 @@ fn several_first_opens_of_one_fresh_library_at_once_all_succeed() {
 #[test]
 fn giving_up_on_wal_says_how_long_it_waited_and_that_nothing_was_lost() {
     let dir = tempdir("wal-gives-up");
-    let db = dir.path.join("library.db");
+    let db = dir.path().join("library.db");
     let holder = rusqlite::Connection::open(&db).expect("a plain connection opens the file");
     holder
         .execute_batch("CREATE TABLE seed (x); BEGIN IMMEDIATE; INSERT INTO seed VALUES (1);")
@@ -1376,7 +1368,7 @@ fn a_fresh_database_records_its_schema_version() {
 #[test]
 fn a_file_backed_library_works_on_a_connection_of_its_own() {
     let dir = tempdir("library-working");
-    let path = dir.path.join("library.db");
+    let path = dir.path().join("library.db");
     let library = Library::open(&path).expect("opens");
 
     let working = library.working().expect("a working connection");
@@ -1468,7 +1460,7 @@ fn an_in_memory_library_works_on_the_connection_it_already_has() {
 fn a_relative_path_still_works_on_the_same_database() {
     let dir = tempdir("library-relative");
     let original = std::env::current_dir().expect("a working directory exists");
-    std::env::set_current_dir(&dir.path).expect("moving into the test directory");
+    std::env::set_current_dir(dir.path()).expect("moving into the test directory");
 
     let result = std::panic::catch_unwind(|| {
         let library = Library::open(Path::new("library.db")).expect("opens with a relative path");

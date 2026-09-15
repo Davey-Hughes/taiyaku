@@ -22,7 +22,8 @@ fn reply_for(id: &str, name: &str, size: u64, pages: u32) -> String {
 /// The whole point: a candidate is not believed until a page proves it.
 #[test]
 fn a_candidate_confirmed_by_a_page_hash_is_recorded() {
-    let work = crate::test_support::work("taiyaku-test-resolve-ok");
+    let tmp = crate::test_support::Fixture::new("resolve-ok");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap();
     let size = std::fs::metadata(root.join("c1.cbz")).unwrap().len();
 
@@ -35,7 +36,6 @@ fn a_candidate_confirmed_by_a_page_hash_is_recorded() {
     let sidecar = work.sidecar();
     let first = sidecar.editions["raw"].members[0].sha256.clone();
     let second_sha = sidecar.editions["raw"].members[1].sha256.clone();
-    crate::test_support::cleanup("taiyaku-test-resolve-ok");
     assert_eq!(resolved.get(&first), Some(&Some("book-1".to_string())));
     // The second member (`c2.cbz`) is asked about against the same
     // single-book reply, which names `c1` — so `find_book`'s own name
@@ -56,7 +56,8 @@ fn a_candidate_confirmed_by_a_page_hash_is_recorded() {
 /// while every hash in the sidecar still matched.
 #[test]
 fn a_candidate_whose_page_disagrees_is_refused() {
-    let work = crate::test_support::work("taiyaku-test-resolve-mismatch");
+    let tmp = crate::test_support::Fixture::new("resolve-mismatch");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap();
     let size = std::fs::metadata(root.join("c1.cbz")).unwrap().len();
 
@@ -74,7 +75,6 @@ fn a_candidate_whose_page_disagrees_is_refused() {
     let first = sidecar.editions["raw"].members[0].sha256.clone();
     let second_sha = sidecar.editions["raw"].members[1].sha256.clone();
     let requests = fake.requests();
-    crate::test_support::cleanup("taiyaku-test-resolve-mismatch");
     // Pin the path taken, not just the outcome: deleting the `on_get`
     // registration above would make `page_bytes` fail instead of
     // returning disagreeing bytes, which is a *different* outcome now
@@ -116,7 +116,8 @@ fn a_candidate_whose_page_disagrees_is_refused() {
 /// to prove never happens.
 #[test]
 fn a_second_resolution_asks_stump_nothing() {
-    let work = crate::test_support::work("taiyaku-test-resolve-cached");
+    let tmp = crate::test_support::Fixture::new("resolve-cached");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap();
     let size1 = std::fs::metadata(root.join("c1.cbz")).unwrap().len();
     let size2 = std::fs::metadata(root.join("c2.cbz")).unwrap().len();
@@ -139,7 +140,6 @@ fn a_second_resolution_asks_stump_nothing() {
     let sidecar = work.sidecar();
     let first = sidecar.editions["raw"].members[0].sha256.clone();
     let second_sha = sidecar.editions["raw"].members[1].sha256.clone();
-    crate::test_support::cleanup("taiyaku-test-resolve-cached");
     assert!(
         second.requests().is_empty(),
         "a cached work must not ask again: {:?}",
@@ -160,7 +160,8 @@ fn a_second_resolution_asks_stump_nothing() {
 /// already present and never ask again.
 #[test]
 fn a_transport_failure_is_not_cached_and_is_retried() {
-    let work = crate::test_support::work("taiyaku-test-resolve-transport-failure");
+    let tmp = crate::test_support::Fixture::new("resolve-transport-failure");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap();
     let size = std::fs::metadata(root.join("c1.cbz")).unwrap().len();
     let first = work.sidecar().editions["raw"].members[0].sha256.clone();
@@ -182,7 +183,6 @@ fn a_transport_failure_is_not_cached_and_is_retried() {
         .on_get("/api/v2/media/book-1/page/1", "image/jpeg", b"a1.jpg");
     let second_pass = resolve_work(&reachable, &work, "http://nas:10801", &mut |_, _, _| {});
 
-    crate::test_support::cleanup("taiyaku-test-resolve-transport-failure");
     assert!(
         !second_pass.aborted_by_transport,
         "a successful run must not report a transport abort"
@@ -203,7 +203,8 @@ fn a_transport_failure_is_not_cached_and_is_retried() {
 /// the second member's own query just fine.
 #[test]
 fn a_semantic_refusal_does_not_abandon_the_rest_of_the_run() {
-    let work = crate::test_support::work("taiyaku-test-resolve-semantic-refusal");
+    let tmp = crate::test_support::Fixture::new("resolve-semantic-refusal");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap();
     let size2 = std::fs::metadata(root.join("c2.cbz")).unwrap().len();
 
@@ -224,7 +225,6 @@ fn a_semantic_refusal_does_not_abandon_the_rest_of_the_run() {
     let resolved = resolve_work(&fake, &work, "http://nas:10801", &mut |_, _, _| {});
 
     let second_sha = work.sidecar().editions["raw"].members[1].sha256.clone();
-    crate::test_support::cleanup("taiyaku-test-resolve-semantic-refusal");
     assert!(
         !resolved.aborted_by_transport,
         "an ambiguous match is Stump answering, not an outage"
@@ -245,13 +245,13 @@ fn a_semantic_refusal_does_not_abandon_the_rest_of_the_run() {
 /// `ureq` timeouts before the listener binds.
 #[test]
 fn a_resolution_failure_abandons_the_rest_of_the_run() {
-    let work = crate::test_support::work("taiyaku-test-resolve-circuit-breaker");
+    let tmp = crate::test_support::Fixture::new("resolve-circuit-breaker");
+    let work = crate::test_support::work(&tmp);
     let unreachable = FakeTransport::new();
 
     let resolved = resolve_work(&unreachable, &work, "http://nas:10801", &mut |_, _, _| {});
 
     let requests = unreachable.requests();
-    crate::test_support::cleanup("taiyaku-test-resolve-circuit-breaker");
     assert!(
         resolved.aborted_by_transport,
         "an unreachable instance must be reported as a transport-level abort"
@@ -281,7 +281,8 @@ fn a_resolution_failure_abandons_the_rest_of_the_run() {
 /// noise that trains you to ignore it.
 #[test]
 fn resolution_reports_each_member_it_asks_about_and_says_nothing_when_it_asks_nothing() {
-    let work = crate::test_support::work("taiyaku-test-resolve-progress");
+    let tmp = crate::test_support::Fixture::new("resolve-progress");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap();
     let size1 = std::fs::metadata(root.join("c1.cbz")).unwrap().len();
     let size2 = std::fs::metadata(root.join("c2.cbz")).unwrap().len();
@@ -313,7 +314,6 @@ fn resolution_reports_each_member_it_asks_about_and_says_nothing_when_it_asks_no
         &mut |member, nth, total| warm.push((member.to_string(), nth, total)),
     );
 
-    crate::test_support::cleanup("taiyaku-test-resolve-progress");
     assert_eq!(
         cold,
         vec![("c1.cbz".to_string(), 1, 2), ("c2.cbz".to_string(), 2, 2),],
@@ -335,12 +335,10 @@ fn resolution_reports_each_member_it_asks_about_and_says_nothing_when_it_asks_no
 /// `resolve_work` walks, so the failure lands in the first edition and
 /// the second edition's member is the one that must never be asked
 /// about.
-fn two_edition_work(dir: &str) -> Work {
+fn two_edition_work(dir: &std::path::Path) -> Work {
     use std::io::Write;
 
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let root = dir;
 
     for (name, entries) in [
         ("c1.cbz", ["a1.jpg", "a2.jpg"]),
@@ -387,13 +385,13 @@ fn two_edition_work(dir: &str) -> Work {
 /// must never be looked up at all.
 #[test]
 fn a_resolution_failure_abandons_a_later_edition_too() {
-    let work = two_edition_work("taiyaku-test-resolve-circuit-breaker-editions");
+    let tmp = crate::test_support::Fixture::new("resolve-circuit-breaker-editions");
+    let work = two_edition_work(&tmp);
     let unreachable = FakeTransport::new();
 
     let resolved = resolve_work(&unreachable, &work, "http://nas:10801", &mut |_, _, _| {});
 
     let requests = unreachable.requests();
-    crate::test_support::cleanup("taiyaku-test-resolve-circuit-breaker-editions");
     assert!(
         resolved.aborted_by_transport,
         "an unreachable instance must be reported as a transport-level abort"

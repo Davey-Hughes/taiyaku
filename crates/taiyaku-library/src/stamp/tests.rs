@@ -18,18 +18,18 @@ impl Fixture {
     }
 
     fn archive(&self, name: &str) -> std::path::PathBuf {
-        self.dir.path.join("Series").join(name)
+        self.dir.path().join("Series").join(name)
     }
 }
 
 fn one_work() -> Fixture {
     let dir = crate::tests::tempdir("stamp");
-    crate::scan::tests::write_archive(&dir.path.join("Series").join("Series - v01.cbz"), 2);
+    crate::scan::tests::write_archive(&dir.path().join("Series").join("Series - v01.cbz"), 2);
 
     let library = crate::Library::open_in_memory().expect("an in-memory library opens");
     let work_id = {
         let conn = library.conn();
-        let root = crate::scan::add_root(&conn, &dir.path).expect("adding the root");
+        let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
         crate::scan::scan_root(&conn, &root).expect("the scan");
         crate::derive::derive(&conn).expect("the derive");
         conn.query_row("SELECT id FROM work", [], |row| row.get(0))
@@ -433,7 +433,7 @@ fn a_rewrite_returns_the_new_digest_and_leaves_no_temp_behind() {
 /// old one would have written the staleness it was meant to record.
 fn imported_work() -> Fixture {
     let dir = crate::tests::tempdir("stamp-imported");
-    let archive = dir.path.join("v01.cbz");
+    let archive = dir.path().join("v01.cbz");
     crate::scan::tests::write_archive(&archive, 2);
 
     let json = format!(
@@ -448,7 +448,7 @@ fn imported_work() -> Fixture {
 
     // On disk as well as in the database: `import::sidecar` reads a document,
     // it does not write one, and the file is what this test is about.
-    let sidecar = dir.path.join("taiyaku.json");
+    let sidecar = dir.path().join("taiyaku.json");
     std::fs::write(&sidecar, &json).expect("writing the fixture sidecar");
 
     let library = crate::Library::open_in_memory().expect("an in-memory library opens");
@@ -583,7 +583,7 @@ fn applying_to_a_scanned_work_writes_no_sidecar_and_does_not_fail() {
     .expect("a scanned work stamps without a sidecar to rewrite");
 
     assert!(
-        !fixture.dir.path.join("taiyaku.json").exists(),
+        !fixture.dir.path().join("taiyaku.json").exists(),
         "nothing invented a sidecar where the library has none"
     );
 }
@@ -592,7 +592,7 @@ fn applying_to_a_scanned_work_writes_no_sidecar_and_does_not_fail() {
 #[test]
 fn applying_to_an_imported_work_rewrites_its_sidecar_with_the_new_digest() {
     let fixture = imported_work();
-    let sidecar = fixture.dir.path.join("taiyaku.json");
+    let sidecar = fixture.dir.path().join("taiyaku.json");
     let before = std::fs::read_to_string(&sidecar).expect("the fixture wrote a sidecar");
 
     let applied = {
@@ -690,7 +690,7 @@ fn report() {
     let before = digest_of(&largest.0);
 
     let scratch = crate::tests::tempdir("stamp-report");
-    let copy = scratch.path.join("measured.cbz");
+    let copy = scratch.path().join("measured.cbz");
     let copy_started = std::time::Instant::now();
     std::fs::copy(&largest.0, &copy).expect("copies the archive");
     let copying = copy_started.elapsed();
@@ -735,7 +735,7 @@ fn report() {
 #[test]
 fn a_stamp_leaves_another_readers_exported_notes_alone() {
     let fixture = imported_work();
-    let stem = fixture.dir.path.join("taiyaku.notes.json");
+    let stem = fixture.dir.path().join("taiyaku.notes.json");
 
     {
         let conn = fixture.conn();
@@ -786,7 +786,7 @@ fn a_stamp_leaves_another_readers_exported_notes_alone() {
 #[test]
 fn applying_an_empty_plan_touches_no_document() {
     let fixture = imported_work();
-    let sidecar = fixture.dir.path.join("taiyaku.json");
+    let sidecar = fixture.dir.path().join("taiyaku.json");
 
     {
         let conn = fixture.conn();
@@ -835,9 +835,9 @@ fn applying_an_empty_plan_touches_no_document() {
 #[test]
 fn a_member_whose_file_is_gone_does_not_block_the_rest() {
     let dir = crate::tests::tempdir("stamp-missing-member");
-    let present = dir.path.join("v01.cbz");
+    let present = dir.path().join("v01.cbz");
     crate::scan::tests::write_archive(&present, 2);
-    let absent = dir.path.join("v02.cbz");
+    let absent = dir.path().join("v02.cbz");
 
     let json = format!(
         r#"{{"taiyaku":1,"work":{{"title":"Partly Gone","reading":"rtl"}},
@@ -850,12 +850,12 @@ fn a_member_whose_file_is_gone_does_not_block_the_rest() {
         absent.display()
     );
     let doc = taiyaku_core::Sidecar::from_json(&json).expect("parses");
-    std::fs::write(dir.path.join("taiyaku.json"), &json).expect("writes the sidecar");
+    std::fs::write(dir.path().join("taiyaku.json"), &json).expect("writes the sidecar");
 
     let library = crate::Library::open_in_memory().expect("opens");
     let work_id = {
         let conn = library.conn();
-        crate::import::sidecar(&conn, &doc, &dir.path.join("taiyaku.json")).expect("imports")
+        crate::import::sidecar(&conn, &doc, &dir.path().join("taiyaku.json")).expect("imports")
     };
 
     let conn = library.conn();
@@ -1010,7 +1010,7 @@ fn a_rewrite_syncs_the_staged_archive_before_the_rename_and_the_directory_after_
     }
 
     let temp = crate::tests::tempdir("stamp-o104");
-    let dir = std::fs::canonicalize(&temp.path).expect("the test directory resolves");
+    let dir = std::fs::canonicalize(temp.path()).expect("the test directory resolves");
     let path = dir.join("Series - v01.cbz");
     crate::scan::tests::write_archive(&path, 2);
     let before = digest_of(&path);

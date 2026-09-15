@@ -1,4 +1,5 @@
 use super::*;
+use taiyaku_read::test_support::TempDir;
 
 /// A single unparsed candidate (name with no digits) is printed in the
 /// inventory table, not silently dropped. This is the case the inventory
@@ -6,8 +7,7 @@ use super::*;
 /// then vanished would hide a parse failure.
 #[test]
 fn a_single_unparsed_candidate_is_reported() {
-    let root = std::env::temp_dir().join("taiyaku-test-inventory-unparsed");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = TempDir::new("inventory-unparsed");
     // Create one directory with no volume number in its name, above threshold.
     let unparsed = root.join("extras");
     std::fs::create_dir_all(&unparsed).unwrap();
@@ -16,7 +16,6 @@ fn a_single_unparsed_candidate_is_reported() {
     }
 
     let walked = walk(&root, 60).unwrap();
-    let _ = std::fs::remove_dir_all(&root);
 
     // Verify the candidate was found.
     assert_eq!(walked.candidates.len(), 1);
@@ -121,8 +120,7 @@ fn an_empty_pattern_on_a_short_name_finds_nothing() {
 /// the chapter directories are not what a person means by a copy.
 #[test]
 fn a_nested_volume_is_one_candidate_not_seven_and_not_zero() {
-    let root = std::env::temp_dir().join("taiyaku-test-inventory-nested");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = TempDir::new("inventory-nested");
     let volume = root.join("v01");
     for chapter in ["c001", "c002", "c003"] {
         let dir = volume.join(chapter);
@@ -133,8 +131,6 @@ fn a_nested_volume_is_one_candidate_not_seven_and_not_zero() {
     }
 
     let walked = walk(&root, 10).unwrap();
-
-    let _ = std::fs::remove_dir_all(&root);
     let paths: Vec<&Path> = walked.candidates.iter().map(|c| c.path.as_path()).collect();
     assert_eq!(paths, vec![volume.as_path()]);
     assert_eq!(walked.candidates[0].pages, 12);
@@ -148,8 +144,7 @@ fn a_nested_volume_is_one_candidate_not_seven_and_not_zero() {
 /// so a threshold that nearly cut something real is visible.
 #[test]
 fn material_below_the_threshold_is_excluded_and_its_range_recorded() {
-    let root = std::env::temp_dir().join("taiyaku-test-inventory-short");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = TempDir::new("inventory-short");
     for (name, pages) in [("v01", 12u32), ("jump-24", 3), ("jump-31", 5)] {
         let dir = root.join(name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -159,8 +154,6 @@ fn material_below_the_threshold_is_excluded_and_its_range_recorded() {
     }
 
     let walked = walk(&root, 10).unwrap();
-
-    let _ = std::fs::remove_dir_all(&root);
     assert_eq!(walked.candidates.len(), 1);
     assert_eq!(walked.excluded, vec![3, 5]);
 }
@@ -173,15 +166,11 @@ fn material_below_the_threshold_is_excluded_and_its_range_recorded() {
 #[test]
 #[cfg(unix)]
 fn a_symlink_cycle_errors_naming_the_depth_instead_of_overflowing() {
-    let root = std::env::temp_dir().join("taiyaku-test-inventory-cycle");
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let root = TempDir::new("inventory-cycle");
     std::os::unix::fs::symlink(&root, root.join("loop")).unwrap();
 
     let mut walked = Walked::default();
     let error = totals(&root, &mut walked).unwrap_err();
-
-    let _ = std::fs::remove_dir_all(&root);
     assert!(
         error.contains(&MAX_DEPTH.to_string()),
         "the depth ceiling should be named: {error}"
@@ -198,11 +187,10 @@ fn a_symlink_cycle_errors_naming_the_depth_instead_of_overflowing() {
 /// not there, and the error would be believed.
 #[test]
 fn a_directory_nested_exactly_to_the_limit_is_walked_rather_than_refused() {
-    let root = std::env::temp_dir().join("taiyaku-test-inventory-at-limit");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = TempDir::new("inventory-at-limit");
     // The root is depth zero, so `MAX_DEPTH` directories below it put the
     // deepest one exactly at the ceiling.
-    let mut deepest = root.clone();
+    let mut deepest = root.to_path_buf();
     for level in 0..MAX_DEPTH {
         deepest = deepest.join(format!("d{level}"));
     }
@@ -211,8 +199,6 @@ fn a_directory_nested_exactly_to_the_limit_is_walked_rather_than_refused() {
 
     let mut walked = Walked::default();
     let measured = totals(&root, &mut walked);
-
-    let _ = std::fs::remove_dir_all(&root);
     let measured = measured.expect("32 levels is at the ceiling, not past it");
     assert_eq!(measured.pages, 1, "the page at the bottom is counted");
     assert_eq!(
@@ -227,9 +213,8 @@ fn a_directory_nested_exactly_to_the_limit_is_walked_rather_than_refused() {
 /// past `MAX_DEPTH` errors rather than being silently walked in full.
 #[test]
 fn a_directory_nested_past_the_limit_errors_naming_the_depth() {
-    let root = std::env::temp_dir().join("taiyaku-test-inventory-deep");
-    let _ = std::fs::remove_dir_all(&root);
-    let mut deepest = root.clone();
+    let root = TempDir::new("inventory-deep");
+    let mut deepest = root.to_path_buf();
     for level in 0..(MAX_DEPTH + 5) {
         deepest = deepest.join(format!("d{level}"));
     }
@@ -237,8 +222,6 @@ fn a_directory_nested_past_the_limit_errors_naming_the_depth() {
 
     let mut walked = Walked::default();
     let error = totals(&root, &mut walked).unwrap_err();
-
-    let _ = std::fs::remove_dir_all(&root);
     assert!(
         error.contains(&MAX_DEPTH.to_string()),
         "the depth ceiling should be named: {error}"
@@ -365,8 +348,7 @@ fn the_footer_counts_duplicated_sets_and_the_settled_ones_among_them() {
 /// volume-editions.
 #[test]
 fn only_the_groups_worth_printing_become_rows() {
-    let root = std::env::temp_dir().join("taiyaku-test-inventory-rows");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = TempDir::new("inventory-rows");
     // Two identical copies of volume 1, one of volume 2, one unparsed.
     for name in ["v01-a", "v01-b", "v02-only", "extras"] {
         let dir = root.join(name);
@@ -379,8 +361,6 @@ fn only_the_groups_worth_printing_become_rows() {
     let walked = walk(&root, 10).unwrap();
     let groups = group_by_volume(&walked.candidates, None);
     let table = rows(&groups).unwrap();
-
-    let _ = std::fs::remove_dir_all(&root);
     assert_eq!(groups.len(), 3, "volume 2 is a group, it is just not a row");
     let shape: Vec<(Option<u32>, usize, usize)> = table
         .iter()
@@ -396,8 +376,7 @@ fn only_the_groups_worth_printing_become_rows() {
 /// user's mistake rather than the command's.
 #[test]
 fn the_command_walks_the_directory_it_is_given() {
-    let root = std::env::temp_dir().join("taiyaku-test-inventory-command");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = TempDir::new("inventory-command");
     for name in ["v01-a", "v01-b"] {
         let dir = root.join(name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -412,8 +391,6 @@ fn the_command_walks_the_directory_it_is_given() {
         "10".to_string(),
     ]);
     let refused = command(&["--min-pages".to_string(), "10".to_string()]);
-
-    let _ = std::fs::remove_dir_all(&root);
     walked.expect("an argument that is not a flag is the directory to walk");
     assert!(
         refused.unwrap_err().contains("needs a directory"),

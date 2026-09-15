@@ -208,19 +208,6 @@ fn the_fallback_names_the_path_and_the_flag() {
     );
 }
 
-/// A directory named for a test of `create`, under the temp dir and never
-/// under a real `$HOME` — a test that writes where the person running it
-/// keeps their own cache is one that passes on this machine and says
-/// nothing about any other. Named per test and per process, the
-/// convention `cover.rs`'s `tempdir_for_test` set, so two tests running in
-/// parallel cannot delete each other's fixture.
-fn scratch(what: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "taiyaku-test-cache-root-{what}-{}",
-        std::process::id()
-    ))
-}
-
 /// Important 5 (whole-branch review): the root exists once `serve` has
 /// started, rather than the first time a request happens to want it.
 ///
@@ -229,13 +216,15 @@ fn scratch(what: &str) -> PathBuf {
 /// every generation writing into a directory that is not there.
 #[test]
 fn creating_the_root_makes_it_and_says_nothing() {
-    let root = scratch("created");
-    let _ = std::fs::remove_dir_all(&root);
+    // Under the temp dir and never under a real `$HOME`: a test that writes
+    // where the person running it keeps their own cache passes on this
+    // machine and says nothing about any other.
+    let scratch = crate::test_support::Fixture::new("cache-root-created");
+    let root = scratch.join("root");
     let resolved = Resolution::Flag(root.clone());
 
     let complaint = create(&resolved);
     let made = resolved.covers().is_dir();
-    let _ = std::fs::remove_dir_all(&root);
 
     assert_eq!(complaint, None, "a root that can be created says nothing");
     assert!(
@@ -256,12 +245,11 @@ fn creating_the_root_makes_it_and_says_nothing() {
 /// be created" without either is one a person cannot act on.
 #[test]
 fn a_root_that_cannot_be_created_is_reported_rather_than_fatal() {
-    let file = scratch("is-a-file");
-    let _ = std::fs::remove_dir_all(&file);
+    let scratch = crate::test_support::Fixture::new("cache-root-is-a-file");
+    let file = scratch.join("is-a-file");
     std::fs::write(&file, b"an existing file where a directory has to go").unwrap();
 
     let complaint = create(&Resolution::Flag(file.clone()));
-    let _ = std::fs::remove_file(&file);
 
     let complaint = complaint.expect("a cache root that cannot be created must not be silent");
     assert!(

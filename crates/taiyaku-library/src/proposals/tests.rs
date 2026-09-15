@@ -66,11 +66,11 @@ fn library_with_series(titles: &[&str]) -> Library {
     // itself was fixed, and a mix of counts is closer to a real library than
     // every volume being the same length.
     for (n, title) in (2_usize..).zip(titles) {
-        write_pages(&dir.path.join(title).join(format!("{title} - v01")), n);
+        write_pages(&dir.path().join(title).join(format!("{title} - v01")), n);
     }
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add root");
+    let root = scan::add_root(&conn, dir.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
     drop(conn);
@@ -160,13 +160,13 @@ fn library_scanned_with_the_subject_under_an_unrelated_directory()
 -> (crate::tests::TempDir, Library) {
     let dir = crate::tests::tempdir("proposals-accept-unrelated-dir");
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01"),
         2,
     );
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Publisher")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
         3,
@@ -174,7 +174,7 @@ fn library_scanned_with_the_subject_under_an_unrelated_directory()
     let library = Library::open_in_memory().expect("open");
     {
         let conn = library.conn();
-        let root = scan::add_root(&conn, &dir.path).expect("add root");
+        let root = scan::add_root(&conn, dir.path()).expect("add root");
         scan::scan_root(&conn, &root).expect("scan");
         derive::derive(&conn).expect("derive");
     }
@@ -188,7 +188,7 @@ fn library_scanned_with_the_subject_under_an_unrelated_directory()
 fn library_with_an_unrelated_series_sharing_the_subjects_directory()
 -> (crate::tests::TempDir, Library) {
     let dir = crate::tests::tempdir("proposals-accept-swallow");
-    let publisher = dir.path.join("Publisher");
+    let publisher = dir.path().join("Publisher");
     write_pages(&publisher.join("Go-Toubun no Hanayome - v01"), 2);
     write_pages(
         &publisher.join("Go-Toubun no Hanayome - Full Color Edition - v01"),
@@ -199,7 +199,7 @@ fn library_with_an_unrelated_series_sharing_the_subjects_directory()
     let library = Library::open_in_memory().expect("open");
     {
         let conn = library.conn();
-        let root = scan::add_root(&conn, &dir.path).expect("add root");
+        let root = scan::add_root(&conn, dir.path()).expect("add root");
         scan::scan_root(&conn, &root).expect("scan");
         derive::derive(&conn).expect("derive");
     }
@@ -217,26 +217,26 @@ fn library_with_two_roots_sharing_a_directory_name()
 -> (crate::tests::TempDir, crate::tests::TempDir, Library) {
     let a = crate::tests::tempdir("proposals-accept-two-roots-a");
     write_pages(
-        &a.path
+        &a.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01"),
         2,
     );
     write_pages(
-        &a.path
+        &a.path()
             .join("Publisher")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
         3,
     );
     let b = crate::tests::tempdir("proposals-accept-two-roots-b");
-    write_pages(&b.path.join("Publisher").join("Something Else - v01"), 4);
+    write_pages(&b.path().join("Publisher").join("Something Else - v01"), 4);
 
     let library = Library::open_in_memory().expect("open");
     {
         let conn = library.conn();
-        let root_a = scan::add_root(&conn, &a.path).expect("add root a");
+        let root_a = scan::add_root(&conn, a.path()).expect("add root a");
         scan::scan_root(&conn, &root_a).expect("scan a");
-        let root_b = scan::add_root(&conn, &b.path).expect("add root b");
+        let root_b = scan::add_root(&conn, b.path()).expect("add root b");
         scan::scan_root(&conn, &root_b).expect("scan b");
         derive::derive(&conn).expect("derive");
     }
@@ -482,7 +482,7 @@ fn accept_with_refuses_an_attach_chapters_proposal_handed_a_rule_directly() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add root");
+    let root = scan::add_root(&conn, tree.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
     let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
@@ -618,7 +618,7 @@ fn library_with_a_shared_publisher_directory() -> Library {
         "Kaguya-sama wa Kokurasetai",
     ]) {
         write_pages(
-            &dir.path
+            &dir.path()
                 .join("Publisher")
                 .join(title)
                 .join(format!("{title} - v01")),
@@ -627,7 +627,7 @@ fn library_with_a_shared_publisher_directory() -> Library {
     }
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add root");
+    let root = scan::add_root(&conn, dir.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
     drop(conn);
@@ -762,15 +762,18 @@ fn same_series_relates_a_known_alt_title_to_its_series() {
     // Different page counts — belt-and-braces, not required; see
     // `library_with_series`'s doc.
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01"),
         2,
     );
-    write_pages(&dir.path.join("五等分の花嫁").join("五等分の花嫁 - v01"), 3);
+    write_pages(
+        &dir.path().join("五等分の花嫁").join("五等分の花嫁 - v01"),
+        3,
+    );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add root");
+    let root = scan::add_root(&conn, dir.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
 
@@ -828,7 +831,7 @@ fn attach_chapters_is_raised_by_a_derive_and_the_accept_is_refused() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add root");
+    let root = scan::add_root(&conn, tree.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     // No separate call to `proposals::raise`: derive is what is supposed to
     // call it, and this is the test that would fail if that wiring were
@@ -1145,19 +1148,19 @@ fn accept_refuses_when_the_subjects_files_sit_directly_in_the_root() {
     // derived pattern is `/`, and no real `rel_path` ever begins with one.
     let dir = crate::tests::tempdir("proposals-accept-root-level");
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01"),
         2,
     );
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
         3,
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add root");
+    let root = scan::add_root(&conn, dir.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
 
@@ -1190,26 +1193,26 @@ fn accept_refuses_when_the_subjects_entries_span_more_than_one_directory() {
     // never load-bearing for this test's own assertions either way, which
     // read `scan_entry` rather than `work`.
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01"),
         2,
     );
     write_pages(
-        &dir.path
+        &dir.path()
             .join("PublisherA")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
         3,
     );
     write_pages(
-        &dir.path
+        &dir.path()
             .join("PublisherB")
             .join("Go-Toubun no Hanayome - Full Color Edition - v02"),
         4,
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add root");
+    let root = scan::add_root(&conn, dir.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
 
@@ -1534,7 +1537,7 @@ fn accept_scopes_the_rule_to_the_subjects_own_root_and_leaves_another_roots_mate
         root_path.as_deref(),
         Some(
             tree_a
-                .path
+                .path()
                 .canonicalize()
                 .expect("canonicalises")
                 .to_string_lossy()
@@ -1581,20 +1584,20 @@ fn accept_scopes_the_rule_to_the_subjects_own_root_and_leaves_another_roots_mate
 fn accept_refuses_when_the_subjects_own_directory_is_spelled_the_same_in_two_roots() {
     let a = crate::tests::tempdir("proposals-accept-multiroot-a");
     write_pages(
-        &a.path
+        &a.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01"),
         2,
     );
     write_pages(
-        &a.path
+        &a.path()
             .join("Publisher")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
         3,
     );
     let b = crate::tests::tempdir("proposals-accept-multiroot-b");
     write_pages(
-        &b.path
+        &b.path()
             .join("Publisher")
             .join("Go-Toubun no Hanayome - Full Color Edition - v02"),
         4,
@@ -1602,9 +1605,9 @@ fn accept_refuses_when_the_subjects_own_directory_is_spelled_the_same_in_two_roo
 
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root_a = scan::add_root(&conn, &a.path).expect("add root a");
+    let root_a = scan::add_root(&conn, a.path()).expect("add root a");
     scan::scan_root(&conn, &root_a).expect("scan a");
-    let root_b = scan::add_root(&conn, &b.path).expect("add root b");
+    let root_b = scan::add_root(&conn, b.path()).expect("add root b");
     scan::scan_root(&conn, &root_b).expect("scan b");
     derive::derive(&conn).expect("derive");
 
@@ -1625,8 +1628,8 @@ fn accept_refuses_when_the_subjects_own_directory_is_spelled_the_same_in_two_roo
             "proposal {}'s subject sits under `Publisher/` in more than one root, so \
              accepting it cannot be scoped to a single root. Its roots are: {}, {}",
             proposal.id,
-            a.path.canonicalize().unwrap().display(),
-            b.path.canonicalize().unwrap().display(),
+            a.path().canonicalize().unwrap().display(),
+            b.path().canonicalize().unwrap().display(),
         )
     );
 
@@ -1981,7 +1984,7 @@ fn a_rescan_does_not_rescore_a_proposal_someone_has_already_dismissed() {
 fn library_where_the_subject_shares_its_directory_with_the_target_alone()
 -> (crate::tests::TempDir, Library) {
     let dir = crate::tests::tempdir("proposals-accept-target-only");
-    let publisher = dir.path.join("Publisher");
+    let publisher = dir.path().join("Publisher");
     write_pages(&publisher.join("Go-Toubun no Hanayome - v01"), 2);
     write_pages(
         &publisher.join("Go-Toubun no Hanayome - Full Color Edition - v01"),
@@ -1990,7 +1993,7 @@ fn library_where_the_subject_shares_its_directory_with_the_target_alone()
     let library = Library::open_in_memory().expect("open");
     {
         let conn = library.conn();
-        let root = scan::add_root(&conn, &dir.path).expect("add root");
+        let root = scan::add_root(&conn, dir.path()).expect("add root");
         scan::scan_root(&conn, &root).expect("scan");
         derive::derive(&conn).expect("derive");
     }
@@ -2049,13 +2052,13 @@ fn library_with_three_colour_editions() -> Library {
         "Kobayashi-san Chi no Meidoragon",
     ] {
         for title in [base.to_string(), format!("{base} - Full Color Edition")] {
-            write_pages(&dir.path.join(&title).join(format!("{title} - v01")), n);
+            write_pages(&dir.path().join(&title).join(format!("{title} - v01")), n);
             n += 1;
         }
     }
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add root");
+    let root = scan::add_root(&conn, dir.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
     drop(conn);
@@ -2382,13 +2385,16 @@ fn library_with_two_volumes_each() -> Library {
         "Go-Toubun no Hanayome - Full Color Edition",
     ] {
         for volume in ["v01", "v02"] {
-            write_pages(&dir.path.join(title).join(format!("{title} - {volume}")), n);
+            write_pages(
+                &dir.path().join(title).join(format!("{title} - {volume}")),
+                n,
+            );
             n += 1;
         }
     }
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add root");
+    let root = scan::add_root(&conn, dir.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
     drop(conn);
@@ -2452,7 +2458,9 @@ fn library_with_a_splittable_second_proposal() -> Library {
     ] {
         for volume in 1..=volumes {
             write_pages(
-                &dir.path.join(title).join(format!("{title} - v{volume:02}")),
+                &dir.path()
+                    .join(title)
+                    .join(format!("{title} - v{volume:02}")),
                 n,
             );
             n += 1;
@@ -2460,7 +2468,7 @@ fn library_with_a_splittable_second_proposal() -> Library {
     }
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add root");
+    let root = scan::add_root(&conn, dir.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
     drop(conn);
@@ -2926,23 +2934,23 @@ fn works_moved_counts_moving_members_not_work_rows_that_change_series() {
     for base in [&a, &b] {
         write_pages(
             &base
-                .path
+                .path()
                 .join("Go-Toubun no Hanayome - Full Color Edition")
                 .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
             2,
         );
     }
     write_pages(
-        &a.path
+        &a.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01"),
         3,
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root_a = scan::add_root(&conn, &a.path).expect("add root a");
+    let root_a = scan::add_root(&conn, a.path()).expect("add root a");
     scan::scan_root(&conn, &root_a).expect("scan a");
-    let root_b = scan::add_root(&conn, &b.path).expect("add root b");
+    let root_b = scan::add_root(&conn, b.path()).expect("add root b");
     scan::scan_root(&conn, &root_b).expect("scan b");
     derive::derive(&conn).expect("derive");
     proposals::raise(&conn).expect("raise");
@@ -3014,16 +3022,19 @@ fn work_series(conn: &rusqlite::Connection) -> Vec<(i64, Option<i64>)> {
 fn library_with_a_same_series_proposal() -> (crate::tests::TempDir, Library) {
     let dir = crate::tests::tempdir("proposals-same-series-fixture");
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01"),
         2,
     );
-    write_pages(&dir.path.join("五等分の花嫁").join("五等分の花嫁 - v01"), 3);
+    write_pages(
+        &dir.path().join("五等分の花嫁").join("五等分の花嫁 - v01"),
+        3,
+    );
     let library = Library::open_in_memory().expect("open");
     {
         let conn = library.conn();
-        let root = scan::add_root(&conn, &dir.path).expect("add root");
+        let root = scan::add_root(&conn, dir.path()).expect("add root");
         scan::scan_root(&conn, &root).expect("scan");
         derive::derive(&conn).expect("derive");
         let established: i64 = conn
@@ -3548,7 +3559,7 @@ fn library_with_unattached_chapters() -> Library {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add root");
+    let root = scan::add_root(&conn, tree.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
     drop(conn);
@@ -3695,26 +3706,26 @@ fn evidence_answers_for_a_target_whose_volumes_span_two_directories() {
     // the row at all.
     let dir = crate::tests::tempdir("proposals-evidence-split-target");
     write_pages(
-        &dir.path
+        &dir.path()
             .join("PublisherA")
             .join("Go-Toubun no Hanayome - v01"),
         2,
     );
     write_pages(
-        &dir.path
+        &dir.path()
             .join("PublisherB")
             .join("Go-Toubun no Hanayome - v02"),
         3,
     );
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Colour")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
         4,
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add root");
+    let root = scan::add_root(&conn, dir.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
     let root_path: String = conn
@@ -3803,11 +3814,11 @@ fn evidence_answers_for_a_target_whose_volumes_span_two_directories() {
 /// Returns the `TempDir`: it must outlive every use of `library`.
 fn library_whose_volume_one_is_a_directory_and_an_archive() -> (crate::tests::TempDir, Library) {
     let dir = crate::tests::tempdir("proposals-evidence-two-members");
-    let series = dir.path.join("Go-Toubun no Hanayome");
+    let series = dir.path().join("Go-Toubun no Hanayome");
     write_pages(&series.join("Go-Toubun no Hanayome - v01"), 2);
     crate::scan::tests::write_archive(&series.join("Go-Toubun no Hanayome - v01.cbz"), 3);
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome - Full Color Edition")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
         4,
@@ -3815,7 +3826,7 @@ fn library_whose_volume_one_is_a_directory_and_an_archive() -> (crate::tests::Te
     let library = Library::open_in_memory().expect("open");
     {
         let conn = library.conn();
-        let root = scan::add_root(&conn, &dir.path).expect("add root");
+        let root = scan::add_root(&conn, dir.path()).expect("add root");
         scan::scan_root(&conn, &root).expect("scan");
         derive::derive(&conn).expect("derive");
     }
@@ -3892,20 +3903,20 @@ fn evidence_builds_its_urls_from_the_work_and_edition_rows_the_library_holds() {
     // rather than a hand-written `work`.
     let dir = crate::tests::tempdir("proposals-evidence-hub");
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01"),
         2,
     );
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Colour")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
         3,
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add root");
+    let root = scan::add_root(&conn, dir.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     conn.execute(
         "INSERT INTO rule (ordinal, kind, pattern, match_on, set_edition_key) \
@@ -3991,18 +4002,18 @@ fn evidence_shows_the_lowest_numbered_volume_rather_than_an_unnumbered_one_shot(
     // numbered ones, and against every other fixture here those are the same
     // number. Here they are 2 and 1.
     let dir = crate::tests::tempdir("proposals-evidence-one-shot");
-    let series = dir.path.join("Go-Toubun no Hanayome");
+    let series = dir.path().join("Go-Toubun no Hanayome");
     write_pages(&series.join("Go-Toubun no Hanayome - v01"), 2);
     write_pages(&series.join("Go-Toubun no Hanayome (Oneshot)"), 5);
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome - Full Color Edition")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
         3,
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add root");
+    let root = scan::add_root(&conn, dir.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
     proposals::raise(&conn).expect("raise");
@@ -4059,24 +4070,28 @@ fn evidence_lists_a_directory_per_root_for_a_side_spanning_two_roots() {
     let a = crate::tests::tempdir("proposals-evidence-roots-a");
     let b = crate::tests::tempdir("proposals-evidence-roots-b");
     write_pages(
-        &a.path.join("Publisher").join("Go-Toubun no Hanayome - v01"),
+        &a.path()
+            .join("Publisher")
+            .join("Go-Toubun no Hanayome - v01"),
         2,
     );
     write_pages(
-        &b.path.join("Publisher").join("Go-Toubun no Hanayome - v02"),
+        &b.path()
+            .join("Publisher")
+            .join("Go-Toubun no Hanayome - v02"),
         3,
     );
     write_pages(
-        &a.path
+        &a.path()
             .join("Colour")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
         4,
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root_a = scan::add_root(&conn, &a.path).expect("add root a");
+    let root_a = scan::add_root(&conn, a.path()).expect("add root a");
     scan::scan_root(&conn, &root_a).expect("scan a");
-    let root_b = scan::add_root(&conn, &b.path).expect("add root b");
+    let root_b = scan::add_root(&conn, b.path()).expect("add root b");
     scan::scan_root(&conn, &root_b).expect("scan b");
     derive::derive(&conn).expect("derive");
     proposals::raise(&conn).expect("raise");
@@ -4090,8 +4105,8 @@ fn evidence_lists_a_directory_per_root_for_a_side_spanning_two_roots() {
 
     let target = ev.target.expect("the base series is the target");
     let mut expected = vec![
-        format!("{}/Publisher", a.path.to_string_lossy()),
-        format!("{}/Publisher", b.path.to_string_lossy()),
+        format!("{}/Publisher", a.path().to_string_lossy()),
+        format!("{}/Publisher", b.path().to_string_lossy()),
     ];
     expected.sort();
     assert_eq!(
@@ -4136,29 +4151,29 @@ fn a_refused_rule_is_an_absent_one_and_a_read_that_failed_is_an_error() {
     // the same outcome, arrived at one step earlier.
     let a = crate::tests::tempdir("proposals-refusal-vs-failure-a");
     write_pages(
-        &a.path
+        &a.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01"),
         2,
     );
     write_pages(
-        &a.path
+        &a.path()
             .join("Publisher")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
         3,
     );
     let b = crate::tests::tempdir("proposals-refusal-vs-failure-b");
     write_pages(
-        &b.path
+        &b.path()
             .join("Publisher")
             .join("Go-Toubun no Hanayome - Full Color Edition - v02"),
         4,
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root_a = scan::add_root(&conn, &a.path).expect("add root a");
+    let root_a = scan::add_root(&conn, a.path()).expect("add root a");
     scan::scan_root(&conn, &root_a).expect("scan a");
-    let root_b = scan::add_root(&conn, &b.path).expect("add root b");
+    let root_b = scan::add_root(&conn, b.path()).expect("add root b");
     scan::scan_root(&conn, &root_b).expect("scan b");
     derive::derive(&conn).expect("derive");
     let proposal = proposals::open(&conn, 0.0)
@@ -4255,16 +4270,19 @@ fn evidence_says_so_when_neither_side_has_a_volume_to_compare() {
     // `series` row for each and no `work` at all, and the titles are still in
     // the `"{target} - "` relation that raises an `edition-of` proposal.
     let dir = crate::tests::tempdir("proposals-evidence-no-volumes");
-    write_pages(&dir.path.join("Kaguya-sama").join("Kaguya-sama - c001"), 2);
     write_pages(
-        &dir.path
+        &dir.path().join("Kaguya-sama").join("Kaguya-sama - c001"),
+        2,
+    );
+    write_pages(
+        &dir.path()
             .join("Kaguya-sama - Fan Translated")
             .join("Kaguya-sama - Fan Translated - c001"),
         3,
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add root");
+    let root = scan::add_root(&conn, dir.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
     proposals::raise(&conn).expect("raise");
@@ -4380,19 +4398,19 @@ fn library_whose_only_volume_is_walked_as_a_directory_from_two_roots()
     let a = crate::tests::tempdir("proposals-evidence-dup-format-a");
     let b = crate::tests::tempdir("proposals-evidence-dup-format-b");
     write_pages(
-        &a.path
+        &a.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01"),
         2,
     );
     write_pages(
-        &a.path
+        &a.path()
             .join("Go-Toubun no Hanayome - Full Color Edition")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
         3,
     );
     write_pages(
-        &b.path
+        &b.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01"),
         4,
@@ -4400,9 +4418,9 @@ fn library_whose_only_volume_is_walked_as_a_directory_from_two_roots()
     let library = Library::open_in_memory().expect("open");
     {
         let conn = library.conn();
-        let root_a = scan::add_root(&conn, &a.path).expect("add root a");
+        let root_a = scan::add_root(&conn, a.path()).expect("add root a");
         scan::scan_root(&conn, &root_a).expect("scan a");
-        let root_b = scan::add_root(&conn, &b.path).expect("add root b");
+        let root_b = scan::add_root(&conn, b.path()).expect("add root b");
         scan::scan_root(&conn, &root_b).expect("scan b");
         derive::derive(&conn).expect("derive");
     }
@@ -4449,19 +4467,19 @@ fn directories_for_entries_sitting_directly_under_the_root_carry_no_trailing_sla
     // series-named subdirectory.
     let dir = crate::tests::tempdir("proposals-evidence-root-level");
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01"),
         2,
     );
     write_pages(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome - Full Color Edition - v01"),
         3,
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add root");
+    let root = scan::add_root(&conn, dir.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
     proposals::raise(&conn).expect("raise");
@@ -4475,7 +4493,7 @@ fn directories_for_entries_sitting_directly_under_the_root_carry_no_trailing_sla
 
     assert_eq!(
         ev.subject.directories,
-        vec![dir.path.to_string_lossy().into_owned()],
+        vec![dir.path().to_string_lossy().into_owned()],
         "the root's own path, verbatim — not the root with a trailing slash \
          appended for an entry that sits directly under it",
     );
@@ -4555,7 +4573,7 @@ fn a_title_correction_leaves_an_attach_chapters_proposal_about_the_same_series()
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add root");
+    let root = scan::add_root(&conn, tree.path()).expect("add root");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
     let open = proposals::open(&conn, 0.0).expect("open");

@@ -1,6 +1,6 @@
 use super::*;
 
-fn work(dir: &str) -> Work {
+fn work(dir: &std::path::Path) -> Work {
     crate::test_support::work(dir)
 }
 
@@ -19,7 +19,8 @@ fn work(dir: &str) -> Work {
 /// whole point is to stop believing them.
 #[test]
 fn forgetting_a_work_makes_the_next_run_ask_stump_again() {
-    let work = work("taiyaku-test-stump-cache-forget");
+    let tmp = crate::test_support::Fixture::new("stump-cache-forget");
+    let work = work(&tmp);
     let mut resolutions = Resolutions::new();
     resolutions.insert("hash-of-en-mono".into(), Some("a8ed51d8".into()));
     store(&work, "http://nas:10801", &resolutions).unwrap();
@@ -29,7 +30,6 @@ fn forgetting_a_work_makes_the_next_run_ask_stump_again() {
     let after = load(&work, "http://nas:10801");
     let gone = !path_for(&work).exists();
 
-    crate::test_support::cleanup("taiyaku-test-stump-cache-forget");
     assert_eq!(before.len(), 1, "the resolution was there to forget");
     assert!(after.is_empty(), "and is not there afterwards: {after:?}");
     assert!(gone, "the file itself is removed, not emptied");
@@ -42,11 +42,11 @@ fn forgetting_a_work_makes_the_next_run_ask_stump_again() {
 /// be a worse answer than doing nothing.
 #[test]
 fn forgetting_a_work_with_nothing_recorded_is_not_an_error() {
-    let work = work("taiyaku-test-stump-cache-forget-absent");
+    let tmp = crate::test_support::Fixture::new("stump-cache-forget-absent");
+    let work = work(&tmp);
 
     let forgotten = forget(&work);
 
-    crate::test_support::cleanup("taiyaku-test-stump-cache-forget-absent");
     assert!(forgotten.is_ok(), "{forgotten:?}");
 }
 
@@ -54,7 +54,8 @@ fn forgetting_a_work_with_nothing_recorded_is_not_an_error() {
 /// is the common case here and the one worth not re-asking about.
 #[test]
 fn resolutions_round_trip_beside_the_sidecar() {
-    let work = work("taiyaku-test-stump-cache");
+    let tmp = crate::test_support::Fixture::new("stump-cache");
+    let work = work(&tmp);
     let mut resolutions = Resolutions::new();
     resolutions.insert("hash-of-en-mono".into(), Some("a8ed51d8".into()));
     resolutions.insert("hash-of-raw-mono".into(), None);
@@ -64,7 +65,6 @@ fn resolutions_round_trip_beside_the_sidecar() {
 
     let path = path_for(&work);
     let existed = path.exists();
-    crate::test_support::cleanup("taiyaku-test-stump-cache");
 
     assert!(existed, "must write beside the sidecar: {}", path.display());
     assert_eq!(
@@ -83,14 +83,14 @@ fn resolutions_round_trip_beside_the_sidecar() {
 /// whatever happens to share an id — or 404 on everything.
 #[test]
 fn a_cache_from_a_different_instance_is_ignored() {
-    let work = work("taiyaku-test-stump-cache-base");
+    let tmp = crate::test_support::Fixture::new("stump-cache-base");
+    let work = work(&tmp);
     let mut resolutions = Resolutions::new();
     resolutions.insert("hash".into(), Some("id-on-the-old-server".into()));
     store(&work, "http://old:10801", &resolutions).unwrap();
 
     let back = load(&work, "http://new:10801");
 
-    crate::test_support::cleanup("taiyaku-test-stump-cache-base");
     assert!(back.is_empty(), "a different base must not be trusted");
 }
 
@@ -99,7 +99,8 @@ fn a_cache_from_a_different_instance_is_ignored() {
 /// can rebuild was truncated would be worse than one that rebuilds it.
 #[test]
 fn a_missing_or_unreadable_cache_is_empty_rather_than_fatal() {
-    let work = work("taiyaku-test-stump-cache-bad");
+    let tmp = crate::test_support::Fixture::new("stump-cache-bad");
+    let work = work(&tmp);
     assert!(
         load(&work, "http://nas:10801").is_empty(),
         "nothing written yet"
@@ -108,7 +109,6 @@ fn a_missing_or_unreadable_cache_is_empty_rather_than_fatal() {
     std::fs::write(path_for(&work), b"{ truncated").unwrap();
     let back = load(&work, "http://nas:10801");
 
-    crate::test_support::cleanup("taiyaku-test-stump-cache-bad");
     assert!(
         back.is_empty(),
         "a corrupt cache rebuilds rather than refusing to start"
@@ -122,14 +122,13 @@ fn a_missing_or_unreadable_cache_is_empty_rather_than_fatal() {
 /// unnoticed. The guard could be replaced by `true` with the suite green.
 #[test]
 fn a_cache_file_that_cannot_be_removed_is_an_error_rather_than_success() {
-    let work = work("taiyaku-test-stump-forget-unremovable");
+    let tmp = crate::test_support::Fixture::new("stump-forget-unremovable");
+    let work = work(&tmp);
     // `remove_file` on a directory fails with something that is not
     // `NotFound`, which is the distinction under test.
     std::fs::create_dir_all(path_for(&work)).unwrap();
 
     let result = forget(&work);
 
-    let _ =
-        std::fs::remove_dir_all(std::env::temp_dir().join("taiyaku-test-stump-forget-unremovable"));
     assert!(result.is_err(), "must not report success: {result:?}");
 }

@@ -586,7 +586,7 @@ from the day it landed until this one. Here they are, with a reason each:
 | `taiyaku-cli/src/score_corpus.rs` | the same |
 | `taiyaku-serve/src/test_support.rs` | `#[cfg(test)]` scaffolding, and a third category rather than a gated module: cargo-llvm-cov's default exclusion drops a file whose basename contains `tests` and so misses this one, for want of an `s` |
 | `taiyaku-serve/src/stump/http/test_support.rs` | the same |
-| `taiyaku-read/src/test_support.rs` | the same, and the one of the three that is not only `#[cfg(test)]`: `taiyaku-read`'s `test-support` feature exposes it to `taiyaku-library`'s tests, since O104's strace harness serves `stamp` as well as `atomic`. Matched by the existing alternation from the day it landed, and listed the same day |
+| `taiyaku-read/src/test_support.rs` | the same, and the one of the three that is not only `#[cfg(test)]`: `taiyaku-read`'s `test-support` feature exposes it to `taiyaku-library`'s tests, since O104's strace harness serves `stamp` as well as `atomic`. Since O117 `taiyaku-serve` and `taiyaku-cli` enable it too, for its `TempDir`. Matched by the existing alternation from the day it landed, and listed the same day |
 
 **The regex matches `/corpus.rs` by path segment, and that is the sharp edge.**
 A *new* `corpus.rs` added to a crate that is **not** corpus-gated would be

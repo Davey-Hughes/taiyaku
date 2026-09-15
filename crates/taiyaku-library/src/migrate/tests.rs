@@ -26,14 +26,11 @@ use crate::{Library, Note, Progress, Region};
 /// run's `remove_dir_all` deletes the other's fixture mid-test. The `name`
 /// alone only separates tests within one run (whole-branch review 3, Minor
 /// 13).
-fn scratch(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "taiyaku-test-migrate-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    root
+///
+/// O117 moved it onto the shared `TempDir`, which keeps the process id, adds a
+/// counter, and removes the directory on drop, which this helper never did.
+fn scratch(name: &str) -> taiyaku_read::test_support::TempDir {
+    taiyaku_read::test_support::TempDir::new(&format!("migrate-{name}"))
 }
 
 /// A work with one edition, `raw-mono`, imported at a **real** path under

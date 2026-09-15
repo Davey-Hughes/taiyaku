@@ -318,10 +318,10 @@ fn cbz_with_page(path: &Path, page: &str) {
 /// sidecar — the reverse of what a glob of the directory sorts to — plus a
 /// third archive on disk that the sidecar does not name.
 ///
-/// Returns the sidecar path and the two digests, in the sidecar's own order.
-fn fixture(name: &str) -> (PathBuf, [String; 2]) {
-    let root = std::env::temp_dir().join(format!("taiyaku-test-score-corpus-{name}"));
-    let _ = std::fs::remove_dir_all(&root);
+/// Returns the directory, which holds everything, then the sidecar path and the
+/// two digests, in the sidecar's own order.
+fn fixture(name: &str) -> (taiyaku_read::test_support::TempDir, PathBuf, [String; 2]) {
+    let root = taiyaku_read::test_support::TempDir::new(&format!("score-corpus-{name}"));
     let dir = root.join("e");
     std::fs::create_dir_all(&dir).expect("create an edition directory");
     cbz_with_page(&dir.join("a.cbz"), "a1.png");
@@ -354,7 +354,7 @@ fn fixture(name: &str) -> (PathBuf, [String; 2]) {
         ),
     )
     .expect("write sidecar");
-    (sidecar, [digest_b, digest_a])
+    (root, sidecar, [digest_b, digest_a])
 }
 
 /// The labelled edition, with `members` as the browser writes them.
@@ -386,7 +386,7 @@ fn labelled_against(digests: &[&str]) -> taiyaku_core::TruthEdition {
 /// would have caught this until an archive was added or replaced.
 #[test]
 fn the_page_order_is_the_sidecars_and_an_unnamed_archive_is_not_read() {
-    let (sidecar, [digest_b, digest_a]) = fixture("order");
+    let (_root, sidecar, [digest_b, digest_a]) = fixture("order");
     let labelled = labelled_against(&[&digest_b, &digest_a]);
 
     let pages = edition_pages(&sidecar, "e", &labelled).expect("the fixture resolves");
@@ -409,7 +409,7 @@ fn the_page_order_is_the_sidecars_and_an_unnamed_archive_is_not_read() {
 /// have said so.
 #[test]
 fn labels_drawn_against_a_replaced_archive_are_refused_rather_than_scored() {
-    let (sidecar, [digest_b, _]) = fixture("stale");
+    let (_root, sidecar, [digest_b, _]) = fixture("stale");
     let elsewhere = "0000000000000000000000000000000000000000000000000000000000000000";
     let labelled = labelled_against(&[&digest_b, elsewhere]);
 

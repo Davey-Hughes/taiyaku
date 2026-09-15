@@ -210,9 +210,8 @@ fn state_changing_methods_need_a_matching_origin() {
 /// and find the cookie no longer works.
 #[tokio::test]
 async fn a_session_can_be_opened_used_and_ended() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-session-round-trip",
-    ));
+    let tmp = crate::test_support::Fixture::new("session-round-trip");
+    let state = Arc::new(crate::test_support::state(&tmp));
 
     let login = build_router(state.clone())
         .oneshot(
@@ -294,7 +293,8 @@ async fn a_session_can_be_opened_used_and_ended() {
 /// a caller cannot enumerate names by the answer.
 #[tokio::test]
 async fn a_bad_login_says_the_same_thing_whoever_it_names() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-session-bad-login"));
+    let tmp = crate::test_support::Fixture::new("session-bad-login");
+    let state = Arc::new(crate::test_support::state(&tmp));
 
     let mut answers = Vec::new();
     for body in [
@@ -336,7 +336,8 @@ async fn a_bad_login_says_the_same_thing_whoever_it_names() {
 /// the predicate.
 #[tokio::test]
 async fn a_cookie_alone_cannot_change_state_cross_site() {
-    let state = crate::test_support::state("taiyaku-test-session-csrf");
+    let tmp = crate::test_support::Fixture::new("session-csrf");
+    let state = crate::test_support::state(&tmp);
     let token = credential::mint_token();
     {
         let conn = state.library.conn();
@@ -386,9 +387,8 @@ async fn a_cookie_alone_cannot_change_state_cross_site() {
 /// being locked out by the weaker of its two credentials.
 #[tokio::test]
 async fn a_dead_cookie_does_not_veto_a_valid_header() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-session-fallthrough",
-    ));
+    let tmp = crate::test_support::Fixture::new("session-fallthrough");
+    let state = Arc::new(crate::test_support::state(&tmp));
 
     let response = build_router(state)
         .oneshot(
@@ -411,7 +411,8 @@ async fn a_dead_cookie_does_not_veto_a_valid_header() {
 /// its login screen rather than an error to display.
 #[tokio::test]
 async fn whoami_is_guarded_and_answers_the_resolved_principal() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-session-me"));
+    let tmp = crate::test_support::Fixture::new("session-me");
+    let state = Arc::new(crate::test_support::state(&tmp));
 
     let anonymous = build_router(state.clone())
         .oneshot(Request::get("/api/me").body(Body::empty()).unwrap())
@@ -462,9 +463,8 @@ async fn whoami_is_guarded_and_answers_the_resolved_principal() {
 /// Found by an automated security review of this branch on 2026-08-18.
 #[tokio::test]
 async fn a_cross_site_page_cannot_log_a_reader_in_or_out() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-session-login-csrf",
-    ));
+    let tmp = crate::test_support::Fixture::new("session-login-csrf");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let credentials = format!(
         r#"{{"name":"{}","password":"{}"}}"#,
         crate::test_support::FIXTURE_NAME,
@@ -547,9 +547,8 @@ async fn a_cross_site_page_cannot_log_a_reader_in_or_out() {
 /// once, which is the least actionable message this server could send.
 #[tokio::test]
 async fn a_refused_origin_does_not_read_as_a_wrong_password() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-session-403-not-401",
-    ));
+    let tmp = crate::test_support::Fixture::new("session-403-not-401");
+    let state = Arc::new(crate::test_support::state(&tmp));
 
     let response = build_router(state)
         .oneshot(
@@ -585,7 +584,8 @@ async fn a_refused_origin_does_not_read_as_a_wrong_password() {
 /// starts doubting the password.
 #[tokio::test]
 async fn a_run_of_failures_locks_the_pair_out_and_the_right_password_waits() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-session-lockout"));
+    let tmp = crate::test_support::Fixture::new("session-lockout");
+    let state = Arc::new(crate::test_support::state(&tmp));
 
     let attempt = |password: &'static str| {
         let state = state.clone();
@@ -628,7 +628,8 @@ async fn a_run_of_failures_locks_the_pair_out_and_the_right_password_waits() {
 /// accumulate against the next slip weeks later.
 #[tokio::test]
 async fn succeeding_forgets_the_failures_before_it() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-session-forgets"));
+    let tmp = crate::test_support::Fixture::new("session-forgets");
+    let state = Arc::new(crate::test_support::state(&tmp));
 
     let attempt = |password: String| {
         let state = state.clone();
@@ -670,9 +671,8 @@ async fn succeeding_forgets_the_failures_before_it() {
 /// would only ever slow down guesses at names it had already confirmed.
 #[tokio::test]
 async fn guessing_at_names_is_rate_limited_as_well() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-session-name-guess",
-    ));
+    let tmp = crate::test_support::Fixture::new("session-name-guess");
+    let state = Arc::new(crate::test_support::state(&tmp));
 
     let attempt = |name: String| {
         let state = state.clone();
@@ -731,9 +731,8 @@ async fn guessing_at_names_is_rate_limited_as_well() {
 async fn inventing_a_new_name_every_time_does_not_buy_unlimited_hashing() {
     use taiyaku_library::account::ADDRESS_LOCKOUT_AFTER;
 
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-session-name-flood",
-    ));
+    let tmp = crate::test_support::Fixture::new("session-name-flood");
+    let state = Arc::new(crate::test_support::state(&tmp));
 
     let attempt = |name: String| {
         let state = state.clone();
@@ -817,7 +816,7 @@ async fn inventing_a_new_name_every_time_does_not_buy_unlimited_hashing() {
 /// A state whose fixture account has been put back to locked, so the library
 /// reads as unclaimed — which is what a fresh one is, and what
 /// `test_support::library` deliberately is not.
-fn unclaimed(dir: &str, allow_web_setup: bool) -> Arc<ServeState> {
+fn unclaimed(dir: &std::path::Path, allow_web_setup: bool) -> Arc<ServeState> {
     let mut state = crate::test_support::state(dir);
     {
         let conn = state.library.conn();
@@ -848,7 +847,8 @@ fn claim_request(name: &str, password: &str) -> Request<Body> {
 #[tokio::test]
 async fn the_claim_route_closes_the_moment_an_admin_exists() {
     // Flag off: 404, and indistinguishable from a server built without it.
-    let off = unclaimed("taiyaku-test-claim-off", false);
+    let tmp = crate::test_support::Fixture::new("claim-off");
+    let off = unclaimed(&tmp, false);
     let response = build_router(off)
         .oneshot(claim_request("davey", "a password"))
         .await
@@ -856,7 +856,8 @@ async fn the_claim_route_closes_the_moment_an_admin_exists() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     // Flag on, no admin: claimed, and signed in by the same response.
-    let on = unclaimed("taiyaku-test-claim-on", true);
+    let tmp2 = crate::test_support::Fixture::new("claim-on");
+    let on = unclaimed(&tmp2, true);
     let claimed = build_router(on.clone())
         .oneshot(claim_request("davey", "a password"))
         .await
@@ -885,7 +886,8 @@ async fn the_claim_route_closes_the_moment_an_admin_exists() {
 /// server had a login still belongs to the account that now exists.
 #[tokio::test]
 async fn claiming_from_the_browser_promotes_the_same_row_the_cli_would() {
-    let state = unclaimed("taiyaku-test-claim-promotes", true);
+    let tmp = crate::test_support::Fixture::new("claim-promotes");
+    let state = unclaimed(&tmp, true);
     {
         let conn = state.library.conn();
         conn.execute(
@@ -933,7 +935,8 @@ async fn claiming_from_the_browser_promotes_the_same_row_the_cli_would() {
 /// login CSRF rather than the same.
 #[tokio::test]
 async fn a_cross_site_page_cannot_claim_the_server() {
-    let state = unclaimed("taiyaku-test-claim-csrf", true);
+    let tmp = crate::test_support::Fixture::new("claim-csrf");
+    let state = unclaimed(&tmp, true);
     let response = build_router(state)
         .oneshot(
             Request::post("/api/claim")
@@ -967,9 +970,8 @@ async fn a_cross_site_page_cannot_claim_the_server() {
 /// racing anything.
 #[tokio::test]
 async fn a_login_that_cannot_be_recorded_is_not_answered_as_a_wrong_password() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-login-unrecordable",
-    ));
+    let tmp = crate::test_support::Fixture::new("login-unrecordable");
+    let state = Arc::new(crate::test_support::state(&tmp));
     {
         let conn = state.library.conn();
         // The password is right; only the session write will fail.
@@ -1009,9 +1011,8 @@ async fn a_login_that_cannot_be_recorded_is_not_answered_as_a_wrong_password() {
 /// asserted nowhere until mutation testing asked.
 #[tokio::test]
 async fn a_failure_the_limiter_cannot_record_is_answered_as_a_lockout() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-login-unrecordable-failure",
-    ));
+    let tmp = crate::test_support::Fixture::new("login-unrecordable-failure");
+    let state = Arc::new(crate::test_support::state(&tmp));
     {
         let conn = state.library.conn();
         conn.execute("DROP TABLE login_attempt", []).expect("drops");
@@ -1049,9 +1050,8 @@ async fn a_failure_the_limiter_cannot_record_is_answered_as_a_lockout() {
 /// reasoning through `from_basic` rather than through `login`.
 #[tokio::test]
 async fn a_basic_failure_the_limiter_cannot_record_is_answered_as_a_lockout() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-basic-unrecordable",
-    ));
+    let tmp = crate::test_support::Fixture::new("basic-unrecordable");
+    let state = Arc::new(crate::test_support::state(&tmp));
     {
         let conn = state.library.conn();
         conn.execute("DROP TABLE login_attempt", []).expect("drops");
@@ -1093,7 +1093,8 @@ async fn a_basic_failure_the_limiter_cannot_record_is_answered_as_a_lockout() {
 /// Found by the fourth whole-branch review, 2026-08-19.
 #[tokio::test]
 async fn a_library_someone_has_already_set_up_cannot_be_claimed_by_a_stranger() {
-    let state = unclaimed("taiyaku-test-claim-after-add", true);
+    let tmp = crate::test_support::Fixture::new("claim-after-add");
+    let state = unclaimed(&tmp, true);
     {
         let conn = state.library.conn();
         account::add(&conn, "alice", "alice's password", "user").expect("the owner sets up");
@@ -1127,7 +1128,7 @@ async fn a_library_someone_has_already_set_up_cannot_be_claimed_by_a_stranger() 
 /// and one typed into a third-party reader must not also mint keys or sign the
 /// owner's browsers out. These tests are about ownership scoping, so they
 /// authenticate the way the account screen does.
-fn two_accounts(dir: &str) -> (Arc<ServeState>, String, String, i64) {
+fn two_accounts(dir: &std::path::Path) -> (Arc<ServeState>, String, String, i64) {
     let state = crate::test_support::state(dir);
     let bob_id = {
         let conn = state.library.conn();
@@ -1163,7 +1164,8 @@ async fn body_of(response: axum::http::Response<Body>) -> String {
 /// A key is created once, listed without its secret, and revoked.
 #[tokio::test]
 async fn keys_are_created_listed_and_revoked() {
-    let (state, alice, _bob, _) = two_accounts("taiyaku-test-keys");
+    let tmp = crate::test_support::Fixture::new("keys");
+    let (state, alice, _bob, _) = two_accounts(&tmp);
 
     let created = build_router(state.clone())
         .oneshot(
@@ -1240,7 +1242,8 @@ async fn keys_are_created_listed_and_revoked() {
 /// a badly scoped one, since it would take anybody's.
 #[tokio::test]
 async fn a_key_id_from_another_account_is_not_revocable() {
-    let (state, alice, bob, bob_id) = two_accounts("taiyaku-test-keys-scoped");
+    let tmp = crate::test_support::Fixture::new("keys-scoped");
+    let (state, alice, bob, bob_id) = two_accounts(&tmp);
     let bobs_key = {
         let conn = state.library.conn();
         taiyaku_library::account::create_key(&conn, bob_id, "bobs-phone").expect("creates")
@@ -1297,7 +1300,8 @@ async fn a_key_id_from_another_account_is_not_revocable() {
 /// nothing is unusable for deciding which to revoke.
 #[tokio::test]
 async fn a_key_without_a_name_is_refused() {
-    let (state, alice, _, _) = two_accounts("taiyaku-test-keys-unnamed");
+    let tmp = crate::test_support::Fixture::new("keys-unnamed");
+    let (state, alice, _, _) = two_accounts(&tmp);
     let refused = build_router(state)
         .oneshot(
             Request::post("/api/keys")
@@ -1316,7 +1320,8 @@ async fn a_key_without_a_name_is_refused() {
 /// Sessions list with the current one marked, and another can be revoked.
 #[tokio::test]
 async fn sessions_are_listed_with_this_one_marked_and_others_revocable() {
-    let state = crate::test_support::state("taiyaku-test-sessions-list");
+    let tmp = crate::test_support::Fixture::new("sessions-list");
+    let state = crate::test_support::state(&tmp);
     let mine = credential::mint_token();
     let theirs = credential::mint_token();
     {
@@ -1376,7 +1381,8 @@ async fn sessions_are_listed_with_this_one_marked_and_others_revocable() {
 /// A session id from another account is not this one's to revoke.
 #[tokio::test]
 async fn a_session_id_from_another_account_is_not_revocable() {
-    let (state, alice, _bob, bob_id) = two_accounts("taiyaku-test-sessions-scoped");
+    let tmp = crate::test_support::Fixture::new("sessions-scoped");
+    let (state, alice, _bob, bob_id) = two_accounts(&tmp);
     let bobs = credential::mint_token();
     {
         let conn = state.library.conn();
@@ -1411,7 +1417,8 @@ async fn a_session_id_from_another_account_is_not_revocable() {
 /// password says "the person here knows it".
 #[tokio::test]
 async fn changing_a_password_needs_the_current_one() {
-    let state = crate::test_support::state("taiyaku-test-password-change");
+    let tmp = crate::test_support::Fixture::new("password-change");
+    let state = crate::test_support::state(&tmp);
     let mine = credential::mint_token();
     let elsewhere = credential::mint_token();
     {
@@ -1481,7 +1488,8 @@ async fn changing_a_password_needs_the_current_one() {
 /// cookie path, which is what that rule is for.
 #[tokio::test]
 async fn a_cross_site_page_cannot_change_a_password() {
-    let state = crate::test_support::state("taiyaku-test-password-csrf");
+    let tmp = crate::test_support::Fixture::new("password-csrf");
+    let state = crate::test_support::state(&tmp);
     let mine = credential::mint_token();
     {
         let conn = state.library.conn();
@@ -1521,7 +1529,8 @@ async fn a_cross_site_page_cannot_change_a_password() {
 /// had neither. Found by the whole-branch review, 2026-08-18.
 #[tokio::test]
 async fn a_server_cannot_be_claimed_with_an_empty_password() {
-    let state = unclaimed("taiyaku-test-claim-empty", true);
+    let tmp = crate::test_support::Fixture::new("claim-empty");
+    let state = unclaimed(&tmp, true);
 
     let refused = build_router(state.clone())
         .oneshot(claim_request("davey", ""))
@@ -1551,7 +1560,8 @@ async fn a_server_cannot_be_claimed_with_an_empty_password() {
 /// Found by the whole-branch review, 2026-08-18.
 #[tokio::test]
 async fn using_a_session_re_issues_the_cookie_that_carries_it() {
-    let state = crate::test_support::state("taiyaku-test-session-reissue");
+    let tmp = crate::test_support::Fixture::new("session-reissue");
+    let state = crate::test_support::state(&tmp);
     let token = credential::mint_token();
     {
         let conn = state.library.conn();
@@ -1589,9 +1599,8 @@ async fn using_a_session_re_issues_the_cookie_that_carries_it() {
 /// `Set-Cookie` on every page of a volume would be noise at best.
 #[tokio::test]
 async fn a_header_authenticated_request_is_given_no_cookie() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-session-no-reissue",
-    ));
+    let tmp = crate::test_support::Fixture::new("session-no-reissue");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let response = build_router(state)
         .oneshot(
             Request::get("/api/works")
@@ -1687,7 +1696,8 @@ fn a_forwarded_host_is_honoured_only_from_a_trusted_peer() {
 async fn an_api_key_cannot_mint_keys_or_end_sessions() {
     use base64::Engine as _;
 
-    let state = crate::test_support::state("taiyaku-test-key-cannot-manage");
+    let tmp = crate::test_support::Fixture::new("key-cannot-manage");
+    let state = crate::test_support::state(&tmp);
     let secret = credential::mint_api_key();
     {
         let conn = state.library.conn();
@@ -1756,7 +1766,8 @@ async fn an_api_key_cannot_mint_keys_or_end_sessions() {
 /// Found by the second whole-branch review.
 #[tokio::test]
 async fn a_password_change_over_basic_needs_no_origin() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-password-basic"));
+    let tmp = crate::test_support::Fixture::new("password-basic");
+    let state = Arc::new(crate::test_support::state(&tmp));
 
     let response = build_router(state)
         .oneshot(
@@ -1804,7 +1815,8 @@ async fn a_password_change_over_basic_needs_no_origin() {
 async fn a_password_over_basic_can_manage_the_account() {
     use base64::Engine as _;
 
-    let state = Arc::new(crate::test_support::state("taiyaku-test-password-manages"));
+    let tmp = crate::test_support::Fixture::new("password-manages");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let password_header = format!(
         "Basic {}",
         base64::engine::general_purpose::STANDARD.encode(
@@ -1887,7 +1899,8 @@ async fn a_password_over_basic_can_manage_the_account() {
 /// Found by the third whole-branch review.
 #[tokio::test]
 async fn a_valid_session_is_not_signed_out_by_an_origin_mismatch() {
-    let state = crate::test_support::state("taiyaku-test-origin-not-signout");
+    let tmp = crate::test_support::Fixture::new("origin-not-signout");
+    let state = crate::test_support::state(&tmp);
     let token = credential::mint_token();
     {
         let conn = state.library.conn();
@@ -1952,7 +1965,8 @@ async fn a_valid_session_is_not_signed_out_by_an_origin_mismatch() {
 /// Found by the third whole-branch review.
 #[tokio::test]
 async fn guessing_the_current_password_is_rate_limited() {
-    let state = crate::test_support::state("taiyaku-test-change-lockout");
+    let tmp = crate::test_support::Fixture::new("change-lockout");
+    let state = crate::test_support::state(&tmp);
     let token = credential::mint_token();
     {
         let conn = state.library.conn();

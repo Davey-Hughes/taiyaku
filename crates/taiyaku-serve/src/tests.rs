@@ -20,12 +20,10 @@ fn a_trailing_slash_is_trimmed_once_at_construction() {
 /// which work triggered them — `crate::test_support::work` reuses
 /// `c1.cbz`/`c2.cbz` for every caller, which would make two such works
 /// indistinguishable in a GraphQL request body.
-fn distinct_work(dir: &str, member_name: &str) -> crate::Work {
+fn distinct_work(dir: &std::path::Path, member_name: &str) -> crate::Work {
     use std::io::Write;
 
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let root = dir;
 
     let archive = format!("{member_name}.cbz");
     let mut zip = zip::ZipWriter::new(std::fs::File::create(root.join(&archive)).unwrap());
@@ -63,8 +61,10 @@ fn distinct_work(dir: &str, member_name: &str) -> crate::Work {
 /// refusing would be the worse answer.
 #[test]
 fn refreshing_forgets_every_work_and_tolerates_one_with_nothing_recorded() {
-    let recorded = distinct_work("taiyaku-test-lib-forget-recorded", "recorded");
-    let untouched = distinct_work("taiyaku-test-lib-forget-untouched", "untouched");
+    let tmp = crate::test_support::Fixture::new("lib-forget-recorded");
+    let recorded = distinct_work(&tmp, "recorded");
+    let tmp2 = crate::test_support::Fixture::new("lib-forget-untouched");
+    let untouched = distinct_work(&tmp2, "untouched");
     let mut resolutions = crate::stump::cache::Resolutions::new();
     resolutions.insert("hash".into(), Some("book-1".into()));
     crate::stump::cache::store(&recorded, "http://nas:10801", &resolutions).unwrap();
@@ -73,8 +73,6 @@ fn refreshing_forgets_every_work_and_tolerates_one_with_nothing_recorded() {
 
     let gone = !crate::stump::cache::path_for(&recorded).exists();
     let still_absent = !crate::stump::cache::path_for(&untouched).exists();
-    crate::test_support::cleanup("taiyaku-test-lib-forget-recorded");
-    crate::test_support::cleanup("taiyaku-test-lib-forget-untouched");
     assert!(gone, "the recorded work's cache file must be removed");
     assert!(still_absent, "and the one that never had one is untouched");
 }
@@ -91,8 +89,10 @@ fn refreshing_forgets_every_work_and_tolerates_one_with_nothing_recorded() {
 /// would pass without measuring anything — so it says so and skips.
 #[test]
 fn one_work_that_cannot_be_forgotten_does_not_stop_the_others() {
-    let stuck = distinct_work("taiyaku-test-lib-forget-stuck", "stuck");
-    let after = distinct_work("taiyaku-test-lib-forget-after", "after");
+    let tmp = crate::test_support::Fixture::new("lib-forget-stuck");
+    let stuck = distinct_work(&tmp, "stuck");
+    let tmp2 = crate::test_support::Fixture::new("lib-forget-after");
+    let after = distinct_work(&tmp2, "after");
     let mut resolutions = crate::stump::cache::Resolutions::new();
     resolutions.insert("hash".into(), Some("book-1".into()));
     for work in [&stuck, &after] {
@@ -110,8 +110,6 @@ fn one_work_that_cannot_be_forgotten_does_not_stop_the_others() {
         #[allow(clippy::permissions_set_readonly_false)]
         open.set_readonly(false);
         let _ = std::fs::set_permissions(&stuck_dir, open);
-        crate::test_support::cleanup("taiyaku-test-lib-forget-stuck");
-        crate::test_support::cleanup("taiyaku-test-lib-forget-after");
         eprintln!(
             "NOT MEASURED: one_work_that_cannot_be_forgotten_does_not_stop_the_others \
                  (a read-only directory still allows deletion here)"
@@ -129,8 +127,6 @@ fn one_work_that_cannot_be_forgotten_does_not_stop_the_others() {
     #[allow(clippy::permissions_set_readonly_false)]
     open.set_readonly(false);
     let _ = std::fs::set_permissions(&stuck_dir, open);
-    crate::test_support::cleanup("taiyaku-test-lib-forget-stuck");
-    crate::test_support::cleanup("taiyaku-test-lib-forget-after");
 
     assert!(
         stuck_remains,
@@ -154,8 +150,10 @@ fn one_work_that_cannot_be_forgotten_does_not_stop_the_others() {
 fn each_work_is_learned_as_it_finishes_rather_than_all_at_the_end() {
     use crate::stump::http::test_support::FakeTransport;
 
-    let first = distinct_work("taiyaku-test-lib-progressive-first", "alpha");
-    let second = distinct_work("taiyaku-test-lib-progressive-second", "bravo");
+    let tmp = crate::test_support::Fixture::new("lib-progressive-first");
+    let first = distinct_work(&tmp, "alpha");
+    let tmp2 = crate::test_support::Fixture::new("lib-progressive-second");
+    let second = distinct_work(&tmp2, "bravo");
     // Stump answers, and what it answers is "no such book" — an answer
     // rather than an outage, so the breaker does not fire and both works
     // are asked about.
@@ -173,8 +171,6 @@ fn each_work_is_learned_as_it_finishes_rather_than_all_at_the_end() {
         },
     );
 
-    crate::test_support::cleanup("taiyaku-test-lib-progressive-first");
-    crate::test_support::cleanup("taiyaku-test-lib-progressive-second");
     assert_eq!(
         batches.len(),
         2,
@@ -197,8 +193,10 @@ fn each_work_is_learned_as_it_finishes_rather_than_all_at_the_end() {
 fn resolve_all_works_stops_asking_after_the_first_transport_failure() {
     use crate::stump::http::test_support::FakeTransport;
 
-    let first = distinct_work("taiyaku-test-lib-resolve-all-first", "alpha");
-    let second = distinct_work("taiyaku-test-lib-resolve-all-second", "bravo");
+    let tmp = crate::test_support::Fixture::new("lib-resolve-all-first");
+    let first = distinct_work(&tmp, "alpha");
+    let tmp2 = crate::test_support::Fixture::new("lib-resolve-all-second");
+    let second = distinct_work(&tmp2, "bravo");
     // No handlers registered, so every POST is a transport-level error —
     // standing in for an unreachable instance, the convention every
     // other test in this crate uses.
@@ -213,8 +211,6 @@ fn resolve_all_works_stops_asking_after_the_first_transport_failure() {
     );
 
     let requests = unreachable.requests();
-    crate::test_support::cleanup("taiyaku-test-lib-resolve-all-first");
-    crate::test_support::cleanup("taiyaku-test-lib-resolve-all-second");
     assert!(
         resolutions.is_empty(),
         "nothing was resolved: {resolutions:?}"
@@ -240,11 +236,11 @@ fn resolve_all_works_stops_asking_after_the_first_transport_failure() {
 /// library would share one directory in the process's working directory.
 #[test]
 fn the_tile_cache_is_a_sibling_of_the_cover_cache() {
-    let state = crate::test_support::state("taiyaku-test-thumb-dir");
+    let tmp = crate::test_support::Fixture::new("thumb-dir");
+    let state = crate::test_support::state(&tmp);
     let covers = state.cache_dir.clone();
     let thumbs = state.thumb_cache_dir();
 
-    crate::test_support::cleanup("taiyaku-test-thumb-dir");
     assert_ne!(thumbs, covers, "not the same directory");
     assert_eq!(
         thumbs.parent(),
@@ -309,7 +305,7 @@ fn a_resolved_root_keeps_covers_and_thumbs_as_siblings() {
 #[test]
 fn a_fixture_removes_its_directory_when_it_is_dropped() {
     let path = {
-        let fixture = crate::test_support::Fixture::new("taiyaku-test-drop-guard");
+        let fixture = crate::test_support::Fixture::new("drop-guard");
         let path = fixture.path().to_path_buf();
         assert!(path.is_dir(), "the fixture creates its directory up front");
         path
@@ -335,7 +331,7 @@ fn a_fixture_removes_its_directory_when_the_scope_unwinds() {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
     let captured = std::sync::Arc::clone(&seen);
     let outcome = std::panic::catch_unwind(move || {
-        let fixture = crate::test_support::Fixture::new("taiyaku-test-drop-unwind");
+        let fixture = crate::test_support::Fixture::new("drop-unwind");
         *captured.lock().unwrap() = Some(fixture.path().to_path_buf());
         panic!("as a failing assertion would");
     });
@@ -404,7 +400,8 @@ fn the_skipping_notice_counts_only_the_works_actually_left() {
 /// failing. Written the obvious way first, and it hung.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn serve_binds_the_address_and_answers_on_it() {
-    let works = vec![crate::test_support::work("taiyaku-test-serve-bind")];
+    let tmp = crate::test_support::Fixture::new("serve-bind");
+    let works = vec![crate::test_support::work(&tmp)];
 
     let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
     let addr = probe.local_addr().unwrap().to_string();
@@ -413,10 +410,8 @@ async fn serve_binds_the_address_and_answers_on_it() {
     // The cache root is pinned by the flag rather than left to resolve,
     // so this test neither reads the environment it happens to run under
     // nor can write a cache into a real `$HOME`. It lives under the
-    // fixture's own temp directory, which `cleanup` below removes.
-    let cache = std::env::temp_dir()
-        .join("taiyaku-test-serve-bind")
-        .join("cache");
+    // fixture's own temp directory, which goes when `tmp` is dropped.
+    let cache = tmp.join("cache");
 
     let serving = tokio::spawn({
         let addr = addr.clone();
@@ -457,7 +452,6 @@ async fn serve_binds_the_address_and_answers_on_it() {
     }
 
     serving.abort();
-    crate::test_support::cleanup("taiyaku-test-serve-bind");
 
     let body = answered.expect("serve must bind the address and answer on it");
     assert!(

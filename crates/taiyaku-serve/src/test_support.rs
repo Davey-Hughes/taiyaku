@@ -2,7 +2,8 @@ use std::io::Write;
 
 use crate::{ServeState, Work};
 
-/// A work of two cbz members, four pages, on disk under a named temp dir.
+/// A work of two cbz members, four pages, on disk under `root` — a directory
+/// the caller's [`Fixture`] owns, so the files go when the test ends.
 ///
 /// Two members deliberately: the offset arithmetic that picks which member
 /// holds page N is what most of these tests are about, and one member
@@ -11,11 +12,7 @@ use crate::{ServeState, Work};
 ///
 /// Shared rather than local to one test module because Task 5's route
 /// tests need the same work.
-pub(crate) fn work(dir: &str) -> Work {
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-
+pub(crate) fn work(root: &std::path::Path) -> Work {
     for (name, entries) in [
         ("c1.cbz", ["a1.jpg", "a2.jpg"]),
         ("c2.cbz", ["b1.jpg", "b2.jpg"]),
@@ -101,6 +98,8 @@ fn seed_fixture_account(library: &taiyaku_library::Library) {
 /// [`router_over_a_scanned_tree`] puts its `cache_dir` beside the fixture with
 /// `with_file_name` instead, which leaks it; that is not copied here, and the
 /// 9,147 leaked directories [`Fixture`]'s own comment records are why.
+/// *(O117 gave it this shape too: its tree is under `tree/`, its covers under
+/// `covers/`.)*
 ///
 /// # Panics
 ///
@@ -109,7 +108,7 @@ fn seed_fixture_account(library: &taiyaku_library::Library) {
 /// backup test assert the 409 refusal rather than the feature.
 pub(crate) fn router_over_a_file_backed_library()
 -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
-    let fixture = Fixture::new("taiyaku-test-file-backed-library");
+    let fixture = Fixture::new("file-backed-library");
     let tree = fixture.path().join("tree");
     let db_dir = fixture.path().join("db");
     write_pages(&tree.join("Scanned").join("Scanned - v01"), 2);
@@ -164,12 +163,12 @@ pub(crate) fn router_over_a_file_backed_library_as_a_reader()
 }
 
 /// The fixture work, wired to a `LocalLibrary`, ready for `build_router`.
-pub(crate) fn state(dir: &str) -> ServeState {
+pub(crate) fn state(root: &std::path::Path) -> ServeState {
     ServeState {
         library: library(),
-        works: vec![work(dir)],
+        works: vec![work(root)],
         source: std::sync::Arc::new(crate::LocalLibrary),
-        cache_dir: std::env::temp_dir().join(dir).join("covers"),
+        cache_dir: root.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -183,8 +182,8 @@ pub(crate) fn state(dir: &str) -> ServeState {
 /// `raw` is four pages across two members, as `work` builds it; `en` is
 /// the same two members under a second key, so no new archives are needed
 /// and the pages a correction addresses really exist.
-pub(crate) fn state_with_two_editions(dir: &str) -> ServeState {
-    let mut state = state(dir);
+pub(crate) fn state_with_two_editions(root: &std::path::Path) -> ServeState {
+    let mut state = state(root);
     let path = state.works[0].path.clone();
     let json = r#"{
           "taiyaku": 1,
@@ -271,43 +270,11 @@ fn png(page: image::RgbImage) -> Vec<u8> {
 /// Both helpers already documented why their *names* had to be unique and
 /// neither said anything about who removes them, which is the whole gap:
 /// uniqueness stops tests colliding, it does not stop them accumulating.
-pub(crate) struct Fixture {
-    path: std::path::PathBuf,
-}
-
-impl Fixture {
-    /// A directory unique to this test: the process id plus a monotonic
-    /// per-process counter, so tests running in parallel threads cannot
-    /// see or delete each other's files. One counter across every prefix
-    /// is enough, since the prefix is part of the name.
-    ///
-    /// No `tempfile` dependency: the workspace's dependency set is
-    /// deliberately short enough to quote in `docs/status.md`, and this
-    /// is the whole of what that crate would be used for here.
-    pub(crate) fn new(prefix: &str) -> Self {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("{prefix}-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&path).unwrap();
-        Self { path }
-    }
-
-    pub(crate) fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-impl Drop for Fixture {
-    /// Failure is ignored deliberately, and in both directions: a test
-    /// that has already passed must not be failed by a directory that
-    /// would not go away, and one that has already failed must not have
-    /// its message replaced by this one. A panic here during unwinding
-    /// would abort the process outright.
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
+///
+/// O117 moved the type into `taiyaku-read`'s `test_support` as `TempDir`, so
+/// every crate's tests share the one this crate wrote first. The name stays
+/// here for the fixtures that already used it.
+pub(crate) type Fixture = taiyaku_read::test_support::TempDir;
 
 pub(crate) fn work_with_real_pages() -> (Work, Fixture) {
     // This helper used to open a single fixed path and start by
@@ -316,7 +283,7 @@ pub(crate) fn work_with_real_pages() -> (Work, Fixture) {
     // whichever ran second would delete the first's fixture out from
     // under it mid-test. `Fixture` answers both halves — a unique name,
     // and someone to remove it.
-    let fixture = Fixture::new("taiyaku-test-real-pages");
+    let fixture = Fixture::new("real-pages");
     let root = fixture.path();
 
     let mut zip = zip::ZipWriter::new(std::fs::File::create(root.join("a1.cbz")).unwrap());
@@ -458,7 +425,7 @@ pub(crate) fn state_with_a_shared_member_and_its_reads()
 
 /// The work and the archives behind [`state_with_a_shared_member`].
 fn work_with_a_shared_member() -> (Work, Fixture) {
-    let fixture = Fixture::new("taiyaku-test-shared-member");
+    let fixture = Fixture::new("shared-member");
     let root = fixture.path();
 
     let solid = |colour: [u8; 3]| png(image::RgbImage::from_pixel(16, 16, image::Rgb(colour)));
@@ -549,8 +516,8 @@ pub(crate) fn colour_of(bytes: &[u8]) -> &'static str {
 /// percent-encoding one that is not URL-safe. The archives on disk are
 /// unchanged; only the in-memory sidecar's edition map is renamed, which
 /// is all a router test reads.
-pub(crate) fn work_with_edition_key(dir: &str, key: &str) -> Work {
-    let base = work(dir);
+pub(crate) fn work_with_edition_key(root: &std::path::Path, key: &str) -> Work {
+    let base = work(root);
     let mut sidecar = (*base.sidecar()).clone();
     let edition = sidecar
         .editions
@@ -561,18 +528,11 @@ pub(crate) fn work_with_edition_key(dir: &str, key: &str) -> Work {
     Work::new(base.id, base.path, sidecar)
 }
 
-pub(crate) fn cleanup(dir: &str) {
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-/// A request log writing to its own path under the temp dir.
-///
-/// Named per test the way `work` is, so tests running in parallel cannot
-/// read each other's lines.
-pub(crate) fn log(name: &str) -> (std::sync::Arc<crate::Log>, std::path::PathBuf) {
-    let path = std::env::temp_dir().join(format!("{name}.jsonl"));
-    let _ = std::fs::remove_file(&path);
+/// A request log writing to `requests.jsonl` inside `dir`, which the caller's
+/// [`Fixture`] owns, so tests running in parallel cannot read each other's
+/// lines.
+pub(crate) fn log(dir: &std::path::Path) -> (std::sync::Arc<crate::Log>, std::path::PathBuf) {
+    let path = dir.join("requests.jsonl");
     let log = std::sync::Arc::new(crate::Log::new(&path).unwrap());
     (log, path)
 }
@@ -654,7 +614,11 @@ pub(crate) fn works_in(library: &taiyaku_library::Library) -> Vec<crate::Work> {
 /// exist mainly to give the page and thumbnail routes real bytes to read.
 /// Nothing that reaches this fixture (progress, notes, truth, the work list)
 /// touches a member's bytes, so there is nothing here for a real file to buy.
-pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<ServeState>) {
+///
+/// The [`Fixture`] is there for `cache_dir` alone, so a cover a test asks for
+/// goes when the test does.
+pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let fixture = Fixture::new("router-over-a-library");
     let library = library();
     {
         let conn = library.conn();
@@ -682,16 +646,14 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
         library,
         works,
         source: std::sync::Arc::new(crate::LocalLibrary),
-        cache_dir: std::env::temp_dir()
-            .join("taiyaku-test-router-over-a-library")
-            .join("covers"),
+        cache_dir: fixture.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
-    (router, state)
+    (router, state, fixture)
 }
 
 /// The two-edition, one-solved-edge shape a correction needs, over a **real**
@@ -716,7 +678,7 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
 /// fixture itself is broken.
 pub(crate) fn router_over_a_library_with_two_editions()
 -> (axum::Router, std::sync::Arc<ServeState>, i64, Fixture) {
-    let fixture = Fixture::new("taiyaku-test-correction-rows");
+    let fixture = Fixture::new("correction-rows");
     let (state, work_id) =
         two_editions_in_a_library(&fixture, |_| std::sync::Arc::new(crate::LocalLibrary));
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -791,7 +753,7 @@ fn two_editions_in_a_library(
 ///
 /// Panics if the fixture cannot be written or imported.
 pub(crate) fn state_whose_pages_wait_on_the_library() -> (std::sync::Arc<ServeState>, Fixture) {
-    let fixture = Fixture::new("taiyaku-test-pages-wait-on-the-library");
+    let fixture = Fixture::new("pages-wait-on-the-library");
     let (state, _work_id) = two_editions_in_a_library(&fixture, |library| {
         std::sync::Arc::new(PagesWaitOnTheLibrary {
             library: std::sync::Arc::clone(library),
@@ -889,14 +851,15 @@ impl crate::PageSource for PagesWaitOnTheLibrary {
 /// absolute path unchanged.
 ///
 /// The `Fixture` directory is returned and is deliberately left **empty**, so
-/// a test can list it before and after a correction and compare.
+/// a test can list it before and after a correction and compare. `covers/`
+/// appears in it only once something asks for a cover.
 ///
 /// # Panics
 ///
 /// Panics if the fixture cannot be imported, which means the fixture is
 /// broken.
 pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
-    let fixture = Fixture::new("taiyaku-test-scanned-correction");
+    let fixture = Fixture::new("scanned-correction");
     let shelf = fixture.path().to_string_lossy().into_owned();
     let json = format!(
         r#"{{
@@ -952,9 +915,7 @@ pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<Serv
         library,
         works,
         source: std::sync::Arc::new(crate::LocalLibrary),
-        cache_dir: std::env::temp_dir()
-            .join("taiyaku-test-scanned-correction")
-            .join("covers"),
+        cache_dir: fixture.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1080,17 +1041,17 @@ fn router_over_a_scanned_tree(
     let fixture = Fixture::new(prefix);
     for (pages, title) in (2_usize..).zip(titles) {
         let under = if parent.is_empty() {
-            fixture.path().to_path_buf()
+            fixture.join("tree")
         } else {
-            fixture.path().join(parent)
+            fixture.join("tree").join(parent)
         };
         write_pages(&under.join(title).join(format!("{title} - v01")), pages);
     }
-    router_over_a_written_tree(prefix, fixture)
+    router_over_a_written_tree(fixture)
 }
 
 /// [`router_over_a_scanned_tree`]'s second half, for a fixture that has
-/// already written its tree: add the fixture's directory as a root that keeps
+/// already written its tree: add the fixture's `tree/` as a root that keeps
 /// documents, scan it, derive, and serve the result.
 ///
 /// # Panics
@@ -1098,13 +1059,13 @@ fn router_over_a_scanned_tree(
 /// Panics if the scan or the derive fails, which means the fixture itself is
 /// broken.
 fn router_over_a_written_tree(
-    prefix: &str,
     fixture: Fixture,
 ) -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
     let library = library();
     {
         let conn = library.conn();
-        let root = taiyaku_library::scan::add_root(&conn, fixture.path()).expect("adds the root");
+        let root =
+            taiyaku_library::scan::add_root(&conn, &fixture.join("tree")).expect("adds the root");
         // **These fixtures are about the document, so they keep documents.**
         // Migration 012 made `keeps_documents` default off, which is right for
         // a person's library and wrong for a fixture whose whole subject is
@@ -1123,10 +1084,9 @@ fn router_over_a_written_tree(
     let state = std::sync::Arc::new(ServeState {
         library,
         works,
-        // A sibling of the scanned tree rather than a directory inside it:
-        // nothing here creates it, and one that appeared under the root
-        // would be material a later scan walked.
-        cache_dir: fixture.path().with_file_name(format!("{prefix}-covers")),
+        // Beside the scanned tree rather than inside it: one that appeared
+        // under the root would be material a later scan walked.
+        cache_dir: fixture.join("covers"),
         source: std::sync::Arc::new(crate::LocalLibrary),
         log: None,
         auth: crate::session::AuthConfig::default(),
@@ -1152,7 +1112,7 @@ fn router_over_a_written_tree(
 ///
 /// Panics if the tree cannot be written or the scan fails.
 pub(crate) fn router_over_a_scanned_cbz() -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
-    let prefix = "taiyaku-test-scanned-cbz";
+    let prefix = "scanned-cbz";
     let fixture = Fixture::new(prefix);
     // **Everything under the one fixture directory, which is unique per
     // call.** Keying a sibling path on `prefix` instead puts every test using
@@ -1247,7 +1207,7 @@ pub(crate) fn router_over_a_scanned_cbz_as_a_reader()
 /// it an address at all.
 pub(crate) fn router_over_a_single_scanned_work()
 -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
-    router_over_a_scanned_tree("taiyaku-test-single-scanned-work", "", &["Scanned"])
+    router_over_a_scanned_tree("single-scanned-work", "", &["Scanned"])
 }
 /// [`router_over_a_single_scanned_work`], with the fixture account demoted to
 /// a reader — the same demotion `router_over_a_scanned_work_as_a_reader`
@@ -1284,7 +1244,7 @@ pub(crate) fn router_over_a_single_scanned_work_as_a_reader()
 pub(crate) fn router_over_two_suffixed_series()
 -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
     router_over_a_scanned_tree(
-        "taiyaku-test-two-suffixed-series",
+        "two-suffixed-series",
         "",
         &[
             "Go-Toubun no Hanayome",
@@ -1304,7 +1264,7 @@ pub(crate) fn router_over_two_suffixed_series()
 pub(crate) fn router_over_a_shared_publisher_directory()
 -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
     router_over_a_scanned_tree(
-        "taiyaku-test-shared-publisher",
+        "shared-publisher",
         "Publisher",
         &[
             "Go-Toubun no Hanayome",
@@ -1330,7 +1290,7 @@ pub(crate) fn router_over_a_shared_publisher_directory()
 /// round trip there ends in a `PATCH`, which saves every work's document.
 pub(crate) fn router_over_three_unrelated_series()
 -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
-    let prefix = "taiyaku-test-three-unrelated-series";
+    let prefix = "three-unrelated-series";
     let fixture = Fixture::new(prefix);
     for (pages, (title, volume)) in (2_usize..).zip([
         ("Go-Toubun no Hanayome", "v01"),
@@ -1340,13 +1300,13 @@ pub(crate) fn router_over_three_unrelated_series()
     ]) {
         write_pages(
             &fixture
-                .path()
+                .join("tree")
                 .join(title)
                 .join(format!("{title} - {volume}")),
             pages,
         );
     }
-    router_over_a_written_tree(prefix, fixture)
+    router_over_a_written_tree(fixture)
 }
 
 /// Two scanned roots, each holding an unrelated, single-volume series — the
@@ -1368,7 +1328,7 @@ pub(crate) fn router_over_three_unrelated_series()
 /// grant-dropping.
 pub(crate) fn state_with_two_scanned_roots() -> (axum::Router, std::sync::Arc<ServeState>, Fixture)
 {
-    let fixture = Fixture::new("taiyaku-test-two-scanned-roots");
+    let fixture = Fixture::new("two-scanned-roots");
     let root_a = fixture.path().join("root-a");
     let root_b = fixture.path().join("root-b");
     write_pages(&root_a.join("Series A").join("Series A - v01"), 2);
@@ -1394,9 +1354,7 @@ pub(crate) fn state_with_two_scanned_roots() -> (axum::Router, std::sync::Arc<Se
         library,
         works,
         source: std::sync::Arc::new(crate::LocalLibrary),
-        cache_dir: fixture
-            .path()
-            .with_file_name("taiyaku-test-two-scanned-roots-covers"),
+        cache_dir: fixture.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1474,12 +1432,12 @@ pub(crate) fn a_path_inside_the_first_root(state: &ServeState) -> String {
 /// means the fixture itself is broken.
 pub(crate) fn router_over_two_scanned_volumes_of_one_series()
 -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
-    let fixture = Fixture::new("taiyaku-test-two-volumes-one-series");
+    let fixture = Fixture::new("two-volumes-one-series");
     let title = "Go-Toubun no Hanayome";
     for (pages, volume) in (2_usize..).zip(["v01", "v02"]) {
         write_pages(
             &fixture
-                .path()
+                .join("tree")
                 .join(title)
                 .join(format!("{title} - {volume}")),
             pages,
@@ -1489,7 +1447,8 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
     let library = library();
     {
         let conn = library.conn();
-        let root = taiyaku_library::scan::add_root(&conn, fixture.path()).expect("adds the root");
+        let root =
+            taiyaku_library::scan::add_root(&conn, &fixture.join("tree")).expect("adds the root");
         // **These fixtures are about the document, so they keep documents.**
         // Migration 012 made `keeps_documents` default off, which is right for
         // a person's library and wrong for a fixture whose whole subject is
@@ -1515,9 +1474,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
         library,
         works,
         source: std::sync::Arc::new(crate::LocalLibrary),
-        cache_dir: fixture
-            .path()
-            .with_file_name("taiyaku-test-two-volumes-one-series-covers"),
+        cache_dir: fixture.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1559,7 +1516,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
     Fixture,
     std::path::PathBuf,
 ) {
-    let fixture = Fixture::new("taiyaku-test-two-volumes-two-roots");
+    let fixture = Fixture::new("two-volumes-two-roots");
     let title = "Go-Toubun no Hanayome";
     let root_a = fixture.path().join("root-a");
     let root_b = fixture.path().join("root-b");
@@ -1596,9 +1553,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
         library,
         works,
         source: std::sync::Arc::new(crate::LocalLibrary),
-        cache_dir: fixture
-            .path()
-            .with_file_name("taiyaku-test-two-volumes-two-roots-covers"),
+        cache_dir: fixture.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1641,7 +1596,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
     Fixture,
     std::path::PathBuf,
 ) {
-    let fixture = Fixture::new("taiyaku-test-two-volumes-plus-unrelated-series");
+    let fixture = Fixture::new("two-volumes-plus-unrelated-series");
     let title = "Go-Toubun no Hanayome";
     let root_unrelated = fixture.path().join("root-unrelated");
     let root_a = fixture.path().join("root-a");
@@ -1698,9 +1653,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         library,
         works,
         source: std::sync::Arc::new(crate::LocalLibrary),
-        cache_dir: fixture
-            .path()
-            .with_file_name("taiyaku-test-two-volumes-plus-unrelated-series-covers"),
+        cache_dir: fixture.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),

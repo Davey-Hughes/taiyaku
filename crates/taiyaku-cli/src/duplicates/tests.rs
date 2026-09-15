@@ -283,8 +283,7 @@ fn a_tie_on_slots_is_decided_by_the_reference_and_only_by_a_real_difference() {
 /// since through `resolve` the count can never be zero.
 #[test]
 fn an_identity_pair_with_no_slots_resolves_rather_than_underflowing() {
-    let root = std::env::temp_dir().join("taiyaku-test-duplicates-noslots");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = taiyaku_read::test_support::TempDir::new("duplicates-noslots");
     let copies: Vec<Vec<PathBuf>> = ["a", "b"]
         .iter()
         .map(|name| {
@@ -298,7 +297,6 @@ fn an_identity_pair_with_no_slots_resolves_rather_than_underflowing() {
     let mut fingerprint = |_: &[PathBuf]| Ok(Vec::new());
     let resolution = resolve_with(&copies, None, &mut fingerprint);
 
-    let _ = std::fs::remove_dir_all(&root);
     let resolution = resolution.expect("a slotless identity pair resolves");
     assert!(
         resolution.copies.iter().all(|copy| copy.slots == 0),
@@ -945,14 +943,12 @@ fn a_copy_confirmed_identical_is_never_fingerprinted() {
     };
 
     let resolved = resolve_with(
-        &[vec![first.clone()], vec![second.clone()]],
+        &[vec![first.to_path_buf()], vec![second.to_path_buf()]],
         None,
         &mut fingerprint,
     )
     .unwrap();
 
-    let _ = std::fs::remove_dir_all(&first);
-    let _ = std::fs::remove_dir_all(&second);
     assert_eq!(decoded, 1, "the second copy is derived, not decoded");
     assert_eq!(resolved.signature_settled, 1);
     assert_eq!(
@@ -986,20 +982,22 @@ fn a_signature_match_the_bytes_refute_fingerprints_both() {
     // signature match rather than in spite of one, and both assertions
     // below would pass for the opposite reason.
     assert_eq!(
-        Signature::of(std::slice::from_ref(&first)).unwrap().digest,
-        Signature::of(std::slice::from_ref(&second)).unwrap().digest,
+        Signature::of(std::slice::from_ref(&first.to_path_buf()))
+            .unwrap()
+            .digest,
+        Signature::of(std::slice::from_ref(&second.to_path_buf()))
+            .unwrap()
+            .digest,
         "the fixture must produce a signature match for this test to mean anything"
     );
 
     let resolved = resolve_with(
-        &[vec![first.clone()], vec![second.clone()]],
+        &[vec![first.to_path_buf()], vec![second.to_path_buf()]],
         None,
         &mut fingerprint,
     )
     .unwrap();
 
-    let _ = std::fs::remove_dir_all(&first);
-    let _ = std::fs::remove_dir_all(&second);
     assert_eq!(decoded, 2, "the content hash refuted the signature match");
     assert_eq!(resolved.signature_settled, 0);
 }
@@ -1008,14 +1006,16 @@ fn a_signature_match_the_bytes_refute_fingerprints_both() {
 /// same bytes, so `Signature::of` and `content_digest` do genuine work on
 /// real bytes while `fingerprint` is a stub that never opens them — the
 /// files need not be decodable images at all, which is the whole point.
-/// Any stale directory from a previous run is removed first, as
-/// `signature.rs`'s `same_pages_two_ways` does.
-fn two_identical_copies(tag: &str) -> (PathBuf, PathBuf) {
-    let first = std::env::temp_dir().join(format!("taiyaku-duplicates-{tag}-a"));
-    let second = std::env::temp_dir().join(format!("taiyaku-duplicates-{tag}-b"));
+/// Each is a directory of its own, removed when the test ends.
+fn two_identical_copies(
+    tag: &str,
+) -> (
+    taiyaku_read::test_support::TempDir,
+    taiyaku_read::test_support::TempDir,
+) {
+    let first = taiyaku_read::test_support::TempDir::new(&format!("duplicates-{tag}-a"));
+    let second = taiyaku_read::test_support::TempDir::new(&format!("duplicates-{tag}-b"));
     for dir in [&first, &second] {
-        let _ = std::fs::remove_dir_all(dir);
-        std::fs::create_dir_all(dir).unwrap();
         for (name, bytes) in [
             ("p1.jpg", &b"one"[..]),
             ("p2.jpg", &b"two"[..]),
@@ -1030,7 +1030,12 @@ fn two_identical_copies(tag: &str) -> (PathBuf, PathBuf) {
 /// Two copies with matching page sizes but differing content: same
 /// signature, different content digest. Built from `two_identical_copies`
 /// by overwriting one file with same-length, different bytes.
-fn two_copies_matching_sizes_different_bytes(tag: &str) -> (PathBuf, PathBuf) {
+fn two_copies_matching_sizes_different_bytes(
+    tag: &str,
+) -> (
+    taiyaku_read::test_support::TempDir,
+    taiyaku_read::test_support::TempDir,
+) {
     let (first, second) = two_identical_copies(tag);
     std::fs::write(second.join("p2.jpg"), b"TWO").unwrap();
     (first, second)
@@ -1042,18 +1047,17 @@ fn two_copies_matching_sizes_different_bytes(tag: &str) -> (PathBuf, PathBuf) {
 /// ranked, and the output says what would settle it.
 #[test]
 fn a_refusing_pair_with_no_reference_flags_both_and_ranks_nothing() {
-    let impostor = copy_on_disk("within-set", "impostor", 8);
-    let real = copy_on_disk("within-set", "real", 6);
+    let (_impostor_dir, impostor) = copy_on_disk("within-set", "impostor", 8);
+    let (_real_dir, real) = copy_on_disk("within-set", "real", 6);
     let mut fingerprint = |members: &[PathBuf]| Ok(synthetic_pages(members));
 
     let resolved = resolve_with(
-        &[vec![impostor.clone()], vec![real.clone()]],
+        &[vec![impostor.to_path_buf()], vec![real.to_path_buf()]],
         None,
         &mut fingerprint,
     )
     .unwrap();
 
-    clean_up(&[&impostor, &real]);
     assert_eq!(resolved.pairs[0].relation, Relation::Refused);
     assert_eq!(
         resolved.flagged,
@@ -1078,19 +1082,18 @@ fn a_refusing_pair_with_no_reference_flags_both_and_ranks_nothing() {
 /// the reference removes it before the ranking sees it.
 #[test]
 fn a_reference_the_real_copy_pairs_with_flags_only_the_impostor() {
-    let impostor = copy_on_disk("reference-decides", "impostor", 8);
-    let real = copy_on_disk("reference-decides", "real", 6);
-    let reference = copy_on_disk("reference-decides", "reference", 6);
+    let (_impostor_dir, impostor) = copy_on_disk("reference-decides", "impostor", 8);
+    let (_real_dir, real) = copy_on_disk("reference-decides", "real", 6);
+    let (_reference_dir, reference) = copy_on_disk("reference-decides", "reference", 6);
     let mut fingerprint = |members: &[PathBuf]| Ok(synthetic_pages(members));
 
     let resolved = resolve_with(
-        &[vec![impostor.clone()], vec![real.clone()]],
-        Some(std::slice::from_ref(&reference)),
+        &[vec![impostor.to_path_buf()], vec![real.to_path_buf()]],
+        Some(std::slice::from_ref(&reference.to_path_buf())),
         &mut fingerprint,
     )
     .unwrap();
 
-    clean_up(&[&impostor, &real, &reference]);
     assert_eq!(
         resolved.pairs[0].relation,
         Relation::Refused,
@@ -1126,19 +1129,18 @@ fn a_reference_the_real_copy_pairs_with_flags_only_the_impostor() {
 /// against both as readily as it decides between them.
 #[test]
 fn a_reference_both_copies_refuse_flags_both() {
-    let impostor = copy_on_disk("reference-refuses-both", "impostor", 8);
-    let real = copy_on_disk("reference-refuses-both", "real", 6);
-    let alien = copy_on_disk("reference-refuses-both", "alien", 6);
+    let (_impostor_dir, impostor) = copy_on_disk("reference-refuses-both", "impostor", 8);
+    let (_real_dir, real) = copy_on_disk("reference-refuses-both", "real", 6);
+    let (_alien_dir, alien) = copy_on_disk("reference-refuses-both", "alien", 6);
     let mut fingerprint = |members: &[PathBuf]| Ok(synthetic_pages(members));
 
     let resolved = resolve_with(
-        &[vec![impostor.clone()], vec![real.clone()]],
-        Some(std::slice::from_ref(&alien)),
+        &[vec![impostor.to_path_buf()], vec![real.to_path_buf()]],
+        Some(std::slice::from_ref(&alien.to_path_buf())),
         &mut fingerprint,
     )
     .unwrap();
 
-    clean_up(&[&impostor, &real, &alien]);
     assert_eq!(resolved.flagged, vec![0, 1], "none of them is the volume");
     assert!(resolved.ranked.is_empty());
     assert_eq!(
@@ -1160,22 +1162,21 @@ fn a_reference_both_copies_refuse_flags_both() {
 /// listing before anything is fingerprinted, and the page counts differ by
 /// role so no two copies sign alike. What the *solver* sees is not in these
 /// bytes at all — `synthetic_pages` decides that — so they need not be
-/// images. Any stale directory from a previous run is removed first, as
-/// `two_identical_copies` does.
-fn copy_on_disk(tag: &str, role: &str, pages: usize) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("taiyaku-duplicates-{tag}-{role}"));
-    let _ = std::fs::remove_dir_all(&dir);
+/// images. The copy is `<role>` inside a directory of its own, so
+/// `synthetic_pages` can read the role off its name; the directory goes when
+/// the test ends.
+fn copy_on_disk(
+    tag: &str,
+    role: &str,
+    pages: usize,
+) -> (taiyaku_read::test_support::TempDir, PathBuf) {
+    let scratch = taiyaku_read::test_support::TempDir::new(&format!("duplicates-{tag}"));
+    let dir = scratch.join(role);
     std::fs::create_dir_all(&dir).unwrap();
     for page in 0..pages {
         std::fs::write(dir.join(format!("p{page}.jpg")), format!("{role}-{page}")).unwrap();
     }
-    dir
-}
-
-fn clean_up(dirs: &[&PathBuf]) {
-    for dir in dirs {
-        let _ = std::fs::remove_dir_all(dir);
-    }
+    (scratch, dir)
 }
 
 /// Six 128-bit patterns, each with exactly 64 bits set and no two of them
@@ -1210,8 +1211,12 @@ const PATTERNS: [(u64, u64); 6] = [
 /// `alien` is that high half filled solid, a constant similarity against
 /// both families and so a refusal against both.
 fn synthetic_pages(members: &[PathBuf]) -> Vec<PageHash> {
-    let name = members[0].to_string_lossy().to_string();
-    match name.rsplit('-').next().unwrap_or_default() {
+    let name = members[0]
+        .file_name()
+        .expect("a copy is named for its role")
+        .to_string_lossy()
+        .to_string();
+    match name.as_str() {
         "real" | "reference" => PATTERNS
             .iter()
             .map(|&(low, high)| PageHash([low, high, 0, 0]))

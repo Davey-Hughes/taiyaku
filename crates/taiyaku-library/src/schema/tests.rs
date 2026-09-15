@@ -148,7 +148,7 @@ fn a_later_migration_failing_leaves_the_earlier_one_committed() {
 /// `Library::open`.
 fn two_processes(label: &str) -> (crate::tests::TempDir, Connection, Connection) {
     let dir = crate::tests::tempdir(label);
-    let db = dir.path.join("library.db");
+    let db = dir.path().join("library.db");
     let first = Connection::open(&db).expect("the first process opens the file");
     let second = Connection::open(&db).expect("the second process opens the same file");
     (dir, first, second)

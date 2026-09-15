@@ -162,8 +162,8 @@ fn temp_paths_for_the_same_key_never_collide_or_look_like_a_cover() {
 /// call's generator panics if it is ever invoked at all.
 #[test]
 fn a_cache_hit_reads_back_the_same_bytes_without_regenerating() {
-    let dir = std::env::temp_dir().join("taiyaku-test-cover-cache-hit");
-    let _ = std::fs::remove_dir_all(&dir);
+    let scratch = crate::test_support::Fixture::new("cover-cache-hit");
+    let dir = scratch.join("covers");
 
     let calls = std::sync::atomic::AtomicUsize::new(0);
     let page = real_page_bytes();
@@ -184,7 +184,6 @@ fn a_cache_hit_reads_back_the_same_bytes_without_regenerating() {
     })
     .unwrap();
 
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         first, second,
         "a cache hit must return exactly what was cached"
@@ -202,16 +201,14 @@ fn a_cache_hit_reads_back_the_same_bytes_without_regenerating() {
 /// permissions tricks that would not be portable across CI runners.
 #[test]
 fn a_cover_survives_a_cache_directory_that_cannot_be_created() {
-    let blocker = std::env::temp_dir().join("taiyaku-test-cover-blocker-file");
-    let _ = std::fs::remove_file(&blocker);
-    let _ = std::fs::remove_dir_all(&blocker);
+    let scratch = crate::test_support::Fixture::new("cover-blocker");
+    let blocker = scratch.join("blocker-file");
     std::fs::write(&blocker, b"not a directory").unwrap();
     let dir = blocker.join("covers");
 
     let page = real_page_bytes();
     let result = cached_or_generated(&dir, "deadbeef", || Ok(page.clone()));
 
-    let _ = std::fs::remove_file(&blocker);
     let bytes = result.expect("an unwritable cache must not fail the request");
     assert!(
         bytes.starts_with(b"\xff\xd8\xff"),
@@ -258,7 +255,7 @@ fn the_generation_semaphore_admits_its_configured_number_of_permits_at_once() {
 /// when the test ends, which the local version of this helper did not.
 /// `test_support::Fixture` carries the argument for both halves.
 fn tempdir_for_test() -> crate::test_support::Fixture {
-    crate::test_support::Fixture::new("taiyaku-thumb")
+    crate::test_support::Fixture::new("thumb")
 }
 
 /// A filmstrip tile is smaller than a cover, and the two never collide in

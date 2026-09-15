@@ -12,15 +12,15 @@ fn two_root_library() -> (
     crate::tests::TempDir,
 ) {
     let en = crate::tests::tempdir("browse-en");
-    write_pages(&en.path.join("Series").join("Series - v01"), 2);
+    write_pages(&en.path().join("Series").join("Series - v01"), 2);
     let raw = crate::tests::tempdir("browse-raw");
-    write_pages(&raw.path.join("Series").join("Series - v01"), 2);
+    write_pages(&raw.path().join("Series").join("Series - v01"), 2);
 
     let library = Library::open_in_memory().expect("in-memory");
     let (en_id, raw_id) = {
         let conn = library.conn();
-        let en_root = scan::add_root(&conn, &en.path).expect("adds en");
-        let raw_root = scan::add_root(&conn, &raw.path).expect("adds raw");
+        let en_root = scan::add_root(&conn, en.path()).expect("adds en");
+        let raw_root = scan::add_root(&conn, raw.path()).expect("adds raw");
         // **Each root declares its own edition key**, or both default to
         // `raw` and derivation merges their members into ONE edition — which
         // is correct behaviour and makes this fixture unable to show a filter
@@ -84,13 +84,13 @@ fn import_a_work(library: &Library, title: &str, path: &str) {
 /// or 0, and a test over it passes whether or not the progress join works.
 fn two_volume_library() -> (Library, i64, crate::tests::TempDir) {
     let dir = crate::tests::tempdir("browse-two-volumes");
-    write_pages(&dir.path.join("Series").join("Series - v01"), 2);
-    write_pages(&dir.path.join("Series").join("Series - v02"), 2);
+    write_pages(&dir.path().join("Series").join("Series - v01"), 2);
+    write_pages(&dir.path().join("Series").join("Series - v02"), 2);
 
     let library = Library::open_in_memory().expect("in-memory");
     let root_id = {
         let conn = library.conn();
-        let root = scan::add_root(&conn, &dir.path).expect("adds the root");
+        let root = scan::add_root(&conn, dir.path()).expect("adds the root");
         scan::scan_root(&conn, &root).expect("scans");
         derive::derive(&conn).expect("derives");
         root.id
@@ -522,15 +522,15 @@ fn merged_edition_library() -> (
     crate::tests::TempDir,
 ) {
     let a = crate::tests::tempdir("browse-merge-a");
-    write_pages(&a.path.join("Series").join("Series - v01"), 2);
+    write_pages(&a.path().join("Series").join("Series - v01"), 2);
     let b = crate::tests::tempdir("browse-merge-b");
-    write_pages(&b.path.join("Series").join("Series - v01"), 3);
+    write_pages(&b.path().join("Series").join("Series - v01"), 3);
 
     let library = Library::open_in_memory().expect("in-memory");
     let (a_id, b_id) = {
         let conn = library.conn();
-        let ra = scan::add_root(&conn, &a.path).expect("adds a");
-        let rb = scan::add_root(&conn, &b.path).expect("adds b");
+        let ra = scan::add_root(&conn, a.path()).expect("adds a");
+        let rb = scan::add_root(&conn, b.path()).expect("adds b");
         scan::scan_root(&conn, &ra).expect("scans a");
         scan::scan_root(&conn, &rb).expect("scans b");
         derive::derive(&conn).expect("derives");
@@ -1243,7 +1243,7 @@ fn two_roots_sharing_a_last_component_fall_back_to_their_paths() {
     {
         let conn = library.conn();
         for parent in ["a", "b"] {
-            let path = outer.path.join(parent).join("Manga");
+            let path = outer.path().join(parent).join("Manga");
             write_pages(&path.join("Series - v01"), 1);
             scan::add_root(&conn, &path).expect("adds a root");
         }
@@ -1278,7 +1278,7 @@ fn a_partial_collision_falls_back_only_the_colliding_pair() {
         let conn = library.conn();
         let mut colliding = Vec::new();
         for parent in ["a", "b"] {
-            let path = outer.path.join(parent).join("Manga");
+            let path = outer.path().join(parent).join("Manga");
             write_pages(&path.join("Series - v01"), 1);
             colliding.push(
                 scan::add_root(&conn, &path)
@@ -1286,7 +1286,7 @@ fn a_partial_collision_falls_back_only_the_colliding_pair() {
                     .id,
             );
         }
-        let unique = outer.path.join("c").join("Unique");
+        let unique = outer.path().join("c").join("Unique");
         write_pages(&unique.join("Series - v01"), 1);
         let unique_id = scan::add_root(&conn, &unique)
             .expect("adds the non-colliding root")
@@ -1329,7 +1329,7 @@ fn a_partial_collision_falls_back_only_the_colliding_pair() {
 #[test]
 fn scanned_turns_true_only_after_a_scan_of_this_library_runs() {
     let dir = crate::tests::tempdir("browse-not-yet-scanned");
-    write_pages(&dir.path.join("Series").join("Series - v01"), 1);
+    write_pages(&dir.path().join("Series").join("Series - v01"), 1);
 
     let library = Library::open_in_memory().expect("in-memory");
     // A fresh block per connection: `Library::conn` locks a non-reentrant
@@ -1337,7 +1337,7 @@ fn scanned_turns_true_only_after_a_scan_of_this_library_runs() {
     // own would deadlock the test rather than fail it.
     let root = {
         let conn = library.conn();
-        scan::add_root(&conn, &dir.path).expect("adds the root")
+        scan::add_root(&conn, dir.path()).expect("adds the root")
     };
 
     {
@@ -1690,15 +1690,15 @@ fn library_with_volumes(volumes: usize) -> (Library, crate::tests::TempDir, crat
     let raw = crate::tests::tempdir("browse-count-raw");
     for v in 1..=volumes {
         let name = format!("Series - v{v:02}");
-        write_pages(&en.path.join("Series").join(&name), 2);
-        write_pages(&raw.path.join("Series").join(&name), 2);
+        write_pages(&en.path().join("Series").join(&name), 2);
+        write_pages(&raw.path().join("Series").join(&name), 2);
     }
 
     let library = Library::open_in_memory().expect("in-memory");
     {
         let conn = library.conn();
-        let en_root = scan::add_root(&conn, &en.path).expect("adds en");
-        let raw_root = scan::add_root(&conn, &raw.path).expect("adds raw");
+        let en_root = scan::add_root(&conn, en.path()).expect("adds en");
+        let raw_root = scan::add_root(&conn, raw.path()).expect("adds raw");
         conn.execute(
             "UPDATE root SET edition_key = 'en' WHERE id = ?1",
             [en_root.id],
@@ -1957,7 +1957,7 @@ fn a_series_with_no_primary_title_is_shown_by_its_first_title_not_its_scanned_na
     let tree = crate::scan::tests::fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
     let series_id: i64 = conn

@@ -29,7 +29,7 @@ use crate::Library;
 /// whole point of the derive tests is that both modules read one set of rows.
 pub(crate) fn fixture() -> crate::tests::TempDir {
     let dir = crate::tests::tempdir("scan");
-    let root = &dir.path;
+    let root = &dir.path();
     let series = root.join("Go-Toubun no Hanayome");
     write_pages(&series.join("Go-Toubun no Hanayome - v01 (2019)"), 3);
     write_pages(&series.join("Go-Toubun no Hanayome - v02 (2019)"), 4);
@@ -166,7 +166,7 @@ fn a_hand_written_archive_lists_its_pages() {
     // list, which is `a_container_that_will_not_open…`'s scenario, and every
     // fixture built on it would pass for the wrong reason.
     let tree = crate::tests::tempdir("scan-archive");
-    let archive = tree.path.join("Series v01.cbz");
+    let archive = tree.path().join("Series v01.cbz");
     write_archive(&archive, 3);
 
     assert_eq!(
@@ -189,12 +189,14 @@ fn two_hand_written_archives_of_equal_length_do_not_hash_alike() {
     // byte-identical, or `content_key` collides and two works silently merge
     // into one row.
     let tree = crate::tests::tempdir("scan-archive-distinct");
-    write_archive(&tree.path.join("v01").join("Series v01.cbz"), 3);
-    write_archive(&tree.path.join("v02").join("Series v02.cbz"), 3);
+    write_archive(&tree.path().join("v01").join("Series v01.cbz"), 3);
+    write_archive(&tree.path().join("v02").join("Series v02.cbz"), 3);
 
     assert_ne!(
-        taiyaku_read::member_digest(&tree.path.join("v01").join("Series v01.cbz")).expect("digest"),
-        taiyaku_read::member_digest(&tree.path.join("v02").join("Series v02.cbz")).expect("digest"),
+        taiyaku_read::member_digest(&tree.path().join("v01").join("Series v01.cbz"))
+            .expect("digest"),
+        taiyaku_read::member_digest(&tree.path().join("v02").join("Series v02.cbz"))
+            .expect("digest"),
     );
 }
 
@@ -236,7 +238,7 @@ fn a_scan_records_every_entry_with_the_format_its_bytes_say() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
 
     let report = scan_root(&conn, &root).expect("scan");
 
@@ -297,7 +299,7 @@ fn the_page_images_inside_a_directory_member_are_counted_and_not_recorded() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
 
     let report = scan_root(&conn, &root).expect("scan");
 
@@ -317,7 +319,7 @@ fn a_second_scan_of_an_unchanged_tree_re_reads_nothing() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
     scan_root(&conn, &root).expect("first");
 
     let report = scan_root(&conn, &root).expect("second");
@@ -332,10 +334,10 @@ fn a_file_that_has_gone_is_recorded_as_gone_rather_than_left_behind() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
     scan_root(&conn, &root).expect("first");
 
-    std::fs::remove_file(tree.path.join("notes.pdf")).expect("remove");
+    std::fs::remove_file(tree.path().join("notes.pdf")).expect("remove");
     let report = scan_root(&conn, &root).expect("second");
 
     assert_eq!(report.gone, 1);
@@ -358,11 +360,11 @@ fn a_root_that_has_become_empty_is_refused_and_nothing_is_applied() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
     scan_root(&conn, &root).expect("first");
 
-    std::fs::remove_dir_all(&tree.path).expect("remove");
-    std::fs::create_dir_all(&tree.path).expect("recreate");
+    std::fs::remove_dir_all(tree.path()).expect("remove");
+    std::fs::create_dir_all(tree.path()).expect("recreate");
     let report = scan_root(&conn, &root).expect("second");
 
     let refusal = report.refused.expect("an empty root is refused");
@@ -381,7 +383,7 @@ fn a_scan_records_when_it_ran_and_how_it_went() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
 
     scan_root(&conn, &root).expect("scan");
 
@@ -405,11 +407,11 @@ fn a_refused_empty_scan_records_the_refusal_rather_than_nothing() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
     scan_root(&conn, &root).expect("first");
 
-    std::fs::remove_dir_all(&tree.path).expect("remove");
-    std::fs::create_dir_all(&tree.path).expect("recreate");
+    std::fs::remove_dir_all(tree.path()).expect("remove");
+    std::fs::create_dir_all(tree.path()).expect("recreate");
     let report = scan_root(&conn, &root).expect("second");
 
     assert!(report.refused.is_some(), "an empty root is refused");
@@ -426,12 +428,12 @@ fn a_refused_empty_scan_records_the_refusal_rather_than_nothing() {
 #[test]
 fn a_symlink_cycle_is_an_error_naming_the_depth_rather_than_a_silent_truncation() {
     let tree = crate::tests::tempdir("cycle");
-    let deep = tree.path.join("a");
+    let deep = tree.path().join("a");
     std::fs::create_dir_all(&deep).expect("mkdir");
-    std::os::unix::fs::symlink(&tree.path, deep.join("loop")).expect("symlink");
+    std::os::unix::fs::symlink(tree.path(), deep.join("loop")).expect("symlink");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
 
     let message = scan_root(&conn, &root).expect_err("a cycle is an error");
     assert!(
@@ -451,12 +453,12 @@ fn a_symlink_cycle_is_an_error_naming_the_depth_rather_than_a_silent_truncation(
 #[test]
 fn a_failed_scan_records_failed_rather_than_ok_or_nothing() {
     let tree = crate::tests::tempdir("cycle-status");
-    let deep = tree.path.join("a");
+    let deep = tree.path().join("a");
     std::fs::create_dir_all(&deep).expect("mkdir");
-    std::os::unix::fs::symlink(&tree.path, deep.join("loop")).expect("symlink");
+    std::os::unix::fs::symlink(tree.path(), deep.join("loop")).expect("symlink");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
 
     scan_root(&conn, &root).expect_err("a cycle is an error");
 
@@ -484,7 +486,7 @@ fn an_unreadable_directory_is_skipped_counted_and_named_rather_than_failing_the_
     // unreadable file must not leave a library unscanned — had never
     // actually been applied to a directory before this test existed.
     let tree = fixture();
-    let locked = tree.path.join("lost+found");
+    let locked = tree.path().join("lost+found");
     std::fs::create_dir_all(&locked).expect("mkdir");
     let mut perms = std::fs::metadata(&locked).expect("metadata").permissions();
     std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o000);
@@ -504,7 +506,7 @@ fn an_unreadable_directory_is_skipped_counted_and_named_rather_than_failing_the_
 
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
 
     let report =
         scan_root(&conn, &root).expect("one unreadable directory must not fail the whole root");
@@ -563,10 +565,10 @@ fn a_page_added_two_levels_down_refreshes_every_ancestors_total() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
     scan_root(&conn, &root).expect("first");
 
-    let series = tree.path.join("Go-Toubun no Hanayome");
+    let series = tree.path().join("Go-Toubun no Hanayome");
     std::fs::write(
         series
             .join("Go-Toubun no Hanayome - v01 (2019)")
@@ -609,10 +611,10 @@ fn a_container_that_will_not_open_is_recorded_with_its_format_and_no_count() {
     // `Zip`, `member_pages` refuses, and the refusal is swallowed rather
     // than failing the scan.
     let tree = fixture();
-    std::fs::write(tree.path.join("truncated.cbz"), b"PK\x03\x04").expect("write");
+    std::fs::write(tree.path().join("truncated.cbz"), b"PK\x03\x04").expect("write");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
 
     let report = scan_root(&conn, &root).expect("a bad archive is not a failed scan");
 
@@ -646,11 +648,11 @@ fn an_unchanged_container_is_not_reopened() {
     // re-sniffed it, `format` would follow the new bytes to NULL, not `pdf`.
     // `std::fs::FileTimes` is stable since 1.75, under this workspace's 1.85.
     let tree = fixture();
-    let archive = tree.path.join("truncated.cbz");
+    let archive = tree.path().join("truncated.cbz");
     std::fs::write(&archive, b"PK\x03\x04").expect("write");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
     scan_root(&conn, &root).expect("first");
 
     let before = std::fs::metadata(&archive).expect("metadata");
@@ -714,7 +716,7 @@ fn a_files_modification_time_reaches_its_scan_entry() {
     // A member is a *directory* of pages, which is why its mtime is the field
     // `unchanged` compares — and why O56 exists: a directory's stamp does not
     // move when the bytes inside an existing child change.
-    let volume = dir.path.join("Series").join("Series - v01");
+    let volume = dir.path().join("Series").join("Series - v01");
     write_pages(&volume, 2);
 
     // A fixed instant well clear of both zero and now, so none of the three
@@ -729,7 +731,7 @@ fn a_files_modification_time_reaches_its_scan_entry() {
         .expect("stamps it");
 
     let (measured, walk) =
-        measure(&dir.path, 0, &Excluder::build(None)).expect("measures the tree");
+        measure(dir.path(), 0, &Excluder::build(None)).expect("measures the tree");
     assert!(
         walk.unreadable.is_empty(),
         "unexpected unreadable dirs: {:?}",
@@ -765,7 +767,7 @@ fn a_new_root_keeps_no_documents_by_default() {
     let conn = Connection::open_in_memory().expect("in-memory database");
     crate::schema::migrate(&conn).expect("migrating");
 
-    let root = super::add_root(&conn, &dir.path).expect("adding the root");
+    let root = super::add_root(&conn, dir.path()).expect("adding the root");
     assert!(
         !root.keeps_documents,
         "a root added without being asked keeps no documents: {root:?}"
@@ -788,7 +790,7 @@ fn a_root_can_be_told_to_keep_documents() {
     let dir = crate::tests::tempdir("scan-keeps-documents-on");
     let conn = Connection::open_in_memory().expect("in-memory database");
     crate::schema::migrate(&conn).expect("migrating");
-    let root = super::add_root(&conn, &dir.path).expect("adding the root");
+    let root = super::add_root(&conn, dir.path()).expect("adding the root");
 
     conn.execute(
         "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
@@ -812,9 +814,9 @@ fn a_root_inside_an_existing_root_is_refused() {
     let dir = crate::tests::tempdir("scan-add-root-checked-nested-inner");
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let outer = super::add_root_checked(&conn, &dir.path).expect("adding the outer root");
+    let outer = super::add_root_checked(&conn, dir.path()).expect("adding the outer root");
 
-    let nested = dir.path.join("inner");
+    let nested = dir.path().join("inner");
     std::fs::create_dir(&nested).expect("mkdir");
     let refused = super::add_root_checked(&conn, &nested).expect_err("nested root");
     assert!(
@@ -839,13 +841,13 @@ fn a_root_inside_an_existing_root_is_refused() {
 #[test]
 fn a_root_containing_an_existing_root_is_refused() {
     let dir = crate::tests::tempdir("scan-add-root-checked-nested-outer");
-    let inner = dir.path.join("inner");
+    let inner = dir.path().join("inner");
     std::fs::create_dir(&inner).expect("mkdir");
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
     let inner_root = super::add_root_checked(&conn, &inner).expect("adding the inner root");
 
-    let refused = super::add_root_checked(&conn, &dir.path).expect_err("containing root");
+    let refused = super::add_root_checked(&conn, dir.path()).expect_err("containing root");
     assert!(
         matches!(refused, AddRootError::Unusable(_)),
         "an overlap is this caller's own mistake, not a store fault: {refused:?}"
@@ -871,8 +873,8 @@ fn a_root_containing_an_existing_root_is_refused() {
 #[test]
 fn a_sibling_whose_name_merely_starts_with_an_existing_roots_name_is_not_refused() {
     let dir = crate::tests::tempdir("scan-add-root-checked-sibling-prefix");
-    let manga = dir.path.join("manga");
-    let manga2 = dir.path.join("manga2");
+    let manga = dir.path().join("manga");
+    let manga2 = dir.path().join("manga2");
     std::fs::create_dir(&manga).expect("mkdir manga");
     std::fs::create_dir(&manga2).expect("mkdir manga2");
     let library = crate::Library::open_in_memory().expect("open");
@@ -892,10 +894,10 @@ fn a_sibling_whose_name_merely_starts_with_an_existing_roots_name_is_not_refused
 #[test]
 fn a_root_reached_only_through_a_symlink_is_still_recognised_as_nested() {
     let dir = crate::tests::tempdir("scan-add-root-checked-symlink-nested");
-    let real_root = dir.path.join("real_root");
+    let real_root = dir.path().join("real_root");
     std::fs::create_dir(&real_root).expect("mkdir real_root");
     std::fs::create_dir(real_root.join("inner")).expect("mkdir inner");
-    let alias = dir.path.join("alias");
+    let alias = dir.path().join("alias");
     std::os::unix::fs::symlink(&real_root, &alias).expect("symlink");
 
     let library = crate::Library::open_in_memory().expect("open");
@@ -939,7 +941,7 @@ fn a_root_reached_only_through_a_symlink_is_still_recognised_as_nested() {
 #[test]
 fn a_path_the_process_cannot_read_is_refused_saying_so() {
     let dir = crate::tests::tempdir("scan-add-root-checked-unreadable");
-    let closed = dir.path.join("closed");
+    let closed = dir.path().join("closed");
     std::fs::write(&closed, b"not a directory").expect("planting a file where a directory must be");
 
     let library = crate::Library::open_in_memory().expect("open");
@@ -967,7 +969,7 @@ fn a_nonexistent_path_produces_a_distinct_error_from_an_unreadable_path() {
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
 
-    let nonexistent = dir.path.join("does_not_exist");
+    let nonexistent = dir.path().join("does_not_exist");
     let nonexistent_err = super::add_root_checked(&conn, &nonexistent)
         .expect_err("nonexistent path fails canonicalize");
     assert!(
@@ -975,7 +977,7 @@ fn a_nonexistent_path_produces_a_distinct_error_from_an_unreadable_path() {
         "a nonexistent path is this caller's own mistake, not a store fault: {nonexistent_err:?}"
     );
 
-    let unreadable = dir.path.join("unreadable");
+    let unreadable = dir.path().join("unreadable");
     std::fs::write(&unreadable, b"not a directory")
         .expect("planting a file where a directory must be");
     let unreadable_err =
@@ -1008,7 +1010,7 @@ fn a_store_fault_while_adding_a_root_is_reported_as_failed_not_unusable() {
     conn.pragma_update(None, "query_only", true)
         .expect("sets query_only");
 
-    let refused = super::add_root_checked(&conn, &dir.path).expect_err("a read-only connection");
+    let refused = super::add_root_checked(&conn, dir.path()).expect_err("a read-only connection");
 
     assert!(
         matches!(refused, AddRootError::Failed(_)),
@@ -1027,7 +1029,7 @@ fn mark_derive_failed_corrects_a_status_a_successful_scan_already_wrote() {
     let dir = crate::tests::tempdir("scan-mark-derive-failed");
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = super::add_root(&conn, &dir.path).expect("adding the root");
+    let root = super::add_root(&conn, dir.path()).expect("adding the root");
     super::scan_root(&conn, &root).expect("scanning the (empty) root");
 
     let before: String = conn
@@ -1067,7 +1069,7 @@ fn adding_a_root_probes_the_watcher_before_the_first_scan() {
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
 
-    let added = super::add_root_checked(&conn, &dir.path).expect("adding the root");
+    let added = super::add_root_checked(&conn, dir.path()).expect("adding the root");
 
     assert_eq!(
         added.interval,
@@ -1092,7 +1094,7 @@ fn adding_a_root_returns_the_same_interval_it_wrote_to_the_row() {
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
 
-    let added = super::add_root_checked(&conn, &dir.path).expect("adding the root");
+    let added = super::add_root_checked(&conn, dir.path()).expect("adding the root");
 
     assert_eq!(
         added.root.scan_interval_secs,
@@ -1111,7 +1113,7 @@ fn adding_a_root_writes_the_probes_interval_onto_the_stored_row() {
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
 
-    let added = super::add_root_checked(&conn, &dir.path).expect("adding the root");
+    let added = super::add_root_checked(&conn, dir.path()).expect("adding the root");
 
     let stored = &super::roots(&conn).expect("listing roots")[0];
     assert_eq!(
@@ -1136,7 +1138,7 @@ fn a_root_patch_changes_only_the_field_it_names() {
     let dir = crate::tests::tempdir("scan-root-patch");
     let conn = Connection::open_in_memory().expect("in-memory database");
     crate::schema::migrate(&conn).expect("migrating");
-    let root = super::add_root(&conn, &dir.path).expect("adding the root");
+    let root = super::add_root(&conn, dir.path()).expect("adding the root");
     conn.execute(
         "UPDATE root SET edition_key = 'raw', default_kind = 'official', \
          default_language = 'ja', exclude_globs = '*.tmp', scan_interval_secs = 3600, \
@@ -1206,7 +1208,7 @@ fn a_listed_root_reports_the_exclude_globs_it_holds() {
     let dir = crate::tests::tempdir("scan-root-exclude-globs");
     let conn = Connection::open_in_memory().expect("in-memory database");
     crate::schema::migrate(&conn).expect("migrating");
-    let root = super::add_root(&conn, &dir.path).expect("adding the root");
+    let root = super::add_root(&conn, dir.path()).expect("adding the root");
 
     assert_eq!(
         super::roots(&conn).expect("listing roots")[0]
@@ -1243,7 +1245,7 @@ fn clearing_a_nullable_root_column_sets_it_to_null_rather_than_leaving_it_alone(
     let dir = crate::tests::tempdir("scan-root-patch-clear");
     let conn = Connection::open_in_memory().expect("in-memory database");
     crate::schema::migrate(&conn).expect("migrating");
-    let root = super::add_root(&conn, &dir.path).expect("adding the root");
+    let root = super::add_root(&conn, dir.path()).expect("adding the root");
     conn.execute(
         "UPDATE root SET edition_key = 'raw', default_kind = 'official' WHERE id = ?1",
         [root.id],
@@ -1299,7 +1301,7 @@ fn an_entirely_empty_root_patch_reports_whether_the_row_exists_without_changing_
     let dir = crate::tests::tempdir("scan-root-patch-empty");
     let conn = Connection::open_in_memory().expect("in-memory database");
     crate::schema::migrate(&conn).expect("migrating");
-    let root = super::add_root(&conn, &dir.path).expect("adding the root");
+    let root = super::add_root(&conn, dir.path()).expect("adding the root");
     let before = super::roots(&conn).expect("listing roots");
 
     let changed = super::update_root(&conn, root.id, &super::RootPatch::default())
@@ -1642,25 +1644,28 @@ fn removal_cost_does_not_repair_a_document_gap_on_the_surviving_root() {
     let library = Library::open_in_memory().expect("library");
     let conn = library.conn();
     write_archive(
-        &dir.path
+        &dir.path()
             .join("root-a")
             .join("Alpha")
             .join("Alpha - v01.cbz"),
         3,
     );
     write_archive(
-        &dir.path.join("root-b").join("Beta").join("Beta - v01.cbz"),
+        &dir.path()
+            .join("root-b")
+            .join("Beta")
+            .join("Beta - v01.cbz"),
         3,
     );
 
-    let root_a = super::add_root(&conn, &dir.path.join("root-a")).expect("root a");
+    let root_a = super::add_root(&conn, &dir.path().join("root-a")).expect("root a");
     conn.execute(
         "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
         [root_a.id],
     )
     .expect("root a keeps documents");
     super::scan_root(&conn, &root_a).expect("scanning root a");
-    let root_b = super::add_root(&conn, &dir.path.join("root-b")).expect("root b");
+    let root_b = super::add_root(&conn, &dir.path().join("root-b")).expect("root b");
     super::scan_root(&conn, &root_b).expect("scanning root b");
     crate::derive::derive(&conn).expect("the first derive");
 
@@ -1729,25 +1734,28 @@ fn remove_root_repairs_a_surviving_documents_gap_only_after_its_own_commit() {
     let library = Library::open_in_memory().expect("library");
     let conn = library.conn();
     write_archive(
-        &dir.path
+        &dir.path()
             .join("root-a")
             .join("Alpha")
             .join("Alpha - v01.cbz"),
         3,
     );
     write_archive(
-        &dir.path.join("root-b").join("Beta").join("Beta - v01.cbz"),
+        &dir.path()
+            .join("root-b")
+            .join("Beta")
+            .join("Beta - v01.cbz"),
         3,
     );
 
-    let root_a = super::add_root(&conn, &dir.path.join("root-a")).expect("root a");
+    let root_a = super::add_root(&conn, &dir.path().join("root-a")).expect("root a");
     conn.execute(
         "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
         [root_a.id],
     )
     .expect("root a keeps documents");
     super::scan_root(&conn, &root_a).expect("scanning root a");
-    let root_b = super::add_root(&conn, &dir.path.join("root-b")).expect("root b");
+    let root_b = super::add_root(&conn, &dir.path().join("root-b")).expect("root b");
     super::scan_root(&conn, &root_b).expect("scanning root b");
     crate::derive::derive(&conn).expect("the first derive");
 
@@ -1947,8 +1955,8 @@ fn check_exclude_globs_names_the_line_it_refuses() {
 /// the same seven entries every other test in this module already pins.
 fn fixture_with_junk() -> crate::tests::TempDir {
     let dir = fixture();
-    write_pages(&dir.path.join("Go-Toubun no Hanayome/extras"), 2);
-    std::fs::write(dir.path.join("Go-Toubun no Hanayome/series.nfo"), b"junk").expect("write");
+    write_pages(&dir.path().join("Go-Toubun no Hanayome/extras"), 2);
+    std::fs::write(dir.path().join("Go-Toubun no Hanayome/series.nfo"), b"junk").expect("write");
     dir
 }
 
@@ -1972,7 +1980,7 @@ fn an_excluded_directory_is_not_walked_and_is_named() {
     let tree = fixture_with_junk();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = root_excluding(&conn, &tree.path, "extras");
+    let root = root_excluding(&conn, tree.path(), "extras");
 
     let report = scan_root(&conn, &root).expect("scan");
 
@@ -2002,7 +2010,7 @@ fn an_excluded_file_is_skipped_and_counted() {
     let tree = fixture_with_junk();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = root_excluding(&conn, &tree.path, "*.nfo");
+    let root = root_excluding(&conn, tree.path(), "*.nfo");
 
     let report = scan_root(&conn, &root).expect("scan");
 
@@ -2026,10 +2034,10 @@ fn an_excluded_file_is_skipped_and_counted() {
 #[test]
 fn a_negation_re_includes_through_the_walk() {
     let tree = fixture_with_junk();
-    std::fs::write(tree.path.join("Go-Toubun no Hanayome/keep.nfo"), b"keep").expect("write");
+    std::fs::write(tree.path().join("Go-Toubun no Hanayome/keep.nfo"), b"keep").expect("write");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = root_excluding(&conn, &tree.path, "*.nfo\n!keep.nfo");
+    let root = root_excluding(&conn, tree.path(), "*.nfo\n!keep.nfo");
 
     let report = scan_root(&conn, &root).expect("scan");
 
@@ -2068,7 +2076,7 @@ fn an_excluded_file_does_not_move_the_entry_count() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = root_excluding(&conn, &tree.path, "*.nfo");
+    let root = root_excluding(&conn, tree.path(), "*.nfo");
     scan_root(&conn, &root).expect("first");
 
     let before: i64 = conn
@@ -2083,7 +2091,7 @@ fn an_excluded_file_does_not_move_the_entry_count() {
         "the two volume directories, and only they, sit directly under it"
     );
 
-    std::fs::write(tree.path.join("Go-Toubun no Hanayome/late.nfo"), b"junk").expect("write");
+    std::fs::write(tree.path().join("Go-Toubun no Hanayome/late.nfo"), b"junk").expect("write");
     scan_root(&conn, &root).expect("second");
 
     let after: i64 = conn
@@ -2102,7 +2110,7 @@ fn a_bad_pattern_is_reported_by_the_scan() {
     let tree = fixture_with_junk();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = root_excluding(&conn, &tree.path, "extras\n\\");
+    let root = root_excluding(&conn, tree.path(), "extras\n\\");
 
     let report = scan_root(&conn, &root).expect("scan");
 
@@ -2121,7 +2129,7 @@ fn a_root_with_no_patterns_reports_the_fields_empty() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
 
     let report = scan_root(&conn, &root).expect("scan");
 
@@ -2148,7 +2156,7 @@ fn an_excluded_page_image_is_dropped_from_its_directorys_page_total() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = root_excluding(&conn, &tree.path, "002.jpg");
+    let root = root_excluding(&conn, tree.path(), "002.jpg");
 
     let report = scan_root(&conn, &root).expect("scan");
 
@@ -2235,7 +2243,7 @@ fn a_refused_scan_reports_what_it_excluded_and_applies_nothing() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
     let first = scan_root(&conn, &root).expect("first scan");
     assert_eq!(first.refused, None, "the library holds entries after this");
 
@@ -2296,11 +2304,11 @@ fn the_refusal_offers_removal_only_when_exclusion_did_not_cause_it() {
     // Case A: a root that genuinely emptied out. No `exclude_globs` at all —
     // every real file removed from disk, not matched by a pattern.
     let empty_tree = fixture();
-    let empty_root = add_root(&conn, &empty_tree.path).expect("add");
+    let empty_root = add_root(&conn, empty_tree.path()).expect("add");
     scan_root(&conn, &empty_root).expect("first scan");
-    std::fs::remove_dir_all(empty_tree.path.join("Go-Toubun no Hanayome")).expect("rm");
-    std::fs::remove_dir_all(empty_tree.path.join("Kaguya-sama - Fan Translated")).expect("rm");
-    std::fs::remove_file(empty_tree.path.join("notes.pdf")).expect("rm");
+    std::fs::remove_dir_all(empty_tree.path().join("Go-Toubun no Hanayome")).expect("rm");
+    std::fs::remove_dir_all(empty_tree.path().join("Kaguya-sama - Fan Translated")).expect("rm");
+    std::fs::remove_file(empty_tree.path().join("notes.pdf")).expect("rm");
     let genuinely_empty = scan_root(&conn, &empty_root).expect("second scan");
     let message_a = genuinely_empty
         .refused
@@ -2319,7 +2327,7 @@ fn the_refusal_offers_removal_only_when_exclusion_did_not_cause_it() {
     // exclude_globs rather than anything actually vanishing — a second,
     // independent root, so this half does not depend on case A's rows.
     let excluded_tree = fixture();
-    let plain = add_root(&conn, &excluded_tree.path).expect("add");
+    let plain = add_root(&conn, excluded_tree.path()).expect("add");
     scan_root(&conn, &plain).expect("first scan");
     let excluding = Root {
         exclude_globs: Some("*".to_string()),
@@ -2354,12 +2362,12 @@ fn the_refusal_offers_removal_only_when_exclusion_did_not_cause_it() {
 #[test]
 fn a_refusal_caused_by_excluded_files_alone_still_names_exclusion() {
     let tree = crate::tests::tempdir("scan-refusal-files-only");
-    std::fs::write(tree.path.join("readme.txt"), b"not a page").expect("write");
-    std::fs::write(tree.path.join("notes.pdf"), b"%PDF-1.7\n").expect("write");
+    std::fs::write(tree.path().join("readme.txt"), b"not a page").expect("write");
+    std::fs::write(tree.path().join("notes.pdf"), b"%PDF-1.7\n").expect("write");
 
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
     let first = scan_root(&conn, &root).expect("first scan");
     assert_eq!(first.refused, None, "the library holds entries after this");
 
@@ -2409,12 +2417,12 @@ fn a_refusal_caused_by_excluded_files_alone_still_names_exclusion() {
 #[test]
 fn a_refusal_caused_by_excluded_directories_alone_still_names_exclusion() {
     let tree = crate::tests::tempdir("scan-refusal-dirs-only");
-    write_pages(&tree.path.join("Series One"), 2);
-    write_pages(&tree.path.join("Series Two"), 3);
+    write_pages(&tree.path().join("Series One"), 2);
+    write_pages(&tree.path().join("Series Two"), 3);
 
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = add_root(&conn, &tree.path).expect("add");
+    let root = add_root(&conn, tree.path()).expect("add");
     let first = scan_root(&conn, &root).expect("first scan");
     assert_eq!(first.refused, None, "the library holds entries after this");
 
@@ -2528,19 +2536,19 @@ fn a_refusal_caused_by_excluded_directories_alone_still_names_exclusion() {
 #[test]
 fn an_excluded_row_is_counted_apart_from_one_that_vanished() {
     let tree = fixture();
-    std::fs::create_dir_all(tree.path.join("Go-Toubun no Hanayome/extras")).expect("mkdir");
-    std::fs::write(tree.path.join("Go-Toubun no Hanayome/extras/a.txt"), b"a").expect("write");
-    std::fs::write(tree.path.join("Go-Toubun no Hanayome/extras/b.txt"), b"b").expect("write");
+    std::fs::create_dir_all(tree.path().join("Go-Toubun no Hanayome/extras")).expect("mkdir");
+    std::fs::write(tree.path().join("Go-Toubun no Hanayome/extras/a.txt"), b"a").expect("write");
+    std::fs::write(tree.path().join("Go-Toubun no Hanayome/extras/b.txt"), b"b").expect("write");
     // A *file* named `extras`, at the root — a different parent directory
     // than the `extras` above, so the two never collide on disk. `extras/`
     // is dir-only and this is not a directory, so on its real `is_dir` it
     // must never be caught by that pattern.
-    std::fs::write(tree.path.join("extras"), b"not a directory").expect("write");
+    std::fs::write(tree.path().join("extras"), b"not a directory").expect("write");
     // A second plain file also named `extras`, under yet another parent —
     // see the doc comment above for why one alone lets `==` → `!=` balance
     // out.
     std::fs::write(
-        tree.path.join("Kaguya-sama - Fan Translated/extras"),
+        tree.path().join("Kaguya-sama - Fan Translated/extras"),
         b"also not a directory",
     )
     .expect("write");
@@ -2550,16 +2558,16 @@ fn an_excluded_row_is_counted_apart_from_one_that_vanished() {
     // First scan: no patterns, so the extras directory and its two files,
     // notes.pdf, and the two plain files also named extras, are all
     // recorded.
-    let plain = add_root(&conn, &tree.path).expect("add");
+    let plain = add_root(&conn, tree.path()).expect("add");
     let first = scan_root(&conn, &plain).expect("first");
     assert_eq!(first.forgotten_by_exclusion, 0, "nothing was excluded yet");
 
     // Now exclude `extras/`, and delete `notes.pdf` and both plain `extras`
     // files from disk in the same pass. Three rows go — the directory and
     // its two files — for one reason, and three rows go for the other.
-    std::fs::remove_file(tree.path.join("notes.pdf")).expect("rm");
-    std::fs::remove_file(tree.path.join("extras")).expect("rm");
-    std::fs::remove_file(tree.path.join("Kaguya-sama - Fan Translated/extras")).expect("rm");
+    std::fs::remove_file(tree.path().join("notes.pdf")).expect("rm");
+    std::fs::remove_file(tree.path().join("extras")).expect("rm");
+    std::fs::remove_file(tree.path().join("Kaguya-sama - Fan Translated/extras")).expect("rm");
     let root = Root {
         exclude_globs: Some("extras/".to_string()),
         ..plain
@@ -2597,21 +2605,21 @@ fn an_excluded_row_is_counted_apart_from_one_that_vanished() {
 #[test]
 fn a_directory_only_pattern_does_not_swallow_a_present_file_of_the_same_name() {
     let tree = fixture();
-    std::fs::create_dir_all(tree.path.join("Go-Toubun no Hanayome/extras")).expect("mkdir");
-    std::fs::write(tree.path.join("Go-Toubun no Hanayome/extras/a.txt"), b"a").expect("write");
+    std::fs::create_dir_all(tree.path().join("Go-Toubun no Hanayome/extras")).expect("mkdir");
+    std::fs::write(tree.path().join("Go-Toubun no Hanayome/extras/a.txt"), b"a").expect("write");
     // A *file* named `extras`, elsewhere on the tree — on disk for the one
     // scan below, unlike the same-named files in
     // `an_excluded_row_is_counted_apart_from_one_that_vanished`, which are
     // deleted before their own excluding scan runs.
     std::fs::write(
-        tree.path.join("Kaguya-sama - Fan Translated/extras"),
+        tree.path().join("Kaguya-sama - Fan Translated/extras"),
         b"not a directory",
     )
     .expect("write");
 
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = root_excluding(&conn, &tree.path, "extras/");
+    let root = root_excluding(&conn, tree.path(), "extras/");
 
     let report = scan_root(&conn, &root).expect("scan");
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::TempDir;
 
 /// A member that yields no pages is almost always a mistake, and saying
 /// nothing about it is the worst possible response. Pointing a directory of
@@ -8,15 +9,11 @@ use super::*;
 /// it found instead.
 #[test]
 fn a_member_with_no_pages_says_what_it_found_instead() {
-    let dir = std::env::temp_dir().join("taiyaku-test-nopages");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("nopages");
     std::fs::write(dir.join("cover.psd"), b"not an image we read").unwrap();
     std::fs::write(dir.join("notes.txt"), b"hello").unwrap();
 
     let error = read_member(&dir).unwrap_err();
-
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(error.contains("no page images"), "unhelpful: {error}");
     assert!(
         error.contains("psd"),
@@ -30,12 +27,11 @@ fn a_member_with_no_pages_says_what_it_found_instead() {
 /// converting it will work.
 #[test]
 fn reading_a_seven_zip_archive_says_so() {
-    let path = std::env::temp_dir().join("taiyaku-test-container.cb7");
+    let dir = TempDir::new("container");
+    let path = dir.join("container.cb7");
     std::fs::write(&path, [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x04]).unwrap();
 
     let error = read_member(&path).unwrap_err();
-
-    let _ = std::fs::remove_file(&path);
     assert!(error.contains("7-Zip"), "unhelpful error: {error}");
 }
 
@@ -44,12 +40,11 @@ fn reading_a_seven_zip_archive_says_so() {
 /// recognised three formats before it and recognises four now.
 #[test]
 fn reading_a_pdf_says_so() {
-    let path = std::env::temp_dir().join("taiyaku-test-container.pdf");
+    let dir = TempDir::new("container");
+    let path = dir.join("container.pdf");
     std::fs::write(&path, b"%PDF-1.7\n").unwrap();
 
     let error = read_member(&path).unwrap_err();
-
-    let _ = std::fs::remove_file(&path);
     assert!(error.contains("this is a PDF"), "{error}");
 }
 
@@ -122,8 +117,10 @@ fn a_page_prints_as_its_name_and_size_rather_than_its_bytes() {
 /// only those cannot tell the two conditions apart.
 #[test]
 fn a_resource_fork_and_a_dotfile_are_each_skipped_on_their_own_account() {
+    let dir = TempDir::new("skips");
     let path = cbz(
-        "taiyaku-test-skips.cbz",
+        &dir,
+        "skips.cbz",
         &[
             "__MACOSX/p1.jpg",
             ".hidden.jpg",
@@ -134,8 +131,6 @@ fn a_resource_fork_and_a_dotfile_are_each_skipped_on_their_own_account() {
     );
 
     let pages = read_member(&path).unwrap();
-
-    let _ = std::fs::remove_file(&path);
     let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(
         names,
@@ -155,22 +150,19 @@ fn a_resource_fork_and_a_dotfile_are_each_skipped_on_their_own_account() {
 /// concatenated in one.
 #[test]
 fn a_members_digest_is_the_hash_of_its_content() {
-    let file = std::env::temp_dir().join("taiyaku-test-digest.bin");
+    let scratch = TempDir::new("digest");
+    let file = scratch.join("digest.bin");
     std::fs::write(&file, b"taiyaku page").unwrap();
     let got = member_digest(&file).unwrap();
-    let _ = std::fs::remove_file(&file);
     assert_eq!(
         got, "e7a8b30f8c6591c8e3341e1f6b0b4f6658cfe5b09b048dafabeaf9ef113622bd",
         "sha256 of the file's bytes"
     );
 
-    let dir = std::env::temp_dir().join("taiyaku-test-digest-dir");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("digest-dir");
     std::fs::write(dir.join("1.jpg"), b"taiyaku ").unwrap();
     std::fs::write(dir.join("2.jpg"), b"pageone").unwrap();
     let got = member_digest(&dir).unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         got, "ce663f7c43b7eb8989b012dfa7c8183eb4e052b8ac0f178b87132354b02b8d72",
         "sha256 over the pages' bytes in reading order, joined"
@@ -178,10 +170,9 @@ fn a_members_digest_is_the_hash_of_its_content() {
 }
 
 /// Write a cbz whose entries are stored in the order given.
-fn cbz(name: &str, entries: &[&str]) -> PathBuf {
+fn cbz(dir: &Path, name: &str, entries: &[&str]) -> PathBuf {
     use std::io::Write;
-    let path = std::env::temp_dir().join(name);
-    let _ = std::fs::remove_file(&path);
+    let path = dir.join(name);
     let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
     for entry in entries {
         zip.start_file(*entry, zip::write::SimpleFileOptions::default())
@@ -204,14 +195,14 @@ fn cbz(name: &str, entries: &[&str]) -> PathBuf {
 /// `ComicInfo.xml`, which is not a page and must not shift the numbering.
 #[test]
 fn entries_are_pages_in_name_order_whatever_order_they_were_stored_in() {
+    let dir = TempDir::new("order");
     let path = cbz(
-        "taiyaku-test-order.cbz",
+        &dir,
+        "order.cbz",
         &["p10.jpg", "ComicInfo.xml", "p2.jpg", "p1.jpg"],
     );
 
     let pages = read_member(&path).unwrap();
-
-    let _ = std::fs::remove_file(&path);
     let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, ["p1.jpg", "p2.jpg", "p10.jpg"]);
 }
@@ -224,8 +215,10 @@ fn entries_are_pages_in_name_order_whatever_order_they_were_stored_in() {
 /// 7 nested archives measured come out differently the two ways.
 #[test]
 fn nested_pages_sort_on_the_whole_path_not_the_basename() {
+    let dir = TempDir::new("nested");
     let path = cbz(
-        "taiyaku-test-nested.cbz",
+        &dir,
+        "nested.cbz",
         &[
             "Chapter 2/001.jpg",
             "Chapter 1/ZBlank (1).jpg",
@@ -234,8 +227,6 @@ fn nested_pages_sort_on_the_whole_path_not_the_basename() {
     );
 
     let pages = read_member(&path).unwrap();
-
-    let _ = std::fs::remove_file(&path);
     let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(
         names,
@@ -255,16 +246,16 @@ fn nested_pages_sort_on_the_whole_path_not_the_basename() {
 /// aligner disagree about what page 47 is.
 #[test]
 fn a_page_reads_by_index_in_the_order_read_member_gives() {
+    let dir = TempDir::new("byindex");
     let path = cbz(
-        "taiyaku-test-byindex.cbz",
+        &dir,
+        "byindex.cbz",
         &["p10.jpg", "ComicInfo.xml", "p2.jpg", "p1.jpg"],
     );
 
     let names = member_page_names(&path).unwrap();
     let second = member_page(&path, 1).unwrap();
     let whole = read_member(&path).unwrap();
-
-    let _ = std::fs::remove_file(&path);
     assert_eq!(names, ["p1.jpg", "p2.jpg", "p10.jpg"]);
     assert_eq!(second.name, "p2.jpg");
     assert_eq!(second.bytes, b"p2.jpg");
@@ -289,15 +280,13 @@ fn a_page_reads_by_index_in_the_order_read_member_gives() {
 #[test]
 fn a_sidecars_member_order_is_the_page_order_and_is_not_re_sorted() {
     // Named so that natural order is the reverse of the order given.
-    let b = cbz("taiyaku-test-given-b.cbz", &["b1.jpg"]);
-    let a = cbz("taiyaku-test-given-a.cbz", &["a1.jpg"]);
+    let dir = TempDir::new("given-b");
+    let b = cbz(&dir, "given-b.cbz", &["b1.jpg"]);
+    let a = cbz(&dir, "given-a.cbz", &["a1.jpg"]);
     let as_given = vec![b.clone(), a.clone()];
 
     let in_order = read_members_in_order(&as_given).unwrap();
     let sorted = read_edition(&as_given).unwrap();
-
-    let _ = std::fs::remove_file(&a);
-    let _ = std::fs::remove_file(&b);
     assert_eq!(
         in_order.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
         ["b1.jpg", "a1.jpg"],
@@ -319,14 +308,13 @@ fn a_sidecars_member_order_is_the_page_order_and_is_not_re_sorted() {
 /// nobody took.
 #[test]
 fn counting_a_rar_archives_pages_names_the_format() {
-    let path = std::env::temp_dir().join("taiyaku-test-count-container.cbz");
+    let dir = TempDir::new("count-container");
+    let path = dir.join("count-container.cbz");
     std::fs::write(&path, b"Rar!\x1a\x07\x01\x00").unwrap();
 
     let counted = member_pages(&path).unwrap_err();
     let listed = member_page_names(&path).unwrap_err();
     let addressed = member_page(&path, 0).unwrap_err();
-
-    let _ = std::fs::remove_file(&path);
     for error in [&counted, &listed, &addressed] {
         assert!(error.contains("RAR"), "unhelpful error: {error}");
     }
@@ -341,8 +329,7 @@ fn counting_a_rar_archives_pages_names_the_format() {
 /// would still pass every other test in this file.
 #[test]
 fn a_directory_page_reads_by_index_in_the_order_read_member_gives() {
-    let dir = std::env::temp_dir().join("taiyaku-test-dir-byindex");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("dir-byindex");
     std::fs::create_dir_all(dir.join("Chapter 1")).unwrap();
     std::fs::create_dir_all(dir.join("Chapter 2")).unwrap();
     std::fs::write(dir.join("Chapter 2/001.jpg"), b"Chapter 2/001.jpg").unwrap();
@@ -356,8 +343,6 @@ fn a_directory_page_reads_by_index_in_the_order_read_member_gives() {
     let names = member_page_names(&dir).unwrap();
     let second = member_page(&dir, 1).unwrap();
     let whole = read_member(&dir).unwrap();
-
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         names,
         [
@@ -386,15 +371,15 @@ fn a_directory_page_reads_by_index_in_the_order_read_member_gives() {
 /// same list, which is the whole point of signing pages rather than files.
 #[test]
 fn page_sizes_are_uncompressed_in_reading_order_and_skip_non_pages() {
+    let dir = TempDir::new("sizes");
     let path = cbz(
-        "taiyaku-test-sizes.cbz",
+        &dir,
+        "sizes.cbz",
         &["p10.jpg", "ComicInfo.xml", "p2.jpg", "p1.jpg"],
     );
 
     let pages = read_member(&path).unwrap();
     let sizes = member_page_sizes(&path).unwrap();
-
-    let _ = std::fs::remove_file(&path);
     let expected: Vec<u64> = pages.iter().map(|p| p.bytes.len() as u64).collect();
     assert_eq!(sizes, expected, "sizes must match the bytes actually read");
     assert_eq!(sizes.len(), 3, "ComicInfo.xml is not a page");
@@ -404,23 +389,20 @@ fn page_sizes_are_uncompressed_in_reading_order_and_skip_non_pages() {
 /// loose images into a cbz must not change what it signs as.
 #[test]
 fn a_directory_and_an_archive_of_the_same_pages_size_identically() {
-    let dir = std::env::temp_dir().join("taiyaku-test-sizes-dir");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("sizes-dir");
     for entry in ["p1.jpg", "p2.jpg", "p10.jpg"] {
         std::fs::write(dir.join(entry), entry.as_bytes()).unwrap();
     }
     // Stored in a different order, as a repacker would.
+    let archive_dir = TempDir::new("sizes-arc");
     let archive = cbz(
-        "taiyaku-test-sizes-arc.cbz",
+        &archive_dir,
+        "sizes-arc.cbz",
         &["p10.jpg", "p2.jpg", "p1.jpg"],
     );
 
     let from_dir = member_page_sizes(&dir).unwrap();
     let from_archive = member_page_sizes(&archive).unwrap();
-
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&archive);
     assert_eq!(from_dir, from_archive);
     assert_eq!(from_dir, vec![6, 6, 7], "p1.jpg, p2.jpg, p10.jpg by length");
 }
@@ -438,8 +420,8 @@ fn a_directory_and_an_archive_of_the_same_pages_size_identically() {
 /// `entry.size()` reads the central directory — patching only that one
 /// leaves the entry's actual stored bytes untouched, so a correct read
 /// is still possible despite the lie.
-fn lying_size_cbz(name: &str, entries: &[&str]) -> PathBuf {
-    let path = cbz(name, entries);
+fn lying_size_cbz(dir: &Path, name: &str, entries: &[&str]) -> PathBuf {
+    let path = cbz(dir, name, entries);
     let mut raw = std::fs::read(&path).unwrap();
     let central_directory = raw
         .windows(4)
@@ -475,11 +457,10 @@ const RESERVATION_CEILING: usize = 64 * 1024 * 1024;
 /// the per-entry ceiling matter in aggregate too.
 #[test]
 fn a_declared_size_far_past_reality_does_not_reserve_past_the_ceiling() {
-    let path = lying_size_cbz("taiyaku-test-lying-size.cbz", &["p1.jpg"]);
+    let dir = TempDir::new("lying-size");
+    let path = lying_size_cbz(&dir, "lying-size.cbz", &["p1.jpg"]);
 
     let pages = read_member(&path).unwrap();
-
-    let _ = std::fs::remove_file(&path);
     assert_eq!(pages.len(), 1);
     assert_eq!(
         pages[0].bytes, b"p1.jpg",
@@ -502,11 +483,10 @@ fn a_declared_size_far_past_reality_does_not_reserve_past_the_ceiling() {
 /// on the one path a server request actually reaches.
 #[test]
 fn a_lying_member_page_does_not_reserve_past_the_ceiling_either() {
-    let path = lying_size_cbz("taiyaku-test-lying-size-member-page.cbz", &["p1.jpg"]);
+    let dir = TempDir::new("lying-size-member-page");
+    let path = lying_size_cbz(&dir, "lying-size-member-page.cbz", &["p1.jpg"]);
 
     let page = member_page(&path, 0).unwrap();
-
-    let _ = std::fs::remove_file(&path);
     assert_eq!(
         page.bytes, b"p1.jpg",
         "the real bytes must still be read correctly despite the lie"
@@ -526,8 +506,8 @@ fn a_lying_member_page_does_not_reserve_past_the_ceiling_either() {
 /// of this function is that it never inflates one to answer.
 #[test]
 fn member_page_entries_reads_names_sizes_and_crcs_from_an_archive() {
-    let path = std::env::temp_dir().join("taiyaku-test-entries-archive.cbz");
-    let _ = std::fs::remove_file(&path);
+    let dir = TempDir::new("entries-archive");
+    let path = dir.join("entries-archive.cbz");
     {
         use std::io::Write as _;
         let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
@@ -541,8 +521,6 @@ fn member_page_entries_reads_names_sizes_and_crcs_from_an_archive() {
     }
 
     let entries = member_page_entries(&path).unwrap();
-
-    let _ = std::fs::remove_file(&path);
     assert_eq!(
         entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
         vec!["001.jpg", "002.jpg"]
@@ -559,8 +537,7 @@ fn member_page_entries_reads_names_sizes_and_crcs_from_an_archive() {
 /// undetected.
 #[test]
 fn member_page_entries_hashes_a_directory_members_pages() {
-    let dir = std::env::temp_dir().join("taiyaku-test-entries-dir");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("entries-dir");
     std::fs::create_dir_all(dir.join("member/ch1")).unwrap();
     std::fs::write(dir.join("member/ch1/002.jpg"), b"two").unwrap();
     std::fs::write(dir.join("member/ch1/001.jpg"), b"one").unwrap();
@@ -568,8 +545,6 @@ fn member_page_entries_hashes_a_directory_members_pages() {
     std::fs::write(dir.join("member/ComicInfo.xml"), b"<x/>").unwrap();
 
     let entries = member_page_entries(&dir.join("member")).unwrap();
-
-    let _ = std::fs::remove_dir_all(&dir);
     // The whole path relative to the member, not the basename — `docs/sidecar.md`.
     assert_eq!(
         entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
@@ -586,8 +561,8 @@ fn member_page_entries_hashes_a_directory_members_pages() {
 /// describes it.
 #[test]
 fn for_each_member_page_visits_every_page_in_order_with_its_entry() {
-    let path = std::env::temp_dir().join("taiyaku-test-each-page.cbz");
-    let _ = std::fs::remove_file(&path);
+    let dir = TempDir::new("each-page");
+    let path = dir.join("each-page.cbz");
     {
         use std::io::Write as _;
         let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
@@ -605,8 +580,6 @@ fn for_each_member_page_visits_every_page_in_order_with_its_entry() {
         Ok(())
     })
     .unwrap();
-
-    let _ = std::fs::remove_file(&path);
     assert_eq!(
         seen,
         vec![
@@ -620,8 +593,8 @@ fn for_each_member_page_visits_every_page_in_order_with_its_entry() {
 /// cost the rest of the volume.
 #[test]
 fn for_each_member_page_stops_at_the_first_refusal() {
-    let path = std::env::temp_dir().join("taiyaku-test-each-stop.cbz");
-    let _ = std::fs::remove_file(&path);
+    let dir = TempDir::new("each-stop");
+    let path = dir.join("each-stop.cbz");
     {
         use std::io::Write as _;
         let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
@@ -642,8 +615,6 @@ fn for_each_member_page_stops_at_the_first_refusal() {
             Ok(())
         }
     });
-
-    let _ = std::fs::remove_file(&path);
     assert_eq!(refused, Err("the caller gave up".to_string()));
     // The third page was never read: a download whose client hung up must not
     // keep inflating the rest of a 1.49 GB volume.
@@ -666,7 +637,8 @@ fn for_each_member_page_stops_at_the_first_refusal() {
 /// plan-vs-stream comparison catch an archive that changed mid-download.
 #[test]
 fn for_each_member_page_reports_the_real_size_while_member_page_entries_keeps_the_declared_lie() {
-    let path = lying_size_cbz("taiyaku-test-lying-size-for-each.cbz", &["p1.jpg"]);
+    let dir = TempDir::new("lying-size-for-each");
+    let path = lying_size_cbz(&dir, "lying-size-for-each.cbz", &["p1.jpg"]);
 
     let mut seen: Vec<PageEntry> = Vec::new();
     for_each_member_page(&path, &mut |entry, _bytes| {
@@ -675,8 +647,6 @@ fn for_each_member_page_reports_the_real_size_while_member_page_entries_keeps_th
     })
     .unwrap();
     let planned = member_page_entries(&path).unwrap();
-
-    let _ = std::fs::remove_file(&path);
     assert_eq!(seen.len(), 1);
     assert_eq!(
         seen[0].size,
@@ -697,15 +667,15 @@ fn for_each_member_page_reports_the_real_size_while_member_page_entries_keeps_th
 /// happened to be first.
 #[test]
 fn member_entry_finds_a_named_archive_entry_among_pages_and_reads_its_own_bytes() {
+    let dir = TempDir::new("member-entry");
     let path = cbz(
-        "taiyaku-test-member-entry.cbz",
+        &dir,
+        "member-entry.cbz",
         &["p1.jpg", "ComicInfo.xml", "p2.jpg"],
     );
 
     let found = member_entry(&path, "ComicInfo.xml").unwrap();
     let missing = member_entry(&path, "Nonexistent.xml").unwrap();
-
-    let _ = std::fs::remove_file(&path);
     assert_eq!(
         found,
         Some(b"ComicInfo.xml".to_vec()),
@@ -722,11 +692,10 @@ fn member_entry_finds_a_named_archive_entry_among_pages_and_reads_its_own_bytes(
 /// anything this crate controls, so the match must not depend on it.
 #[test]
 fn member_entry_matches_an_archive_entrys_name_case_insensitively() {
-    let path = cbz("taiyaku-test-member-entry-case.cbz", &["comicinfo.xml"]);
+    let dir = TempDir::new("member-entry-case");
+    let path = cbz(&dir, "member-entry-case.cbz", &["comicinfo.xml"]);
 
     let found = member_entry(&path, "ComicInfo.xml").unwrap();
-
-    let _ = std::fs::remove_file(&path);
     assert_eq!(found, Some(b"comicinfo.xml".to_vec()));
 }
 
@@ -735,16 +704,12 @@ fn member_entry_matches_an_archive_entrys_name_case_insensitively() {
 /// archive branch does.
 #[test]
 fn member_entry_reads_a_directory_members_own_file() {
-    let dir = std::env::temp_dir().join("taiyaku-test-member-entry-dir");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("member-entry-dir");
     std::fs::write(dir.join("001.jpg"), b"page").unwrap();
     std::fs::write(dir.join("ComicInfo.xml"), b"<ComicInfo/>").unwrap();
 
     let found = member_entry(&dir, "ComicInfo.xml").unwrap();
     let missing = member_entry(&dir, "Nonexistent.xml").unwrap();
-
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(found, Some(b"<ComicInfo/>".to_vec()));
     assert_eq!(missing, None);
 }
@@ -755,14 +720,11 @@ fn member_entry_reads_a_directory_members_own_file() {
 /// every `ComicInfo.xml` this crate has read sits there, never nested.
 #[test]
 fn member_entry_does_not_descend_into_a_directorys_subdirectories() {
-    let dir = std::env::temp_dir().join("taiyaku-test-member-entry-nested");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("member-entry-nested");
     std::fs::create_dir_all(dir.join("Chapter 1")).unwrap();
     std::fs::write(dir.join("Chapter 1").join("ComicInfo.xml"), b"nested").unwrap();
 
     let found = member_entry(&dir, "ComicInfo.xml").unwrap();
-
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         found, None,
         "a nested ComicInfo.xml is not this member's own"

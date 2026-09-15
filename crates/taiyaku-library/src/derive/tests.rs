@@ -15,7 +15,7 @@ use crate::{Library, derive, scan};
 /// own, and that is the fact none of them carried.
 fn archived_volumes() -> crate::tests::TempDir {
     let dir = crate::tests::tempdir("derive-archived");
-    let series = dir.path.join("Series");
+    let series = dir.path().join("Series");
     write_archive(&series.join("v01").join("Series v01.cbz"), 3);
     write_archive(&series.join("v02").join("Series v02.cbz"), 4);
     dir
@@ -34,7 +34,7 @@ fn archived_volumes() -> crate::tests::TempDir {
 /// chapter directory has no work to hang an edition off.
 fn chaptered() -> crate::tests::TempDir {
     let dir = crate::tests::tempdir("derive-chaptered");
-    let series = dir.path.join("Chaptered");
+    let series = dir.path().join("Chaptered");
     write_pages(&series.join("Chaptered - v03 - c9"), 1);
     write_pages(&series.join("Chaptered - v03 - c10"), 2);
     dir
@@ -46,7 +46,7 @@ fn chaptered() -> crate::tests::TempDir {
 /// have said.
 fn flat() -> crate::tests::TempDir {
     let dir = crate::tests::tempdir("derive-flat");
-    write_pages(&dir.path.join("Alone - v01"), 2);
+    write_pages(&dir.path().join("Alone - v01"), 2);
     dir
 }
 
@@ -55,7 +55,7 @@ fn flat() -> crate::tests::TempDir {
 /// different number of pages so the two editions' digests differ.
 fn oneshot(label: &str, pages: usize) -> crate::tests::TempDir {
     let dir = crate::tests::tempdir(label);
-    write_pages(&dir.path.join("Oneshot").join("Some Oneshot"), pages);
+    write_pages(&dir.path().join("Oneshot").join("Some Oneshot"), pages);
     dir
 }
 
@@ -70,7 +70,7 @@ fn oneshot(label: &str, pages: usize) -> crate::tests::TempDir {
 /// as well as in the row count.
 fn bare_numbered() -> crate::tests::TempDir {
     let dir = crate::tests::tempdir("derive-bare-numbers");
-    let series = dir.path.join("ONE PIECE");
+    let series = dir.path().join("ONE PIECE");
     for (name, pages) in [("001", 3), ("002", 4), ("003", 5), ("004", 6)] {
         write_pages(&series.join(name), pages);
     }
@@ -82,7 +82,7 @@ fn bare_numbered() -> crate::tests::TempDir {
 /// directory is what stays unattached, not each of the 146 files in it.
 fn chapters() -> crate::tests::TempDir {
     let dir = crate::tests::tempdir("derive-chapters");
-    let series = dir.path.join("Kaguya-sama - Fan Translated");
+    let series = dir.path().join("Kaguya-sama - Fan Translated");
     write_pages(&series.join("Kaguya-sama - c001"), 1);
     write_pages(&series.join("Kaguya-sama - c002"), 1);
     write_pages(&series.join("Kaguya-sama - c003"), 1);
@@ -97,13 +97,13 @@ fn editing_a_rule_re_derives_the_library_without_touching_the_filesystem() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
 
     assert_eq!(edition_keys(&conn), vec!["raw", "raw"]);
 
-    std::fs::remove_dir_all(&tree.path).expect("remove the tree entirely");
+    std::fs::remove_dir_all(tree.path()).expect("remove the tree entirely");
 
     conn.execute(
         "INSERT INTO rule (ordinal, kind, pattern, match_on, set_edition_key)
@@ -150,7 +150,7 @@ fn a_rule_edit_that_renames_an_edition_key_leaves_the_old_edition_standing_and_c
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     let first = derive::derive(&conn).expect("first");
     assert_eq!(
@@ -185,7 +185,7 @@ fn a_chapter_organised_directory_produces_members_and_no_work() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -202,7 +202,7 @@ fn re_deriving_keeps_a_series_row_so_a_dismissal_still_points_at_something() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first");
 
@@ -269,7 +269,7 @@ fn a_works_hub_survives_a_second_edition_arriving_in_another_root() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first");
 
@@ -284,10 +284,10 @@ fn a_works_hub_survives_a_second_edition_arriving_in_another_root() {
     // the same series, the same two volumes, under a rule scoped to this root
     // alone so the first root's editions keep the key they already have.
     let second = crate::tests::tempdir("derive-second-root");
-    let series = second.path.join("Go-Toubun no Hanayome");
+    let series = second.path().join("Go-Toubun no Hanayome");
     write_pages(&series.join("Go-Toubun no Hanayome - v01 (2019)"), 3);
     write_pages(&series.join("Go-Toubun no Hanayome - v02 (2019)"), 4);
-    let other = scan::add_root(&conn, &second.path).expect("add");
+    let other = scan::add_root(&conn, second.path()).expect("add");
     conn.execute(
         "INSERT INTO rule (ordinal, root_id, kind, pattern, match_on, set_edition_key)
          VALUES (99, ?1, 'prefix', '', 'path', 'colour')",
@@ -333,7 +333,7 @@ fn a_format_nothing_reads_is_counted_and_produces_no_structure() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -360,7 +360,7 @@ fn a_members_digest_is_written_back_and_nothing_elses_is() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     derive::derive(&conn).expect("derive");
@@ -391,9 +391,9 @@ fn an_entry_whose_bytes_have_gone_before_its_first_derive_is_counted_not_an_erro
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
-    std::fs::remove_dir_all(&tree.path).expect("remove the tree before anything is hashed");
+    std::fs::remove_dir_all(tree.path()).expect("remove the tree before anything is hashed");
 
     let report = derive::derive(&conn).expect("a missing file is not a failed derive");
 
@@ -419,7 +419,7 @@ fn members_of_one_edition_are_ordered_naturally_rather_than_lexically() {
     let tree = chaptered();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -451,7 +451,7 @@ fn a_chapter_number_the_rules_resolved_lands_on_the_member() {
     let tree = chaptered();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     derive::derive(&conn).expect("derive");
@@ -482,7 +482,7 @@ fn a_hand_set_chapter_number_outlives_a_re_derive_that_no_longer_resolves_one() 
     let tree = chaptered();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first");
 
@@ -524,7 +524,7 @@ fn a_hand_set_chapter_number_survives_a_re_derive_that_still_resolves_one() {
     let tree = chaptered();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first");
 
@@ -563,7 +563,7 @@ fn a_comicinfo_chapter_number_survives_a_re_derive_that_still_resolves_one() {
     let tree = chaptered();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first");
 
@@ -602,7 +602,7 @@ fn a_derived_series_is_findable_by_title_so_a_document_does_not_mint_a_second_on
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     derive::derive(&conn).expect("derive");
@@ -642,7 +642,7 @@ fn a_series_that_only_holds_chapters_still_gets_a_row_for_a_proposal_to_point_at
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -670,7 +670,7 @@ fn a_work_carries_the_series_and_volume_the_rules_resolved() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -725,7 +725,7 @@ fn a_hand_set_volume_outlives_a_re_derive_once_a_library_document_is_absorbed() 
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
 
@@ -783,7 +783,7 @@ fn a_hand_document_beside_the_library_survives_the_next_derive() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     // Migration 012 defaults `keeps_documents` off; this test's name and its
     // own doc comment both say the document lands *beside the root*, which an
     // off root would make false without ever failing an assertion — `save`
@@ -859,7 +859,7 @@ fn a_derive_applies_a_hand_document_whose_marker_was_cleared_on_an_existing_work
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     // Migration 012 defaults `keeps_documents` off; this test exists to pin
     // the read-back reading a file off disk, and an off root leaves
     // `hand::save` below writing no file at all — `hand::load` would then
@@ -954,7 +954,7 @@ fn a_fresh_database_recovers_a_hand_set_title_on_its_first_derive() {
     {
         let first = Library::open_in_memory().expect("open");
         let conn = first.conn();
-        let root = scan::add_root(&conn, &tree.path).expect("add");
+        let root = scan::add_root(&conn, tree.path()).expect("add");
         // Migration 012 defaults `keeps_documents` off; this test is about
         // the document surviving the database being lost, so it opts in.
         conn.execute(
@@ -991,7 +991,7 @@ fn a_fresh_database_recovers_a_hand_set_title_on_its_first_derive() {
     // at the very same root: what a rebuilt database actually looks like.
     let second = Library::open_in_memory().expect("open");
     let conn = second.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect(
         "one derive, against a database that has never scanned or derived this root before",
@@ -1032,7 +1032,7 @@ fn an_empty_hand_document_this_database_has_never_seen_leaves_the_guard_open() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
 
@@ -1110,7 +1110,7 @@ fn a_hand_document_that_will_not_parse_is_reported_and_the_scan_goes_on() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     let first = derive::derive(&conn).expect("first derive");
     assert_eq!(
@@ -1165,7 +1165,7 @@ fn a_hand_document_naming_an_edition_the_work_does_not_have_is_reported_and_the_
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
 
@@ -1224,7 +1224,7 @@ fn a_re_derive_still_writes_the_volume_for_a_work_no_hand_document_has_touched()
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
 
@@ -1294,7 +1294,7 @@ fn a_rules_edition_kind_and_language_reach_the_edition_row() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     a_rule_setting(&conn, Some("official"), Some("Japanese"));
 
@@ -1324,7 +1324,7 @@ fn a_rule_that_stops_naming_a_kind_clears_the_one_the_last_derive_wrote() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     a_rule_setting(&conn, Some("official"), Some("Japanese"));
     derive::derive(&conn).expect("first derive");
@@ -1351,7 +1351,7 @@ fn an_edition_kind_the_closed_set_does_not_hold_is_refused_and_counted() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     a_rule_setting(&conn, Some("bootleg"), Some("Japanese"));
 
@@ -1391,7 +1391,7 @@ fn a_hand_applied_library_documents_edition_kind_outlives_a_re_derive() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
 
@@ -1453,7 +1453,7 @@ fn an_edition_takes_the_kind_of_the_first_member_that_resolved_one() {
     let tree = chaptered();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     conn.execute(
         "INSERT INTO rule (ordinal, kind, pattern, match_on, set_kind)
@@ -1482,7 +1482,7 @@ fn a_member_directly_under_the_root_keeps_its_whole_name_as_the_title() {
     let tree = flat();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -1507,7 +1507,7 @@ fn a_volume_less_work_still_matches_itself_on_the_next_derive() {
     let first = oneshot("derive-oneshot-a", 3);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &first.path).expect("add");
+    let root = scan::add_root(&conn, first.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first");
 
@@ -1519,7 +1519,7 @@ fn a_volume_less_work_still_matches_itself_on_the_next_derive() {
     assert_eq!(volume, None, "nothing in the name says which volume it is");
 
     let second = oneshot("derive-oneshot-b", 5);
-    let other = scan::add_root(&conn, &second.path).expect("add");
+    let other = scan::add_root(&conn, second.path()).expect("add");
     conn.execute(
         "INSERT INTO rule (ordinal, root_id, kind, pattern, match_on, set_edition_key)
          VALUES (99, ?1, 'prefix', '', 'path', 'colour')",
@@ -1552,7 +1552,7 @@ fn a_container_that_would_not_open_is_counted_rather_than_written_with_no_pages(
     // not become a work with a page count invented for it.
     let tree = fixture();
     std::fs::write(
-        tree.path
+        tree.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v03.cbz"),
         b"PK\x03\x04",
@@ -1560,7 +1560,7 @@ fn a_container_that_would_not_open_is_counted_rather_than_written_with_no_pages(
     .expect("four bytes of zip signature and nothing behind them");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("a bad archive is not a failed derive");
@@ -1587,7 +1587,7 @@ fn a_rule_that_captures_a_title_decides_the_works_own() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     conn.execute(
         "INSERT INTO rule (ordinal, kind, pattern, match_on)
@@ -1624,7 +1624,7 @@ fn several_chapter_directories_under_one_parent_are_one_unattached_directory() {
     let tree = chapters();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -1655,13 +1655,13 @@ fn a_volume_split_into_chapter_subdirectories_is_one_member() {
     // members, the volume's pages are counted twice, and three chapters
     // become editions of nothing.
     let tree = crate::tests::tempdir("derive-nested");
-    let volume = tree.path.join("Series").join("Series - v01");
+    let volume = tree.path().join("Series").join("Series - v01");
     for chapter in ["c001", "c002", "c003"] {
         crate::scan::tests::write_pages(&volume.join(chapter), 2);
     }
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -1682,13 +1682,13 @@ fn the_chapters_inside_a_volume_are_not_an_unattached_directory() {
     // and the volume they are plainly *inside* is reported as needing an
     // `attach-chapters` decision nobody has to make.
     let tree = crate::tests::tempdir("derive-nested-attached");
-    let volume = tree.path.join("Series").join("Series - v01");
+    let volume = tree.path().join("Series").join("Series - v01");
     for chapter in ["c001", "c002", "c003"] {
         write_pages(&volume.join(chapter), 2);
     }
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -1708,13 +1708,13 @@ fn a_chapter_file_naming_its_own_volume_does_not_become_a_second_member() {
     // twelve and one volume becomes four members, three of which are pieces
     // of the first. `Kaguya-sama v03/Kaguya-sama v03 c015` is that layout.
     let tree = crate::tests::tempdir("derive-nested-marked");
-    let volume = tree.path.join("Series").join("Series - v01");
+    let volume = tree.path().join("Series").join("Series - v01");
     for chapter in ["c001", "c002", "c003"] {
         write_pages(&volume.join(format!("Series - v01 - {chapter}")), 2);
     }
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -1741,14 +1741,14 @@ fn a_chapter_directory_inside_another_one_is_not_a_second_unattached_directory()
     // is already covered by whatever decision `c001` is waiting for. Counting
     // both would put two rows in §6's inbox for one question.
     let tree = crate::tests::tempdir("derive-nested-chapters");
-    let series = tree.path.join("Chaptered");
+    let series = tree.path().join("Chaptered");
     write_pages(
         &series.join("Chaptered - c001").join("Chaptered - c001.5"),
         2,
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -1766,7 +1766,7 @@ fn a_chapter_two_levels_below_a_volume_is_still_inside_it() {
     // in as members of the very work their grandparent forms.
     let tree = crate::tests::tempdir("derive-nested-deep");
     let inside = tree
-        .path
+        .path()
         .join("Series")
         .join("Series - v01")
         .join("Chapters");
@@ -1774,7 +1774,7 @@ fn a_chapter_two_levels_below_a_volume_is_still_inside_it() {
     write_pages(&inside.join("Series - v01 - c002"), 2);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -1809,10 +1809,13 @@ fn a_volume_less_container_does_not_become_a_member_beside_what_is_inside_it() {
     // module gave its containers a volume marker, so no test had an entry
     // that resolved neither (whole-branch review, C3).
     let tree = crate::tests::tempdir("derive-extras");
-    write_pages(&tree.path.join("Series").join("Extras").join("Art Book"), 5);
+    write_pages(
+        &tree.path().join("Series").join("Extras").join("Art Book"),
+        5,
+    );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -1850,7 +1853,7 @@ fn three_levels_of_volume_less_containers_are_one_member() {
     let tree = crate::tests::tempdir("derive-extras-deep");
     write_pages(
         &tree
-            .path
+            .path()
             .join("Series")
             .join("Extras")
             .join("Art Books")
@@ -1859,7 +1862,7 @@ fn three_levels_of_volume_less_containers_are_one_member() {
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -1882,10 +1885,10 @@ fn a_broad_rule_that_reaches_the_root_does_not_swallow_the_library() {
     // that really does say "every path is one series" is visible as a number
     // rather than as a library that quietly holds less than it did.
     let tree = crate::tests::tempdir("derive-root-defers");
-    write_pages(&tree.path.join("Series").join("Series - v01"), 2);
+    write_pages(&tree.path().join("Series").join("Series - v01"), 2);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     conn.execute(
         "INSERT INTO rule (ordinal, kind, pattern, match_on, set_series)
@@ -1926,10 +1929,10 @@ fn a_root_that_is_itself_the_material_is_named_after_its_own_directory() {
     // and the slug `work`, which is `slugify`'s fallback for a name holding
     // nothing alphanumeric.
     let tree = crate::tests::tempdir("derive-root-material");
-    write_pages(&tree.path, 3);
+    write_pages(tree.path(), 3);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     conn.execute(
         "INSERT INTO rule (ordinal, kind, pattern, match_on, set_series)
@@ -1953,7 +1956,7 @@ fn a_root_that_is_itself_the_material_is_named_after_its_own_directory() {
         )
         .expect("work");
     let named = tree
-        .path
+        .path()
         .file_name()
         .expect("the temp directory has a name")
         .to_string_lossy()
@@ -1984,7 +1987,7 @@ fn every_volume_less_entry_in_a_series_is_its_own_work() {
     let tree = bare_numbered();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -2027,12 +2030,12 @@ fn two_differently_named_volume_less_directories_in_one_series_do_not_merge() {
     // carries a volume marker, so they shared a group key and one page
     // sequence.
     let tree = crate::tests::tempdir("derive-omake");
-    let series = tree.path.join("Series");
+    let series = tree.path().join("Series");
     write_pages(&series.join("Omake"), 2);
     write_pages(&series.join("Bonus"), 2);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -2063,11 +2066,11 @@ fn a_second_volume_less_work_arriving_later_does_not_take_the_first_ones_row() {
     // the same thing that keys it. Removing that probe puts Bonus's content
     // on Omake's row.
     let tree = crate::tests::tempdir("derive-omake-later");
-    let series = tree.path.join("Series");
+    let series = tree.path().join("Series");
     write_pages(&series.join("Omake"), 2);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first");
 
@@ -2123,7 +2126,7 @@ fn two_entries_joining_one_edition_are_counted_as_a_merge() {
     let tree = chaptered();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -2139,13 +2142,13 @@ fn two_entries_joining_one_edition_are_counted_as_a_merge() {
 #[test]
 fn a_suppressed_entry_is_counted_rather_than_vanishing() {
     let tree = crate::tests::tempdir("derive-suppressed-count");
-    let volume = tree.path.join("Series").join("Series - v01");
+    let volume = tree.path().join("Series").join("Series - v01");
     for chapter in ["c001", "c002", "c003"] {
         crate::scan::tests::write_pages(&volume.join(chapter), 2);
     }
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -2172,7 +2175,7 @@ fn an_archive_inside_a_volume_directory_is_the_member_rather_than_the_directory(
     let tree = archived_volumes();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -2214,7 +2217,7 @@ fn a_container_holding_no_pages_of_its_own_is_counted_rather_than_silently_dropp
     let tree = archived_volumes();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
 
     let report = derive::derive(&conn).expect("derive");
@@ -2230,7 +2233,7 @@ fn a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first");
 
@@ -2248,7 +2251,7 @@ fn a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress() {
     .expect("progress");
 
     std::fs::write(
-        tree.path
+        tree.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01 (2019)")
             .join("003.jpg"),
@@ -2263,7 +2266,7 @@ fn a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress() {
     // caught both on 2026-08-19; both pass here.
     let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
     std::fs::File::open(
-        tree.path
+        tree.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01 (2019)"),
     )
@@ -2311,12 +2314,12 @@ fn a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive() {
     // on is degenerate-corpus behaviour rather than a designed outcome — what
     // is pinned here is that the scan survives it.
     let tree = crate::tests::tempdir("derive-duplicate");
-    write_pages(&tree.path.join("Alpha").join("Alpha - v01"), 3);
-    let beta = tree.path.join("Beta").join("Beta - v01");
+    write_pages(&tree.path().join("Alpha").join("Alpha - v01"), 3);
+    let beta = tree.path().join("Beta").join("Beta - v01");
     write_pages(&beta, 5);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first");
 
@@ -2325,7 +2328,7 @@ fn a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive() {
     // `write_pages` bakes its own directory into every page's bytes
     // precisely so two calls can never collide by accident (Task 5/8 review).
     // Deliberate duplication belongs at the call site that wants it.
-    let alpha = tree.path.join("Alpha").join("Alpha - v01");
+    let alpha = tree.path().join("Alpha").join("Alpha - v01");
     std::fs::remove_dir_all(&beta).expect("remove");
     std::fs::create_dir_all(&beta).expect("mkdir");
     for page in 0..3 {
@@ -2455,14 +2458,14 @@ fn the_token_side_readability_test_agrees_with_the_enums_own() {
 #[test]
 fn a_work_spanning_two_roots_gives_each_member_its_own_root() {
     let english = crate::tests::tempdir("derive-root-en");
-    write_pages(&english.path.join("Series").join("Series - v01"), 2);
+    write_pages(&english.path().join("Series").join("Series - v01"), 2);
     let raw = crate::tests::tempdir("derive-root-raw");
-    write_pages(&raw.path.join("Series").join("Series - v01"), 2);
+    write_pages(&raw.path().join("Series").join("Series - v01"), 2);
 
     let library = Library::open_in_memory().expect("in-memory library");
     let conn = library.conn();
-    let en_root = scan::add_root(&conn, &english.path).expect("adds the English root");
-    let raw_root = scan::add_root(&conn, &raw.path).expect("adds the raw root");
+    let en_root = scan::add_root(&conn, english.path()).expect("adds the English root");
+    let raw_root = scan::add_root(&conn, raw.path()).expect("adds the raw root");
     scan::scan_root(&conn, &en_root).expect("scans English");
     scan::scan_root(&conn, &raw_root).expect("scans raw");
     derive::derive(&conn).expect("derives");
@@ -2493,7 +2496,7 @@ fn a_work_spanning_two_roots_gives_each_member_its_own_root() {
 #[test]
 fn a_rederive_rewrites_the_root_rather_than_leaving_the_old_one() {
     let dir = crate::tests::tempdir("derive-root-rewrite");
-    write_pages(&dir.path.join("Series").join("Series - v01"), 2);
+    write_pages(&dir.path().join("Series").join("Series - v01"), 2);
 
     // A second, real root to scribble with: `member.root_id` REFERENCES
     // `root(id)`, so a made-up id is refused by the constraint rather than
@@ -2502,12 +2505,12 @@ fn a_rederive_rewrites_the_root_rather_than_leaving_the_old_one() {
     // assertion, since it proves the re-derive writes the *right* root and
     // not merely a different one.
     let other = crate::tests::tempdir("derive-root-rewrite-other");
-    write_pages(&other.path.join("Other").join("Other - v01"), 1);
+    write_pages(&other.path().join("Other").join("Other - v01"), 1);
 
     let library = Library::open_in_memory().expect("in-memory library");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("adds the root");
-    let wrong_root = scan::add_root(&conn, &other.path).expect("adds the other root");
+    let root = scan::add_root(&conn, dir.path()).expect("adds the root");
+    let wrong_root = scan::add_root(&conn, other.path()).expect("adds the other root");
     scan::scan_root(&conn, &root).expect("scans");
     derive::derive(&conn).expect("derives");
 
@@ -2537,7 +2540,7 @@ fn one_pass_answers_for_every_series_it_was_asked_about() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
 
@@ -3007,15 +3010,15 @@ fn seed_notes(conn: &Connection, work_id: i64, user_id: i64, edition: &str, ids:
 /// a Full Color one, scanned and derived into two separate works, with the id
 /// of the colour work returned.
 fn two_works_before_the_fold(tree: &crate::tests::TempDir, conn: &Connection) -> i64 {
-    write_pages(&tree.path.join("Series").join("Series - v01"), 12);
+    write_pages(&tree.path().join("Series").join("Series - v01"), 12);
     write_pages(
         &tree
-            .path
+            .path()
             .join("Series - Full Color")
             .join("Series - Full Color - v01"),
         12,
     );
-    let root = scan::add_root(conn, &tree.path).expect("add");
+    let root = scan::add_root(conn, tree.path()).expect("add");
     // Migration 012 defaults `keeps_documents` off; two of the four tests
     // built on this fixture hand-edit the colour work and need its document
     // to actually reach disk, so this opts in — harmless for the other two,
@@ -3388,7 +3391,7 @@ fn a_title_only_edit_claims_no_volume_and_no_series() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
 
@@ -3459,7 +3462,7 @@ fn a_rekeyed_digest_takes_its_document_with_it() {
     let dir = archived_volumes();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add");
+    let root = scan::add_root(&conn, dir.path()).expect("add");
     // Migration 012 defaults `keeps_documents` off; this test is about the
     // document surviving a rekey, so it opts in.
     conn.execute(
@@ -3503,7 +3506,7 @@ fn a_rekeyed_digest_takes_its_document_with_it() {
         )
         .expect("the work's one member");
     let rel_path = member_path
-        .strip_prefix(&format!("{}/", dir.path.to_string_lossy()))
+        .strip_prefix(&format!("{}/", dir.path().to_string_lossy()))
         .expect("the member sits under the root")
         .to_string();
     conn.execute(
@@ -3637,9 +3640,9 @@ fn folding_a_work_away_orphans_its_hand_document_on_the_same_pass() {
 #[test]
 fn repaired_documents_accumulates_across_every_root_that_needed_one() {
     let dir = crate::tests::tempdir("derive-repaired-documents-two-roots");
-    let root_a_dir = dir.path.join("root-a");
+    let root_a_dir = dir.path().join("root-a");
     write_archive(&root_a_dir.join("Alpha").join("Alpha - v01.cbz"), 3);
-    let root_b_dir = dir.path.join("root-b");
+    let root_b_dir = dir.path().join("root-b");
     write_archive(&root_b_dir.join("Beta").join("Beta - v01.cbz"), 3);
 
     let library = Library::open_in_memory().expect("open");
@@ -3742,7 +3745,7 @@ fn two_orphans_in_one_pass_only_one_from_a_fold() {
     // A second document, planted directly under the same root's `.taiyaku`,
     // addressing no work this library has ever derived — stranded from the
     // moment it is written, never through a fold or a rekey.
-    let taiyaku_dir = tree.path.join(".taiyaku");
+    let taiyaku_dir = tree.path().join(".taiyaku");
     std::fs::create_dir_all(&taiyaku_dir).expect("creating .taiyaku");
     std::fs::write(
         taiyaku_dir.join("never-addressed.library.json"),
@@ -3834,7 +3837,7 @@ fn a_repacked_volume_takes_its_document_with_it() {
     let dir = archived_volumes();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add");
+    let root = scan::add_root(&conn, dir.path()).expect("add");
     // Migration 012 defaults `keeps_documents` off; this test is about the
     // document following a repack, so it opts in.
     conn.execute(
@@ -3863,7 +3866,7 @@ fn a_repacked_volume_takes_its_document_with_it() {
     // because the label differs — `write_archive`'s own comment says why it
     // is built that way.
     write_archive(
-        &dir.path.join("Series").join("v01").join("Series v01.cbz"),
+        &dir.path().join("Series").join("v01").join("Series v01.cbz"),
         4,
     );
 
@@ -3905,12 +3908,12 @@ fn a_repacked_volume_takes_its_document_with_it() {
 #[test]
 fn a_correction_survives_a_page_being_added_and_then_losing_the_database() {
     let dir = archived_volumes();
-    let v01 = dir.path.join("Series").join("v01").join("Series v01.cbz");
+    let v01 = dir.path().join("Series").join("v01").join("Series v01.cbz");
 
     {
         let library = Library::open_in_memory().expect("open");
         let conn = library.conn();
-        let root = scan::add_root(&conn, &dir.path).expect("add");
+        let root = scan::add_root(&conn, dir.path()).expect("add");
         // Migration 012 defaults `keeps_documents` off; this test is about
         // the document surviving a rekey and then losing the database, so it
         // opts in.
@@ -3962,7 +3965,7 @@ fn a_correction_survives_a_page_being_added_and_then_losing_the_database() {
 fn correct_the_first_work(dir: &crate::tests::TempDir) {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add");
+    let root = scan::add_root(&conn, dir.path()).expect("add");
     // Migration 012 defaults `keeps_documents` off; this fixture's whole
     // point is a document that survives losing the database, so it opts in.
     conn.execute(
@@ -3990,7 +3993,7 @@ fn correct_the_first_work(dir: &crate::tests::TempDir) {
 fn title_after_rebuilding(dir: &crate::tests::TempDir) -> String {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("add");
+    let root = scan::add_root(&conn, dir.path()).expect("add");
     scan::scan_root(&conn, &root).expect("rescanning");
     derive::derive(&conn).expect("rederiving");
     conn.query_row("SELECT title FROM work ORDER BY id LIMIT 1", [], |row| {
@@ -4110,11 +4113,11 @@ fn reconciling_documents_is_what_plain_derive_does() {
 #[test]
 fn write_roots_survives_a_root_deleted_after_its_own_group_was_built() {
     let dir = crate::tests::tempdir("derive-write-roots-vanished-root");
-    write_pages(&dir.path.join("Series").join("Series - v01"), 2);
+    write_pages(&dir.path().join("Series").join("Series - v01"), 2);
 
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("adding the root");
+    let root = scan::add_root(&conn, dir.path()).expect("adding the root");
     scan::scan_root(&conn, &root).expect("scanning the root");
     derive::derive(&conn).expect("the first derive, which assigns member.root_id for real");
 
@@ -4171,7 +4174,7 @@ fn write_roots_survives_a_root_deleted_after_its_own_group_was_built() {
         edition_key,
         vec![super::Candidate {
             path: dir
-                .path
+                .path()
                 .join("Series")
                 .join("Series - v01")
                 .join("000.png")
@@ -4232,11 +4235,11 @@ fn write_roots_survives_a_root_deleted_after_its_own_group_was_built() {
 #[test]
 fn write_roots_propagates_a_non_foreign_key_error_rather_than_treating_it_as_a_vanished_root() {
     let dir = crate::tests::tempdir("derive-write-roots-non-fk-error");
-    write_pages(&dir.path.join("Series").join("Series - v01"), 2);
+    write_pages(&dir.path().join("Series").join("Series - v01"), 2);
 
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("adding the root");
+    let root = scan::add_root(&conn, dir.path()).expect("adding the root");
     scan::scan_root(&conn, &root).expect("scanning the root");
     derive::derive(&conn).expect("the first derive, which assigns member.root_id for real");
 
@@ -4272,7 +4275,7 @@ fn write_roots_propagates_a_non_foreign_key_error_rather_than_treating_it_as_a_v
         edition_key,
         vec![super::Candidate {
             path: dir
-                .path
+                .path()
                 .join("Series")
                 .join("Series - v01")
                 .join("000.png")
@@ -4329,7 +4332,7 @@ fn rescanned_after_correcting_gotoubun(
     let library = Library::open_in_memory().expect("open");
     let series_id = {
         let conn = library.conn();
-        let root = scan::add_root(&conn, &tree.path).expect("add");
+        let root = scan::add_root(&conn, tree.path()).expect("add");
         scan::scan_root(&conn, &root).expect("scan");
         derive::derive(&conn).expect("first derive");
         let series_id: i64 = conn
@@ -4446,7 +4449,7 @@ fn a_rescan_after_a_document_names_another_primary_title_keeps_the_series() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &tree.path).expect("add");
+    let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
     let (series_id, work_id): (i64, i64) = conn

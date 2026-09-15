@@ -6,7 +6,8 @@ use super::*;
 /// arithmetic below this line.
 #[test]
 fn a_source_serves_one_member_at_an_offset_within_it() {
-    let work = crate::test_support::work("taiyaku-test-source");
+    let tmp = crate::test_support::Fixture::new("source");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap().to_path_buf();
     let sidecar = work.sidecar();
     let edition = sidecar.editions.get("raw").unwrap();
@@ -15,7 +16,6 @@ fn a_source_serves_one_member_at_an_offset_within_it() {
     let second_member = LocalLibrary.page(&root, &edition.members[1], 0).unwrap();
     let past_end = LocalLibrary.page(&root, &edition.members[1], 9);
 
-    crate::test_support::cleanup("taiyaku-test-source");
     assert_eq!(first.bytes, b"a1.jpg");
     assert_eq!(
         second_member.bytes, b"b1.jpg",
@@ -34,7 +34,8 @@ fn a_source_serves_one_member_at_an_offset_within_it() {
 /// asserted, now checked one level up.
 #[test]
 fn state_walks_a_flat_index_across_member_boundaries() {
-    let state = crate::test_support::state("taiyaku-test-state-page");
+    let tmp = crate::test_support::Fixture::new("state-page");
+    let state = crate::test_support::state(&tmp);
     let work = &state.works[0];
 
     let count = work.sidecar().editions.get("raw").unwrap().total_pages();
@@ -44,7 +45,6 @@ fn state_walks_a_flat_index_across_member_boundaries() {
     let past_end = state.page(work, "raw", 4);
     let no_edition = state.page(work, "nope", 0);
 
-    crate::test_support::cleanup("taiyaku-test-state-page");
     assert_eq!(count, 4);
     assert_eq!(first.bytes, b"a1.jpg");
     assert_eq!(

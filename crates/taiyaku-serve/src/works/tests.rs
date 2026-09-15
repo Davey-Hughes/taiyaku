@@ -24,13 +24,12 @@ fn a_work_is_named_by_its_sidecar_filename() {
 /// otherwise tell which two files collided.
 #[test]
 fn two_sidecars_claiming_one_work_id_are_refused_rather_than_shadowed() {
-    let first = crate::test_support::work("taiyaku-test-works-clash-first");
-    let second = crate::test_support::work("taiyaku-test-works-clash-second");
+    let tmp = crate::test_support::Fixture::new("works-clash-first");
+    let first = crate::test_support::work(&tmp);
+    let tmp2 = crate::test_support::Fixture::new("works-clash-second");
+    let second = crate::test_support::work(&tmp2);
 
     let refused = load_works(&[first.path.clone(), second.path.clone()]);
-
-    crate::test_support::cleanup("taiyaku-test-works-clash-first");
-    crate::test_support::cleanup("taiyaku-test-works-clash-second");
 
     let message = refused.expect_err("two files naming one work must not load");
     assert!(
@@ -52,15 +51,14 @@ fn two_sidecars_claiming_one_work_id_are_refused_rather_than_shadowed() {
 /// and keep their own ids.
 #[test]
 fn two_differently_named_sidecars_load_side_by_side() {
-    let first = crate::test_support::work("taiyaku-test-works-distinct-first");
-    let second = crate::test_support::work("taiyaku-test-works-distinct-second");
+    let tmp = crate::test_support::Fixture::new("works-distinct-first");
+    let first = crate::test_support::work(&tmp);
+    let tmp2 = crate::test_support::Fixture::new("works-distinct-second");
+    let second = crate::test_support::work(&tmp2);
     let renamed = second.path.with_file_name("other.taiyaku.json");
     std::fs::rename(&second.path, &renamed).unwrap();
 
     let loaded = load_works(&[first.path.clone(), renamed]);
-
-    crate::test_support::cleanup("taiyaku-test-works-distinct-first");
-    crate::test_support::cleanup("taiyaku-test-works-distinct-second");
 
     let works = loaded.expect("distinct filenames are distinct works");
     let ids: Vec<&str> = works.iter().map(|w| w.id.as_str()).collect();
@@ -76,7 +74,8 @@ fn two_differently_named_sidecars_load_side_by_side() {
 #[allow(clippy::result_large_err)]
 #[test]
 fn a_replaced_sidecar_is_what_the_next_reader_sees() {
-    let work = crate::test_support::work("taiyaku-test-works-replace");
+    let tmp = crate::test_support::Fixture::new("works-replace");
+    let work = crate::test_support::work(&tmp);
     let before = work.sidecar();
 
     let swapped: Result<(), axum::response::Response> = work.update(|current| {
@@ -86,7 +85,6 @@ fn a_replaced_sidecar_is_what_the_next_reader_sees() {
     });
 
     let after = work.sidecar();
-    crate::test_support::cleanup("taiyaku-test-works-replace");
     swapped.expect("the update runs");
     assert_eq!(before.work.title, "T");
     assert_eq!(after.work.title, "Renamed");
@@ -193,10 +191,10 @@ fn summary_reads_series_and_volume_from_the_row_when_present() {
 #[test]
 fn summary_answers_none_for_series_and_volume_with_no_row_at_all() {
     let library = taiyaku_library::Library::open_in_memory().expect("library");
-    let work = crate::test_support::work("taiyaku-test-works-summary-no-row");
+    let tmp = crate::test_support::Fixture::new("works-summary-no-row");
+    let work = crate::test_support::work(&tmp);
     let conn = library.conn();
     let summary = crate::works::summary(&conn, &work, None).expect("summary");
-    crate::test_support::cleanup("taiyaku-test-works-summary-no-row");
     assert_eq!(summary.slug, "t");
     assert_eq!(summary.title, "T");
     assert_eq!(summary.series, None);

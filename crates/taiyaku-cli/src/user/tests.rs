@@ -122,25 +122,28 @@ fn the_usage_covers_every_subcommand() {
 }
 
 /// A scratch directory and the path of a library inside it.
-fn scratch(name: &str) -> std::path::PathBuf {
-    let root =
-        std::env::temp_dir().join(format!("taiyaku-test-user-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    root
+fn scratch(name: &str) -> taiyaku_read::test_support::TempDir {
+    taiyaku_read::test_support::TempDir::new(&format!("user-{name}"))
 }
 
 /// A real on-disk library with one account that can log in, and the `--db`
-/// arguments that reach it.
-fn a_library(name: &str) -> (std::path::PathBuf, Vec<String>) {
-    let db = scratch(name).join("library.db");
+/// arguments that reach it, with the directory that holds it.
+fn a_library(
+    name: &str,
+) -> (
+    taiyaku_read::test_support::TempDir,
+    std::path::PathBuf,
+    Vec<String>,
+) {
+    let dir = scratch(name);
+    let db = dir.join("library.db");
     {
         let library = Library::open(&db).expect("opens a real on-disk library");
         let conn = library.conn();
         account::promote(&conn, "davey", "a password", "admin").expect("promotes");
     }
     let flags = vec!["--db".to_string(), db.to_str().unwrap().to_string()];
-    (db, flags)
+    (dir, db, flags)
 }
 
 fn with(flags: &[String], args: &[&str]) -> Vec<String> {
@@ -151,7 +154,7 @@ fn with(flags: &[String], args: &[&str]) -> Vec<String> {
 
 #[test]
 fn listing_accounts_reaches_a_real_library() {
-    let (_db, flags) = a_library("list");
+    let (_dir, _db, flags) = a_library("list");
     command(&with(&flags, &["list"])).expect("lists");
 }
 
@@ -163,7 +166,7 @@ fn listing_accounts_reaches_a_real_library() {
 /// that happens before the prompt.
 #[test]
 fn a_second_account_added_from_the_command_line_is_a_reader() {
-    let (db, _flags) = a_library("add-is-a-reader");
+    let (_dir, db, _flags) = a_library("add-is-a-reader");
     let library = Library::open(&db).expect("opens");
     {
         let conn = library.conn();
@@ -180,7 +183,7 @@ fn a_second_account_added_from_the_command_line_is_a_reader() {
 /// The whole key lifecycle through the commands a person actually types.
 #[test]
 fn a_key_can_be_created_listed_and_revoked_from_the_command_line() {
-    let (db, flags) = a_library("keys");
+    let (_dir, db, flags) = a_library("keys");
 
     key_command(&with(&flags, &["create", "davey", "--name", "phone"])).expect("creates");
     let id: i64 = {
@@ -206,7 +209,7 @@ fn a_key_can_be_created_listed_and_revoked_from_the_command_line() {
 /// "already gone" and "revoked" are the same outcome for the person asking.
 #[test]
 fn revoking_a_key_that_is_not_there_is_not_an_error() {
-    let (_db, flags) = a_library("revoke-missing");
+    let (_dir, _db, flags) = a_library("revoke-missing");
     key_command(&with(&flags, &["revoke", "davey", "999"])).expect("says nothing to revoke");
 }
 
@@ -214,7 +217,7 @@ fn revoking_a_key_that_is_not_there_is_not_an_error() {
 /// than doing nothing quietly.
 #[test]
 fn an_unknown_account_is_named_in_the_refusal() {
-    let (_db, flags) = a_library("unknown-account");
+    let (_dir, _db, flags) = a_library("unknown-account");
 
     for args in [
         vec!["create", "nobody", "--name", "phone"],
@@ -233,7 +236,7 @@ fn an_unknown_account_is_named_in_the_refusal() {
 /// library's own unit test.
 #[test]
 fn promoting_a_claimed_library_points_at_user_add() {
-    let (_db, flags) = a_library("promote-twice");
+    let (_dir, _db, flags) = a_library("promote-twice");
     // **Refused before any password is read**, which is what makes this test
     // able to run at all: the version that prompted first would block on stdin
     // here forever, which is exactly what it does to a person.
@@ -271,7 +274,8 @@ fn says(password: &'static str) -> impl Fn(&str) -> Result<String, String> {
 /// The whole of `promote`, not just its flag parsing.
 #[test]
 fn promote_claims_the_seeded_account_end_to_end() {
-    let db = scratch("promote-end-to-end").join("library.db");
+    let dir = scratch("promote-end-to-end");
+    let db = dir.join("library.db");
     let flags = vec!["--db".to_string(), db.to_str().unwrap().to_string()];
 
     promote_with(&with(&flags, &["davey"]), &says("a real password")).expect("promotes");
@@ -298,7 +302,7 @@ fn promote_claims_the_seeded_account_end_to_end() {
 /// And `add` beside it, which must not mint an administrator.
 #[test]
 fn add_creates_a_reader_end_to_end() {
-    let (db, flags) = a_library("add-end-to-end");
+    let (_dir, db, flags) = a_library("add-end-to-end");
 
     add_with(&with(&flags, &["alex"]), &says("theirs")).expect("adds");
 
@@ -319,7 +323,7 @@ fn add_creates_a_reader_end_to_end() {
 /// `user password` replaces the hash and ends the account's sessions.
 #[test]
 fn changing_a_password_from_the_command_line_ends_open_sessions() {
-    let (db, flags) = a_library("password-end-to-end");
+    let (_dir, db, flags) = a_library("password-end-to-end");
     let library = Library::open(&db).expect("opens");
     {
         let conn = library.conn();
@@ -356,7 +360,7 @@ fn changing_a_password_from_the_command_line_ends_open_sessions() {
 /// — leaves the library exactly as it was.
 #[test]
 fn a_refused_password_changes_nothing() {
-    let (db, flags) = a_library("refused-password");
+    let (_dir, db, flags) = a_library("refused-password");
     let refuses = |_: &str| Err("the two passwords did not match".to_string());
 
     let err = add_with(&with(&flags, &["alex"]), &refuses).unwrap_err();
@@ -399,7 +403,7 @@ fn the_sessions_ended_note_appears_only_when_sessions_ended() {
 /// path (`library scan --add PATH`) and has no reason to know its rowid.
 #[test]
 fn granting_a_root_by_path_resolves_it_to_the_row() {
-    let (db, flags) = a_library("grant-root");
+    let (_dir, db, flags) = a_library("grant-root");
     let root_dir = scratch("grant-root-shelf");
     let root_id = {
         let library = Library::open(&db).expect("opens");
@@ -428,7 +432,7 @@ fn granting_a_root_by_path_resolves_it_to_the_row() {
 
 #[test]
 fn revoking_a_root_takes_the_grant_back() {
-    let (db, flags) = a_library("revoke-root");
+    let (_dir, db, flags) = a_library("revoke-root");
     let root_dir = scratch("revoke-root-shelf");
     {
         let library = Library::open(&db).expect("opens");
@@ -453,7 +457,7 @@ fn revoking_a_root_takes_the_grant_back() {
 
 #[test]
 fn granting_a_root_this_library_does_not_hold_names_the_path() {
-    let (_db, flags) = a_library("grant-unknown-root");
+    let (_dir, _db, flags) = a_library("grant-unknown-root");
     let why = command(&with(&flags, &["grant-root", "davey", "/not/a/root"])).unwrap_err();
     assert!(
         why.contains("/not/a/root"),
@@ -463,7 +467,7 @@ fn granting_a_root_this_library_does_not_hold_names_the_path() {
 
 #[test]
 fn granting_a_root_to_an_account_that_does_not_exist_names_the_account() {
-    let (db, flags) = a_library("grant-unknown-user");
+    let (_dir, db, flags) = a_library("grant-unknown-user");
     let root_dir = scratch("grant-unknown-user-shelf");
     {
         let library = Library::open(&db).expect("opens");
@@ -485,7 +489,7 @@ fn granting_a_root_to_an_account_that_does_not_exist_names_the_account() {
 /// second grant that did not happen.
 #[test]
 fn granting_a_root_twice_says_nothing_changed() {
-    let (db, flags) = a_library("grant-root-twice");
+    let (_dir, db, flags) = a_library("grant-root-twice");
     let root_dir = scratch("grant-root-twice-shelf");
     {
         let library = Library::open(&db).expect("opens");
@@ -512,7 +516,7 @@ fn granting_a_root_twice_says_nothing_changed() {
 /// Revoking a grant that was never made is not an error.
 #[test]
 fn revoking_a_root_that_was_never_granted_is_not_an_error() {
-    let (db, flags) = a_library("revoke-root-absent");
+    let (_dir, db, flags) = a_library("revoke-root-absent");
     let root_dir = scratch("revoke-root-absent-shelf");
     {
         let library = Library::open(&db).expect("opens");
@@ -532,7 +536,7 @@ fn revoking_a_root_that_was_never_granted_is_not_an_error() {
 /// the whole-branch review.
 #[test]
 fn revoking_a_root_whose_directory_is_gone_still_works() {
-    let (db, flags) = a_library("revoke-root-gone");
+    let (_dir, db, flags) = a_library("revoke-root-gone");
     let root_dir = scratch("revoke-root-gone-shelf");
     let stored = {
         let library = Library::open(&db).expect("opens");
@@ -564,7 +568,7 @@ fn revoking_a_root_whose_directory_is_gone_still_works() {
 /// Both subcommands refuse a wrong number of positionals with the usage text.
 #[test]
 fn the_root_subcommands_state_their_usage() {
-    let (_db, flags) = a_library("root-usage");
+    let (_dir, _db, flags) = a_library("root-usage");
     for verb in ["grant-root", "revoke-root"] {
         let err = command(&with(&flags, &[verb, "only-one-argument"])).unwrap_err();
         assert!(err.contains("grant-root"), "{verb}: {err}");
@@ -579,7 +583,7 @@ fn the_root_subcommands_state_their_usage() {
 /// and matching none are indistinguishable. Two roots tell them apart.
 #[test]
 fn granting_names_the_root_it_was_given_and_not_another() {
-    let (db, flags) = a_library("grant-root-picks-one");
+    let (_dir, db, flags) = a_library("grant-root-picks-one");
     let wanted = scratch("grant-root-picks-wanted");
     let other = scratch("grant-root-picks-other");
     let (wanted_id, other_id) = {

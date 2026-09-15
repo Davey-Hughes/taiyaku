@@ -312,7 +312,8 @@ async fn drain(response: axum::http::Response<axum::body::Body>) -> (Vec<u8>, bo
 
 #[tokio::test]
 async fn a_two_member_edition_downloads_as_one_readable_cbz() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-two-members"));
+    let tmp = crate::test_support::Fixture::new("download-two-members");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
@@ -370,8 +371,6 @@ async fn a_two_member_edition_downloads_as_one_readable_cbz() {
     let mut third = Vec::new();
     std::io::Read::read_to_end(&mut archive.by_name("0003.jpg").unwrap(), &mut third).unwrap();
     assert_eq!(third, b"b1.jpg", "member two's first page is page three");
-
-    crate::test_support::cleanup("download-two-members");
 }
 
 #[tokio::test]
@@ -404,7 +403,8 @@ async fn a_single_member_edition_is_served_byte_for_byte() {
 
 #[tokio::test]
 async fn a_range_of_a_generated_download_is_that_slice_of_the_whole() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-range"));
+    let tmp = crate::test_support::Fixture::new("download-range");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
@@ -436,13 +436,12 @@ async fn a_range_of_a_generated_download_is_that_slice_of_the_whole() {
         whole[10..50],
         "the range is not that slice of the file"
     );
-
-    crate::test_support::cleanup("download-range");
 }
 
 #[tokio::test]
 async fn an_unsatisfiable_range_is_refused_with_the_real_length() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-bad-range"));
+    let tmp = crate::test_support::Fixture::new("download-bad-range");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
@@ -466,8 +465,6 @@ async fn an_unsatisfiable_range_is_refused_with_the_real_length() {
         .unwrap()
         .to_string();
     assert!(stated.starts_with("bytes */"), "got {stated}");
-
-    crate::test_support::cleanup("download-bad-range");
 }
 
 #[tokio::test]
@@ -523,7 +520,8 @@ async fn the_filename_comes_from_the_library_rows_when_it_has_them() {
 
 #[tokio::test]
 async fn an_edition_that_does_not_exist_is_a_404_before_any_bytes() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-no-edition"));
+    let tmp = crate::test_support::Fixture::new("download-no-edition");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
@@ -537,8 +535,6 @@ async fn an_edition_that_does_not_exist_is_a_404_before_any_bytes() {
             .get(axum::http::header::CONTENT_LENGTH)
             .is_some()
     );
-
-    crate::test_support::cleanup("download-no-edition");
 }
 
 /// A withheld `can_download` refuses the download and leaves the shelf alone.
@@ -555,7 +551,8 @@ async fn an_edition_that_does_not_exist_is_a_404_before_any_bytes() {
 /// does not admit it exists.
 #[tokio::test]
 async fn a_withheld_download_capability_refuses_with_403() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-withheld"));
+    let tmp = crate::test_support::Fixture::new("download-withheld");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
     {
         let conn = state.library.conn();
         // Demoted first — see `withhold` below for why an admin cannot have a
@@ -574,16 +571,15 @@ async fn a_withheld_download_capability_refuses_with_403() {
         403,
         "a withheld can_download must refuse, not serve"
     );
-
-    crate::test_support::cleanup("download-withheld");
 }
 
 // --- Task 8: the member download — one file, its own name, its own bytes. ---
 
 #[tokio::test]
 async fn a_member_downloads_as_the_file_on_disk() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-member"));
-    let root = std::env::temp_dir().join("download-member");
+    let tmp = crate::test_support::Fixture::new("download-member");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
+    let root = tmp.path();
     let second = std::fs::read(root.join("c2.cbz")).unwrap();
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
@@ -610,13 +606,12 @@ async fn a_member_downloads_as_the_file_on_disk() {
         "a member keeps its own name: {disposition}"
     );
     assert_eq!(all_of(response).await, second);
-
-    crate::test_support::cleanup("download-member");
 }
 
 #[tokio::test]
 async fn a_member_ordinal_past_the_end_is_a_404() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-member-past"));
+    let tmp = crate::test_support::Fixture::new("download-member-past");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
@@ -624,14 +619,13 @@ async fn a_member_ordinal_past_the_end_is_a_404() {
     assert_eq!(response.status(), 404);
     let body = crate::test_support::body_string(response).await;
     assert!(body.contains("2 members"), "say how many there are: {body}");
-
-    crate::test_support::cleanup("download-member-past");
 }
 
 #[tokio::test]
 async fn a_member_range_is_that_slice_of_the_file() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-member-range"));
-    let root = std::env::temp_dir().join("download-member-range");
+    let tmp = crate::test_support::Fixture::new("download-member-range");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
+    let root = tmp.path();
     let first = std::fs::read(root.join("c1.cbz")).unwrap();
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
@@ -659,8 +653,6 @@ async fn a_member_range_is_that_slice_of_the_file() {
         &format!("bytes 5-14/{}", first.len())
     );
     assert_eq!(all_of(response).await, first[5..15]);
-
-    crate::test_support::cleanup("download-member-range");
 }
 
 /// A member that is a directory of loose pages, not an archive, is refused
@@ -672,8 +664,7 @@ async fn a_member_range_is_that_slice_of_the_file() {
 /// verified live but never pinned by a test until now.
 #[tokio::test]
 async fn a_directory_member_is_refused_not_streamed() {
-    let root = std::env::temp_dir().join("download-member-directory");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = crate::test_support::Fixture::new("download-member-directory");
     std::fs::create_dir_all(root.join("pages")).unwrap();
     std::fs::write(root.join("pages").join("0001.jpg"), b"page one").unwrap();
 
@@ -716,8 +707,6 @@ async fn a_directory_member_is_refused_not_streamed() {
         body.contains("is a directory of pages"),
         "must refuse with an actionable message, not stream it: {body}"
     );
-
-    crate::test_support::cleanup("download-member-directory");
 }
 
 /// [`a_withheld_download_capability_refuses_with_403`]'s edition-route proof,
@@ -726,7 +715,8 @@ async fn a_directory_member_is_refused_not_streamed() {
 /// site until now. Task 8 review, carried over.
 #[tokio::test]
 async fn a_withheld_download_capability_refuses_a_member_download_too() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-member-withheld"));
+    let tmp = crate::test_support::Fixture::new("download-member-withheld");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
     withhold(&state, "can_download");
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
@@ -737,8 +727,6 @@ async fn a_withheld_download_capability_refuses_a_member_download_too() {
         403,
         "a withheld can_download must refuse a member download too, not serve"
     );
-
-    crate::test_support::cleanup("download-member-withheld");
 }
 
 // --- Task 9: `can_download` and `can_stream`, and the line between them. ---
@@ -767,7 +755,8 @@ fn withhold(state: &crate::ServeState, column: &str) {
 
 #[tokio::test]
 async fn without_can_download_the_download_is_403_and_the_shelf_still_works() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-no-can-download"));
+    let tmp = crate::test_support::Fixture::new("download-no-can-download");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
     withhold(&state, "can_download");
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
@@ -787,13 +776,12 @@ async fn without_can_download_the_download_is_403_and_the_shelf_still_works() {
         let response = crate::test_support::get(&router, path).await;
         assert_ne!(response.status(), 403, "{path} is how the shelf renders");
     }
-
-    crate::test_support::cleanup("download-no-can-download");
 }
 
 #[tokio::test]
 async fn without_can_stream_the_pages_are_403_and_the_download_still_works() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-no-can-stream"));
+    let tmp = crate::test_support::Fixture::new("download-no-can-stream");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
     withhold(&state, "can_stream");
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
@@ -818,11 +806,9 @@ async fn without_can_stream_the_pages_are_403_and_the_download_still_works() {
     );
     // Drained rather than dropped: the body streams off a detached thread
     // (`download::edition`'s `produce`), and dropping the response here would
-    // race that thread against `cleanup` below deleting the fixture's `.cbz`
-    // files out from under it.
+    // race that thread against the fixture's `Drop` at the end of the test,
+    // which deletes the `.cbz` files out from under it.
     all_of(response).await;
-
-    crate::test_support::cleanup("download-no-can-stream");
 }
 
 // --- Whole-branch review, 2026-08-24: five findings in the download path,
@@ -845,8 +831,8 @@ async fn without_can_stream_the_pages_are_403_and_the_download_still_works() {
 /// about the file lying.
 #[test]
 fn generated_detects_a_member_that_lost_pages_before_the_trailer() {
-    let path = std::env::temp_dir().join("taiyaku-test-download-lost-page.cbz");
-    let _ = std::fs::remove_file(&path);
+    let scratch = crate::test_support::Fixture::new("download-lost-page");
+    let path = scratch.join("lost-page.cbz");
     {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
         for (name, bytes) in [
@@ -956,9 +942,7 @@ fn lying_size_cbz(path: &std::path::Path, entries: &[(&str, &[u8])]) {
 /// one size while its real, readable bytes are a different, smaller one.
 #[tokio::test]
 async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
-    let root = std::env::temp_dir().join("download-lying-size");
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let root = crate::test_support::Fixture::new("download-lying-size");
     lying_size_cbz(&root.join("c1.cbz"), &[("p1.jpg", b"page one")]);
     // A second, honest member — so the edition has two members and takes the
     // generated path, which is the only path that ever consults the plan.
@@ -1036,8 +1020,6 @@ async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
          error",
         bytes.len()
     );
-
-    crate::test_support::cleanup("download-lying-size");
 }
 
 /// Finding 3: the route's own range walk — `generated`'s loop over `plan`,
@@ -1057,7 +1039,8 @@ async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
 /// each one.
 #[tokio::test]
 async fn a_route_download_matches_the_whole_at_every_local_header_boundary() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-boundary-walk"));
+    let tmp = crate::test_support::Fixture::new("download-boundary-walk");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
@@ -1106,8 +1089,6 @@ async fn a_route_download_matches_the_whole_at_every_local_header_boundary() {
         }
     }
     assert!(wrong.is_empty(), "wrong windows: {wrong:?}");
-
-    crate::test_support::cleanup("download-boundary-walk");
 }
 
 /// Spec §10's own prescription — "fetch an edition whole; fetch it in N
@@ -1118,7 +1099,8 @@ async fn a_route_download_matches_the_whole_at_every_local_header_boundary() {
 /// the route's own.
 #[tokio::test]
 async fn n_random_ranges_of_a_route_download_reassemble_into_the_whole() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-random-ranges"));
+    let tmp = crate::test_support::Fixture::new("download-random-ranges");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
@@ -1161,8 +1143,6 @@ async fn n_random_ranges_of_a_route_download_reassemble_into_the_whole() {
             "range [{from}, {upto}) is not that slice of the whole download"
         );
     }
-
-    crate::test_support::cleanup("download-random-ranges");
 }
 
 /// Finding 4: `download::prepare`'s `paths[0].is_file()` check had no coverage —
@@ -1175,8 +1155,7 @@ async fn n_random_ranges_of_a_route_download_reassemble_into_the_whole() {
 /// file at all.
 #[tokio::test]
 async fn a_single_member_directory_edition_is_generated_not_passed_through() {
-    let root = std::env::temp_dir().join("download-single-dir-edition");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = crate::test_support::Fixture::new("download-single-dir-edition");
     std::fs::create_dir_all(root.join("pages")).unwrap();
     std::fs::write(root.join("pages").join("0001.jpg"), b"page one").unwrap();
 
@@ -1227,8 +1206,6 @@ async fn a_single_member_directory_edition_is_generated_not_passed_through() {
         "only the generated path writes a metadata document; a directory \
          member must never take the passthrough path meant for one file"
     );
-
-    crate::test_support::cleanup("download-single-dir-edition");
 }
 
 /// Finding 5: the `bytes=-N` suffix branch of `download::requested_range` had
@@ -1287,7 +1264,8 @@ fn a_suffix_range_answers_with_the_last_n_bytes() {
 /// timeout beside it.
 #[tokio::test]
 async fn a_download_waits_for_a_permit_once_every_slot_is_held() {
-    let state = std::sync::Arc::new(crate::test_support::state("download-concurrency-cap"));
+    let tmp = crate::test_support::Fixture::new("download-concurrency-cap");
+    let state = std::sync::Arc::new(crate::test_support::state(&tmp));
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
@@ -1324,7 +1302,6 @@ async fn a_download_waits_for_a_permit_once_every_slot_is_held() {
     assert_eq!(response.status(), 200);
 
     drop(held);
-    crate::test_support::cleanup("download-concurrency-cap");
 }
 
 /// `send_with_timeout` is what `IDLE_SEND_TIMEOUT` actually rests on, and this
@@ -1433,10 +1410,8 @@ fn a_slow_but_progressing_consumer_is_not_cut_off() {
 /// A work of one member, written the way `test_support::work` writes its
 /// fixture — from JSON through `Sidecar::from_json`, since none of these
 /// types derives `Default`.
-fn one_member_work(dir: &str, member: &str, write_it: bool) -> crate::Work {
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+fn one_member_work(dir: &std::path::Path, member: &str, write_it: bool) -> crate::Work {
+    let root = dir;
     if write_it {
         std::fs::write(root.join(member), b"%PDF-1.4\n").unwrap();
     }
@@ -1466,14 +1441,14 @@ fn one_member_work(dir: &str, member: &str, write_it: bool) -> crate::Work {
 /// A generated edition is always a `STORE` zip, whatever its members are.
 #[test]
 fn a_multi_member_edition_advertises_the_comic_type() {
-    let work = crate::test_support::work("download-advertised-generated");
+    let tmp = crate::test_support::Fixture::new("download-advertised-generated");
+    let work = crate::test_support::work(&tmp);
     let sidecar = work.sidecar();
     let edition = sidecar.editions.get("raw").expect("fixture edition");
     assert_eq!(
         crate::download::advertised_type(&work, edition),
         crate::download::CBZ_TYPE
     );
-    crate::test_support::cleanup("download-advertised-generated");
 }
 
 /// A single-member edition whose member is **not** a comic archive must not
@@ -1482,7 +1457,8 @@ fn a_multi_member_edition_advertises_the_comic_type() {
 /// that advertises the same thing tells it a third time.
 #[test]
 fn a_single_pdf_member_advertises_the_pdf_type() {
-    let work = one_member_work("download-advertised-pdf", "volume.pdf", true);
+    let tmp = crate::test_support::Fixture::new("download-advertised-pdf");
+    let work = one_member_work(&tmp, "volume.pdf", true);
     let sidecar = work.sidecar();
     let edition = sidecar.editions.get("raw").expect("fixture edition");
     assert_eq!(
@@ -1491,19 +1467,18 @@ fn a_single_pdf_member_advertises_the_pdf_type() {
         "the route serves this passthrough as application/pdf, so the feed \
          must not advertise it as a comic archive"
     );
-    crate::test_support::cleanup("download-advertised-pdf");
 }
 
 /// A member that is not on disk falls back rather than failing: one bad
 /// edition must not turn into a 500 for a whole work's feed.
 #[test]
 fn a_missing_member_falls_back_to_the_comic_type() {
-    let work = one_member_work("download-advertised-missing", "gone.pdf", false);
+    let tmp = crate::test_support::Fixture::new("download-advertised-missing");
+    let work = one_member_work(&tmp, "gone.pdf", false);
     let sidecar = work.sidecar();
     let edition = sidecar.editions.get("raw").expect("fixture edition");
     assert_eq!(
         crate::download::advertised_type(&work, edition),
         crate::download::CBZ_TYPE
     );
-    crate::test_support::cleanup("download-advertised-missing");
 }

@@ -2,12 +2,10 @@ use super::*;
 use crate::Library;
 
 /// A scratch directory that cleans itself up, matching the shape the rest of
-/// this crate's file-touching tests use.
-fn scratch(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("taiyaku-backup-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("creates the scratch directory");
-    dir
+/// this crate's file-touching tests use. *(Until O117 it did not: it returned
+/// a bare path, and nothing removed it.)*
+fn scratch(name: &str) -> taiyaku_read::test_support::TempDir {
+    taiyaku_read::test_support::TempDir::new(&format!("backup-{name}"))
 }
 
 /// PR2 §1.3: the directory is derived from the database path, because the
@@ -92,7 +90,8 @@ fn listing_answers_newest_first_and_ignores_anything_else_in_the_directory() {
 /// that lists backups is the one an operator opens *before* taking the first.
 #[test]
 fn listing_a_directory_that_does_not_exist_yet_is_empty_rather_than_an_error() {
-    let dir = scratch("absent").join("never-made");
+    let parent = scratch("absent");
+    let dir = parent.join("never-made");
     assert_eq!(list(&dir).expect("lists"), Vec::new());
 }
 
@@ -193,7 +192,8 @@ fn pruning_more_than_there_are_deletes_nothing_and_zero_deletes_all() {
 /// `list` is not: the first run of a cron entry meets exactly this state.
 #[test]
 fn pruning_a_directory_that_does_not_exist_yet_removes_nothing() {
-    let dir = scratch("prune-absent").join("never-made");
+    let parent = scratch("prune-absent");
+    let dir = parent.join("never-made");
     assert!(prune(&dir, 3).expect("prunes").is_empty());
 }
 

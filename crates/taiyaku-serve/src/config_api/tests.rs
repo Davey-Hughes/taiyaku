@@ -317,7 +317,7 @@ fn write_cbz(path: &std::path::Path, pages: usize) {
 
 #[tokio::test]
 async fn the_import_route_reports_the_proposals_it_reopens() {
-    let fixture = test_support::Fixture::new("taiyaku-test-import-reopens-proposal");
+    let fixture = test_support::Fixture::new("import-reopens-proposal");
     let root_dir = fixture.path().join("root");
     write_cbz(
         &root_dir
@@ -1367,7 +1367,7 @@ fn state_with_many_scan_entries(
 /// (rule 1, `^(?<series>[^/]+)/`), is one more than the cap.
 #[tokio::test]
 async fn the_preview_routes_matched_files_table_reports_its_own_truncation() {
-    let (state, _fixture) = state_with_many_scan_entries("taiyaku-test-preview-truncation", 501);
+    let (state, _fixture) = state_with_many_scan_entries("preview-truncation", 501);
     let router = test_support::authenticating(crate::build_router(state.clone()), &state.library);
 
     let listed = get_json(&router, "/api/library/rules").await;
@@ -1429,7 +1429,7 @@ async fn the_preview_routes_matched_files_table_reports_its_own_truncation() {
 /// actually used.
 #[tokio::test]
 async fn the_preview_route_does_not_wait_on_the_shared_connections_mutex() {
-    let fixture = test_support::Fixture::new("taiyaku-test-preview-second-connection");
+    let fixture = test_support::Fixture::new("preview-second-connection");
     let path = fixture.path().join("library.db");
     let library = taiyaku_library::Library::open(&path).expect("opens a file-backed library");
     let state = std::sync::Arc::new(crate::ServeState {
@@ -1639,7 +1639,7 @@ async fn the_root_list_carries_the_exclude_globs_the_row_holds() {
 #[tokio::test]
 async fn a_root_can_be_added_and_then_appears_in_the_list() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
-    let fixture = test_support::Fixture::new("taiyaku-test-add-root");
+    let fixture = test_support::Fixture::new("add-root");
     std::fs::create_dir_all(fixture.path().join("New Root")).expect("mkdir");
     let body = serde_json::json!({ "path": fixture.path().to_string_lossy() });
 
@@ -2100,7 +2100,7 @@ async fn a_rules_route_validation_message_still_names_a_rule() {
 #[tokio::test]
 async fn a_store_fault_creating_a_root_is_a_500_not_a_400() {
     let (_router, state, _fixture) = test_support::router_over_a_single_scanned_work();
-    let fixture = test_support::Fixture::new("taiyaku-test-create-root-store-fault");
+    let fixture = test_support::Fixture::new("create-root-store-fault");
     std::fs::create_dir_all(fixture.path().join("New Root")).expect("mkdir");
     {
         let conn = state.library.conn();
@@ -2299,7 +2299,7 @@ fn write_page_dir(dir: &std::path::Path, pages: usize) {
 /// makes for the race itself.
 #[tokio::test]
 async fn a_derive_failure_after_a_successful_scan_corrects_last_scan_status() {
-    let fixture = test_support::Fixture::new("taiyaku-test-scan-then-derive-fails");
+    let fixture = test_support::Fixture::new("scan-then-derive-fails");
     let root_dir = fixture.path().join("root");
     write_page_dir(&root_dir.join("Series").join("Series - v01"), 2);
 
@@ -2585,7 +2585,7 @@ async fn a_second_scan_of_a_root_already_scanning_is_refused() {
 #[tokio::test]
 async fn the_scan_report_names_what_it_could_not_read() {
     let (state, _fixture) =
-        state_with_a_root_that_cannot_write_its_document("taiyaku-test-scan-unwritable-document");
+        state_with_a_root_that_cannot_write_its_document("scan-unwritable-document");
     let root_id = only_root_id(&state);
 
     let started = crate::config_api::start_scan(
@@ -2929,7 +2929,7 @@ async fn a_scan_report_names_the_work_a_folded_documents_orphan_was_absorbed_int
 /// and prove nothing about the scan itself.
 #[tokio::test]
 async fn a_scan_does_not_wait_on_the_shared_connections_mutex() {
-    let fixture = test_support::Fixture::new("taiyaku-test-scan-second-connection");
+    let fixture = test_support::Fixture::new("scan-second-connection");
     let root_dir = fixture.path().join("root");
     let volume_dir = root_dir.join("Series").join("Series - v01");
     std::fs::create_dir_all(&volume_dir).expect("mkdir");
@@ -3121,7 +3121,7 @@ async fn deleting_a_root_clears_its_stale_scan_registry_entry() {
 
     // A fresh root, added in the same process — on a table `delete_root` just
     // emptied, with no `AUTOINCREMENT`, SQLite reissues the id it just freed.
-    let new_fixture = test_support::Fixture::new("taiyaku-test-reused-root-id");
+    let new_fixture = test_support::Fixture::new("reused-root-id");
     std::fs::create_dir_all(new_fixture.path().join("New Root")).expect("mkdir");
     let body = serde_json::json!({ "path": new_fixture.path().to_string_lossy() });
     let response = send_json(&router, Method::POST, "/api/library/roots", &body).await;

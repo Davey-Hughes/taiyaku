@@ -18780,7 +18780,8 @@ with a `Drop` impl.
 The two failures behind the row are "O70" (six `serve_works_*` tests, `disk
 I/O error`) and "O78" (`every_route_refuses_an_anonymous_request`,
 `NotFound` at `test_support.rs:23`). Each passed alone, and neither was
-reproduced on purpose.
+reproduced on purpose. *(Both were reproduced on purpose on 2026-09-15 — see
+"O117: every test's temp directory from one helper".)*
 
 ### O118: what an import says
 
@@ -19086,3 +19087,165 @@ unchanged:
 
 Rust 2153 → 2156: three new tests, all in `routes/tests.rs`, counted by the
 control run above. `web/` was not changed.
+
+## O117: every test's temp directory from one helper — 2026-09-15
+
+O117 recorded that tests wrote fixed names under `std::env::temp_dir()`, and
+that two suites running at once on one machine had failed twice for it
+without anyone reproducing it on purpose. It is reproduced here first, then
+closed with one helper that every crate's tests now take their directories
+from, and a test that fails if a new one is written the old way.
+
+### The collision, reproduced
+
+Two copies of one test binary were started together, ten times, with one
+`TMPDIR` shared between the two copies and a different one for each binary.
+That is what two checkouts sharing `/tmp` look like, reduced to one checkout.
+The binaries were built from `aaacc2b`. Each filter passed on its own first.
+
+| binary, filter | attempts with a failure | copies that failed | what they said |
+| --- | --- | --- | --- |
+| `taiyaku-cli` unit tests, `serve_works_` (6 tests) | 10 of 10 | 14 of 20 | `opening the library: setting WAL: disk I/O error`, and `…/taiyaku-test-serve-works-hub-grows/taiyaku.json: No such file or directory` |
+| `taiyaku-serve`, `auth::tests::every_route_refuses_an_anonymous_request` | 6 of 10 | 6 of 20 | `NotFound` at `test_support.rs:23:82` five times, at `test_support.rs:45:33` once |
+| `taiyaku-read`, every test (65) | 10 of 10 | 20 of 20 | between 3 and 16 failures a copy, 24 tests among them: `invalid Zip archive: Could not find EOCD`, `No such file or directory`, `File exists`, and `renaming the temporary into place: No such file or directory` |
+
+The first two rows are the failures behind the row, `disk I/O error` for the
+six `serve_works_*` tests and `NotFound` at `test_support.rs:23`, now seen on
+demand rather than once each by accident.
+
+### The helper
+
+`taiyaku_read::test_support::TempDir`: `TempDir::new(label)` makes
+`taiyaku-test-{label}-{pid}-{n}` under the temp dir, where `n` is a
+process-wide counter, and its `Drop` removes it. It removes a directory
+already at that name first, since only a run killed before its `Drop` leaves
+one. It derefs to `Path`, so `&dir` goes where a `&Path` did and `dir.join(…)`
+reads as it did when `dir` was a `PathBuf`, which is what let most sites move
+without rewriting what they did with the path. A label holding `/` is refused.
+
+It lives in `taiyaku-read`'s `test_support` because that is the one crate
+every crate with tests depends on — `taiyaku-library`, `taiyaku-serve` and
+`taiyaku-cli` all do, and `taiyaku-core` and `taiyaku-wasm` write no temp
+files — and because that module was already shared through the
+`test-support` feature, which only a `[dev-dependencies]` entry enables.
+`taiyaku-library` already enabled it for O104; `taiyaku-serve` and
+`taiyaku-cli` enable it now. The file name was already excluded by both the
+coverage regex and `.cargo/mutants.toml`, so neither changed. `tempfile`
+3.27.0 is in `Cargo.lock` as a dependency of `safetensors`; it was not
+taken, for the reason the helpers this replaces gave: the workspace's
+dependency list is short enough to quote in `docs/status.md`, and this is the
+whole of what that crate would be used for.
+
+There were four copies of the same shape on `aaacc2b` —
+`taiyaku-read`'s `format/tests.rs`, `taiyaku-library`'s `tests.rs` and
+`export/tests.rs`, and `taiyaku-serve`'s `test_support::Fixture` — and each is
+now this type. `Fixture` stays in `taiyaku-serve` as a type alias for it.
+
+### What moved
+
+On `aaacc2b`, `git grep 'temp_dir()'` over `crates/` counts 138 lines in 32
+files. On this branch, untracked files included, it counts five, all in the
+helper's own two files: its one call, its test's assertion that a directory
+is under the temp dir, and the standing check's name and two lines of its
+doc. The rest, by shape:
+
+- **A literal name**, removed and recreated or not: now a `TempDir`, with the
+  file the test wanted inside it.
+- **A name a helper was handed.** `taiyaku-serve`'s `test_support::work`,
+  `state`, `state_with_two_editions`, `work_with_edition_key` and `log` take a
+  directory rather than a name; `aaacc2b` held over 160 calls to them. So do
+  seventeen local helpers in `taiyaku-serve`'s test modules and seven in
+  `taiyaku-cli`'s. Each caller makes a guard just before the statement that
+  needs it and passes `&tmp`. `test_support::cleanup` and its 156 calls are
+  gone: the guard removes the directory, and does so when a test panics,
+  which the call at the end of a test never reached.
+- **A process id and no counter**, in `taiyaku-cli`'s `cache`, `library`,
+  `score` and `user` tests, `tests/cli.rs`'s `db_path` and its two rule
+  documents, `taiyaku-library`'s `backup` and `migrate` tests and
+  `taiyaku-serve`'s `cache_root` tests, and three single tests that built one
+  inline. These did not collide between runs. They left one directory per
+  test per run behind, and now return a guard.
+- **A name nothing greps for.** Five covers directories were placed beside a
+  `Fixture` with `with_file_name` — four under fixed names such as
+  `taiyaku-test-two-scanned-roots-covers`, one per prefix — so a covers cache
+  was shared by every run and outlived all of them. Where the fixture's roots
+  are subdirectories, covers go in `covers/` inside it. Where the fixture's
+  own directory was the scan root — `router_over_a_scanned_tree`, and so
+  every fixture built on it, and `router_over_two_scanned_volumes_of_one_series`
+  — the tree moved to `tree/` and covers to `covers/`, the layout
+  `router_over_a_scanned_cbz` already used. `router_over_a_library` returns
+  its `Fixture` now, for its covers alone.
+
+One helper depended on the old names. `duplicates::tests`' `synthetic_pages`
+read a copy's role from the text after the last `-` in its whole path, which
+is now the counter; the copy is named for its role inside its own directory,
+and the role is read from the file name; three tests failed until it was.
+And `tests/cli.rs`'s scan tests would have put their database inside the root
+they scan, so the database has a directory of its own.
+
+### The standing check
+
+`test_support::tests::nothing_outside_this_helper_calls_temp_dir` walks every
+`.rs` file under `crates/`, skips the helper and comment lines, and fails
+naming each line that still calls `temp_dir()`. It also fails if the walk read
+100 files or fewer, so a walk that reaches nothing cannot pass. **It sees the
+call and nothing else**: a fixed name reached another way, as the five covers
+directories were, passes it.
+
+### The collision, again
+
+The same three pairs, ten attempts each, on this branch's final code, with the
+same shared `TMPDIR`s:
+
+| binary, filter | attempts with a failure | copies that failed |
+| --- | --- | --- |
+| `taiyaku-cli` unit tests, `serve_works_` | 0 of 10 | 0 of 20 |
+| `taiyaku-serve`, `auth::tests::every_route_refuses_an_anonymous_request` | 0 of 10 | 0 of 20 |
+| `taiyaku-read`, every test (70) | 0 of 10 | 0 of 20 |
+
+No `taiyaku-test-*-{pid}-{n}` directory was left under any of the three
+`TMPDIR`s afterwards. The seventeen entries still there were the fixed names
+the first runs left.
+
+### The tests, watched red
+
+Each change was applied by a script that counted its substitution's matches,
+one for each, ran `cargo nextest run --workspace --all-features
+--no-fail-fast`, and put the file back byte for byte. After the last,
+`git diff -- crates` hashed the same as before the first. The control passed
+2158 of 2158.
+
+| applied | tests failed | which |
+| --- | --- | --- |
+| nothing — the control | 0 | — |
+| a fixed name, `taiyaku-test-{label}` | 284: 174 in `taiyaku-library`, 95 in `taiyaku-serve`, 10 in `taiyaku-cli`, 5 in `taiyaku-read` | `two_temp_dirs_under_one_label_are_distinct_and_both_exist` and `a_temp_dir_is_named_for_the_process_that_made_it` among them |
+| no counter, `taiyaku-test-{label}-{pid}` | 16 | `two_temp_dirs_under_one_label_are_distinct_and_both_exist`, both paths `…/taiyaku-test-same-label-3662067`, among them |
+| no process id, `taiyaku-test-{label}-{n}` | 253: 170 in `taiyaku-library`, 79 in `taiyaku-serve`, 4 in `taiyaku-read` | `a_temp_dir_is_named_for_the_process_that_made_it` among them |
+| an empty `Drop` | 3 | `a_temp_dir_is_removed_with_its_contents_when_dropped`, and `taiyaku-serve`'s `tests::a_fixture_removes_its_directory_when_it_is_dropped` and `tests::a_fixture_removes_its_directory_when_the_scope_unwinds`, which test `Fixture` and so this type now |
+| no removal before creating | 0 | — |
+| the `/` assert deleted | 1 | `a_label_holding_a_slash_is_refused`: "test did not panic as expected" |
+| a function returning `std::env::temp_dir().join("taiyaku-test-o117-mutant")` appended to `taiyaku-serve/src/routes/tests.rs` | 1 | `nothing_outside_this_helper_calls_temp_dir`, naming `taiyaku-serve/src/routes/tests.rs:3599` |
+| the walk never descending, `pending.push(path)` as `drop(path)` | 1 | `nothing_outside_this_helper_calls_temp_dir`: "the walk read 0 files under …/crates" |
+
+The fixed name and the missing process id fail far more than the helper's own
+tests because `cargo nextest` runs every test in a process of its own, all at
+once: with either part gone, tests that share a label collide inside one run,
+which is O117 inside a single suite. The missing counter fails the tests that
+make two directories under one label in one test — `tests/cli.rs`'s tree and
+database, `routes::tests`' state and request log, and `duplicates::tests`'
+copies of one tag among them.
+
+**The removal before creating survived**, as expected. It matters only when a
+process id is reused after a run was killed before its `Drop`, which no test
+arranges, and a test cannot know the name the next `TempDir` will take: the
+counter is shared by every test in its process. It is recorded rather than
+pinned. `.cargo/mutants.toml` excludes `**/test_support.rs`, so cargo-mutants
+never mutates this helper, and these hand mutations are all that has.
+
+### What remains
+
+- The removal of a stale directory before creating one is unpinned (above).
+- The standing check sees the text `temp_dir()` and nothing else. A fixed name
+  built another way — beside a guard with `with_file_name`, as the five covers
+  directories were, or from `TMPDIR` read by hand — passes it.
+- cargo-mutants excludes the helper's file.

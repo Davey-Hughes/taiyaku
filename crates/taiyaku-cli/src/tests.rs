@@ -1,4 +1,5 @@
 use super::*;
+use taiyaku_read::test_support::TempDir;
 
 /// A bare flag is on when it is there and off when it is not, and that is
 /// the whole of it — but it is the whole of it at every call site, so the
@@ -430,9 +431,7 @@ fn a_pairing_involves_a_spread_whichever_side_is_the_half() {
 /// to merge" puts that back.
 #[test]
 fn a_sidecar_that_cannot_be_read_stops_the_write_rather_than_being_absent() {
-    let root = std::env::temp_dir().join("taiyaku-test-existing-sidecar");
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let root = TempDir::new("existing-sidecar");
 
     assert!(
         existing_sidecar(&root.join("nothing-here.json").to_string_lossy())
@@ -463,12 +462,7 @@ fn a_sidecar_that_cannot_be_read_stops_the_write_rather_than_being_absent() {
 /// command at once, and this pins that `align --write` is one of them.
 #[test]
 fn a_sidecar_from_a_newer_taiyaku_stops_the_write_rather_than_being_downgraded() {
-    let root = std::env::temp_dir().join(format!(
-        "taiyaku-test-existing-sidecar-newer-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let root = TempDir::new("existing-sidecar-newer");
     let path = root.join("taiyaku.json");
     std::fs::write(
         &path,
@@ -499,8 +493,7 @@ fn a_sidecar_from_a_newer_taiyaku_stops_the_write_rather_than_being_downgraded()
 /// three-orders-of-magnitude saving the cache exists for is invisible.
 #[test]
 fn a_warm_edition_reports_every_member_as_a_cache_hit() {
-    let root = std::env::temp_dir().join("taiyaku-test-cached-edition");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = TempDir::new("cached-edition");
     // The two members hold different pages. Identical ones would share a
     // digest, and the second would be answered from the entry the first
     // just wrote — one hit on a cold run, which is correct behaviour and
@@ -626,8 +619,7 @@ fn both_editions_come_back_in_natural_order() {
 /// rule the format states, invisible until something resolved it.
 #[test]
 fn a_member_path_is_recorded_relative_to_the_sidecar() {
-    let root = std::env::temp_dir().join("taiyaku-test-relative");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = TempDir::new("relative");
     let library = root.join("library");
     let beside = root.join("sidecars");
     std::fs::create_dir_all(&library).unwrap();
@@ -651,14 +643,13 @@ fn a_member_path_is_recorded_relative_to_the_sidecar() {
 /// existing suite.
 #[test]
 fn a_member_inside_the_base_directory_is_recorded_relative_to_it() {
-    let root = std::env::temp_dir().join("taiyaku-test-relative-nested");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = TempDir::new("relative-nested");
     let raw_mono = root.join("raw-mono");
     std::fs::create_dir_all(&raw_mono).unwrap();
     let member = raw_mono.join("v01.cbz");
     std::fs::write(&member, b"placeholder").unwrap();
     // Sidecar at <root>/taiyaku.json, so its directory is <root> itself.
-    let beside = root.clone();
+    let beside = root.to_path_buf();
 
     let recorded = relative_to(&member, &beside).unwrap();
 
@@ -690,8 +681,8 @@ fn a_member_inside_the_base_directory_is_recorded_relative_to_it() {
 #[test]
 fn relative_to_returns_an_absolute_path_when_the_base_cannot_be_resolved() {
     let target = Path::new("relative/thing.cbz");
-    let missing_base = std::env::temp_dir().join("taiyaku-test-relative-missing-base");
-    let _ = std::fs::remove_dir_all(&missing_base);
+    let scratch = TempDir::new("relative-missing-base");
+    let missing_base = scratch.join("missing");
 
     let recorded = relative_to(target, &missing_base).unwrap();
 
@@ -787,9 +778,7 @@ fn three_editions_one_hand_corrected() -> Sidecar {
 /// reading UI with it.
 #[test]
 fn writing_an_alignment_replaces_the_sidecar_rather_than_truncating_it() {
-    let dir = std::env::temp_dir().join("taiyaku-test-align-write");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = TempDir::new("align-write");
     let path = dir.join("taiyaku.json");
     let out = path.to_str().expect("utf-8 temp path").to_string();
 
@@ -1584,12 +1573,9 @@ fn run_with_no_command_prints_usage_and_succeeds() {
 
 // -- lookup(): resolved entirely from a sidecar, so no archive is needed --
 
-/// Write a sidecar fixture to its own temp directory and return its path,
+/// Write a sidecar fixture into `dir` and return its path,
 /// as a `String` since every command here takes paths as `&str`.
-fn write_fixture(name: &str, doc: &Sidecar) -> String {
-    let dir = std::env::temp_dir().join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+fn write_fixture(dir: &Path, doc: &Sidecar) -> String {
     let path = dir.join("taiyaku.json");
     std::fs::write(&path, doc.to_json()).expect("fixture written");
     path.to_str().expect("utf-8 temp path").to_string()
@@ -1667,7 +1653,8 @@ fn lookup_reports_a_direct_edge() {
         })
     );
 
-    let path = write_fixture("taiyaku-test-lookup-direct", &doc);
+    let fixture_dir = TempDir::new("lookup-direct");
+    let path = write_fixture(&fixture_dir, &doc);
     assert_eq!(lookup(&argv(&[&path, "raw", "en-fan", "0", "7"])), Ok(()));
 }
 
@@ -1690,7 +1677,8 @@ fn lookup_reports_an_inverted_edge() {
         })
     );
 
-    let path = write_fixture("taiyaku-test-lookup-inverted", &doc);
+    let fixture_dir = TempDir::new("lookup-inverted");
+    let path = write_fixture(&fixture_dir, &doc);
     assert_eq!(lookup(&argv(&[&path, "en-fan", "raw", "0"])), Ok(()));
 }
 
@@ -1712,7 +1700,8 @@ fn lookup_reports_a_hub_composed_route() {
         })
     );
 
-    let path = write_fixture("taiyaku-test-lookup-hub", &doc);
+    let fixture_dir = TempDir::new("lookup-hub");
+    let path = write_fixture(&fixture_dir, &doc);
     assert_eq!(lookup(&argv(&[&path, "en-fan", "en-mono", "0"])), Ok(()));
 }
 
@@ -1732,7 +1721,8 @@ fn lookup_reports_identity_for_the_same_edition() {
         })
     );
 
-    let path = write_fixture("taiyaku-test-lookup-identity", &doc);
+    let fixture_dir = TempDir::new("lookup-identity");
+    let path = write_fixture(&fixture_dir, &doc);
     assert_eq!(lookup(&argv(&[&path, "raw", "raw", "0"])), Ok(()));
 }
 
@@ -1761,7 +1751,8 @@ fn lookup_reports_an_unreadable_edge_rather_than_falling_back_to_the_hub() {
         "the stored edge names a page the 3-page `broken` edition does not have"
     );
 
-    let path = write_fixture("taiyaku-test-lookup-broken", &doc);
+    let fixture_dir = TempDir::new("lookup-broken");
+    let path = write_fixture(&fixture_dir, &doc);
     assert_eq!(lookup(&argv(&[&path, "raw", "broken", "0"])), Ok(()));
 }
 
@@ -1781,13 +1772,15 @@ fn lookup_reports_that_an_unrelated_pair_has_nothing_stored() {
         "island must have no stored edge to anything, unlike `broken`"
     );
 
-    let path = write_fixture("taiyaku-test-lookup-island", &doc);
+    let fixture_dir = TempDir::new("lookup-island");
+    let path = write_fixture(&fixture_dir, &doc);
     assert_eq!(lookup(&argv(&[&path, "raw", "island", "0"])), Ok(()));
 }
 
 #[test]
 fn lookup_refuses_a_page_that_does_not_parse() {
-    let path = write_fixture("taiyaku-test-lookup-badpage", &lookup_fixture());
+    let fixture_dir = TempDir::new("lookup-badpage");
+    let path = write_fixture(&fixture_dir, &lookup_fixture());
     let err = lookup(&argv(&[&path, "raw", "en-fan", "not-a-number"])).unwrap_err();
     assert_eq!(err, "not a page: not-a-number");
 }
@@ -1844,7 +1837,8 @@ fn lookup_names_the_right_half_of_a_spread_in_a_right_to_left_document() {
         })
     );
 
-    let path = write_fixture("taiyaku-test-lookup-spread-rtl", &doc);
+    let fixture_dir = TempDir::new("lookup-spread-rtl");
+    let path = write_fixture(&fixture_dir, &doc);
     assert_eq!(lookup(&argv(&[&path, "raw", "en", "1"])), Ok(()));
 }
 
@@ -1860,7 +1854,8 @@ fn lookup_names_the_left_half_of_a_spread_in_a_left_to_right_document() {
         })
     );
 
-    let path = write_fixture("taiyaku-test-lookup-spread-ltr", &doc);
+    let fixture_dir = TempDir::new("lookup-spread-ltr");
+    let path = write_fixture(&fixture_dir, &doc);
     assert_eq!(lookup(&argv(&[&path, "raw", "en", "1"])), Ok(()));
 }
 
@@ -1885,10 +1880,9 @@ fn lookup_names_the_left_half_of_a_spread_in_a_left_to_right_document() {
 /// than by the solver actually distinguishing anything. The pattern below
 /// varies along both axes and by page and by `seed`, so distinct calls
 /// produce distinct fingerprints.
-fn cbz_pages(name: &str, count: u32, seed: u32) -> PathBuf {
+fn cbz_pages(dir: &Path, name: &str, count: u32, seed: u32) -> PathBuf {
     use std::io::Write;
-    let path = std::env::temp_dir().join(name);
-    let _ = std::fs::remove_file(&path);
+    let path = dir.join(name);
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).expect("create cbz"));
     for i in 0..count {
         let level = seed.wrapping_add(i).wrapping_mul(101);
@@ -1929,8 +1923,9 @@ fn cbz_pages(name: &str, count: u32, seed: u32) -> PathBuf {
 /// order, would still leave `align` returning `Ok(())`.
 #[test]
 fn align_runs_the_page_level_diagnostic_against_real_pages() {
-    let a = cbz_pages("taiyaku-test-main-diag-a.cbz", 3, 1);
-    let b = cbz_pages("taiyaku-test-main-diag-b.cbz", 3, 1);
+    let scratch = TempDir::new("main-diag");
+    let a = cbz_pages(&scratch, "main-diag-a.cbz", 3, 1);
+    let b = cbz_pages(&scratch, "main-diag-b.cbz", 3, 1);
 
     let a_pages = taiyaku_read::read_edition(std::slice::from_ref(&a)).expect("a decodes");
     let b_pages = taiyaku_read::read_edition(std::slice::from_ref(&b)).expect("b decodes");
@@ -1971,11 +1966,11 @@ fn align_runs_the_page_level_diagnostic_against_real_pages() {
 /// would still leave `align` returning `Ok(())`.
 #[test]
 fn align_runs_the_default_diagnostic_against_real_pages() {
-    let a = cbz_pages("taiyaku-test-main-split-a.cbz", 4, 1);
-    let b = cbz_pages("taiyaku-test-main-split-b.cbz", 2, 50);
+    let scratch = TempDir::new("main-split");
+    let a = cbz_pages(&scratch, "main-split-a.cbz", 4, 1);
+    let b = cbz_pages(&scratch, "main-split-b.cbz", 2, 50);
 
-    let probe_cache = std::env::temp_dir().join("taiyaku-test-main-split-cache-expected");
-    let _ = std::fs::remove_dir_all(&probe_cache);
+    let probe_cache = scratch.join("cache-expected");
     let (a_hashes, _, _) = cached_edition(
         &probe_cache,
         std::slice::from_ref(&a),
@@ -2002,8 +1997,7 @@ fn align_runs_the_default_diagnostic_against_real_pages() {
         "page 3 of a has no counterpart in the 2-page b"
     );
 
-    let cache = std::env::temp_dir().join("taiyaku-test-main-split-cache");
-    let _ = std::fs::remove_dir_all(&cache);
+    let cache = scratch.join("cache");
     let args = argv(&[
         a.to_str().unwrap(),
         "--",
@@ -2032,12 +2026,11 @@ fn align_runs_the_default_diagnostic_against_real_pages() {
 /// worth accepting and every run fully paired, reaching both.
 #[test]
 fn align_write_creates_a_new_sidecar_from_real_pages() {
-    let a = cbz_pages("taiyaku-test-main-write-a.cbz", 3, 1);
-    let b = cbz_pages("taiyaku-test-main-write-b.cbz", 3, 1);
-    let cache = std::env::temp_dir().join("taiyaku-test-main-write-cache");
-    let _ = std::fs::remove_dir_all(&cache);
-    let out_dir = std::env::temp_dir().join("taiyaku-test-main-write-out");
-    let _ = std::fs::remove_dir_all(&out_dir);
+    let scratch = TempDir::new("main-write");
+    let a = cbz_pages(&scratch, "main-write-a.cbz", 3, 1);
+    let b = cbz_pages(&scratch, "main-write-b.cbz", 3, 1);
+    let cache = scratch.join("cache");
+    let out_dir = scratch.join("out");
     std::fs::create_dir_all(&out_dir).expect("temp dir");
     let out = out_dir.join("taiyaku.json");
     let args = argv(&[
@@ -2097,13 +2090,12 @@ fn align_write_creates_a_new_sidecar_from_real_pages() {
 /// reaches it with the right arguments in both shapes.
 #[test]
 fn align_write_merges_further_spokes_into_an_existing_sidecar() {
-    let a = cbz_pages("taiyaku-test-main-merge-a.cbz", 3, 1);
-    let b = cbz_pages("taiyaku-test-main-merge-b.cbz", 3, 60);
-    let c = cbz_pages("taiyaku-test-main-merge-c.cbz", 3, 90);
-    let cache = std::env::temp_dir().join("taiyaku-test-main-merge-cache");
-    let _ = std::fs::remove_dir_all(&cache);
-    let out_dir = std::env::temp_dir().join("taiyaku-test-main-merge-out");
-    let _ = std::fs::remove_dir_all(&out_dir);
+    let scratch = TempDir::new("main-merge");
+    let a = cbz_pages(&scratch, "main-merge-a.cbz", 3, 1);
+    let b = cbz_pages(&scratch, "main-merge-b.cbz", 3, 60);
+    let c = cbz_pages(&scratch, "main-merge-c.cbz", 3, 90);
+    let cache = scratch.join("cache");
+    let out_dir = scratch.join("out");
     std::fs::create_dir_all(&out_dir).expect("temp dir");
     let out = out_dir.join("taiyaku.json");
 
@@ -2174,12 +2166,11 @@ fn align_write_merges_further_spokes_into_an_existing_sidecar() {
 /// name.
 #[test]
 fn align_write_refuses_direct_without_name_a_on_a_merge() {
-    let a = cbz_pages("taiyaku-test-main-direct-a.cbz", 3, 1);
-    let b = cbz_pages("taiyaku-test-main-direct-b.cbz", 3, 60);
-    let cache = std::env::temp_dir().join("taiyaku-test-main-direct-cache");
-    let _ = std::fs::remove_dir_all(&cache);
-    let out_dir = std::env::temp_dir().join("taiyaku-test-main-direct-out");
-    let _ = std::fs::remove_dir_all(&out_dir);
+    let scratch = TempDir::new("main-direct");
+    let a = cbz_pages(&scratch, "main-direct-a.cbz", 3, 1);
+    let b = cbz_pages(&scratch, "main-direct-b.cbz", 3, 60);
+    let cache = scratch.join("cache");
+    let out_dir = scratch.join("out");
     std::fs::create_dir_all(&out_dir).expect("temp dir");
     let out = out_dir.join("taiyaku.json");
     assert_eq!(
@@ -2220,10 +2211,10 @@ fn align_write_refuses_direct_without_name_a_on_a_merge() {
 
 #[test]
 fn align_write_refuses_both_editions_named_the_same() {
-    let a = cbz_pages("taiyaku-test-main-clash-a.cbz", 3, 1);
-    let b = cbz_pages("taiyaku-test-main-clash-b.cbz", 3, 60);
-    let out = std::env::temp_dir().join("taiyaku-test-main-clash.json");
-    let _ = std::fs::remove_file(&out);
+    let scratch = TempDir::new("main-clash");
+    let a = cbz_pages(&scratch, "main-clash-a.cbz", 3, 1);
+    let b = cbz_pages(&scratch, "main-clash-b.cbz", 3, 60);
+    let out = scratch.join("clash.json");
 
     let err = align(&argv(&[
         a.to_str().unwrap(),
@@ -2248,10 +2239,10 @@ fn align_write_refuses_both_editions_named_the_same() {
 /// an existing document is only honoured when it agrees.
 #[test]
 fn align_write_refuses_to_rename_a_work_on_a_merge() {
-    let a = cbz_pages("taiyaku-test-main-retitle-a.cbz", 3, 1);
-    let b = cbz_pages("taiyaku-test-main-retitle-b.cbz", 3, 60);
-    let out_dir = std::env::temp_dir().join("taiyaku-test-main-retitle-out");
-    let _ = std::fs::remove_dir_all(&out_dir);
+    let scratch = TempDir::new("main-retitle");
+    let a = cbz_pages(&scratch, "main-retitle-a.cbz", 3, 1);
+    let b = cbz_pages(&scratch, "main-retitle-b.cbz", 3, 60);
+    let out_dir = scratch.join("out");
     std::fs::create_dir_all(&out_dir).expect("temp dir");
     let out = out_dir.join("taiyaku.json");
     assert_eq!(
@@ -2299,10 +2290,10 @@ fn align_write_refuses_to_rename_a_work_on_a_merge() {
 /// leaves a non-empty file at `--out`.
 #[test]
 fn verify_writes_a_report_for_a_direct_solve() {
-    let a = cbz_pages("taiyaku-test-main-verify-a.cbz", 3, 1);
-    let b = cbz_pages("taiyaku-test-main-verify-b.cbz", 3, 60);
-    let out_dir = std::env::temp_dir().join("taiyaku-test-main-verify-out");
-    let _ = std::fs::remove_dir_all(&out_dir);
+    let scratch = TempDir::new("main-verify");
+    let a = cbz_pages(&scratch, "main-verify-a.cbz", 3, 1);
+    let b = cbz_pages(&scratch, "main-verify-b.cbz", 3, 60);
+    let out_dir = scratch.join("out");
     std::fs::create_dir_all(&out_dir).expect("temp dir");
     let out = out_dir.join("report.html");
     let args = argv(&[
@@ -2327,8 +2318,9 @@ fn verify_writes_a_report_for_a_direct_solve() {
 /// would fail `edition_of` before any of the rest of this ran.
 #[test]
 fn verify_reports_confidence_through_a_stored_sidecar() {
-    let a = cbz_pages("taiyaku-test-main-verify-sc-a.cbz", 3, 1);
-    let b = cbz_pages("taiyaku-test-main-verify-sc-b.cbz", 3, 60);
+    let scratch = TempDir::new("main-verify-sc");
+    let a = cbz_pages(&scratch, "main-verify-sc-a.cbz", 3, 1);
+    let b = cbz_pages(&scratch, "main-verify-sc-b.cbz", 3, 60);
     let a_digest = taiyaku_read::member_digest(&a).expect("digest a");
     let b_digest = taiyaku_read::member_digest(&b).expect("digest b");
     let doc_text = format!(
@@ -2350,9 +2342,7 @@ fn verify_reports_confidence_through_a_stored_sidecar() {
               ]
             }}"#
     );
-    let dir = std::env::temp_dir().join("taiyaku-test-main-verify-sidecar");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = TempDir::new("main-verify-sidecar");
     let sidecar_path = dir.join("taiyaku.json");
     std::fs::write(&sidecar_path, &doc_text).expect("fixture written");
 
@@ -2394,9 +2384,10 @@ fn verify_reports_confidence_through_a_stored_sidecar() {
 /// still fail this.
 #[test]
 fn topology_reports_the_star_against_two_spokes() {
-    let hub = cbz_pages("taiyaku-test-main-topology-hub.cbz", 3, 10);
-    let spoke1 = cbz_pages("taiyaku-test-main-topology-s1.cbz", 3, 20);
-    let spoke2 = cbz_pages("taiyaku-test-main-topology-s2.cbz", 3, 30);
+    let scratch = TempDir::new("main-topology");
+    let hub = cbz_pages(&scratch, "main-topology-hub.cbz", 3, 10);
+    let spoke1 = cbz_pages(&scratch, "main-topology-s1.cbz", 3, 20);
+    let spoke2 = cbz_pages(&scratch, "main-topology-s2.cbz", 3, 30);
 
     let hub_pages = taiyaku_read::read_edition(std::slice::from_ref(&hub)).expect("hub decodes");
     let s1_pages =
@@ -2447,13 +2438,10 @@ fn topology_reports_the_star_against_two_spokes() {
 /// path segment.
 #[test]
 fn relative_to_is_current_directory_when_target_and_base_are_the_same() {
-    let dir = std::env::temp_dir().join("taiyaku-test-relative-same");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = TempDir::new("relative-same");
 
     let recorded = relative_to(&dir, &dir);
 
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(recorded, Ok(PathBuf::from(".")));
 }
 
@@ -2465,9 +2453,10 @@ fn relative_to_is_current_directory_when_target_and_base_are_the_same() {
 /// to report which side.
 #[test]
 fn verify_refuses_members_that_match_no_edition_of_the_sidecar() {
-    let a = cbz_pages("taiyaku-test-main-verify-mismatch-a.cbz", 3, 1);
-    let b = cbz_pages("taiyaku-test-main-verify-mismatch-b.cbz", 3, 60);
-    let unrelated = cbz_pages("taiyaku-test-main-verify-mismatch-x.cbz", 3, 200);
+    let scratch = TempDir::new("main-verify-mismatch");
+    let a = cbz_pages(&scratch, "main-verify-mismatch-a.cbz", 3, 1);
+    let b = cbz_pages(&scratch, "main-verify-mismatch-b.cbz", 3, 60);
+    let unrelated = cbz_pages(&scratch, "main-verify-mismatch-x.cbz", 3, 200);
     let a_digest = taiyaku_read::member_digest(&a).expect("digest a");
     let b_digest = taiyaku_read::member_digest(&b).expect("digest b");
     let doc_text = format!(
@@ -2489,9 +2478,7 @@ fn verify_refuses_members_that_match_no_edition_of_the_sidecar() {
               ]
             }}"#
     );
-    let dir = std::env::temp_dir().join("taiyaku-test-main-verify-mismatch");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = TempDir::new("main-verify-mismatch");
     let sidecar_path = dir.join("taiyaku.json");
     std::fs::write(&sidecar_path, &doc_text).expect("fixture written");
 
@@ -2517,8 +2504,9 @@ fn verify_refuses_members_that_match_no_edition_of_the_sidecar() {
 /// since every other sidecar test leaves it at the default.
 #[test]
 fn verify_reports_confidence_through_an_inverted_edge() {
-    let a = cbz_pages("taiyaku-test-main-verify-inv-a.cbz", 3, 1);
-    let b = cbz_pages("taiyaku-test-main-verify-inv-b.cbz", 3, 60);
+    let scratch = TempDir::new("main-verify-inv");
+    let a = cbz_pages(&scratch, "main-verify-inv-a.cbz", 3, 1);
+    let b = cbz_pages(&scratch, "main-verify-inv-b.cbz", 3, 60);
     let a_digest = taiyaku_read::member_digest(&a).expect("digest a");
     let b_digest = taiyaku_read::member_digest(&b).expect("digest b");
     let doc_text = format!(
@@ -2540,9 +2528,7 @@ fn verify_reports_confidence_through_an_inverted_edge() {
               ]
             }}"#
     );
-    let dir = std::env::temp_dir().join("taiyaku-test-main-verify-inverted");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = TempDir::new("main-verify-inverted");
     let sidecar_path = dir.join("taiyaku.json");
     std::fs::write(&sidecar_path, &doc_text).expect("fixture written");
 
@@ -2609,7 +2595,8 @@ fn serve_refuses_a_stump_key_with_no_url() {
 /// blocking this test on a server that never stops.
 #[test]
 fn serve_reaches_load_works_with_every_flag_resolved() {
-    let log = std::env::temp_dir().join("taiyaku-test-serve-log.jsonl");
+    let scratch = TempDir::new("serve-log");
+    let log = scratch.join("requests.jsonl");
     let args = argv(&[
         "does-not-exist.json",
         "--addr",
@@ -2638,15 +2625,10 @@ fn serve_reaches_load_works_with_no_stump_configured() {
     assert!(err.contains("does-not-exist.json"), "{err}");
 }
 
-/// A fixture sidecar for `serve_works`'s own tests, under a scratch directory
-/// named after `tag` — this file's own convention (see e.g. `cbz_pages`
-/// above) for a temp path nothing else is using. `content_key` hashes the
+/// A fixture sidecar for `serve_works`'s own tests, written into `dir`. `content_key` hashes the
 /// member's *declared* `sha256`, not its actual bytes, so no archive needs to
 /// exist on disk.
-fn serve_works_fixture(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("taiyaku-test-serve-works-{tag}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("fixture directory");
+fn serve_works_fixture(dir: &Path) -> PathBuf {
     let path = dir.join("taiyaku.json");
     std::fs::write(
         &path,
@@ -2675,9 +2657,9 @@ fn serve_works_fixture(tag: &str) -> PathBuf {
 /// write a reader makes, rather than minting a second, placeholder one.
 #[test]
 fn serve_works_imports_the_given_path_and_the_work_carries_the_librarys_slug() {
-    let path = serve_works_fixture("single");
-    let db = std::env::temp_dir().join("taiyaku-test-serve-works-single.db");
-    let _ = std::fs::remove_file(&db);
+    let fixture_dir = TempDir::new("serve-works-single");
+    let path = serve_works_fixture(&fixture_dir);
+    let db = fixture_dir.join("library.db");
 
     let (library, works) =
         serve_works(std::slice::from_ref(&path), Some(db.to_str().unwrap())).expect("builds works");
@@ -2709,9 +2691,9 @@ fn serve_works_imports_the_given_path_and_the_work_carries_the_librarys_slug() {
 /// branch in `serve_works`.
 #[test]
 fn serve_works_serves_one_work_when_the_same_path_is_given_twice() {
-    let path = serve_works_fixture("repeated");
-    let db = std::env::temp_dir().join("taiyaku-test-serve-works-repeated.db");
-    let _ = std::fs::remove_file(&db);
+    let fixture_dir = TempDir::new("serve-works-repeated");
+    let path = serve_works_fixture(&fixture_dir);
+    let db = fixture_dir.join("library.db");
 
     let (_library, works) = serve_works(&[path.clone(), path.clone()], Some(db.to_str().unwrap()))
         .expect("builds works");
@@ -2746,16 +2728,13 @@ fn the_duplicate_work_notice_names_both_paths() {
     );
 }
 
-/// A sidecar at `<tag>/taiyaku.json` that cannot be imported: valid JSON,
+/// A sidecar at `<dir>/taiyaku.json` that cannot be imported: valid JSON,
 /// parses as a `Sidecar`, and names a `hub` no edition in it answers to — so
 /// it fails in `identity::content_key`, the way a hand edit that renames an
 /// edition and forgets the hub does. Written as a separate fixture rather
 /// than by corrupting `serve_works_fixture`'s, since the point of the tests
 /// below is that a bad document sits *beside* a good one.
-fn unimportable_fixture(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("taiyaku-test-serve-works-{tag}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("fixture directory");
+fn unimportable_fixture(dir: &Path) -> PathBuf {
     let path = dir.join("taiyaku.json");
     std::fs::write(
         &path,
@@ -2782,10 +2761,11 @@ fn unimportable_fixture(tag: &str) -> PathBuf {
 /// the call merely returning `Ok`.
 #[test]
 fn serve_works_skips_a_work_it_cannot_import_and_serves_the_rest() {
-    let good = serve_works_fixture("survivor");
-    let bad = unimportable_fixture("survivor-bad");
-    let db = std::env::temp_dir().join("taiyaku-test-serve-works-survivor.db");
-    let _ = std::fs::remove_file(&db);
+    let fixture_dir = TempDir::new("serve-works-survivor");
+    let good = serve_works_fixture(&fixture_dir);
+    let fixture_dir = TempDir::new("serve-works-survivor-bad");
+    let bad = unimportable_fixture(&fixture_dir);
+    let db = fixture_dir.join("library.db");
 
     let (_library, works) = serve_works(&[bad.clone(), good.clone()], Some(db.to_str().unwrap()))
         .expect("one unimportable work must not abort the start");
@@ -2812,11 +2792,10 @@ fn serve_works_skips_a_work_it_cannot_import_and_serves_the_rest() {
 /// `works::from_library` could be deleted without the property going with it.
 #[test]
 fn serve_works_serves_two_sidecars_both_named_taiyaku_json() {
-    let first = serve_works_fixture("shared-name-a");
-    let second = std::env::temp_dir().join("taiyaku-test-serve-works-shared-name-b");
-    let _ = std::fs::remove_dir_all(&second);
-    std::fs::create_dir_all(&second).expect("fixture directory");
-    let second = second.join("taiyaku.json");
+    let fixture_dir = TempDir::new("serve-works-shared-name-a");
+    let first = serve_works_fixture(&fixture_dir);
+    let second_dir = TempDir::new("serve-works-shared-name-b");
+    let second = second_dir.join("taiyaku.json");
     // A different title *and* a different hub member digest: the title is what
     // `unique_slug` derives the id from, and the digest is what `content_key`
     // hashes — share the digest and the second import lands on the first
@@ -2830,8 +2809,7 @@ fn serve_works_serves_two_sidecars_both_named_taiyaku_json() {
     )
     .expect("writing the second fixture");
 
-    let db = std::env::temp_dir().join("taiyaku-test-serve-works-shared-name.db");
-    let _ = std::fs::remove_file(&db);
+    let db = fixture_dir.join("library.db");
 
     let (_library, works) =
         serve_works(&[first.clone(), second.clone()], Some(db.to_str().unwrap()))
@@ -2858,9 +2836,9 @@ fn serve_works_serves_two_sidecars_both_named_taiyaku_json() {
 /// failure has already been named on stderr.
 #[test]
 fn serve_works_refuses_when_no_work_could_be_imported() {
-    let bad = unimportable_fixture("all-bad");
-    let db = std::env::temp_dir().join("taiyaku-test-serve-works-all-bad.db");
-    let _ = std::fs::remove_file(&db);
+    let fixture_dir = TempDir::new("serve-works-all-bad");
+    let bad = unimportable_fixture(&fixture_dir);
+    let db = fixture_dir.join("library.db");
 
     let err = serve_works(std::slice::from_ref(&bad), Some(db.to_str().unwrap()))
         .expect_err("nothing to serve must be an error");
@@ -2886,9 +2864,7 @@ fn serve_works_refuses_when_no_work_could_be_imported() {
 /// the `tokio::runtime` and the socket.
 #[test]
 fn serve_works_survives_a_hub_that_gained_a_member() {
-    let dir = std::env::temp_dir().join("taiyaku-test-serve-works-hub-grows");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("fixture directory");
+    let dir = TempDir::new("serve-works-hub-grows");
     let path = dir.join("taiyaku.json");
     std::fs::write(
         &path,
@@ -2904,8 +2880,7 @@ fn serve_works_survives_a_hub_that_gained_a_member() {
                "runs":[{"a":"0-9","b":"0-9"}]}]}"#,
     )
     .expect("writing the fixture");
-    let db = std::env::temp_dir().join("taiyaku-test-serve-works-hub-grows.db");
-    let _ = std::fs::remove_file(&db);
+    let db = dir.join("library.db");
 
     let (library, works) =
         serve_works(std::slice::from_ref(&path), Some(db.to_str().unwrap())).expect("first start");
@@ -2957,10 +2932,10 @@ fn serve_works_survives_a_hub_that_gained_a_member() {
 /// document over it.
 #[test]
 fn align_write_reports_a_read_error_other_than_not_found() {
-    let a = cbz_pages("taiyaku-test-main-readerr-a.cbz", 3, 1);
-    let b = cbz_pages("taiyaku-test-main-readerr-b.cbz", 3, 60);
-    let out = std::env::temp_dir().join("taiyaku-test-main-readerr-out");
-    let _ = std::fs::remove_dir_all(&out);
+    let scratch = TempDir::new("main-readerr");
+    let a = cbz_pages(&scratch, "main-readerr-a.cbz", 3, 1);
+    let b = cbz_pages(&scratch, "main-readerr-b.cbz", 3, 60);
+    let out = scratch.join("out");
     std::fs::create_dir_all(&out).expect("out exists as a directory, not a file");
 
     let err = align(&argv(&[

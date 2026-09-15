@@ -1,29 +1,10 @@
 use super::*;
 use std::path::PathBuf;
 
-struct TempDir {
-    path: PathBuf,
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-impl TempDir {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
+use crate::test_support::TempDir;
 
 fn tempdir() -> TempDir {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("taiyaku-test-format-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&path).expect("creating the test directory");
-    TempDir { path }
+    TempDir::new("format")
 }
 
 /// A zip whose entries are `names`, each holding `bytes`.

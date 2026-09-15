@@ -167,8 +167,8 @@ fn composing_through_the_hub_agrees_with_a_direct_solve() {
         .unwrap_or(Path::new("."))
         .join(".taiyaku-cache");
 
-    let out = std::env::temp_dir().join("taiyaku-corpus-star.json");
-    let _ = std::fs::remove_file(&out);
+    let scratch = taiyaku_read::test_support::TempDir::new("corpus-star");
+    let out = scratch.join("star.json");
     for spoke in spokes {
         let mut args = members(&volume.join(hub));
         args.push("--".into());

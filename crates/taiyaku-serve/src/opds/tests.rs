@@ -90,7 +90,8 @@ fn markup_in_a_title_is_escaped_rather_than_emitted() {
 /// past the first request.
 #[tokio::test]
 async fn the_catalog_is_an_atom_navigation_feed() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-root"));
+    let tmp = crate::test_support::Fixture::new("opds-root");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     let response = app
@@ -110,7 +111,6 @@ async fn the_catalog_is_an_atom_navigation_feed() {
         .to_string();
     let body = body_of(response).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-root");
     assert!(content_type.starts_with(ATOM), "{content_type}");
     assert!(body.starts_with("<?xml"), "{body}");
     assert!(
@@ -124,7 +124,8 @@ async fn the_catalog_is_an_atom_navigation_feed() {
 /// understands taiyaku can resolve between them.
 #[tokio::test]
 async fn a_work_lists_its_editions_with_page_counts_and_a_sidecar_link() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-work"));
+    let tmp = crate::test_support::Fixture::new("opds-work");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     let response = app
@@ -138,7 +139,6 @@ async fn a_work_lists_its_editions_with_page_counts_and_a_sidecar_link() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_of(response).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-work");
     assert!(
         body.contains(PSE_NS),
         "the PSE namespace must be declared: {body}"
@@ -171,7 +171,8 @@ async fn a_work_lists_its_editions_with_page_counts_and_a_sidecar_link() {
 /// shifted answer is not merely a wrong status but visibly the wrong page.
 #[tokio::test]
 async fn pse_page_numbers_are_taiyaku_indices_unchanged() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-page"));
+    let tmp = crate::test_support::Fixture::new("opds-page");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     let page = async |n: u32| {
@@ -202,7 +203,6 @@ async fn pse_page_numbers_are_taiyaku_indices_unchanged() {
     // old conversion this was the last page and answered 200.
     let (past_end, _) = page(4).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-page");
     assert_eq!(zero_status, StatusCode::OK, "pse page 0 must exist");
     assert_eq!(zero, "a1.jpg", "pse page 0 is taiyaku index 0");
     assert_eq!(two, "b1.jpg", "pse page 2 is taiyaku index 2");
@@ -224,7 +224,8 @@ async fn pse_page_numbers_are_taiyaku_indices_unchanged() {
 /// only one of the two were fixed it would be the wrong one.
 #[tokio::test]
 async fn a_pse_page_number_that_is_not_a_number_is_refused_the_same_way() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-page-nan"));
+    let tmp = crate::test_support::Fixture::new("opds-page-nan");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     let response = app
@@ -238,7 +239,6 @@ async fn a_pse_page_number_that_is_not_a_number_is_refused_the_same_way() {
     let status = response.status();
     let body = body_of(response).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-page-nan");
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body.contains("abc"), "must quote what was sent: {body}");
     assert!(
@@ -258,7 +258,8 @@ async fn a_pse_page_number_that_is_not_a_number_is_refused_the_same_way() {
 /// routes — cannot happen again silently here.
 #[tokio::test]
 async fn the_pse_stream_also_carries_an_etag_and_answers_a_matching_request_304() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-page-etag"));
+    let tmp = crate::test_support::Fixture::new("opds-page-etag");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     let first = app
@@ -287,7 +288,6 @@ async fn the_pse_stream_also_carries_an_etag_and_answers_a_matching_request_304(
         .await
         .unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-opds-page-etag");
     assert_eq!(status, StatusCode::NOT_MODIFIED);
     assert!(
         bytes.is_empty(),
@@ -394,7 +394,8 @@ async fn each_edition_s_cover_is_cached_under_the_member_its_first_page_is_in() 
 /// returning an empty feed a client renders as an empty library.
 #[tokio::test]
 async fn an_unknown_work_is_refused_rather_than_served_empty() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-missing"));
+    let tmp = crate::test_support::Fixture::new("opds-missing");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     let response = app
@@ -408,7 +409,6 @@ async fn an_unknown_work_is_refused_rather_than_served_empty() {
     let status = response.status();
     let body = body_of(response).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-missing");
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(body.contains("nope"), "must name the work: {body}");
 }
@@ -418,7 +418,8 @@ async fn an_unknown_work_is_refused_rather_than_served_empty() {
 /// not be caught by `cargo test`.
 #[tokio::test]
 async fn the_works_feed_lists_every_work_with_its_edition_count() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-works-list"));
+    let tmp = crate::test_support::Fixture::new("opds-works-list");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     let response = app
@@ -438,7 +439,6 @@ async fn the_works_feed_lists_every_work_with_its_edition_count() {
         .to_string();
     let body = body_of(response).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-works-list");
     assert!(content_type.starts_with(ATOM), "{content_type}");
     assert!(body.starts_with("<?xml"), "{body}");
     assert!(
@@ -456,9 +456,8 @@ async fn the_works_feed_lists_every_work_with_its_edition_count() {
 /// route before this test.
 #[tokio::test]
 async fn streaming_an_unknown_edition_names_it() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-opds-unknown-edition",
-    ));
+    let tmp = crate::test_support::Fixture::new("opds-unknown-edition");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     let response = app
@@ -472,7 +471,6 @@ async fn streaming_an_unknown_edition_names_it() {
     let status = response.status();
     let body = body_of(response).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-unknown-edition");
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(body.contains("nope"), "must name the edition: {body}");
 }
@@ -482,9 +480,8 @@ async fn streaming_an_unknown_edition_names_it() {
 /// names the edition and how many pages it actually has.
 #[tokio::test]
 async fn streaming_a_page_past_the_end_names_the_edition_and_its_length() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-opds-page-past-end",
-    ));
+    let tmp = crate::test_support::Fixture::new("opds-page-past-end");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     // The fixture edition has 4 pages; PSE page 5 is index 4, one past it.
@@ -499,7 +496,6 @@ async fn streaming_a_page_past_the_end_names_the_edition_and_its_length() {
     let status = response.status();
     let body = body_of(response).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-page-past-end");
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(body.contains("raw"), "must name the edition: {body}");
     assert!(body.contains('4'), "must say how many pages it has: {body}");
@@ -514,9 +510,8 @@ async fn streaming_a_page_past_the_end_names_the_edition_and_its_length() {
 /// regress silently. This one stays.
 #[tokio::test]
 async fn a_cover_for_an_unknown_work_or_edition_names_what_was_missing() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-opds-cover-missing",
-    ));
+    let tmp = crate::test_support::Fixture::new("opds-cover-missing");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     let no_work = app
@@ -542,7 +537,6 @@ async fn a_cover_for_an_unknown_work_or_edition_names_what_was_missing() {
     let no_edition_status = no_edition.status();
     let no_edition_body = body_of(no_edition).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-cover-missing");
     assert_eq!(no_work_status, StatusCode::NOT_FOUND);
     assert!(
         no_work_body.contains("nope"),
@@ -571,16 +565,15 @@ async fn a_cover_for_an_unknown_work_or_edition_names_what_was_missing() {
 /// somewhere contains `%20`.
 #[tokio::test]
 async fn a_percent_encoded_edition_key_in_the_feed_routes_back_to_the_same_edition() {
+    let tmp = crate::test_support::Fixture::new("opds-percent");
     let state = Arc::new(ServeState {
         library: crate::test_support::library(),
         works: vec![crate::test_support::work_with_edition_key(
-            "taiyaku-test-opds-percent",
+            &tmp,
             "raw color",
         )],
         source: Arc::new(crate::LocalLibrary),
-        cache_dir: std::env::temp_dir()
-            .join("taiyaku-test-opds-percent")
-            .join("covers"),
+        cache_dir: tmp.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -628,7 +621,6 @@ async fn a_percent_encoded_edition_key_in_the_feed_routes_back_to_the_same_editi
         .await
         .unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-opds-percent");
     assert!(
         template.contains("%20"),
         "the href must percent-encode the space: {template}"
@@ -650,7 +642,8 @@ async fn a_percent_encoded_edition_key_in_the_feed_routes_back_to_the_same_editi
 /// `catalog` already had it; `works` and `work_feed` did not.
 #[tokio::test]
 async fn the_works_feed_and_the_work_feed_declare_an_atom_author() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-author"));
+    let tmp = crate::test_support::Fixture::new("opds-author");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     let all_works_feed_body = body_of(
@@ -675,7 +668,6 @@ async fn the_works_feed_and_the_work_feed_declare_an_atom_author() {
     )
     .await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-author");
     assert!(
         all_works_feed_body.contains("<author><name>taiyaku</name></author>"),
         "the works feed must declare an author: {all_works_feed_body}"
@@ -691,7 +683,8 @@ async fn the_works_feed_and_the_work_feed_declare_an_atom_author() {
 /// OPDS catalogs use for an entry that leads to another feed.
 #[tokio::test]
 async fn navigation_entries_carry_a_subsection_rel() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-subsection"));
+    let tmp = crate::test_support::Fixture::new("opds-subsection");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     let catalog_body = body_of(
@@ -716,7 +709,6 @@ async fn navigation_entries_carry_a_subsection_rel() {
     )
     .await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-subsection");
     assert!(
         catalog_body.contains(r#"rel="subsection""#),
         "the catalog's entry link to /works must carry rel=subsection: {catalog_body}"
@@ -739,7 +731,8 @@ async fn navigation_entries_carry_a_subsection_rel() {
 /// left to contradict the code beside it.*
 #[tokio::test]
 async fn the_acquisition_link_is_a_real_fetchable_download() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-acq-dl"));
+    let tmp = crate::test_support::Fixture::new("opds-acq-dl");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     let feed = app
@@ -782,7 +775,6 @@ async fn the_acquisition_link_is_a_real_fetchable_download() {
         "streaming stays the in-app read path: {feed_body}"
     );
 
-    crate::test_support::cleanup("taiyaku-test-opds-acq-dl");
     assert_eq!(
         status,
         StatusCode::OK,
@@ -795,7 +787,8 @@ async fn the_acquisition_link_is_a_real_fetchable_download() {
 /// decides, so the two cannot drift.
 #[tokio::test]
 async fn the_acquisition_link_declares_the_type_the_route_will_send() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-acq-type"));
+    let tmp = crate::test_support::Fixture::new("opds-acq-type");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
     let feed = app
@@ -808,7 +801,6 @@ async fn the_acquisition_link_declares_the_type_the_route_will_send() {
         .unwrap();
     let feed_body = body_of(feed).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-acq-type");
     assert!(
         feed_body.contains(
             r#"<link rel="http://opds-spec.org/acquisition" type="application/vnd.comicbook+zip""#
@@ -834,7 +826,7 @@ async fn the_acquisition_link_declares_the_type_the_route_will_send() {
 /// Only the pair distinguishes a working branch from a missing one.
 #[tokio::test]
 async fn the_acquisition_link_follows_can_download_in_both_directions() {
-    async fn feed_for(dir: &str, may_download: bool) -> String {
+    async fn feed_for(dir: &std::path::Path, may_download: bool) -> String {
         let state = Arc::new(crate::test_support::state(dir));
         {
             let conn = state.library.conn();
@@ -854,13 +846,13 @@ async fn the_acquisition_link_follows_can_download_in_both_directions() {
         let router = crate::test_support::key_authenticating(crate::build_router(state));
         let response = crate::test_support::get(&router, "/opds/v1.2/works/t").await;
         assert_eq!(response.status(), StatusCode::OK);
-        let body = crate::test_support::body_string(response).await;
-        crate::test_support::cleanup(dir);
-        body
+        crate::test_support::body_string(response).await
     }
 
-    let granted = feed_for("taiyaku-test-opds-acq-yes", true).await;
-    let withheld = feed_for("taiyaku-test-opds-acq-no", false).await;
+    let tmp = crate::test_support::Fixture::new("opds-acq-yes");
+    let granted = feed_for(&tmp, true).await;
+    let tmp2 = crate::test_support::Fixture::new("opds-acq-no");
+    let withheld = feed_for(&tmp2, false).await;
 
     for (name, body) in [("granted", &granted), ("withheld", &withheld)] {
         assert_eq!(
@@ -887,7 +879,8 @@ async fn the_acquisition_link_follows_can_download_in_both_directions() {
     // "not a dead link" proof with none — which is how `pages/1` survived as
     // the acquisition target while PSE counts from 0, making it the *second*
     // page and a 404 for any one-page edition.
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-acq-fetch"));
+    let tmp3 = crate::test_support::Fixture::new("opds-acq-fetch");
+    let state = Arc::new(crate::test_support::state(&tmp3));
     {
         let conn = state.library.conn();
         // Demoted first, as in `feed_for` above: an administrator's
@@ -912,7 +905,6 @@ async fn the_acquisition_link_follows_can_download_in_both_directions() {
         .unwrap_or_else(|| panic!("no page link in the withheld feed: {body}"));
     let page = crate::test_support::get(&router, &href).await;
     let status = page.status();
-    crate::test_support::cleanup("taiyaku-test-opds-acq-fetch");
     assert_eq!(
         status,
         StatusCode::OK,
@@ -927,14 +919,11 @@ async fn the_acquisition_link_follows_can_download_in_both_directions() {
 /// under `members.first()` unconditionally.
 #[tokio::test]
 async fn the_cover_cache_key_follows_locate_past_a_pageless_first_member() {
-    let dir = std::env::temp_dir()
-        .join("taiyaku-test-opds-cover-pageless-first-member")
-        .join("covers");
+    let tmp = crate::test_support::Fixture::new("opds-cover-pageless-first-member");
+    let dir = tmp.join("covers");
     let state = Arc::new(ServeState {
         library: crate::test_support::library(),
-        works: vec![work_with_a_pageless_first_member(
-            "taiyaku-test-opds-cover-pageless-first-member",
-        )],
+        works: vec![work_with_a_pageless_first_member(&tmp)],
         source: Arc::new(crate::LocalLibrary),
         cache_dir: dir.clone(),
         log: None,
@@ -953,12 +942,11 @@ async fn the_cover_cache_key_follows_locate_past_a_pageless_first_member() {
         .await
         .unwrap();
     let status = response.status();
-    // Checked before cleanup: `cache_dir` sits inside the work's own
-    // temp directory, which `cleanup` removes.
+    // `cache_dir` sits inside the work's own fixture directory, which goes
+    // when `tmp` is dropped at the end of the test.
     let expected = crate::cover::cache_path(&dir, "sha-of-real-second-member");
     let cached_under_the_right_member = expected.exists();
 
-    crate::test_support::cleanup("taiyaku-test-opds-cover-pageless-first-member");
     assert_eq!(status, StatusCode::OK);
     assert!(
         cached_under_the_right_member,
@@ -988,12 +976,10 @@ fn channel(v: u32) -> u8 {
 /// real, decodable images (like `cover::tests::real_page_bytes`) rather
 /// than the shared fixture's plain-ASCII placeholders, because this test
 /// exercises the cover route all the way through `thumbnail`'s decode.
-fn work_with_a_pageless_first_member(dir: &str) -> crate::Work {
+fn work_with_a_pageless_first_member(dir: &std::path::Path) -> crate::Work {
     use std::io::Write;
 
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let root = dir;
 
     let page = image::RgbImage::from_fn(16, 16, |x, y| {
         let r = channel(x * 16);
@@ -1078,13 +1064,11 @@ fn work_with_a_pageless_first_member(dir: &str) -> crate::Work {
 /// refuse the feed itself), since both need the same "nothing here is
 /// visible" shape.
 fn router_with_a_real_page_under_a_withheld_root(
-    dir: &str,
+    dir: &std::path::Path,
 ) -> (axum::Router, std::sync::Arc<ServeState>) {
     use std::io::Write as _;
 
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let root = dir;
 
     let page = image::RgbImage::from_fn(16, 16, |x, y| {
         let r = channel(x * 16);
@@ -1158,11 +1142,9 @@ fn router_with_a_real_page_under_a_withheld_root(
 /// needs: a work that is itself visible, with exactly one of its editions
 /// outside the grant.
 fn router_with_two_editions_split_across_roots(
-    dir: &str,
+    dir: &std::path::Path,
 ) -> (axum::Router, std::sync::Arc<ServeState>) {
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let root = dir;
     let shelf = root.to_string_lossy().into_owned();
 
     let json = format!(
@@ -1225,10 +1207,10 @@ fn router_with_two_editions_split_across_roots(
 /// A router over **two** works, one filed under the root the fixture
 /// account holds and one under a root it does not. What the `works` list
 /// feed's test needs: a work it must keep naming beside one it must not.
-fn router_with_two_works_one_withheld(dir: &str) -> (axum::Router, std::sync::Arc<ServeState>) {
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+fn router_with_two_works_one_withheld(
+    dir: &std::path::Path,
+) -> (axum::Router, std::sync::Arc<ServeState>) {
+    let root = dir;
     let shelf = root.to_string_lossy().into_owned();
 
     let visible_json = format!(
@@ -1325,8 +1307,8 @@ fn router_with_two_works_one_withheld(dir: &str) -> (axum::Router, std::sync::Ar
 /// assertion failure instead.
 #[tokio::test]
 async fn a_restricted_reader_cannot_stream_pages_or_covers_from_a_root_they_do_not_hold() {
-    let (router, state) =
-        router_with_a_real_page_under_a_withheld_root("taiyaku-test-opds-grant-stream");
+    let tmp = crate::test_support::Fixture::new("opds-grant-stream");
+    let (router, state) = router_with_a_real_page_under_a_withheld_root(&tmp);
     let slug = state.works[0].id.clone();
 
     let page =
@@ -1345,7 +1327,6 @@ async fn a_restricted_reader_cannot_stream_pages_or_covers_from_a_root_they_do_n
         .unwrap();
     let cover_body = String::from_utf8_lossy(&cover_bytes).into_owned();
 
-    crate::test_support::cleanup("taiyaku-test-opds-grant-stream");
     assert_eq!(
         page_status,
         StatusCode::NOT_FOUND,
@@ -1373,15 +1354,14 @@ async fn a_restricted_reader_cannot_stream_pages_or_covers_from_a_root_they_do_n
 /// that lists works.
 #[tokio::test]
 async fn a_restricted_readers_work_feed_lists_only_the_editions_they_may_see() {
-    let (router, state) =
-        router_with_two_editions_split_across_roots("taiyaku-test-opds-grant-work-feed");
+    let tmp = crate::test_support::Fixture::new("opds-grant-work-feed");
+    let (router, state) = router_with_two_editions_split_across_roots(&tmp);
     let slug = state.works[0].id.clone();
 
     let response = crate::test_support::get(&router, &format!("/opds/v1.2/works/{slug}")).await;
     let status = response.status();
     let body = crate::test_support::body_string(response).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-grant-work-feed");
     assert_eq!(
         status,
         StatusCode::OK,
@@ -1405,15 +1385,14 @@ async fn a_restricted_readers_work_feed_lists_only_the_editions_they_may_see() {
 /// smaller leak than a key or a path, and it is still one.
 #[tokio::test]
 async fn a_restricted_readers_works_list_counts_only_the_editions_they_may_see() {
-    let (router, state) =
-        router_with_two_editions_split_across_roots("taiyaku-test-opds-grant-works-count");
+    let tmp = crate::test_support::Fixture::new("opds-grant-works-count");
+    let (router, state) = router_with_two_editions_split_across_roots(&tmp);
     let slug = state.works[0].id.clone();
 
     let response = crate::test_support::get(&router, "/opds/v1.2/works").await;
     let status = response.status();
     let body = crate::test_support::body_string(response).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-grant-works-count");
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(
         body.contains(&format!("href=\"/opds/v1.2/works/{slug}\"")),
@@ -1435,15 +1414,14 @@ async fn a_restricted_readers_works_list_counts_only_the_editions_they_may_see()
 /// `browse::work`'s own contract, unread by this route before the fix.
 #[tokio::test]
 async fn a_restricted_readers_work_feed_404s_when_no_edition_is_visible() {
-    let (router, state) =
-        router_with_a_real_page_under_a_withheld_root("taiyaku-test-opds-grant-work-feed-hidden");
+    let tmp = crate::test_support::Fixture::new("opds-grant-work-feed-hidden");
+    let (router, state) = router_with_a_real_page_under_a_withheld_root(&tmp);
     let slug = state.works[0].id.clone();
 
     let response = crate::test_support::get(&router, &format!("/opds/v1.2/works/{slug}")).await;
     let status = response.status();
     let body = crate::test_support::body_string(response).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-grant-work-feed-hidden");
     assert_eq!(
         status,
         StatusCode::NOT_FOUND,
@@ -1457,13 +1435,13 @@ async fn a_restricted_readers_work_feed_404s_when_no_edition_is_visible() {
 /// of material a restricted reader cannot see anywhere else.
 #[tokio::test]
 async fn the_works_feed_does_not_name_a_work_outside_the_grant() {
-    let (router, _state) = router_with_two_works_one_withheld("taiyaku-test-opds-grant-works-list");
+    let tmp = crate::test_support::Fixture::new("opds-grant-works-list");
+    let (router, _state) = router_with_two_works_one_withheld(&tmp);
 
     let response = crate::test_support::get(&router, "/opds/v1.2/works").await;
     let status = response.status();
     let body = crate::test_support::body_string(response).await;
 
-    crate::test_support::cleanup("taiyaku-test-opds-grant-works-list");
     assert_eq!(status, StatusCode::OK);
     assert!(
         body.contains("Visible Work"),
@@ -1485,7 +1463,8 @@ async fn the_works_feed_does_not_name_a_work_outside_the_grant() {
 /// this route rather than assumed to follow from registering it.
 #[tokio::test]
 async fn the_opds_download_401s_with_a_prompt_where_the_api_twin_does_not() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-dl-401"));
+    let tmp = crate::test_support::Fixture::new("opds-dl-401");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let router = crate::build_router(state);
 
     let opds = router
@@ -1520,15 +1499,14 @@ async fn the_opds_download_401s_with_a_prompt_where_the_api_twin_does_not() {
         api.headers().get("www-authenticate").is_none(),
         "an /api 401 carrying WWW-Authenticate raises the browser's own dialog"
     );
-
-    crate::test_support::cleanup("taiyaku-test-opds-dl-401");
 }
 
 /// "One handler, two registrations" is a claim, so it is checked rather than
 /// hoped for: the same edition through both paths is the same bytes.
 #[tokio::test]
 async fn the_opds_download_serves_the_same_bytes_as_the_api_route() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-opds-dl-same"));
+    let tmp = crate::test_support::Fixture::new("opds-dl-same");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let router = crate::test_support::key_authenticating(crate::build_router(state));
 
     let mut bodies = Vec::new();
@@ -1545,7 +1523,6 @@ async fn the_opds_download_serves_the_same_bytes_as_the_api_route() {
         );
     }
 
-    crate::test_support::cleanup("taiyaku-test-opds-dl-same");
     assert_eq!(
         bodies[0], bodies[1],
         "the OPDS registration must be the same handler, not a second \

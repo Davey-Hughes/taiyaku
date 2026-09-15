@@ -44,6 +44,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync",
 ureq = "3.3.0"
 
 [dev-dependencies]
+# `test-support` for `TempDir`, O117: a directory unique to the process and the
+# call, the one helper every crate's tests share.
+taiyaku-read = { path = "../taiyaku-read", features = ["test-support"] }
 tower = { version = "0.5", features = ["util"] }
 zip = "7.2.0"
 

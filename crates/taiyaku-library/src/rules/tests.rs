@@ -868,7 +868,7 @@ fn a_root_scoped_rule_resolves_onto_the_local_root_at_the_same_path() {
     let dir = crate::tests::tempdir("rules-root-scoped");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let added = crate::scan::add_root(&conn, &dir.path).expect("adds a root");
+    let added = crate::scan::add_root(&conn, dir.path()).expect("adds a root");
 
     let json = format!(
         r#"[
@@ -1159,20 +1159,20 @@ fn replace_all_over_an_unchanged_rule_never_nulls_a_proposals_created_rule_id() 
 
     let dir = crate::tests::tempdir("replace-all-keeps-created-rule-id");
     scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01.cbz"),
         3,
     );
     scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome - Full Color Edition")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01.cbz"),
         3,
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("adding the root");
+    let root = scan::add_root(&conn, dir.path()).expect("adding the root");
     scan::scan_root(&conn, &root).expect("scanning the root");
     crate::derive::derive(&conn).expect("the first derive, which raises the edition-of proposal");
     let proposal = crate::proposals::open(&conn, 0.0)
@@ -1237,20 +1237,20 @@ fn importing_a_rule_set_that_drops_an_accepted_rule_reopens_its_proposal() {
 
     let dir = crate::tests::tempdir("import-json-reopens-orphaned-accept");
     scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01.cbz"),
         3,
     );
     scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome - Full Color Edition")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01.cbz"),
         3,
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, &dir.path).expect("adding the root");
+    let root = scan::add_root(&conn, dir.path()).expect("adding the root");
     scan::scan_root(&conn, &root).expect("scanning the root");
     crate::derive::derive(&conn).expect("the first derive, which raises the edition-of proposal");
 
@@ -1388,7 +1388,7 @@ fn replace_all_refuses_two_rules_sharing_one_nonzero_id() {
 /// from "silently rewritten" apart.
 fn fully_specified_rule(conn: &Connection) -> Rule {
     let dir = crate::tests::tempdir("rules-fully-specified");
-    let root = crate::scan::add_root(conn, &dir.path).expect("adding a root for root_id");
+    let root = crate::scan::add_root(conn, dir.path()).expect("adding a root for root_id");
     let id = create(
         conn,
         &NewRule {
@@ -1602,25 +1602,25 @@ fn deleting_an_absent_rule_reports_it_rather_than_erroring() {
 fn deleting_a_widened_rule_reports_and_reopens_every_proposal_it_answered() {
     let dir = crate::tests::tempdir("rules-widened-accept");
     crate::scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome")
             .join("Go-Toubun no Hanayome - v01.cbz"),
         3,
     );
     crate::scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Go-Toubun no Hanayome - Full Color Edition")
             .join("Go-Toubun no Hanayome - Full Color Edition - v01.cbz"),
         3,
     );
     crate::scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Kaguya-sama wa Kokurasetai")
             .join("Kaguya-sama wa Kokurasetai - v01.cbz"),
         3,
     );
     crate::scan::tests::write_archive(
-        &dir.path
+        &dir.path()
             .join("Kaguya-sama wa Kokurasetai - Full Color Edition")
             .join("Kaguya-sama wa Kokurasetai - Full Color Edition - v01.cbz"),
         3,
@@ -1628,7 +1628,7 @@ fn deleting_a_widened_rule_reports_and_reopens_every_proposal_it_answered() {
 
     let db = Library::open_in_memory().expect("open");
     let conn = db.conn();
-    let root = crate::scan::add_root(&conn, &dir.path).expect("adding the root");
+    let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
     crate::scan::scan_root(&conn, &root).expect("scanning the root");
     crate::derive::derive(&conn).expect("the first derive, which raises both edition-of proposals");
 

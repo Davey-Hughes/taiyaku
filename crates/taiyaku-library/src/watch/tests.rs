@@ -9,7 +9,7 @@ fn a_probe_on_an_ordinary_local_directory_sees_its_own_file() {
     // whether it works on Unraid's shfs is unknown and cannot be measured
     // from this workstation.
     let dir = crate::tests::tempdir("probe");
-    let probe = probe(&dir.path, Duration::from_secs(2));
+    let probe = probe(dir.path(), Duration::from_secs(2));
     assert!(probe.watching, "{:?}", probe.reason);
 }
 
@@ -18,8 +18,8 @@ fn the_probe_removes_the_file_it_wrote() {
     // §10: the scanner does not write to the library. The probe is the one
     // exception, and it is only an exception while it cleans up after itself.
     let dir = crate::tests::tempdir("probe");
-    probe(&dir.path, Duration::from_secs(2));
-    let left: Vec<_> = std::fs::read_dir(&dir.path)
+    probe(dir.path(), Duration::from_secs(2));
+    let left: Vec<_> = std::fs::read_dir(dir.path())
         .expect("read_dir")
         .filter_map(Result::ok)
         .collect();
@@ -41,12 +41,12 @@ fn the_probe_removes_the_file_it_wrote() {
 #[test]
 fn the_probe_file_is_removed_even_on_an_immediate_timeout() {
     let dir = crate::tests::tempdir("probe-timeout");
-    let probe = probe(&dir.path, Duration::ZERO);
+    let probe = probe(dir.path(), Duration::ZERO);
     assert!(
         !probe.watching,
         "a zero timeout cannot see the event arrive"
     );
-    let left: Vec<_> = std::fs::read_dir(&dir.path)
+    let left: Vec<_> = std::fs::read_dir(dir.path())
         .expect("read_dir")
         .filter_map(Result::ok)
         .collect();
@@ -72,15 +72,15 @@ fn a_root_that_cannot_be_written_falls_back_to_the_short_interval() {
     // is what `check-all.sh`'s own summary does when something is skipped.
 
     let dir = crate::tests::tempdir("probe");
-    let mut perms = std::fs::metadata(&dir.path)
+    let mut perms = std::fs::metadata(dir.path())
         .expect("metadata")
         .permissions();
     std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o555);
-    std::fs::set_permissions(&dir.path, perms).expect("chmod");
+    std::fs::set_permissions(dir.path(), perms).expect("chmod");
 
     // The guard: if this process can still create a file here, the chmod
     // bought nothing and every assertion below would pass without measuring.
-    let sentinel = dir.path.join(".taiyaku-permission-check");
+    let sentinel = dir.path().join(".taiyaku-permission-check");
     if std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -94,7 +94,7 @@ fn a_root_that_cannot_be_written_falls_back_to_the_short_interval() {
         return;
     }
 
-    let probe = probe(&dir.path, Duration::from_secs(1));
+    let probe = probe(dir.path(), Duration::from_secs(1));
 
     assert!(!probe.watching);
     assert!(probe.reason.is_some(), "a failure says why");
@@ -107,14 +107,14 @@ fn a_symlink_in_the_probes_place_is_refused_rather_than_followed() {
     // guessable and a media share may be writable by other accounts, so the
     // scanner's one write must not be a write to an arbitrary file.
     let dir = crate::tests::tempdir("probe-symlink");
-    let victim = dir.path.join("important.json");
+    let victim = dir.path().join("important.json");
     std::fs::write(&victim, b"{\"keep\": true}").expect("write");
     let planted = dir
-        .path
+        .path()
         .join(format!(".taiyaku-watch-probe-{}", std::process::id()));
     std::os::unix::fs::symlink(&victim, &planted).expect("symlink");
 
-    let answer = probe(&dir.path, Duration::from_millis(200));
+    let answer = probe(dir.path(), Duration::from_millis(200));
 
     assert!(!answer.watching);
     assert_eq!(

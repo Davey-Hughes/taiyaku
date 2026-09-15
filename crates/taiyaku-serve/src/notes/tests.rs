@@ -25,7 +25,8 @@ fn note(id: &str, slot: u32, region: Option<Region>) -> Note {
 /// re-solving rewrites it, and prose in it would be noise in every diff.
 #[test]
 fn notes_are_written_to_the_library_not_into_the_sidecar() {
-    let work = crate::test_support::work("taiyaku-test-notes-beside");
+    let tmp = crate::test_support::Fixture::new("notes-beside");
+    let work = crate::test_support::work(&tmp);
     let library = library();
     let sidecar_before = std::fs::read_to_string(&work.path).unwrap();
 
@@ -42,7 +43,6 @@ fn notes_are_written_to_the_library_not_into_the_sidecar() {
 
     let sidecar_after = std::fs::read_to_string(&work.path).unwrap();
     let stored = load(&library, &work, 1).unwrap();
-    crate::test_support::cleanup("taiyaku-test-notes-beside");
     assert_eq!(sidecar_before, sidecar_after, "the sidecar must not change");
     assert_eq!(
         stored.map(|n| n.notes.len()),
@@ -57,7 +57,8 @@ fn notes_are_written_to_the_library_not_into_the_sidecar() {
 /// should have to handle.
 #[test]
 fn a_note_round_trips_with_and_without_a_region() {
-    let work = crate::test_support::work("taiyaku-test-notes-round-trip");
+    let tmp = crate::test_support::Fixture::new("notes-round-trip");
+    let work = crate::test_support::work(&tmp);
     let library = library();
     let stored = Notes {
         work: "t".into(),
@@ -85,7 +86,6 @@ fn a_note_round_trips_with_and_without_a_region() {
     // would be sent.
     let serialised = to_json(read_back.as_ref().expect("just stored")).unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-notes-round-trip");
     assert_eq!(read_back, Some(stored));
     assert!(
         !serialised.contains("null"),
@@ -110,7 +110,8 @@ fn a_note_round_trips_with_and_without_a_region() {
 /// refusal names what was wrong rather than quietly dropping the field.
 #[test]
 fn a_colour_must_be_a_name_rather_than_a_style() {
-    let work = crate::test_support::work("taiyaku-test-notes-colour");
+    let tmp = crate::test_support::Fixture::new("notes-colour");
+    let work = crate::test_support::work(&tmp);
     let coloured = |value: &str| {
         let mut notes = on("raw", 0, None);
         notes.notes[0].color = Some(value.to_string());
@@ -122,7 +123,6 @@ fn a_colour_must_be_a_name_rather_than_a_style() {
     let css = coloured("red; background: url(x)");
     let shouty = coloured("Amber");
     let empty = coloured("");
-    crate::test_support::cleanup("taiyaku-test-notes-colour");
 
     plain.expect("an ordinary name");
     dashed.expect("dashes are how a two-word name is spelled here");
@@ -146,7 +146,8 @@ fn a_colour_must_be_a_name_rather_than_a_style() {
 /// answered 404.
 #[test]
 fn a_stale_anchor_already_stored_does_not_refuse_the_writes_that_follow_it() {
-    let work = crate::test_support::work("taiyaku-test-notes-stale");
+    let tmp = crate::test_support::Fixture::new("notes-stale");
+    let work = crate::test_support::work(&tmp);
     let mut stale = on("gone-in-a-re-solve", 3, None);
     stale.notes[0].id = "01STALE".into();
 
@@ -171,7 +172,6 @@ fn a_stale_anchor_already_stored_does_not_refuse_the_writes_that_follow_it() {
     // out of it.
     let removing = validate(&empty("t"), &work, &stale);
 
-    crate::test_support::cleanup("taiyaku-test-notes-stale");
     assert!(
         matches!(introducing, Err(Invalid::Missing(_))),
         "a new note on an edition this work does not have is still refused"
@@ -185,14 +185,14 @@ fn a_stale_anchor_already_stored_does_not_refuse_the_writes_that_follow_it() {
 /// an edition that still does not exist is this write's doing.
 #[test]
 fn moving_a_stale_note_is_refused_even_though_it_was_already_stored() {
-    let work = crate::test_support::work("taiyaku-test-notes-stale-moved");
+    let tmp = crate::test_support::Fixture::new("notes-stale-moved");
+    let work = crate::test_support::work(&tmp);
     let mut stored = on("gone-in-a-re-solve", 3, None);
     stored.notes[0].id = "01STALE".into();
     let mut moved = stored.clone();
     moved.notes[0].slot = 4;
 
     let refused = validate(&moved, &work, &stored);
-    crate::test_support::cleanup("taiyaku-test-notes-stale-moved");
     assert!(
         matches!(refused, Err(Invalid::Missing(_))),
         "moving a note onto a bad anchor is this write's doing"
@@ -204,13 +204,13 @@ fn moving_a_stale_note_is_refused_even_though_it_was_already_stored() {
 /// has been stored.
 #[test]
 fn a_grandfathered_note_still_has_its_colour_checked() {
-    let work = crate::test_support::work("taiyaku-test-notes-stale-colour");
+    let tmp = crate::test_support::Fixture::new("notes-stale-colour");
+    let work = crate::test_support::work(&tmp);
     let stored = on("raw", 0, None);
     let mut recoloured = stored.clone();
     recoloured.notes[0].color = Some("NOT A NAME".into());
 
     let refused = validate(&recoloured, &work, &stored);
-    crate::test_support::cleanup("taiyaku-test-notes-stale-colour");
     assert!(matches!(refused, Err(Invalid::Refused(_))));
 }
 
@@ -219,9 +219,9 @@ fn a_grandfathered_note_still_has_its_colour_checked() {
 /// *route*'s decision, made there and explained there.
 #[test]
 fn a_work_with_no_notes_recorded_loads_as_nothing_recorded() {
-    let work = crate::test_support::work("taiyaku-test-notes-absent");
+    let tmp = crate::test_support::Fixture::new("notes-absent");
+    let work = crate::test_support::work(&tmp);
     let loaded = load(&library(), &work, 1);
-    crate::test_support::cleanup("taiyaku-test-notes-absent");
     assert_eq!(loaded.unwrap(), None);
 }
 
@@ -231,7 +231,8 @@ fn a_work_with_no_notes_recorded_loads_as_nothing_recorded() {
 /// row minted on its first write, and a read never mints one at all.
 #[test]
 fn storing_notes_mints_exactly_one_bridge_row_for_a_work_the_library_never_imported() {
-    let work = crate::test_support::work("taiyaku-test-notes-bridge");
+    let tmp = crate::test_support::Fixture::new("notes-bridge");
+    let work = crate::test_support::work(&tmp);
     let library = library();
 
     assert_eq!(
@@ -250,7 +251,6 @@ fn storing_notes_mints_exactly_one_bridge_row_for_a_work_the_library_never_impor
         .unwrap()
         .expect("still there");
 
-    crate::test_support::cleanup("taiyaku-test-notes-bridge");
     assert_eq!(
         first_id, second_id,
         "the second write reuses the first's row"
@@ -267,13 +267,13 @@ fn storing_notes_mints_exactly_one_bridge_row_for_a_work_the_library_never_impor
 /// actually honours it.
 #[test]
 fn loading_notes_for_an_unregistered_work_creates_no_row() {
-    let work = crate::test_support::work("taiyaku-test-notes-read-only");
+    let tmp = crate::test_support::Fixture::new("notes-read-only");
+    let work = crate::test_support::work(&tmp);
     let library = library();
 
     let loaded = load(&library, &work, 1).unwrap();
 
     let row = crate::works::find_row(&library.conn(), &work).unwrap();
-    crate::test_support::cleanup("taiyaku-test-notes-read-only");
     assert_eq!(loaded, None);
     assert_eq!(row, None, "a GET must not write");
 }
@@ -298,13 +298,13 @@ fn on(edition: &str, slot: u32, region: Option<Region>) -> Notes {
 /// spelled "refuse everything".
 #[test]
 fn a_note_must_name_a_slot_of_an_edition_this_work_has() {
-    let work = crate::test_support::work("taiyaku-test-notes-validate");
+    let tmp = crate::test_support::Fixture::new("notes-validate");
+    let work = crate::test_support::work(&tmp);
     // The fixture is one edition, `raw`, of four pages and no spreads —
     // four slots, so slot 3 is the last and slot 4 is one past the end.
     let accepted = validate(&on("raw", 3, None), &work, &empty("t"));
     let unknown_edition = validate(&on("nope", 0, None), &work, &empty("t"));
     let past_the_end = validate(&on("raw", 4, None), &work, &empty("t"));
-    crate::test_support::cleanup("taiyaku-test-notes-validate");
 
     accepted.expect("the last slot of a real edition is a real anchor");
     let message = match unknown_edition {
@@ -328,7 +328,8 @@ fn a_note_must_name_a_slot_of_an_edition_this_work_has() {
 /// progress; a note is anchored the same way.
 #[test]
 fn the_range_check_counts_slots_not_pages() {
-    let built = crate::test_support::work("taiyaku-test-notes-spread-slot");
+    let tmp = crate::test_support::Fixture::new("notes-spread-slot");
+    let built = crate::test_support::work(&tmp);
     // Rewrite the fixture's sidecar so page 0 is a joined spread: 4 pages,
     // 5 slots, and slot 4 must be accepted.
     let json = std::fs::read_to_string(&built.path)
@@ -343,7 +344,6 @@ fn the_range_check_counts_slots_not_pages() {
     let last = validate(&on("raw", 4, None), &work, &empty("t"));
     let past = validate(&on("raw", 5, None), &work, &empty("t"));
 
-    crate::test_support::cleanup("taiyaku-test-notes-spread-slot");
     last.expect("4 pages with page 0 joined is 5 slots, and slot 4 is real");
     assert!(past.is_err(), "slot 5 is past the end even so");
 }
@@ -353,7 +353,8 @@ fn the_range_check_counts_slots_not_pages() {
 /// an absent region already is for the whole slot.
 #[test]
 fn a_region_must_lie_within_the_slot_and_have_a_size() {
-    let work = crate::test_support::work("taiyaku-test-notes-region");
+    let tmp = crate::test_support::Fixture::new("notes-region");
+    let work = crate::test_support::work(&tmp);
     let ok = Region {
         x: 0.1,
         y: 0.1,
@@ -392,7 +393,6 @@ fn a_region_must_lie_within_the_slot_and_have_a_size() {
         validate(&on("raw", 0, Some(point)), &work, &empty("t")),
         validate(&on("raw", 0, Some(negative)), &work, &empty("t")),
     ];
-    crate::test_support::cleanup("taiyaku-test-notes-region");
 
     results[0].as_ref().expect("an ordinary region");
     results[1]
@@ -416,12 +416,12 @@ fn a_region_must_lie_within_the_slot_and_have_a_size() {
 /// discovered by a client that edits the wrong one.
 #[test]
 fn two_notes_cannot_share_an_id() {
-    let work = crate::test_support::work("taiyaku-test-notes-dupe-id");
+    let tmp = crate::test_support::Fixture::new("notes-dupe-id");
+    let work = crate::test_support::work(&tmp);
     let mut notes = on("raw", 0, None);
     notes.notes.push(notes.notes[0].clone());
 
     let refused = validate(&notes, &work, &empty("t"));
-    crate::test_support::cleanup("taiyaku-test-notes-dupe-id");
 
     let message = match refused {
         Err(Invalid::Refused(m)) => m,
@@ -435,12 +435,12 @@ fn two_notes_cannot_share_an_id() {
 /// mistake here that destroys notes rather than refusing them.
 #[test]
 fn a_document_naming_a_different_work_is_refused() {
-    let work = crate::test_support::work("taiyaku-test-notes-wrong-work");
+    let tmp = crate::test_support::Fixture::new("notes-wrong-work");
+    let work = crate::test_support::work(&tmp);
     let mut notes = on("raw", 0, None);
     notes.work = "some-other-work".into();
 
     let refused = validate(&notes, &work, &empty("t"));
-    crate::test_support::cleanup("taiyaku-test-notes-wrong-work");
 
     let message = match refused {
         Err(Invalid::Refused(m)) => m,
@@ -472,7 +472,8 @@ fn an_empty_document_names_the_work_it_is_for() {
 /// marker can run off the bottom of a page as easily as off the side.
 #[test]
 fn a_region_that_runs_off_the_bottom_is_refused_like_one_that_runs_off_the_side() {
-    let work = crate::test_support::work("taiyaku-test-notes-region-y");
+    let tmp = crate::test_support::Fixture::new("notes-region-y");
+    let work = crate::test_support::work(&tmp);
     let over_y = Region {
         x: 0.1,
         y: 0.8,
@@ -480,7 +481,6 @@ fn a_region_that_runs_off_the_bottom_is_refused_like_one_that_runs_off_the_side(
         h: 0.5,
     };
     let result = validate(&on("raw", 0, Some(over_y)), &work, &empty("t"));
-    crate::test_support::cleanup("taiyaku-test-notes-region-y");
 
     assert!(
         matches!(result, Err(Invalid::Refused(_))),

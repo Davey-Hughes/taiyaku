@@ -14,7 +14,8 @@ fn png_bytes(tail: &[u8]) -> Vec<u8> {
 /// Stump and one from disk, and nothing above this line can tell.
 #[test]
 fn each_member_is_served_by_whichever_source_has_it() {
-    let work = crate::test_support::work("taiyaku-test-composite");
+    let tmp = crate::test_support::Fixture::new("composite");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap().to_path_buf();
     let sidecar = work.sidecar();
     let edition = sidecar.editions["raw"].clone();
@@ -40,7 +41,6 @@ fn each_member_is_served_by_whichever_source_has_it() {
     let from_stump = composite.page(&root, &edition.members[0], 0).unwrap();
     let from_disk = composite.page(&root, &edition.members[1], 0).unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-composite");
     assert_eq!(from_stump.bytes, png_bytes(b"from-stump"));
     assert_eq!(
         from_stump.content_type, "image/png",
@@ -65,7 +65,8 @@ fn each_member_is_served_by_whichever_source_has_it() {
 /// ordering there is a handful of lines and is visible by reading them.
 #[test]
 fn a_member_is_served_from_disk_until_its_resolution_lands() {
-    let work = crate::test_support::work("taiyaku-test-composite-late-resolution");
+    let tmp = crate::test_support::Fixture::new("composite-late-resolution");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap().to_path_buf();
     let sidecar = work.sidecar();
     let edition = sidecar.editions["raw"].clone();
@@ -88,7 +89,6 @@ fn a_member_is_served_from_disk_until_its_resolution_lands() {
 
     let after = composite.page(&root, &edition.members[0], 0).unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-composite-late-resolution");
     assert_eq!(
         before.bytes, b"a1.jpg",
         "disk must answer while resolution is still running"
@@ -104,7 +104,8 @@ fn a_member_is_served_from_disk_until_its_resolution_lands() {
 /// configuration `taiyaku serve` has had since M2 and must keep.
 #[test]
 fn with_no_stump_every_member_is_local() {
-    let work = crate::test_support::work("taiyaku-test-composite-local");
+    let tmp = crate::test_support::Fixture::new("composite-local");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap().to_path_buf();
     let sidecar = work.sidecar();
     let edition = sidecar.editions["raw"].clone();
@@ -112,7 +113,6 @@ fn with_no_stump_every_member_is_local() {
     let composite = CompositeSource::new(LocalLibrary, None);
     let page = composite.page(&root, &edition.members[0], 0).unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-composite-local");
     assert_eq!(page.bytes, b"a1.jpg");
 }
 
@@ -121,7 +121,8 @@ fn with_no_stump_every_member_is_local() {
 /// for members it never needed the NAS to read.
 #[test]
 fn a_stump_failure_falls_back_to_disk_rather_than_failing() {
-    let work = crate::test_support::work("taiyaku-test-composite-fallback");
+    let tmp = crate::test_support::Fixture::new("composite-fallback");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap().to_path_buf();
     let sidecar = work.sidecar();
     let edition = sidecar.editions["raw"].clone();
@@ -140,7 +141,6 @@ fn a_stump_failure_falls_back_to_disk_rather_than_failing() {
     );
     let page = composite.page(&root, &edition.members[0], 0).unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-composite-fallback");
     assert_eq!(page.bytes, b"a1.jpg", "disk answers when stump cannot");
 }
 
@@ -150,7 +150,8 @@ fn a_stump_failure_falls_back_to_disk_rather_than_failing() {
 /// cooldown must suppress the second request's network attempt entirely.
 #[test]
 fn a_transport_failure_latches_the_cooldown_so_a_second_request_skips_the_network() {
-    let work = crate::test_support::work("taiyaku-test-composite-cooldown-latch");
+    let tmp = crate::test_support::Fixture::new("composite-cooldown-latch");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap().to_path_buf();
     let sidecar = work.sidecar();
     let edition = sidecar.editions["raw"].clone();
@@ -173,7 +174,6 @@ fn a_transport_failure_latches_the_cooldown_so_a_second_request_skips_the_networ
     let second = composite.page(&root, &edition.members[0], 0).unwrap();
 
     let requests = fake.requests();
-    crate::test_support::cleanup("taiyaku-test-composite-cooldown-latch");
     assert_eq!(first.bytes, b"a1.jpg", "first request falls back to disk");
     assert_eq!(
         second.bytes, b"a1.jpg",
@@ -192,7 +192,8 @@ fn a_transport_failure_latches_the_cooldown_so_a_second_request_skips_the_networ
 /// than being suppressed like the 60-second case above.
 #[test]
 fn a_zero_cooldown_expires_immediately_so_every_request_retries() {
-    let work = crate::test_support::work("taiyaku-test-composite-cooldown-zero");
+    let tmp = crate::test_support::Fixture::new("composite-cooldown-zero");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap().to_path_buf();
     let sidecar = work.sidecar();
     let edition = sidecar.editions["raw"].clone();
@@ -210,7 +211,6 @@ fn a_zero_cooldown_expires_immediately_so_every_request_retries() {
     composite.page(&root, &edition.members[0], 0).unwrap();
 
     let requests = fake.requests();
-    crate::test_support::cleanup("taiyaku-test-composite-cooldown-zero");
     assert_eq!(
         requests.len(),
         2,
@@ -224,7 +224,8 @@ fn a_zero_cooldown_expires_immediately_so_every_request_retries() {
 /// would keep re-latching the whole side.
 #[test]
 fn a_404_does_not_latch_the_cooldown() {
-    let work = crate::test_support::work("taiyaku-test-composite-cooldown-404");
+    let tmp = crate::test_support::Fixture::new("composite-cooldown-404");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap().to_path_buf();
     let sidecar = work.sidecar();
     let edition = sidecar.editions["raw"].clone();
@@ -246,7 +247,6 @@ fn a_404_does_not_latch_the_cooldown() {
     composite.page(&root, &edition.members[0], 0).unwrap();
 
     let requests = fake.requests();
-    crate::test_support::cleanup("taiyaku-test-composite-cooldown-404");
     assert_eq!(
         requests.len(),
         2,
@@ -265,7 +265,8 @@ fn a_404_does_not_latch_the_cooldown() {
 /// failure already does.
 #[test]
 fn a_response_that_does_not_sniff_as_an_image_falls_back_to_disk_rather_than_being_served() {
-    let work = crate::test_support::work("taiyaku-test-composite-html-spa-fallback");
+    let tmp = crate::test_support::Fixture::new("composite-html-spa-fallback");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap().to_path_buf();
     let sidecar = work.sidecar();
     let edition = sidecar.editions["raw"].clone();
@@ -289,7 +290,6 @@ fn a_response_that_does_not_sniff_as_an_image_falls_back_to_disk_rather_than_bei
 
     let page = composite.page(&root, &edition.members[0], 0).unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-composite-html-spa-fallback");
     assert_eq!(
         page.bytes, b"a1.jpg",
         "the SPA's HTML must not be served; disk must answer instead"
@@ -302,7 +302,8 @@ fn a_response_that_does_not_sniff_as_an_image_falls_back_to_disk_rather_than_bei
 /// either.
 #[test]
 fn a_response_that_does_not_sniff_as_an_image_does_not_latch_the_cooldown() {
-    let work = crate::test_support::work("taiyaku-test-composite-html-spa-cooldown");
+    let tmp = crate::test_support::Fixture::new("composite-html-spa-cooldown");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap().to_path_buf();
     let sidecar = work.sidecar();
     let edition = sidecar.editions["raw"].clone();
@@ -328,7 +329,6 @@ fn a_response_that_does_not_sniff_as_an_image_does_not_latch_the_cooldown() {
     composite.page(&root, &edition.members[0], 0).unwrap();
 
     let requests = fake.requests();
-    crate::test_support::cleanup("taiyaku-test-composite-html-spa-cooldown");
     assert_eq!(
         requests.len(),
         2,
@@ -342,7 +342,8 @@ fn a_response_that_does_not_sniff_as_an_image_does_not_latch_the_cooldown() {
 /// staying suppressed for a full cooldown it no longer needs.
 #[test]
 fn a_recovered_stump_clears_the_latch_and_is_served_from_again() {
-    let work = crate::test_support::work("taiyaku-test-composite-cooldown-recovery");
+    let tmp = crate::test_support::Fixture::new("composite-cooldown-recovery");
+    let work = crate::test_support::work(&tmp);
     let root = work.path.parent().unwrap().to_path_buf();
     let sidecar = work.sidecar();
     let edition = sidecar.editions["raw"].clone();
@@ -379,7 +380,6 @@ fn a_recovered_stump_clears_the_latch_and_is_served_from_again() {
         .lock()
         .unwrap()
         .is_none();
-    crate::test_support::cleanup("taiyaku-test-composite-cooldown-recovery");
     assert_eq!(
         second.bytes,
         png_bytes(b"from-stump"),

@@ -7,7 +7,9 @@
 //! stdout and branch on the status. A `main` that did nothing at all would
 //! leave every other test in the crate green.
 
+use std::path::Path;
 use std::process::Command;
+use taiyaku_read::test_support::TempDir;
 
 /// The binary this crate builds, resolved by Cargo rather than by guessing at
 /// a path under `target/`, which differs by profile and by platform.
@@ -30,15 +32,11 @@ fn taiyaku_output(args: &[&str]) -> String {
     )
 }
 
-/// A fixture sidecar under this test binary's own scratch directory: one hub
-/// edition of one member. `content_key` hashes the member's *declared*
-/// `sha256`, not its actual bytes, so no archive needs to exist on disk.
-/// `name` is only ever `"taiyaku.json"` today; kept as a parameter so a
-/// future fixture does not have to invent a second helper.
-fn fixture(name: &str) -> String {
-    let dir = std::env::temp_dir().join("taiyaku-cli-test-fixtures");
-    std::fs::create_dir_all(&dir).expect("fixture directory");
-    let path = dir.join(name);
+/// A fixture sidecar, `taiyaku.json` in `dir`: one hub edition of one member.
+/// `content_key` hashes the member's *declared* `sha256`, not its actual bytes,
+/// so no archive needs to exist on disk.
+fn fixture(dir: &Path) -> String {
+    let path = dir.join("taiyaku.json");
     std::fs::write(
         &path,
         r#"{"taiyaku":1,"work":{"title":"Fixture","reading":"rtl"},
@@ -50,36 +48,15 @@ fn fixture(name: &str) -> String {
     path.to_str().expect("a utf-8 temp path").to_string()
 }
 
-/// A fresh, uniquely-named `--db` path under this test binary's own scratch
-/// directory — `tag` names the caller, the same convention
-/// `duplicates/tests.rs`'s own temp-path helpers use, so two tests never
-/// share one database file.
+/// A `--db` path, `library.db` in `dir`.
 ///
-/// **All three files go, not just the `.db`.** Every connection this workspace
-/// opens sets `journal_mode = WAL` (`taiyaku_library::set_wal`), so a library
-/// on disk is three files: `x.db`, `x.db-wal` and `x.db-shm`. Removing only
-/// the first left a run that had crashed — or been killed mid-test — with a
-/// write-ahead log beside the "fresh" database that the next open would
-/// replay, so a test starting from nothing could find rows in it. Nothing has
-/// been seen to go wrong; this is the kind of thing that goes wrong once and
-/// takes a day (whole-branch review 3, Minor 13).
-///
-/// **The process id is part of the name too** (delta review M6). The `-wal`
-/// removal above closed the crashed-run half of that hazard and left the
-/// concurrent-run half open: the path was still fixed per `tag`, so two
-/// overlapping runs of this binary shared one database file and each cleared
-/// the other's out from under it — the very collision the paragraph above
-/// describes, arriving live rather than from a previous run.
-fn db_path(tag: &str) -> String {
-    let path = std::env::temp_dir().join(format!(
-        "taiyaku-cli-test-library-{tag}-{}.db",
-        std::process::id()
-    ));
-    for suffix in ["", "-wal", "-shm"] {
-        let mut sidecar = path.clone().into_os_string();
-        sidecar.push(suffix);
-        let _ = std::fs::remove_file(sidecar);
-    }
+/// *(Until O117 this was a process-scoped name under the temp dir, and removed
+/// `x.db`, `x.db-wal` and `x.db-shm` by hand first so a killed run's write-ahead
+/// log could not be replayed into a fresh database — whole-branch review 3,
+/// Minor 13, and delta review M6. A new directory holds none of the three, and
+/// goes when the test does.)*
+fn db_path(dir: &Path) -> String {
+    let path = dir.join("library.db");
     path.to_str().expect("a utf-8 temp path").to_string()
 }
 
@@ -225,12 +202,14 @@ fn the_usage_lists_library_scan_and_rules() {
 /// a pure unit test over `merge_summary` itself.
 #[test]
 fn library_import_reports_what_the_merge_did() {
+    let scratch = TempDir::new("cli-import-reports-fixture");
+    let db_dir = TempDir::new("cli-import-reports");
     let out = taiyaku_output(&[
         "library",
         "import",
-        &fixture("taiyaku.json"),
+        &fixture(&scratch),
         "--db",
-        &db_path("import-reports"),
+        &db_path(&db_dir),
     ]);
     assert!(out.contains("imported"), "{out}");
 }
@@ -280,9 +259,7 @@ fn serve_still_accepts_sidecar_paths() {
 /// invokes the fixed function at all — that is by design, not a gap).
 #[test]
 fn two_imports_of_one_file_reconcile_by_content_not_path() {
-    let dir = std::env::temp_dir().join("taiyaku-cli-test-reimport-spelling");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("fixture directory");
+    let dir = TempDir::new("cli-reimport-spelling");
     let sidecar = dir.join("taiyaku.json");
     std::fs::write(
         &sidecar,
@@ -292,7 +269,8 @@ fn two_imports_of_one_file_reconcile_by_content_not_path() {
              "hub":"raw","alignments":[]}"#,
     )
     .expect("writing the fixture");
-    let db = db_path("reimport-spelling");
+    let db_dir = TempDir::new("cli-reimport-spelling");
+    let db = db_path(&db_dir);
 
     let first = taiyaku_output(&["library", "import", sidecar.to_str().unwrap(), "--db", &db]);
     assert!(first.contains("imported"), "{first}");
@@ -350,9 +328,7 @@ fn two_imports_of_one_file_reconcile_by_content_not_path() {
 ///   one layer up, through the real binary's own stdout.
 #[test]
 fn export_reports_wrote_removed_kept_and_the_summary_line_on_real_stdout() {
-    let dir = std::env::temp_dir().join("taiyaku-cli-test-export-reporting");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("fixture directory");
+    let dir = TempDir::new("cli-export-reporting");
     // Canonicalised up front: `export::work` derives every path it reports
     // from the sidecar's own canonicalised `sidecar_path`, so an assertion
     // built from an uncanonicalised `dir` could mismatch on a platform where
@@ -376,7 +352,8 @@ fn export_reports_wrote_removed_kept_and_the_summary_line_on_real_stdout() {
     )
     .expect("writing the skeleton library.json");
 
-    let db = db_path("export-reporting");
+    let db_dir = TempDir::new("cli-export-reporting");
+    let db = db_path(&db_dir);
 
     let first = taiyaku_output(&["library", "import", sidecar.to_str().unwrap(), "--db", &db]);
     assert!(
@@ -449,9 +426,7 @@ fn export_reports_wrote_removed_kept_and_the_summary_line_on_real_stdout() {
 /// `taiyaku.notes.json` and reads the warning off the binary's real stderr.
 #[test]
 fn library_import_prints_the_malformed_sibling_warning_to_stderr() {
-    let dir = std::env::temp_dir().join("taiyaku-cli-test-import-malformed-warning");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("fixture directory");
+    let dir = TempDir::new("cli-import-malformed-warning");
     let dir = dir
         .canonicalize()
         .expect("canonicalises the fixture directory");
@@ -467,12 +442,13 @@ fn library_import_prints_the_malformed_sibling_warning_to_stderr() {
     std::fs::write(dir.join("taiyaku.notes.json"), "{ this is not valid json")
         .expect("writing the malformed sibling");
 
+    let db_dir = TempDir::new("cli-import-malformed-warning");
     let out = taiyaku_output(&[
         "library",
         "import",
         sidecar.to_str().unwrap(),
         "--db",
-        &db_path("import-malformed-warning"),
+        &db_path(&db_dir),
     ]);
 
     assert!(
@@ -503,8 +479,7 @@ fn library_import_prints_the_malformed_sibling_warning_to_stderr() {
 /// raises exactly one `edition-of` proposal.
 #[test]
 fn library_scan_reports_the_real_proposal_count_on_real_stdout() {
-    let dir = std::env::temp_dir().join("taiyaku-cli-test-scan-proposals");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("cli-scan-proposals");
     let base = dir
         .join("Go-Toubun no Hanayome")
         .join("Go-Toubun no Hanayome - v01");
@@ -516,13 +491,14 @@ fn library_scan_reports_the_real_proposal_count_on_real_stdout() {
     std::fs::write(base.join("000.jpg"), b"page").expect("write base page");
     std::fs::write(colour.join("000.jpg"), b"page").expect("write colour page");
 
+    let db_dir = TempDir::new("cli-scan-proposals");
     let out = taiyaku_output(&[
         "library",
         "scan",
         "--add",
         dir.to_str().unwrap(),
         "--db",
-        &db_path("scan-proposals"),
+        &db_path(&db_dir),
     ]);
 
     assert!(
@@ -571,8 +547,7 @@ fn library_scan_reports_the_real_proposal_count_on_real_stdout() {
 /// `library_import_reports_what_the_merge_did` already does for `import`.
 #[test]
 fn library_proposals_lists_and_accepts_over_real_stdout() {
-    let dir = std::env::temp_dir().join("taiyaku-cli-test-proposals");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("cli-proposals");
     let base = dir
         .join("Go-Toubun no Hanayome")
         .join("Go-Toubun no Hanayome - v01");
@@ -583,7 +558,8 @@ fn library_proposals_lists_and_accepts_over_real_stdout() {
     std::fs::create_dir_all(&colour).expect("mkdir colour");
     std::fs::write(base.join("000.jpg"), b"page").expect("write base page");
     std::fs::write(colour.join("000.jpg"), b"page").expect("write colour page");
-    let db = db_path("proposals-e2e");
+    let db_dir = TempDir::new("cli-proposals-e2e");
+    let db = db_path(&db_dir);
 
     let scan_out = taiyaku_output(&[
         "library",
@@ -638,8 +614,7 @@ fn library_proposals_lists_and_accepts_over_real_stdout() {
 /// exit code or a changed message, and the exact line is what tells.
 #[test]
 fn library_proposals_refusals_exit_one_with_the_librarys_own_sentence() {
-    let dir = std::env::temp_dir().join("taiyaku-cli-test-proposals-refusals");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("cli-proposals-refusals");
     let base = dir
         .join("Go-Toubun no Hanayome")
         .join("Go-Toubun no Hanayome - v01");
@@ -650,7 +625,8 @@ fn library_proposals_refusals_exit_one_with_the_librarys_own_sentence() {
     std::fs::create_dir_all(&colour).expect("mkdir colour");
     std::fs::write(base.join("000.jpg"), b"page").expect("write base page");
     std::fs::write(colour.join("000.jpg"), b"page").expect("write colour page");
-    let db = db_path("proposals-refusals");
+    let db_dir = TempDir::new("cli-proposals-refusals");
+    let db = db_path(&db_dir);
 
     let scan_out = taiyaku_output(&[
         "library",
@@ -717,8 +693,7 @@ fn library_proposals_refusals_exit_one_with_the_librarys_own_sentence() {
 /// that no longer exists and reopen it — and the CLI must print that it did.
 #[test]
 fn library_rules_import_reports_a_proposal_that_lost_its_accepted_rule() {
-    let dir = std::env::temp_dir().join("taiyaku-cli-test-rules-reopen");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("cli-rules-reopen");
     let base = dir
         .join("Go-Toubun no Hanayome")
         .join("Go-Toubun no Hanayome - v01");
@@ -729,7 +704,8 @@ fn library_rules_import_reports_a_proposal_that_lost_its_accepted_rule() {
     std::fs::create_dir_all(&colour).expect("mkdir colour");
     std::fs::write(base.join("000.jpg"), b"page").expect("write base page");
     std::fs::write(colour.join("000.jpg"), b"page").expect("write colour page");
-    let db = db_path("rules-import-reopen");
+    let db_dir = TempDir::new("cli-rules-import-reopen");
+    let db = db_path(&db_dir);
 
     let scan_out = taiyaku_output(&[
         "library",
@@ -772,10 +748,7 @@ fn library_rules_import_reports_a_proposal_that_lost_its_accepted_rule() {
         rules.len() < before,
         "the accept above must have added a fifth rule for this filter to drop: {exported}"
     );
-    let path = std::env::temp_dir().join(format!(
-        "taiyaku-cli-test-rules-reopen-{}.json",
-        std::process::id()
-    ));
+    let path = db_dir.join("rules.json");
     std::fs::write(&path, serde_json::to_string(&rules).expect("serialises"))
         .expect("write the trimmed rule document");
 
@@ -809,9 +782,7 @@ fn library_rules_import_reports_a_proposal_that_lost_its_accepted_rule() {
 /// stderr to read.
 #[test]
 fn serve_prints_the_malformed_sibling_warning_before_refusing_to_bind() {
-    let dir = std::env::temp_dir().join("taiyaku-cli-test-serve-malformed-warning");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("fixture directory");
+    let dir = TempDir::new("cli-serve-malformed-warning");
     let dir = dir
         .canonicalize()
         .expect("canonicalises the fixture directory");
@@ -833,12 +804,13 @@ fn serve_prints_the_malformed_sibling_warning_before_refusing_to_bind() {
     let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("binds an ephemeral port");
     let addr = occupied.local_addr().expect("reads back the bound address");
 
+    let db_dir = TempDir::new("cli-serve-malformed-warning");
     let run = taiyaku()
         .args([
             "serve",
             sidecar.to_str().unwrap(),
             "--db",
-            &db_path("serve-malformed-warning"),
+            &db_path(&db_dir),
             "--addr",
             &addr.to_string(),
         ])
@@ -876,7 +848,8 @@ fn serve_prints_the_malformed_sibling_warning_before_refusing_to_bind() {
 /// crate has no stdout-capturing helper, deliberately.
 #[test]
 fn library_rules_import_says_a_scan_is_needed_before_the_rules_decide_anything() {
-    let db = db_path("rules-import-note");
+    let db_dir = TempDir::new("cli-rules-import-note");
+    let db = db_path(&db_dir);
     // Stdout alone here, not `taiyaku_output`: this document is fed straight
     // back to `--import`, and the "library database at …" note the command
     // writes to stderr would not parse as JSON beside it.
@@ -887,10 +860,7 @@ fn library_rules_import_says_a_scan_is_needed_before_the_rules_decide_anything()
     let exported = String::from_utf8_lossy(&run.stdout).into_owned();
     assert!(exported.contains("\"ordinal\""), "{exported}");
 
-    let path = std::env::temp_dir().join(format!(
-        "taiyaku-cli-test-rules-{}.json",
-        std::process::id()
-    ));
+    let path = db_dir.join("rules.json");
     std::fs::write(&path, &exported).expect("write the rule document");
 
     let out = taiyaku_output(&[
@@ -914,14 +884,9 @@ fn library_rules_import_says_a_scan_is_needed_before_the_rules_decide_anything()
 /// silently ignores its argument exits 0.
 #[test]
 fn library_scan_refuses_a_bare_path_and_exits_nonzero() {
+    let db_dir = TempDir::new("cli-scan-positional");
     let run = taiyaku()
-        .args([
-            "library",
-            "scan",
-            "/srv/manga",
-            "--db",
-            &db_path("scan-positional"),
-        ])
+        .args(["library", "scan", "/srv/manga", "--db", &db_path(&db_dir)])
         .output()
         .expect("the binary runs");
     assert!(

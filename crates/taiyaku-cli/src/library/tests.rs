@@ -31,14 +31,10 @@ use taiyaku_library::Library;
 /// both — unique name *plus* a `Drop` that removes it, added there after 9,147
 /// leaked directories were measured — and giving these five helpers the same
 /// guard is a separate piece of work from the collision this comment is about.
-fn scratch(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "taiyaku-test-library-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    root
+/// *(O117 did that piece of work: this is the shared `TempDir` now, and every
+/// helper named above went with it.)*
+fn scratch(name: &str) -> taiyaku_read::test_support::TempDir {
+    taiyaku_read::test_support::TempDir::new(&format!("library-{name}"))
 }
 
 /// A minimal, valid sidecar: one hub edition of one member. `content_key`
@@ -2395,7 +2391,7 @@ fn documents_state_line_says_what_on_and_off_each_mean() {
 /// A root this library already knows, by way of `scan --add` — the same
 /// resolution `root_documents` itself relies on, so a test fixture and the
 /// code under test agree on what "a known root" is.
-fn a_scanned_root(name: &str) -> (PathBuf, PathBuf) {
+fn a_scanned_root(name: &str) -> (taiyaku_read::test_support::TempDir, PathBuf, PathBuf) {
     let dir = scratch(name);
     let root_dir = dir.join("shelf");
     std::fs::create_dir_all(&root_dir).expect("mkdir");
@@ -2408,7 +2404,7 @@ fn a_scanned_root(name: &str) -> (PathBuf, PathBuf) {
         db.display().to_string(),
     ])
     .expect("adds the root");
-    (root_dir, db)
+    (dir, root_dir, db)
 }
 
 fn root_keeps_documents(db: &Path) -> bool {
@@ -2420,7 +2416,7 @@ fn root_keeps_documents(db: &Path) -> bool {
 
 #[test]
 fn turning_documents_on_sets_the_column() {
-    let (root_dir, db) = a_scanned_root("root-documents-on");
+    let (_dir, root_dir, db) = a_scanned_root("root-documents-on");
     assert!(
         !root_keeps_documents(&db),
         "migration 012's own default: off until asked"
@@ -2441,7 +2437,7 @@ fn turning_documents_on_sets_the_column() {
 
 #[test]
 fn turning_documents_off_again_sets_it_back() {
-    let (root_dir, db) = a_scanned_root("root-documents-off");
+    let (_dir, root_dir, db) = a_scanned_root("root-documents-off");
     command(&[
         "root".into(),
         "documents".into(),
@@ -2584,7 +2580,7 @@ fn rules_import_replaces_the_existing_rule_set() {
 /// `taiyaku_library::proposals`, not about proposals.rs's own scoring, which
 /// is `taiyaku_library::proposals::tests`' job. The tree is the same shape
 /// `library_with_two_suffixed_series` there scans.
-fn db_with_one_open_proposal(tag: &str) -> PathBuf {
+fn db_with_one_open_proposal(tag: &str) -> (taiyaku_read::test_support::TempDir, PathBuf) {
     let root = scratch(tag);
     let tree = root.join("library");
     let base = tree
@@ -2607,7 +2603,7 @@ fn db_with_one_open_proposal(tag: &str) -> PathBuf {
         db.display().to_string(),
     ])
     .expect("scans and derives, which raises the one proposal");
-    db
+    (root, db)
 }
 
 #[test]
@@ -2657,7 +2653,8 @@ fn proposals_refuses_more_than_one_action_at_once() {
 
 #[test]
 fn proposals_refuses_an_id_that_will_not_parse() {
-    let db = scratch("proposals-bad-id").join("library.db");
+    let dir = scratch("proposals-bad-id");
+    let db = dir.join("library.db");
     let err = proposals(&[
         "--accept".to_string(),
         "not-a-number".to_string(),
@@ -2670,7 +2667,7 @@ fn proposals_refuses_an_id_that_will_not_parse() {
 
 #[test]
 fn proposals_lists_the_one_open_proposal_the_scan_raised() {
-    let db = db_with_one_open_proposal("proposals-list");
+    let (_root, db) = db_with_one_open_proposal("proposals-list");
     // No action flag: the default is listing, and it must reach the real
     // proposal `scan` raised — not merely succeed.
     proposals(&["--db".to_string(), db.to_str().unwrap().to_string()]).expect("lists");
@@ -2687,7 +2684,7 @@ fn proposals_lists_the_one_open_proposal_the_scan_raised() {
 /// was, still open.
 #[test]
 fn proposals_with_min_score_above_everything_still_succeeds() {
-    let db = db_with_one_open_proposal("proposals-min-score-empty");
+    let (_root, db) = db_with_one_open_proposal("proposals-min-score-empty");
     proposals(&[
         "--min-score".to_string(),
         "999".to_string(),
@@ -2704,7 +2701,8 @@ fn proposals_with_min_score_above_everything_still_succeeds() {
 
 #[test]
 fn proposals_min_score_refuses_a_value_that_will_not_parse() {
-    let db = scratch("proposals-min-score-bad").join("library.db");
+    let dir = scratch("proposals-min-score-bad");
+    let db = dir.join("library.db");
     let err = proposals(&[
         "--min-score".to_string(),
         "not-a-number".to_string(),
@@ -2717,7 +2715,7 @@ fn proposals_min_score_refuses_a_value_that_will_not_parse() {
 
 #[test]
 fn proposals_accept_writes_a_rule_and_the_cli_surface_reaches_it() {
-    let db = db_with_one_open_proposal("proposals-accept");
+    let (_root, db) = db_with_one_open_proposal("proposals-accept");
     let library = Library::open(&db).expect("reopens");
     let id = {
         let conn = library.conn();
@@ -2809,7 +2807,7 @@ fn proposals_accept_surfaces_the_attach_chapters_refusal_unreworded() {
 
 #[test]
 fn proposals_dismiss_and_unaccept_reach_the_library_crate() {
-    let db = db_with_one_open_proposal("proposals-dismiss-unaccept");
+    let (_root, db) = db_with_one_open_proposal("proposals-dismiss-unaccept");
     let library = Library::open(&db).expect("reopens");
     let id = {
         let conn = library.conn();
@@ -2861,7 +2859,7 @@ fn proposals_dismiss_and_unaccept_reach_the_library_crate() {
 /// still contain the phrase.
 #[test]
 fn proposals_dismiss_surfaces_the_accepted_refusal_unreworded() {
-    let db = db_with_one_open_proposal("proposals-dismiss-accepted");
+    let (_root, db) = db_with_one_open_proposal("proposals-dismiss-accepted");
     let library = Library::open(&db).expect("reopens");
     let id = {
         let conn = library.conn();

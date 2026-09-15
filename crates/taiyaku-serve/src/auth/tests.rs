@@ -162,7 +162,8 @@ async fn every_route_refuses_an_anonymous_request() {
 
     for pattern in patterns {
         let path = concrete(pattern);
-        let state = Arc::new(crate::test_support::state("taiyaku-test-auth-enum"));
+        let tmp = crate::test_support::Fixture::new("auth-enum");
+        let state = Arc::new(crate::test_support::state(&tmp));
         let response = build_router(state)
             .oneshot(Request::get(&path).body(Body::empty()).unwrap())
             .await
@@ -208,7 +209,8 @@ async fn open_routes_are_the_ones_that_cannot_be_guarded() {
 
     // Login: correct credentials and no `Authorization` header at all. Behind
     // the guard this is a 401 before the handler is reached.
-    let state = Arc::new(crate::test_support::state("taiyaku-test-auth-open-login"));
+    let tmp = crate::test_support::Fixture::new("auth-open-login");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let logged_in = build_router(state)
         .oneshot(
             Request::post("/api/session")
@@ -233,7 +235,8 @@ async fn open_routes_are_the_ones_that_cannot_be_guarded() {
     // Logout: anonymous, and 204 because a browser holding an expired cookie
     // needs it cleared. Behind the guard that browser would be stuck holding
     // the thing it was trying to be rid of.
-    let state = Arc::new(crate::test_support::state("taiyaku-test-auth-open-logout"));
+    let tmp2 = crate::test_support::Fixture::new("auth-open-logout");
+    let state = Arc::new(crate::test_support::state(&tmp2));
     let logged_out = build_router(state)
         .oneshot(
             Request::delete("/api/session")
@@ -249,7 +252,8 @@ async fn open_routes_are_the_ones_that_cannot_be_guarded() {
     // Claim: anonymous, and 404 with the flag off — which is the shut answer
     // rather than the guard's, and is what makes a claimed server look like one
     // built without the flag.
-    let state = Arc::new(crate::test_support::state("taiyaku-test-auth-open-claim"));
+    let tmp3 = crate::test_support::Fixture::new("auth-open-claim");
+    let state = Arc::new(crate::test_support::state(&tmp3));
     let claim = build_router(state)
         .oneshot(
             Request::post("/api/claim")
@@ -270,7 +274,8 @@ async fn open_routes_are_the_ones_that_cannot_be_guarded() {
 /// cannot style, cannot pre-fill and cannot recover from.
 #[tokio::test]
 async fn the_two_401_shapes_differ_by_path() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-auth-401-api"));
+    let tmp = crate::test_support::Fixture::new("auth-401-api");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let api = build_router(state)
         .oneshot(Request::get("/api/works").body(Body::empty()).unwrap())
         .await
@@ -282,7 +287,8 @@ async fn the_two_401_shapes_differ_by_path() {
          which the reader cannot style, pre-fill or recover from"
     );
 
-    let state = Arc::new(crate::test_support::state("taiyaku-test-auth-401-opds"));
+    let tmp2 = crate::test_support::Fixture::new("auth-401-opds");
+    let state = Arc::new(crate::test_support::state(&tmp2));
     let opds = build_router(state)
         .oneshot(
             Request::get("/opds/v1.2/catalog")
@@ -304,7 +310,8 @@ async fn the_two_401_shapes_differ_by_path() {
 /// A password authenticates through Basic, and a wrong one does not.
 #[tokio::test]
 async fn basic_accepts_a_password() {
-    let state = crate::test_support::state("taiyaku-test-auth-basic");
+    let tmp = crate::test_support::Fixture::new("auth-basic");
+    let state = crate::test_support::state(&tmp);
     with_password(&state, "fixture");
     let state = Arc::new(state);
 
@@ -352,7 +359,8 @@ async fn basic_accepts_a_password() {
 /// refactor makes the key path fall through to the password verifier.
 #[tokio::test]
 async fn an_api_key_authenticates_without_reaching_argon2() {
-    let state = crate::test_support::state("taiyaku-test-auth-key");
+    let tmp = crate::test_support::Fixture::new("auth-key");
+    let state = crate::test_support::state(&tmp);
     let secret = credential::mint_api_key();
     {
         let conn = state.library.conn();
@@ -422,7 +430,8 @@ async fn an_api_key_authenticates_without_reaching_argon2() {
 /// broken key.
 #[tokio::test]
 async fn a_key_authenticates_as_its_owner_whatever_username_accompanies_it() {
-    let state = crate::test_support::state("taiyaku-test-auth-key-name");
+    let tmp = crate::test_support::Fixture::new("auth-key-name");
+    let state = crate::test_support::state(&tmp);
     let secret = credential::mint_api_key();
     {
         let conn = state.library.conn();
@@ -459,7 +468,8 @@ async fn a_malformed_authorization_header_is_refused() {
         "Bearer something",
         "",
     ] {
-        let state = Arc::new(crate::test_support::state("taiyaku-test-auth-malformed"));
+        let tmp = crate::test_support::Fixture::new("auth-malformed");
+        let state = Arc::new(crate::test_support::state(&tmp));
         let response = build_router(state)
             .oneshot(
                 Request::get("/api/works")
@@ -485,7 +495,8 @@ async fn a_malformed_authorization_header_is_refused() {
 /// telling them each one names something real they merely cannot see.
 #[tokio::test]
 async fn an_unmatched_path_is_still_a_404() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-auth-404"));
+    let tmp = crate::test_support::Fixture::new("auth-404");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let response = build_router(state)
         .oneshot(
             Request::get("/api/nothing-here")
@@ -599,7 +610,8 @@ fn a_forwarded_chain_is_read_from_the_right_end() {
 /// Found by the whole-branch review, 2026-08-18.
 #[tokio::test]
 async fn guessing_a_password_over_basic_is_rate_limited_too() {
-    let state = crate::test_support::state("taiyaku-test-auth-basic-lockout");
+    let tmp = crate::test_support::Fixture::new("auth-basic-lockout");
+    let state = crate::test_support::state(&tmp);
     with_password(&state, "fixture");
     let state = Arc::new(state);
 
@@ -641,7 +653,8 @@ async fn guessing_a_password_over_basic_is_rate_limited_too() {
 /// hard enough that one would lock a reader out of their own library.
 #[tokio::test]
 async fn a_working_api_key_is_never_locked_out() {
-    let state = crate::test_support::state("taiyaku-test-auth-key-not-limited");
+    let tmp = crate::test_support::Fixture::new("auth-key-not-limited");
+    let state = crate::test_support::state(&tmp);
     let secret = credential::mint_api_key();
     {
         let conn = state.library.conn();
@@ -804,7 +817,8 @@ fn a_mapped_v6_range_matches_the_v4_peer_it_names() {
 async fn every_guarded_response_refuses_a_shared_cache() {
     for (pattern, _) in guarded_routes() {
         let path = concrete(pattern);
-        let state = crate::test_support::state("taiyaku-test-auth-cache");
+        let tmp = crate::test_support::Fixture::new("auth-cache");
+        let state = crate::test_support::state(&tmp);
         let credential = crate::test_support::fixture_authorization();
         let response = build_router(Arc::new(state))
             .oneshot(
@@ -866,9 +880,8 @@ fn only_a_password_or_a_session_may_administer_an_account() {
 /// it.
 #[tokio::test]
 async fn a_basic_header_still_speaks_past_a_cookie_refused_for_its_origin() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-crosssite-plus-basic",
-    ));
+    let tmp = crate::test_support::Fixture::new("crosssite-plus-basic");
+    let state = Arc::new(crate::test_support::state(&tmp));
     with_password(&state, "a password");
     let token = credential::mint_token();
     {
@@ -1009,7 +1022,8 @@ fn the_forwarded_warning_fires_only_when_a_header_is_being_ignored() {
 /// share one file — reproduced deterministically rather than by racing a writer.
 #[tokio::test]
 async fn a_password_change_the_database_refuses_is_not_answered_as_success() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-password-refused"));
+    let tmp = crate::test_support::Fixture::new("password-refused");
+    let state = Arc::new(crate::test_support::state(&tmp));
     {
         let conn = state.library.conn();
         // `set_password` ends the account's other sessions as part of the same
@@ -1123,12 +1137,12 @@ fn channel(v: u32) -> u8 {
 /// same mutation now answers 200 with the actual page for every one of
 /// those routes, which is what makes the loop below a proof rather than a
 /// coincidence.
-fn router_with_material_under_a_withheld_root(dir: &str) -> (axum::Router, Arc<ServeState>) {
+fn router_with_material_under_a_withheld_root(
+    dir: &std::path::Path,
+) -> (axum::Router, Arc<ServeState>) {
     use std::io::Write as _;
 
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let root = dir;
     let shelf = root.to_string_lossy().into_owned();
 
     let page = image::RgbImage::from_fn(16, 16, |x, y| {
@@ -1229,10 +1243,8 @@ fn router_with_material_under_a_withheld_root(dir: &str) -> (axum::Router, Arc<S
 /// `"held"` — an assertion that the body contains `"held"` would pass whether
 /// or not `"withheld"` had also leaked. Distinct roots avoid that trap rather
 /// than relying on a reader noticing it.
-fn two_works_one_withheld(dir: &str) -> (axum::Router, Arc<ServeState>) {
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeState>) {
+    let root = dir;
     let shelf = root.to_string_lossy().into_owned();
 
     let visible_json = format!(
@@ -1336,10 +1348,10 @@ fn two_works_one_withheld(dir: &str) -> (axum::Router, Arc<ServeState>) {
 /// this one is *not* wholly hidden: `en` survives the grant, so the series
 /// itself is visible with one of its work's two editions filtered out —
 /// the split case, at the series level rather than the work level.
-fn one_work_two_editions_split_across_roots(dir: &str) -> (axum::Router, Arc<ServeState>) {
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+fn one_work_two_editions_split_across_roots(
+    dir: &std::path::Path,
+) -> (axum::Router, Arc<ServeState>) {
+    let root = dir;
     let shelf = root.to_string_lossy().into_owned();
 
     let json = format!(
@@ -1472,10 +1484,8 @@ fn one_work_two_editions_split_across_roots(dir: &str) -> (axum::Router, Arc<Ser
 /// `patch_alignments` recomputes from the same full document — a tag over
 /// the filtered projection a restricted reader sees would drift the moment
 /// `raw` changes, even though nothing this reader can see moved.
-fn one_work_three_editions_hub_withheld(dir: &str) -> (axum::Router, Arc<ServeState>) {
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+fn one_work_three_editions_hub_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeState>) {
+    let root = dir;
     let shelf = root.to_string_lossy().into_owned();
 
     let json = format!(
@@ -1687,8 +1697,8 @@ async fn every_route_declares_its_grant_posture() {
     // to, both wholly outside the caller's grant. `RefusesAndFilters` shares
     // this proof for its refuse half — the pattern skip just below still
     // routes it to its own dedicated block instead. ----
-    let (refuses_router, refuses_state) =
-        router_with_material_under_a_withheld_root("taiyaku-test-grant-posture-refuses");
+    let tmp = crate::test_support::Fixture::new("grant-posture-refuses");
+    let (refuses_router, refuses_state) = router_with_material_under_a_withheld_root(&tmp);
     for (pattern, posture) in &table {
         if !matches!(
             posture,
@@ -1824,8 +1834,6 @@ async fn every_route_declares_its_grant_posture() {
         );
     }
 
-    crate::test_support::cleanup("taiyaku-test-grant-posture-refuses");
-
     // ---- `Filters`: proven against two works, and — for `work_feed`, whose
     // filtering is per-edition rather than per-work — two editions of one
     // work. A route classified `Filters` is marked proven here only after its
@@ -1835,8 +1843,8 @@ async fn every_route_declares_its_grant_posture() {
     let mut proven_filters: std::collections::HashSet<&'static str> =
         std::collections::HashSet::new();
 
-    let (works_router, _works_state) =
-        two_works_one_withheld("taiyaku-test-grant-posture-filters-a");
+    let tmp2 = crate::test_support::Fixture::new("grant-posture-filters-a");
+    let (works_router, _works_state) = two_works_one_withheld(&tmp2);
     for (pattern, uri) in [
         ("/api/works", "/api/works"),
         ("/opds/v1.2/works", "/opds/v1.2/works"),
@@ -1897,7 +1905,6 @@ async fn every_route_declares_its_grant_posture() {
         "/api/library/status named a root outside the grant: {status_body}"
     );
     proven_filters.insert("/api/library/status");
-    crate::test_support::cleanup("taiyaku-test-grant-posture-filters-a");
 
     // ---- Finding 2: the split-across-roots case, for every `Refuses` and
     // `Filters` entry that can usefully be driven against it. ----
@@ -1910,8 +1917,8 @@ async fn every_route_declares_its_grant_posture() {
     // leaking a hidden edition sharing a work with a granted one. One
     // fixture, reused below for both the `Refuses` and the `Filters` half,
     // so both proofs see the identical split.
-    let (split_router, split_state) =
-        one_work_two_editions_split_across_roots("taiyaku-test-grant-posture-split");
+    let tmp3 = crate::test_support::Fixture::new("grant-posture-split");
+    let (split_router, split_state) = one_work_two_editions_split_across_roots(&tmp3);
     let split_slug = split_state.works[0].id.clone();
 
     // `Refuses`, again: the withheld half (`raw`) of a work that also keeps
@@ -2286,8 +2293,8 @@ async fn every_route_declares_its_grant_posture() {
     // two editions this caller *may* see must still answer with a response
     // that omits the third, withheld one — `one_work_three_editions_hub_withheld`'s
     // own doc comment says why `split_router` above cannot drive this case.
-    let (triple_router, triple_state) =
-        one_work_three_editions_hub_withheld("taiyaku-test-grant-posture-triple-filters");
+    let tmp4 = crate::test_support::Fixture::new("grant-posture-triple-filters");
+    let (triple_router, triple_state) = one_work_three_editions_hub_withheld(&tmp4);
     let triple_slug = triple_state.works[0].id.clone();
     let triple_get = triple_router
         .clone()
@@ -2326,7 +2333,6 @@ async fn every_route_declares_its_grant_posture() {
          named the withheld edition in its response: {triple_body}"
     );
     proven_filters.insert("/api/works/{work}/alignments");
-    crate::test_support::cleanup("taiyaku-test-grant-posture-triple-filters");
 
     // `/api/library/works/{slug}` — `library_api::work` already reused
     // `browse::work`; this proves it, rather than merely trusting the read.
@@ -2545,8 +2551,6 @@ async fn every_route_declares_its_grant_posture() {
     // string-membership assertions cannot express as cleanly as a direct
     // numeric comparison can.
 
-    crate::test_support::cleanup("taiyaku-test-grant-posture-split");
-
     for (pattern, posture) in &table {
         if matches!(
             posture,
@@ -2569,8 +2573,8 @@ async fn every_route_declares_its_grant_posture() {
 /// the withheld `raw` edition's key, label, member path and `sha256`.
 #[tokio::test]
 async fn get_sidecar_names_only_visible_editions() {
-    let (router, state) =
-        one_work_two_editions_split_across_roots("taiyaku-test-sidecar-split-leak");
+    let tmp = crate::test_support::Fixture::new("sidecar-split-leak");
+    let (router, state) = one_work_two_editions_split_across_roots(&tmp);
     let slug = state.works[0].id.clone();
     let credential = crate::test_support::fixture_authorization();
 
@@ -2608,7 +2612,6 @@ async fn get_sidecar_names_only_visible_editions() {
         !compact.contains("\"sha256\":\"x\""),
         "GET /api/works/{{work}} named the withheld edition's member sha256: {body}"
     );
-    crate::test_support::cleanup("taiyaku-test-sidecar-split-leak");
 }
 
 /// **Finding 1's reproduction**, for the list route. `list_works` filtered
@@ -2618,8 +2621,8 @@ async fn get_sidecar_names_only_visible_editions() {
 /// grant.
 #[tokio::test]
 async fn list_works_names_only_visible_editions_and_cover() {
-    let (router, _state) =
-        one_work_two_editions_split_across_roots("taiyaku-test-listworks-split-leak");
+    let tmp = crate::test_support::Fixture::new("listworks-split-leak");
+    let (router, _state) = one_work_two_editions_split_across_roots(&tmp);
     let credential = crate::test_support::fixture_authorization();
 
     let response = router
@@ -2648,7 +2651,6 @@ async fn list_works_names_only_visible_editions_and_cover() {
         !body.contains("/raw/pages/"),
         "GET /api/works built a cover URL from the withheld edition: {body}"
     );
-    crate::test_support::cleanup("taiyaku-test-listworks-split-leak");
 }
 
 /// **Finding 1's reproduction**, for the write itself rather than the
@@ -2665,7 +2667,8 @@ async fn list_works_names_only_visible_editions_and_cover() {
 /// caller had no standing to assert.
 #[tokio::test]
 async fn patch_alignments_refuses_a_correction_naming_a_withheld_edition() {
-    let (router, state) = one_work_two_editions_split_across_roots("taiyaku-test-patch-write-leak");
+    let tmp = crate::test_support::Fixture::new("patch-write-leak");
+    let (router, state) = one_work_two_editions_split_across_roots(&tmp);
     let slug = state.works[0].id.clone();
     let credential = crate::test_support::fixture_authorization();
 
@@ -2722,8 +2725,6 @@ async fn patch_alignments_refuses_a_correction_naming_a_withheld_edition() {
         "PATCH /api/works/{{work}}/alignments wrote shared alignment rows \
          for a correction naming a withheld edition"
     );
-
-    crate::test_support::cleanup("taiyaku-test-patch-write-leak");
 }
 
 /// **Finding 1** (verification pass, 2026-08-25): three properties on this
@@ -2751,8 +2752,8 @@ async fn patch_alignments_refuses_a_correction_naming_a_withheld_edition() {
 /// never agree again for a restricted reader.
 #[tokio::test]
 async fn a_restricted_readers_own_etag_round_trips_through_a_correction_between_visible_editions() {
-    let (router, state) =
-        one_work_three_editions_hub_withheld("taiyaku-test-grant-posture-triple-etag");
+    let tmp = crate::test_support::Fixture::new("grant-posture-triple-etag");
+    let (router, state) = one_work_three_editions_hub_withheld(&tmp);
     let slug = state.works[0].id.clone();
     let credential = crate::test_support::fixture_authorization();
 
@@ -2790,8 +2791,6 @@ async fn a_restricted_readers_own_etag_round_trips_through_a_correction_between_
          validate against a correction between two editions they can both \
          see: {patch_body}"
     );
-
-    crate::test_support::cleanup("taiyaku-test-grant-posture-triple-etag");
 }
 
 /// (b) **`patch_alignments`'s response is filtered**, on a correction
@@ -2805,8 +2804,8 @@ async fn a_restricted_readers_own_etag_round_trips_through_a_correction_between_
 /// when `(a)` itself is broken.
 #[tokio::test]
 async fn a_correction_between_visible_editions_omits_the_withheld_one_from_its_response() {
-    let (router, state) =
-        one_work_three_editions_hub_withheld("taiyaku-test-grant-posture-triple-response-filter");
+    let tmp = crate::test_support::Fixture::new("grant-posture-triple-response-filter");
+    let (router, state) = one_work_three_editions_hub_withheld(&tmp);
     let slug = state.works[0].id.clone();
     let credential = crate::test_support::fixture_authorization();
 
@@ -2856,8 +2855,6 @@ async fn a_correction_between_visible_editions_omits_the_withheld_one_from_its_r
         "PATCH /api/works/{{work}}/alignments named the withheld edition in \
          its response: {patch_body}"
     );
-
-    crate::test_support::cleanup("taiyaku-test-grant-posture-triple-response-filter");
 }
 
 /// (c) **Both write guards are covered**, not only the one every existing
@@ -2871,8 +2868,8 @@ async fn a_correction_between_visible_editions_omits_the_withheld_one_from_its_r
 /// nothing about this guard should depend on either of those passing first.
 #[tokio::test]
 async fn a_correction_naming_the_withheld_edition_on_the_from_side_is_still_refused() {
-    let (router, state) =
-        one_work_three_editions_hub_withheld("taiyaku-test-grant-posture-triple-from-guard");
+    let tmp = crate::test_support::Fixture::new("grant-posture-triple-from-guard");
+    let (router, state) = one_work_three_editions_hub_withheld(&tmp);
     let slug = state.works[0].id.clone();
     let credential = crate::test_support::fixture_authorization();
 
@@ -2909,8 +2906,6 @@ async fn a_correction_naming_the_withheld_edition_on_the_from_side_is_still_refu
         "a correction naming the withheld edition on the `from` side must be \
          refused exactly as one naming it on `to` is: {refused_body}"
     );
-
-    crate::test_support::cleanup("taiyaku-test-grant-posture-triple-from-guard");
 }
 
 /// **O86: an administrator is unrestricted in every dimension, and the grant
@@ -3299,7 +3294,7 @@ fn a_reader_may_stamp_only_when_the_column_says_so() {
 async fn the_guard_does_not_stall_the_runtime() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let (router, state) = crate::test_support::router_over_a_library().await;
+    let (router, state, _fixture) = crate::test_support::router_over_a_library().await;
 
     // A position to read back, so the eventual read proves more than "no
     // content" — it proves the value written before the block still comes

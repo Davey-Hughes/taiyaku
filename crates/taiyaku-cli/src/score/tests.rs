@@ -424,12 +424,9 @@ fn sample_needs_the_corpus_root_itself_to_be_a_directory() {
 /// under this empty root, so every one of the fifteen must be named.
 #[test]
 fn a_missing_edition_directory_is_reported_by_name_not_skipped_silently() {
-    let root = std::env::temp_dir().join("taiyaku-test-sample-missing-root");
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).expect("create an empty corpus root");
+    let root = taiyaku_read::test_support::TempDir::new("sample-missing-root");
 
     let err = sample_worklist(&root).expect_err("no sample.rs entry exists under this root");
-    let _ = std::fs::remove_dir_all(&root);
 
     assert!(
         err.contains("15 edition(s) could not be read"),
@@ -447,15 +444,10 @@ fn a_missing_edition_directory_is_reported_by_name_not_skipped_silently() {
 
 /// A scratch directory nobody else is using, emptied first in case a
 /// previous run left one behind.
-fn scratch(name: &str) -> std::path::PathBuf {
-    // The process id, for the reason `taiyaku-library/src/migrate/tests.rs`'s
-    // own `scratch` sets out: `name` separates tests within one run and
-    // nothing between runs.
-    let root =
-        std::env::temp_dir().join(format!("taiyaku-test-score-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).expect("create a scratch directory");
-    root
+fn scratch(name: &str) -> taiyaku_read::test_support::TempDir {
+    // O117's shared helper: unique to the process and the call, and removed
+    // when the test ends. It was a process id alone.
+    taiyaku_read::test_support::TempDir::new(&format!("score-{name}"))
 }
 
 /// A one-page cbz whose page is a real, decodable image.
@@ -573,7 +565,6 @@ fn a_glob_ordered_command_line_does_not_make_a_good_truth_document_stale() {
         a.to_str().expect("a path is utf8"),
         b.to_str().expect("b path is utf8"),
     ]));
-    let _ = std::fs::remove_dir_all(&root);
     result.expect("a truth document drawn against these very archives is not stale");
 }
 
@@ -612,7 +603,6 @@ fn a_replaced_archive_is_still_refused_after_the_order_fix() {
         b.to_str().expect("b path is utf8"),
     ]))
     .unwrap_err();
-    let _ = std::fs::remove_dir_all(&root);
     assert!(err.contains("drawn against different files"), "{err}");
 }
 
@@ -646,7 +636,6 @@ fn a_labelled_page_past_the_end_of_the_edition_is_named_rather_than_dropped() {
         a.to_str().expect("a path is utf8"),
     ]))
     .unwrap_err();
-    let _ = std::fs::remove_dir_all(&root);
     assert!(err.contains('7'), "the message names the page: {err}");
     assert!(
         err.contains("1 page(s)"),
@@ -660,9 +649,8 @@ fn a_labelled_page_past_the_end_of_the_edition_is_named_rather_than_dropped() {
 /// with, so the worklist stays a subset of it.
 #[test]
 fn a_resolved_edition_reports_its_page_count_and_the_pages_to_label() {
-    let root = std::env::temp_dir().join("taiyaku-test-sample-resolved-root");
+    let root = taiyaku_read::test_support::TempDir::new("sample-resolved-root");
     let dir = root.join("gotoubun-v01").join("raw-mono");
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&dir).expect("create an edition directory");
 
     let image = image::GrayImage::from_pixel(4, 4, image::Luma([255]));
@@ -673,7 +661,6 @@ fn a_resolved_edition_reports_its_page_count_and_the_pages_to_label() {
     }
 
     let result = resolve_sample_edition(&root, "gotoubun-v01", "raw-mono");
-    let _ = std::fs::remove_dir_all(&root);
     let (available, pages) = result.expect("six loose page images resolve");
 
     assert_eq!(available, 6);

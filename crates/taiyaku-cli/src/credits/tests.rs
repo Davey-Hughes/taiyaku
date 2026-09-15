@@ -275,9 +275,7 @@ fn a_written_list_comes_out_ascending() {
 /// and the runs joining them with it.
 #[test]
 fn writing_a_credits_list_replaces_the_sidecar_rather_than_truncating_it() {
-    let dir = std::env::temp_dir().join("taiyaku-test-credits-write");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = taiyaku_read::test_support::TempDir::new("credits-write");
     let path = dir.join("taiyaku.json");
     let sidecar = path.to_str().expect("utf-8 temp path").to_string();
 

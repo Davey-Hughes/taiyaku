@@ -9,6 +9,10 @@
 //! crate's test builds and any `--all-features` build, and into no binary
 //! this workspace ships. The file name is the one the coverage report and
 //! `.cargo/mutants.toml` already exclude, so neither gate needed changing.
+//!
+//! [`TempDir`] is here for the same reason, and for every crate with tests
+//! rather than two: `taiyaku-library`, `taiyaku-serve` and `taiyaku-cli` enable
+//! the feature the same way. O117 is why it exists — see its own doc.
 
 use std::path::{Path, PathBuf};
 
@@ -210,3 +214,97 @@ pub fn assert_replaced_durably(calls: &[Call], path: &Path, dir: &Path) {
 fn wrote_to(call: &Call, target: &Path) -> bool {
     matches!(call, Call::Write(paths) if paths.iter().any(|p| p == target))
 }
+
+/// A directory of its own for one test, removed with everything in it when
+/// dropped.
+///
+/// **O117.** Tests used to write fixed names under the temp dir —
+/// `taiyaku-test-serve-works-single.db`, `taiyaku-test-atomic-rename` — and a
+/// fixed name is shared by every run on the machine. Two checkouts running
+/// their suites at once, or a `cargo test` beside a `cargo mutants`, deleted
+/// and rewrote each other's files mid-test and failed with `disk I/O error` or
+/// `NotFound` for a reason that was never the change under test.
+/// `docs/notes.md`, "O117", has the reproduction.
+///
+/// The name is `taiyaku-test-{label}-{pid}-{n}`. The process id separates two
+/// runs: a counter alone restarts at nought in every process, which under
+/// `cargo nextest` is every test. The counter separates two directories in one
+/// process, which under `cargo test` is every test in a crate. The label is
+/// only for a person reading the temp dir.
+///
+/// A directory already at that name is removed first: only a run killed
+/// before its `Drop` leaves one, and its process id has since been reused by
+/// this one.
+///
+/// Removal failures on drop are ignored in both directions, for the reason
+/// `taiyaku-serve`'s fixtures gave first: a test that passed must not be failed
+/// by a directory that will not go, and one that failed must not have its
+/// message replaced — a panic during unwinding aborts the process.
+///
+/// No `tempfile` dependency, for the reason the helpers this replaces gave:
+/// the workspace's dependency list is short enough to quote in
+/// `docs/status.md`, and this is the whole of what that crate would be used
+/// for.
+#[derive(Debug)]
+pub struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    /// A new, empty directory under the temp dir, unique to this process and
+    /// this call.
+    ///
+    /// # Panics
+    ///
+    /// If `label` holds a `/`, which would leave the directories above the
+    /// last one behind on drop, or if the directory cannot be created.
+    #[must_use]
+    pub fn new(label: &str) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        assert!(
+            !label.contains('/'),
+            "a TempDir label is one path component: {label}"
+        );
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("taiyaku-test-{label}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path)
+            .unwrap_or_else(|e| panic!("creating {}: {e}", path.display()));
+        Self { path }
+    }
+
+    /// The directory itself.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// So `&dir` goes wherever a `&Path` does and `dir.join(…)` reads as it did
+/// when `dir` was a `PathBuf`, which is what let every site move without
+/// rewriting what it does with the path.
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod tests;

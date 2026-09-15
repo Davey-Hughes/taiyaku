@@ -42,7 +42,7 @@ async fn get_anonymous(
 /// instead of the reader's login screen.
 #[tokio::test]
 async fn the_browse_routes_refuse_anonymously_without_a_challenge_header() {
-    let (_authenticated, state) = test_support::router_over_a_library().await;
+    let (_authenticated, state, _fixture) = test_support::router_over_a_library().await;
     // The guard as it really is, with nothing injecting credentials.
     let router = crate::build_router(state);
     for path in [
@@ -73,7 +73,7 @@ async fn the_browse_routes_refuse_anonymously_without_a_challenge_header() {
 /// §5.4's unfiled bucket rather than the series grid.
 #[tokio::test]
 async fn the_grid_carries_an_imported_work_in_the_unfiled_bucket() {
-    let (router, _state) = test_support::router_over_a_library().await;
+    let (router, _state, _fixture) = test_support::router_over_a_library().await;
     let body = get_json(&router, "/api/library/series").await;
 
     assert_eq!(
@@ -92,7 +92,7 @@ async fn the_grid_carries_an_imported_work_in_the_unfiled_bucket() {
 
 #[tokio::test]
 async fn one_work_is_served_by_slug_and_a_missing_one_is_a_404() {
-    let (router, state) = test_support::router_over_a_library().await;
+    let (router, state, _fixture) = test_support::router_over_a_library().await;
     let slug = state.works[0].id.clone();
     {
         // O73/Task 7b: `EditionCard::missing` has to reach the client or
@@ -123,7 +123,7 @@ async fn one_work_is_served_by_slug_and_a_missing_one_is_a_404() {
 
 #[tokio::test]
 async fn the_home_lists_are_present_and_empty_for_a_reader_who_has_read_nothing() {
-    let (router, _state) = test_support::router_over_a_library().await;
+    let (router, _state, _fixture) = test_support::router_over_a_library().await;
     let body = get_json(&router, "/api/library/home").await;
 
     assert_eq!(body["continuing"].as_array().expect("continuing").len(), 0);
@@ -139,7 +139,7 @@ async fn the_home_lists_are_present_and_empty_for_a_reader_who_has_read_nothing(
 /// "no matches" from "the box didn't hold what I thought it did".
 #[tokio::test]
 async fn a_search_echoes_the_query_back_so_an_empty_result_can_name_it() {
-    let (router, _state) = test_support::router_over_a_library().await;
+    let (router, _state, _fixture) = test_support::router_over_a_library().await;
 
     let hit = get_json(&router, "/api/library/search?q=W").await;
     assert_eq!(hit["query"], "W");
@@ -164,7 +164,7 @@ async fn a_search_echoes_the_query_back_so_an_empty_result_can_name_it() {
 /// before anybody has typed.
 #[tokio::test]
 async fn a_search_with_no_query_is_empty_rather_than_a_refusal() {
-    let (router, _state) = test_support::router_over_a_library().await;
+    let (router, _state, _fixture) = test_support::router_over_a_library().await;
     let body = get_json(&router, "/api/library/search").await;
     assert_eq!(body["query"], "");
     assert_eq!(body["series"].as_array().expect("series").len(), 0);
@@ -203,7 +203,7 @@ async fn a_series_cover_redirects_to_the_existing_thumbnail_route() {
 /// elsewhere.
 #[tokio::test]
 async fn a_series_that_does_not_exist_is_a_404() {
-    let (router, _state) = test_support::router_over_a_library().await;
+    let (router, _state, _fixture) = test_support::router_over_a_library().await;
     let response = get(&router, "/api/library/series/9999").await;
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }
@@ -311,7 +311,7 @@ async fn home_carries_a_work_the_reader_has_started() {
 /// than a mocked one.
 #[tokio::test]
 async fn a_store_error_is_a_500_rather_than_a_panic() {
-    let (router, state) = test_support::router_over_a_library().await;
+    let (router, state, _fixture) = test_support::router_over_a_library().await;
     {
         let conn = state.library.conn();
         // `series_fts` and the triggers go with the tables they index.
@@ -518,7 +518,7 @@ async fn the_grid_narrows_to_the_root_the_query_names() {
 /// NULL-excludes-itself rule, applied in SQL rather than special-cased here.
 #[tokio::test]
 async fn a_root_scoped_grid_carries_no_unfiled_work() {
-    let (router, _state) = test_support::router_over_a_library().await;
+    let (router, _state, _fixture) = test_support::router_over_a_library().await;
 
     let all = get_json(&router, "/api/library/series").await;
     assert_eq!(
@@ -564,7 +564,7 @@ async fn the_work_route_carries_an_alignments_array_and_the_list_routes_do_not()
 
 #[tokio::test]
 async fn status_answers_the_two_facts_a_first_run_screen_needs() {
-    let (router, _state) = test_support::router_over_a_library().await;
+    let (router, _state, _fixture) = test_support::router_over_a_library().await;
     let body = get_json(&router, "/api/library/status").await;
     assert!(body["roots"].is_array(), "roots is a list: {body}");
     assert!(body["scanned"].is_boolean(), "scanned is a bool: {body}");

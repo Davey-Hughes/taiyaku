@@ -13,7 +13,8 @@ fn library() -> Library {
 /// reader that conflates them reopens at the cover forever.
 #[test]
 fn absent_progress_is_not_the_same_as_slot_zero() {
-    let work = crate::test_support::work("taiyaku-test-progress");
+    let tmp = crate::test_support::Fixture::new("progress");
+    let work = crate::test_support::work(&tmp);
     let library = library();
 
     let before = load(&library, &work, 1).unwrap();
@@ -29,7 +30,6 @@ fn absent_progress_is_not_the_same_as_slot_zero() {
     .unwrap();
     let after = load(&library, &work, 1).unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-progress");
     assert_eq!(before, Vec::new(), "nothing recorded yet");
     assert_eq!(
         after.len(),
@@ -44,7 +44,8 @@ fn absent_progress_is_not_the_same_as_slot_zero() {
 /// and a reading position churns it on every page turn.
 #[test]
 fn progress_is_written_to_the_library_not_into_the_sidecar() {
-    let work = crate::test_support::work("taiyaku-test-progress-beside");
+    let tmp = crate::test_support::Fixture::new("progress-beside");
+    let work = crate::test_support::work(&tmp);
     let library = library();
     let sidecar_before = std::fs::read_to_string(&work.path).unwrap();
 
@@ -60,7 +61,6 @@ fn progress_is_written_to_the_library_not_into_the_sidecar() {
     .unwrap();
 
     let sidecar_after = std::fs::read_to_string(&work.path).unwrap();
-    crate::test_support::cleanup("taiyaku-test-progress-beside");
     assert_eq!(sidecar_before, sidecar_after, "the sidecar must not change");
 }
 
@@ -70,7 +70,8 @@ fn progress_is_written_to_the_library_not_into_the_sidecar() {
 /// resolves back onto that same row rather than a fresh one each time.
 #[test]
 fn storing_progress_mints_exactly_one_bridge_row_for_a_work_the_library_never_imported() {
-    let work = crate::test_support::work("taiyaku-test-progress-bridge");
+    let tmp = crate::test_support::Fixture::new("progress-bridge");
+    let work = crate::test_support::work(&tmp);
     let library = library();
 
     assert_eq!(
@@ -107,7 +108,6 @@ fn storing_progress_mints_exactly_one_bridge_row_for_a_work_the_library_never_im
         .unwrap()
         .expect("still there");
 
-    crate::test_support::cleanup("taiyaku-test-progress-bridge");
     assert_eq!(
         first_id, second_id,
         "the second write reuses the first's row"
@@ -123,13 +123,13 @@ fn storing_progress_mints_exactly_one_bridge_row_for_a_work_the_library_never_im
 /// actually honours it rather than merely being written next to it.
 #[test]
 fn loading_progress_for_an_unregistered_work_creates_no_row() {
-    let work = crate::test_support::work("taiyaku-test-progress-read-only");
+    let tmp = crate::test_support::Fixture::new("progress-read-only");
+    let work = crate::test_support::work(&tmp);
     let library = library();
 
     let loaded = load(&library, &work, 1).unwrap();
 
     let row = crate::works::find_row(&library.conn(), &work).unwrap();
-    crate::test_support::cleanup("taiyaku-test-progress-read-only");
     assert_eq!(loaded, Vec::new());
     assert_eq!(row, None, "a GET must not write");
 }

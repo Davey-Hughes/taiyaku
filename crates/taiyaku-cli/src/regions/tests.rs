@@ -106,10 +106,9 @@ fn an_edition_with_no_blocks_still_produces_a_line() {
 /// Unlike every other test in this file, `--write` runs the full decode
 /// path — `taiyaku_read::read_edition` then `fingerprint::decode_all` —
 /// so the entry has to be bytes an image decoder accepts, not a stand-in.
-fn cbz_with_page(name: &str, page: &str) -> PathBuf {
+fn cbz_with_page(dir: &std::path::Path, name: &str, page: &str) -> PathBuf {
     use std::io::Write;
-    let path = std::env::temp_dir().join(name);
-    let _ = std::fs::remove_file(&path);
+    let path = dir.join(name);
     let image = image::GrayImage::from_pixel(4, 4, image::Luma([255]));
     let mut bytes = Vec::new();
     image
@@ -143,13 +142,14 @@ fn cbz_with_page(name: &str, page: &str) -> PathBuf {
 /// reading the sidecar's own order produces the expected `b, a`.
 #[test]
 fn write_records_members_in_the_sidecars_own_order_not_natural_order() {
-    let a = cbz_with_page("taiyaku-test-regions-given-a.cbz", "a1.png");
-    let b = cbz_with_page("taiyaku-test-regions-given-b.cbz", "b1.png");
+    let scratch = taiyaku_read::test_support::TempDir::new("regions-given");
+    let a = cbz_with_page(&scratch, "given-a.cbz", "a1.png");
+    let b = cbz_with_page(&scratch, "given-b.cbz", "b1.png");
 
     let digest_a = taiyaku_read::member_digest(&a).expect("digest a");
     let digest_b = taiyaku_read::member_digest(&b).expect("digest b");
 
-    let sidecar_path = std::env::temp_dir().join("taiyaku-test-regions-given.json");
+    let sidecar_path = scratch.join("regions-given.json");
     std::fs::write(
         &sidecar_path,
         format!(
@@ -184,11 +184,6 @@ fn write_records_members_in_the_sidecars_own_order_not_natural_order() {
 
     let regions_path = RegionDoc::path_beside(&sidecar_path);
     let written = std::fs::read_to_string(&regions_path);
-
-    let _ = std::fs::remove_file(&a);
-    let _ = std::fs::remove_file(&b);
-    let _ = std::fs::remove_file(&sidecar_path);
-    let _ = std::fs::remove_file(&regions_path);
 
     result.expect("command succeeds");
     let doc = RegionDoc::from_json(&written.expect("regions document was written"))

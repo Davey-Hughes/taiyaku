@@ -106,11 +106,12 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
 
     let works = load_works(std::slice::from_ref(&sidecar)).expect("sidecar loads");
     let dir = sidecar.parent().unwrap();
+    let scratch = crate::test_support::Fixture::new("corpus-covers");
     let state = ServeState {
         library: crate::test_support::library(),
         works,
         source: Arc::new(LocalLibrary),
-        cache_dir: std::env::temp_dir().join("taiyaku-corpus-covers"),
+        cache_dir: scratch.join("covers"),
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -400,11 +401,12 @@ fn a_corpus_edition_with_members(
             .map(|(key, edition)| (key.clone(), edition.total_pages()));
         if let Some((key, pages)) = found {
             let slug = works[0].id.clone();
+            let scratch = crate::test_support::Fixture::new("corpus-download-covers");
             let state = Arc::new(ServeState {
                 library: crate::test_support::library(),
                 works,
                 source: Arc::new(LocalLibrary),
-                cache_dir: std::env::temp_dir().join("taiyaku-corpus-download-covers"),
+                cache_dir: scratch.join("covers"),
                 log: None,
                 auth: crate::session::AuthConfig::default(),
                 scans: Default::default(),
@@ -451,11 +453,12 @@ fn a_corpus_edition_of_one_file(root: &Path) -> (axum::Router, String, String, P
         });
         if let Some((key, path)) = found {
             let slug = works[0].id.clone();
+            let scratch = crate::test_support::Fixture::new("corpus-download-covers");
             let state = Arc::new(ServeState {
                 library: crate::test_support::library(),
                 works,
                 source: Arc::new(LocalLibrary),
-                cache_dir: std::env::temp_dir().join("taiyaku-corpus-download-covers"),
+                cache_dir: scratch.join("covers"),
                 log: None,
                 auth: crate::session::AuthConfig::default(),
                 scans: Default::default(),

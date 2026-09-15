@@ -17,17 +17,12 @@ fn member_of_three_pages(dir: &Path) {
     }
 }
 
-/// A temporary root nobody else is using, removed first in case a previous
-/// run left one behind.
-fn scratch(name: &str) -> PathBuf {
-    // The process id, for the reason `taiyaku-library/src/migrate/tests.rs`'s
-    // own `scratch` sets out: `name` separates tests within one run and
-    // nothing between runs, so two overlapping runs share this directory and
-    // either one's `remove_dir_all` takes the other's fixture with it.
-    let root =
-        std::env::temp_dir().join(format!("taiyaku-test-cache-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    root
+/// A temporary root nobody else is using, removed when the test ends.
+fn scratch(name: &str) -> taiyaku_read::test_support::TempDir {
+    // O117's shared helper: unique to the process and the call, and removed
+    // when the test ends. It was a process id alone, which kept two runs apart
+    // and left one directory per test per run behind.
+    taiyaku_read::test_support::TempDir::new(&format!("cache-{name}"))
 }
 
 /// The whole point of the cache, and the only thing that proves the entry

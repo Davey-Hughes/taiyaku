@@ -28,7 +28,8 @@ fn build_router(state: Arc<crate::ServeState>) -> axum::Router {
 /// shows a blank page and says nothing.
 #[tokio::test]
 async fn the_reader_can_list_a_work_read_its_sidecar_and_fetch_a_page() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-routes"));
+    let tmp = crate::test_support::Fixture::new("routes");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     let list = app
@@ -74,14 +75,12 @@ async fn the_reader_can_list_a_work_read_its_sidecar_and_fetch_a_page() {
         .await
         .unwrap();
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
-
-    crate::test_support::cleanup("taiyaku-test-routes");
 }
 
 /// Task 14: `GET /api/works` answers objects rather than a bare list of ids.
 #[tokio::test]
 async fn listing_works_answers_objects_rather_than_bare_ids() {
-    let (router, _state) = crate::test_support::router_over_a_library().await;
+    let (router, _state, _fixture) = crate::test_support::router_over_a_library().await;
     let body =
         crate::test_support::body_string(crate::test_support::get(&router, "/api/works").await)
             .await;
@@ -100,7 +99,7 @@ async fn listing_works_answers_objects_rather_than_bare_ids() {
 /// `volume`, so even a row that exists says nothing about either.
 #[tokio::test]
 async fn series_and_volume_answer_null_rather_than_being_omitted() {
-    let (router, _state) = crate::test_support::router_over_a_library().await;
+    let (router, _state, _fixture) = crate::test_support::router_over_a_library().await;
     let body =
         crate::test_support::body_string(crate::test_support::get(&router, "/api/works").await)
             .await;
@@ -121,7 +120,7 @@ async fn series_and_volume_answer_null_rather_than_being_omitted() {
 /// decodes or generates an image just to build a listing.
 #[tokio::test]
 async fn the_cover_url_addresses_page_zero_of_the_hub_edition() {
-    let (router, _state) = crate::test_support::router_over_a_library().await;
+    let (router, _state, _fixture) = crate::test_support::router_over_a_library().await;
     let body =
         crate::test_support::body_string(crate::test_support::get(&router, "/api/works").await)
             .await;
@@ -140,9 +139,8 @@ async fn the_cover_url_addresses_page_zero_of_the_hub_edition() {
 /// calls it that way.
 #[tokio::test]
 async fn a_work_with_no_library_row_still_lists_with_a_title() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-routes-list-no-row",
-    ));
+    let tmp = crate::test_support::Fixture::new("routes-list-no-row");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
     let body =
         crate::test_support::body_string(crate::test_support::get(&app, "/api/works").await).await;
@@ -151,7 +149,6 @@ async fn a_work_with_no_library_row_still_lists_with_a_title() {
     assert_eq!(parsed[0]["title"], "T");
     assert!(parsed[0]["series"].is_null());
     assert!(parsed[0]["volume"].is_null());
-    crate::test_support::cleanup("taiyaku-test-routes-list-no-row");
 }
 
 /// `status.md` previously claimed no test dispatched an out-of-range
@@ -162,9 +159,8 @@ async fn a_work_with_no_library_row_still_lists_with_a_title() {
 /// past the end.
 #[tokio::test]
 async fn an_out_of_range_page_index_dispatched_through_the_router_names_the_length() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-routes-page-past-end",
-    ));
+    let tmp = crate::test_support::Fixture::new("routes-page-past-end");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     let response = app
@@ -181,7 +177,6 @@ async fn an_out_of_range_page_index_dispatched_through_the_router_names_the_leng
         .unwrap();
     let message = String::from_utf8_lossy(&body).to_string();
 
-    crate::test_support::cleanup("taiyaku-test-routes-page-past-end");
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(message.contains("raw"), "must name the edition: {message}");
     assert!(
@@ -205,7 +200,8 @@ async fn an_out_of_range_page_index_dispatched_through_the_router_names_the_leng
 /// is that the message comes from here and says what was expected.
 #[tokio::test]
 async fn a_page_index_that_is_not_a_number_is_refused_in_this_server_s_own_words() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-routes-page-nan"));
+    let tmp = crate::test_support::Fixture::new("routes-page-nan");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     let response = app
@@ -222,7 +218,6 @@ async fn a_page_index_that_is_not_a_number_is_refused_in_this_server_s_own_words
         .unwrap();
     let message = String::from_utf8_lossy(&body).to_string();
 
-    crate::test_support::cleanup("taiyaku-test-routes-page-nan");
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
         message.contains("abc"),
@@ -243,7 +238,8 @@ async fn a_page_index_that_is_not_a_number_is_refused_in_this_server_s_own_words
 /// there is simply nothing yet.
 #[tokio::test]
 async fn progress_round_trips_through_the_api() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-progress-api"));
+    let tmp = crate::test_support::Fixture::new("progress-api");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     let empty = app
@@ -317,7 +313,6 @@ async fn progress_round_trips_through_the_api() {
         "each position must have exactly edition, slot and updated fields"
     );
 
-    crate::test_support::cleanup("taiyaku-test-progress-api");
     assert_eq!(entry["edition"].as_str().unwrap(), "raw");
     assert_eq!(entry["slot"].as_u64().unwrap(), 3);
 }
@@ -342,9 +337,8 @@ async fn progress_round_trips_through_the_api() {
 /// different seconds.
 #[tokio::test]
 async fn every_edition_the_reader_has_a_position_in_comes_back_newest_first() {
-    let state = Arc::new(crate::test_support::state_with_two_editions(
-        "taiyaku-test-progress-set",
-    ));
+    let tmp = crate::test_support::Fixture::new("progress-set");
+    let state = Arc::new(crate::test_support::state_with_two_editions(&tmp));
     let library = state.library.clone();
     let app = build_router(state);
 
@@ -403,8 +397,6 @@ async fn every_edition_the_reader_has_a_position_in_comes_back_newest_first() {
         "raw is the newest position and must come first — not alphabetically \
          first (`en`) and not the position written first (`en`): got {editions:?}"
     );
-
-    crate::test_support::cleanup("taiyaku-test-progress-set");
 }
 
 /// O3: the edition check was only half the guard. A position naming a real
@@ -415,7 +407,8 @@ async fn every_edition_the_reader_has_a_position_in_comes_back_newest_first() {
 /// than persist.
 #[tokio::test]
 async fn progress_past_the_end_of_the_edition_is_refused() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-progress-past-end"));
+    let tmp = crate::test_support::Fixture::new("progress-past-end");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     // 4 pages, no spreads, so 4 slots — 0 to 3. Slot 4 is one past.
@@ -446,7 +439,6 @@ async fn progress_past_the_end_of_the_edition_is_refused() {
         .await
         .unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-progress-past-end");
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(message.contains("raw"), "must name the edition: {message}");
     assert!(
@@ -471,7 +463,8 @@ async fn progress_past_the_end_of_the_edition_is_refused() {
 #[allow(clippy::result_large_err)]
 #[tokio::test]
 async fn the_last_slot_of_a_spread_carrying_edition_is_in_range() {
-    let state = crate::test_support::state("taiyaku-test-progress-spread-slot");
+    let tmp = crate::test_support::Fixture::new("progress-spread-slot");
+    let state = crate::test_support::state(&tmp);
     state.works[0]
         .update(|current| {
             let mut next = (**current).clone();
@@ -499,7 +492,6 @@ async fn the_last_slot_of_a_spread_carrying_edition_is_in_range() {
         .unwrap();
     let message = String::from_utf8_lossy(&body).to_string();
 
-    crate::test_support::cleanup("taiyaku-test-progress-spread-slot");
     assert_eq!(
         status,
         StatusCode::NO_CONTENT,
@@ -1074,7 +1066,8 @@ async fn a_hidden_work_is_refused_before_its_correction_is_read() {
 /// guard exists — and it was the one thing here with no test.
 #[tokio::test]
 async fn progress_for_an_edition_the_work_does_not_have_is_refused() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-progress-edition"));
+    let tmp = crate::test_support::Fixture::new("progress-edition");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     let put = app
@@ -1104,7 +1097,6 @@ async fn progress_for_an_edition_the_work_does_not_have_is_refused() {
         .await
         .unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-progress-edition");
     assert!(message.contains("nope"), "must name the edition: {message}");
     assert_eq!(after.status(), StatusCode::NO_CONTENT);
 }
@@ -1381,7 +1373,8 @@ async fn an_absurd_width_is_clamped_rather_than_refused() {
 /// and a stale tag names something else entirely.
 #[tokio::test]
 async fn a_stale_validator_gets_the_page_rather_than_a_304() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-routes-etag-stale"));
+    let tmp = crate::test_support::Fixture::new("routes-etag-stale");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     let first = app
@@ -1410,7 +1403,6 @@ async fn a_stale_validator_gets_the_page_rather_than_a_304() {
         .await
         .unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-routes-etag-stale");
     assert_eq!(
         status,
         StatusCode::OK,
@@ -1429,9 +1421,8 @@ async fn a_stale_validator_gets_the_page_rather_than_a_304() {
 /// the first with the first page's own tag.
 #[tokio::test]
 async fn two_pages_of_one_member_have_different_etags() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-routes-etag-member",
-    ));
+    let tmp = crate::test_support::Fixture::new("routes-etag-member");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     // Pages 0 and 1 of `raw` are both `c1.cbz`'s pages (see
@@ -1459,7 +1450,6 @@ async fn two_pages_of_one_member_have_different_etags() {
     assert_eq!(page1.status(), StatusCode::OK);
     let tag1 = page1.headers()[header::ETAG].clone();
 
-    crate::test_support::cleanup("taiyaku-test-routes-etag-member");
     assert_ne!(
         tag0, tag1,
         "page 0 and page 1 share one member and its one sha256 — the \
@@ -1979,8 +1969,10 @@ async fn no_document_a_client_can_change_is_given_a_freshness_lifetime() {
 /// received rather than 0 for every request.
 #[tokio::test]
 async fn a_page_fetch_through_the_router_logs_a_line_with_real_byte_count() {
-    let mut state = crate::test_support::state("taiyaku-test-routes-reqlog");
-    let (log, log_path) = crate::test_support::log("taiyaku-test-routes-reqlog");
+    let tmp = crate::test_support::Fixture::new("routes-reqlog");
+    let mut state = crate::test_support::state(&tmp);
+    let tmp2 = crate::test_support::Fixture::new("routes-reqlog");
+    let (log, log_path) = crate::test_support::log(&tmp2);
     state.log = Some(log);
     let app = build_router(Arc::new(state));
 
@@ -1996,8 +1988,6 @@ async fn a_page_fetch_through_the_router_logs_a_line_with_real_byte_count() {
     let bytes = axum::body::to_bytes(page.into_body(), 1 << 20)
         .await
         .unwrap();
-
-    crate::test_support::cleanup("taiyaku-test-routes-reqlog");
 
     let entries = crate::test_support::logged_lines(&log_path);
     let _ = std::fs::remove_file(&log_path);
@@ -2031,8 +2021,10 @@ async fn a_page_fetch_through_the_router_logs_a_line_with_real_byte_count() {
 /// pasted into issues.
 #[tokio::test]
 async fn a_conditional_request_header_is_logged_and_an_unlisted_one_is_not() {
-    let mut state = crate::test_support::state("taiyaku-test-routes-reqlog-headers");
-    let (log, log_path) = crate::test_support::log("taiyaku-test-routes-reqlog-headers");
+    let tmp = crate::test_support::Fixture::new("routes-reqlog-headers");
+    let mut state = crate::test_support::state(&tmp);
+    let tmp2 = crate::test_support::Fixture::new("routes-reqlog-headers");
+    let (log, log_path) = crate::test_support::log(&tmp2);
     state.log = Some(log);
     let app = build_router(Arc::new(state));
 
@@ -2048,8 +2040,6 @@ async fn a_conditional_request_header_is_logged_and_an_unlisted_one_is_not() {
         .await
         .unwrap();
     assert_eq!(page.status(), StatusCode::OK);
-
-    crate::test_support::cleanup("taiyaku-test-routes-reqlog-headers");
 
     let entries = crate::test_support::logged_lines(&log_path);
     let _ = std::fs::remove_file(&log_path);
@@ -2073,8 +2063,10 @@ async fn a_conditional_request_header_is_logged_and_an_unlisted_one_is_not() {
 /// is only that nothing here answers it yet.
 #[tokio::test]
 async fn a_request_with_a_query_string_is_logged_with_it() {
-    let mut state = crate::test_support::state("taiyaku-test-routes-reqlog-query");
-    let (log, log_path) = crate::test_support::log("taiyaku-test-routes-reqlog-query");
+    let tmp = crate::test_support::Fixture::new("routes-reqlog-query");
+    let mut state = crate::test_support::state(&tmp);
+    let tmp2 = crate::test_support::Fixture::new("routes-reqlog-query");
+    let (log, log_path) = crate::test_support::log(&tmp2);
     state.log = Some(log);
     let app = build_router(Arc::new(state));
 
@@ -2087,8 +2079,6 @@ async fn a_request_with_a_query_string_is_logged_with_it() {
         .await
         .unwrap();
     assert_eq!(page.status(), StatusCode::OK);
-
-    crate::test_support::cleanup("taiyaku-test-routes-reqlog-query");
 
     let entries = crate::test_support::logged_lines(&log_path);
     let _ = std::fs::remove_file(&log_path);
@@ -2130,9 +2120,8 @@ fn if_match_distinguishes_absent_from_matching_from_stale() {
 #[allow(clippy::result_large_err)]
 #[tokio::test]
 async fn the_sidecar_carries_an_etag_that_tracks_its_content() {
-    let state = Arc::new(crate::test_support::state(
-        "taiyaku-test-routes-sidecar-etag",
-    ));
+    let tmp = crate::test_support::Fixture::new("routes-sidecar-etag");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let router = build_router(state.clone());
 
     let first = router
@@ -2163,7 +2152,6 @@ async fn the_sidecar_carries_an_etag_that_tracks_its_content() {
         .await
         .unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-routes-sidecar-etag");
     let tag = tag.expect("a sidecar response carries an ETag");
     assert_ne!(
         tag,
@@ -2245,9 +2233,8 @@ async fn correct_with_body(
 /// so afterwards.
 #[tokio::test]
 async fn a_correction_is_written_and_read_back() {
-    let state = Arc::new(crate::test_support::state_with_two_editions(
-        "taiyaku-test-routes-correct",
-    ));
+    let tmp = crate::test_support::Fixture::new("routes-correct");
+    let state = Arc::new(crate::test_support::state_with_two_editions(&tmp));
     let router = build_router(state.clone());
     let tag = etag_of(&router, "/api/works/t").await;
 
@@ -2279,7 +2266,6 @@ async fn a_correction_is_written_and_read_back() {
         .await
         .unwrap();
     let on_disk = std::fs::read_to_string(&state.works[0].path).unwrap();
-    crate::test_support::cleanup("taiyaku-test-routes-correct");
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_ne!(
         fresh,
@@ -2424,9 +2410,8 @@ async fn a_correction_survives_the_reimport_a_restart_performs() {
 async fn a_no_op_correction_does_not_touch_the_file() {
     use std::os::unix::fs::MetadataExt;
 
-    let state = Arc::new(crate::test_support::state_with_two_editions(
-        "taiyaku-test-routes-correct-noop",
-    ));
+    let tmp = crate::test_support::Fixture::new("routes-correct-noop");
+    let state = Arc::new(crate::test_support::state_with_two_editions(&tmp));
     let router = build_router(state.clone());
     let first_tag = etag_of(&router, "/api/works/t").await;
     let first_status = correct(
@@ -2456,7 +2441,6 @@ async fn a_no_op_correction_does_not_touch_the_file() {
 
     let after_bytes = std::fs::read(&state.works[0].path).unwrap();
     let after_ino = std::fs::metadata(&state.works[0].path).unwrap().ino();
-    crate::test_support::cleanup("taiyaku-test-routes-correct-noop");
     assert_eq!(
         second_status,
         axum::http::StatusCode::OK,
@@ -2478,9 +2462,8 @@ async fn a_no_op_correction_does_not_touch_the_file() {
 /// both correct it; the second must be told rather than silently winning.
 #[tokio::test]
 async fn a_correction_against_a_stale_validator_is_refused() {
-    let state = Arc::new(crate::test_support::state_with_two_editions(
-        "taiyaku-test-routes-correct-stale",
-    ));
+    let tmp = crate::test_support::Fixture::new("routes-correct-stale");
+    let state = Arc::new(crate::test_support::state_with_two_editions(&tmp));
     let router = build_router(state.clone());
     let stale_etag = etag_of(&router, "/api/works/t").await;
     correct(
@@ -2500,7 +2483,6 @@ async fn a_correction_against_a_stale_validator_is_refused() {
 
     let after = state.works[0].sidecar();
     let current = sidecar_etag(&after);
-    crate::test_support::cleanup("taiyaku-test-routes-correct-stale");
     assert_eq!(second, axum::http::StatusCode::PRECONDITION_FAILED);
     // Telling a client only that it lost is not enough to let it recover:
     // the message carries the validator it should have sent, so the next
@@ -2530,9 +2512,8 @@ async fn a_correction_against_a_stale_validator_is_refused() {
 /// not exist.
 #[tokio::test]
 async fn a_correction_with_no_validator_at_all_says_which_header_is_missing() {
-    let state = Arc::new(crate::test_support::state_with_two_editions(
-        "taiyaku-test-routes-correct-bare",
-    ));
+    let tmp = crate::test_support::Fixture::new("routes-correct-bare");
+    let state = Arc::new(crate::test_support::state_with_two_editions(&tmp));
     let router = build_router(state);
 
     let response = router
@@ -2553,7 +2534,6 @@ async fn a_correction_with_no_validator_at_all_says_which_header_is_missing() {
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    crate::test_support::cleanup("taiyaku-test-routes-correct-bare");
     assert_eq!(status, axum::http::StatusCode::PRECONDITION_REQUIRED);
     assert!(
         String::from_utf8_lossy(&body).contains("If-Match"),
@@ -2577,9 +2557,8 @@ async fn a_correction_with_no_validator_at_all_says_which_header_is_missing() {
 /// reach one status would cost more than it pins.
 #[tokio::test]
 async fn each_refusal_answers_the_status_its_kind_calls_for() {
-    let state = Arc::new(crate::test_support::state_with_two_editions(
-        "taiyaku-test-routes-correct-statuses",
-    ));
+    let tmp = crate::test_support::Fixture::new("routes-correct-statuses");
+    let state = Arc::new(crate::test_support::state_with_two_editions(&tmp));
     let router = build_router(state.clone());
     let tag = etag_of(&router, "/api/works/t").await;
 
@@ -2645,7 +2624,6 @@ async fn each_refusal_answers_the_status_its_kind_calls_for() {
     .await;
     let unchanged = state.works[0].sidecar().alignments[0].runs.len();
 
-    crate::test_support::cleanup("taiyaku-test-routes-correct-statuses");
     for ((body, want, names), (got, message)) in cases.iter().zip(&answered) {
         assert_eq!(got, want, "for {body}: {message}");
         assert!(
@@ -2674,9 +2652,8 @@ async fn each_refusal_answers_the_status_its_kind_calls_for() {
 /// field nullable would rest on a path nothing exercises.
 #[tokio::test]
 async fn an_explicit_null_unpairs_the_slot() {
-    let state = Arc::new(crate::test_support::state_with_two_editions(
-        "taiyaku-test-routes-correct-unpair",
-    ));
+    let tmp = crate::test_support::Fixture::new("routes-correct-unpair");
+    let state = Arc::new(crate::test_support::state_with_two_editions(&tmp));
     let router = build_router(state.clone());
     let tag = etag_of(&router, "/api/works/t").await;
     let before = taiyaku_core::resolve(&state.works[0].sidecar(), "raw", "en", 2);
@@ -2690,7 +2667,6 @@ async fn an_explicit_null_unpairs_the_slot() {
     .await;
 
     let after = state.works[0].sidecar();
-    crate::test_support::cleanup("taiyaku-test-routes-correct-unpair");
     assert_eq!(status, axum::http::StatusCode::OK);
     assert!(
         before.is_some(),
@@ -2717,9 +2693,8 @@ async fn an_explicit_null_unpairs_the_slot() {
 /// silently correct something other than what was asked.
 #[tokio::test]
 async fn a_correction_naming_a_range_rather_than_a_slot_is_refused() {
-    let state = Arc::new(crate::test_support::state_with_two_editions(
-        "taiyaku-test-routes-correct-range",
-    ));
+    let tmp = crate::test_support::Fixture::new("routes-correct-range");
+    let state = Arc::new(crate::test_support::state_with_two_editions(&tmp));
     let router = build_router(state.clone());
     let tag = etag_of(&router, "/api/works/t").await;
 
@@ -2731,7 +2706,6 @@ async fn a_correction_naming_a_range_rather_than_a_slot_is_refused() {
     )
     .await;
 
-    crate::test_support::cleanup("taiyaku-test-routes-correct-range");
     assert!(
         message.contains("2-3") && message.contains("range"),
         "the refusal must name the span it would not take: {message}"
@@ -2748,7 +2722,8 @@ async fn a_correction_naming_a_range_rather_than_a_slot_is_refused() {
 /// like every later one.
 #[tokio::test]
 async fn a_work_with_no_notes_answers_an_empty_document_with_a_validator() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-notes-get"));
+    let tmp = crate::test_support::Fixture::new("notes-get");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     let response = app
@@ -2773,7 +2748,6 @@ async fn a_work_with_no_notes_answers_an_empty_document_with_a_validator() {
         .unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-notes-get");
     assert_eq!(tag, notes_etag(&body), "the tag must be over what was sent");
     let parsed: crate::notes::Notes = serde_json::from_str(&body).unwrap();
     assert_eq!(parsed.work, "t");
@@ -2791,7 +2765,7 @@ async fn a_work_with_no_notes_answers_an_empty_document_with_a_validator() {
 /// minting one.
 #[tokio::test]
 async fn a_notes_etag_is_computed_over_the_bytes_that_were_sent() {
-    let (router, _state) = crate::test_support::router_over_a_library().await;
+    let (router, _state, _fixture) = crate::test_support::router_over_a_library().await;
     let response = crate::test_support::get(&router, "/api/works/w/notes").await;
     let etag = response.headers().get("etag").expect("an etag").clone();
     let body = crate::test_support::body_string(response).await;
@@ -2805,7 +2779,7 @@ async fn a_notes_etag_is_computed_over_the_bytes_that_were_sent() {
 /// rather than a second one, so this is the same test, over `/truth`.
 #[tokio::test]
 async fn a_truth_etag_is_computed_over_the_bytes_that_were_sent() {
-    let (router, _state) = crate::test_support::router_over_a_library().await;
+    let (router, _state, _fixture) = crate::test_support::router_over_a_library().await;
     let response = crate::test_support::get(&router, "/api/works/w/truth").await;
     let etag = response.headers().get("etag").expect("an etag").clone();
     let body = crate::test_support::body_string(response).await;
@@ -2818,7 +2792,8 @@ async fn a_truth_etag_is_computed_over_the_bytes_that_were_sent() {
 /// a per-page-load read of a document that rarely changes off the wire.
 #[tokio::test]
 async fn a_matching_if_none_match_answers_304_for_notes() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-notes-304"));
+    let tmp = crate::test_support::Fixture::new("notes-304");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
     let tag = etag_of(&app, "/api/works/t/notes").await;
 
@@ -2832,7 +2807,6 @@ async fn a_matching_if_none_match_answers_304_for_notes() {
         .await
         .unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-notes-304");
     assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
 }
 
@@ -2840,7 +2814,8 @@ async fn a_matching_if_none_match_answers_304_for_notes() {
 /// route addressed by work uses.
 #[tokio::test]
 async fn notes_for_an_unknown_work_are_a_404_naming_it() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-notes-no-work"));
+    let tmp = crate::test_support::Fixture::new("notes-no-work");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     let response = app
@@ -2857,7 +2832,6 @@ async fn notes_for_an_unknown_work_are_a_404_naming_it() {
         .unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-notes-no-work");
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(body.contains("nope"), "the refusal must name it: {body}");
 }
@@ -2867,7 +2841,8 @@ async fn notes_for_an_unknown_work_are_a_404_naming_it() {
 /// let a stale client write over a note it never saw.
 #[tokio::test]
 async fn stored_notes_are_served_and_change_the_validator() {
-    let state = crate::test_support::state("taiyaku-test-notes-stored");
+    let tmp = crate::test_support::Fixture::new("notes-stored");
+    let state = crate::test_support::state(&tmp);
     crate::notes::store(
         &state.library,
         &state.works[0],
@@ -2910,7 +2885,6 @@ async fn stored_notes_are_served_and_change_the_validator() {
         .unwrap();
     let parsed: crate::notes::Notes = serde_json::from_slice(&bytes).unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-notes-stored");
     assert_eq!(parsed.notes.len(), 1);
     assert_eq!(parsed.notes[0].body, "kept");
     assert_ne!(
@@ -2954,7 +2928,8 @@ async fn write_notes(
 /// entered a race), a stale one is 412 (you lost it), a current one writes.
 #[tokio::test]
 async fn writing_notes_needs_a_current_if_match() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-notes-put"));
+    let tmp = crate::test_support::Fixture::new("notes-put");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     let (unconditional, _) = write_notes(&app, None, one_note("01J8", "first")).await;
@@ -2982,7 +2957,6 @@ async fn writing_notes_needs_a_current_if_match() {
         .unwrap();
     let parsed: crate::notes::Notes = serde_json::from_slice(&bytes).unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-notes-put");
     assert_ne!(fresh, tag, "the document changed, so the tag must have");
     assert_eq!(parsed.notes.len(), 1);
     assert_eq!(parsed.notes[0].body, "first");
@@ -2993,7 +2967,8 @@ async fn writing_notes_needs_a_current_if_match() {
 /// told rather than quietly replacing the first reader's note.
 #[tokio::test]
 async fn a_second_writer_holding_the_same_tag_is_refused_rather_than_winning() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-notes-race"));
+    let tmp = crate::test_support::Fixture::new("notes-race");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
     let shared = etag_of(&app, "/api/works/t/notes").await;
 
@@ -3015,7 +2990,6 @@ async fn a_second_writer_holding_the_same_tag_is_refused_rather_than_winning() {
         .unwrap();
     let parsed: crate::notes::Notes = serde_json::from_slice(&bytes).unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-notes-race");
     assert_eq!(second, StatusCode::PRECONDITION_FAILED);
     assert!(
         message.contains("ETag is now"),
@@ -3030,7 +3004,8 @@ async fn a_second_writer_holding_the_same_tag_is_refused_rather_than_winning() {
 /// calls is the shape O4 records — correct by inspection only.
 #[tokio::test]
 async fn a_note_on_a_slot_that_does_not_exist_is_refused_through_the_router() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-notes-bad-slot"));
+    let tmp = crate::test_support::Fixture::new("notes-bad-slot");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
     let tag = etag_of(&app, "/api/works/t/notes").await;
 
@@ -3053,7 +3028,6 @@ async fn a_note_on_a_slot_that_does_not_exist_is_refused_through_the_router() {
     )
     .await;
 
-    crate::test_support::cleanup("taiyaku-test-notes-bad-slot");
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(
         message.contains("99") && message.contains("slots"),
@@ -3089,7 +3063,8 @@ async fn a_note_on_a_slot_that_does_not_exist_is_refused_through_the_router() {
 /// assertion is on the pair of outcomes rather than on which request won.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_writes_in_flight_together_leave_exactly_one_winner() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-notes-concurrent"));
+    let tmp = crate::test_support::Fixture::new("notes-concurrent");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     for round in 0..20 {
@@ -3111,7 +3086,6 @@ async fn two_writes_in_flight_together_leave_exactly_one_winner() {
         let mut statuses = [a.0, b.0];
         statuses.sort_by_key(StatusCode::as_u16);
         if statuses != [StatusCode::OK, StatusCode::PRECONDITION_FAILED] {
-            crate::test_support::cleanup("taiyaku-test-notes-concurrent");
             panic!(
                 "round {round}: {statuses:?} — one write must land and the other be told;                      two 200s is a lost note"
             );
@@ -3131,7 +3105,6 @@ async fn two_writes_in_flight_together_leave_exactly_one_winner() {
         .unwrap();
     let parsed: crate::notes::Notes = serde_json::from_slice(&bytes).unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-notes-concurrent");
     assert_eq!(
         parsed.notes.len(),
         1,
@@ -3145,13 +3118,13 @@ async fn two_writes_in_flight_together_leave_exactly_one_winner() {
 /// correction.
 #[tokio::test]
 async fn a_body_that_is_not_notes_is_refused_in_this_servers_own_words() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-notes-garbage"));
+    let tmp = crate::test_support::Fixture::new("notes-garbage");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
     let tag = etag_of(&app, "/api/works/t/notes").await;
 
     let (status, message) = write_notes(&app, Some(&tag), "{\"nope\":1}".to_string()).await;
 
-    crate::test_support::cleanup("taiyaku-test-notes-garbage");
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
         message.contains("these are not notes"),
@@ -3364,7 +3337,8 @@ async fn a_width_of_one_is_absent_rather_than_a_one_pixel_page() {
 /// cannot tell "no such work" from "a work with nothing in it".
 #[tokio::test]
 async fn an_unknown_work_is_a_404_that_names_it() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-routes-unknown"));
+    let tmp = crate::test_support::Fixture::new("routes-unknown");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     let response = app
@@ -3376,7 +3350,6 @@ async fn an_unknown_work_is_a_404_that_names_it() {
         .await
         .unwrap();
 
-    crate::test_support::cleanup("taiyaku-test-routes-unknown");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = axum::body::to_bytes(response.into_body(), 1 << 16)
         .await
@@ -3395,7 +3368,8 @@ async fn an_unknown_work_is_a_404_that_names_it() {
 /// A reader given an empty list shows an empty library.
 #[tokio::test]
 async fn the_work_list_names_every_work_rather_than_being_merely_ok() {
-    let state = Arc::new(crate::test_support::state("taiyaku-test-routes-list"));
+    let tmp = crate::test_support::Fixture::new("routes-list");
+    let state = Arc::new(crate::test_support::state(&tmp));
     let app = build_router(state);
 
     let response = app
@@ -3407,7 +3381,6 @@ async fn the_work_list_names_every_work_rather_than_being_merely_ok() {
     let body = axum::body::to_bytes(response.into_body(), 1 << 16)
         .await
         .unwrap();
-    crate::test_support::cleanup("taiyaku-test-routes-list");
     // Task 14: a JSON array of objects rather than of bare ids — `slug` is
     // this object's `id`.
     let listed: Vec<serde_json::Value> = serde_json::from_slice(&body).expect("a JSON array");
@@ -3425,7 +3398,8 @@ async fn the_work_list_names_every_work_rather_than_being_merely_ok() {
 /// SQLite refuse it.
 #[tokio::test]
 async fn a_broken_library_connection_answers_500_rather_than_panicking() {
-    let state = crate::test_support::state("taiyaku-test-routes-list-db-broken");
+    let tmp = crate::test_support::Fixture::new("routes-list-db-broken");
+    let state = crate::test_support::state(&tmp);
     state
         .library
         .conn()
@@ -3435,7 +3409,6 @@ async fn a_broken_library_connection_answers_500_rather_than_panicking() {
 
     let response = crate::test_support::get(&app, "/api/works").await;
 
-    crate::test_support::cleanup("taiyaku-test-routes-list-db-broken");
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
@@ -3451,7 +3424,8 @@ async fn a_broken_library_connection_answers_500_rather_than_panicking() {
 async fn two_readers_hold_separate_positions_in_one_work() {
     use base64::Engine as _;
 
-    let state = crate::test_support::state("taiyaku-test-two-readers");
+    let tmp = crate::test_support::Fixture::new("two-readers");
+    let state = crate::test_support::state(&tmp);
     {
         let conn = state.library.conn();
         let phc = taiyaku_library::credential::hash_password("bobs-password").expect("hashes");
@@ -3513,8 +3487,6 @@ async fn two_readers_hold_separate_positions_in_one_work() {
             "expected slot {expected}, read {body}"
         );
     }
-
-    crate::test_support::cleanup("taiyaku-test-two-readers");
 }
 
 /// The same, for notes: two readers annotate one work and neither sees the
@@ -3523,7 +3495,8 @@ async fn two_readers_hold_separate_positions_in_one_work() {
 async fn two_readers_hold_separate_notes_on_one_work() {
     use base64::Engine as _;
 
-    let state = crate::test_support::state("taiyaku-test-two-readers-notes");
+    let tmp = crate::test_support::Fixture::new("two-readers-notes");
+    let state = crate::test_support::state(&tmp);
     {
         let conn = state.library.conn();
         let phc = taiyaku_library::credential::hash_password("bobs-password").expect("hashes");
@@ -3613,8 +3586,6 @@ async fn two_readers_hold_separate_notes_on_one_work() {
             "{theirs} leaked into another reader's notes: {body}"
         );
     }
-
-    crate::test_support::cleanup("taiyaku-test-two-readers-notes");
 }
 
 /// A correction on a work with **no document** writes rows and no file.
@@ -3677,10 +3648,8 @@ async fn correcting_a_work_with_no_document_writes_rows_and_no_file() {
 
 /// A router over **two** works, one filed under the root the fixture account
 /// holds and one under a root it does not.
-fn router_with_two_works_one_withheld(dir: &str) -> (axum::Router, Arc<ServeState>) {
-    let root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+fn router_with_two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeState>) {
+    let root = dir;
     let shelf = root.to_string_lossy().into_owned();
 
     let visible_json = format!(
@@ -3763,14 +3732,13 @@ fn router_with_two_works_one_withheld(dir: &str) -> (axum::Router, Arc<ServeStat
 /// for the JSON route.
 #[tokio::test]
 async fn the_work_list_does_not_name_a_work_outside_the_grant() {
-    let (router, _state) =
-        router_with_two_works_one_withheld("taiyaku-test-routes-grant-works-list");
+    let tmp = crate::test_support::Fixture::new("routes-grant-works-list");
+    let (router, _state) = router_with_two_works_one_withheld(&tmp);
 
     let response = crate::test_support::get(&router, "/api/works").await;
     let status = response.status();
     let body = crate::test_support::body_string(response).await;
 
-    crate::test_support::cleanup("taiyaku-test-routes-grant-works-list");
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(
         body.contains("Visible Work"),
@@ -3798,10 +3766,10 @@ async fn the_work_list_does_not_name_a_work_outside_the_grant() {
 /// since a correction needs an edge to address — but filed entirely under a
 /// root the fixture account is **not** granted, mirroring
 /// `opds::tests::router_with_a_real_page_under_a_withheld_root`'s root split.
-fn router_over_a_scanned_work_under_a_withheld_root(dir: &str) -> (axum::Router, Arc<ServeState>) {
-    let fixture_root = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&fixture_root);
-    std::fs::create_dir_all(&fixture_root).unwrap();
+fn router_over_a_scanned_work_under_a_withheld_root(
+    dir: &std::path::Path,
+) -> (axum::Router, Arc<ServeState>) {
+    let fixture_root = dir;
     let shelf = fixture_root.to_string_lossy().into_owned();
 
     let json = format!(
@@ -3884,9 +3852,8 @@ fn router_over_a_scanned_work_under_a_withheld_root(dir: &str) -> (axum::Router,
 /// grant was actually consulted.
 #[tokio::test]
 async fn a_restricted_account_cannot_patch_alignments_on_a_work_in_a_withheld_root() {
-    let (router, state) = router_over_a_scanned_work_under_a_withheld_root(
-        "taiyaku-test-routes-grant-alignments-write",
-    );
+    let tmp = crate::test_support::Fixture::new("routes-grant-alignments-write");
+    let (router, state) = router_over_a_scanned_work_under_a_withheld_root(&tmp);
     let slug = state.works[0].id.clone();
     // Computed directly from the state the running server holds, rather than
     // fetched through `GET /api/works/{slug}` — that route is already fixed
@@ -3910,7 +3877,6 @@ async fn a_restricted_account_cannot_patch_alignments_on_a_work_in_a_withheld_ro
         .expect("counting hand-corrected runs")
     };
 
-    crate::test_support::cleanup("taiyaku-test-routes-grant-alignments-write");
     assert_eq!(
         status,
         StatusCode::NOT_FOUND,

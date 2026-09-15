@@ -539,11 +539,11 @@ fn a_preview_of_the_librarys_own_unchanged_rules_reports_no_reopens() {
 #[test]
 fn a_rule_that_gives_an_ancestor_a_volumes_own_address_orphans_the_volume_it_swallowed() {
     let tree = crate::tests::tempdir("preview-ancestor-swallow");
-    crate::scan::tests::write_pages(&tree.path.join("Series 1").join("Series - v01"), 2);
-    crate::scan::tests::write_pages(&tree.path.join("Series 1").join("Series - v02"), 2);
+    crate::scan::tests::write_pages(&tree.path().join("Series 1").join("Series - v01"), 2);
+    crate::scan::tests::write_pages(&tree.path().join("Series 1").join("Series - v02"), 2);
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = crate::scan::add_root(&conn, &tree.path).expect("add");
+    let root = crate::scan::add_root(&conn, tree.path()).expect("add");
     crate::scan::scan_root(&conn, &root).expect("scan");
     crate::derive::derive(&conn).expect("the base derive");
 

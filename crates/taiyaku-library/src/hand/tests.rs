@@ -135,7 +135,7 @@ fn a_scanned_work_rooted_at_that_keeps_documents(conn: &Connection, root: &str) 
 #[test]
 fn saving_writes_the_document_and_records_the_marker() {
     let dir = crate::tests::tempdir("hand-save");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -169,7 +169,7 @@ fn an_unedited_work_has_nothing_to_remove_and_that_is_not_a_failure() {
     // That is not a removal failure; the disk already reflects the database
     // (there is nothing to write), and there is nothing to report.
     let dir = crate::tests::tempdir("hand-save-no-file");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -208,7 +208,7 @@ fn an_unedited_work_has_nothing_to_remove_and_that_is_not_a_failure() {
 #[test]
 fn a_hand_document_withdrawn_removes_the_file_it_left_behind() {
     let dir = crate::tests::tempdir("hand-save-withdraw");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -259,7 +259,7 @@ fn a_hand_document_withdrawn_removes_the_file_it_left_behind() {
 #[test]
 fn a_removal_failure_that_is_not_notfound_is_reported_not_swallowed() {
     let dir = crate::tests::tempdir("hand-save-remove-fails");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -315,7 +315,7 @@ fn a_removal_failure_that_is_not_notfound_is_reported_not_swallowed() {
 #[test]
 fn a_root_that_cannot_take_the_document_still_arms_the_guard() {
     let dir = crate::tests::tempdir("hand-save-unwritable");
-    let root = dir.path.join("unwritable");
+    let root = dir.path().join("unwritable");
     std::fs::create_dir(&root).expect("creating the root");
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root.to_string_lossy());
@@ -414,7 +414,7 @@ fn saving_a_work_with_no_address_still_arms_the_guard() {
 #[test]
 fn a_rescan_with_no_database_recovers_the_hand_set_title() {
     let dir = crate::tests::tempdir("hand-load-rescan");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
 
     // First database: a person corrects the title, and it is saved.
     let first = Connection::open_in_memory().expect("in-memory database");
@@ -465,7 +465,7 @@ fn a_rescan_with_no_database_recovers_the_hand_set_title() {
 #[test]
 fn a_document_no_work_addresses_is_an_orphan_named_with_its_title() {
     let dir = crate::tests::tempdir("hand-reconcile-orphan");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -530,7 +530,7 @@ fn a_document_no_work_addresses_is_an_orphan_named_with_its_title() {
 #[test]
 fn a_gap_is_written_on_the_next_pass() {
     let dir = crate::tests::tempdir("hand-reconcile-retry");
-    let root = dir.path.join("root");
+    let root = dir.path().join("root");
     std::fs::create_dir(&root).expect("creating the root");
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root.to_string_lossy());
@@ -579,7 +579,7 @@ fn a_gap_is_written_on_the_next_pass() {
 #[test]
 fn a_gap_whose_document_projects_empty_is_not_counted_as_repaired() {
     let dir = crate::tests::tempdir("hand-reconcile-empty-gap");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -621,7 +621,7 @@ fn a_gap_whose_document_projects_empty_is_not_counted_as_repaired() {
 #[test]
 fn repaired_is_counted_off_the_live_answer_not_the_stale_snapshot() {
     let dir = crate::tests::tempdir("hand-reconcile-race");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -672,7 +672,7 @@ fn repaired_is_counted_off_the_live_answer_not_the_stale_snapshot() {
 #[test]
 fn a_gap_that_cannot_be_written_is_named_and_does_not_fail_the_pass() {
     let dir = crate::tests::tempdir("hand-reconcile-still-unwritable");
-    let root = dir.path.join("root");
+    let root = dir.path().join("root");
     std::fs::create_dir(&root).expect("creating the root");
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root.to_string_lossy());
@@ -704,7 +704,7 @@ fn a_gap_that_cannot_be_written_is_named_and_does_not_fail_the_pass() {
 #[test]
 fn a_library_with_nothing_wrong_reports_nothing() {
     let dir = crate::tests::tempdir("hand-reconcile-clean");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -730,7 +730,7 @@ fn a_library_with_nothing_wrong_reports_nothing() {
 #[test]
 fn a_document_that_disagrees_with_the_database_is_stale_and_is_not_rewritten() {
     let dir = crate::tests::tempdir("hand-reconcile-stale");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -771,7 +771,7 @@ fn a_document_that_disagrees_with_the_database_is_stale_and_is_not_rewritten() {
 #[test]
 fn a_document_that_agrees_is_not_stale_despite_a_newer_updated_stamp() {
     let dir = crate::tests::tempdir("hand-reconcile-agrees");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -816,7 +816,7 @@ fn a_document_that_agrees_is_not_stale_despite_a_newer_updated_stamp() {
 #[test]
 fn an_unparseable_document_is_neither_stale_nor_an_orphan() {
     let dir = crate::tests::tempdir("hand-reconcile-unparseable");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -874,7 +874,7 @@ fn an_unparseable_document_is_neither_stale_nor_an_orphan() {
 #[test]
 fn a_document_that_cannot_be_read_is_not_reported_stale() {
     let dir = crate::tests::tempdir("hand-reconcile-unreadable");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -915,7 +915,7 @@ fn a_document_that_cannot_be_read_is_not_reported_stale() {
 #[test]
 fn a_new_filename_chapter_does_not_make_a_hand_edit_stale() {
     let dir = crate::tests::tempdir("hand-reconcile-new-chapter");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -950,7 +950,7 @@ fn a_new_filename_chapter_does_not_make_a_hand_edit_stale() {
 #[test]
 fn a_rekey_never_overwrites_a_document_already_at_the_new_address() {
     let dir = crate::tests::tempdir("hand-rekey-collision");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -984,7 +984,7 @@ fn a_rekey_never_overwrites_a_document_already_at_the_new_address() {
         "and left what was already there untouched"
     );
     assert!(
-        dir.path.join(".taiyaku/abc123.library.json").is_file(),
+        dir.path().join(".taiyaku/abc123.library.json").is_file(),
         "and kept the old document for a person to read"
     );
 }
@@ -995,7 +995,7 @@ fn a_rekey_never_overwrites_a_document_already_at_the_new_address() {
 #[test]
 fn a_root_that_keeps_no_documents_gets_no_file_and_reports_success() {
     let dir = crate::tests::tempdir("hand-save-documents-off");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at(&conn, &root);
     // `a_scanned_work_rooted_at` seeds the root directly, so the column takes
@@ -1018,7 +1018,7 @@ fn a_root_that_keeps_no_documents_gets_no_file_and_reports_success() {
         "the root declined, which is not the same as having no root: {saved:?}"
     );
     assert!(
-        !dir.path.join(".taiyaku").exists(),
+        !dir.path().join(".taiyaku").exists(),
         "and the directory a person objected to was never created"
     );
     assert!(
@@ -1047,7 +1047,7 @@ fn a_root_that_keeps_no_documents_gets_no_file_and_reports_success() {
 #[test]
 fn an_off_root_never_deletes_a_document_already_on_disk() {
     let dir = crate::tests::tempdir("hand-save-documents-off-keeps-existing");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
 
@@ -1105,7 +1105,7 @@ fn an_off_root_never_deletes_a_document_already_on_disk() {
 #[test]
 fn a_root_that_keeps_documents_still_writes_one() {
     let dir = crate::tests::tempdir("hand-save-documents-on");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at(&conn, &root);
     conn.execute("UPDATE root SET keeps_documents = 1", [])
@@ -1159,7 +1159,7 @@ fn a_work_with_no_rooted_member_has_no_root_to_ask() {
 #[test]
 fn an_off_root_is_never_repaired_into_growing_documents() {
     let dir = crate::tests::tempdir("hand-reconcile-off-no-repair");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at(&conn, &root);
 
@@ -1185,7 +1185,7 @@ fn an_off_root_is_never_repaired_into_growing_documents() {
         "and nothing was attempted: {found:?}"
     );
     assert!(
-        !dir.path.join(".taiyaku").exists(),
+        !dir.path().join(".taiyaku").exists(),
         "and no document was written behind the setting's back"
     );
 }
@@ -1213,7 +1213,7 @@ fn an_off_root_is_never_repaired_into_growing_documents() {
 #[test]
 fn an_off_root_reports_an_addressed_document_as_declined_not_orphaned() {
     let dir = crate::tests::tempdir("hand-reconcile-off-declined");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at(&conn, &root);
 
@@ -1277,7 +1277,7 @@ fn an_off_root_reports_an_addressed_document_as_declined_not_orphaned() {
 #[test]
 fn an_off_root_still_reports_a_document_nothing_addresses() {
     let dir = crate::tests::tempdir("hand-reconcile-off-orphan");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at(&conn, &root);
 
@@ -1333,7 +1333,7 @@ fn an_off_root_still_reports_a_document_nothing_addresses() {
 #[test]
 fn a_rekey_in_an_off_root_moves_nothing_and_creates_nothing() {
     let dir = crate::tests::tempdir("hand-rekey-documents-off");
-    let root = dir.path.to_string_lossy().to_string();
+    let root = dir.path().to_string_lossy().to_string();
     let conn = Connection::open_in_memory().expect("in-memory database");
     let work_id = a_scanned_work_rooted_at(&conn, &root);
 
@@ -1352,7 +1352,7 @@ fn a_rekey_in_an_off_root_moves_nothing_and_creates_nothing() {
 
     assert!(!moved, "there was no document to move: {moved}");
     assert!(
-        !dir.path.join(".taiyaku").exists(),
+        !dir.path().join(".taiyaku").exists(),
         "and asking to move one did not create the directory"
     );
 }

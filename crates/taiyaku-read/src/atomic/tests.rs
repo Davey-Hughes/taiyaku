@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::TempDir;
 
 /// The property O2 established for progress and this now shares: the
 /// destination is *replaced*, never opened for truncation, so a crash
@@ -19,9 +20,7 @@ use super::*;
 /// enforcement does, so there is nothing left to skip.
 #[test]
 fn the_destination_is_replaced_by_rename_not_truncation() {
-    let dir = std::env::temp_dir().join("taiyaku-test-atomic-rename");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("atomic-rename");
     let path = dir.join("thing.json");
     std::fs::write(&path, b"old").unwrap();
 
@@ -42,8 +41,6 @@ fn the_destination_is_replaced_by_rename_not_truncation() {
         use std::os::unix::fs::MetadataExt;
         std::fs::metadata(&path).unwrap().ino()
     };
-
-    let _ = std::fs::remove_dir_all(&dir);
     wrote.expect("the write succeeds");
     assert_eq!(read_back, "new", "the destination must hold the new bytes");
     #[cfg(unix)]
@@ -64,10 +61,9 @@ fn the_destination_is_replaced_by_rename_not_truncation() {
 /// infix, so it is the one substring that cannot appear by accident.
 #[test]
 fn a_failed_staging_names_the_destination_and_never_the_temporary() {
-    let dir = std::env::temp_dir().join("taiyaku-test-atomic-o29-staging");
-    let _ = std::fs::remove_dir_all(&dir);
+    let scratch = TempDir::new("atomic-o29-staging");
     // Deliberately not created: the parent must be missing.
-    let path = dir.join("out.json");
+    let path = scratch.join("missing").join("out.json");
 
     let e = write(&path, b"{}", "json").expect_err("the parent does not exist");
 
@@ -89,9 +85,7 @@ fn a_failed_staging_names_the_destination_and_never_the_temporary() {
 /// cannot be renamed onto a directory.
 #[test]
 fn a_failed_rename_names_the_destination_and_never_the_temporary() {
-    let dir = std::env::temp_dir().join("taiyaku-test-atomic-o29-rename");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("atomic-o29-rename");
     let path = dir.join("out.json");
     // A directory where the file should go — staging succeeds, rename cannot.
     std::fs::create_dir(&path).unwrap();
@@ -105,7 +99,6 @@ fn a_failed_rename_names_the_destination_and_never_the_temporary() {
         .map(|entry| entry.file_name().to_string_lossy().to_string())
         .filter(|name| name.contains(".tmp."))
         .collect();
-    let _ = std::fs::remove_dir_all(&dir);
 
     let e = outcome.expect_err("a file cannot be renamed onto a directory");
     assert!(
@@ -154,16 +147,8 @@ fn the_temporary_is_synced_before_the_rename_and_the_directory_after_it() {
         return;
     }
 
-    // Per process, since the traced child widens the window in which two
-    // concurrent runs — cargo-mutants' jobs, a second worktree — would
-    // delete each other's directory.
-    let dir = std::env::temp_dir().join(format!(
-        "taiyaku-test-atomic-o104-sync-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let dir = std::fs::canonicalize(&dir).unwrap();
+    let scratch = TempDir::new("atomic-o104-sync");
+    let dir = std::fs::canonicalize(&scratch).unwrap();
     let path = dir.join("thing.json");
     std::fs::write(&path, b"old").unwrap();
 
@@ -173,7 +158,6 @@ fn the_temporary_is_synced_before_the_rename_and_the_directory_after_it() {
         &dir.join("strace.log"),
     );
     let read_back = std::fs::read_to_string(&path).unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert_eq!(
         read_back, "new",
@@ -204,13 +188,8 @@ fn a_bare_filename_syncs_the_directory_it_was_written_into() {
         return;
     }
 
-    let dir = std::env::temp_dir().join(format!(
-        "taiyaku-test-atomic-o104-bare-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let dir = std::fs::canonicalize(&dir).unwrap();
+    let scratch = TempDir::new("atomic-o104-bare");
+    let dir = std::fs::canonicalize(&scratch).unwrap();
 
     let calls = traced(
         "atomic::tests::a_bare_filename_syncs_the_directory_it_was_written_into",
@@ -218,7 +197,6 @@ fn a_bare_filename_syncs_the_directory_it_was_written_into() {
         &dir.join("strace.log"),
     );
     let read_back = std::fs::read_to_string(dir.join("thing.json")).unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert_eq!(
         read_back, "new",
