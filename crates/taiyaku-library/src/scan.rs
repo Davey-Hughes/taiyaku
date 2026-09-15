@@ -239,11 +239,13 @@ impl std::error::Error for AddRootError {}
 ///    answer is written to `scan_interval_secs` immediately, not left at
 ///    the column default until some later call happens to set it.
 ///
-/// [`add_root`] itself is unchanged and still validates nothing: `import`
-/// and a great many fixtures call it directly, and a validation that runs
-/// inside every fixture is a validation nobody can test the absence of.
-/// This is the checked path a person — or the HTTP API, on their behalf —
-/// takes when adding a root they have not already vetted by hand.
+/// [`add_root`] itself is unchanged and still validates nothing: a great many
+/// fixtures call it directly, and a validation that runs inside every fixture
+/// is a validation nobody can test the absence of. This is the checked path a
+/// person takes when adding a root they have not already vetted by hand —
+/// through `taiyaku library scan --add`, or the HTTP API on their behalf.
+/// That command took the unchecked one until O47, and this doc named `import`
+/// as a caller of [`add_root`], which it has never been.
 ///
 /// # Errors
 ///

@@ -17288,3 +17288,96 @@ files warned nothing but the control.
 - `browser-setup.ts` keeps its name, though the `jsdom` project loads it too.
 - The `browser` project was not counted for warnings. `browser-setup.ts`
   changed there only in its doc, and its 28 tests passed in the gate.
+
+## O47: `scan --add` takes the checked add — 2026-09-14
+
+O47 recorded that `scan::add_root` accepts a root nested inside, or containing,
+one already held, that the next scan admits the same directory twice as two
+members of one work — measured on 2026-08-18 — and that nothing refuses it.
+Since C4 PR 1 (#105, 2026-09-03) something has: `POST /api/library/roots` calls
+`scan::add_root_checked`, which refuses an overlap in either direction. What
+was left was `taiyaku library scan --add`, the one caller of `add_root` outside
+a test; the rest are fixtures, and `taiyaku-library`'s `corpus.rs` and
+`taiyaku-serve`'s `test_support.rs` are both `#[cfg(test)]`.
+
+### Before and after, on a scratch tree
+
+A tree `lib/Series/Series - v01/` holding three files, `000.jpg` to `002.jpg`,
+and a fresh `--db` beside it, both under the session scratchpad, and a new tree
+for every run. Two `taiyaku library scan --add` commands, in each order, run
+with `target/release/taiyaku` built from `main` (no crate change on `main`
+since that build) and with `target/debug/taiyaku` built from this branch; the
+database was read back with Python's `sqlite3`.
+
+| binary | order | second `--add` exits | it printed | roots | members of the one edition |
+| --- | --- | --- | --- | --- | --- |
+| `main` | `lib`, then `lib/Series` | 0 | `1 rekeyed, 1 merged` | 2 | 2 — ordinals 0 and 1, one path, one `sha256`, 3 pages each, `root_id` 2 and 1 |
+| `main` | `lib/Series`, then `lib` | 0 | `1 rekeyed, 1 merged` | 2 | 2 — the same, `root_id` 1 and 2 |
+| branch | `lib`, then `lib/Series` | 1 | "`…/lib/Series` is inside existing root `…/lib` (id 1)" | 1 | 1 |
+| branch | `lib/Series`, then `lib` | 1 | "`…/lib` contains existing root `…/lib/Series` (id 1)" | 1 | 1 |
+
+The `main` rows are the shape the 2026-08-18 measurement recorded, in both
+directions: the same directory twice, one member under each root. On the
+branch the one root left carries `scan_interval_secs` 86400 in both orders; on
+`main`, in the first order, both roots' were NULL. That is not O47: it is
+`add_root_checked` recording the watch probe's interval when a root is added,
+which `--add` now gets along with the refusal.
+
+Re-adding a root already held exits 1 on both binaries and leaves one root; the
+message changes. `main` says `UNIQUE constraint failed: root.path`; the branch
+says "`…/lib` is inside existing root `…/lib` (id 1)", the exact-duplicate case
+`add_root_checked`'s doc names.
+
+**The first branch run of the second order was of the wrong binary.** It
+printed the refusal and still left a second root, `lib`, with
+`scan_interval_secs` and `last_scan_status` both NULL: an unchecked insert
+followed by the refusal, which is exactly the last row of the table below.
+`taiyaku-cli`'s `tests/cli.rs` runs `CARGO_BIN_EXE_taiyaku`, so a mutation's
+`cargo nextest` run builds `target/debug/taiyaku` from the source as it
+stands; the source was restored after that mutation and the binary was not.
+The branch rows above are from a rebuild, `cargo build -p taiyaku-cli --bin
+taiyaku`, made after checking that the source held the `add_root_checked` call
+and no `add_root` call.
+
+### The tests, watched
+
+Two tests in `taiyaku-cli`'s `library/tests.rs` add a root through `scan
+--add`, then a second root inside it or containing it, and assert the
+refusal's message and that the library still holds one root and one member.
+Each mutation was one substitution in `library.rs`'s `scan`; the file was
+restored and compared with its original after each run.
+
+| `--add` calls | inside | containing |
+| --- | --- | --- |
+| `add_root_checked` (the fix) | passed | passed |
+| `add_root` (the defect) | red: `a root inside a known root must be refused: ()` | red: `a root containing a known root must be refused: ()` |
+| `add_root_checked`, its error replaced by `adding root {path} failed` | red at the message assertion | red at the message assertion |
+| `add_root`, then `add_root_checked` | red at the *first* `--add` | red at the *first* `--add` |
+| `add_root` only once a root exists, then `add_root_checked` | red: `left: (2, 1)`, `right: (1, 1)` | red: `left: (2, 1)`, `right: (1, 1)` |
+
+The fourth row proves nothing and is kept for that reason. Inserting before the
+check made the first `--add` refuse its own path, so both tests went red in
+their setup and never reached the count the mutation was meant to exercise. The
+fifth row reaches it.
+
+All twenty `library::tests::scan*` tests pass on the branch.
+
+### Not changed
+
+- `add_root` still validates nothing, as its own doc and `add_root_checked`'s
+  say it should not; fixtures are its callers now.
+- **A refused `--add` still creates the database.** `scan` opens the library
+  before it adds anything, so `--add` of a path that does not exist, with a
+  `--db` that did not exist, exited 1 and left `new.db` behind. The refusal
+  comes before a root is written, not before anything is.
+- **A root added by `--add` is probed twice when the same run walks it**: once
+  inside `add_root_checked`, and again by `scan`'s own loop, which probes every
+  root it walks. It walks every root unless `--root` names a different one:
+  `--add b --root a` walked only `a`, and left `b` with its interval recorded
+  and no `last_scan_status`. On a filesystem that delivers no event the probe waits out its
+  two-second timeout, so that is up to two more seconds, once per `--add`. Not
+  measured.
+- `add_root_checked`'s doc named `import` as a caller of `add_root`. It never
+  was: `git log -S'add_root('` over the CLI's `library.rs` and `main.rs` finds
+  one commit, `cec59e2`, which added `scan`'s call, and over
+  `taiyaku-library`'s `import` module finds none. Corrected.

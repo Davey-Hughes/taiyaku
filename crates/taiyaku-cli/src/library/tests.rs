@@ -2069,6 +2069,90 @@ fn scan_adds_a_root_and_the_second_run_finds_it_without_add() {
     assert_eq!(roots, 1, "--add is idempotent about the root it names");
 }
 
+/// How many roots and members `db` holds — what a refused `--add` must leave
+/// exactly as it found them.
+fn roots_and_members(db: &std::path::Path) -> (i64, i64) {
+    let library = taiyaku_library::Library::open(db).expect("open");
+    let conn = library.conn();
+    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).expect("count") };
+    (
+        count("SELECT count(*) FROM root"),
+        count("SELECT count(*) FROM member"),
+    )
+}
+
+/// O47: `--add` went through the unchecked `scan::add_root`, so a root inside
+/// one already held was accepted, and the next derive admitted the same
+/// directory twice — two members of one work with one path and one `sha256`.
+/// `scan::add_root_checked` is the refusal `POST /api/library/roots` already
+/// had; this pins that `--add` takes it too, and that a refused `--add` adds
+/// nothing.
+#[test]
+fn scan_add_refuses_a_root_inside_a_known_root() {
+    let dir = scratch("scan-add-inside");
+    let tree = dir.join("library");
+    std::fs::create_dir_all(tree.join("Series/Series - v01")).expect("mkdir");
+    std::fs::write(tree.join("Series/Series - v01/000.jpg"), b"page").expect("write");
+    let db = dir.join("library.db");
+    command(&[
+        "scan".into(),
+        "--add".into(),
+        tree.display().to_string(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("adds and scans the outer root");
+
+    let err = command(&[
+        "scan".into(),
+        "--add".into(),
+        tree.join("Series").display().to_string(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect_err("a root inside a known root must be refused");
+    assert!(err.contains("is inside existing root"), "{err}");
+    assert_eq!(
+        roots_and_members(&db),
+        (1, 1),
+        "a refused --add must add no root and no member"
+    );
+}
+
+/// The same mistake the other way round: a root that would contain one already
+/// held, added second, double-counts the inner root's files exactly as well.
+#[test]
+fn scan_add_refuses_a_root_containing_a_known_root() {
+    let dir = scratch("scan-add-containing");
+    let tree = dir.join("library");
+    std::fs::create_dir_all(tree.join("Series/Series - v01")).expect("mkdir");
+    std::fs::write(tree.join("Series/Series - v01/000.jpg"), b"page").expect("write");
+    let db = dir.join("library.db");
+    command(&[
+        "scan".into(),
+        "--add".into(),
+        tree.join("Series").display().to_string(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect("adds and scans the inner root");
+
+    let err = command(&[
+        "scan".into(),
+        "--add".into(),
+        tree.display().to_string(),
+        "--db".into(),
+        db.display().to_string(),
+    ])
+    .expect_err("a root containing a known root must be refused");
+    assert!(err.contains("contains existing root"), "{err}");
+    assert_eq!(
+        roots_and_members(&db),
+        (1, 1),
+        "a refused --add must add no root and no member"
+    );
+}
+
 #[test]
 fn scan_no_derive_stops_before_deriving_anything() {
     let dir = scratch("scan-no-derive");

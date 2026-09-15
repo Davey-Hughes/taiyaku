@@ -339,8 +339,11 @@ fn scan(args: &[String]) -> Result<(), String> {
     let library = Library::open(&db).map_err(|e| format!("opening the library: {e}"))?;
 
     if let Some(path) = add {
+        // The checked add, the one `POST /api/library/roots` makes: a root
+        // inside or around one already held has the overlap walked twice, and
+        // derive admits the same directory as two members of one work (O47).
         let conn = library.conn();
-        taiyaku_library::scan::add_root(&conn, Path::new(path))
+        taiyaku_library::scan::add_root_checked(&conn, Path::new(path))
             .map_err(|e| format!("adding root {path}: {e}"))?;
     }
 

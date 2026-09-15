@@ -118,7 +118,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Six crates, 2126 tests, plus 2,108 in `web/`'s TypeScript — 1,157 in the `node`
+Six crates, 2128 tests, plus 2,108 in `web/`'s TypeScript — 1,157 in the `node`
 project and 951 in the `jsdom` one — and twenty-eight more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -186,7 +186,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Twenty-four of the 2126 are standing checks gated on
+`rayon` exactly as `align` already did. Twenty-four of the 2128 are standing checks gated on
 `TAIYAKU_CORPUS` — seventeen in `crates/taiyaku-cli/src/corpus.rs`, five in
 `crates/taiyaku-serve/src/corpus.rs`, two in
 `crates/taiyaku-library/src/corpus.rs` (this read "nineteen … ten … five"
@@ -456,7 +456,10 @@ facts are what it exists to record. What it does not touch is `series`,
 `work`, `edition`, `member` or `proposal`. `scan`
 with neither `--add` nor an existing root refuses, naming `--add`, rather than
 succeeding silently over nothing; `--root PATH` naming no known root refuses
-the same way. Each root's line is §8's report — `watching N directories —
+the same way. `--add PATH` refuses, before adding a root, a path this
+process cannot read, or one inside or containing a root the library already
+holds, naming that root — the checks `POST /api/library/roots` makes, through
+the same `scan::add_root_checked`. Each root's line is §8's report — `watching N directories —
 scanning every 24h`, or a probe failure and the short interval, from
 `watch.rs`'s two-second experiment (write a file, watch for the event) rather
 than a guess from filesystem type — and §8.1's empty-root refusal is per
@@ -1383,11 +1386,11 @@ and reading which URLs the browser requested for it, or turned up by
 measuring what else stood where a fix had just moved a button, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Sixty-three are now closed
+visible act rather than a thing someone remembers. **Sixty-four are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
 O21, O22, O25, O26, O27, O28, O29, O30, O34, O35, O36, O37, O38, O39, O40, O43,
-O44, O53, O54, O55, O62, O64, O65, O67, O73, O75, O80, O84, O85, O86, O92, O93, O95, O96,
-O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108 and O110 — leaving forty-nine.** *(It read "leaving fifty" against
+O44, O47, O53, O54, O55, O62, O64, O65, O67, O73, O75, O80, O84, O85, O86, O92, O93, O95, O96,
+O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108 and O110 — leaving forty-eight.** *(It read "leaving fifty" against
 forty-nine open rows from the moment O97 closed: the count of closed items
 moved and the count of open ones did not, which is the drift the sweep at the
 head of this section exists to catch and did not run. Corrected here. **It
@@ -1420,7 +1423,8 @@ before and after, and took it to forty-nine. O112 opened the same day with no
 code change, for what O65's pre-merge check measured beside that fix's own
 cost, and took it back to fifty. O75 closed the same day on a branch of its
 own, once React's warnings had been counted with the output visible, and took
-it to forty-nine.)*
+it to forty-nine. O47 closed the same day on a branch of its own, once
+`library scan --add` had been run before and after, and took it to forty-eight.)*
 
 **What spec A2's fourth review reported and nobody has verified.** Four rounds
 returned fifteen findings each. Round four's fifteen were: two fixed as security
@@ -1523,7 +1527,7 @@ each is in the detail below; the table is what a reader scans.
 | O44 | [x] | `taiyaku.library.json` is the one document this project designs for hand-editing, and after a work's first import there is no route that applies a hand edit to it — `migrate` reads a sibling document once per work and records that it did (settled, and deliberate), and `librarydoc::apply` has no CLI command and no HTTP route. So the only way to make a hand edit take is a fresh `--db`. The same gap is why `librarydoc::forget_orphaned_series` was unreachable from any production path at the time: nothing applied a second document over a work. *No longer true once this closed: `patch_work`'s own `series` field, one of the four PATCH routes that close this item, gives `apply` — and so `forget_orphaned_series` — its first reachable production path, since moving or clearing a work's series is exactly the case that can hand it a real, now-empty series to delete* | `taiyaku-library/src/librarydoc.rs::apply`, with no caller outside `migrate::apply_library` | the review of review 3's Minor fixes, M8 |
 | O45 | [ ] | `dir_state` is written on every scan for every directory and read by nothing — the migration's own comment says it is what an interval scan compares, and `scan.rs`'s doc says the saving is `(size, mtime)` on `scan_entry`. So the table is the design's §8 cheap walk, present and unused; the comment cannot be corrected because it sits inside a `CREATE TABLE` and therefore lands in `sqlite_master`, and migrations here are append-only | `taiyaku-library/src/scan.rs::record`, `schema/003_scanner.sql`'s `dir_state` | the scanner whole-branch review, Minor 2 |
 | O46 | [ ] | `derive`'s `unreadable` counts every sidecar JSON under a root — *measured: 22 `taiyaku*.json` files in `corpus/` outside dot-directories, each sniffing to no known signature and so failing `is_readable`* — so a library following this project's own sidecar convention reports one "unreadable" per work directory as though something were wrong. The counter's doc is literally true ("for want of readable bytes") and the operator-facing reading is not. Whether the right answer is a fifth situation in the doc, an exclusion, or a separate counter is a decision, and changing it moves the corpus figures in `docs/notes.md` | `taiyaku-library/src/derive.rs::admit`, `DeriveReport::unreadable` | the scanner whole-branch review, Minor 3 |
-| O47 | [ ] | `add_root` accepts a root nested inside, or containing, an existing one, and the second scan then admits the same directory **twice as two members of one work** — *measured 2026-08-18 on a scratch tree: `--add lib`, then `--add lib/Series`, gives member ordinals 0 and 1 with the identical path and the identical sha256, and the work's page total goes from 3 to 6. Member order is page order, so the reader sees every page twice.* The report says `1 merged`, which is true and does not say that the two entries are one directory. Easy to reach by hand and nothing refuses it | `taiyaku-library/src/scan.rs::add_root` | the scanner whole-branch review, Minor 4 |
+| O47 | [x] | **Closed 2026-09-14, once `library scan --add` had been run before and after.** `add_root` accepts a root nested inside, or containing, an existing one, and the second scan then admits the same directory **twice as two members of one work** — *measured 2026-08-18 on a scratch tree: `--add lib`, then `--add lib/Series`, gives member ordinals 0 and 1 with the identical path and the identical sha256, and the work's page total goes from 3 to 6. Member order is page order, so the reader sees every page twice.* The report says `1 merged`, which is true and does not say that the two entries are one directory. Easy to reach by hand and nothing refuses it *(half stale by the time it closed: `POST /api/library/roots` has refused it through `scan::add_root_checked` since C4 PR 1, #105, on 2026-09-03 — `library scan --add` was the way left)*. **Still present on `main` (`b0ebc25`), by one path.** `add_root` validates nothing by design, and its one caller outside a test was `taiyaku library scan --add`. Reproduced with the release binary on a scratch tree (`docs/notes.md`, "O47: `scan --add` takes the checked add"): `--add lib`, then `--add lib/Series`, exited 0, printed `1 rekeyed, 1 merged`, and left the one edition with two members — ordinals 0 and 1, one path, one `sha256`, 3 pages each, one under each root. The other order, `--add lib/Series` then `--add lib`, did the same. **Fixed by having `--add` call `scan::add_root_checked`**, the path its doc names for a person: on fresh copies of the same tree the second `--add` now exits 1, with "`…/lib/Series` is inside existing root `…/lib` (id 1)" or "`…/lib` contains existing root `…/lib/Series` (id 1)", and the library holds one root and one member. Re-adding a root already held still exits 1, and its message changes from `UNIQUE constraint failed: root.path` to "`…/lib` is inside existing root `…/lib` (id 1)" — the exact-duplicate case `add_root_checked`'s doc names. That function's other checks come with it: a path this process cannot read is refused before a root is written, and the new root's `scan_interval_secs` is recorded from the watch probe (86400 there, NULL on `main`). **Pinned by two CLI tests**, a root inside a known one and a root containing one, each asserting the refusal's message and that one root and one member remain; watched red against `add_root` (the command returned `Ok`), against a generic error message (the message assertion), and against an insert made before the refusal (the count, `(2, 1)`). `add_root_checked`'s doc also named `import` as a caller of `add_root`, which it has never been — corrected. **Not changed**: `add_root` itself; and a root added by `--add` is probed twice when the same run walks it, once when it is added and again by `scan`'s loop, which walks every root unless `--root` names a different one | `taiyaku-library/src/scan.rs::add_root`, `taiyaku-cli/src/library.rs::scan` | the scanner whole-branch review, Minor 4 |
 | O48 | [ ] | §8.1's empty-root refusal fires only at `seen.len() <= 1`, so a share that mounts one directory deep — or ninety-nine per cent unmounted — is applied silently and `forget_unseen` drops the rest. The reasoning that justifies the refusal at 100% applies just as well at 99%; what it needs is a threshold nobody has chosen and no measurement behind one | `taiyaku-library/src/scan.rs::scan_root`, the `held > 1` refusal | the scanner whole-branch review, Minor 6 |
 | O49 | [ ] | `marked_number` strips exactly one separator between a marker and its digits, so `Ch.  7` (two spaces) is not a chapter. The loose fix (`trim_end_matches`) was settled against in Task 1 for a reason that no longer holds — the word-boundary guard added afterwards is what stops `Scan by ABC 2019` reading as chapter 2019 — but loosening it now would move the kanji-counter survey figures this branch measured, so it is a decision with a re-measurement attached | `taiyaku-read/src/naming.rs::marked_number` | the scanner whole-branch review, Minor 9 |
 | O50 | [ ] | `library export --all --in-place` exits non-zero on any library holding scanned works: `export::work` refuses a work with no `sidecar_path` on record, `export_targets` counts it as a failure, and a work derivation minted has no such path by construction. So the mixed library — some works imported from a `taiyaku.json`, some found by a scan — is exactly the case the command cannot complete. Whether a scanned work should be skipped, or should get a sidecar written beside its hub member, is a decision | `taiyaku-cli/src/library.rs::export_targets`, `taiyaku-library/src/export.rs::work` | the scanner whole-branch review, Minor 11 |
@@ -3965,12 +3969,12 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the forty-nine open items tabled above — twenty-two of them found by
+What remains: the forty-eight open items tabled above — twenty-one of them found by
 a whole-branch review or by the review of one's own fixes (O42 and O44 among
 them, O96 from the *third* such pass over one branch, which is the most any
 change here has had — **it has since closed, on 2026-09-06, and is no longer one
 of the items this sentence is counting** — O45 through O53 all from the scanner branch's own whole-branch
-review or from a fix round inside it, O57 and O58 from spec A2's fourth, O59 from the mutation workflow's first sharded run, O74 from spec C3's whole-branch one, and O109 from the fix round of O100, filed five days after it surfaced), and
+review or from a fix round inside it — **O47 has since closed, on 2026-09-14, and is no longer one of them** — O57 and O58 from spec A2's fourth, O59 from the mutation workflow's first sharded run, O74 from spec C3's whole-branch one, and O109 from the fix round of O100, filed five days after it surfaced), and
 O69 through O72 from spec C3's own
 per-task reviews rather than from a whole-branch one, and O67 opened
 by driving a real OPDS client against a real library rather than found by a
