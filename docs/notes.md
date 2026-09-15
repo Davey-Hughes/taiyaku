@@ -19063,7 +19063,8 @@ unchanged:
 - OPDS's `works` and `work_feed` ask a grant that names roots on the async
   worker through their own code, `opds::visible_editions_by_work` and an
   inline `browse::work`, not through the two checks this row moved. They are
-  O115's failure in two more handlers. Not filed.
+  O115's failure in two more handlers. Not filed. *(Filed and closed as O119
+  on 2026-09-15 — see "O119".)*
 - `library_api::work` stalls whatever the grant, because it takes
   `state.library.conn()` on the async worker for every request. That is O116's
   class, measured here for one of its seven handlers; the other six were not
@@ -19249,3 +19250,120 @@ never mutates this helper, and these hand mutations are all that has.
   built another way — beside a guard with `with_file_name`, as the five covers
   directories were, or from `TMPDIR` read by hand — passes it.
 - cargo-mutants excludes the helper's file.
+
+## O119: the OPDS feeds ask a grant on the blocking pool — 2026-09-15
+
+O115's branch measured, beside its own row, that OPDS's `works` and
+`work_feed` stalled the runtime for a reader granted root 1 and not for an
+empty grant ("O115", "Found beside it, not changed"), and did not file it. The
+user chose on 2026-09-15 to file and fix it on one branch, so O119 opens and
+closes here. The branch is based on O115's (`67f2f5b`), whose
+`routes::on_the_grant` the fix reuses.
+
+### What asks the library on the async worker, read
+
+A script over `crates/taiyaku-serve/src/`, test files and `test_support.rs`
+excluded, blanked comments and string literals, located the parentheses of
+every `spawn_blocking(` call, and listed every `library.…()` call and `.roots`
+read outside them. Each was read by hand, and so was each call site of the
+synchronous functions among them.
+
+| where | what it does | where it runs |
+| --- | --- | --- |
+| `opds::works`, through `opds::visible_editions_by_work` | `state.library.conn()`, then `browse::visible_editions` | **the async worker**: this item |
+| `opds::work_feed` | `state.library.conn()`, then `browse::work` | **the async worker**: this item |
+| `library_api.rs`'s `home`, `series`, `one_series`, `work`, `search`, `cover` and `status` | `state.library.conn()` for every request | the async worker, whatever the grant: O116 |
+| `routes::refuse_if_hidden`, `visible_editions_or_refuse` and `visible_editions_for_a_correction` | the grant, through `routes::on_the_grant` | the blocking pool, since O115 |
+| `auth::resolve`, through `session::from_cookie` and `auth::from_basic` | the session or credential, and the account's roots | inside `auth::guard`'s `spawn_blocking` |
+| `download::prepare` | the edition's members | inside `download::edition`'s `spawn_blocking` |
+| `notes`, `truth` and `progress`: `load` and `store` | a reader's documents | inside the `routes.rs` handlers' `spawn_blocking`, all eight calls |
+| the `config_api`, `curation`, `metadata`, `session`, `stamp` and `users_api` handlers | their store work | inside each handler's `spawn_blocking` |
+| `routes::list_works` | copies `principal.roots` on the async worker and queries inside `spawn_blocking` | no library on the async worker |
+| `serve`, in `lib.rs` | `is_claimed` twice, and the two sweeps | once, before the listener binds |
+| `works::from_library` | projects the library's works | at startup, from `taiyaku-cli`'s `serve`, and in tests |
+| `config_api::run_scan_inner` | `library.working()`, a second connection rather than the mutex | a background scan |
+| `backup_api::directory` | `library.path()`, which takes no lock | — |
+| `users_api::user_patch_from_json` | `patch.roots`, a field of the request body | no library |
+
+Nothing but the two feeds and O116's handlers takes the library's mutex on the
+async worker.
+
+### The fix
+
+- `opds::visible_editions_by_work` is `async` and asks through
+  `routes::on_the_grant`. No principal, or an empty grant, answers `None`
+  without the library, as before; a grant that names roots runs
+  `browse::visible_editions` on the blocking pool, and a failed query is the
+  same 500.
+- `opds::work_feed` asks `routes::visible_editions_or_refuse`, the question
+  `get_sidecar` asks: `browse::work` on the blocking pool for a grant that
+  names roots, `` no work `{id}` `` with 404 for a work outside it, as `missing`
+  sent, and the same 500. It still asks after the unknown work's 404 and
+  before the feed is built.
+- `routes::on_the_grant` and `routes::visible_editions_or_refuse` are
+  `pub(crate)`, and so are `opds::works` and `opds::work_feed`, for the test.
+
+**After the check, neither feed takes the library.** `works` walks
+`state.works` and reads each sidecar. `work_feed` reads its sidecar and,
+through `download::advertised_type`, asks the filesystem whether a one-member
+edition's file exists: a `stat` on the async worker, not the library's mutex,
+and unchanged here.
+
+Neither feed answers a conditional request, so there is no 304 for the check to
+come before. The order that could change is the unknown work's 404 against the
+grant's, and it is the same.
+
+### The test, red on O115's branch
+
+`routes::tests::neither_opds_feed_asks_a_grant_on_the_async_worker` calls
+`opds::works` and `opds::work_feed` directly under
+`test_support::the_runtime_stalls_on`, over
+`test_support::state_whose_grant_waits_on_the_library`, as a reader granted
+root 1 and then with an empty grant. It asserts every call answered 200 and
+collects the calls that stalled.
+
+With only the test and `pub(crate)` on the two feeds added to `67f2f5b`:
+
+```
+these asked the library on the async worker: ["opds::works, granted root 1", "opds::work_feed, granted root 1"]
+```
+
+It failed at its last assertion, so all four calls had answered 200, and
+neither feed stalled with an empty grant.
+
+### Watched red
+
+A script applied each change to the final `opds.rs`, ran `cargo nextest run
+--workspace --all-features --no-fail-fast`, and wrote the file back from its
+saved bytes, comparing sha256. The two "on the async worker" changes put back
+the base's own code, whose guard is dropped before any `.await`, so both
+compiled. The control passed 2157, with 4 skipped.
+
+| applied to the final code | failed | at |
+| --- | --- | --- |
+| nothing, the control | nothing | 2157 passed |
+| `visible_editions_by_work` asking on the async worker | `routes::tests::neither_opds_feed_asks_a_grant_on_the_async_worker` | `routes/tests.rs:1023`: `["opds::works, granted root 1"]` |
+| `work_feed` asking on the async worker | the same test | `routes/tests.rs:1023`: `["opds::work_feed, granted root 1"]` |
+| `visible_editions_by_work` answering `None` for every caller | `auth::tests::every_route_declares_its_grant_posture`, `opds::tests::a_restricted_readers_works_list_counts_only_the_editions_they_may_see` and `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` | `auth/tests.rs:1865`, `opds/tests.rs:1422` and `:1472` |
+| `work_feed` asking no grant | `auth::tests::every_route_declares_its_grant_posture`, `opds::tests::a_restricted_readers_work_feed_lists_only_the_editions_they_may_see` and `opds::tests::a_restricted_readers_work_feed_404s_when_no_edition_is_visible` | `auth/tests.rs:2145`, `opds/tests.rs:1394`, and `:1447` with 200 for 404 |
+
+The last two rows are about the rewrite rather than the stall: each feed's
+filter is still held by tests that existed before it.
+
+### Flake runs
+
+The new test alone, 20 times through `cargo nextest run -p taiyaku-serve`: 20
+passed, each in 0.054–0.058 s. The one-minute load average read 22.80 before
+the first run, and 21.29 before the sixth, the eleventh and the sixteenth and
+after the last.
+
+### What remains
+
+- The watchdog sees a call's first wait on the library's mutex, as O115
+  recorded, so a second wait added on the async worker after either feed's
+  check would pass.
+- `library_api.rs`'s seven handlers take the library's mutex on the async
+  worker for every request: O116, unchanged here.
+- `work_feed`'s `advertised_type` asks the filesystem about a one-member
+  edition on the async worker. It is not the library's mutex, and it was not
+  measured.

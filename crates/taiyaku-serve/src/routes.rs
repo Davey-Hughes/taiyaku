@@ -505,7 +505,10 @@ fn edition_refusal(
 /// itself. For a reader with roots, every request that asked waited on that
 /// mutex on the thread serving every other request, before its own
 /// `spawn_blocking` ran. `get_page`'s reasoning about the async worker applies
-/// to the check as it does to the read behind it.
+/// to the check as it does to the read behind it. Since O119, `opds::works`
+/// asks through this directly and `opds::work_feed` through
+/// [`visible_editions_or_refuse`]: each had asked the library itself, on the
+/// async worker, through code of its own.
 ///
 /// **An empty grant never leaves the async worker**: it is answered without
 /// the library, so the unrestricted reader pays for neither the query nor the
@@ -517,7 +520,7 @@ fn edition_refusal(
     reason = "the `Err` carries a `Response`, for `visible_editions_or_refuse`'s reason: a \
               routing handler's refusal path, called once per request"
 )]
-async fn on_the_grant<T: Send + 'static>(
+pub(crate) async fn on_the_grant<T: Send + 'static>(
     state: &Arc<ServeState>,
     extensions: &axum::http::Extensions,
     unrestricted: T,
@@ -641,6 +644,10 @@ pub(crate) fn refuse_if_cannot_stamp(extensions: &axum::http::Extensions) -> Opt
 /// work outside the grant exactly as it does for one that does not exist,
 /// so this refuses identically either way — the same rule `refuse_if_hidden`
 /// states for [`taiyaku_library::browse::edition_visible`].
+///
+/// **`opds::work_feed` asks it too, since O119**, for the feed that names a
+/// work's editions — the same question, and the same 404 for a work outside
+/// the grant.
 #[expect(
     clippy::result_large_err,
     reason = "the `Err` carries a `Response`, which every other refusal-returning function in \
@@ -649,7 +656,7 @@ pub(crate) fn refuse_if_cannot_stamp(extensions: &axum::http::Extensions) -> Opt
               handler's own refusal path, called once per request, not a hot loop, so the 128 \
               bytes clippy measures are not worth an indirection at every call site"
 )]
-async fn visible_editions_or_refuse(
+pub(crate) async fn visible_editions_or_refuse(
     state: &Arc<ServeState>,
     extensions: &axum::http::Extensions,
     slug: &str,

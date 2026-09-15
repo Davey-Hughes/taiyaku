@@ -795,10 +795,14 @@ async fn assert_answered(handler: &str, response: Response, expected: StatusCode
 /// async worker, before any `spawn_blocking`. The test above drives an empty
 /// grant, which never reaches the library, so it could not see that.
 ///
-/// **Every handler that calls either check, not the four O115 named.** The
-/// item listed `get_page`, `get_thumb`, `get_sidecar` and `patch_alignments`.
-/// `refuse_if_hidden` is `pub(crate)`, and `opds::stream_page`, `opds::cover`,
-/// `download::edition` and `download::member` call it the same way.
+/// **Every handler that called either check when O115 closed, not the four
+/// O115 named.** The item listed `get_page`, `get_thumb`, `get_sidecar` and
+/// `patch_alignments`. `refuse_if_hidden` is `pub(crate)`, and
+/// `opds::stream_page`, `opds::cover`, `download::edition` and
+/// `download::member` call it the same way. `opds::work_feed` has asked
+/// `visible_editions_or_refuse` since O119, and
+/// [`neither_opds_feed_asks_a_grant_on_the_async_worker`] holds it beside
+/// `opds::works`.
 ///
 /// **The watchdog measures each call's first wait on the library's mutex**:
 /// [`crate::test_support::the_runtime_stalls_on`] holds it once and lets it go
@@ -947,6 +951,70 @@ async fn no_grant_check_stalls_the_runtime() {
     assert!(
         stalled_on.is_empty(),
         "for a reader whose grant names roots, these asked it on the async worker: {stalled_on:?}"
+    );
+}
+
+/// **Neither OPDS feed asks a grant on the async worker** — O119: the property
+/// [`no_grant_check_stalls_the_runtime`] holds for the eight handlers that ask
+/// through `refuse_if_hidden` and `visible_editions_or_refuse`, held for the
+/// two that asked through code of their own.
+///
+/// `opds::works` read a restricted reader's visible editions through
+/// `opds::visible_editions_by_work`, and `opds::work_feed` through an inline
+/// `browse::work`, each taking `state.library.conn()` in the handler, on the
+/// async worker. `docs/notes.md`, "O115", "Found beside it, not changed",
+/// measured both stalling for a reader granted root 1 and neither for an empty
+/// grant.
+///
+/// **Both grants, because they take different paths**: one that names roots is
+/// asked of the library, and an empty one is answered without it. Every call is
+/// asserted to answer 200, so neither feed is free for having been refused, and
+/// the stalls are collected so a failing run names every call that stalled.
+/// The watchdog sees a call's first wait on the library's mutex, and in both
+/// feeds that wait is the grant check: nothing after it takes the library.
+#[tokio::test(flavor = "current_thread")]
+async fn neither_opds_feed_asks_a_grant_on_the_async_worker() {
+    use crate::test_support::the_runtime_stalls_on;
+    use axum::extract::{Path as AxPath, State};
+
+    let (state, _fixture) = crate::test_support::state_whose_grant_waits_on_the_library();
+    let library = Arc::clone(&state.library);
+    let mut stalled_on = Vec::new();
+
+    for (grant, roots) in [("granted root 1", vec![1]), ("an empty grant", Vec::new())] {
+        let call = format!("opds::works, {grant}");
+        let (stalled, response) = the_runtime_stalls_on(
+            &library,
+            crate::opds::works(
+                State(Arc::clone(&state)),
+                as_a_reader_granted(roots.clone()),
+            ),
+        )
+        .await;
+        if stalled {
+            stalled_on.push(call.clone());
+        }
+        assert_answered(&call, response, StatusCode::OK).await;
+
+        let call = format!("opds::work_feed, {grant}");
+        let (stalled, response) = the_runtime_stalls_on(
+            &library,
+            crate::opds::work_feed(
+                State(Arc::clone(&state)),
+                AxPath("w".to_string()),
+                as_a_reader_granted(roots),
+            ),
+        )
+        .await;
+        if stalled {
+            stalled_on.push(call.clone());
+        }
+        assert_answered(&call, response, StatusCode::OK).await;
+    }
+
+    assert!(
+        stalled_on.is_empty(),
+        "these asked the library on the async worker: {stalled_on:?}"
     );
 }
 

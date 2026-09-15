@@ -129,24 +129,35 @@ async fn catalog() -> Response {
 /// The visible editions a restricted principal's grant admits, keyed by
 /// work slug, or `None` for an unrestricted caller (no `Principal` at all —
 /// this file's own tests build requests with none — or an empty grant,
-/// which spec C1 reads as "every root").
+/// which spec C1 reads as "every root"). `Err` is the response to send
+/// instead, a 500 when the query fails.
 ///
 /// `None` rather than "every edition of every work" so `works` can skip the
 /// lookup entirely for the ordinary, unrestricted case instead of filtering
 /// against a map built from every work — the same reason `refuse_if_hidden`
 /// short-circuits on `roots.is_empty()` before ever reaching SQL.
-fn visible_editions_by_work(
-    state: &ServeState,
+///
+/// **Asked on the blocking pool, through [`crate::routes::on_the_grant`] —
+/// O119.** This took `state.library.conn()` itself, on the async worker, so a
+/// restricted reader's `works` feed waited on the library's mutex on the thread
+/// serving every other request: the failure O115 closed for the eight handlers
+/// that ask through `routes`, in a ninth that asked through code of its own.
+#[expect(
+    clippy::result_large_err,
+    reason = "the `Err` carries a `Response`, for `routes::visible_editions_or_refuse`'s reason: \
+              a handler's refusal path, called once per request"
+)]
+async fn visible_editions_by_work(
+    state: &Arc<ServeState>,
     extensions: &axum::http::Extensions,
-) -> Result<Option<HashMap<String, HashSet<String>>>, String> {
-    let Some(principal) = extensions.get::<crate::auth::Principal>() else {
-        return Ok(None);
-    };
-    if principal.roots.is_empty() {
-        return Ok(None);
-    }
-    let conn = state.library.conn();
-    taiyaku_library::browse::visible_editions(&conn, &principal.roots).map(Some)
+) -> Result<Option<HashMap<String, HashSet<String>>>, Response> {
+    crate::routes::on_the_grant(state, extensions, Ok(None), |conn, principal| {
+        taiyaku_library::browse::visible_editions(conn, &principal.roots)
+            .map(Some)
+            .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())
+    })
+    .await
+    .and_then(|answer| answer)
 }
 
 /// Every work this caller may see, with its editions.
@@ -170,13 +181,13 @@ fn visible_editions_by_work(
 /// question) answers every work's visible edition set in one round trip, in
 /// [`visible_editions_by_work`] above, and this loop only ever does a
 /// `HashMap` lookup per work.
-async fn works(
+pub(crate) async fn works(
     State(state): State<Arc<ServeState>>,
     extensions: axum::http::Extensions,
 ) -> Response {
-    let visible = match visible_editions_by_work(&state, &extensions) {
+    let visible = match visible_editions_by_work(&state, &extensions).await {
         Ok(visible) => visible,
-        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+        Err(refusal) => return refusal,
     };
     let mut entries = String::new();
     for work in &state.works {
@@ -275,7 +286,7 @@ async fn works(
 /// acquisition became the offline one; they are two mechanisms for two
 /// different intentions and always were, and the documented deviation
 /// existed only because one of them had no implementation.
-async fn work_feed(
+pub(crate) async fn work_feed(
     State(state): State<Arc<ServeState>>,
     AxPath(id): AxPath<String>,
     extensions: axum::http::Extensions,
@@ -288,11 +299,13 @@ async fn work_feed(
     // A grant restricts which *editions* of a work may be named here, not
     // only whether the work itself may — the same distinction
     // `refuse_if_hidden` draws for the page and cover routes below, applied
-    // to a feed rather than a single fetch. `browse::work` already answers
-    // both halves in one round trip: `None` for a work with no edition
-    // inside the grant (the same 404 `get_sidecar` sends for the identical
-    // case), `Some` carrying only the editions that survive otherwise —
-    // `WorkCard::editions`'s own contract. Reused rather than reimplemented,
+    // to a feed rather than a single fetch. `routes::visible_editions_or_refuse`
+    // answers both halves in one round trip through `browse::work`: a 404 for
+    // a work with no edition inside the grant (the one `get_sidecar` sends for
+    // the identical case, from the same function), `Some` carrying only the
+    // editions that survive otherwise — `WorkCard::editions`'s own contract.
+    // It asks on the blocking pool; until O119 this handler called
+    // `browse::work` itself, on the async worker. Reused rather than reimplemented,
     // and cheap for the one work this route addresses: `works_of`'s row plus
     // one `editions_by_work` call, not one query per edition — and since O85
     // that call answers the whole set rather than one work at a time.
@@ -304,21 +317,11 @@ async fn work_feed(
         .get::<crate::auth::Principal>()
         .is_none_or(|principal| principal.can_download);
 
-    let visible_editions: Option<HashSet<String>> = match extensions.get::<crate::auth::Principal>()
-    {
-        Some(principal) if !principal.roots.is_empty() => {
-            let detail = {
-                let conn = state.library.conn();
-                taiyaku_library::browse::work(&conn, &principal.roots, principal.user_id, &id)
-            };
-            match detail {
-                Ok(None) => return missing(format!("no work `{id}`")),
-                Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
-                Ok(Some(detail)) => Some(detail.card.editions.into_iter().map(|e| e.key).collect()),
-            }
-        }
-        _ => None,
-    };
+    let visible_editions: Option<HashSet<String>> =
+        match crate::routes::visible_editions_or_refuse(&state, &extensions, &id).await {
+            Ok(visible) => visible,
+            Err(refusal) => return refusal,
+        };
 
     let work_id = escape(&work.id);
     // See the note in `works`: `work.id` is already URL-safe by
