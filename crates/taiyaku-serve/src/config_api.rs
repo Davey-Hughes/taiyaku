@@ -1402,12 +1402,12 @@ fn declined_json(declined: &hand::Declined) -> serde_json::Value {
 
 /// [`derive::DeriveReport`], whole, field for field — [`scan_status`]'s
 /// `"derive"` key. See this section's own header comment for why every
-/// field is here, including the ten that are Vecs and can be empty.
+/// field is here, including the Vecs, which can be empty.
 ///
 /// **Destructured with no `..`** — [`scan_report_json`]'s own doc comment
 /// states the whole argument, and this is the renderer that argument was
-/// actually written for: [`derive::DeriveReport`] is the 28-field struct four
-/// of the deleted keys came from.
+/// actually written for: [`derive::DeriveReport`] is the struct four of the
+/// deleted keys came from.
 fn derive_report_json(report: &derive::DeriveReport) -> serde_json::Value {
     let derive::DeriveReport {
         series,

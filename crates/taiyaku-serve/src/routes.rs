@@ -503,7 +503,7 @@ fn edition_refusal(
 /// answered in SQL, and until O115 closed [`refuse_if_hidden`] and
 /// [`visible_editions_or_refuse`] took `state.library.conn()` in the handler
 /// itself. For a reader with roots, every request that asked waited on that
-/// mutex on the thread serving every other request, before its own
+/// mutex on a tokio worker thread, stalling the whole worker, before its own
 /// `spawn_blocking` ran. `get_page`'s reasoning about the async worker applies
 /// to the check as it does to the read behind it. Since O119, `opds::works`
 /// asks through this directly and `opds::work_feed` through

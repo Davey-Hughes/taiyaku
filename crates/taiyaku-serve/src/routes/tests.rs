@@ -526,11 +526,12 @@ fn as_the_fixture_account() -> axum::http::Extensions {
 /// property, held for all ten handlers that have a closure to hold it in.
 ///
 /// Every handler here that reads or writes the library, or reads a page, does
-/// it inside `spawn_blocking`, because on the async worker that work stalls
-/// every other request the runtime is serving: `get_page`'s comment gives the
-/// reasoning and the others cite it. **Until O71 closed, 2026-09-14, the one
-/// test behind that was `a_progress_read_does_not_stall_the_runtime`, and it
-/// measured something else.** It drove `GET /progress` through the router, so
+/// it inside `spawn_blocking`, because on a tokio worker that work stalls the
+/// whole worker — on this test's `current_thread` runtime, every other
+/// request: `get_page`'s comment gives the reasoning and the others cite it.
+/// **Until O71 closed, 2026-09-14, the one test behind that was
+/// `a_progress_read_does_not_stall_the_runtime`, and it measured something
+/// else.** It drove `GET /progress` through the router, so
 /// `auth::guard`'s own `spawn_blocking` took the mutex wait before any handler
 /// ran: with `get_progress`'s closure moved onto the async worker, the whole
 /// workspace still passed. It is `auth::tests::the_guard_does_not_stall_the_runtime`

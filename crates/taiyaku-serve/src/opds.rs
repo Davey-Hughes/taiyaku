@@ -139,9 +139,10 @@ async fn catalog() -> Response {
 ///
 /// **Asked on the blocking pool, through [`crate::routes::on_the_grant`] —
 /// O119.** This took `state.library.conn()` itself, on the async worker, so a
-/// restricted reader's `works` feed waited on the library's mutex on the thread
-/// serving every other request: the failure O115 closed for the eight handlers
-/// that ask through `routes`, in a ninth that asked through code of its own.
+/// restricted reader's `works` feed waited on the library's mutex on a tokio
+/// worker thread, stalling the whole worker: the failure O115 closed for the
+/// eight handlers that ask through `routes`, in a ninth that asked through
+/// code of its own.
 #[expect(
     clippy::result_large_err,
     reason = "the `Err` carries a `Response`, for `routes::visible_editions_or_refuse`'s reason: \

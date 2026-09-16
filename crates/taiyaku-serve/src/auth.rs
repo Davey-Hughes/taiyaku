@@ -412,8 +412,9 @@ fn refuse(path: &str) -> Response {
 /// **Resolution happens inside `spawn_blocking`**, for the same reason every
 /// handler in `routes.rs` does: it reads SQLite through `state.library`, whose
 /// `conn()` is a `MutexGuard`, and a password additionally costs an argon2
-/// verify measured at 11.9 ms. Doing either on the async worker stalls the whole
-/// runtime — which `auth::tests::the_guard_does_not_stall_the_runtime` asserts
+/// verify measured at 11.9 ms. Doing either on the async worker stalls that
+/// whole tokio worker, and on a `current_thread` runtime the whole runtime —
+/// which `auth::tests::the_guard_does_not_stall_the_runtime` asserts
 /// (named `routes::tests::a_progress_read_does_not_stall_the_runtime` until
 /// O71, which found that the guard, not a progress read, is what it sees), and
 /// which it caught this middleware doing when the guard was first written. A
