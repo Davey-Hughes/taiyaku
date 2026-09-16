@@ -187,6 +187,13 @@ pub struct DeriveReport {
     /// archives on the two sides. All three are the reader's own state or the
     /// library's ground truth, and none is this fold's to destroy or to
     /// rewrite. [`Self::unfoldable`] is where the difference is legible.
+    ///
+    /// **And since O121, a fold that would leave a row naming another page** —
+    /// a reading position or a note whose page and half has no slot on the
+    /// surviving edition, or an alignment the surviving work already holds
+    /// whose spans the spread flags the fold writes would move. A slot is an
+    /// index into one edition's spreads and reading direction, and the fold
+    /// places it by page and half rather than carrying the number.
     pub unfolded_works: usize,
     /// Why each of those works was left standing, one message per work,
     /// naming the work and what could not be mapped or was stranded on it.
@@ -346,13 +353,34 @@ pub struct DeriveReport {
     pub moved_truth_collisions: usize,
     /// Rows a fold's `DELETE` took that the fold did not move.
     ///
-    /// Credits, alignments and their runs, tags, collection places, page
-    /// flags, hand-entered chapter numbers and hand-classified editions —
-    /// `fold::DISCARDED` is the list and states, per entry, why each is
-    /// counted rather than migrated. The number exists so that "1 work folded
-    /// away" can never quietly mean "and its hand-corrected alignment went
-    /// with it".
+    /// Credits, tags, collection places, credit page flags, hand-entered
+    /// chapter numbers and hand-classified editions — `fold::DISCARDED` is the
+    /// list and states, per entry, why each is counted rather than migrated.
+    /// *Until O76, 2026-09-15, it counted alignments, their runs and spread
+    /// flags too, and this doc said the number existed so that "1 work folded
+    /// away" could never quietly mean "and its hand-corrected alignment went
+    /// with it". A fold carries those now, and the alignment it cannot carry is
+    /// [`Self::uncarried_alignments`].*
     pub discarded_rows: usize,
+    /// Alignments a fold did not carry onto the surviving work and that
+    /// nothing there stands in for — `fold::Moved::uncarried_alignments`,
+    /// summed.
+    ///
+    /// **O76.** A fold carries an alignment when every span of it covers the
+    /// same pages and halves on the surviving work's editions as it did on the
+    /// folded work's. This counts the ones it could not: an alignment naming
+    /// an edition the folded work did not hold, one whose spans would cover
+    /// other slots there, a hand-corrected one whose pair the surviving work
+    /// already answers with a hand-corrected alignment of its own, which it
+    /// keeps, and a hand-corrected one between two editions the fold makes
+    /// one. A solver's alignment whose pair is already answered is not
+    /// counted, having an answer, and nor is a solver's edge between two
+    /// editions that become one.
+    ///
+    /// A field rather than a clause of [`Self::discarded_rows`], because it is
+    /// the one thing a fold leaves behind that a person may have made and a
+    /// rescan cannot make again.
+    pub uncarried_alignments: usize,
     /// Series holding no work at all.
     ///
     /// **Left standing deliberately.** `series` has no dependency on `work` —
@@ -666,6 +694,7 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
                 report.moved_truth_pages += moved.truth_pages;
                 report.moved_truth_collisions += moved.collisions;
                 report.discarded_rows += moved.discarded;
+                report.uncarried_alignments += moved.uncarried_alignments;
                 // Only a completed fold orphans anything — a refused one
                 // deletes nothing, per `Outcome::Refused`'s own doc. A path
                 // of `None` means `from_work` had no document to strand

@@ -45,6 +45,7 @@ const derived = (over: Partial<Derived> = {}): Derived => ({
   moved_truth_pages: 0,
   moved_truth_collisions: 0,
   discarded_rows: 0,
+  uncarried_alignments: 0,
   series_holding_no_work: 0,
   merged: 0,
   unrecognised_kinds: 0,
@@ -72,12 +73,34 @@ describe('ScanReport', () => {
   })
 
   it('draws every field of both reports', () => {
-    // Forty-two fields: twelve from the walk, thirty from the derive.
+    // Forty-three fields: twelve from the walk, thirty-one from the derive.
     // Counted rather than spot-checked, because the failure this guards is a
     // field quietly dropped on the way out — which is exactly what happened
     // once already on the server side.
     const host = mount(<ScanReport outcome={finished()} />)
-    expect(host.querySelectorAll('[data-field]')).toHaveLength(42)
+    expect(host.querySelectorAll('[data-field]')).toHaveLength(43)
+  })
+
+  it('draws alignments a fold left behind apart from rows it discarded', () => {
+    // O76: a fold carries an alignment now, and the one it cannot carry is
+    // not a discarded row. Per element, with a different number in each, so a
+    // label paired with the other row's count fails.
+    const host = mount(
+      <ScanReport
+        outcome={finished({
+          derive: derived({ discarded_rows: 4, uncarried_alignments: 9 }),
+        })}
+      />,
+    )
+    for (const [field, label, n] of [
+      ['discarded_rows', 'Rows discarded', '4'],
+      ['uncarried_alignments', 'Alignments not carried', '9'],
+    ]) {
+      const row = host.querySelector(`[data-field="${field}"]`)
+      expect(row, `${field} must be drawn`).not.toBeNull()
+      expect(row?.querySelector('dt')?.textContent).toBe(label)
+      expect(row?.querySelector('dd')?.textContent).toBe(n)
+    }
   })
 
   it('draws identical notes dropped apart from notes moved', () => {

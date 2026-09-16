@@ -226,13 +226,38 @@ describe('THE_FOLD', () => {
   it('names what the fold discards, which nothing on this panel said', () => {
     // `Moved::discarded` takes the work's `work_tag` rows and its
     // `collection_item` places — a reader's own curation — along with its
-    // credits and alignments. A hand-corrected alignment is **O76**, open
-    // against exactly this, and the panel offering the accept was silent
-    // about all of it.
+    // credits. Alignments were discarded too until **O76** closed, and this
+    // pinned "alignment corrected by hand" among the discards; a fold carries
+    // them now, so that phrase must not come back.
     expect(THE_FOLD).toContain('discards')
     expect(THE_FOLD).toContain('tags')
     expect(THE_FOLD).toContain('places in reading lists')
-    expect(THE_FOLD).toContain('alignment corrected by hand')
+    expect(THE_FOLD).not.toContain('alignment corrected by hand')
+  })
+
+  it('says alignments move, which one wins, and what it leaves and refuses', () => {
+    // O76: `fold::absorb` carries an alignment whose spans cover the same
+    // pages on this edition, and where both works align one pair a
+    // hand-corrected alignment beats one that is not while the target keeps
+    // its own otherwise. What it cannot place, or what would align an edition
+    // with itself, is left and counted. O121: a place or a note on either side,
+    // or an alignment already on this edition, that would name another page
+    // refuses the fold instead — the target's own rows included, which the
+    // first version of this sentence left out.
+    expect(THE_FOLD).toContain('marked pages and alignments on them move')
+    expect(THE_FOLD).toContain(
+      'a hand-corrected alignment wins over one that is not, and otherwise this edition keeps its own',
+    )
+    expect(THE_FOLD).toContain(
+      'any alignment it cannot place exactly on these pages',
+    )
+    expect(THE_FOLD).toContain('would align an edition with itself')
+    // The third class its own doc enumerates, which the first version of this
+    // sentence left to the winner clause to imply.
+    expect(THE_FOLD).toContain('hand-corrected alignment outranks')
+    expect(THE_FOLD).toContain(
+      'would leave a place or note on either side, or an alignment already on this edition, naming a different page, refuses instead',
+    )
   })
 })
 

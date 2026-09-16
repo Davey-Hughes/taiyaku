@@ -706,6 +706,13 @@ fn the_same_digests_in_a_different_order_are_not_a_counterpart() {
 /// every one of them is visible and re-doable by hand where a reading
 /// position is not. So they are counted rather than moved, and this test is
 /// what keeps the number honest.
+///
+/// **Nine until O76, seven since.** The alignment and its run were two of the
+/// nine, and a fold now carries an alignment rather than counting it. This
+/// one names an edition, `en`, that the folded work does not hold, so nothing
+/// can carry it and it is counted where an alignment left behind is counted,
+/// in `uncarried_alignments` — and the spread flag beside the credit flag is
+/// written onto the twin rather than counted, where the credit flag still is.
 #[test]
 fn what_the_delete_takes_that_the_fold_does_not_move_is_counted() {
     let (conn, from, into) = folded_pair();
@@ -761,6 +768,12 @@ fn what_the_delete_takes_that_the_fold_does_not_move_is_counted() {
     )
     .expect("a credit page flag");
     conn.execute(
+        "INSERT INTO page_flag (edition_id, kind, page)
+         SELECT id, 'spread', 0 FROM edition WHERE work_id = ?1",
+        [from],
+    )
+    .expect("a spread flag, which the twin takes");
+    conn.execute(
         "UPDATE member SET chapter_declared = 4.5, chapter_source = 'hand'
           WHERE edition_id IN (SELECT id FROM edition WHERE work_id = ?1)",
         [from],
@@ -776,10 +789,27 @@ fn what_the_delete_takes_that_the_fold_does_not_move_is_counted() {
     let moved = folded(&conn, from, into);
 
     assert_eq!(
-        moved.discarded, 9,
-        "one credit on the work, one on the edition, one alignment, one run, \
-         one tag, one collection place, one page flag, one hand chapter number \
-         and one hand-classified edition — each counted, none moved"
+        (moved.discarded, moved.uncarried_alignments),
+        (7, 1),
+        "one credit on the work, one on the edition, one tag, one collection \
+         place, one credit page flag, one hand chapter number and one \
+         hand-classified edition — each counted, none moved — and the \
+         alignment naming an edition the work does not hold, left behind"
+    );
+    let spreads: Vec<i64> = conn
+        .prepare(
+            "SELECT page FROM page_flag JOIN edition ON edition.id = page_flag.edition_id
+              WHERE edition.work_id = ?1 AND edition.key = 'full-color' AND page_flag.kind = 'spread'",
+        )
+        .and_then(|mut s| {
+            s.query_map([into], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<i64>>>()
+        })
+        .expect("the twin's spread flags");
+    assert_eq!(
+        spreads,
+        vec![0],
+        "the spread flag went to the twin, not to the count"
     );
     let left: i64 = conn
         .query_row("SELECT count(*) FROM credit", [], |r| r.get(0))
@@ -818,6 +848,7 @@ fn folding_a_work_that_carries_nothing_by_hand_discards_nothing() {
             collisions: 0,
             lost_positions: 0,
             discarded: 0,
+            uncarried_alignments: 0,
         },
         "the edition and member rows the fold removes are the duplication, \
          not a cost"
@@ -1822,9 +1853,14 @@ fn an_identical_copy_of_a_note_on_both_works_is_dropped_and_the_fold_goes_ahead(
 /// edition keys differing: `raw` on the superseded work, `full-color` on the
 /// target, which is where `raw`'s archive lives.
 ///
-/// **There is no slot rewrite.** `edition_map` pairs editions whose members
-/// carry the same digests in the same order, so slot 3 is slot 3 on both, and
-/// the only part of a note's anchor a fold rewrites is its edition key. "The
+/// **No slot moves in this fixture.** `edition_map` pairs editions whose
+/// members carry the same digests in the same order, and neither side here
+/// holds a spread flag, so slot 3 is slot 3 on both and the only part of a
+/// note's anchor this fold rewrites is its edition key. *This said "there is
+/// no slot rewrite" of every fold until O121: where the two editions' spread
+/// flags differ the slot moves too, and
+/// `note_copies_are_one_note_by_the_page_they_name_not_the_number_they_hold`
+/// is that case.* "The
 /// same anchor" is therefore the target's key being exactly the one the
 /// source's key maps to, with `slot` and all four region columns equal. A
 /// comparison of the raw keys calls these two different and refuses.
@@ -2043,5 +2079,1248 @@ fn a_second_readers_notes_are_not_touched_by_the_first_readers_identical_copy() 
         (moved.notes, moved.dropped_notes),
         (1, 1),
         "reader 2's note moved; reader 1's copy was the only one dropped"
+    );
+}
+
+/// One `work` whose editions each hold one member of `pages` pages, with the
+/// spread flags given and read in `reading` — the slot space a carried slot is
+/// addressed in, which [`seed_work`]'s one-page members cannot express.
+fn seed_paged_work(
+    conn: &Connection,
+    work_id: i64,
+    name: &str,
+    reading: &str,
+    editions: &[(&str, &str, u32, &[u32])],
+) {
+    let hub = editions.first().map_or("raw", |(key, ..)| *key);
+    conn.execute(
+        "INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (?1, ?2, ?2, ?2, ?3, ?4)",
+        params![work_id, name, reading, hub],
+    )
+    .expect("seeding a work");
+    for (key, sha256, pages, spreads) in editions {
+        conn.execute(
+            "INSERT INTO edition (work_id, key, label) VALUES (?1, ?2, ?2)",
+            params![work_id, key],
+        )
+        .expect("seeding an edition");
+        let edition_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO member (edition_id, ordinal, path, sha256, pages)
+             VALUES (?1, 0, ?2, ?3, ?4)",
+            params![edition_id, format!("archive/{sha256}"), sha256, pages],
+        )
+        .expect("seeding a member");
+        for page in *spreads {
+            conn.execute(
+                "INSERT INTO page_flag (edition_id, kind, page) VALUES (?1, 'spread', ?2)",
+                params![edition_id, page],
+            )
+            .expect("seeding a spread flag");
+        }
+    }
+}
+
+/// The page, and the half, that slot `slot` of `work_id`'s edition `key` names
+/// — read through the projection and `Edition::slots`, the same rebuild the
+/// reader draws from, so an assertion on it is an assertion about what a
+/// person sees rather than about a column.
+fn page_at(conn: &Connection, work_id: i64, key: &str, slot: i64) -> Option<taiyaku_core::Slot> {
+    let sidecar = crate::project::sidecar(conn, work_id).expect("projecting the work");
+    let slots = sidecar.editions.get(key)?.slots(sidecar.work.reading);
+    usize::try_from(slot)
+        .ok()
+        .and_then(|i| slots.get(i).copied())
+}
+
+/// **O121: a fold carried a reader's slot as a number, and a slot is only a
+/// number inside one edition's spread flags.** The superseded work's `colour`
+/// edition holds a joined spread at page 2 — slots `0, 1, 2R, 2L, 3, 4, 5` —
+/// and its digest-identical twin on the target was built by a scan, which
+/// never writes a spread flag, so there slot 5 is page 5 and slot 3 is page 3.
+/// A place on page 4 and a note on the left half of page 2 must still name
+/// page 4 and the left half of page 2 once they live on the target.
+#[test]
+fn a_carried_position_and_note_name_the_page_they_named_before_the_fold() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[("raw", "aaa", 6, &[]), ("full-color", "bbb", 6, &[])],
+    );
+    seed_paged_work(&conn, 2, "superseded", "rtl", &[("colour", "bbb", 6, &[2])]);
+    put_progress(
+        &conn,
+        2,
+        1,
+        &Progress {
+            edition: "colour".to_string(),
+            slot: 5,
+        },
+    )
+    .expect("the reader's place on page 4");
+    seed_note(&conn, 2, "colour", 3);
+    let left_of_2 = taiyaku_core::Slot {
+        page: 2,
+        half: Some(taiyaku_core::Half::Left),
+    };
+    let page_4 = taiyaku_core::Slot {
+        page: 4,
+        half: None,
+    };
+    assert_eq!(
+        page_at(&conn, 2, "colour", 5),
+        Some(page_4),
+        "the fixture's own premise"
+    );
+    assert_eq!(
+        page_at(&conn, 2, "colour", 3),
+        Some(left_of_2),
+        "the fixture's own premise"
+    );
+
+    folded(&conn, 2, 1);
+
+    let position: i64 = conn
+        .query_row(
+            "SELECT slot FROM progress WHERE user_id = 1 AND work_id = 1 AND edition = 'full-color'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the carried position");
+    let note: i64 = conn
+        .query_row(
+            "SELECT slot FROM note WHERE user_id = 1 AND work_id = 1 AND edition = 'full-color'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the carried note");
+    assert_eq!(
+        (
+            page_at(&conn, 1, "full-color", position),
+            page_at(&conn, 1, "full-color", note)
+        ),
+        (Some(page_4), Some(left_of_2)),
+        "position slot {position} and note slot {note} on the target must name what they \
+         named on the folded work"
+    );
+}
+
+/// A run of an alignment fixture: `a`, and `b` where it pairs, marked by hand
+/// or not.
+fn run(a: &str, b: Option<&str>, hand: bool) -> taiyaku_core::RunEntry {
+    taiyaku_core::RunEntry {
+        a: taiyaku_core::SlotSpan::parse(a).expect("an `a` span"),
+        b: b.map(|b| taiyaku_core::SlotSpan::parse(b).expect("a `b` span")),
+        margin: None,
+        by: hand.then_some(taiyaku_core::Source::Hand),
+        note: None,
+    }
+}
+
+/// Replace `work_id`'s alignments with these, through `state::put_alignments`
+/// — the writer the correction route uses.
+fn write_alignments(
+    conn: &Connection,
+    work_id: i64,
+    alignments: &[(&str, &str, Vec<taiyaku_core::RunEntry>)],
+) {
+    let doc = taiyaku_core::Sidecar {
+        taiyaku: taiyaku_core::VERSION,
+        work: taiyaku_core::Work {
+            title: "fixture".to_string(),
+            reading: taiyaku_core::Direction::RightToLeft,
+        },
+        editions: BTreeMap::new(),
+        hub: String::new(),
+        alignments: alignments
+            .iter()
+            .map(|(from, to, runs)| taiyaku_core::Alignment {
+                from: (*from).to_string(),
+                to: (*to).to_string(),
+                by: taiyaku_core::Source::Solver,
+                solver: None,
+                quality: None,
+                runs: runs.clone(),
+            })
+            .collect(),
+    };
+    crate::state::put_alignments(conn, work_id, &doc).expect("the alignments");
+}
+
+fn projected(conn: &Connection, work_id: i64) -> taiyaku_core::Sidecar {
+    crate::project::sidecar(conn, work_id).expect("projecting the work")
+}
+
+fn alignments_on(conn: &Connection, work_id: i64) -> Vec<(String, String)> {
+    projected(conn, work_id)
+        .alignments
+        .iter()
+        .map(|alignment| (alignment.from.clone(), alignment.to.clone()))
+        .collect()
+}
+
+fn spreads_on(conn: &Connection, work_id: i64, key: &str) -> Vec<u32> {
+    projected(conn, work_id).editions[key].spreads.clone()
+}
+
+/// What `route` answers on `work_id` for one slot of `from`, as a reader
+/// swapping editions would be answered.
+fn resolves(
+    conn: &Connection,
+    work_id: i64,
+    from: &str,
+    to: &str,
+    slot: taiyaku_core::Slot,
+) -> Option<taiyaku_core::Slot> {
+    taiyaku_core::route(&projected(conn, work_id), from, to)
+        .and_then(|route| route.resolve_slot(slot))
+}
+
+fn whole(page: u32) -> taiyaku_core::Slot {
+    taiyaku_core::Slot { page, half: None }
+}
+
+fn right(page: u32) -> taiyaku_core::Slot {
+    taiyaku_core::Slot {
+        page,
+        half: Some(taiyaku_core::Half::Right),
+    }
+}
+
+fn left(page: u32) -> taiyaku_core::Slot {
+    taiyaku_core::Slot {
+        page,
+        half: Some(taiyaku_core::Half::Left),
+    }
+}
+
+fn place(conn: &Connection, work_id: i64, user_id: i64, edition: &str, slot: u32) {
+    if user_id != 1 {
+        conn.execute(
+            "INSERT OR IGNORE INTO user (id, name, password_hash, role)
+             VALUES (?1, 'reader ' || ?1, '!', 'user')",
+            [user_id],
+        )
+        .expect("a second reader");
+    }
+    put_progress(
+        conn,
+        work_id,
+        user_id,
+        &Progress {
+            edition: edition.to_string(),
+            slot,
+        },
+    )
+    .expect("a reading position");
+}
+
+fn position_slot(conn: &Connection, work_id: i64, user_id: i64, edition: &str) -> i64 {
+    conn.query_row(
+        "SELECT slot FROM progress WHERE user_id = ?1 AND work_id = ?2 AND edition = ?3",
+        params![user_id, work_id, edition],
+        |r| r.get(0),
+    )
+    .expect("the position")
+}
+
+fn note_slot(conn: &Connection, work_id: i64, edition: &str) -> i64 {
+    conn.query_row(
+        "SELECT slot FROM note WHERE work_id = ?1 AND edition = ?2",
+        params![work_id, edition],
+        |r| r.get(0),
+    )
+    .expect("the note")
+}
+
+/// Make every insert, update and delete on `tables` raise.
+fn forbid_writes(conn: &Connection, tables: &[&str]) {
+    for table in tables {
+        for op in ["INSERT", "UPDATE", "DELETE"] {
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER {table}_{op}_forbidden BEFORE {op} ON {table}
+                   BEGIN SELECT RAISE(ABORT, 'a fold that should have refused wrote to {table}'); END;"
+            ))
+            .expect("making a write fail");
+        }
+    }
+}
+
+/// [`absorb`], expected to refuse, with every table the slot plan writes made
+/// to raise on any write first — O78's `refused_leaving_every_note`, widened.
+///
+/// **A refusal rolls back, so without the triggers a write made before it is
+/// invisible.** Every refusal arm is a `SELECT` and the plan's four writes —
+/// spread flags, the twin's own rows, the folded work's rows and the carried
+/// alignments — all come after the last of them. Moving any of them above a
+/// refusal left every test green until these triggers were added: the review
+/// of the first commit found both (its M09 and M09c).
+fn refusal(conn: &Connection, from: i64, into: i64) -> String {
+    forbid_writes(conn, &["page_flag", "progress", "note", "alignment", "run"]);
+    match absorb(conn, from, into)
+        .expect("a refusal writes nothing, so no trigger fires; an `Err` here is a write")
+    {
+        Outcome::Refused(why) => why,
+        Outcome::Folded(moved) => panic!("the fold went ahead: {moved:?}"),
+    }
+}
+
+/// **The flags a twin takes are the folded edition's spread flags, and only
+/// those.** A credit flag is a heuristic's reading of one scanlation's pages
+/// and stays counted, as it always was; a spread flag is a measurement of the
+/// bytes both editions hold, and every slot on the twin is built from it.
+#[test]
+fn a_twin_holding_no_spread_flags_takes_the_folded_editions_and_no_credit_flag() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[("raw", "aaa", 6, &[]), ("full-color", "bbb", 6, &[])],
+    );
+    seed_paged_work(
+        &conn,
+        2,
+        "superseded",
+        "rtl",
+        &[("colour", "bbb", 6, &[2, 4])],
+    );
+    conn.execute(
+        "INSERT INTO page_flag (edition_id, kind, page)
+         SELECT id, 'credit', 5 FROM edition WHERE work_id = 2",
+        [],
+    )
+    .expect("a credit flag");
+
+    let moved = folded(&conn, 2, 1);
+
+    let target = projected(&conn, 1);
+    assert_eq!(
+        (
+            target.editions["full-color"].spreads.clone(),
+            target.editions["full-color"].credits.clone(),
+            target.editions["raw"].spreads.clone(),
+        ),
+        (vec![2, 4], vec![], vec![]),
+        "the twin takes both spread flags, no credit flag, and no other edition takes anything"
+    );
+    assert_eq!(
+        moved.discarded, 1,
+        "the credit flag is counted and the spread flags are not"
+    );
+}
+
+/// **O76: an alignment moves with its editions, and routes on the surviving
+/// work exactly as it did on the folded one.** The folded work's `colour`
+/// joins page 1 as a spread; its twin `full-color` was built by a scan and
+/// holds no flags. The alignment names `colour` and `en`, which the target
+/// calls `full-color` and `en-color`, so a move that kept the keys, swapped
+/// them, or left the flags behind each fails a different assertion. One run is
+/// a person's correction, pairing page 2 with page 3, and the edge it lands on
+/// is a direct one between two editions neither of which is the hub.
+#[test]
+fn a_carried_alignment_names_the_twins_and_routes_as_it_did() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[
+            ("raw", "aaa", 8, &[]),
+            ("full-color", "bbb", 8, &[]),
+            ("en-color", "ccc", 8, &[]),
+        ],
+    );
+    seed_paged_work(
+        &conn,
+        2,
+        "superseded",
+        "rtl",
+        &[("colour", "bbb", 8, &[1]), ("en", "ccc", 8, &[])],
+    );
+    write_alignments(
+        &conn,
+        2,
+        &[(
+            "colour",
+            "en",
+            vec![
+                run("0-1R", Some("0-1"), false),
+                run("1L", None, false),
+                run("2", Some("3"), true),
+                run("3", None, false),
+                run("4-7", Some("4-7"), false),
+            ],
+        )],
+    );
+    assert_eq!(
+        resolves(&conn, 2, "colour", "en", whole(2)),
+        Some(whole(3)),
+        "the fixture's own premise: the correction pairs page 2 with page 3"
+    );
+
+    let moved = folded(&conn, 2, 1);
+
+    assert_eq!(moved.uncarried_alignments, 0, "nothing was left behind");
+    assert_eq!(
+        alignments_on(&conn, 1),
+        vec![("full-color".to_string(), "en-color".to_string())],
+        "one alignment, naming the twins"
+    );
+    assert_eq!(
+        [whole(2), right(1), left(1), whole(5)].map(|slot| resolves(
+            &conn,
+            1,
+            "full-color",
+            "en-color",
+            slot
+        )),
+        [Some(whole(3)), Some(whole(1)), None, Some(whole(5))],
+        "the corrected page, a half, the gap and an ordinary page answer as they did"
+    );
+    let target = projected(&conn, 1);
+    assert_eq!(
+        taiyaku_core::route(&target, "full-color", "en-color").map(|route| route.via),
+        Some(taiyaku_core::Via::Direct),
+        "a stored edge between two editions neither of which is the hub"
+    );
+    assert_eq!(
+        target.alignments[0]
+            .runs
+            .iter()
+            .filter(|run| run.by == Some(taiyaku_core::Source::Hand))
+            .count(),
+        1,
+        "the correction is still marked as a person's"
+    );
+}
+
+/// **Where both works align the same two editions, a hand-corrected alignment
+/// wins over one that is not, and otherwise the target keeps its own** — in
+/// either stored direction. The incoming alignment pairs page 2 with page 3,
+/// the target's pairs it with page 2, so which one survived is read off one
+/// answer; and only the case where a person's correction is left behind is
+/// counted.
+#[test]
+fn where_both_works_align_one_pair_a_hand_correction_wins_and_otherwise_the_target_keeps_its_own() {
+    // (incoming holds a hand run, the target's does, the target's is stored
+    //  reversed, where page 2 lands, alignments left behind and counted)
+    let cases = [
+        (true, false, true, 3, 0),
+        (true, false, false, 3, 0),
+        (false, true, true, 2, 0),
+        (true, true, false, 2, 1),
+        (false, false, true, 2, 0),
+    ];
+    for (incoming_hand, held_hand, reversed, lands, uncarried) in cases {
+        let conn = open();
+        seed_paged_work(
+            &conn,
+            1,
+            "target",
+            "rtl",
+            &[
+                ("raw", "aaa", 8, &[]),
+                ("full-color", "bbb", 8, &[1]),
+                ("en-color", "ccc", 8, &[]),
+            ],
+        );
+        seed_paged_work(
+            &conn,
+            2,
+            "superseded",
+            "rtl",
+            &[("colour", "bbb", 8, &[1]), ("en", "ccc", 8, &[])],
+        );
+        write_alignments(
+            &conn,
+            2,
+            &[(
+                "colour",
+                "en",
+                vec![
+                    run("0-1R", Some("0-1"), false),
+                    run("1L", None, false),
+                    run("2", Some("3"), incoming_hand),
+                    run("3", None, false),
+                    run("4-7", Some("4-7"), false),
+                ],
+            )],
+        );
+        let held = if reversed {
+            (
+                "en-color",
+                "full-color",
+                vec![
+                    run("0-1", Some("0-1R"), false),
+                    run("2-7", Some("2-7"), held_hand),
+                ],
+            )
+        } else {
+            (
+                "full-color",
+                "en-color",
+                vec![
+                    run("0-1R", Some("0-1"), false),
+                    run("1L", None, false),
+                    run("2-7", Some("2-7"), held_hand),
+                ],
+            )
+        };
+        write_alignments(&conn, 1, &[held]);
+
+        let moved = folded(&conn, 2, 1);
+
+        let case =
+            format!("incoming hand {incoming_hand}, target hand {held_hand}, reversed {reversed}");
+        assert_eq!(
+            (
+                resolves(&conn, 1, "full-color", "en-color", whole(2)),
+                moved.uncarried_alignments,
+                alignments_on(&conn, 1).len(),
+            ),
+            (Some(whole(lands)), uncarried, 1),
+            "{case}"
+        );
+        let orphaned: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM run WHERE alignment_id NOT IN (SELECT id FROM alignment)",
+                [],
+                |r| r.get(0),
+            )
+            .expect("counting runs");
+        assert_eq!(
+            orphaned, 0,
+            "{case}: a replaced alignment's runs go with it"
+        );
+    }
+}
+
+/// **An alignment between two editions the fold makes one is not carried** —
+/// the map is non-injective, and an edge from an edition to itself is no edge.
+/// A person's correction on one is counted; a solver's is not.
+#[test]
+fn an_alignment_between_two_editions_the_fold_makes_one_is_left_and_a_hand_one_is_counted() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[("raw", "aaa", 4, &[]), ("full-color", "bbb", 4, &[])],
+    );
+    seed_paged_work(
+        &conn,
+        2,
+        "superseded",
+        "rtl",
+        &[("colour", "bbb", 4, &[1]), ("colour-copy", "bbb", 4, &[1])],
+    );
+    write_alignments(
+        &conn,
+        2,
+        &[
+            ("colour", "colour-copy", vec![run("0-3", Some("0-3"), true)]),
+            (
+                "colour-copy",
+                "colour",
+                vec![run("0-3", Some("0-3"), false)],
+            ),
+        ],
+    );
+
+    let moved = folded(&conn, 2, 1);
+
+    assert_eq!(
+        (
+            moved.uncarried_alignments,
+            alignments_on(&conn, 1),
+            spreads_on(&conn, 1, "full-color")
+        ),
+        (1, vec![], vec![1]),
+        "neither is carried, the hand one is counted, and the flags both editions agree on are written"
+    );
+}
+
+/// **Two folded editions meeting on one twin with different spread flags give
+/// it neither**, and every row on either is still placed by page and half.
+#[test]
+fn folded_editions_that_disagree_about_spreads_give_the_twin_neither() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[("raw", "aaa", 6, &[]), ("full-color", "bbb", 6, &[])],
+    );
+    seed_paged_work(
+        &conn,
+        2,
+        "superseded",
+        "rtl",
+        &[("colour", "bbb", 6, &[1]), ("colour-copy", "bbb", 6, &[3])],
+    );
+    seed_note(&conn, 2, "colour-copy", 5);
+
+    folded(&conn, 2, 1);
+
+    assert_eq!(
+        (
+            spreads_on(&conn, 1, "full-color"),
+            page_at(&conn, 1, "full-color", note_slot(&conn, 1, "full-color")),
+        ),
+        (vec![], Some(whole(4))),
+        "no flags written, and the note on page 4 still on page 4"
+    );
+}
+
+/// **A twin that already holds a different spread set keeps it**, and what
+/// depended on the folded edition's flags is placed, counted or refused. A
+/// place on page 2 is slot 3 on the folded edition and slot 2 on the twin, and
+/// lands on slot 2. The alignment's first span ends on the right half of
+/// page 1, which the twin does not have, so it is left behind and counted.
+#[test]
+fn a_twin_holding_other_spread_flags_keeps_them_and_places_what_it_can() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[
+            ("raw", "aaa", 8, &[]),
+            ("full-color", "bbb", 8, &[4]),
+            ("en-color", "ccc", 8, &[]),
+        ],
+    );
+    seed_paged_work(
+        &conn,
+        2,
+        "superseded",
+        "rtl",
+        &[("colour", "bbb", 8, &[1]), ("en", "ccc", 8, &[])],
+    );
+    place(&conn, 2, 1, "colour", 3);
+    write_alignments(
+        &conn,
+        2,
+        &[(
+            "colour",
+            "en",
+            vec![
+                run("0-1R", Some("0-1"), true),
+                run("1L", None, false),
+                run("2-7", Some("2-7"), false),
+            ],
+        )],
+    );
+
+    let moved = folded(&conn, 2, 1);
+
+    let slot = position_slot(&conn, 1, 1, "full-color");
+    assert_eq!(
+        (
+            spreads_on(&conn, 1, "full-color"),
+            slot,
+            page_at(&conn, 1, "full-color", slot),
+            moved.uncarried_alignments,
+            alignments_on(&conn, 1),
+        ),
+        (vec![4], 2, Some(whole(2)), 1, vec![]),
+        "the twin's own flags stand, the place is on page 2, and the alignment is left and counted"
+    );
+}
+
+/// **Where a reader's note has no slot on the twin, the fold is refused and
+/// writes nothing.** The right half of page 1 exists on the folded edition,
+/// which joins page 1, and not on a twin that joins page 4 instead.
+#[test]
+fn a_note_on_a_half_the_twin_does_not_have_refuses_the_fold() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[("raw", "aaa", 8, &[]), ("full-color", "bbb", 8, &[4])],
+    );
+    seed_paged_work(&conn, 2, "superseded", "rtl", &[("colour", "bbb", 8, &[1])]);
+    seed_note(&conn, 2, "colour", 1);
+
+    let why = refusal(&conn, 2, 1);
+
+    // Whole, because it reaches `DeriveReport::unfoldable` and a person reads
+    // it: the first version carried three runs of fourteen spaces where its
+    // line continuations had been lost, and a `contains` saw none of them.
+    assert_eq!(
+        why,
+        "folding work 2 into work 1 would leave 1 row(s) naming another page — work 2's \
+         `colour` (1 note); the two works' editions do not present those pages as the same \
+         slots, and no slot on the surviving edition names the same page and half; nothing \
+         was moved and nothing was deleted"
+    );
+    assert_eq!(
+        (
+            note_slot(&conn, 2, "colour"),
+            spreads_on(&conn, 1, "full-color")
+        ),
+        (1, vec![4]),
+        "the note is where it was and the twin's flags are untouched"
+    );
+}
+
+/// **The twin's own rows were written under the slots it had before the fold
+/// gave it flags, and they are placed too.** A second reader's place on page 5
+/// is slot 5 on a twin holding no flags and slot 6 once page 3 is a spread; a
+/// note on page 7 goes from 7 to 8; and the target's own alignment, whose spans
+/// never cover page 3, reads the same afterwards and stays. The folded work's
+/// place on page 6 is slot 7 already, and must not be placed a second time.
+#[test]
+fn the_twins_own_rows_are_placed_under_the_flags_it_takes() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[
+            ("raw", "aaa", 8, &[]),
+            ("full-color", "bbb", 8, &[]),
+            ("en-color", "ccc", 8, &[]),
+        ],
+    );
+    seed_paged_work(&conn, 2, "superseded", "rtl", &[("colour", "bbb", 8, &[3])]);
+    place(&conn, 1, 2, "full-color", 5);
+    seed_note(&conn, 1, "full-color", 7);
+    place(&conn, 2, 1, "colour", 7);
+    write_alignments(
+        &conn,
+        1,
+        &[(
+            "en-color",
+            "full-color",
+            vec![
+                run("0-2", Some("0-2"), true),
+                run("3", None, false),
+                run("4-7", Some("4-7"), false),
+            ],
+        )],
+    );
+
+    folded(&conn, 2, 1);
+
+    let pages = [
+        position_slot(&conn, 1, 2, "full-color"),
+        note_slot(&conn, 1, "full-color"),
+        position_slot(&conn, 1, 1, "full-color"),
+    ]
+    .map(|slot| page_at(&conn, 1, "full-color", slot));
+    assert_eq!(
+        (spreads_on(&conn, 1, "full-color"), pages),
+        (vec![3], [Some(whole(5)), Some(whole(7)), Some(whole(6))]),
+        "the flag is written, and the target's place, its note and the carried place each name their page"
+    );
+    assert_eq!(
+        (
+            alignments_on(&conn, 1),
+            resolves(&conn, 1, "en-color", "full-color", whole(5)),
+        ),
+        (
+            vec![("en-color".to_string(), "full-color".to_string())],
+            Some(whole(5))
+        ),
+        "the target's own alignment stands and still answers"
+    );
+}
+
+/// **A row of the twin's own that the new flags would split is refused over,
+/// and so is an alignment of its own whose span they would lengthen.** A place
+/// on page 3, a whole page before the fold, has no whole-page slot once page 3
+/// is a spread; an alignment pairing `0-7` with `0-7` would pair nine slots
+/// with eight.
+#[test]
+fn a_twin_row_or_alignment_the_new_flags_would_move_refuses_the_fold() {
+    for (what, expected) in [("progress", "(1 progress)"), ("alignment", "(1 alignment)")] {
+        let conn = open();
+        seed_paged_work(
+            &conn,
+            1,
+            "target",
+            "rtl",
+            &[
+                ("raw", "aaa", 8, &[]),
+                ("full-color", "bbb", 8, &[]),
+                ("en-color", "ccc", 8, &[]),
+            ],
+        );
+        seed_paged_work(&conn, 2, "superseded", "rtl", &[("colour", "bbb", 8, &[3])]);
+        if what == "progress" {
+            place(&conn, 1, 2, "full-color", 3);
+        } else {
+            write_alignments(
+                &conn,
+                1,
+                &[(
+                    "en-color",
+                    "full-color",
+                    vec![run("0-7", Some("0-7"), false)],
+                )],
+            );
+        }
+
+        let why = refusal(&conn, 2, 1);
+
+        assert!(
+            why.contains(&format!("work 1's `full-color` {expected}")),
+            "{what}: {why}"
+        );
+        assert_eq!(
+            spreads_on(&conn, 1, "full-color"),
+            Vec::<u32>::new(),
+            "{what}: no flag written"
+        );
+    }
+}
+
+/// **A half is a side of the scan, not a position in reading order.** The
+/// folded work reads left to right, so its slots over a spread at page 1 are
+/// `0, 1L, 1R, 2, 3`; the target reads right to left, `0, 1R, 1L, 2, 3`. A
+/// note on the left half and a place on the right half keep their halves and
+/// swap slot numbers, and an alignment span running `1L-1R` runs backwards on
+/// the target, so it is left behind and counted.
+#[test]
+fn across_reading_directions_a_half_keeps_its_side() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[
+            ("raw", "aaa", 4, &[]),
+            ("full-color", "bbb", 4, &[]),
+            ("en-color", "ccc", 4, &[]),
+        ],
+    );
+    seed_paged_work(
+        &conn,
+        2,
+        "superseded",
+        "ltr",
+        &[("colour", "bbb", 4, &[1]), ("en", "ccc", 4, &[])],
+    );
+    seed_note(&conn, 2, "colour", 1);
+    place(&conn, 2, 1, "colour", 2);
+    write_alignments(
+        &conn,
+        2,
+        &[(
+            "colour",
+            "en",
+            vec![
+                run("0", Some("0"), false),
+                run("1L-1R", Some("1-2"), true),
+                run("2", Some("3"), false),
+                run("3", None, false),
+            ],
+        )],
+    );
+
+    let moved = folded(&conn, 2, 1);
+
+    let (note, position) = (
+        note_slot(&conn, 1, "full-color"),
+        position_slot(&conn, 1, 1, "full-color"),
+    );
+    assert_eq!(
+        (
+            (note, page_at(&conn, 1, "full-color", note)),
+            (position, page_at(&conn, 1, "full-color", position)),
+            moved.uncarried_alignments,
+        ),
+        ((2, Some(left(1))), (1, Some(right(1))), 1),
+        "each half keeps its side, and the alignment that cannot is counted"
+    );
+}
+
+/// **Two copies of one note are compared where each will stand, not as
+/// stored.** The folded edition joins page 1, its twin does not yet, and the
+/// fold gives it the flag: a copy on page 2 is slot 3 on one work and slot 2
+/// on the other, and is one note; a copy stored as slot 3 on both is page 2 on
+/// one and page 3 on the other, and is two.
+#[test]
+fn note_copies_are_one_note_by_the_page_they_name_not_the_number_they_hold() {
+    for (target_slot, identical) in [(2_u32, true), (3, false)] {
+        let conn = open();
+        seed_paged_work(
+            &conn,
+            1,
+            "target",
+            "rtl",
+            &[("raw", "aaa", 6, &[]), ("full-color", "bbb", 6, &[])],
+        );
+        seed_paged_work(&conn, 2, "superseded", "rtl", &[("colour", "bbb", 6, &[1])]);
+        seed_note(&conn, 2, "colour", 3);
+        seed_note(&conn, 1, "full-color", target_slot);
+
+        let outcome = absorb(&conn, 2, 1).expect("folding");
+
+        match (identical, outcome) {
+            (true, Outcome::Folded(moved)) => assert_eq!(
+                (
+                    moved.dropped_notes,
+                    page_at(&conn, 1, "full-color", note_slot(&conn, 1, "full-color")),
+                ),
+                (1, Some(whole(2))),
+                "one note, on page 2, kept once"
+            ),
+            (false, Outcome::Refused(why)) => {
+                assert!(why.contains("whose two copies differ"), "{why}");
+            }
+            (identical, outcome) => {
+                panic!("stored as slot {target_slot}, identical {identical}: {outcome:?}")
+            }
+        }
+    }
+}
+
+/// **A `b` span is held to the same test as an `a` span.** The twin of `en`
+/// already joins page 2 rather than page 1, so a run pairing `1-2` with
+/// `1R-1L` names halves the twin does not have, and the alignment is left and
+/// counted even though every `a` span reads the same.
+#[test]
+fn an_alignment_whose_b_span_the_twin_cannot_hold_is_left_and_counted() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[
+            ("raw", "aaa", 4, &[]),
+            ("full-color", "bbb", 4, &[]),
+            ("en-color", "ccc", 4, &[2]),
+        ],
+    );
+    seed_paged_work(
+        &conn,
+        2,
+        "superseded",
+        "rtl",
+        &[("colour", "bbb", 4, &[]), ("en", "ccc", 4, &[1])],
+    );
+    write_alignments(
+        &conn,
+        2,
+        &[(
+            "colour",
+            "en",
+            vec![
+                run("0", Some("0"), false),
+                run("1-2", Some("1R-1L"), true),
+                run("3", Some("3"), false),
+            ],
+        )],
+    );
+
+    let moved = folded(&conn, 2, 1);
+
+    assert_eq!(
+        (moved.uncarried_alignments, alignments_on(&conn, 1)),
+        (1, vec![]),
+        "left behind and counted"
+    );
+}
+
+/// A note row as `(slot, page it names)`, by its own key.
+fn note_page(
+    conn: &Connection,
+    user_id: i64,
+    work_id: i64,
+    id: &str,
+    edition: &str,
+) -> (i64, Option<taiyaku_core::Slot>) {
+    let slot: i64 = conn
+        .query_row(
+            "SELECT slot FROM note WHERE user_id = ?1 AND work_id = ?2 AND id = ?3",
+            params![user_id, work_id, id],
+            |r| r.get(0),
+        )
+        .expect("the note");
+    (slot, page_at(conn, work_id, edition, slot))
+}
+
+fn insert_note(conn: &Connection, user_id: i64, work_id: i64, id: &str, edition: &str, slot: i64) {
+    conn.execute(
+        "INSERT INTO note (user_id, id, work_id, edition, slot, body, created, updated)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'a note', '2026-09-15T00:00:00Z', '2026-09-15T00:00:00Z')",
+        params![user_id, id, work_id, edition, slot],
+    )
+    .expect("a note");
+}
+
+/// **Every statement that places a slot touches its own row and no other.**
+/// The twin takes a spread at page 3, so every row on it past page 3 moves one
+/// slot. Two readers sit on it at different pages; the first reader also has a
+/// place and a note on the target's other edition, and a place and a note under
+/// the same edition key and the same note id on an unrelated work. Every slot
+/// differs, so a `progress` or `note` statement missing any one of its user,
+/// work, edition or id writes one row's slot over another's — the review of
+/// the first commit found two of them passing every test (its M14 and M15) —
+/// and a spread write missing its work writes a flag onto the unrelated work.
+///
+/// **The unrelated work's rows sit past page 3 as well**, where placing them
+/// under the twin's map would move them. A row a read wrongly reaches is only
+/// written when its slot would change, so a place on page 2 and a note on page
+/// 1 there left a read that had lost its work writing nothing, and passing:
+/// the first draft of this test, watched surviving both.
+#[test]
+fn every_statement_that_places_a_slot_touches_only_its_own_row() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[("raw", "aaa", 8, &[]), ("full-color", "bbb", 8, &[])],
+    );
+    seed_paged_work(&conn, 2, "superseded", "rtl", &[("colour", "bbb", 8, &[3])]);
+    seed_paged_work(
+        &conn,
+        3,
+        "unrelated",
+        "rtl",
+        &[("full-color", "zzz", 8, &[])],
+    );
+    place(&conn, 1, 1, "full-color", 5);
+    place(&conn, 1, 2, "full-color", 7);
+    place(&conn, 1, 1, "raw", 4);
+    place(&conn, 3, 1, "full-color", 4);
+    // In this order, so a read that lost its work reaches the unrelated work's
+    // copy after the target's and writes it last.
+    insert_note(&conn, 1, 1, "01JSAMEID", "full-color", 4);
+    insert_note(&conn, 2, 1, "01JSAMEID", "full-color", 6);
+    insert_note(&conn, 1, 1, "01JOTHERID", "raw", 6);
+    insert_note(&conn, 1, 3, "01JSAMEID", "full-color", 7);
+
+    folded(&conn, 2, 1);
+
+    let position = |work_id: i64, user_id: i64, edition: &str| {
+        let slot = position_slot(&conn, work_id, user_id, edition);
+        (slot, page_at(&conn, work_id, edition, slot))
+    };
+    assert_eq!(
+        [
+            position(1, 1, "full-color"),
+            position(1, 2, "full-color"),
+            position(1, 1, "raw"),
+            position(3, 1, "full-color"),
+        ],
+        [
+            (6, Some(whole(5))),
+            (8, Some(whole(7))),
+            (4, Some(whole(4))),
+            (4, Some(whole(4))),
+        ],
+        "each place names its own page: two readers on the twin, the target's other edition, an unrelated work"
+    );
+    assert_eq!(
+        [
+            note_page(&conn, 1, 1, "01JSAMEID", "full-color"),
+            note_page(&conn, 2, 1, "01JSAMEID", "full-color"),
+            note_page(&conn, 1, 1, "01JOTHERID", "raw"),
+            note_page(&conn, 1, 3, "01JSAMEID", "full-color"),
+        ],
+        [
+            (5, Some(whole(4))),
+            (7, Some(whole(6))),
+            (6, Some(whole(6))),
+            (7, Some(whole(7))),
+        ],
+        "each note names its own page, by reader, work, edition and id"
+    );
+    assert_eq!(
+        (
+            spreads_on(&conn, 1, "full-color"),
+            spreads_on(&conn, 3, "full-color")
+        ),
+        (vec![3], vec![]),
+        "the flag went onto the twin and not onto the unrelated work's edition of the same key"
+    );
+}
+
+/// **A row whose slot names no page before the fold is carried as it was, and
+/// only a row that named a page can refuse.** `taiyaku-serve`'s
+/// `notes::validate` keeps a note stored past its edition's end on purpose.
+/// The first version refused a fold over one — on the twin, and on the folded
+/// edition alike — which `main` folded, with a message saying it would name
+/// another page. Three shapes: a note past the end on a twin that takes flags,
+/// a place past the end on a folded edition whose twin holds other flags, and
+/// the first again with a place on a page the flags split, which refuses and
+/// names that place alone.
+#[test]
+fn a_row_naming_no_page_is_carried_as_it_was_and_only_a_row_naming_one_refuses() {
+    for shape in ["twin", "folded", "refused"] {
+        let conn = open();
+        let twin_flags: &[u32] = if shape == "folded" { &[4] } else { &[] };
+        seed_paged_work(
+            &conn,
+            1,
+            "target",
+            "rtl",
+            &[("raw", "aaa", 6, &[]), ("full-color", "bbb", 6, twin_flags)],
+        );
+        seed_paged_work(&conn, 2, "superseded", "rtl", &[("colour", "bbb", 6, &[2])]);
+        if shape == "folded" {
+            conn.execute(
+                "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, 2, 'colour', 40)",
+                [],
+            )
+            .expect("a place past the end of the folded edition");
+        } else {
+            insert_note(&conn, 1, 1, "01JPASTTHEEND", "full-color", 40);
+        }
+        if shape == "refused" {
+            place(&conn, 1, 2, "full-color", 2);
+        }
+
+        match shape {
+            "refused" => {
+                let why = refusal(&conn, 2, 1);
+                assert!(why.contains("would leave 1 row(s)"), "{why}");
+                assert!(why.contains("work 1's `full-color` (1 progress)"), "{why}");
+            }
+            "twin" => {
+                folded(&conn, 2, 1);
+                assert_eq!(
+                    (
+                        note_page(&conn, 1, 1, "01JPASTTHEEND", "full-color"),
+                        spreads_on(&conn, 1, "full-color")
+                    ),
+                    ((40, None), vec![2]),
+                    "the note past the end stays past the end, and the twin takes the flag"
+                );
+            }
+            _ => {
+                folded(&conn, 2, 1);
+                assert_eq!(
+                    position_slot(&conn, 1, 1, "full-color"),
+                    40,
+                    "the place past the end moved as it was"
+                );
+            }
+        }
+    }
+}
+
+/// **A folded edition holding no spread flags is unmeasured, and does not
+/// disagree with one that holds them.** Two copies of one archive meet on a
+/// twin holding none: `colour` measured a spread at page 2, `colour-copy` holds
+/// nothing, because a scan never writes a flag. The twin takes `[2]`. A note on
+/// the unmeasured copy on page 4 is placed under it; one on page 2 — a whole
+/// page there, half of a spread under the flags — refuses the fold.
+#[test]
+fn a_folded_edition_holding_no_flags_does_not_disagree_with_one_that_holds_them() {
+    for note_page_number in [4_u32, 2] {
+        let conn = open();
+        seed_paged_work(
+            &conn,
+            1,
+            "target",
+            "rtl",
+            &[("raw", "aaa", 6, &[]), ("full-color", "bbb", 6, &[])],
+        );
+        seed_paged_work(
+            &conn,
+            2,
+            "superseded",
+            "rtl",
+            &[("colour", "bbb", 6, &[2]), ("colour-copy", "bbb", 6, &[])],
+        );
+        seed_note(&conn, 2, "colour-copy", note_page_number);
+
+        if note_page_number == 4 {
+            folded(&conn, 2, 1);
+            let slot = note_slot(&conn, 1, "full-color");
+            assert_eq!(
+                (
+                    spreads_on(&conn, 1, "full-color"),
+                    slot,
+                    page_at(&conn, 1, "full-color", slot)
+                ),
+                (vec![2], 5, Some(whole(4))),
+                "the measured flag is taken and the unmeasured copy's note lands on its page"
+            );
+        } else {
+            let why = refusal(&conn, 2, 1);
+            assert!(why.contains("work 2's `colour-copy` (1 note)"), "{why}");
+        }
+    }
+}
+
+/// **A fold refused at its last arm, after the slot plan has something to
+/// write, writes none of it.** The twin would take a spread, the second
+/// reader's place on it would move, and an alignment would be carried — and
+/// the ground truth meeting on the twin was drawn against different archives,
+/// so the fold refuses at the sixth arm. With every table the plan writes made
+/// to raise, a write placed above that refusal fails this test where the
+/// rollback used to hide it.
+#[test]
+fn a_fold_refused_after_its_slot_plan_has_writes_makes_none_of_them() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[
+            ("raw", "aaa", 8, &[]),
+            ("full-color", "bbb", 8, &[]),
+            ("en-color", "ccc", 8, &[]),
+        ],
+    );
+    seed_paged_work(
+        &conn,
+        2,
+        "superseded",
+        "rtl",
+        &[("colour", "bbb", 8, &[3]), ("en", "ccc", 8, &[])],
+    );
+    place(&conn, 1, 2, "full-color", 5);
+    place(&conn, 2, 1, "colour", 7);
+    write_alignments(
+        &conn,
+        2,
+        &[(
+            "colour",
+            "en",
+            vec![
+                run("0-3R", Some("0-3"), true),
+                run("3L", None, false),
+                run("4-7", Some("4-7"), false),
+            ],
+        )],
+    );
+    seed_truth(&conn, 2, "colour", 0, "drawn-on-the-folded-copy");
+    seed_truth(&conn, 1, "full-color", 0, "drawn-on-the-twin");
+
+    let why = refusal(&conn, 2, 1);
+
+    assert!(why.contains("cannot be given one provenance"), "{why}");
+    assert_eq!(
+        (
+            spreads_on(&conn, 1, "full-color"),
+            position_slot(&conn, 1, 2, "full-color"),
+            alignments_on(&conn, 1)
+        ),
+        (vec![], 5, vec![]),
+        "nothing the plan would have written is there"
     );
 }

@@ -2508,6 +2508,83 @@ fn state_with_a_root_that_folds_a_hand_documented_work(
     (state, fixture)
 }
 
+/// **`uncarried_alignments` reaches the scan report with its own number —
+/// O76.** The review of the first commit rendered the key as
+/// `discarded_rows + 0 * uncarried_alignments` and all 585 of this crate's
+/// tests passed. Three alignments on the colour work name editions it does not
+/// hold, so the fold the scan runs can carry none of them, and three is not the
+/// number `discarded_rows` holds, which the test checks rather than assumes.
+#[tokio::test]
+async fn a_scan_report_counts_the_alignments_a_fold_left_behind() {
+    let (state, _fixture) = state_with_a_root_that_folds_a_hand_documented_work(
+        "taiyaku-test-scan-fold-uncarried-alignments",
+    );
+    let root_id = only_root_id(&state);
+    {
+        let conn = state.library.conn();
+        let colour: i64 = conn
+            .query_row(
+                "SELECT edition.work_id FROM member
+                   JOIN edition ON edition.id = member.edition_id
+                  WHERE member.path LIKE '%Full Color%'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the colour work");
+        for gone in 1..=3 {
+            conn.execute(
+                "INSERT INTO alignment (work_id, from_key, to_key, by)
+                 VALUES (?1, 'raw', 'gone-' || ?2, 'solver')",
+                rusqlite::params![colour, gone],
+            )
+            .expect("an alignment naming an edition the colour work does not hold");
+        }
+    }
+
+    let started = crate::config_api::start_scan(
+        axum::extract::State(std::sync::Arc::clone(&state)),
+        axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
+        axum::extract::Path(root_id),
+        axum::extract::Query(crate::config_api::ScanQuery::default()),
+    )
+    .await;
+    assert_eq!(started.status(), StatusCode::ACCEPTED);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let json = loop {
+        let response = crate::config_api::scan_status(
+            axum::extract::State(std::sync::Arc::clone(&state)),
+            axum::extract::Extension(an_administrator()),
+            test_support::from_a_browser(),
+            axum::extract::Path(root_id),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = test_support::body_string(response).await;
+        let json: serde_json::Value = serde_json::from_str(&body).expect("a JSON body");
+        if json["running"] == false {
+            break json;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the scan did not finish within 5s: {json}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+
+    let derive = &json["report"]["derive"];
+    assert_eq!(derive["emptied_works"], 1, "the fold ran: {derive}");
+    assert_ne!(
+        derive["discarded_rows"], 3,
+        "the fixture must not give discarded_rows the number under test: {derive}"
+    );
+    assert_eq!(
+        derive["uncarried_alignments"], 3,
+        "the three alignments the fold could not carry: {derive}"
+    );
+}
+
 /// C4 §3 requires a scan already running is not startable twice, and the
 /// refusal names which root is already running rather than queueing a
 /// second walk of the same tree.

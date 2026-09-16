@@ -3152,6 +3152,10 @@ fn write_the_fold_rule(conn: &Connection) {
 /// `fold::move_positions`' `WHERE excluded.updated > progress.updated` makes
 /// a silent no-op, and `Moved::lost_positions` exists to see.
 ///
+/// **`uncarried_alignments` is the ninth, and O76 added it.** Nine alignments
+/// on the work about to be folded name edition keys it does not hold, so no
+/// fold can carry them and each is counted — nine, in no other field.
+///
 /// **`dropped_notes` is the eighth field, and O78 added it.** Reader 2 holds
 /// eight notes on both works in identical copies, so the fold drops eight and
 /// moves none of them — a number no other field here carries — and the
@@ -3273,6 +3277,14 @@ fn deriving_after_a_fold_moves_the_reader_onto_the_target_and_deletes_the_work()
         .expect("a tag on the work about to be folded");
     }
 
+    for gone in 1..=9 {
+        conn.execute(
+            "INSERT INTO alignment (work_id, from_key, to_key, by) VALUES (?1, 'raw', 'gone-' || ?2, 'solver')",
+            [colour, gone],
+        )
+        .expect("an alignment naming an edition the work does not hold");
+    }
+
     write_the_fold_rule(&conn);
 
     let second = derive::derive(&conn).expect("second derive");
@@ -3291,13 +3303,15 @@ fn deriving_after_a_fold_moves_the_reader_onto_the_target_and_deletes_the_work()
             second.discarded_rows,
             second.lost_positions,
             second.dropped_notes,
+            second.uncarried_alignments,
         ),
-        (1, 0, 2, 3, 4, 5, 6, 7, 8),
+        (1, 0, 2, 3, 4, 5, 6, 7, 8, 9),
         "the Full Color work folded away; two places and three notes moved, \
          four labelled pages moved and five stayed the target's, six rows \
          the fold does not move were counted before the delete took them, \
          seven readings the newer target place overrode stopped existing, \
-         and eight identical note copies were dropped rather than moved"
+         eight identical note copies were dropped rather than moved, and \
+         nine alignments naming editions the work did not hold were left"
     );
     assert!(
         second.unfoldable.is_empty(),
@@ -4532,4 +4546,45 @@ fn a_rescan_after_a_document_names_another_primary_title_keeps_the_series() {
             corrected_title("五等分の花嫁", TitleKind::Native, true),
         ],
     );
+}
+
+/// **A spread flag a fold writes onto its twin survives the next derive.** The
+/// flag is what every slot on that edition is built from, so a rescan that
+/// dropped it would move every place and note the fold had just placed.
+/// `import::replace_editions` carries a held page flag across a scan by
+/// edition key, and this is the fold's flag reaching it.
+#[test]
+fn a_spread_flag_a_fold_writes_survives_the_next_derive() {
+    let tree = crate::tests::tempdir("derive-fold-spread");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let colour = two_works_before_the_fold(&tree, &conn);
+    conn.execute(
+        "INSERT INTO page_flag (edition_id, kind, page)
+         SELECT id, 'spread', 3 FROM edition WHERE work_id = ?1",
+        [colour],
+    )
+    .expect("the colour edition's spread, as `taiyaku align` would have measured it");
+    write_the_fold_rule(&conn);
+
+    let spreads = |conn: &Connection| -> Vec<i64> {
+        conn.prepare(
+            "SELECT page_flag.page FROM page_flag
+               JOIN edition ON edition.id = page_flag.edition_id
+              WHERE edition.key = 'full-color' AND page_flag.kind = 'spread'",
+        )
+        .and_then(|mut s| {
+            s.query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<i64>>>()
+        })
+        .expect("the full-color edition's spread flags")
+    };
+    let folding = derive::derive(&conn).expect("the derive that folds");
+    assert_eq!(
+        (folding.emptied_works, spreads(&conn)),
+        (1, vec![3]),
+        "folded, flag written"
+    );
+    derive::derive(&conn).expect("the next derive");
+    assert_eq!(spreads(&conn), vec![3], "and still there after a rescan");
 }

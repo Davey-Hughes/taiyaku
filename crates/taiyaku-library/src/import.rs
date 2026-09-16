@@ -758,8 +758,9 @@ fn slugify(title: &str) -> String {
 /// out — so a spoke edition that gained or lost a member keeps its credit and
 /// spread flags at the page numbers they had before the member set moved,
 /// pointing at whatever is now at those offsets. (A folded work's flags are
-/// not left pointing anywhere: `fold::DISCARDED` counts `page_flag` and the
-/// `DELETE` takes it, which is O76's territory rather than this one's.)
+/// not left pointing anywhere either: since O76 and O121 a fold writes its
+/// spread flags onto a twin holding none, and counts a credit flag, which its
+/// `DELETE` takes.)
 /// Re-running
 /// `taiyaku credits --write` over that edition is the recovery, and nothing
 /// signals the need. Deleting them instead would cost that same re-run on

@@ -15,9 +15,21 @@
 //! at migration 9. Four more follow transitively: `member` and `page_flag`
 //! through `edition`, `run` through `alignment`, and `work_fts` via the
 //! `work_ad AFTER DELETE` trigger in `001_initial.sql`. Three of those tables
-//! hold a reader's own state and are moved by [`absorb`]; the rest are counted
-//! as [`Moved::discarded`], because a delete this wide must not be able to
-//! happen quietly.
+//! hold a reader's own state and are moved by [`absorb`], and since O76 so is
+//! `alignment`, with `run` beneath it, wherever it can be placed exactly —
+//! [`plan_alignments`] says which it leaves, and which of those it counts as
+//! [`Moved::uncarried_alignments`]; the rest are counted as
+//! [`Moved::discarded`], because a delete this wide must not be able to happen
+//! quietly.
+//!
+//! **A slot moves as the page and half it names, never as its number** — O121.
+//! A slot is an index into the slots an edition's spread flags and its work's
+//! reading direction build, and a twin a scan has just built holds no spread
+//! flags, so until 2026-09-15 a reader's place past a spread landed a page
+//! later while [`Moved`] counted it as moved and the three counters that
+//! report a loss — [`Moved::lost_positions`], [`Moved::dropped_notes`] and
+//! [`Moved::collisions`] — all read zero. [`plan_slots`] decides where every
+//! slot-addressed row stands before anything is written.
 //!
 //! **The guarantee is per row, not per table.** Moving `progress`, `note`,
 //! `truth_page` and `truth_member` is not the same as moving *every* row in
@@ -30,9 +42,12 @@
 //! **What this module is *not* asked to decide.** Which work is superseded
 //! and which absorbed it is `derive::superseded`'s answer, reached from
 //! member digests, paths and roots. [`absorb`] is handed that pair and asks
-//! four questions of its own — which edition of the target holds each edition
+//! five questions of its own — which edition of the target holds each edition
 //! of the superseded work's archives; whether anything the reader owns is on
-//! a key neither side can name; whether one reader holds one note id on both
+//! a key neither side can name; whether every row addressed by slot — the
+//! folded work's and the surviving work's own alike — can name the same page
+//! and half afterwards, and whether the flags it would write would move a span
+//! of an alignment the surviving work holds; whether one reader holds one note id on both
 //! works with two copies that differ; and whether the ground truth meeting on
 //! a mapped edition was drawn against the same archives on the two sides —
 //! and refuses the whole fold when the answer to any of them is wrong. Two
@@ -51,6 +66,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::Connection;
+use taiyaku_core::{Alignment, Sidecar, Slot, SlotSpan, Source};
 
 /// What one absorption moved.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +159,17 @@ pub struct Moved {
     /// Rows the final `DELETE` took that this fold did not move — see
     /// [`DISCARDED`], which enumerates them.
     pub discarded: usize,
+    /// Alignments of `from_work` this fold did not carry onto `into_work`
+    /// and that nothing on `into_work` stands in for — see
+    /// [`plan_alignments`] for the four ways that happens.
+    ///
+    /// **Not every alignment left behind.** One whose pair the target already
+    /// aligns, and which holds no hand-corrected run, is not counted: the
+    /// target's own edge answers the same question. Nor is a solver's edge
+    /// between two editions the fold makes one. What is counted is an edge
+    /// the surviving work no longer has an answer for, or a person's
+    /// correction it did not keep.
+    pub uncarried_alignments: usize,
 }
 
 /// What [`absorb`] did.
@@ -167,6 +194,18 @@ pub enum Outcome {
 /// not move, and that the final `DELETE` therefore takes — as the table and
 /// the predicate that finds it, with `?1` bound to the superseded work.
 ///
+/// **`alignment`, `run` and a `spread` page flag are not in it, since O76.**
+/// They were, counted as one more number beside a scanlation credit, and that
+/// took a person's correction of an alignment with the work. They are carried
+/// now — see [`plan_slots`] — because the fold is between editions holding the
+/// same archives, which is the one case where their meaning can be kept
+/// exactly. What cannot be kept exactly is refused or counted there, never
+/// here: an alignment left behind is [`Moved::uncarried_alignments`], and a
+/// spread flag is either written onto the twin that held none, identical to
+/// the twin's own, or a different measurement of the same bytes, where the
+/// twin's own stands and every row that depended on the source's has already
+/// been placed exactly, refused over or counted.
+///
 /// **Counted rather than moved, and that is a decision.** Each of these is
 /// the library's *description* of the material rather than a reader's state,
 /// and each would need its own merge rule against what the target already
@@ -190,7 +229,7 @@ pub enum Outcome {
 /// removing them is the fold succeeding, not a cost of it. What is counted
 /// from them is only what a person put there by hand: a label that is no
 /// longer the key, a language or kind, a chapter number no scan wrote.
-const DISCARDED: [(&str, &str); 8] = [
+const DISCARDED: [(&str, &str); 6] = [
     // **One entry, not one per column**, because `credit`'s `work_id` and
     // `edition_id` are separately nullable and a row setting both would be
     // counted twice by two entries. Nothing writes `work_id` today —
@@ -202,16 +241,13 @@ const DISCARDED: [(&str, &str); 8] = [
         "credit",
         "work_id = ?1 OR edition_id IN (SELECT id FROM edition WHERE work_id = ?1)",
     ),
-    ("alignment", "work_id = ?1"),
-    (
-        "run",
-        "alignment_id IN (SELECT id FROM alignment WHERE work_id = ?1)",
-    ),
     ("work_tag", "work_id = ?1"),
     ("collection_item", "work_id = ?1"),
+    // A credit flag only: a spread flag is a measurement of the bytes, and
+    // [`plan_slots`] carries it — see this list's own doc.
     (
         "page_flag",
-        "edition_id IN (SELECT id FROM edition WHERE work_id = ?1)",
+        "kind = 'credit' AND edition_id IN (SELECT id FROM edition WHERE work_id = ?1)",
     ),
     // A chapter number the scanner derived is re-derived onto the target by
     // `derive::write_chapters` from the same filename; one a person entered
@@ -240,8 +276,12 @@ const DISCARDED: [(&str, &str); 8] = [
 ///
 /// **By member digest, not by the rule that caused the fold.** The two
 /// editions are the same bytes — measured at `920d44d8…`, 195 pages, on both
-/// sides of O73's reproduction — so slots, page indices and box coordinates
-/// transfer one for one with nothing to re-derive. Reading `set_edition_key`
+/// sides of O73's reproduction — so page indices and box coordinates transfer
+/// one for one with nothing to re-derive. *Slots did not, and this sentence
+/// said they did until O121, 2026-09-15: a slot is an index into the slots
+/// an edition's spread flags and its work's reading direction build, a scan
+/// writes no spread flag, so a slot past a spread named a later page on a twin
+/// holding none. [`plan_slots`] is what places a slot now.* Reading `set_edition_key`
 /// off the rule instead would tie this to *why* the material moved and would
 /// guess where no rule exists; digests hold for any later feature that moves
 /// material between works.
@@ -510,14 +550,22 @@ struct SharedNotes {
 /// actually writes, one sidecar imported against both works, which agree in
 /// everything. Two copies are one note when their [`NoteContent`] is equal
 /// and the target's `edition` is exactly the key `map` sends the source's
-/// edition to. **There is no slot rewrite to account for**: [`edition_map`]
-/// pairs editions holding the same digests in the same order, so slot and
-/// region carry across unchanged and the edition key is the only part of the
-/// anchor that moves. The raw keys are the wrong thing to compare — the
+/// edition to. [`edition_map`] pairs editions holding the same digests in the
+/// same order, so a region carries across unchanged, and the edition key and
+/// the slot are the parts of the anchor that move — the slot by the page and
+/// half it names, below. The raw keys are the wrong thing to compare — the
 /// source's `raw` and the target's `raw` can be two different books, and the
 /// source's `raw` and the target's `full-color` the same one. Anything short
 /// of that — a body, a colour, a timestamp, a coordinate, a key — is two
 /// notes, and choosing between them is not this fold's to do.
+///
+/// **The slot is compared where each copy will stand, not as stored.** Until
+/// O121 this doc said there was no slot rewrite to account for, which held
+/// while a fold carried a slot as a number: [`plan_slots`] now rewrites a slot
+/// whose edition's slot sequence the fold changes, on either work, so two
+/// copies stored under different numbers can name one page and two stored
+/// under one number can name two. `plan` answers both; a slot it cannot place has already refused
+/// the fold, so the `None` arm here is a copy that is not identical.
 ///
 /// **Per reader, and `user_id` is in both the join and the result.** Two
 /// readers holding one id is migration 5's first case and is not a collision
@@ -533,6 +581,7 @@ fn shared_note_ids(
     from_work: i64,
     into_work: i64,
     map: &BTreeMap<String, String>,
+    plan: &SlotPlan,
 ) -> Result<SharedNotes, String> {
     let reading = || format!("reading the note ids work {from_work} and work {into_work} share");
     let mut statement = conn
@@ -550,8 +599,17 @@ fn shared_note_ids(
         .query_map(rusqlite::params![from_work, into_work], |row| {
             let from_key: String = row.get(2)?;
             let into_key: String = row.get(3)?;
+            let mut source = note_content(row, 4)?;
+            let mut target = note_content(row, 13)?;
+            let placed = plan
+                .source_slot(&from_key, source.slot)
+                .zip(plan.target_slot(&into_key, target.slot));
             let identical = map.get(&from_key) == Some(&into_key)
-                && note_content(row, 4)? == note_content(row, 13)?;
+                && placed.is_some_and(|(from_slot, into_slot)| {
+                    source.slot = from_slot;
+                    target.slot = into_slot;
+                    source == target
+                });
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, identical))
         })
         .map_err(|e| format!("{}: {e}", reading()))?;
@@ -738,12 +796,554 @@ fn truth_provenance_clashes(
     Ok(clashing)
 }
 
+/// One edition whose slot sequence a fold changes: its slots as they stood,
+/// and as they will stand on the surviving work.
+///
+/// **A slot is an index, and only means a page inside one sequence.**
+/// `Edition::slots` builds the sequence from the edition's page count, its
+/// spread flags and its work's reading direction, so the same number names a
+/// different page wherever any of the three differs. That is O121, and this
+/// type is the whole of its fix: a slot is carried as the page and half it
+/// named, never as the number.
+#[derive(Debug)]
+struct Resequenced {
+    before: Vec<Slot>,
+    after: Vec<Slot>,
+}
+
+impl Resequenced {
+    /// Where the page and half that `slot` named stands afterwards: `None`
+    /// where that page and half does not exist there — a whole page the fold
+    /// makes a spread, or a half of a page it does not — and `slot` itself
+    /// where it named no page before the fold.
+    ///
+    /// **A slot that names no page is carried as it is, not refused.** Past
+    /// the end of its edition, it names no page on either work, so carrying
+    /// it gets no page wrong; and `taiyaku-serve`'s `notes::validate` keeps a
+    /// note stored that way on purpose, so a re-solve that shortened an
+    /// edition leaves it readable and deletable. The first version of this
+    /// function returned `None` for it, which refused, for good, a fold that
+    /// `main` made — over a row that points nowhere.
+    ///
+    /// **By the page and the half, not by the position in reading order.** A
+    /// half is a physical side of the scan, so the right half of page 4 is the
+    /// right half of page 4 whichever direction either work reads in, and a
+    /// note's region — fractions of its slot — still lies on the same artwork.
+    fn place(&self, slot: i64) -> Option<i64> {
+        let Some(named) = usize::try_from(slot)
+            .ok()
+            .and_then(|at| self.before.get(at))
+        else {
+            return Some(slot);
+        };
+        let at = self.after.iter().position(|standing| standing == named)?;
+        i64::try_from(at).ok()
+    }
+}
+
+/// Everything one fold does to what is addressed by slot, decided before any
+/// write so that every refusal it leads to is still a `SELECT`. See
+/// [`plan_slots`].
+#[derive(Debug, Default)]
+struct SlotPlan {
+    /// Spread pages to write onto each edition of `into_work` that holds none,
+    /// by key.
+    spreads: BTreeMap<String, Vec<u32>>,
+    /// Editions of `from_work`, by key, whose slots stand differently on their
+    /// twin — every reader row on one of them is rewritten before it moves.
+    source: BTreeMap<String, Resequenced>,
+    /// Editions of `into_work`, by key, whose own slots [`Self::spreads`]
+    /// changes — the rows already there were written under the old sequence.
+    target: BTreeMap<String, Resequenced>,
+    /// Alignments of `from_work` to carry, with the keys each will name.
+    carried: Vec<(i64, String, String)>,
+    /// Alignments of `into_work` an incoming one replaces.
+    replaced: Vec<i64>,
+    /// [`Moved::uncarried_alignments`].
+    uncarried: usize,
+    /// Alignments of `into_work`, counted under a key [`Self::target`]
+    /// resequences, whose spans would name other slots once it has.
+    broken: BTreeMap<String, usize>,
+}
+
+impl SlotPlan {
+    /// Where a reader row on `from_work`'s edition `key` will stand.
+    fn source_slot(&self, key: &str, slot: i64) -> Option<i64> {
+        self.source
+            .get(key)
+            .map_or(Some(slot), |moved| moved.place(slot))
+    }
+
+    /// Where a row already on `into_work`'s edition `key` will stand.
+    fn target_slot(&self, key: &str, slot: i64) -> Option<i64> {
+        self.target
+            .get(key)
+            .map_or(Some(slot), |moved| moved.place(slot))
+    }
+}
+
+/// Decide what a fold does to spread flags, to every reader row addressed by
+/// slot, and to alignments — O76 and O121, one mechanism.
+///
+/// **The claim is that every slot-addressed row the fold carries names the
+/// same page and half afterwards that it named on the folded work**, and the
+/// three kinds of row are held to it the same way.
+///
+/// **Spread flags first, because every slot is built from them.** A scan
+/// writes no spread flag (`derive` builds every edition with none) and
+/// `taiyaku align` measures them from the images, so the ordinary fold is a
+/// work imported with its flags folding onto a twin a scan has just built
+/// without any. The two hold the same archives in the same order, and a flag
+/// is a measurement of the bytes, so where the twin holds none it takes the
+/// folded edition's. Where it already holds a set it keeps it — a different
+/// set is a different measurement of the same pages, and choosing between two
+/// is not this fold's. Where two folded editions meeting on one twin both hold
+/// flags and the sets differ, it takes neither. **A folded edition holding no
+/// flags does not disagree**: a scan never writes one, so none means
+/// unmeasured rather than measured to have none, and it does not stop the
+/// twin taking the measured set — which is what lets a correction on the
+/// measured edition carry. A row on the unmeasured edition that the taken
+/// flags would put on another page still refuses, below.
+///
+/// **Then every sequence is compared, before and after.** A folded edition
+/// whose slots stand differently on its twin, and a twin whose own slots the
+/// new flags change, each get a [`Resequenced`], and [`absorb`] refuses the
+/// whole fold over any `progress` or `note` row one of them cannot place —
+/// reader state, for the reason [`stranded`] gives. A row whose slot named no
+/// page before the fold is carried as it is; see [`Resequenced::place`].
+/// **Refused rather than counted**, because the alternative is a place or a note on another page
+/// with a number saying so, and a standing duplicate is recoverable where that
+/// is not.
+///
+/// **Alignments are carried where their spans still cover the same slots**,
+/// and counted where they do not — see [`plan_alignments`].
+fn plan_slots(
+    conn: &Connection,
+    from_work: i64,
+    into_work: i64,
+    map: &BTreeMap<String, String>,
+) -> Result<SlotPlan, String> {
+    // Through the projection, so the sequences compared here are the ones the
+    // reader draws: `Edition::slots` over the same rows, not a second
+    // reconstruction of spreads and halves that could drift from it.
+    let source = crate::project::sidecar(conn, from_work)?;
+    let target = crate::project::sidecar(conn, into_work)?;
+    let mut plan = SlotPlan::default();
+
+    let mut meeting: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (from_key, into_key) in map {
+        meeting.entry(into_key).or_default().push(from_key);
+    }
+    let mut standing: BTreeMap<String, Vec<Slot>> = BTreeMap::new();
+    for (into_key, from_keys) in meeting {
+        let Some(twin) = target.editions.get(into_key) else {
+            continue;
+        };
+        let mut twin_after = twin.clone();
+        if twin.spreads.is_empty() {
+            let offered: Vec<&Vec<u32>> = from_keys
+                .iter()
+                .filter_map(|key| source.editions.get(*key))
+                .map(|edition| &edition.spreads)
+                .filter(|spreads| !spreads.is_empty())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if let [only] = offered.as_slice() {
+                twin_after.spreads.clone_from(only);
+                plan.spreads.insert(into_key.to_string(), (*only).clone());
+            }
+        }
+        let before = twin.slots(target.work.reading);
+        let after = twin_after.slots(target.work.reading);
+        if after != before {
+            plan.target.insert(
+                into_key.to_string(),
+                Resequenced {
+                    before,
+                    after: after.clone(),
+                },
+            );
+        }
+        standing.insert(into_key.to_string(), after);
+    }
+    for (from_key, into_key) in map {
+        let (Some(edition), Some(after)) = (source.editions.get(from_key), standing.get(into_key))
+        else {
+            continue;
+        };
+        let before = edition.slots(source.work.reading);
+        if before != *after {
+            plan.source.insert(
+                from_key.clone(),
+                Resequenced {
+                    before,
+                    after: after.clone(),
+                },
+            );
+        }
+    }
+
+    plan_alignments(
+        conn,
+        (from_work, into_work),
+        map,
+        (&source, &target),
+        &standing,
+        &mut plan,
+    )?;
+    Ok(plan)
+}
+
+/// Who answers for one pair of `into_work`'s editions once the fold is done.
+#[derive(Debug, Clone, Copy)]
+enum Answer {
+    /// An alignment `into_work` already holds, by id.
+    Held(i64),
+    /// The incoming alignment at this index of the carried list.
+    Carried(usize),
+}
+
+/// Which of `from_work`'s alignments move, which of `into_work`'s they
+/// replace, how many are left behind, and which of `into_work`'s own the new
+/// spread flags would break.
+///
+/// **An alignment is carried when every one of its spans covers the same
+/// slots on the twins as it did on the folded work.** Runs are stored as a
+/// page and a half per endpoint, not as indices, so carrying one is
+/// rewriting its work and its two keys; what can change underneath it is the
+/// sequence each span is read against. A span that covers the same run of
+/// pages and halves before and after means the same thing, so the run needs
+/// no rewrite at all, and one that does not cannot be rewritten without
+/// changing how many slots it pairs. That comparison holds whichever way the
+/// two works read, and it is what counts a span straddling a page one side
+/// joins and the other does not.
+///
+/// **Left behind, and counted in [`Moved::uncarried_alignments`]:**
+///
+/// 1. an alignment naming an edition key `from_work` does not hold — it was
+///    unreadable there, and nothing names it here;
+/// 2. one whose spans would cover other slots on the twins;
+/// 3. one holding a hand-corrected run whose pair `into_work` already answers
+///    with an alignment that also holds one — the target keeps its own;
+/// 4. one holding a hand-corrected run between two editions the fold makes
+///    one, which would be an edge from an edition to itself.
+///
+/// **Left behind and not counted:** a solver's alignment whose pair the target
+/// already answers, and one between two editions the fold makes one (the map
+/// is non-injective) that holds no hand-corrected run.
+///
+/// **"Holds a hand-corrected run" is `merge_spoke`'s own test** — any run with
+/// `by: "hand"`. `alignment.by` is not it: that reads `hand` only on an edge
+/// `Sidecar::correct` created, and a correction on a solver's edge leaves it
+/// `solver`. A hand-holding alignment replaces a pair's answer that holds none,
+/// in either direction, which is the one case a correction is not lost.
+fn plan_alignments(
+    conn: &Connection,
+    (from_work, into_work): (i64, i64),
+    map: &BTreeMap<String, String>,
+    (source, target): (&Sidecar, &Sidecar),
+    standing: &BTreeMap<String, Vec<Slot>>,
+    plan: &mut SlotPlan,
+) -> Result<(), String> {
+    let slots = |sidecar: &Sidecar, key: &str| {
+        sidecar
+            .editions
+            .get(key)
+            .map(|edition| edition.slots(sidecar.work.reading))
+            .unwrap_or_default()
+    };
+    let after = |key: &str| {
+        standing
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| slots(target, key))
+    };
+    // `project::sidecar` reads alignments `ORDER BY id`, and so does this, in
+    // the same transaction, so the two zip one to one.
+    let source_ids = alignment_ids(conn, from_work)?;
+    let target_ids = alignment_ids(conn, into_work)?;
+
+    let mut answers: BTreeMap<(String, String), (Answer, bool)> = BTreeMap::new();
+    for (id, alignment) in target_ids.iter().zip(&target.alignments) {
+        answers.insert(
+            pair(&alignment.from, &alignment.to),
+            (Answer::Held(*id), holds_hand(alignment)),
+        );
+    }
+    let mut carried: Vec<Option<(i64, String, String)>> = Vec::new();
+    for (id, alignment) in source_ids.iter().zip(&source.alignments) {
+        let hand = holds_hand(alignment);
+        let (Some(from), Some(to)) = (map.get(&alignment.from), map.get(&alignment.to)) else {
+            plan.uncarried += 1;
+            continue;
+        };
+        if from == to {
+            plan.uncarried += usize::from(hand);
+            continue;
+        }
+        let (from_before, from_after) = (slots(source, &alignment.from), after(from));
+        let (to_before, to_after) = (slots(source, &alignment.to), after(to));
+        if !reads_the_same(
+            alignment,
+            (&from_before, &from_after),
+            (&to_before, &to_after),
+        ) {
+            plan.uncarried += 1;
+            continue;
+        }
+        let key = pair(from, to);
+        match answers.get(&key).copied() {
+            Some((_, held_hand)) if held_hand || !hand => {
+                plan.uncarried += usize::from(hand);
+            }
+            answer => {
+                match answer.map(|(answer, _)| answer) {
+                    Some(Answer::Held(held)) => plan.replaced.push(held),
+                    Some(Answer::Carried(at)) => carried[at] = None,
+                    None => {}
+                }
+                answers.insert(key, (Answer::Carried(carried.len()), hand));
+                carried.push(Some((*id, from.clone(), to.clone())));
+            }
+        }
+    }
+    plan.carried = carried.into_iter().flatten().collect();
+
+    for (id, alignment) in target_ids.iter().zip(&target.alignments) {
+        if plan.replaced.contains(id) {
+            continue;
+        }
+        let Some(touched) = [&alignment.from, &alignment.to]
+            .into_iter()
+            .find(|key| plan.target.contains_key(key.as_str()))
+        else {
+            continue;
+        };
+        let (from_before, from_after) = (slots(target, &alignment.from), after(&alignment.from));
+        let (to_before, to_after) = (slots(target, &alignment.to), after(&alignment.to));
+        if !reads_the_same(
+            alignment,
+            (&from_before, &from_after),
+            (&to_before, &to_after),
+        ) {
+            *plan.broken.entry(touched.clone()).or_default() += 1;
+        }
+    }
+    Ok(())
+}
+
+/// One work's alignment ids, in the order `project::sidecar` reads them.
+fn alignment_ids(conn: &Connection, work_id: i64) -> Result<Vec<i64>, String> {
+    conn.prepare("SELECT id FROM alignment WHERE work_id = ?1 ORDER BY id")
+        .and_then(|mut statement| {
+            statement
+                .query_map([work_id], |row| row.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<i64>>>()
+        })
+        .map_err(|e| format!("reading the alignment ids of work {work_id}: {e}"))
+}
+
+/// Two edition keys as an unordered pair: an alignment and its reverse answer
+/// the same question, which is `route`'s own rule.
+fn pair(a: &str, b: &str) -> (String, String) {
+    if a <= b {
+        (a.to_string(), b.to_string())
+    } else {
+        (b.to_string(), a.to_string())
+    }
+}
+
+/// `Sidecar::merge_spoke`'s test for a person's correction: any run marked
+/// `by: "hand"`.
+fn holds_hand(alignment: &Alignment) -> bool {
+    alignment
+        .runs
+        .iter()
+        .any(|run| run.by == Some(Source::Hand))
+}
+
+/// Whether every span of `alignment` covers the same slots in the `after`
+/// sequences as in the `before` ones — `from` for the `a` side, `to` for `b`.
+fn reads_the_same(
+    alignment: &Alignment,
+    (from_before, from_after): (&[Slot], &[Slot]),
+    (to_before, to_after): (&[Slot], &[Slot]),
+) -> bool {
+    alignment.runs.iter().all(|run| {
+        covered(from_before, run.a) == covered(from_after, run.a)
+            && run
+                .b
+                .is_none_or(|b| covered(to_before, b) == covered(to_after, b))
+    })
+}
+
+/// The slots a span covers in one sequence, or `None` where either endpoint
+/// is not in it or the span runs backwards there.
+fn covered(slots: &[Slot], span: SlotSpan) -> Option<&[Slot]> {
+    let start = slots.iter().position(|slot| *slot == span.start)?;
+    let end = slots.iter().position(|slot| *slot == span.end)?;
+    (start <= end).then(|| &slots[start..=end])
+}
+
+/// Rows the fold would leave naming another page, as `(work, edition key) ->
+/// [(what, rows)]`: `progress` and `note` rows that named a page and that
+/// [`SlotPlan`] cannot place, on either work, and `into_work` alignments its
+/// new spread flags would break. A row that named no page is not one of them.
+type Unplaceable = BTreeMap<(i64, String), BTreeMap<&'static str, usize>>;
+
+fn unplaceable(
+    conn: &Connection,
+    from_work: i64,
+    into_work: i64,
+    plan: &SlotPlan,
+) -> Result<Unplaceable, String> {
+    let mut found = Unplaceable::new();
+    for table in ["progress", "note"] {
+        for (work_id, resequenced) in [(from_work, &plan.source), (into_work, &plan.target)] {
+            if resequenced.is_empty() {
+                continue;
+            }
+            // `table` is one of the two constants above, not anything a
+            // caller supplies — `stranded` says the same of its own.
+            let rows: Vec<(String, i64)> = conn
+                .prepare(&format!(
+                    "SELECT edition, slot FROM {table} WHERE work_id = ?1"
+                ))
+                .and_then(|mut statement| {
+                    statement
+                        .query_map([work_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .map_err(|e| format!("reading the `{table}` slots of work {work_id}: {e}"))?;
+            for (edition, slot) in rows {
+                if let Some(moved) = resequenced.get(&edition)
+                    && moved.place(slot).is_none()
+                {
+                    *found
+                        .entry((work_id, edition))
+                        .or_default()
+                        .entry(table)
+                        .or_default() += 1;
+                }
+            }
+        }
+    }
+    for (key, count) in &plan.broken {
+        found
+            .entry((into_work, key.clone()))
+            .or_default()
+            .insert("alignment", *count);
+    }
+    Ok(found)
+}
+
+/// Write [`SlotPlan::spreads`] onto `into_work`'s editions.
+fn write_spreads(conn: &Connection, into_work: i64, plan: &SlotPlan) -> Result<(), String> {
+    for (key, pages) in &plan.spreads {
+        for page in pages {
+            conn.execute(
+                "INSERT OR IGNORE INTO page_flag (edition_id, kind, page)
+                 SELECT id, 'spread', ?3 FROM edition WHERE work_id = ?1 AND key = ?2",
+                rusqlite::params![into_work, key, page],
+            )
+            .map_err(|e| format!("writing spread flag {page} onto `{key}`: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Rewrite every `progress` and `note` slot on `work_id`'s resequenced
+/// editions to where its page and half stands.
+///
+/// **Read whole before the first write, and keyed by each row's own key**,
+/// so a rewritten slot is never read back and rewritten again. Called for
+/// `into_work` before a single row moves onto it, which is what keeps a
+/// carried row — already placed — from being placed a second time.
+fn resequence_rows(
+    conn: &Connection,
+    work_id: i64,
+    resequenced: &BTreeMap<String, Resequenced>,
+) -> Result<(), String> {
+    for (key, moved) in resequenced {
+        let positions: Vec<(i64, i64)> = conn
+            .prepare("SELECT user_id, slot FROM progress WHERE work_id = ?1 AND edition = ?2")
+            .and_then(|mut statement| {
+                statement
+                    .query_map(rusqlite::params![work_id, key], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .map_err(|e| format!("reading the positions on `{key}` of work {work_id}: {e}"))?;
+        for (user_id, slot) in positions {
+            if let Some(placed) = moved.place(slot).filter(|placed| *placed != slot) {
+                conn.execute(
+                    "UPDATE progress SET slot = ?1 WHERE user_id = ?2 AND work_id = ?3 AND edition = ?4",
+                    rusqlite::params![placed, user_id, work_id, key],
+                )
+                .map_err(|e| format!("placing a position on `{key}` of work {work_id}: {e}"))?;
+            }
+        }
+        let notes: Vec<(i64, String, i64)> = conn
+            .prepare("SELECT user_id, id, slot FROM note WHERE work_id = ?1 AND edition = ?2")
+            .and_then(|mut statement| {
+                statement
+                    .query_map(rusqlite::params![work_id, key], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .map_err(|e| format!("reading the notes on `{key}` of work {work_id}: {e}"))?;
+        for (user_id, id, slot) in notes {
+            if let Some(placed) = moved.place(slot).filter(|placed| *placed != slot) {
+                conn.execute(
+                    "UPDATE note SET slot = ?1 WHERE user_id = ?2 AND work_id = ?3 AND id = ?4",
+                    rusqlite::params![placed, user_id, work_id, id],
+                )
+                .map_err(|e| format!("placing note `{id}` on `{key}` of work {work_id}: {e}"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Carry [`SlotPlan::carried`] onto `into_work`, after deleting what they
+/// replace.
+///
+/// **An `UPDATE`, so the runs follow by `alignment_id`** and a run is never
+/// copied — its spans already name the slots they will name on the twins,
+/// which is what [`plan_alignments`] checked. The replaced alignments' runs
+/// are deleted by name rather than left to `ON DELETE CASCADE`, so a
+/// connection with foreign keys off cannot leave them orphaned.
+fn carry_alignments(
+    conn: &Connection,
+    from_work: i64,
+    into_work: i64,
+    plan: &SlotPlan,
+) -> Result<(), String> {
+    for id in &plan.replaced {
+        conn.execute("DELETE FROM run WHERE alignment_id = ?1", [id])
+            .and_then(|_| conn.execute("DELETE FROM alignment WHERE id = ?1", [id]))
+            .map_err(|e| format!("removing alignment {id}, which a carried one replaces: {e}"))?;
+    }
+    for (id, from_key, to_key) in &plan.carried {
+        conn.execute(
+            "UPDATE alignment SET work_id = ?1, from_key = ?2, to_key = ?3
+              WHERE id = ?4 AND work_id = ?5",
+            rusqlite::params![into_work, from_key, to_key, id, from_work],
+        )
+        .map_err(|e| format!("carrying alignment {id} onto work {into_work}: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Move every reader row off `from_work` onto `into_work` and delete
 /// `from_work`.
 ///
-/// Returns [`Outcome::Refused`] — nothing moved, nothing deleted — on five
+/// Returns [`Outcome::Refused`] — nothing moved, nothing deleted — on six
 /// counts, each checked before the first move so that a refusal costs the
-/// database nothing. Every one of the five is a `SELECT`, which is what keeps
+/// database nothing. Every one of the six is a `SELECT`, which is what keeps
 /// that property true as the list grows:
 ///
 /// 1. **`from_work == into_work`.** Every edition would map to itself, every
@@ -761,7 +1361,13 @@ fn truth_provenance_clashes(
 ///    [`stranded`], which is where the reasoning for refusing rather than
 ///    counting it lives. This is the one arm that is about a *row* rather
 ///    than an edition, and the guarantee the module makes is per row.
-/// 4. **One note id held by one reader on both works, with two copies that
+/// 4. **A row the fold would leave naming another page** — see [`plan_slots`].
+///    A `progress` or `note` slot, on either work, whose page and half has no
+///    slot on the surviving edition, and an alignment `into_work` already
+///    holds whose spans the spread flags this fold writes would move. O121:
+///    until 2026-09-15 a slot was carried as a number, and a number past a
+///    spread named a later page on a twin a scan had built without flags.
+/// 5. **One note id held by one reader on both works, with two copies that
 ///    differ** — see [`shared_note_ids`]. `note`'s key is
 ///    `(user_id, work_id, id)` and migration 5 widened it to that
 ///    *specifically to permit* this state, so [`move_notes`]' bare `UPDATE`
@@ -769,10 +1375,10 @@ fn truth_provenance_clashes(
 ///    re-keyed: the id is one the reader's own sidecar names, and rewriting it
 ///    silently is worse than declining. **Copies that agree in every column
 ///    are not refused (O78)**: they are one note, and the superseded work's
-///    copy is dropped — after the fifth check below, so that a fold refused
+///    copy is dropped — after the sixth check below, so that a fold refused
 ///    over anything has written nothing — and counted in
 ///    [`Moved::dropped_notes`].
-/// 5. **Ground truth meeting on one target edition that cannot be given one
+/// 6. **Ground truth meeting on one target edition that cannot be given one
 ///    provenance** — see [`truth_provenance_clashes`]. Identical `member`
 ///    digests do not imply identical `truth_member` digests, and moving boxes
 ///    under the wrong provenance records them as fresh when they are stale.
@@ -781,10 +1387,11 @@ fn truth_provenance_clashes(
 ///    other side's — a claim those boxes never had, and the same defect
 ///    reached from the direction the guard used to be exempt in.
 ///
-/// **Arms 4 and 5 are refusals about a state neither side can be told to fix
-/// from here, which is the point.** Both leave the duplicate work visibly
-/// standing, which is recoverable and which an operator can act on, where a
-/// re-keyed note and a mis-attributed box are neither.
+/// **Arms 4, 5 and 6 are refusals about a state neither side can be told to
+/// fix from here, which is the point.** All three leave the duplicate work
+/// visibly standing, which is recoverable and which an operator can act on,
+/// where a note on the wrong page, a re-keyed note and a mis-attributed box
+/// are none of those.
 ///
 /// # Errors
 ///
@@ -863,6 +1470,33 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
         )));
     }
 
+    // **Every slot placed before anything is compared or written.** After
+    // `stranded`, so every reader row still on `from_work` is on a key the map
+    // holds; before the shared-note read, which compares two copies where
+    // each will stand rather than as stored. See `plan_slots`.
+    let plan = plan_slots(&tx, from_work, into_work, &map)?;
+    let unplaced = unplaceable(&tx, from_work, into_work, &plan)?;
+    if !unplaced.is_empty() {
+        let rows: usize = unplaced.values().flat_map(BTreeMap::values).sum();
+        let named: Vec<String> = unplaced
+            .iter()
+            .map(|((work_id, key), kinds)| {
+                let kinds: Vec<String> = kinds
+                    .iter()
+                    .map(|(kind, count)| format!("{count} {kind}"))
+                    .collect();
+                format!("work {work_id}'s `{key}` ({})", kinds.join(", "))
+            })
+            .collect();
+        return Ok(Outcome::Refused(format!(
+            "folding work {from_work} into work {into_work} would leave {rows} row(s) naming \
+             another page — {}; the two works' editions do not present those pages as the same \
+             slots, and no slot on the surviving edition names the same page and half; nothing \
+             was moved and nothing was deleted",
+            named.join(", "),
+        )));
+    }
+
     // **After `stranded`, and that ordering is what makes the read exact.**
     // Every note still on `from_work` here is on a key the map holds, so the
     // whole-work read below is asking about exactly the rows `move_notes` is
@@ -872,7 +1506,7 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
     // column are one note and are dropped from the source further down —
     // after the last refusal, not here, so that a fold refused over one
     // conflicting id has written nothing, identical copies included.
-    let shared = shared_note_ids(&tx, from_work, into_work, &map)?;
+    let shared = shared_note_ids(&tx, from_work, into_work, &map, &plan)?;
     let conflicting = &shared.conflicting;
     if !conflicting.is_empty() {
         // **A count and the first few, not the whole list.** The realistic
@@ -926,8 +1560,20 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
     // these ids. See `shared_note_ids` for what "identical" is.
     let mut moved = Moved {
         dropped_notes: drop_identical_notes(&tx, from_work, &shared.identical)?,
+        uncarried_alignments: plan.uncarried,
         ..Moved::default()
     };
+
+    // **The flags, then `into_work`'s own rows, then `from_work`'s, then the
+    // alignments — and every one of them before the move loop.** The flags
+    // are what the new sequences were built from. The target's own rows are
+    // placed while they are still the only rows on those editions: once a
+    // carried row has moved onto one, a rewrite keyed on the edition would
+    // place it a second time. See `plan_slots`.
+    write_spreads(&tx, into_work, &plan)?;
+    resequence_rows(&tx, into_work, &plan.target)?;
+    resequence_rows(&tx, from_work, &plan.source)?;
+    carry_alignments(&tx, from_work, into_work, &plan)?;
 
     // **The two halves of the position identity, read before the first
     // write.** Other works hold positions too, but no statement in this loop

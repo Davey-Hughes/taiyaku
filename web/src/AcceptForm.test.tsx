@@ -574,18 +574,21 @@ describe('AcceptForm', () => {
     // **The whole line has to be inside `.why`, not just its first clause.**
     // A screen reader on Accept reads this block and nothing else, and the
     // three things the fold does *not* carry — the marks the surviving
-    // edition already holds, the older of two places in one edition, and the
-    // tags, reading-list places and hand-corrected alignments the `DELETE`
-    // takes (O76) — are the parts a person deciding cannot find out any
-    // other way. Asserted here rather than only in `curation.test.ts`
-    // because that file pins the string and this one pins that the string
-    // reaches the control.
+    // edition already holds, the older of two places in one edition, which
+    // of two alignments of one pair survives (O76, where a hand-corrected
+    // alignment used to be among what the `DELETE` took), and the tags and
+    // reading-list places it does take — are the parts a person deciding
+    // cannot find out any other way. Asserted here rather than only in
+    // `curation.test.ts` because that file pins the string and this one pins
+    // that the string reaches the control.
     const { host } = await ready()
 
     const why = control(host, '.why')
     expect(why.textContent).toContain('wherever they can')
     expect(why.textContent).toContain('only the newer survives')
-    expect(why.textContent).toContain('alignment corrected by hand')
+    expect(why.textContent).toContain(
+      'a hand-corrected alignment wins over one that is not',
+    )
   })
 
   it('says nothing about what is left standing when the rule is refused', async () => {

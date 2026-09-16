@@ -734,7 +734,8 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
             line,
             ", {} work(s) folded away ({} position(s) written, {} position(s) lost, \
              {} note(s) and {} truth page(s) moved, {} identical note(s) dropped, \
-             {} truth page(s) already held, {} row(s) discarded)",
+             {} truth page(s) already held, {} row(s) discarded, \
+             {} alignment(s) not carried)",
             report.emptied_works,
             report.moved_positions,
             report.lost_positions,
@@ -743,6 +744,7 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
             report.dropped_notes,
             report.moved_truth_collisions,
             report.discarded_rows,
+            report.uncarried_alignments,
         );
     }
     if report.unfolded_works > 0 {

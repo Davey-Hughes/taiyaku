@@ -165,6 +165,7 @@ export interface Derived {
   moved_truth_pages: number
   moved_truth_collisions: number
   discarded_rows: number
+  uncarried_alignments: number
   series_holding_no_work: number
   merged: number
   unrecognised_kinds: number

@@ -443,14 +443,32 @@ export function consequence(
  * already has marked keeps its own marks and the incoming ones die with the
  * work. `lost_positions`: when both sides hold a place in one edition the
  * older is destroyed. `discarded`: the work's `work_tag` rows and its
- * `collection_item` places — a reader's own curation — and its `credit` and
- * `alignment` rows, hand corrections among them, which is **O76**. All three
- * states are constructed by this branch's own tests, so none is a hypothesis.
- * Two clauses therefore replace the promise: the move is what the fold *can*
- * move, and what it cannot carry is named rather than left to be discovered.
+ * `collection_item` places — a reader's own curation — and its `credit` rows.
+ * All three states are constructed by this branch's own tests, so none is a
+ * hypothesis. Two clauses therefore replace the promise: the move is what the
+ * fold *can* move, and what it cannot carry is named rather than left to be
+ * discovered.
+ *
+ * **Alignments move now, and the sentence says which one wins — O76,
+ * 2026-09-15.** Until then `discarded` took every `alignment` row, a hand
+ * correction among them, and this line named "any alignment corrected by
+ * hand" among the discards. `fold::absorb` carries an alignment wherever each
+ * of its spans covers the same pages and halves on this edition, and counts
+ * those it leaves in `uncarried_alignments`: one it cannot place exactly, a
+ * hand-corrected one that would align an edition with itself once two become
+ * one, and a hand-corrected one whose pair this work already answers with a
+ * hand-corrected alignment of its own. **And the refusal clause widened with
+ * O121**: a fold that would leave a place or a note — on the volumes, or
+ * already on this edition — or an alignment already on this edition naming a
+ * different page refuses rather than moving it, because a slot is an index
+ * into one edition's spreads and the fold places it by page and half. An
+ * alignment of the volumes' own that it cannot place is left rather than
+ * refused over, which is the clause before it. The first version of the
+ * sentence said the refusal covered "anything it carries", which left out the
+ * rows already on this edition.
  */
 export const THE_FOLD =
-  'Accepting folds these works together on the next scan: the volumes named above are removed as their own works, and the reader positions, notes and marked pages on them move onto this edition wherever they can — a page this edition already has marked keeps its own marks, and where both sides hold a place in one edition only the newer survives. What the fold cannot carry it discards with the works: their tags, their places in reading lists, and any alignment corrected by hand. A fold that cannot move a reader’s own state safely refuses instead, leaving the volumes standing rather than losing anything.'
+  'Accepting folds these works together on the next scan: the volumes named above are removed as their own works, and the reader positions, notes, marked pages and alignments on them move onto this edition wherever they can — a page this edition already has marked keeps its own marks, where both sides hold a place in one edition only the newer survives, and where both sides align the same two editions a hand-corrected alignment wins over one that is not, and otherwise this edition keeps its own. What the fold cannot carry it discards with the works: their tags, their places in reading lists, and any alignment it cannot place exactly on these pages, one that would align an edition with itself, and a hand-corrected one this edition’s own hand-corrected alignment outranks. A fold that cannot move a reader’s own state safely, or would leave a place or note on either side, or an alignment already on this edition, naming a different page, refuses instead, leaving the volumes standing rather than losing anything.'
 
 /**
  * The refusal sentences a candidate rule runs into — one line per condition

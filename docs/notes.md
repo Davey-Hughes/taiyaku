@@ -17723,6 +17723,9 @@ Both were flagged while classifying the open rows on 2026-09-14 and are
 re-measured here on `6a2e72d`. The same pass escapes seven rows whose cells did
 not render.
 
+*O77 has since closed, on #153; O51 is still open. Marked here rather than
+rewritten, as the ritual asks — see both rows in `docs/status.md`.*
+
 ### O77: the mutant is caught, and not on purpose
 
 The row's substitution, `&&` to `||` in `derive::unattached_chapter_dirs`'s
@@ -18142,7 +18145,9 @@ rationale is as the row quotes it.
 edition = ?4 WHERE work_id = ?1 AND edition = ?3`. `edition_map` pairs editions
 whose members carry the same digests in the same `ordinal` order, so slot and
 region carry across unchanged and the edition key is the only part of an
-anchor a fold rewrites.
+anchor a fold rewrites. *Not true of every fold, marked here rather than
+rewritten: a slot is an index into one edition's spread flags, and O121 found
+the fold carrying it onto a twin that held none — see "O76 and O121".*
 
 **The row's definition left three columns unsettled.** `PRAGMA
 table_info(note)`, read in sqlite3 3.53.4 after replaying all thirteen
@@ -20149,3 +20154,331 @@ three new tests in `proposals/tests.rs` and one in `curation/tests.rs`, and an
 existing test tightened. `web/`: `node` stays at 1,158, and `jsdom` goes 971 →
 974 (two in `ProposalRow.test.tsx`, one in `Proposals.test.tsx`), measured with
 `vitest run --project node` and `--project jsdom`.
+
+## O76 and O121: a fold carries alignments, and places every slot by page — 2026-09-15
+
+O76 recorded that `fold::DISCARDED` took an emptied work's `alignment` rows
+whoever wrote them, so a person's correction went with a folded work, counted
+as one more row beside a scanlation credit. The user chose to carry alignments
+rather than refuse the fold: nothing undoes a correction short of making
+another (`web/src/correction.ts`), so a refusal would leave a duplicate work
+standing for good.
+
+### The brief, and the premise that was false
+
+The brief carried every alignment of the folded work onto the target,
+rewriting `work_id`, `from_key` and `to_key` through `edition_map`, with the
+runs following by `alignment_id`. It rested on one premise: a fold only goes
+ahead between editions holding the same archives in the same order (absorb's
+second refusal), so an alignment's slots mean the same pages on either side.
+
+That is false, and the code says why in three places. `Edition::slots` builds
+an edition's slots from its page count, its spread flags and its work's
+reading direction. `derive` builds every edition with `spreads: Vec::new()`,
+so a scan writes no spread flag; `taiyaku align` measures them from the images
+(`spread_flags`) and a `taiyaku.json` import writes them. And a fold's twin is,
+in the ordinary case, the edition the same scan has just built. So a slot past
+a spread on the folded edition is a different page on the twin.
+
+**The probe**, a scratch test appended to `fold/tests.rs`, run once and
+reverted (`git diff --stat` empty afterwards): a folded edition holding a
+spread at page 2, a twin holding none, one alignment whose first span is
+`0-2R`. Read through `project::sidecar` and `route`:
+
+| state | `runs_of` | `route` pages 0–5 |
+| --- | --- | --- |
+| folded work, before the move | `Ok`, three runs | all six resolve |
+| target, rows moved and keys rewritten | Err("the source edition has no slot `2R` in span `0-2R`") | `None` |
+| target, the spread flag carried as well | `Ok`, the same three runs | all six resolve, the same |
+
+**Across the corpus**, by `scratchpad/o76/corpus-emulation.py` — a
+re-implementation of `runs_of`, not the Rust code, kept with its log and
+re-run on 2026-09-15: all 22 alignments in the 12 `corpus/*/taiyaku.json` read as stored, 16
+touch an edition holding a spread flag, and with both editions of each read as
+holding none, 14 are unreadable — seven name a half, and seven straddle a
+spread and pair unequal counts (`gotoubun-v03`: `2-20` is 19 slots against
+`1-18`'s 18).
+
+The branch stopped there and reported it. The user's decision: carry the spread
+flags. And a suspected defect on `main` was to be measured first, because the
+fold already carried `progress.slot` and `note.slot` as numbers.
+
+### O121, on `main`
+
+`fold::tests::a_carried_position_and_note_name_the_page_they_named_before_the_fold`
+was written against unchanged `fold.rs`: a folded edition `colour` spreading
+page 2 (slots `0, 1, 2R, 2L, 3, 4, 5`), a place on slot 5 (page 4) and a note on
+slot 3 (the left half of page 2), folded onto a twin holding no flags.
+
+```
+assertion `left == right` failed: position slot 5 and note slot 3 on the target must name what they named on the folded work
+  left: (Some(Slot { page: 5, half: None }), Some(Slot { page: 3, half: None }))
+ right: (Some(Slot { page: 4, half: None }), Some(Slot { page: 2, half: Some(Left) }))
+```
+
+It reproduced over real archives too — the drive below, run with a release
+binary built from `eeff032`.
+
+### What the fold does now
+
+`fold::plan_slots` decides everything addressed by slot before anything is
+written, so every refusal is still a `SELECT`:
+
+- **Spread flags.** A twin holding none takes the folded edition's. A twin
+  holding a set keeps it. Two folded editions meeting on one twin that both
+  hold flags, in different sets, give it neither. One holding none is
+  unmeasured — a scan never writes a flag — and does not stop the other's
+  being taken. *This bullet said "with different sets give it neither" until
+  the review of the first commit, which found the code did not treat an
+  edition holding none as a set; the code's rule was kept, and the words now
+  say it.*
+- **Places and notes, on both works.** Every slot moves as the page and half it
+  named. A half is a side of the scan, so this holds across reading directions:
+  a left half stays a left half and takes the slot number that sits there. The
+  twin's own rows were written under the slots it had before the flags, and are
+  placed too, before any carried row lands beside them.
+- **Refused rather than counted**, where a place or note named a page and has no
+  slot naming the same page and half on the surviving edition, or where the new
+  flags would lengthen a span of an alignment the target already holds. A slot
+  past the end of its edition names no page and moves as it is. A place on another
+  page with a number beside it cannot be undone; a standing duplicate can.
+- **Alignments** (`fold::plan_alignments`) are carried where every span covers
+  the same pages and halves before and after. Where both works align one pair,
+  in either stored direction, a hand-corrected alignment (any run with
+  `by: "hand"`, `merge_spoke`'s own test) replaces one that is not, and
+  otherwise the target keeps its own. `uncarried_alignments` counts an
+  alignment naming an edition the folded work does not hold, one whose spans
+  would move, a hand-corrected one the target's own hand-corrected alignment
+  outranks, and a hand-corrected one between two editions the fold makes one.
+  A solver's alignment whose pair the target already answers is not counted,
+  and neither is a solver's edge between two editions the fold makes one.
+- `alignment` and `run` left `fold::DISCARDED`; its `page_flag` entry counts
+  credit flags only.
+
+O76's row said `alignment.by` records whether an alignment was corrected. It
+does not: `run.by` does, and `alignment.by` reads `hand` only on an edge
+`Sidecar::correct` created. The row is marked in place.
+
+### Over real archives, before and after
+
+`scratchpad/o76/drive.sh BIN RUNDIR PORT`, run once with the release binary
+built from `eeff032` and once with this branch's, into
+`target/o76-real-main` and `target/o76-real-branch`:
+
+1. `Go-Toubun no Hanayome - v01.cbz` from `corpus/gotoubun-v01/raw-mono` and
+   `(2018).cbz` from `en-mono`, hardlinked as `tree/Alt/ja/Gotoubun Alt - v01.cbz`
+   and `tree/Alt/tl/Gotoubun Alt - v01.cbz`.
+2. `library rules --import` of the seeded rules plus two `prefix` rules setting
+   edition keys `raw` and `tl`.
+3. `library import` of a `taiyaku.json` built from the corpus sidecar: hub
+   `raw`, `tl` holding `en-mono`'s seven spreads `[4, 45, 46, 49, 90, 121, 152]`,
+   and the corpus's `raw-mono -> en-mono` alignment renamed `raw -> tl`. Then
+   `library scan --add tree`: the scan found the imported work by content key,
+   gave its members roots, and kept its flags and its alignment.
+4. `serve --db`, a session, and through the routes: `PATCH …/alignments`
+   pairing raw page 100 with tl page 95 (`200`), `PUT …/progress` on `tl` slot 54
+   (`204`), `PUT …/notes` with one note on `tl` slot 5 (`200`). Slot 54 is page
+   50 and slot 5 the left half of page 4; `lookup raw tl 100` answered `95`.
+5. `library rules --import` swapping the keys to `raw-mono` and `en-mono` and
+   adding a `prefix` rule `Alt/` setting series `Go-Toubun no Hanayome`, then
+   `library scan`: the scan derives a new work over the same two paths and folds
+   the imported one into it.
+6. `serve` again and read the surviving work back.
+
+| | `main` (`eeff032`) | this branch |
+| --- | --- | --- |
+| fold line | `16 row(s) discarded` | `0 row(s) discarded, 0 alignment(s) not carried` |
+| spread flags on `en-mono` | none | `4,45,46,49,90,121,152` |
+| alignment on the surviving work | none | `raw-mono -> en-mono`, hand runs `100 -> 95` and `101 -> gap` |
+| place, slot 54 | names page 54 | names page 50 |
+| note, slot 5 | names page 5 | names the left half of page 4 |
+| `lookup raw-mono en-mono 100` | `no counterpart` | `95` |
+
+The surviving work's hub is `en-mono`, so the carried edge starts at an edition
+that is not the hub. On the branch a second correction through the route on that
+edge, raw 120 to en-mono 115, answered `200`, and `lookup … 100 120` answered
+`95` and `115`. On `main` the sixteen discarded rows are the alignment, its
+eight runs and the seven spread flags.
+
+The drives' first attempts were thrown away: a script error left a `serve`
+bound to the port, the next run's `serve` failed with `Address already in use`,
+and its writes reached the old server's database instead. The script now
+refuses to start on a bound port, checks its own server is the listener, and
+kills it on exit.
+
+`find corpus -newer <stamp>`, stamped at 05:57:41 before either drive: 0
+entries.
+
+### Mutations, watched
+
+`scratchpad/o76/run-mutants-o76-r1.sh`: a control run of `fold::` and `derive::`
+in `taiyaku-library` (132 passed), then each mutation applied to a pristine
+copy of `fold.rs`, the suite run with `--no-fail-fast`, and a mutation counted
+caught only on a `FAIL` line; `fold.rs` compared identical to the pristine copy
+afterwards. M10b and M11 matched nothing after `cargo fmt` rewrapped their
+lines, and were re-run as `-r2` with the formatted text.
+
+| mutation | first failure |
+| --- | --- |
+| M01 skip writing the spread flags | `a_spread_flag_a_fold_writes_survives_the_next_derive`: `left: (1, [])`, and eight more tests |
+| M02 copy flags onto a twin holding other ones | `a_note_on_a_half_the_twin_does_not_have_refuses_the_fold`: the fold went ahead |
+| M03 skip placing the twin's own rows | `note_copies_are_one_note_by_the_page_they_name_not_the_number_they_hold`: `(1, Some(1L))` |
+| M04 place the twin's own rows after the move | `a_carried_position_and_note_name_the_page_they_named_before_the_fold`: slot 6 names page 5 |
+| M05 keep the folded work's keys | `a_carried_alignment_names_the_twins_and_routes_as_it_did`: `[("colour", "en")]` |
+| M06 swap `from` and `to` | the same test: `[("en-color", "full-color")]` |
+| M07 carry the alignment without its runs | the same test: `[None, None, None, None]` |
+| M08 invert the hand precedence | `where_both_works_align_one_pair_…`: incoming hand, target not, reversed: `(Some(2), 1, 1)` |
+| M09 no self-edge filter | `an_alignment_between_two_editions_the_fold_makes_one_…`: `(0, [("full-color", …)])` |
+| M10a count a carried alignment | `a_carried_alignment_names_the_twins_and_routes_as_it_did`: `left: 1` |
+| M10b do not count an alignment whose spans move | `a_twin_holding_other_spread_flags_keeps_them_and_places_what_it_can`: `([4], 2, Some(2), 0, …)`, and two more tests |
+| M11 write before the refusals | `a_twin_holding_other_spread_flags_keeps_them_and_places_what_it_can`: refused, `work 2's colour (1 progress)` — the rows placed before the check were placed a second time by it; and four more tests |
+| M12 carry a folded row's slot as its number | `a_note_on_a_half_the_twin_does_not_have_refuses_the_fold`: the fold went ahead |
+| M13 no refusal over an unplaceable row | the same |
+| M14 ignore a target alignment the flags would move | `a_twin_row_or_alignment_the_new_flags_would_move_refuses_the_fold`: the fold went ahead |
+| M15 compare note copies as stored | `note_copies_are_one_note_…`: stored as slot 2, refused as two copies |
+| M16 place by number | seven tests, first `a_note_on_a_half_the_twin_does_not_have_refuses_the_fold` |
+| M17 skip the `b` span | `an_alignment_whose_b_span_the_twin_cannot_hold_is_left_and_counted`: `(0, [("full-color", "en-color")])` |
+
+M11 is caught by a false refusal, not by a refused fold leaving writes behind:
+a refusal returns with the transaction dropped, which rolls every write back,
+so no ordering of the writes against the refusals can leave one standing.
+
+The brief's "move progress and notes before the flags are in place" has no
+literal form here: a slot's new place is computed from the planned flags, not
+read back from the table, so the order of the flag write against the moves
+changes no value. What order does matter for is the twin's own rows against
+the moves, and that is M04.
+
+### What remains
+
+- The fold writes rows and no file. A surviving work with a `sidecar_path`
+  holds a carried alignment in rows until `library export --in-place`, and the
+  folded work's own `taiyaku.json` still names it — as has always been true of
+  the notes and truth a fold moves.
+- A fold is refused, not carried, where a twin's own place, note or alignment
+  sits on a page the new flags split, and where two measurements of one
+  archive's spreads disagree under a place or note that depends on them. An
+  alignment in that second case is left and counted instead.
+- An alignment the target already held, on an edition that takes new flags, keeps
+  its stored `quality` block, whose `slots` counted the sequence without them.
+  `Sidecar::quality_of` recomputes from the runs and nothing reads the stored
+  count, so it is stale rather than wrong in use.
+- `scripts/mutants.sh` was not run on this branch; the table above is by hand.
+- **Unmeasured, read and not driven.** `library import` of a document over a
+  surviving work (`import::reimport`, `Scope::Document`) replaces that work's
+  page flags from the document. A document holding no spreads would drop the
+  flags a fold wrote, and every place and note the fold had placed under them
+  would then name another page.
+
+### The review's fix round
+
+An independent review of the first commit, `db2fe30`, drove its own probes and
+twenty-six mutations (`scratchpad/o76-review/`). It found no reader row placed
+on a wrong page in anything it drove, and eight things to address, which the
+branch's second commit does. One line each: what changed, and what was watched
+failing.
+
+1. **Two statements over reader data were unpinned.** `resequence_rows`'
+   `UPDATE progress` passed every fold and derive test with its `user_id`
+   dropped (the review's M14) or its `work_id` dropped (M15); its probes moved
+   one reader's place onto another's page, and a place on an unrelated work.
+   **Fixed by** `every_statement_that_places_a_slot_touches_only_its_own_row`:
+   two readers on one twin at different pages, the first reader on the
+   target's other edition too, and the same reader, key and note id on an
+   unrelated work, every slot different. **Watched**: the review's M14 and M15,
+   and F01–F09 below, each fail it. Its first draft put the unrelated work's
+   rows before the spread, where placing them changes nothing; since this round
+   `resequence_rows` skips a slot already where it stands, so a read that had
+   lost its work wrote nothing there and F03 and F08 survived. The rows moved
+   past page 3 and both fail.
+2. **A row naming no page refused a fold `main` makes.** `Resequenced::place`
+   returned `None` for a slot past the end, which `notes::validate` keeps on
+   purpose, and the refusal said the row would name another page. **Fixed**:
+   a slot that named no page before the fold is carried as it was, and only a
+   row that named a page and has no slot naming it refuses.
+   `a_row_naming_no_page_is_carried_as_it_was_and_only_a_row_naming_one_refuses`
+   covers a note past the end on the twin, a place past the end on the folded
+   edition, and a refusal counting only the row that named a page. **Watched**:
+   F10, the first commit's `place`, fails it (`the fold was refused … (1
+   note)`); F11, carrying an unplaceable row too, fails four refusal tests.
+3. **The flag rule and its docs disagreed.** The code treats a folded edition
+   holding no flags as unmeasured and lets the twin take the measured set; the
+   docs said two different sets give neither. **Kept the code** (the
+   coordinator's decision) and fixed `plan_slots`' doc, the bullet above and
+   the O76 row. `a_folded_edition_holding_no_flags_does_not_disagree_with_one_that_holds_them`
+   pins it, with a note on the unmeasured copy placed under the taken flag and
+   one the flag would split refusing. **Watched**: the review's M26 fails it,
+   `left: ([], 4, …)`.
+4. **The scan JSON's counter was unasserted.** The review rendered it as
+   `discarded_rows + 0 * uncarried_alignments` and all 585 `taiyaku-serve`
+   tests passed. **Fixed by** `a_scan_report_counts_the_alignments_a_fold_left_behind`,
+   through the scan route: three alignments on the folded work naming editions
+   it does not hold, `uncarried_alignments` 3, and `discarded_rows` checked not
+   to be 3 (it is 0). **Watched**: the review's M12 fails it, 585 passed and 1
+   failed.
+5. **The slot refusal's message had three runs of fourteen spaces**, its line
+   continuations lost, and it reaches `DeriveReport::unfoldable`. **Fixed**, and
+   `a_note_on_a_half_the_twin_does_not_have_refuses_the_fold` asserts the whole
+   sentence. **Watched**: F12, the gapped message, fails it.
+6. **A write moved above a refusal was hidden by the rollback** (the review's
+   M09, the flag write above the slot refusal, and M09c, all four writes above
+   the truth refusal). **Fixed**: the fold tests' `refusal` helper makes every
+   insert, update and delete on `page_flag`, `progress`, `note`, `alignment` and
+   `run` raise first, O78's `refused_leaving_every_note` widened, and
+   `a_fold_refused_after_its_slot_plan_has_writes_makes_none_of_them` refuses at
+   the last arm with a flag, a place and an alignment all planned. **Watched**:
+   M09 fails four tests (`writing spread flag 3 onto full-color: a fold that
+   should have refused wrote to page_flag`), M09c fails that one.
+7. **Three claims overstated.** The O76 row said "the rest are counted"; two
+   kinds are not, and the row now names them as `DeriveReport`'s doc does.
+   `THE_FOLD` said the fold refuses when it would leave "anything it carries"
+   on another page; the refusal covers rows already on the surviving edition
+   too, and the sentence now says "a place or note on either side, or an
+   alignment already on this edition". `shared_note_ids`' doc still said
+   "there is no slot rewrite to account for" above its own correction; that
+   sentence is rewritten, and so is `fold.rs`' module doc, which said an
+   alignment not carried is always counted. Grepping for the shape afterwards
+   found the same "no slot rewrite" claim twice more: an O78 test's doc in
+   `fold/tests.rs`, corrected, and O78's own section of these notes, marked in
+   place. **Watched**: F13, the first
+   commit's `THE_FOLD` sentence, fails `curation.test.ts`.
+8. **Recorded, not fixed**: `library import` over a surviving work could drop
+   the flags a fold wrote — What remains above, and the O76 row.
+
+| mutation | first failure |
+| --- | --- |
+| review's M09, flag write above the slot refusal | `a_fold_refused_after_its_slot_plan_has_writes_makes_none_of_them`: a write reached `page_flag`; and three more tests |
+| review's M09c, all four writes above the truth refusal | the same test |
+| review's M12, scan JSON counter carries `discarded_rows` | `a_scan_report_counts_the_alignments_a_fold_left_behind` |
+| review's M14, progress `UPDATE` without its user | `every_statement_that_places_a_slot_touches_only_its_own_row`: places `[(8, …` |
+| review's M15, progress `UPDATE` without its work | the same: places `[(6, …` with the unrelated work's moved |
+| review's M26, a flagless edition joins the agreement check | `a_folded_edition_holding_no_flags_does_not_disagree_with_one_that_holds_them`: `([], 4, …)` |
+| F01 progress `UPDATE` without its edition | the scoping test, places |
+| F02 progress `SELECT` without its edition | the scoping test, places `[(5, …` |
+| F03 progress `SELECT` without its work | the scoping test, places `[(5, …` (survived the fixture's first draft) |
+| F04 note `UPDATE` without its user | the scoping test, notes `[(7, Some(6)), …` |
+| F05 note `UPDATE` without its work | the scoping test, notes |
+| F06 note `UPDATE` without its id | the scoping test, notes |
+| F07 note `SELECT` without its edition | the scoping test, notes |
+| F08 note `SELECT` without its work | the scoping test, notes `[(8, Some(7)), …` (survived the fixture's first draft) |
+| F09 spread write without its work | the scoping test: the unrelated work's place names half of page 3 |
+| F10 a slot naming no page refuses | the past-the-end test: refused `(1 note)` |
+| F11 an unplaceable slot carried as it was | four refusal tests: a write reached `note` |
+| F12 the gapped refusal message | `a_note_on_a_half_the_twin_does_not_have_refuses_the_fold`, whole sentence |
+| F13 `THE_FOLD`'s first refusal clause | `curation.test.ts`: `says alignments move, which one wins, and what it leaves and refuses` |
+
+`scratchpad/o76/run-mutants-o76-r3.py`, then `-r4.py` for the scoping rows once
+the fixture moved: a control of each suite first (library 136 passed, serve 586,
+web `node` 1,158 and `jsdom` 963 under `--reporter=default`), each mutation
+counted caught only on a `FAIL` line, and `fold.rs`, `config_api.rs` and
+`curation.ts` compared identical to their pristine copies afterwards.
+
+### Counts
+
+Rust 2170 → 2184, fourteen new tests — thirteen in `fold/tests.rs` and one in `derive/tests.rs` — counted by the gate's `status-test-count`. `web/`: `node`
+1,157 → 1,158 and `jsdom` 962 → 963, read off `vitest run --project node` and
+`--project jsdom`.
+
+The fix round: Rust 2184 → 2189, four new tests in `fold/tests.rs` and one in
+`config_api/tests.rs`. `web/` unchanged at `node` 1,158 and `jsdom` 963, read
+off the mutation runner's control under `--reporter=default`.

@@ -102,6 +102,7 @@ const derived = (over: Partial<config.Derived> = {}): config.Derived => ({
   moved_truth_pages: 0,
   moved_truth_collisions: 0,
   discarded_rows: 0,
+  uncarried_alignments: 0,
   series_holding_no_work: 0,
   merged: 0,
   unrecognised_kinds: 0,

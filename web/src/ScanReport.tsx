@@ -228,6 +228,11 @@ export function DeriveSection({ derive }: { derive: Derived }) {
           n={derive.discarded_rows}
         />
         <Count
+          field="uncarried_alignments"
+          label="Alignments not carried"
+          n={derive.uncarried_alignments}
+        />
+        <Count
           field="series_holding_no_work"
           label="Series holding no work"
           n={derive.series_holding_no_work}

@@ -1578,6 +1578,10 @@ fn derive_summary_prints_unrecognised_kinds_when_nonzero_and_omits_them_when_zer
 /// repeated a value would let two of them swap places and print the identical
 /// line.
 ///
+/// **`uncarried_alignments` last — O76.** An alignment the fold left behind is
+/// not a row its delete discarded, and a person who corrected one needs the
+/// number on its own; 89 is in no other field.
+///
 /// **`dropped_notes` beside `moved_notes`, and not inside it — O78.** A note
 /// copy the fold dropped because the target already held it identically is
 /// not a note moved, and a reader counting their notes afterwards finds one
@@ -1593,12 +1597,14 @@ fn derive_summary_says_what_a_fold_moved_and_what_its_delete_took() {
     report.moved_truth_collisions = 21;
     report.discarded_rows = 34;
     report.dropped_notes = 55;
+    report.uncarried_alignments = 89;
     let line = derive_summary(&report, 0);
     assert!(
         line.contains(
             "2 work(s) folded away (3 position(s) written, 13 position(s) lost, \
              5 note(s) and 8 truth page(s) moved, 55 identical note(s) dropped, \
-             21 truth page(s) already held, 34 row(s) discarded)"
+             21 truth page(s) already held, 34 row(s) discarded, \
+             89 alignment(s) not carried)"
         ),
         "{line}"
     );
