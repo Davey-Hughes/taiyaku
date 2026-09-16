@@ -5,7 +5,7 @@
 // --- why a baseline rather than a raw survivor list ---------------------------
 //
 // A survivor list is only actionable if a new one is distinguishable from an old
-// one. 92 of the 105 entries below are untriaged, and a run that reprints them
+// one. 91 of the 115 entries below are untriaged, and a run that reprints them
 // all trains the reader to skim — which is the failure mode a scheduled job is
 // most prone to and the exact reason `.forgejo/workflows/mutants.yml` gates
 // nothing.

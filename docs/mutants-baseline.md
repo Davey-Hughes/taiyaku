@@ -732,23 +732,6 @@ it mutates only changed code and takes minutes.
   hasher built from anything but this module's constants is caught the moment
   they differ from the crate's defaults.
 
-### `crates/taiyaku-library/src/derive.rs`
-
-- `crates/taiyaku-library/src/derive.rs:1451:51: replace && with || in unattached_chapter_dirs`
-  UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
-  examined. Nothing is known about this mutant beyond the fact that it survived.
-
-  *Renumbered from `:1262` on 2026-08-26 — same expression, same function, same
-  description; `write_edition_metadata` and `in_page_order` were added above it
-  in the file. Recorded rather than left to reappear as a new survivor on the
-  next run, which is the one thing this file exists to prevent.*
-
-  It is here so a dispatched run's diff stays readable, **not** because anybody has
-  judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
-  and prints the total on every run for exactly that reason. Triaging one means
-  deciding which of three it is: an equivalent mutant, a decision inside output
-  nobody asserts on, or a missing assertion. Only the third is work on the tests.
-
 ### `crates/taiyaku-library/src/import.rs`
 
 - `crates/taiyaku-library/src/import.rs:437:36: replace && with || in drop_stale_spoke`

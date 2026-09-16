@@ -19507,3 +19507,93 @@ async worker, which is what the changes applied by hand above are for.
 
 Rust 2169 → 2170: one new test, in `library_api/tests.rs`, counted by the
 control run above. `web/` was not changed.
+
+## O77: a test that names the guard — 2026-09-15
+
+O77 recorded that `&&` → `||` in `derive::unattached_chapter_dirs`'s guard
+passed the `taiyaku-library` suite. "O77 and O51" above found it caught on
+2026-09-14, by `preview::tests::a_preview_and_a_real_save_produce_the_same_structure`
+alone, a test that pins a preview against a real save and does not name the
+guard.
+
+### Before the test, on `eeff032`
+
+The substitution was applied by hand in place (one match), then
+`cargo nextest run --workspace --all-features --no-fail-fast`, then `git
+checkout` of the file and an empty `git diff`:
+
+- 2170 tests ran: 2169 passed, 1 failed, 4 skipped.
+- The one failure is the preview test, at its literal `Impact`:
+  `proposals_raised: 1` against `0`.
+
+The incidental catch holds across the whole workspace, not only the crate, and
+nothing else sees the guard.
+
+### The test
+
+`derive::tests::only_a_directory_resolving_a_chapter_and_no_volume_is_asked_about`
+calls `unattached_chapter_dirs` itself. `report.unattached_chapter_dirs` cannot
+stand in for it: that count is `classify`'s `chapter_dirs`, collected under the
+same condition written a second time. The fixture is five directories under one
+root, one per side of each half of `volume.is_none() && chapter.is_some()`, with
+the shape the guard exists for present twice, so the answer is a map rather than
+a count:
+
+| directory | resolves | in the answer |
+| --- | --- | --- |
+| `Kaguya-sama/Kaguya-sama - c001` | a chapter, no volume | yes |
+| `Dandadan/Dandadan - c012` | a chapter, no volume | yes |
+| `Chaptered/Chaptered - v03 - c9` | a volume and a chapter | no |
+| `Series/Series - v01` | a volume, no chapter | no |
+| `ONE PIECE/001` | neither | no |
+
+The first assertion checks the fixture resolves as the table says, through
+`derive`: 3 works and 2 unattached directories. The second asserts the map
+`{(1, "Dandadan"): "Dandadan", (1, "Kaguya-sama"): "Kaguya-sama"}`, keyed by
+root id and directory with the series as the value. On the untouched guard:
+`1 test run: 1 passed`.
+
+### Each half, mutated by hand
+
+Each mutation was a one-match replacement in place, then
+`cargo nextest run -p taiyaku-library --no-fail-fast`, then `git checkout` of
+`derive.rs` and an empty `git diff`. As a control, the runner printed no failure
+line over the untouched tree: `805 tests run: 805 passed, 4 skipped` for the crate
+before the test existed, and `2171 tests run: 2171 passed, 4 skipped` for the
+workspace after it.
+
+| mutation | the new test's `left`, by directory | anything else failing in `taiyaku-library` |
+| --- | --- | --- |
+| `&&` → `\|\|` | `Chaptered`, `Dandadan`, `Kaguya-sama`, `ONE PIECE` | the preview test |
+| `volume.is_none()` → `volume.is_some()` | `Chaptered` | five `proposals::tests`, four of them naming `attach-chapters` |
+| `&& chapter.is_some()` dropped | `Dandadan`, `Kaguya-sama`, `ONE PIECE` | the preview test |
+| `volume.is_none() &&` dropped | `Chaptered`, `Dandadan`, `Kaguya-sama` | nothing |
+
+Every row fails the new test at its map assertion, each with a different map.
+The last row fails nothing else in the crate.
+
+### The same condition in `classify`
+
+`&&` → `||` in `classify`'s own `resolved.volume.is_none() &&
+resolved.chapter.is_some()`, run the same way over the whole workspace:
+`2171 tests run: 2154 passed, 17 failed`. Sixteen are tests that do not name
+it, fourteen in `derive::tests`, one in `proposals::tests` and one in
+`rules::tests`, and the seventeenth is the new test, at its first assertion
+(`left: (1, 4)` against `(3, 2)`). That copy of the condition was never the gap.
+
+### `docs/mutants-baseline.md`
+
+The entry `derive.rs:1451:51: replace && with || in unattached_chapter_dirs` is
+removed, with its `derive.rs` heading, which held nothing else. It was the
+third of that file's three kinds, a missing assertion, and a test now names it.
+Its key was stale as well: the guard sits at line 2392 on `eeff032`.
+
+`scripts/mutants-baseline.mjs`'s header said "92 of the 105 entries below are
+untriaged". Counted over the lines after `<!-- entries -->`, the file held 116
+entries, 92 of them untriaged, before this change, and holds 115 and 91 after,
+which is what the header now says.
+
+### Counts
+
+Rust 2170 → 2171: one new test, counted by the workspace runs above. `web/` was
+not changed.

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::Connection;
 
@@ -1755,6 +1755,58 @@ fn a_chapter_directory_inside_another_one_is_not_a_second_unattached_directory()
 
     assert_eq!(report.unattached_chapter_dirs, 1, "one question, not two");
     assert_eq!(report.works, 0);
+}
+
+#[test]
+fn only_a_directory_resolving_a_chapter_and_no_volume_is_asked_about() {
+    // O77. `unattached_chapter_dirs` is what `proposals::raise` asks, and
+    // `report.unattached_chapter_dirs` above is not its answer — that count is
+    // `classify`'s own `chapter_dirs` — so no assertion on the report can see
+    // this function's guard. Five directories, one per side of each half of
+    // `volume.is_none() && chapter.is_some()`, and the shape the guard exists
+    // for twice, under different parents and different series: the answer is
+    // a map of two named directories, not a count a swap could keep.
+    let tree = crate::tests::tempdir("derive-unattached-guard");
+    // A chapter and no volume, twice: the two directories to report.
+    write_pages(
+        &tree.path().join("Kaguya-sama").join("Kaguya-sama - c001"),
+        1,
+    );
+    write_pages(&tree.path().join("Dandadan").join("Dandadan - c012"), 2);
+    // A volume and a chapter: a member of v03 and nothing to ask about.
+    write_pages(
+        &tree.path().join("Chaptered").join("Chaptered - v03 - c9"),
+        3,
+    );
+    // A volume and no chapter.
+    write_pages(&tree.path().join("Series").join("Series - v01"), 4);
+    // Neither: `bare_numbered`'s shape, a series and nothing else.
+    write_pages(&tree.path().join("ONE PIECE").join("001"), 5);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+
+    let report = derive::derive(&conn).expect("derive");
+    assert_eq!(
+        (report.works, report.unattached_chapter_dirs),
+        (3, 2),
+        "the fixture is what its comments say: v03, v01 and the volume-less \
+         `001` are works, and the two chapter directories are not"
+    );
+
+    let asked = derive::unattached_chapter_dirs(&conn).expect("unattached");
+
+    assert_eq!(
+        asked,
+        BTreeMap::from([
+            ((root.id, "Dandadan".to_string()), "Dandadan".to_string()),
+            (
+                (root.id, "Kaguya-sama".to_string()),
+                "Kaguya-sama".to_string()
+            ),
+        ]),
+    );
 }
 
 #[test]
