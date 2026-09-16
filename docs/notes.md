@@ -19744,7 +19744,13 @@ being written. The same read is on the async worker in `opds::works`,
 `routes::get_sidecar`, and `routes::locate_member`, which `routes::get_page` and
 `opds::stream_page` call in the handler: five handlers with this one. Moving
 this handler's read would leave four, and none of the five is a `stat`, so all
-five are left and recorded here.
+five are left and recorded here. *(Counted again from the code on 2026-09-15,
+while filing O122, and the count here is wrong rather than stale:
+`routes::get_page` calls `locate_member` **inside** its own `spawn_blocking`
+(opened at `routes.rs:878`, the call at `:886`), so it never took this read on
+the async worker. The set is four — `opds::works`, `opds::work_feed`,
+`routes::get_sidecar` and `opds::stream_page`. Marked here rather than
+rewritten.)*
 
 ### Every filesystem call in `taiyaku-serve`, placed
 
@@ -19843,7 +19849,8 @@ passed 20 times.
 ### What remains
 
 - `work.sidecar()` waits on `Work`'s lock on the async worker in five handlers,
-  while a correction to that work is written.
+  while a correction to that work is written. *(Four, not five — see O122 and the
+  marker above.)*
 - `reqlog::Log::finish` writes each request's line on the async worker while the
   request log is on.
 - No test reaches `advertised_types`' panic arm or its 404, sees that an edition
