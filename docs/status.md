@@ -118,7 +118,7 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Six crates, 2171 tests, plus 2,119 in `web/`'s TypeScript — 1,157 in the `node`
+Six crates, 2173 tests, plus 2,119 in `web/`'s TypeScript — 1,157 in the `node`
 project and 962 in the `jsdom` one — and twenty-eight more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -186,7 +186,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Twenty-four of the 2171 are standing checks gated on
+`rayon` exactly as `align` already did. Twenty-four of the 2173 are standing checks gated on
 `TAIYAKU_CORPUS` — seventeen in `crates/taiyaku-cli/src/corpus.rs`, five in
 `crates/taiyaku-serve/src/corpus.rs`, two in
 `crates/taiyaku-library/src/corpus.rs` (this read "nineteen … ten … five"
@@ -1389,11 +1389,11 @@ what those branches found past the edges of their rows, or turned up
 by answering a question an earlier item's notes wrote down and left open, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Seventy-seven are now closed
+visible act rather than a thing someone remembers. **Seventy-eight are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
-O21, O22, O25, O26, O27, O28, O29, O30, O34, O35, O36, O37, O38, O39, O40, O43,
+O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43,
 O44, O47, O53, O54, O55, O62, O64, O65, O67, O70, O71, O73, O75, O77, O78, O79, O80, O83, O84, O85, O86, O92, O93, O94, O95, O96,
-O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O113, O114, O115, O116, O117 and O119 — leaving forty-two.** *(It read "leaving fifty" against
+O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O113, O114, O115, O116, O117 and O119 — leaving forty-one.** *(It read "leaving fifty" against
 forty-nine open rows from the moment O97 closed: the count of closed items
 moved and the count of open ones did not, which is the drift the sweep at the
 head of this section exists to catch and did not run. Corrected here. **It
@@ -1455,7 +1455,9 @@ it moved the closed count and not the open one. O116 closed the same day on a
 branch of its own, once each browse handler had been put back on the async
 worker by hand, and took it to forty-three. O77 closed the same day on a branch
 of its own, once a test naming its guard had failed against each half of it
-mutated by hand, and took it to forty-two.)*
+mutated by hand, and took it to forty-two. O33 closed the same day on a branch
+of its own, once each of its two filters had been removed by hand and a page it
+refuses had come back, and took it to forty-one.)*
 
 **What spec A2's fourth review reported and nobody has verified.** Four rounds
 returned fifteen findings each. Round four's fifteen were: two fixed as security
@@ -1544,7 +1546,7 @@ each is in the detail below; the table is what a reader scans.
 | O30 | [x] | A relative `TAIYAKU_CORPUS` skipped every standing check and reported `ok` | `corpus.rs::corpus`, `corpus.rs::corpus_root` | O26's corpus drive |
 | O31 | [ ] | The text-block axis is decided per page, where the design says per cluster — so a page cannot report vertical dialogue beside a horizontal SFX, and the survey's `v`/`h` figures are per-page decisions counted per block — *all three of those consequences are addressed by L2b Task 5 (`8531d05`): `axis_of` is `#[cfg(test)]`, `detect_page_with` unions both axes and dedupes with `uncontained`, and `region_experiment::summarize` counts per surviving block. **Open on what replaced them**: where both smears produce an identical box the axis reported is the dedupe tie-break's default rather than a measurement — 13 of 69 blocks changed label on an unchanged box over the 90-page sample — so `Region::axis` is still not "what the clustering knows", which is what this item tracks* | `detect.rs::detect_page_with`, `detect.rs::uncontained`'s tie-break | L2a whole-branch review |
 | O32 | [ ] | The `median_area` disqualifier cannot fire — `MAX_BLOCK_AREA` clamps every region under it before the median is taken | `detect.rs::detect_page_with`, `regions.rs::median_area` | L2a whole-branch review |
-| O33 | [ ] | Two of the five detection constants reject nothing in any test, so a computation bug in either would ship unseen — *the gap is in the tests and stays open; against the corpus `MAX_BLOCK_AREA` fires on 89 of 90 pages and `MIN_BLOCK_STROKE_SPAN` on 1* | `detect.rs`, the `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` filters | L2a whole-branch review |
+| O33 | [x] | Two of the five detection constants reject nothing in any test, so a computation bug in either would ship unseen — *the gap is in the tests and stays open; against the corpus `MAX_BLOCK_AREA` fires on 89 of 90 pages and `MIN_BLOCK_STROKE_SPAN` on 1* — *closed 2026-09-15 by two tests, each a pair of pages one pixel either side of its constant, whose refused page comes back when that filter is removed* | `detect.rs`, the `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` filters; `detect/tests.rs`'s `a_block_shorter_than_two_stroke_scales_is_not_a_region` and `a_block_over_the_area_ceiling_is_not_a_region` | L2a whole-branch review |
 | O34 | [x] | `MIN_INK` cannot reject anything on real material — it sums overlapping stroke bounding boxes, so 61 of 76 surviving blocks score above 1.0 against a floor of 0.05, and it rejected 0 blocks on 0 of 90 sampled pages — *closed by `aa0b479` (L2b Task 6) taking the first of the two routes this item named: it counts ink pixels at the page's own Otsu threshold, so the quantity is bounded by the block's own area by construction rather than by the material, and the ratio across the same sample fell from 0.38–1.89 to 0.09–0.56. It now rejects: 16 spurious blocks over the nine labelled editions, spurious-per-page 55.31 → 54.96. **Band-free it still rejects nothing on the 90 sampled pages** — the filter is live in the shipped, banded detector and not in the population `region_experiment.rs` samples* | `detect.rs::detect_page_with`, the `MIN_INK` filter and `ink_in` | the survivor-composition measurement |
 | O35 | [x] | A `PUT` response with no `ETag` turns every later note write into a silent no-op — the same "write without a validator" hole the 412 path was fixed for, left open on the response path — *closed on the branch that found it (178f3e5): the guard became `writeGate` with three arms — `wait` (no document, the only silent one), `refuse` (document but no validator, carrying a notice), `write` — after the correct-behaviour test was watched failing against a faithful port* | `api.ts::putNotes`, `App.tsx::writeNotes`'s `notesEtag === undefined` guard | coverage-gate reading |
 | O36 | [x] | The two write debounces are never cancelled on unmount, so an unmounted `App` can still `PUT` up to 700 ms later — *a two-line fix, not an impossibility: `useFlushOnHide`'s cleanup already exists and `debounce` already exposes `cancel()`* — *closed on the branch that found it (4303dee): `useFlushOnHide`'s cleanup now flushes both, decided per call site: cancelling `writeProgress` drops the last page turn, cancelling `saveNotes` destroys up to 700 ms of prose that exists nowhere else* | `App.tsx`'s `writeProgress`/`saveNotes` handles, `hooks.ts::useFlushOnHide` | coverage-gate reading |
@@ -2997,7 +2999,7 @@ something an alignment already reports. A merge keeps whatever hub the file name
 **Three came from L2a's whole-branch review** — O31 to O33, none blocking because
 the detector they describe does not work yet for reasons upstream of all three,
 and fixing any of them alone would sharpen an instrument that is measuring the
-wrong population:
+wrong population *(O33 has since closed — see its entry below)*:
 
 - **O31 — The axis is decided once per page, where the design says once per
   cluster. Open.** `detect_page` calls `axis_of` over the whole page's
@@ -3069,7 +3071,7 @@ wrong population:
   has not been written — so it stays open on its own terms rather than being
   ticked because the decision it was blocking went ahead without it.
 - **O33 — Two of the five detection constants reject nothing in any test.
-  Open.** `MIN_STROKES` and `MIN_INK` are each pinned by a fixture that reaches
+  Closed.** `MIN_STROKES` and `MIN_INK` are each pinned by a fixture that reaches
   them and is refused by them. `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` are
   not: the panel-border and lone-speck fixtures are both rejected by
   `MIN_STROKES` first, and the blocks that do survive sit at 0.015 against a
@@ -3099,6 +3101,24 @@ wrong population:
   behaviour. It stays open on those terms. What the same measurement did find
   inert is the constant this item lists as *pinned*: `MIN_INK` rejected nothing,
   on any page. That is O34.
+  **Closed on 2026-09-15, by two tests that each draw a pair of pages one pixel
+  either side of a constant.** `a_block_shorter_than_two_stroke_scales_is_not_a_region`
+  lays six 40px bars across a block, so `stroke_scale` is 40 and the span asked
+  for is 80: a 79px block comes back empty and an 80px one as one region, drawn
+  stacked and turned, so a filter reading `width()` or `height()` in place of
+  `longer()` fails one orientation each.
+  `a_block_over_the_area_ceiling_is_not_a_region` stacks five 100×39 bars into
+  a block 0.15075 of the page, which is refused, and a twin at 0.14975, which is
+  kept at its own size. Every other filter has room on both pages, and removing
+  the filter under test brings its refused page back, so nothing else is doing
+  the refusing. Each constant at ×4, ×2, ÷2 and ÷4, each comparison inverted,
+  the span read off the wrong side, and the area read off the wrong side or in
+  pixels all fail one of the two tests. Two mutations survive, and no test here could tell either apart:
+  `<=` as `<`, since only a page of at least 2²⁵ pixels can put a block exactly
+  on `f64::from(0.15f32)`; and the span's `scale * MIN_BLOCK_STROKE_SPAN` as the
+  smear `gap`, which is the same number while `SMEAR_K` is 2. The table is in
+  `docs/notes.md`, "O33: two fixtures that reach the two block constants".
+  Production code is unchanged.
 
 **One came from asking a diagnosis about the case it did not explain** — O34,
 found by the measurement that answered why the noisiest edition was the only
@@ -4011,7 +4031,7 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the forty-two open items tabled above — twenty-one of them found by
+What remains: the forty-one open items tabled above — twenty of them found by
 a whole-branch review or by the review of one's own fixes (O42 and O44 among
 them — **O44 has since closed, on 2026-08-29, and is no longer one of them** — O96 from the *third* such pass over one branch, which is the most any
 change here has had — **it has since closed, on 2026-09-06, and is no longer one
@@ -4102,7 +4122,9 @@ change rather than left describing deleted code** (2026-08-12): all three of
 its consequences are addressed, and it stays open on the residue the union
 introduced — a block both smears produce identically has no axis to discover
 and takes the dedupe tie-break's default, which is 13 of 69 blocks over the
-90-page sample. See each entry above.*
+90-page sample. See each entry above.* *O33 has since closed too, on
+2026-09-15, by fixtures that reach both of its constants — see its entry above —
+which leaves O31 and O32 the two still held together.*
 
 **Three more were the reader's, and they are closed rather than open** — O35,
 O36 and O37 were each a decision plus a few lines, and the branch that found

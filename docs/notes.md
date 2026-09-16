@@ -7698,7 +7698,8 @@ records that `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` reject nothing *in
 any test*: against the corpus the dead one is `MIN_INK`, which O33 does not
 name, and `MAX_BLOCK_AREA` is the opposite of dead. O34 is opened for
 `MIN_INK`; O33 is annotated rather than closed, because the gap it names is in
-the tests and this measurement is not one.
+the tests and this measurement is not one. *O33 has since closed, on 2026-09-15 — see
+"O33: two fixtures that reach the two block constants" below.*
 
 ### What this changes for the redesign, which is the point of running it first
 
@@ -19597,3 +19598,112 @@ which is what the header now says.
 
 Rust 2170 → 2171: one new test, counted by the workspace runs above. `web/` was
 not changed.
+
+## O33: two fixtures that reach the two block constants — 2026-09-15
+
+O33 recorded that `MAX_BLOCK_AREA` and `MIN_BLOCK_STROKE_SPAN` reject nothing
+in any test: every page `detect/tests.rs` refused was refused before either
+filter, and every block it kept sat far inside both. The corpus half was
+answered before ("`MIN_BLOCK_STROKE_SPAN` fires twice in 90 pages.
+`MAX_BLOCK_AREA` fires on 89 of 90"); this branch closes the test half. No
+production code changes.
+
+### The two fixtures
+
+`a_block_shorter_than_two_stroke_scales_is_not_a_region` draws six bars 40px
+long and 4 or 5px thick on a 15px pitch, on a 400×600 page. Every bar's longer
+side is 40, so `stroke_scale` is 40 and the filter asks for 80; the block is 79
+or 80 long and 40 across. It draws the pair stacked and turned, so a filter
+reading `width()` or `height()` in place of `longer()` fails one orientation
+each.
+
+`a_block_over_the_area_ceiling_is_not_a_region` draws five bars 100×39 on a
+pitch of 141 or 140, on a 400×1000 page: one vertical block, 100×603 (0.15075
+of the page) or 100×599 (0.14975).
+
+Each test first asserts that the band keeps every bar and the scale is the one
+above ("fixture must bite"), then that the refused page is empty and the kept
+page is one region at the bars' own size. Every other filter has room on both
+pages, computed from the fixtures:
+
+| filter | span pair, 79 / 80 | area pair, 603 / 599 |
+| --- | --- | --- |
+| `BAND` (`lo` 64, `hi` 2000), a bar in ‱ of page height | 666 | 1,000 |
+| `MIN_STROKES` (4) | 6 | 5 |
+| `MIN_BLOCK_STROKE_SPAN` (2 × scale) | 79 / 80 against 80 | 603 / 599 against 200 |
+| `MAX_BLOCK_AREA` (0.15) | 0.0132 / 0.0133 | 0.15075 / 0.14975 |
+| `MIN_INK` (0.05) | 0.304 / 0.375 | 0.323 / 0.326 |
+
+### Hand mutations
+
+A script applied each change to `detect.rs` in place, ran
+`cargo nextest run -p taiyaku-cli --no-fail-fast -E 'test(/detect::tests::/)'`,
+and restored the file; a control ran first in each of the two batches (39
+passed, both times), and `detect.rs` matched `main` after each batch. "Span"
+is the new span test, "area" the new area test; messages as printed.
+
+| mutation | fails | message |
+| --- | --- | --- |
+| `MIN_BLOCK_STROKE_SPAN` 2 → 8 (×4) | span, area, and 2 others | `80px against a span of 80, turned=false: got []`; area: `100x599 is 0.14975 of the page, against 0.15: got []` |
+| `MIN_BLOCK_STROKE_SPAN` 2 → 4 (×2) | span | `80px against a span of 80, turned=false: got []` |
+| `MIN_BLOCK_STROKE_SPAN` 2 → 1 (÷2) | span | `79px against a span of 80, turned=false: got [Region { x: 0.25, y: 0.3333333333333333, w: 0.1, h: 0.13166666666666665, axis: Vertical }]` |
+| `MIN_BLOCK_STROKE_SPAN` 2 → 0 (÷4) | span | the same 79px message |
+| span `>=` → `>` | span | `80px against a span of 80, turned=false: got []` |
+| span `>=` → `<` | span, area, and 9 others | the 79px message; area: the 599 message |
+| span `longer()` → `width()` | span, area, and 8 others | `80px against a span of 80, turned=false: got []` |
+| span `longer()` → `height()` | span, `a_column_beside_a_row_keeps_both_axes` | `80px against a span of 80, turned=true: got []` |
+| span filter removed | span only | the 79px message |
+| span `scale * MIN_BLOCK_STROKE_SPAN` → `gap` | **SURVIVED** | equivalent; see below |
+| `MAX_BLOCK_AREA` 0.15 → 0.6 (×4) | area | `100x603 is 0.15075 of the page, against 0.15: got [Region { x: 0.375, y: 0.2, w: 0.25, h: 0.603, axis: Vertical }]` |
+| `MAX_BLOCK_AREA` 0.15 → 0.3 (×2) | area | the same 603 message |
+| `MAX_BLOCK_AREA` 0.15 → 0.075 (÷2) | area | `100x599 is 0.14975 of the page, against 0.15: got []` |
+| `MAX_BLOCK_AREA` 0.15 → 0.0375 (÷4) | area, `a_block_of_hollow_strokes_is_mostly_paper` | the 599 message |
+| area `<=` → `<` | **SURVIVED** | unreachable; see below |
+| area `<=` → `>=` | area, span, and 9 others | the 603 message |
+| area `w × h` → `w × w` | area | the 603 message |
+| area `w × h` → `h × h` | area, `a_block_of_hollow_strokes_is_mostly_paper` | the 599 message |
+| area in pixels, not a fraction of the page | area, span, and 9 others | the 599 message |
+| page area as `width × width` | area | the 599 message |
+| area filter removed | area only | the 603 message |
+
+The rows below tighten an *earlier* filter past each fixture's margin, to show
+the fixtures depend on passing it rather than on it being loose:
+
+| mutation | fails | message |
+| --- | --- | --- |
+| `BAND.lo` 64 → 700 | span, and 8 others | `fixture must bite: all six bars must pass the band and set the scale, turned=false` — the area test passes, its bars being 1,000‱ |
+| `BAND.lo` 64 → 1100 | span, area, and 9 others | area: `fixture must bite: all five bars must pass the band and set the scale` |
+| `MIN_STROKES` 4 → 7 | span, area, and 7 others | the kept pages come back empty: `80px … got []`, `100x599 … got []` |
+| `MIN_INK` 0.05 → 0.35 | area only | `100x599 is 0.14975 of the page, against 0.15: got []` — the span pair's kept page scores 0.375 |
+| `MIN_INK` 0.05 → 0.38 | span, area | `80px against a span of 80, turned=false: got []` |
+| `SMEAR_K` 2 → 1 | area; `a_field_of_screentone_is_not_a_region` and `glyphs_survive_a_screentone_background` timed out at 60 s | `100x599 is 0.14975 of the page, against 0.15: got []` — at a gap of 100 the area pair's 101px spaces no longer merge, so each bar is a block of one stroke and `MIN_STROKES` empties both pages; the kept page is what fails. The span test passes: its 11px spaces still merge at a gap of 40 |
+
+### The two that survive
+
+**The area filter's `<=` as `<`.** The filter compares
+`area / page_area <= f64::from(MAX_BLOCK_AREA)`, and `f64::from(0.15f32)` is
+0.15000000596046448, which is exactly 5,033,165 / 2²⁵. A block sitting on the
+limit needs `area / page_area` to equal that, and 5,033,165 is odd, so the page
+must be a multiple of 2²⁵ pixels — 33.5 million — before any block can land on
+it. A page of that size is not a unit test, and on every page smaller the two
+comparisons agree.
+
+**The span filter's `scale * MIN_BLOCK_STROKE_SPAN` as the smear `gap`.**
+`gap` is `(scale * SMEAR_K).max(1)`, `SMEAR_K` is 2 like
+`MIN_BLOCK_STROKE_SPAN`, and `scale` is at least 1, so the two expressions are
+the same number on every page. No test can tell them apart while both
+constants are 2.
+
+### Counts
+
+Rust 2170 → 2172: two new tests in `detect/tests.rs`, counted by the gate's
+`status-test-count` check. `web/` was not changed.
+
+### What remains
+
+- O32 is untouched. `MAX_BLOCK_AREA` still clamps every surviving region under
+  0.15 before `median_area` is taken, and the fix its entry names is unwritten.
+- `region_experiment.rs`'s comment above its filter tally still says O32 and
+  O33 record two constants rejecting nothing in any test. It is test-gated code
+  outside `detect/tests.rs`, and this branch changes nothing else, so it is
+  left as written.

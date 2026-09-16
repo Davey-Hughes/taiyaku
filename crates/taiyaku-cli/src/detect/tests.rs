@@ -612,6 +612,136 @@ fn a_lone_speck_is_not_a_region() {
     assert!(detect_page(&speck).is_empty());
 }
 
+/// Solid black rectangles, `(x0, y0, w, h)`, on a white page of any size.
+fn page_of(width: u32, height: u32, marks: &[(u32, u32, u32, u32)]) -> GrayImage {
+    GrayImage::from_fn(width, height, |x, y| {
+        let inked = marks
+            .iter()
+            .any(|&(x0, y0, w, h)| x >= x0 && x < x0 + w && y >= y0 && y < y0 + h);
+        Luma([if inked { 0 } else { 255 }])
+    })
+}
+
+/// Six bars on a 400x600 page, each 40px long and `thick` px thick, on a 15px
+/// pitch: stacked down the page, so they smear into one vertical block, or
+/// with `turned` laid side by side, so they smear into one horizontal one.
+///
+/// Every bar's longer side is 40 whichever way it lies, so `stroke_scale` is
+/// 40 on all four pages this draws and `MIN_BLOCK_STROKE_SPAN` asks for a
+/// block 80px long. The block is `15 * 5 + thick` long — 79 at `thick` 4, 80
+/// at 5 — and 40 across, because the bars are.
+fn six_bars(thick: u32, turned: bool) -> GrayImage {
+    let marks: Vec<(u32, u32, u32, u32)> = (0..6)
+        .map(|k| {
+            if turned {
+                (100 + 15 * k, 200, thick, 40)
+            } else {
+                (100, 200 + 15 * k, 40, thick)
+            }
+        })
+        .collect();
+    page_of(400, 600, &marks)
+}
+
+/// **`MIN_BLOCK_STROKE_SPAN` rejects a block on its own, and one pixel more
+/// gets through** — O33, which recorded that no fixture here could fail if
+/// this filter's arithmetic were wrong by a factor of several: everything this
+/// file refuses is refused before the filter, and every block it keeps spans
+/// many stroke-scales.
+///
+/// A block can only be short against the page's own strokes if those strokes
+/// lie *across* it, which is why these are bars rather than glyph-sized
+/// squares: four square marks in a line already span four scales. Nothing
+/// else is near its limit on any of the four pages: six strokes against
+/// `MIN_STROKES`' four, 666‱ inside `BAND`, ink at 0.30 and 0.38 against
+/// `MIN_INK`'s 0.05, and a block about 0.013 of the page. So the 80px page
+/// coming back as a region is what shows the 79px one reaches this filter, and
+/// the 79px one coming back empty is what shows the filter refuses it.
+///
+/// Both orientations, because `longer` is the one accessor here that has to
+/// read the right side: a filter reading `width()` fails the stacked pair and
+/// one reading `height()` fails the turned pair.
+#[test]
+fn a_block_shorter_than_two_stroke_scales_is_not_a_region() {
+    for turned in [false, true] {
+        let short = six_bars(4, turned);
+        assert_eq!(
+            stroke_scale(&glyph_band(&components(&short, otsu(&short)), 600, BAND)),
+            Some(40),
+            "fixture must bite: all six bars must pass the band and set the scale, \
+             turned={turned}"
+        );
+        let found = detect_page(&short);
+        assert!(
+            found.is_empty(),
+            "79px against a span of 80, turned={turned}: got {found:?}"
+        );
+
+        let long = detect_page(&six_bars(5, turned));
+        assert_eq!(
+            long.len(),
+            1,
+            "80px against a span of 80, turned={turned}: got {long:?}"
+        );
+        let (axis, along, across) = if turned {
+            (Axis::Horizontal, long[0].w * 400.0, long[0].h * 600.0)
+        } else {
+            (Axis::Vertical, long[0].h * 600.0, long[0].w * 400.0)
+        };
+        assert_eq!(long[0].axis, axis, "turned={turned}: got {long:?}");
+        assert!(
+            (along - 80.0).abs() < 0.5 && (across - 40.0).abs() < 0.5,
+            "the block is the bars' own 80x40, turned={turned}: got {long:?}"
+        );
+    }
+}
+
+/// Five bars 100px wide and 39px tall on a 400x1000 page, stacked on a
+/// `pitch` of 140 or 141: one vertical block 100px wide and `4 * pitch + 39`
+/// tall — 599 or 603 — on a page of 400,000px².
+fn five_wide_bars(pitch: u32) -> GrayImage {
+    let marks: Vec<(u32, u32, u32, u32)> =
+        (0..5).map(|k| (150, 200 + pitch * k, 100, 39)).collect();
+    page_of(400, 1000, &marks)
+}
+
+/// **`MAX_BLOCK_AREA` rejects a block on its own, and four rows fewer gets
+/// through** — O33's other half. The 603px block is 0.15075 of the page and
+/// the 599px one 0.14975, either side of 0.15, and the constant sits between
+/// them rather than on either.
+///
+/// Nothing else is near its limit: five strokes against `MIN_STROKES`' four, a
+/// block about six stroke-scales long against `MIN_BLOCK_STROKE_SPAN`'s two, 1,000‱
+/// inside `BAND`, and ink at 0.32 and 0.33 against `MIN_INK`'s 0.05. The pairing is
+/// what makes it bite, as it is for `a_block_of_hollow_strokes_is_mostly_paper`:
+/// the two pages differ by one pixel of pitch, so the only filter that can tell
+/// them apart is the one that reads area.
+#[test]
+fn a_block_over_the_area_ceiling_is_not_a_region() {
+    let over = five_wide_bars(141);
+    assert_eq!(
+        stroke_scale(&glyph_band(&components(&over, otsu(&over)), 1000, BAND)),
+        Some(100),
+        "fixture must bite: all five bars must pass the band and set the scale"
+    );
+    let found = detect_page(&over);
+    assert!(
+        found.is_empty(),
+        "100x603 is 0.15075 of the page, against 0.15: got {found:?}"
+    );
+
+    let under = detect_page(&five_wide_bars(140));
+    assert_eq!(
+        under.len(),
+        1,
+        "100x599 is 0.14975 of the page, against 0.15: got {under:?}"
+    );
+    assert!(
+        (under[0].w * 400.0 - 100.0).abs() < 0.5 && (under[0].h * 1000.0 - 599.0).abs() < 0.5,
+        "the block is the bars' own 100x599: got {under:?}"
+    );
+}
+
 /// A page-sized field of screentone: 2px dots on a 5px lattice, over a
 /// canvas the size of a real scan.
 ///
