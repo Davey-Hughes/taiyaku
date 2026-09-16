@@ -19707,3 +19707,145 @@ Rust 2170 → 2172: two new tests in `detect/tests.rs`, counted by the gate's
   O33 record two constants rejecting nothing in any test. It is test-gated code
   outside `detect/tests.rs`, and this branch changes nothing else, so it is
   left as written.
+
+## O120: the work feed types its editions on the blocking pool — 2026-09-15
+
+O119 ("What remains") recorded that `opds::work_feed`'s
+`download::advertised_type` asks the filesystem on the async worker, that it is
+not the library's mutex, and that it was not measured. O116 ("What remains")
+recorded it again, and neither changed it. The user chose on 2026-09-15 to file
+and fix it on one branch, so O120 opens and closes here, on `main` at `eeff032`.
+
+### What the handler does on the async worker, read
+
+Every step of `work_feed`'s body on `eeff032`, in order:
+
+| step | what it does | on the async worker |
+| --- | --- | --- |
+| `state.work_or_missing` | searches `state.works`, in memory | nothing waits |
+| `extensions.get::<Principal>()` | reads a request extension | nothing waits |
+| `routes::visible_editions_or_refuse` | the grant, through `routes::on_the_grant` | nothing since O119: a grant that names roots is asked on the blocking pool, an empty or absent one without the library |
+| `work.sidecar()` | clones an `Arc` under `Work`'s `std::sync::RwLock`, for reading | **waits while a writer holds that lock**: not changed here, see below |
+| `download::advertised_type`, for each edition the feed names, for a reader who may download | `download::passthrough_extension`: `is_file()` on the member of an edition of one member, and nothing for an edition of several, which stops at the count | **a `stat`**: this item |
+| escaping, `writeln!`, the response | memory | nothing waits |
+
+**The sidecar lock is not the same defect, and it is not this handler's
+alone.** `Work::update` holds the lock for writing across its closure, and its
+one caller outside tests, `patch_alignments`, writes the sidecar inside that
+closure with `taiyaku_read::atomic::write`, synced since O104, when the work has
+one, and then its rows through `alignments::store`. A `work.sidecar()` on the
+async worker waits that long, and only while a correction to the same work is
+being written. The same read is on the async worker in `opds::works`,
+`routes::get_sidecar`, and `routes::locate_member`, which `routes::get_page` and
+`opds::stream_page` call in the handler: five handlers with this one. Moving
+this handler's read would leave four, and none of the five is a `stat`, so all
+five are left and recorded here.
+
+### Every filesystem call in `taiyaku-serve`, placed
+
+A script over `crates/taiyaku-serve/src/`, with `tests.rs`, `tests/` and
+`test_support.rs` left out, blanked comments, string and character literals,
+then listed every `is_file`, `is_dir`, `exists`, `metadata`, `read_dir`,
+`File::open`, `File::create`, `OpenOptions`, `std::fs::`, `canonicalize`,
+`write_all`, `flush`, `sync_all` and `atomic::write`, with the function around
+each and whether it sat inside a `spawn_blocking(` call's parentheses. The
+callers of each synchronous function among them were listed the same way and
+read by hand. `corpus.rs` is `#[cfg(test)]` and is left out.
+
+| where | call | where it runs |
+| --- | --- | --- |
+| `download::passthrough_extension` | `is_file()` | from `advertised_type`: **the async worker** on `eeff032`, which is this item, and the blocking pool since; and from `download::prepare`, inside `download::edition`'s `spawn_blocking` |
+| `download::prepare` | `metadata` | inside `download::edition`'s `spawn_blocking` |
+| `download::prepare_member` | `is_dir()`, `metadata` | inside `download::member`'s `spawn_blocking` |
+| `download::passthrough` | `File::open` | on the thread each download route starts for its body: `produce`'s in `edition`, and `member`'s own |
+| `cover::cached_or_generated_page`, `cover::cached`, `cover::at_path` | `create_dir_all`, `read`, `atomic::write` | inside the `spawn_blocking` of `routes::get_page`, `routes::get_thumb` and `opds::cover` |
+| `backup_api::download_backup` | `read` | inside its `spawn_blocking` |
+| `routes::patch_alignments` | `atomic::write` | inside its `spawn_blocking` |
+| `stump::cache::load`, `stump::cache::store`, `stump::resolve::resolve_member` | `read_to_string`, `write`, `rename`, `metadata` | from `stump::resolve::resolve_work`, inside `serve`'s `spawn_blocking`, after the listener binds |
+| `stump::cache::forget` | `remove_file` | from `forget_all_works`, in `serve` before the listener binds, only for `--refresh-stump` |
+| `cache_root::create` | `create_dir_all` | in `serve`, before the listener binds |
+| `reqlog::Log::new` | `OpenOptions::open` | in `serve`, before the listener binds |
+| `reqlog::Log::finish` | `write_all`, to a `File` held in a `std::sync::Mutex` | **the async worker**: `build_router`'s request-log middleware calls it after `next.run(request).await`, once per request while `--log-requests` is on |
+| `works::load_works` | `read_to_string` | only from tests |
+
+So one call besides this item runs on the async worker, for every request:
+`reqlog::Log::finish`'s write, to an unbuffered file, while the request log is
+on. It is not changed or filed here. **What this cannot see**: a call into
+another crate that reaches the disk — `taiyaku_read` opening an archive,
+`taiyaku_library` reading the library — is none of the tokens above. Those
+reads are what O12, O71, O115, O116 and O119 placed.
+
+### The fix
+
+- `opds::advertised_types` answers, for each edition the grant admits, what
+  `download::advertised_type` answers, in one `spawn_blocking` over the sidecar
+  snapshot `work_feed` builds its entries from. It answers a panic with a 500,
+  `typing the editions panicked: …`, and a work `id` does not name with the 404
+  `missing` sends, which the handler has already sent before asking.
+- `work_feed` asks it only for a reader who may download, and its loop reads
+  the answer for each edition. A key with no answer would be declared
+  `CBZ_TYPE`, `advertised_type`'s own answer for a file it cannot find; the loop
+  names no edition that was not asked about.
+- `download::advertised_type`'s doc now says it blocks and who asks it, and
+  that its `metadata` call is for an edition of one member.
+
+### The test
+
+`test_support::the_runtime_stalls_on` sees a handler that waits on the
+library's mutex. A `stat` does not, and one of a file on a local disk answers
+before a watchdog could notice, so no test in the crate could tell where it ran:
+the feed is the same XML either way. A `stat` could be made to wait with a
+filesystem that stalls under the fixture, or with a seam in
+`passthrough_extension` for a test to hold, and neither was needed: the kernel
+records which thread made each call.
+
+`opds::tests::the_work_feed_stats_its_members_on_the_blocking_pool` runs itself
+again as a child under `strace -f -qq -y -e trace=%%stat`, as O104's tests run
+under `strace` for their syncs. The runner is
+`taiyaku_read::test_support::strace`, split out of `traced`, which now calls it.
+The child builds a current-thread runtime whose `on_thread_start` writes down
+the id of every thread it starts, which in a current-thread runtime is its
+blocking pool, and calls `work_feed` through `block_on` from a thread whose id
+it also writes down: the runtime's async worker. Each id is the kernel's thread
+id, read from `/proc/thread-self`, which is the number `strace -f` prints at the
+head of each line. The work has two editions of one member each,
+`raw` a `.pdf` and `en` an `.epub`, and the child requires each entry's
+acquisition link to declare its own edition's type. The parent requires each
+member's path in at least one `stat`-family call, so a log that matches nothing
+fails, and every such call made by a thread the runtime started.
+
+### Red
+
+Each change was applied to the final code by a script that checked the change
+was in the file, ran `taiyaku-serve`'s tests, restored the file and compared it
+with a copy taken before the first. The control, run through the same script
+with nothing applied, passed 586 of 586.
+
+| change | failed | message |
+| --- | --- | --- |
+| `work_feed` as on `eeff032`: no trip, `advertised_type` called in the loop | the new test alone, 585 passing | `…/work/volume.pdf was statted by thread(s) ["2301903"], which the runtime did not start: the async worker is 2301903 and the blocking pool is []` |
+| `advertised_types` calling its closure in place of `spawn_blocking` | the new test alone, 585 passing | the same, with thread `2311209` both the one that statted and the async worker, and an empty blocking pool |
+| the loop declaring `CBZ_TYPE` for every edition, its answers unread | the new test alone, 585 passing | the child's `` `raw`'s acquisition link must declare application/pdf `` |
+| `advertised_types` typing every edition as the sidecar's first, `en` | the new test alone, 585 passing | the child's `` `raw`'s acquisition link must declare application/pdf `` |
+
+No other test in the crate saw any of the four. The feed's acquisition-type
+test uses an edition of two members, which is never statted, and
+`download::tests` call `advertised_type` itself rather than the feed.
+
+Run alone 20 times at a one-minute load average of 15.37–15.58, the new test
+passed 20 times.
+
+### What remains
+
+- `work.sidecar()` waits on `Work`'s lock on the async worker in five handlers,
+  while a correction to that work is written.
+- `reqlog::Log::finish` writes each request's line on the async worker while the
+  request log is on.
+- No test reaches `advertised_types`' panic arm or its 404, sees that an edition
+  outside the grant is not statted, or sees that a reader who may not download
+  makes no trip.
+- Nothing here was timed, on this workstation or on the NAS.
+
+### Counts
+
+Rust 2170 → 2171: one new test, in `opds/tests.rs`. `web/` was not changed.

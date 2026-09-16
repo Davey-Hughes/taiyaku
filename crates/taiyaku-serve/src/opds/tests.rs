@@ -813,6 +813,197 @@ async fn the_acquisition_link_declares_the_type_the_route_will_send() {
     );
 }
 
+/// **The work feed asks the filesystem off the async worker** — O120.
+///
+/// `download::advertised_type` stats an edition of one member to learn what a
+/// download of it will be sent as, and `work_feed` called it in the handler,
+/// on the async worker. No test here could see that: a `stat` of a file on this
+/// machine's disk answers at once, so nothing stands still for
+/// `test_support::the_runtime_stalls_on`'s watchdog to notice, and the feed is
+/// the same wherever the `stat` ran. So this asks the kernel which thread made
+/// it.
+///
+/// The test runs itself again as a child under `strace`, as O104's tests do.
+/// The child builds a current-thread runtime and calls the handler through
+/// `block_on`. The thread calling `block_on` is that runtime's async worker,
+/// and every thread the runtime starts is its blocking pool; the child writes
+/// down the ids of both. The parent then requires that each member was
+/// statted at least once, and only ever by a thread the runtime started.
+///
+/// **Two editions of one member each, of two types**, so the child can check
+/// each entry's link names its own edition's type: a feed that paired the
+/// answers with the wrong entries, or dropped them for the fallback, would
+/// send the right XML for a single edition of a comic archive.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_work_feed_stats_its_members_on_the_blocking_pool() {
+    const CHILD: &str = "TAIYAKU_TEST_OPDS_O120_CHILD";
+    const MEMBERS: [(&str, &str, &str); 2] = [
+        ("raw", "volume.pdf", "application/pdf"),
+        ("en", "volume.epub", "application/epub+zip"),
+    ];
+    if let Some(dir) = std::env::var_os(CHILD) {
+        feed_on_a_current_thread_runtime(std::path::Path::new(&dir), &MEMBERS);
+        return;
+    }
+
+    let scratch = crate::test_support::Fixture::new("opds-o120-stat");
+    // Canonical, because strace prints the path the call was handed, and the
+    // member paths are joined onto this one.
+    let dir = std::fs::canonicalize(&scratch).unwrap();
+    let work_dir = dir.join("work");
+    std::fs::create_dir(&work_dir).unwrap();
+    for (_, member, _) in MEMBERS {
+        std::fs::write(work_dir.join(member), b"statted, never read").unwrap();
+    }
+
+    let log = taiyaku_read::test_support::strace(
+        "opds::tests::the_work_feed_stats_its_members_on_the_blocking_pool",
+        (CHILD, dir.as_os_str()),
+        "%%stat",
+        &dir.join("strace.log"),
+    );
+    let threads =
+        std::fs::read_to_string(dir.join("threads")).expect("the child wrote its threads");
+    let async_worker = threads
+        .lines()
+        .find_map(|line| line.strip_prefix("async "))
+        .expect("the child named its async worker");
+    let blocking: Vec<&str> = threads
+        .lines()
+        .filter_map(|line| line.strip_prefix("blocking "))
+        .collect();
+
+    for (_, member, _) in MEMBERS {
+        let target = work_dir.join(member);
+        let by = statted_by(&log, &target);
+        assert!(
+            !by.is_empty(),
+            "nothing statted {}, so where the feed asked proves nothing",
+            target.display()
+        );
+        let elsewhere: Vec<&str> = by
+            .into_iter()
+            .filter(|thread| !blocking.contains(thread))
+            .collect();
+        assert!(
+            elsewhere.is_empty(),
+            "{} was statted by thread(s) {elsewhere:?}, which the runtime did not start: \
+             the async worker is {async_worker} and the blocking pool is {blocking:?}",
+            target.display()
+        );
+    }
+}
+
+/// The child half of [`the_work_feed_stats_its_members_on_the_blocking_pool`]:
+/// the feed for a work whose editions are `members`, one file each under
+/// `dir/work`, asked on a current-thread runtime, with the async worker's
+/// thread id and every started thread's written to `dir/threads`.
+#[cfg(target_os = "linux")]
+fn feed_on_a_current_thread_runtime(dir: &std::path::Path, members: &[(&str, &str, &str)]) {
+    use axum::extract::{Path as AxPath, State};
+
+    let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .on_thread_start({
+            let started = Arc::clone(&started);
+            move || started.lock().unwrap().push(this_thread())
+        })
+        .build()
+        .expect("a current-thread runtime");
+
+    let editions = members
+        .iter()
+        .map(|(key, member, _)| {
+            format!(
+                r#""{key}": {{ "label": "{key}", "members": [
+                  {{ "path": "{member}", "sha256": "{key}", "pages": 1 }}
+                ], "spreads": [] }}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "T", "reading": "rtl" }},
+          "editions": {{ {editions} }},
+          "hub": "{hub}",
+          "alignments": []
+        }}"#,
+        hub = members[0].0
+    );
+    let mut state = crate::test_support::state(dir);
+    state.works = vec![crate::Work::new(
+        "t".into(),
+        dir.join("work").join("taiyaku.json"),
+        taiyaku_core::Sidecar::from_json(&json).unwrap(),
+    )];
+    let state = Arc::new(state);
+
+    let async_worker = this_thread();
+    let body = runtime.block_on(async {
+        let response = crate::opds::work_feed(
+            State(state),
+            AxPath("t".to_string()),
+            axum::http::Extensions::new(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        body_of(response).await
+    });
+    for (key, _, expected) in members {
+        let entry = body
+            .split("<entry>")
+            .find(|entry| entry.contains(&format!("<id>taiyaku:edition:t:{key}</id>")))
+            .unwrap_or_else(|| panic!("no entry for `{key}`: {body}"));
+        assert!(
+            entry.contains(&format!(
+                r#"rel="http://opds-spec.org/acquisition" type="{expected}""#
+            )),
+            "`{key}`'s acquisition link must declare {expected}: {entry}"
+        );
+    }
+
+    let mut threads = String::new();
+    let _ = writeln!(threads, "async {async_worker}");
+    for thread in started.lock().unwrap().iter() {
+        let _ = writeln!(threads, "blocking {thread}");
+    }
+    std::fs::write(dir.join("threads"), threads).unwrap();
+}
+
+/// This thread's id as the kernel numbers it, which is what `strace -f`
+/// prints at the head of each line: `/proc/thread-self` links to
+/// `<pid>/task/<tid>`.
+#[cfg(target_os = "linux")]
+fn this_thread() -> String {
+    std::fs::read_link("/proc/thread-self")
+        .expect("reading /proc/thread-self")
+        .file_name()
+        .expect("a thread id")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The ids of the threads that made a `stat`-family call naming `target`, from
+/// a log `strace -f` wrote. Each line begins with the thread's id. A call
+/// another thread interrupted is split across two lines, and the first, which
+/// carries the path, is the one read.
+#[cfg(target_os = "linux")]
+fn statted_by<'a>(log: &'a str, target: &std::path::Path) -> Vec<&'a str> {
+    let target = target.to_str().expect("a UTF-8 fixture path");
+    log.lines()
+        .filter_map(|line| {
+            let (thread, call) = line.split_once(' ')?;
+            let name = call.trim_start().split('(').next()?;
+            let named = call.split('"').nth(1)?;
+            (name.contains("stat") && named == target).then_some(thread)
+        })
+        .collect()
+}
+
 /// The web UI's control is *absent* for a reader who may not download, and
 /// the feed cannot do the same: OPDS 1.2 requires an acquisition link on
 /// every entry, which is why this one pointed at a page in the first place.

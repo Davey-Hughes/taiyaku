@@ -253,7 +253,9 @@ pub(crate) async fn works(
 /// than a constant: [`crate::download::advertised_type`] decides, once, for
 /// the feed and the route alike, because a single-member edition can be a
 /// PDF and advertising it as a comic archive would be a claim the response's
-/// own header then contradicts.
+/// own header then contradicts. It is asked on the blocking pool, through
+/// [`advertised_types`], because for an edition of one member it asks the
+/// filesystem (O120).
 ///
 /// **A reader whose `can_download` is withheld keeps the page link.** The
 /// conformance requirement above admits no third option: an entry with no
@@ -332,6 +334,16 @@ pub(crate) async fn work_feed(
     let work_href = escape(&percent_encode(&work.id));
     let sidecar = work.sidecar();
     let title = escape(&sidecar.work.title);
+    // Only a reader who may download is sent to the blocking pool: the page
+    // link the others get names no type this server has to find out.
+    let types = if may_download {
+        match advertised_types(&state, &id, &sidecar, visible_editions.as_ref()).await {
+            Ok(types) => types,
+            Err(refusal) => return refusal,
+        }
+    } else {
+        HashMap::new()
+    };
 
     let mut entries = String::new();
     for (key, edition) in &sidecar.editions {
@@ -367,7 +379,10 @@ pub(crate) async fn work_feed(
             format!(
                 r#"<link rel="http://opds-spec.org/acquisition" type="{}"
           href="/opds/v1.2/works/{work_href}/{key_href}/download"/>"#,
-                crate::download::advertised_type(work, edition)
+                // Every edition this loop names was asked about, so the
+                // fallback is `advertised_type`'s own answer for a file it
+                // cannot find rather than a case this reaches.
+                types.get(key).copied().unwrap_or(crate::download::CBZ_TYPE)
             )
         } else {
             // **`pages/0`, not `pages/1`.** PSE counts from 0 and
@@ -416,6 +431,64 @@ pub(crate) async fn work_feed(
         ),
     )
         .into_response()
+}
+
+/// The type each edition [`work_feed`] lists will declare on its acquisition
+/// link, keyed by edition, asked on the blocking pool.
+///
+/// **Off the async worker, because the answer is a `stat` — O120.**
+/// [`crate::download::advertised_type`] asks the filesystem whether an edition
+/// of one member is a file, and until O120 closed `work_feed` asked it in the
+/// handler, once for each such edition. On the async worker a `stat` holds a
+/// runtime worker thread for as long as the filesystem takes to answer. This
+/// server's host bind-mounts its library from a FUSE share, where nothing
+/// promises that is quick; it has not been timed there.
+///
+/// One trip for the whole feed. Only the editions `visible` admits are asked
+/// about, which are the ones the feed names, and `sidecar` is the snapshot the
+/// feed builds its entries from, so a type and its entry describe one
+/// document.
+///
+/// `Err` is the refusal to send: a 404 if `id` names no work, which the handler
+/// has already refused before asking, and a 500 if the task panicked.
+#[expect(
+    clippy::result_large_err,
+    reason = "the `Err` carries a `Response`, for `routes::visible_editions_or_refuse`'s \
+              reason: a routing handler's refusal path, called once per request"
+)]
+async fn advertised_types(
+    state: &Arc<ServeState>,
+    id: &str,
+    sidecar: &Arc<taiyaku_core::Sidecar>,
+    visible: Option<&HashSet<String>>,
+) -> Result<HashMap<String, &'static str>, Response> {
+    let state = Arc::clone(state);
+    let id = id.to_string();
+    let sidecar = Arc::clone(sidecar);
+    let visible = visible.cloned();
+    let typed = tokio::task::spawn_blocking(move || {
+        let work = state.work_or_missing(&id)?;
+        Ok::<_, String>(
+            sidecar
+                .editions
+                .iter()
+                .filter(|(key, _)| visible.as_ref().is_none_or(|v| v.contains(*key)))
+                .map(|(key, edition)| {
+                    (key.clone(), crate::download::advertised_type(work, edition))
+                })
+                .collect(),
+        )
+    })
+    .await;
+    match typed {
+        Ok(Ok(types)) => Ok(types),
+        Ok(Err(message)) => Err(missing(message)),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("typing the editions panicked: {e}"),
+        )
+            .into_response()),
+    }
 }
 
 pub(crate) async fn stream_page(

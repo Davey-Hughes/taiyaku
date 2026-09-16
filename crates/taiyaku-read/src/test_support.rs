@@ -68,31 +68,55 @@ const DESCRIPTORS_ONLY: &[&str] = &["copy_file_range", "sendfile", "splice"];
 /// wrote no log.
 #[must_use]
 pub fn traced(test: &str, child: (&str, &std::ffi::OsStr), log: &Path) -> Vec<Call> {
+    let recorded = strace(
+        test,
+        child,
+        &format!(
+            "fsync,fdatasync,rename,renameat,renameat2,{}",
+            WRITES.join(",")
+        ),
+        log,
+    );
+    rejoined(&recorded)
+        .iter()
+        .filter_map(|line| call(line))
+        .collect()
+}
+
+/// Run one test of this binary again as a child under `strace`, tracing the
+/// syscalls `trace` names, and return the log as strace wrote it.
+///
+/// [`traced`]'s runner. Split out for O120, whose test in `taiyaku-serve`
+/// asks different syscalls a different question — which thread made a
+/// `stat` — and reads the log itself rather than through a second copy of
+/// this invocation. Under `-f` each line begins with the id of the thread
+/// that made the call.
+///
+/// # Panics
+///
+/// If `strace` is not on `PATH`, if the traced child fails, or if strace
+/// wrote no log. A missing `strace` fails rather than skips, for
+/// [`traced`]'s reason.
+#[must_use]
+pub fn strace(test: &str, child: (&str, &std::ffi::OsStr), trace: &str, log: &Path) -> String {
     let exe = std::env::current_exe().expect("the test binary's own path");
     let ran = std::process::Command::new("strace")
         .args(["-f", "-qq", "-y", "-e"])
-        .arg(format!(
-            "trace=fsync,fdatasync,rename,renameat,renameat2,{}",
-            WRITES.join(",")
-        ))
+        .arg(format!("trace={trace}"))
         .arg("-o")
         .arg(log)
         .arg(exe)
         .args(["--exact", test, "--nocapture", "--test-threads=1"])
         .env(child.0, child.1)
         .output()
-        .expect("`strace` must be on PATH: O104's sync ordering cannot be observed without it");
+        .expect("`strace` must be on PATH: a traced test cannot observe its syscalls without it");
     assert!(
         ran.status.success(),
         "the traced child failed: {}\n{}",
         String::from_utf8_lossy(&ran.stdout),
         String::from_utf8_lossy(&ran.stderr)
     );
-    let recorded = std::fs::read_to_string(log).expect("strace wrote its log");
-    rejoined(&recorded)
-        .iter()
-        .filter_map(|line| call(line))
-        .collect()
+    std::fs::read_to_string(log).expect("strace wrote its log")
 }
 
 /// strace's log with every interrupted call put back on one line.

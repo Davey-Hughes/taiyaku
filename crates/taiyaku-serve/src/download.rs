@@ -302,10 +302,14 @@ fn passthrough_extension(paths: &[std::path::PathBuf]) -> Option<String> {
 /// through `PageSource` and this route does not — see `opds::work_feed`,
 /// which states that asymmetry where the link is built.)
 ///
-/// The cost is one `metadata` call per edition, in a feed that otherwise
-/// touches no disk. Bounded — one work, its editions, metadata only, no
-/// archive opened — and it is what buys the feed and the route being unable
-/// to drift apart.
+/// The cost is one `metadata` call per edition of one member — an edition of
+/// several is generated and asks nothing — in a feed that otherwise touches no
+/// disk. Bounded — one work, its editions, metadata only, no archive opened —
+/// and it is what buys the feed and the route being unable to drift apart.
+///
+/// **It blocks, so the feed asks it on the blocking pool**, through
+/// `opds::advertised_types` — O120. `opds::work_feed` called it in the
+/// handler, on the async worker, until then.
 pub(crate) fn advertised_type(work: &crate::Work, edition: &taiyaku_core::Edition) -> &'static str {
     match passthrough_extension(&member_paths(work, edition)) {
         Some(extension) => type_for(&extension),
