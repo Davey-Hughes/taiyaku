@@ -195,6 +195,7 @@ GET    /api/library/proposals?state=&kind=&min_score=
 GET    /api/library/proposals/{id}          the expanded evidence
 POST   /api/library/proposals/{id}/accept   body: the rule to write
 POST   /api/library/proposals/{id}/dismiss
+DELETE /api/library/proposals/{id}/dismiss  reopen a dismissal (added by O72, 2026-09-15)
 DELETE /api/library/proposals/{id}/accept   un-accept: drop the rule, reopen
 
 PATCH  /api/library/series/{id}             metadata

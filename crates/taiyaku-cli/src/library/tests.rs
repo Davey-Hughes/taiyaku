@@ -2647,7 +2647,28 @@ fn proposals_refuses_more_than_one_action_at_once() {
     // `.contains("--accept")` check would not.
     assert_eq!(
         err,
-        "library proposals takes at most one of --accept, --dismiss or --unaccept at a time"
+        "library proposals takes at most one of --accept, --dismiss, --unaccept or --reopen at a \
+         time"
+    );
+
+    // `--reopen` counts as an action too: beside any other one it is refused
+    // rather than whichever arm runs first silently winning. **`--db` names a
+    // scratch path**, unlike the call above: without it a version that did
+    // not count `--reopen` would get as far as `resolve_db_path`, whose
+    // default is the real library under `XDG_DATA_HOME`.
+    let dir = scratch("proposals-two-actions");
+    let err = proposals(&[
+        "--dismiss".to_string(),
+        "1".to_string(),
+        "--reopen".to_string(),
+        "2".to_string(),
+        "--db".to_string(),
+        dir.join("library.db").to_str().unwrap().to_string(),
+    ])
+    .unwrap_err();
+    assert!(
+        err.starts_with("library proposals takes at most one of"),
+        "{err}"
     );
 }
 
@@ -2898,6 +2919,63 @@ fn proposals_dismiss_surfaces_the_accepted_refusal_unreworded() {
         })
         .expect("state");
     assert_eq!(state, "accepted", "a refused dismiss changes nothing");
+}
+
+/// `--reopen` takes a dismissal back through the library crate (O72), and a
+/// reopen the library refuses reaches this command's error **word for word**,
+/// writing nothing.
+#[test]
+fn proposals_reopen_reaches_the_library_crate_and_surfaces_its_refusal_unreworded() {
+    let (_root, db) = db_with_one_open_proposal("proposals-reopen");
+    let library = Library::open(&db).expect("reopens");
+    let id = {
+        let conn = library.conn();
+        taiyaku_library::proposals::open(&conn, 0.0)
+            .expect("open")
+            .remove(0)
+            .id
+    };
+    drop(library);
+    let db_arg = db.to_str().unwrap().to_string();
+    let state = || -> String {
+        let library = Library::open(&db).expect("reopens");
+        let conn = library.conn();
+        conn.query_row("SELECT state FROM proposal WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .expect("state")
+    };
+
+    proposals(&[
+        "--dismiss".to_string(),
+        id.to_string(),
+        "--db".to_string(),
+        db_arg.clone(),
+    ])
+    .expect("dismisses");
+    assert_eq!(state(), "dismissed");
+
+    proposals(&[
+        "--reopen".to_string(),
+        id.to_string(),
+        "--db".to_string(),
+        db_arg.clone(),
+    ])
+    .expect("reopens");
+    assert_eq!(state(), "open");
+
+    let err = proposals(&[
+        "--reopen".to_string(),
+        id.to_string(),
+        "--db".to_string(),
+        db_arg,
+    ])
+    .unwrap_err();
+    assert_eq!(
+        err,
+        format!("proposal {id} is `open`, not dismissed — only a dismissal can be reopened")
+    );
+    assert_eq!(state(), "open", "a refused reopen changes nothing");
 }
 
 /// A bare path handed to a command that takes none is refused by name, not

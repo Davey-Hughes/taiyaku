@@ -1374,7 +1374,10 @@ body {
  * will sit next to it: doing nothing to a proposal already leaves the
  * directory its own series, so this confirms an outcome rather than changing
  * one. */
-.proposals .row .dismiss {
+/* Reopening a dismissal (O72) is the same weight of decision the other way,
+ * so it wears the same control. */
+.proposals .row .dismiss,
+.proposals .row .reopen {
   flex: 0 0 auto;
   border: 1px solid ButtonBorder;
   border-radius: 4px;
@@ -1386,12 +1389,13 @@ body {
   cursor: pointer;
 }
 
-.proposals .row .dismiss:disabled {
+.proposals .row .dismiss:disabled,
+.proposals .row .reopen:disabled {
   color: GrayText;
   cursor: default;
 }
 
-.proposals .dismiss-failure {
+.proposals .write-failure {
   margin: 0;
   padding: 0.35rem 0.6rem;
   border-top: 1px solid ButtonBorder;

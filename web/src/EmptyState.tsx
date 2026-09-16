@@ -27,7 +27,17 @@
  * into the first would tell somebody their work was finished while the
  * control that would show them otherwise sat unpressed above the message.
  *
- * **None of them draws a control of its own.** Every recovery these three
+ * **And three for the inbox's other two states (O72), on the same split.**
+ * With `accepted` or `dismissed` selected an empty list is again three
+ * situations: nothing has been decided that way (`decided-none`), something
+ * may have been and the threshold is hiding it (`decided-weak-hidden`), or
+ * this one kind holds none of them while others do (`decided-kind-none`).
+ * They are kinds of their own rather than the three above with a flag,
+ * because every sentence above is about proposals *waiting on a decision*,
+ * and a decided list saying "nothing to answer" would be telling somebody
+ * looking for a dismissal that there was nothing left to decide.
+ *
+ * **None of them draws a control of its own.** Every recovery these six
  * name — `Show weak proposals`, the `All` tab — is already on screen above
  * the list, drawn by `Proposals.tsx`, so this names it in words rather than
  * offering a second button that does the same thing from a different place.
@@ -41,16 +51,24 @@ export type EmptyKind =
   | 'inbox-clear'
   | 'inbox-weak-hidden'
   | 'kind-answered'
+  | 'decided-none'
+  | 'decided-weak-hidden'
+  | 'decided-kind-none'
 
 export interface EmptyStateProps {
   kind: EmptyKind
   /** What was searched, for `no-matches`. */
   query?: string
-  /** Which kind's tab is selected, as `kindLabel` writes it, for `kind-answered`. */
+  /**
+   * Which kind's tab is selected, as `kindLabel` writes it, for
+   * `kind-answered` and `decided-kind-none`.
+   */
   label?: string
+  /** Which decided state the inbox is showing, for the three `decided-*` kinds. */
+  decided?: 'accepted' | 'dismissed'
 }
 
-export function EmptyState({ kind, query, label }: EmptyStateProps) {
+export function EmptyState({ kind, query, label, decided }: EmptyStateProps) {
   if (kind === 'no-roots') {
     return (
       <section className="empty">
@@ -108,6 +126,38 @@ export function EmptyState({ kind, query, label }: EmptyStateProps) {
             ? 'No proposal of this kind is waiting on a decision.'
             : `No ${label} proposal is waiting on a decision.`}{' '}
           All shows the ones that are.
+        </p>
+      </section>
+    )
+  }
+  if (kind === 'decided-none') {
+    return (
+      <section className="empty">
+        <h2>Nothing {decided}</h2>
+        <p>No proposal in this library has been {decided}.</p>
+      </section>
+    )
+  }
+  if (kind === 'decided-weak-hidden') {
+    return (
+      <section className="empty">
+        <h2>Nothing {decided}</h2>
+        <p>
+          Nothing {decided} is above the score threshold. Show weak proposals
+          reveals the ones below it.
+        </p>
+      </section>
+    )
+  }
+  if (kind === 'decided-kind-none') {
+    return (
+      <section className="empty">
+        <h2>Nothing here</h2>
+        <p>
+          {label === undefined || label === ''
+            ? `No proposal of this kind has been ${decided}.`
+            : `No ${label} proposal has been ${decided}.`}{' '}
+          All shows every one that has.
         </p>
       </section>
     )

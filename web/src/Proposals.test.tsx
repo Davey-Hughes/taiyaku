@@ -26,6 +26,7 @@ vi.mock('./curation', async (importOriginal) => ({
   listProposals: vi.fn(),
   proposalDetail: vi.fn(),
   dismissProposal: vi.fn(),
+  reopenProposal: vi.fn(),
 }))
 
 const proposal = (
@@ -127,6 +128,7 @@ describe('Proposals', () => {
       evidenceFor(proposal()),
     )
     vi.mocked(curation.dismissProposal).mockResolvedValue(undefined)
+    vi.mocked(curation.reopenProposal).mockResolvedValue(undefined)
   })
 
   it('gives every row its own proposal, not the first one three times', async () => {
@@ -201,10 +203,10 @@ describe('Proposals', () => {
     // always sent `min_score: 0` regardless of `showWeak` would still pass
     // that test's post-click assertion, since 0 is what it checks for either
     // way. Only the *first* call, taken before any click, tells "defaults to
-    // 1" apart from "always 0". `state: 'open'` has no control in this
-    // screen that would otherwise exercise it — dropping it entirely (which
-    // would ask the server for every state, not just open ones) is a change
-    // no other test here could catch.
+    // 1" apart from "always 0". `state: 'open'` is the default the state
+    // control starts from (O72) — dropping it entirely would ask the server
+    // for every state, not just open ones, and only the first call, before
+    // any control is touched, can see which state the screen lands on.
     //
     // The whole object, including `kind: undefined`: an inbox that opened
     // pre-filtered to one kind is a real defect and reads identically to a
@@ -862,5 +864,263 @@ describe('Proposals', () => {
     expect(host.querySelectorAll('li')).toHaveLength(2)
     expect(labels()).toEqual(['All 2', 'Edition Of 2'])
     expect(host.querySelector('section.empty')).toBe(null)
+  })
+  /** The state control's buttons, in order. */
+  const stateButtons = (host: HTMLElement) => [
+    ...host.querySelectorAll<HTMLElement>('.proposal-states button.state'),
+  ]
+  const stateButton = (host: HTMLElement, label: string): HTMLElement => {
+    const found = stateButtons(host).find((b) => b.textContent === label)
+    if (!found) throw new Error(`no state control labelled ${label}`)
+    return found
+  }
+
+  it('asks for each state through its own control, keeping the kind and the threshold (O72)', async () => {
+    // Spec C3 §4: accepted and dismissed proposals "stay listed under their
+    // own filters". Every control is pressed, and the whole filter object is
+    // compared each time, so a control sending a fixed state, or one that
+    // reset the kind or the threshold on the way, fails here rather than
+    // reading like a filter that works.
+    vi.mocked(curation.listProposals).mockResolvedValue({
+      proposals: [proposal({ id: 1, kind: 'edition-of' })],
+      counts: { 'edition-of': 1 },
+    })
+    const host = await settle()
+
+    expect(stateButtons(host).map((b) => b.textContent)).toEqual([
+      'Open',
+      'Accepted',
+      'Dismissed',
+    ])
+    const pressed = () =>
+      stateButtons(host)
+        .filter((b) => b.getAttribute('aria-pressed') === 'true')
+        .map((b) => b.textContent)
+    expect(pressed()).toEqual(['Open'])
+
+    // A kind and the weak toggle set first, so both have something to lose.
+    const editionTab = [
+      ...host.querySelectorAll<HTMLElement>('.proposal-tabs button.tab'),
+    ].find((b) => b.textContent?.startsWith('Edition Of'))
+    if (!editionTab) throw new Error('no Edition Of tab')
+    await click(editionTab)
+    await click(weakToggle(host))
+
+    await click(stateButton(host, 'Dismissed'))
+    expect(lastCall()).toEqual({
+      state: 'dismissed',
+      kind: 'edition-of',
+      min_score: 0,
+    })
+    expect(pressed()).toEqual(['Dismissed'])
+
+    await click(stateButton(host, 'Accepted'))
+    expect(lastCall()).toEqual({
+      state: 'accepted',
+      kind: 'edition-of',
+      min_score: 0,
+    })
+    expect(pressed()).toEqual(['Accepted'])
+
+    await click(stateButton(host, 'Open'))
+    expect(lastCall()).toEqual({
+      state: 'open',
+      kind: 'edition-of',
+      min_score: 0,
+    })
+    expect(pressed()).toEqual(['Open'])
+  })
+
+  it('heads a decided list with its own state, and says that state is empty in its own words', async () => {
+    // `counts` is counted within the state the request carried, so the
+    // header over a dismissed list is a count of dismissals: "2 open" there
+    // would be a false number. And an empty decided list is not a cleared
+    // inbox — see `EmptyState`'s `decided-*` kinds.
+    vi.mocked(curation.listProposals).mockImplementation(
+      async (filter = {}): Promise<curation.Inbox> =>
+        filter.state === 'dismissed'
+          ? {
+              proposals: [
+                proposal({ id: 4, state: 'dismissed' }),
+                proposal({ id: 5, state: 'dismissed' }),
+              ],
+              counts: { 'edition-of': 2 },
+            }
+          : filter.state === 'accepted'
+            ? { proposals: [], counts: {} }
+            : { proposals: [proposal({ id: 1 })], counts: { 'edition-of': 1 } },
+    )
+    const host = await settle()
+    expect(host.querySelector('h1')?.textContent).toBe('1 open')
+
+    await click(stateButton(host, 'Dismissed'))
+    expect(host.querySelector('h1')?.textContent).toBe('2 dismissed')
+    expect(host.querySelectorAll('li')).toHaveLength(2)
+
+    await click(stateButton(host, 'Accepted'))
+    expect(host.querySelector('h1')?.textContent).toBe('0 accepted')
+    const empty = host.querySelector('section.empty')
+    expect(empty?.textContent).toContain(
+      'Nothing accepted is above the score threshold.',
+    )
+    expect(empty?.textContent).not.toContain('Nothing to answer')
+
+    await click(weakToggle(host))
+    expect(host.querySelector('section.empty')?.textContent).toContain(
+      'No proposal in this library has been accepted.',
+    )
+  })
+
+  it('names a kind with no dismissals as that kind, while other kinds hold some', async () => {
+    // `decided-kind-none` rather than `kind-answered`: "waiting on a
+    // decision" is false of a dismissed list, and a screen that picked its
+    // empty state without reading `state` would print it.
+    vi.mocked(curation.listProposals).mockImplementation(
+      async (filter = {}) => {
+        const rows =
+          filter.state === 'dismissed'
+            ? [proposal({ id: 4, kind: 'edition-of', state: 'dismissed' })]
+            : [
+                proposal({ id: 1, kind: 'edition-of' }),
+                proposal({ id: 2, kind: 'attach-chapters' }),
+              ]
+        const counts: Record<string, number> = {}
+        for (const r of rows) counts[r.kind] = (counts[r.kind] ?? 0) + 1
+        return {
+          proposals: rows.filter(
+            (p) => filter.kind === undefined || p.kind === filter.kind,
+          ),
+          counts,
+        }
+      },
+    )
+    const host = await settle()
+    const chapters = [
+      ...host.querySelectorAll<HTMLElement>('.proposal-tabs button.tab'),
+    ].find((b) => b.textContent?.startsWith('Attach Chapters'))
+    if (!chapters) throw new Error('no Attach Chapters tab')
+    await click(chapters)
+    await click(stateButton(host, 'Dismissed'))
+
+    const empty = host.querySelector('section.empty')
+    expect(empty?.textContent).toContain(
+      'No Attach Chapters proposal has been dismissed.',
+    )
+    expect(empty?.textContent).not.toContain('waiting on a decision')
+  })
+
+  it('re-reads the dismissed list, still dismissed, and re-counts the chrome, when a row reopens its proposal', async () => {
+    // The Reopen half of the seam `re-reads the inbox when a row dismisses
+    // its own proposal` pins for Dismiss. A reload that fell back to the
+    // open state would show the reopened proposal where the person is not
+    // looking and hide the rest of the dismissals they were reading — so the
+    // second request's state is asserted, not only that there was one.
+    let dismissed = [4, 5]
+    vi.mocked(curation.listProposals).mockImplementation(
+      async (filter = {}): Promise<curation.Inbox> =>
+        filter.state === 'dismissed'
+          ? {
+              proposals: dismissed.map((id) =>
+                proposal({ id, state: 'dismissed' }),
+              ),
+              counts:
+                dismissed.length === 0
+                  ? {}
+                  : { 'edition-of': dismissed.length },
+            }
+          : { proposals: [], counts: {} },
+    )
+    vi.mocked(curation.reopenProposal).mockImplementation(async (id) => {
+      dismissed = dismissed.filter((d) => d !== id)
+    })
+
+    const recounts: number[] = []
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <InboxRefreshContext.Provider value={() => recounts.push(1)}>
+          <Proposals />
+        </InboxRefreshContext.Provider>,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    if (!host) throw new Error('nothing mounted')
+
+    await click(stateButton(host, 'Dismissed'))
+    expect(host.querySelector('h1')?.textContent).toBe('2 dismissed')
+    const reopen = host.querySelector('li button.reopen')
+    if (!reopen) throw new Error('no reopen control rendered')
+    const calls = vi.mocked(curation.listProposals).mock.calls.length
+
+    await click(reopen)
+
+    expect(curation.reopenProposal).toHaveBeenCalledWith(4)
+    expect(vi.mocked(curation.listProposals).mock.calls.length).toBe(calls + 1)
+    expect(lastCall().state).toBe('dismissed')
+    expect(host.querySelector('h1')?.textContent).toBe('1 dismissed')
+    expect(recounts).toHaveLength(1)
+  })
+  it('heads the list with the state it was fetched for, while the next list is on its way', async () => {
+    // Held, not resolved at once: the header, the counts and the empty
+    // state all describe one answer, and the window between pressing a
+    // state and its answer landing is where reading the pressed control
+    // instead drew "2 dismissed" over two open rows. Both directions, so the
+    // empty state is watched in that window too — it chose its words from
+    // the pressed control and said "Nothing to answer" over an empty
+    // dismissed list.
+    const held: Array<(inbox: curation.Inbox) => void> = []
+    let first = true
+    vi.mocked(curation.listProposals).mockImplementation(() => {
+      if (first) {
+        first = false
+        return Promise.resolve({
+          proposals: [proposal({ id: 1 }), proposal({ id: 2 })],
+          counts: { 'edition-of': 2 },
+        })
+      }
+      return new Promise<curation.Inbox>((resolve) => {
+        held.push(resolve)
+      })
+    })
+    const host = await settle()
+    const header = () => host.querySelector('h1')?.textContent
+    const empty = () => host.querySelector('section.empty')?.textContent
+    const pressed = () =>
+      stateButtons(host)
+        .filter((b) => b.getAttribute('aria-pressed') === 'true')
+        .map((b) => b.textContent)
+    expect(header()).toBe('2 open')
+
+    await click(stateButton(host, 'Dismissed'))
+    expect(pressed()).toEqual(['Dismissed'])
+    expect(lastCall().state).toBe('dismissed')
+    expect(header()).toBe('2 open')
+    expect(host.querySelectorAll('li')).toHaveLength(2)
+
+    await act(async () => {
+      held[0]?.({ proposals: [], counts: {} })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(header()).toBe('0 dismissed')
+    expect(empty()).toContain('Nothing dismissed')
+
+    await click(stateButton(host, 'Open'))
+    expect(pressed()).toEqual(['Open'])
+    expect(header()).toBe('0 dismissed')
+    expect(empty()).toContain('Nothing dismissed')
+    expect(empty()).not.toContain('Nothing to answer')
+
+    await act(async () => {
+      held[1]?.({
+        proposals: [proposal({ id: 1 }), proposal({ id: 2 })],
+        counts: { 'edition-of': 2 },
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(header()).toBe('2 open')
+    expect(host.querySelector('section.empty')).toBeNull()
   })
 })

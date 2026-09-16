@@ -12,6 +12,7 @@ import {
   proposalDetail,
   refusals,
   relation,
+  reopenProposal,
   resolution,
   strength,
   unacceptProposal,
@@ -438,6 +439,25 @@ describe('the curation HTTP client', () => {
     expect(calls[1][1].method).toBe('POST')
     expect(calls[1][1].body).toBeUndefined()
     expect(calls[1][1].headers).toBeUndefined()
+  })
+
+  it('reopens a dismissal as the DELETE of the dismiss, with no body (O72)', async () => {
+    // The same path the dismissal was written to and the other method —
+    // `unacceptProposal`'s shape. A reopen sent as a second POST would
+    // dismiss again, and answer a 204 that looks exactly like success.
+    const calls: Array<[string, RequestInit]> = []
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push([url, init])
+      return Promise.resolve(new Response(null, { status: 204 }))
+    })
+
+    await expect(reopenProposal(7)).resolves.toBeUndefined()
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0][0]).toBe('/api/library/proposals/7/dismiss')
+    expect(calls[0][1].method).toBe('DELETE')
+    expect(calls[0][1].body).toBeUndefined()
+    expect(calls[0][1].headers).toBeUndefined()
   })
 
   it('routes a 401 through the one place that notices it, from a write too', async () => {

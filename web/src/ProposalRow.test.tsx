@@ -22,6 +22,8 @@ vi.mock('./curation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./curation')>()),
   proposalDetail: vi.fn(),
   dismissProposal: vi.fn(),
+  reopenProposal: vi.fn(),
+  unacceptProposal: vi.fn(),
   resolution: vi.fn(),
   acceptProposal: vi.fn(),
 }))
@@ -203,6 +205,7 @@ describe('ProposalRow', () => {
     vi.clearAllMocks()
     vi.mocked(curation.proposalDetail).mockResolvedValue(detail())
     vi.mocked(curation.dismissProposal).mockResolvedValue(undefined)
+    vi.mocked(curation.reopenProposal).mockResolvedValue(undefined)
     vi.mocked(curation.resolution).mockResolvedValue({
       also_resolves: [],
       collateral: [],
@@ -1078,5 +1081,250 @@ describe('ProposalRow', () => {
     await click(dismiss)
 
     expect(host.querySelector('[role="alert"]')?.textContent).toBe('offline')
+  })
+  /** The line's own write controls, beside the disclosure, by their words. */
+  const lineControls = (host: HTMLElement) =>
+    [...host.querySelectorAll<HTMLButtonElement>('.row > button')]
+      .filter((b) => !b.classList.contains('disclosure'))
+      .map((b) => `${b.className}:${b.textContent}`)
+
+  it('offers each state exactly its own decision on the line, and an accepted row none (O72)', async () => {
+    // Asserted as the whole list per state rather than "has a Reopen": a
+    // row that drew Dismiss beside Reopen, or Reopen on an accepted row —
+    // an Undo that O74 says would not undo — passes any check for presence.
+    // Three rows in one mount, so a control keyed to the first row's state
+    // rather than each row's own is visible too.
+    const host = await settle(
+      <ul>
+        <ProposalRow
+          proposal={proposal({ id: 1, state: 'open' })}
+          expanded={false}
+          onToggle={noop}
+          onChanged={noop}
+        />
+        <ProposalRow
+          proposal={proposal({ id: 2, state: 'dismissed' })}
+          expanded={false}
+          onToggle={noop}
+          onChanged={noop}
+        />
+        <ProposalRow
+          proposal={proposal({ id: 3, state: 'accepted', created_rule_id: 9 })}
+          expanded={false}
+          onToggle={noop}
+          onChanged={noop}
+        />
+      </ul>,
+    )
+
+    const rows = [...host.querySelectorAll<HTMLElement>('li')]
+    expect(rows).toHaveLength(3)
+    expect(rows.map(lineControls)).toEqual([
+      ['dismiss:Dismiss'],
+      ['reopen:Reopen'],
+      [],
+    ])
+  })
+
+  it('reopens its own dismissed proposal and asks the screen to re-read the inbox', async () => {
+    const changes: number[] = []
+    let resolveReopen: (() => void) | undefined
+    vi.mocked(curation.reopenProposal).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveReopen = () => {
+            resolve(undefined)
+          }
+        }),
+    )
+    const host = await settle(
+      <ul>
+        <ProposalRow
+          proposal={proposal({ id: 7, state: 'dismissed' })}
+          expanded={false}
+          onToggle={noop}
+          onChanged={() => changes.push(1)}
+        />
+      </ul>,
+    )
+
+    const reopen = host.querySelector<HTMLButtonElement>('button.reopen')
+    if (!reopen) throw new Error('no reopen control rendered')
+    expect(reopen.disabled).toBe(false)
+
+    await click(reopen)
+    // Its own write, to its own proposal — and not the dismissal it undoes.
+    expect(curation.reopenProposal).toHaveBeenCalledWith(7)
+    expect(curation.dismissProposal).not.toHaveBeenCalled()
+    expect(reopen.disabled).toBe(true)
+    expect(changes).toHaveLength(0)
+
+    await act(async () => {
+      resolveReopen?.()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(changes).toHaveLength(1)
+    expect(reopen.disabled).toBe(false)
+  })
+
+  it('says why a reopen failed, and re-reads nothing', async () => {
+    const changes: number[] = []
+    vi.mocked(curation.reopenProposal).mockRejectedValueOnce(
+      new Error('proposal 42 is accepted, not dismissed'),
+    )
+    const host = await settle(
+      <ul>
+        <ProposalRow
+          proposal={proposal({ state: 'dismissed' })}
+          expanded={false}
+          onToggle={noop}
+          onChanged={() => changes.push(1)}
+        />
+      </ul>,
+    )
+    const reopen = host.querySelector<HTMLButtonElement>('button.reopen')
+    if (!reopen) throw new Error('no reopen control rendered')
+
+    await click(reopen)
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'proposal 42 is accepted, not dismissed',
+    )
+    expect(changes).toHaveLength(0)
+    expect(reopen.disabled).toBe(false)
+  })
+
+  it('sends one write for two presses in one frame, before disabled can take effect', async () => {
+    // Both presses inside one `act()`: that is the window between the first
+    // press and the re-render that disables the control, and the only one a
+    // ref guard is for. Pressing, awaiting and pressing again tests
+    // `disabled` instead. Both of the line's writes share the guard, so both
+    // are driven.
+    const host = await settle(
+      <ul>
+        <ProposalRow
+          proposal={proposal({ id: 5, state: 'open' })}
+          expanded={false}
+          onToggle={noop}
+          onChanged={noop}
+        />
+        <ProposalRow
+          proposal={proposal({ id: 6, state: 'dismissed' })}
+          expanded={false}
+          onToggle={noop}
+          onChanged={noop}
+        />
+      </ul>,
+    )
+    const dismiss = host.querySelector<HTMLButtonElement>('button.dismiss')
+    const reopen = host.querySelector<HTMLButtonElement>('button.reopen')
+    if (!dismiss || !reopen) throw new Error('a line control is missing')
+
+    await act(async () => {
+      dismiss.click()
+      dismiss.click()
+      reopen.click()
+      reopen.click()
+      await Promise.resolve()
+    })
+
+    expect(vi.mocked(curation.dismissProposal).mock.calls).toEqual([[5]])
+    expect(vi.mocked(curation.reopenProposal).mock.calls).toEqual([[6]])
+  })
+  it('offers a decided row no accept, dismiss or un-accept control, collapsed or opened (O72)', async () => {
+    // **Every button in the row, not the line's direct children.** The
+    // per-state test above reads `.row > button`, so an Undo drawn inside a
+    // `<span>` on the line, or in the opened panel, passed it — and O74 is
+    // why no Undo may exist: un-accepting leaves what the rule derived
+    // standing. The panel is loaded, with `rule: null` as the server sends
+    // for any proposal not open, so what it draws is on screen. Every
+    // enabled control is then pressed, so a control that reached a write by
+    // some other name is caught by the call rather than by its label.
+    const expected = {
+      accepted: {
+        collapsed: ['disclosure'],
+        opened: ['disclosure', 'compare:Compare v01'],
+      },
+      dismissed: {
+        collapsed: ['disclosure', 'reopen:Reopen'],
+        opened: ['disclosure', 'reopen:Reopen', 'compare:Compare v01'],
+      },
+    } as const
+    for (const state of ['accepted', 'dismissed'] as const) {
+      for (const expanded of [false, true]) {
+        vi.clearAllMocks()
+        const p = proposal({
+          id: 31,
+          state,
+          created_rule_id: state === 'accepted' ? 9 : null,
+        })
+        vi.mocked(curation.proposalDetail).mockResolvedValue(
+          detail({ proposal: p, rule: null }),
+        )
+        const host = await settle(row(expanded, p))
+        if (expanded) {
+          expect(host.querySelector('.sides')).not.toBeNull()
+        }
+
+        const buttons = [
+          ...host.querySelectorAll<HTMLButtonElement>(
+            'li button, li [role="button"]',
+          ),
+        ]
+        expect(
+          buttons.map((b) =>
+            b.classList.contains('disclosure')
+              ? 'disclosure'
+              : `${b.className}:${b.textContent}`,
+          ),
+        ).toEqual(expected[state][expanded ? 'opened' : 'collapsed'])
+
+        for (const b of buttons) {
+          if (b.classList.contains('disclosure') || b.disabled) continue
+          await click(b)
+        }
+        expect(curation.unacceptProposal).not.toHaveBeenCalled()
+        expect(curation.acceptProposal).not.toHaveBeenCalled()
+        expect(curation.dismissProposal).not.toHaveBeenCalled()
+      }
+    }
+  })
+
+  it('takes a second press after a write succeeds, while the row is still on screen', async () => {
+    // A successful write asks the screen to reload, and a reload that fails
+    // leaves this very row mounted — so the line has to answer again. Its
+    // `disabled` comes from `writing`, which is released on success whether
+    // or not the ref is, so only a second press can see a ref left held:
+    // the row would look ready and send nothing. Both of the line's writes,
+    // though they share one runner, so a split runner stays covered.
+    const host = await settle(
+      <ul>
+        <ProposalRow
+          proposal={proposal({ id: 5, state: 'open' })}
+          expanded={false}
+          onToggle={noop}
+          onChanged={noop}
+        />
+        <ProposalRow
+          proposal={proposal({ id: 6, state: 'dismissed' })}
+          expanded={false}
+          onToggle={noop}
+          onChanged={noop}
+        />
+      </ul>,
+    )
+    const dismiss = host.querySelector<HTMLButtonElement>('button.dismiss')
+    const reopen = host.querySelector<HTMLButtonElement>('button.reopen')
+    if (!dismiss || !reopen) throw new Error('a line control is missing')
+
+    await click(dismiss)
+    expect(dismiss.disabled).toBe(false)
+    await click(dismiss)
+    await click(reopen)
+    expect(reopen.disabled).toBe(false)
+    await click(reopen)
+
+    expect(vi.mocked(curation.dismissProposal).mock.calls).toEqual([[5], [5]])
+    expect(vi.mocked(curation.reopenProposal).mock.calls).toEqual([[6], [6]])
   })
 })

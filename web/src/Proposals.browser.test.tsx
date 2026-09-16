@@ -44,6 +44,7 @@ vi.mock('./curation', async (importOriginal) => ({
   listProposals: vi.fn(),
   proposalDetail: vi.fn(),
   dismissProposal: vi.fn(),
+  reopenProposal: vi.fn(),
 }))
 
 /** The store's own wording. */

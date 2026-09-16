@@ -931,12 +931,13 @@ fn rules(args: &[String]) -> Result<(), String> {
 }
 
 /// `taiyaku library proposals [--min-score N] [--accept ID] [--dismiss ID]
-/// [--unaccept ID] [--db PATH]`: the surface over `taiyaku_library::proposals`
-/// — [`taiyaku_library::proposals::open`], [`taiyaku_library::proposals::accept`],
-/// [`taiyaku_library::proposals::dismiss`] and
-/// [`taiyaku_library::proposals::unaccept`] — none of which had a caller
-/// outside their own tests before this (I3). Two rounds of Critical fixes
-/// went into an `accept` a person could not invoke.
+/// [--unaccept ID] [--reopen ID] [--db PATH]`: the surface over
+/// `taiyaku_library::proposals` — [`taiyaku_library::proposals::open`],
+/// [`taiyaku_library::proposals::accept`], [`taiyaku_library::proposals::dismiss`],
+/// [`taiyaku_library::proposals::unaccept`] and, since O72,
+/// [`taiyaku_library::proposals::reopen`] — the first four of which had no
+/// caller outside their own tests before this (I3). Two rounds of Critical
+/// fixes went into an `accept` a person could not invoke.
 ///
 /// **Listing is the default**, with nothing after it: `library scan` already
 /// raises proposals as a side effect of deriving, so the ordinary use of this
@@ -944,7 +945,7 @@ fn rules(args: &[String]) -> Result<(), String> {
 /// narrows it the same way [`taiyaku_library::proposals::open`]'s own
 /// argument does — §6.1's threshold, not a suppression list.
 ///
-/// **At most one of `--accept`, `--dismiss` and `--unaccept`.** Each names a
+/// **At most one of `--accept`, `--dismiss`, `--unaccept` and `--reopen`.** Each names a
 /// proposal and performs the one action a person asked for; taking more than
 /// one at once would leave which happened first, and to which id, ambiguous
 /// the moment two flags named different proposals.
@@ -959,36 +960,51 @@ fn rules(args: &[String]) -> Result<(), String> {
 /// # Errors
 ///
 /// Returns an error for an unknown flag, for more than one of
-/// `--accept`/`--dismiss`/`--unaccept`, for an id or a `--min-score` that will
+/// `--accept`/`--dismiss`/`--unaccept`/`--reopen`, for an id or a `--min-score` that will
 /// not parse as a number, if the database cannot be opened, or whatever the
 /// underlying `taiyaku_library::proposals` call itself returns.
 fn proposals(args: &[String]) -> Result<(), String> {
     reject_unknown_flags(
         "library proposals",
         args,
-        &["--min-score", "--accept", "--dismiss", "--unaccept", "--db"],
+        &[
+            "--min-score",
+            "--accept",
+            "--dismiss",
+            "--unaccept",
+            "--reopen",
+            "--db",
+        ],
     )?;
     reject_positional_arguments(
         "library proposals",
         args,
-        &["--min-score", "--accept", "--dismiss", "--unaccept", "--db"],
-        "a proposal is named by id, as `--accept ID`, `--dismiss ID` or \
-         `--unaccept ID`",
+        &[
+            "--min-score",
+            "--accept",
+            "--dismiss",
+            "--unaccept",
+            "--reopen",
+            "--db",
+        ],
+        "a proposal is named by id, as `--accept ID`, `--dismiss ID`, \
+         `--unaccept ID` or `--reopen ID`",
     )?;
 
     let accept_id = option_value(args, "--accept", "a proposal id")?;
     let dismiss_id = option_value(args, "--dismiss", "a proposal id")?;
     let unaccept_id = option_value(args, "--unaccept", "a proposal id")?;
+    let reopen_id = option_value(args, "--reopen", "a proposal id")?;
     let min_score = option_value(args, "--min-score", "a number")?;
 
-    let actions = [accept_id, dismiss_id, unaccept_id]
+    let actions = [accept_id, dismiss_id, unaccept_id, reopen_id]
         .iter()
         .filter(|a| a.is_some())
         .count();
     if actions > 1 {
         return Err(
-            "library proposals takes at most one of --accept, --dismiss or --unaccept at a \
-             time"
+            "library proposals takes at most one of --accept, --dismiss, --unaccept or \
+             --reopen at a time"
                 .to_string(),
         );
     }
@@ -1029,6 +1045,18 @@ fn proposals(args: &[String]) -> Result<(), String> {
         println!("un-accepted proposal {id}, and removed the rule it had written");
         return Ok(());
     }
+    // The undo of `--dismiss` (O72), folded back into this command's error the
+    // same way when the library refuses it.
+    if let Some(id) = reopen_id {
+        let id = parse_proposal_id(id)?;
+        if let taiyaku_library::proposals::Offer::Refused(why) =
+            taiyaku_library::proposals::reopen(&conn, id)?
+        {
+            return Err(why);
+        }
+        println!("reopened proposal {id}");
+        return Ok(());
+    }
 
     let min_score = match min_score {
         Some(s) => s
@@ -1049,7 +1077,7 @@ fn proposals(args: &[String]) -> Result<(), String> {
 }
 
 /// One line of `taiyaku library proposals`' default listing: the id and kind
-/// a `--accept`/`--dismiss`/`--unaccept` call takes, the score
+/// a `--accept`/`--dismiss`/`--unaccept`/`--reopen` call takes, the score
 /// `--min-score` filters on, and `reason` — the human-readable sentence
 /// [`taiyaku_library::proposals::raise`] itself wrote, which already names
 /// the series involved, so this does not have to look them up a second time.
@@ -1065,7 +1093,7 @@ fn proposal_line(proposal: &taiyaku_library::proposals::Proposal) -> String {
     )
 }
 
-/// A `--accept`/`--dismiss`/`--unaccept` argument, parsed as the `proposal.id`
+/// A `--accept`/`--dismiss`/`--unaccept`/`--reopen` argument, parsed as the `proposal.id`
 /// it names.
 ///
 /// # Errors

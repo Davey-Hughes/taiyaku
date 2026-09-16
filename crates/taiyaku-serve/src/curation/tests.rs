@@ -363,6 +363,7 @@ async fn every_curation_route_refuses_a_reader() {
         (Method::POST, "/api/library/proposals/1/accept"),
         (Method::DELETE, "/api/library/proposals/1/accept"),
         (Method::POST, "/api/library/proposals/1/dismiss"),
+        (Method::DELETE, "/api/library/proposals/1/dismiss"),
     ] {
         let response = send_json(&router, method.clone(), path, &body).await;
         assert_eq!(
@@ -1048,6 +1049,135 @@ async fn a_store_fault_during_a_dismiss_is_a_500_rather_than_a_conflict() {
     assert_eq!(proposal_state(&state, id), "open");
 }
 
+/// **O72.** `DELETE .../dismiss` takes a dismissal back: the proposal leaves
+/// the dismissed list and is in the open one again, with both tab counts
+/// moving with it.
+#[tokio::test]
+async fn reopening_puts_a_dismissed_proposal_back_in_the_open_list() {
+    let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
+    let id = the_one_open_proposal(&state);
+    let path = format!("/api/library/proposals/{id}/dismiss");
+    let response = send_json(&router, Method::POST, &path, &serde_json::json!({})).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(proposal_state(&state, id), "dismissed");
+
+    let response = send_json(&router, Method::DELETE, &path, &serde_json::json!({})).await;
+    let status = response.status();
+    let body = test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let open = get_json(&router, "/api/library/proposals?state=open&min_score=0").await;
+    let ids: Vec<i64> = open["proposals"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|p| p["id"].as_i64().expect("an id"))
+        .collect();
+    assert_eq!(ids, vec![id], "{open}");
+    assert_eq!(open["counts"]["edition-of"], 1, "{open}");
+    let dismissed = get_json(
+        &router,
+        "/api/library/proposals?state=dismissed&min_score=0",
+    )
+    .await;
+    assert_eq!(
+        dismissed["proposals"].as_array().map(Vec::len),
+        Some(0),
+        "{dismissed}"
+    );
+    assert_eq!(
+        dismissed["counts"].as_object().map(serde_json::Map::len),
+        Some(0),
+        "{dismissed}"
+    );
+}
+
+/// Reopening a proposal that is not dismissed is a **409 naming why**, not a
+/// failure and not a silent success — for an open one and for an accepted
+/// one, whose sentence points at un-accepting instead.
+#[tokio::test]
+async fn reopening_a_proposal_that_is_not_dismissed_is_a_conflict() {
+    let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
+    let id = the_one_open_proposal(&state);
+    let path = format!("/api/library/proposals/{id}/dismiss");
+
+    let response = send_json(&router, Method::DELETE, &path, &serde_json::json!({})).await;
+    let status = response.status();
+    let body = test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("only a dismissal can be reopened"), "{body}");
+    assert_eq!(proposal_state(&state, id), "open");
+
+    let rule = previewed_rule(&router, id).await;
+    let response = send_json(
+        &router,
+        Method::POST,
+        &format!("/api/library/proposals/{id}/accept"),
+        &rule,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = send_json(&router, Method::DELETE, &path, &serde_json::json!({})).await;
+    let status = response.status();
+    let body = test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body.contains("un-accepting it is what reopens it"),
+        "{body}"
+    );
+    assert_eq!(proposal_state(&state, id), "accepted");
+}
+
+/// A store fault **during a reopen** is a 500, and the dismissal stands.
+#[tokio::test]
+async fn a_store_fault_during_a_reopen_is_a_500_rather_than_a_conflict() {
+    let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
+    let id = the_one_open_proposal(&state);
+    let path = format!("/api/library/proposals/{id}/dismiss");
+    let response = send_json(&router, Method::POST, &path, &serde_json::json!({})).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    a_store_fault_on(
+        &state,
+        "BEFORE UPDATE OF state ON proposal WHEN NEW.state = 'open'",
+    );
+
+    let response = send_json(&router, Method::DELETE, &path, &serde_json::json!({})).await;
+    let status = response.status();
+    let body = test_support::body_string(response).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(body.contains("a simulated store fault"), "{body}");
+    assert_eq!(proposal_state(&state, id), "dismissed");
+}
+
+/// A store `Err` for a proposal **gone by the time the store read it** is a
+/// 404, and any other is the 500 a failed write gets (O72's fix round).
+///
+/// The race that produces the first — another process deleting the row
+/// between `present` and the write's own read — cannot be staged
+/// deterministically from here, so this drives the mapping the `dismiss` and
+/// `reopen` handlers hand their store `Err` to, with a row that is gone and a
+/// row that is not.
+#[tokio::test]
+async fn a_write_error_for_a_proposal_that_has_gone_is_a_404_and_any_other_a_500() {
+    let (_router, state, _fixture) = test_support::router_over_two_suffixed_series();
+    let id = the_one_open_proposal(&state);
+    let conn = state.library.conn();
+    let gone = id + 1000;
+
+    let answered = super::failed_unless_gone(&conn, gone, "looking up proposal: gone".to_string());
+    assert!(
+        matches!(answered, super::NoAnswer::Missing(missing) if missing == gone),
+        "{answered:?}"
+    );
+    let answered = super::failed_unless_gone(&conn, id, "a simulated store fault".to_string());
+    assert!(
+        matches!(&answered, super::NoAnswer::Failed(why) if why == "a simulated store fault"),
+        "{answered:?}"
+    );
+}
+
 /// A rule the engine cannot evaluate, handed to the **accept** route, is still
 /// a 409 naming why.
 ///
@@ -1241,6 +1371,7 @@ async fn an_unknown_id_is_a_404_on_every_route_that_takes_one() {
         (Method::POST, "/api/library/proposals/9999/accept"),
         (Method::DELETE, "/api/library/proposals/9999/accept"),
         (Method::POST, "/api/library/proposals/9999/dismiss"),
+        (Method::DELETE, "/api/library/proposals/9999/dismiss"),
     ] {
         let response = send_json(&router, method.clone(), path, &rule).await;
         let status = response.status();
@@ -1439,4 +1570,21 @@ async fn no_curation_route_stalls_the_runtime() {
         "and each write landed, rather than being refused into a status \
          this loop happens not to read"
     );
+
+    let (stalled, response) = test_support::the_runtime_stalls_on(
+        &library,
+        crate::curation::reopen(
+            State(Arc::clone(&state)),
+            Extension(an_administrator()),
+            crate::test_support::from_a_browser(),
+            AxPath(id),
+        ),
+    )
+    .await;
+    assert!(
+        !stalled,
+        "DELETE /api/library/proposals/{{id}}/dismiss ran on the async worker"
+    );
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(proposal_state(&state, id), "open", "and the reopen landed");
 }

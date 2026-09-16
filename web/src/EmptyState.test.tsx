@@ -54,6 +54,51 @@ describe('the empty states', () => {
     expect(hidden.textContent).not.toContain('taiyaku library scan')
   })
 
+  it('says which decided state is empty, never that there is nothing left to answer (O72)', () => {
+    // A person on the Dismissed filter is looking for a dismissal. "Nothing
+    // to answer" is a sentence about the open inbox, and here it would read
+    // as though the thing they came for had never existed — so each of the
+    // three names the state it is about, and none borrows the inbox's words.
+    // Two states, so a kind that printed one fixed word passes neither half.
+    for (const decided of ['accepted', 'dismissed'] as const) {
+      const none = mount(<EmptyState kind="decided-none" decided={decided} />)
+      const hidden = mount(
+        <EmptyState kind="decided-weak-hidden" decided={decided} />,
+      )
+      const kind = mount(
+        <EmptyState
+          kind="decided-kind-none"
+          label="Attach Chapters"
+          decided={decided}
+        />,
+      )
+      expect(none.querySelector('h2')?.textContent).toBe(`Nothing ${decided}`)
+      expect(none.textContent).toContain(
+        `No proposal in this library has been ${decided}.`,
+      )
+      expect(hidden.textContent).toContain(
+        `Nothing ${decided} is above the score threshold.`,
+      )
+      expect(hidden.textContent).toContain('Show weak proposals')
+      expect(kind.textContent).toContain(
+        `No Attach Chapters proposal has been ${decided}.`,
+      )
+      expect(kind.textContent).toContain('All shows every one that has.')
+      for (const host of [none, hidden, kind]) {
+        expect(host.textContent).not.toContain('Nothing to answer')
+        expect(host.textContent).not.toContain('waiting on a decision')
+        expect(host.textContent).not.toContain('taiyaku library scan')
+      }
+    }
+    const unlabelled = mount(
+      <EmptyState kind="decided-kind-none" decided="dismissed" />,
+    )
+    expect(unlabelled.textContent).toContain(
+      'No proposal of this kind has been dismissed.',
+    )
+    expect(unlabelled.textContent).not.toContain('undefined')
+  })
+
   it('renders something for every kind — none of them is a null return', () => {
     for (const kind of [
       'no-roots',
@@ -62,6 +107,9 @@ describe('the empty states', () => {
       'inbox-clear',
       'inbox-weak-hidden',
       'kind-answered',
+      'decided-none',
+      'decided-weak-hidden',
+      'decided-kind-none',
     ] as const) {
       expect(mount(<EmptyState kind={kind} />).textContent).not.toBe('')
     }

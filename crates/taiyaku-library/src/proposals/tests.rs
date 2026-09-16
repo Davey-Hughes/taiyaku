@@ -1292,6 +1292,142 @@ fn dismiss_refuses_an_accepted_proposal_rather_than_orphaning_its_rule() {
         })
         .expect("count");
     assert_eq!(rules, 1, "the rule survives a refused dismiss");
+    // **And the row is untouched, which the rule count alone cannot see**
+    // (O72's fix round): `dismiss` never deletes a rule, so a version that
+    // wrote `dismissed` over the accepted row and then refused anyway kept
+    // the rule and passed. That row is the orphan this test is named for.
+    assert_eq!(state_of(&conn, proposal.id), "accepted");
+    assert_eq!(rule_of(&conn, proposal.id), Some(rule_id));
+}
+
+/// `proposal.created_rule_id` for `id`.
+fn rule_of(conn: &rusqlite::Connection, id: i64) -> Option<i64> {
+    conn.query_row(
+        "SELECT created_rule_id FROM proposal WHERE id = ?1",
+        [id],
+        |r| r.get(0),
+    )
+    .expect("the proposal's rule")
+}
+
+/// **O72's fix round.** A row holding a rule an accept wrote, but not
+/// `accepted`, is what `dismiss`'s old read-then-write left behind when an
+/// accept committed between its two statements — and `dismiss` must not
+/// write over one. The race cannot be staged deterministically, so the row it
+/// leaves is built by hand; this one reads `open`, the other shape `dismiss`
+/// could be handed.
+#[test]
+fn dismiss_refuses_a_proposal_still_holding_a_rule_though_it_is_not_accepted() {
+    let library = library_with_two_suffixed_series();
+    let conn = library.conn();
+    proposals::raise(&conn).expect("raise");
+    let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
+    let rule_id = proposals::accept(&conn, proposal.id).expect("accept");
+    conn.execute(
+        "UPDATE proposal SET state = 'open' WHERE id = ?1",
+        [proposal.id],
+    )
+    .expect("a row holding a rule and not accepted");
+
+    let why = refusal_of(proposals::dismiss(&conn, proposal.id));
+    assert_eq!(
+        why,
+        format!(
+            "proposal {} is `open` but still holds rule {rule_id}, which an accept wrote — \
+             un-accept it first, then dismiss",
+            proposal.id
+        )
+    );
+    assert_eq!(state_of(&conn, proposal.id), "open");
+    assert_eq!(rule_of(&conn, proposal.id), Some(rule_id));
+}
+
+/// **O72's fix round.** The race's product from the other side: a
+/// `dismissed` row still holding its accept's rule. Reopened, it would be
+/// `open` with that rule in force, and `acceptable` would let it be accepted
+/// again beside it. Refused — and the sentence's advice is then taken, and
+/// shown to leave an open proposal with no rule anywhere.
+#[test]
+fn reopen_refuses_a_dismissal_still_holding_a_rule_and_un_accepting_repairs_it() {
+    let library = library_with_two_suffixed_series();
+    let conn = library.conn();
+    proposals::raise(&conn).expect("raise");
+    let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
+    let rule_id = proposals::accept(&conn, proposal.id).expect("accept");
+    conn.execute(
+        "UPDATE proposal SET state = 'dismissed' WHERE id = ?1",
+        [proposal.id],
+    )
+    .expect("the row the race left");
+
+    let why = refusal_of(proposals::reopen(&conn, proposal.id));
+    assert_eq!(
+        why,
+        format!(
+            "proposal {} is `dismissed` but still holds rule {rule_id}, which an accept wrote — \
+             un-accepting it removes that rule and reopens it",
+            proposal.id
+        )
+    );
+    assert_eq!(state_of(&conn, proposal.id), "dismissed");
+    assert_eq!(rule_of(&conn, proposal.id), Some(rule_id));
+
+    made(proposals::unaccept(&conn, proposal.id));
+    assert_eq!(state_of(&conn, proposal.id), "open");
+    assert_eq!(rule_of(&conn, proposal.id), None);
+    let rules: i64 = conn
+        .query_row("SELECT count(*) FROM rule WHERE id = ?1", [rule_id], |r| {
+            r.get(0)
+        })
+        .expect("count");
+    assert_eq!(rules, 0, "and the rule is gone");
+}
+
+/// **O72's fix round.** An accepted proposal whose rule has gone — deleted
+/// by hand, or by another process before the next `raise` reopens it — is
+/// refused by both writes, and neither sentence sends a person to un-accept
+/// a proposal `unaccept` would refuse. `dismiss` refused it before this
+/// round by its state alone; its conditional `UPDATE` now has to carry the
+/// state as well as the rule to keep doing so.
+#[test]
+fn an_accepted_proposal_whose_rule_has_gone_is_refused_by_dismiss_and_reopen() {
+    let library = library_with_two_suffixed_series();
+    let conn = library.conn();
+    proposals::raise(&conn).expect("raise");
+    let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
+    let rule_id = proposals::accept(&conn, proposal.id).expect("accept");
+    conn.execute("DELETE FROM rule WHERE id = ?1", [rule_id])
+        .expect("the rule goes");
+    assert_eq!(rule_of(&conn, proposal.id), None, "ON DELETE SET NULL");
+    assert_eq!(state_of(&conn, proposal.id), "accepted");
+
+    let why = refusal_of(proposals::dismiss(&conn, proposal.id));
+    assert_eq!(
+        why,
+        format!(
+            "proposal {} is accepted, but the rule it wrote has gone — the next scan reopens \
+             it, and it can be dismissed then",
+            proposal.id
+        )
+    );
+    assert_eq!(state_of(&conn, proposal.id), "accepted");
+
+    let why = refusal_of(proposals::reopen(&conn, proposal.id));
+    assert_eq!(
+        why,
+        format!(
+            "proposal {} is accepted, but the rule it wrote has gone — the next scan reopens it",
+            proposal.id
+        )
+    );
+    assert_eq!(state_of(&conn, proposal.id), "accepted");
+
+    proposals::raise(&conn).expect("the next scan's raise");
+    assert_eq!(
+        state_of(&conn, proposal.id),
+        "open",
+        "as both sentences say"
+    );
 }
 
 #[test]
@@ -1787,6 +1923,108 @@ fn dismiss_answers_a_failed_write_as_an_error_and_a_refusal_as_refused() {
         )
     );
     assert_eq!(state_of(&conn, proposal.id), "accepted");
+}
+
+/// **O72.** A dismissal can be taken back, and what comes back is the same
+/// proposal, open, rather than a second row a rescan raised beside it.
+///
+/// The rescan is the half worth pinning: `raise` treats an open proposal as
+/// one it may refresh, and `proposal_identity` is what keeps its
+/// `INSERT OR IGNORE` from adding a duplicate — so the row count and the id
+/// are asserted, not only that something is open.
+#[test]
+fn a_reopened_dismissal_is_the_same_proposal_open_again_across_a_rescan() {
+    let library = library_with_two_suffixed_series();
+    let conn = library.conn();
+    proposals::raise(&conn).expect("raise");
+    let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
+    made(proposals::dismiss(&conn, proposal.id));
+    assert!(proposals::open(&conn, 0.0).expect("open").is_empty());
+
+    made(proposals::reopen(&conn, proposal.id));
+    assert_eq!(state_of(&conn, proposal.id), "open");
+
+    let newly_open = proposals::raise(&conn).expect("rescan");
+    assert_eq!(
+        newly_open, 0,
+        "reopening is not a proposal the rescan raised"
+    );
+    let open: Vec<i64> = proposals::open(&conn, 0.0)
+        .expect("open")
+        .iter()
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(open, vec![proposal.id]);
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM proposal", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(rows, 1, "and no second row beside it");
+}
+
+/// `reopen` refuses anything but a dismissal, **in words that say which**,
+/// and writes nothing.
+///
+/// Both refusals are exact strings: the accepted one points somewhere else
+/// (un-accepting), and a reopen that reached an accepted row would leave an
+/// `open` proposal still holding a live `created_rule_id` — the orphaned
+/// shape `dismiss`'s own refusal exists to prevent from the other side — so
+/// the rule is counted as well as the state read.
+#[test]
+fn reopen_refuses_a_proposal_that_is_not_dismissed_and_writes_nothing() {
+    let library = library_with_two_suffixed_series();
+    let conn = library.conn();
+    proposals::raise(&conn).expect("raise");
+    let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
+
+    let why = refusal_of(proposals::reopen(&conn, proposal.id));
+    assert_eq!(
+        why,
+        format!(
+            "proposal {} is `open`, not dismissed — only a dismissal can be reopened",
+            proposal.id
+        )
+    );
+    assert_eq!(state_of(&conn, proposal.id), "open");
+
+    proposals::accept(&conn, proposal.id).expect("accept");
+    let why = refusal_of(proposals::reopen(&conn, proposal.id));
+    assert_eq!(
+        why,
+        format!(
+            "proposal {} is accepted, not dismissed — un-accepting it is what reopens it",
+            proposal.id
+        )
+    );
+    assert_eq!(state_of(&conn, proposal.id), "accepted");
+    assert_eq!(accepted_rules(&conn), 1, "the accept's rule is untouched");
+}
+
+#[test]
+fn reopening_an_unknown_proposal_is_an_error() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let err = proposals::reopen(&conn, 999).expect_err("an id naming no proposal");
+    assert!(err.contains("there is no such proposal"), "{err}");
+}
+
+/// `reopen`: a write that fails is `Err`, not a refusal, and the dismissal
+/// stands.
+#[test]
+fn reopen_answers_a_failed_write_as_an_error() {
+    let library = library_with_two_suffixed_series();
+    let conn = library.conn();
+    proposals::raise(&conn).expect("raise");
+    let proposal = proposals::open(&conn, 0.0).expect("open").remove(0);
+    made(proposals::dismiss(&conn, proposal.id));
+
+    a_store_fault_on(
+        &conn,
+        "BEFORE UPDATE OF state ON proposal WHEN NEW.state = 'open'",
+    );
+    let err = proposals::reopen(&conn, proposal.id)
+        .expect_err("a write that failed is an error, not a refusal");
+    assert!(err.contains("a simulated store fault"), "{err}");
+    assert_eq!(state_of(&conn, proposal.id), "dismissed");
 }
 
 // --- what the mutation sweep found unpinned --------------------------------

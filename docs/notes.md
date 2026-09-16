@@ -19849,3 +19849,303 @@ passed 20 times.
 ### Counts
 
 Rust 2170 → 2171: one new test, in `opds/tests.rs`. `web/` was not changed.
+
+## O72: a dismissal can be found, and reopened — 2026-09-15
+
+O72 recorded that spec C3 §4's "a dismissal you disagree with later is a thing
+you have to be able to find" was met at the store and the API and nowhere a
+person could reach: `Proposals.tsx` sent `state: 'open'` and nothing else.
+
+Read before building, on `eeff032`, and each true: `proposals::list` and
+`GET /api/library/proposals` take a `state`, and
+`curation::tests::dismissing_takes_a_proposal_out_of_the_open_list` already
+reads `?state=dismissed`; nothing reopens a dismissal — no route, no CLI flag,
+and `proposals::acceptable` refuses any proposal whose state is not `open`;
+`proposals::dismiss` writes no rule; the sidebar's count is re-read through
+`useInboxRefresh` after any write the inbox makes. One premise the brief stated
+was not: the Dismiss control was guarded by `disabled` alone, with no ref, so
+two presses in one frame both reached its handler.
+
+### What was built
+
+- `proposals::reopen`: one `UPDATE … WHERE id = ?2 AND state = 'dismissed'`,
+  and only when it changed no row a read through `one` to word the refusal —
+  "is accepted, not dismissed — un-accepting it is what reopens it" or "is
+  `open`, not dismissed — only a dismissal can be reopened". An id naming no
+  proposal is `Err`, as for its siblings.
+- `DELETE /api/library/proposals/{id}/dismiss` → `curation::reopen`:
+  admin-gated, `present` first, on the blocking pool, 204 / 409 / 500 / 404 as
+  O70 settled for the other writes. Its grant posture stays
+  `GrantIndependent`, with the reason extended to the `DELETE` half.
+- `taiyaku library proposals --reopen ID`, counted in the at-most-one rule and
+  known to both flag checks.
+- `web/`: `reopenProposal`; an Open / Accepted / Dismissed control on the
+  inbox, `open` by default, independent of the kind tabs and the weak toggle;
+  a header reading the selected state ("2 dismissed"); three `decided-*`
+  empty states; each row's own control chosen by the row's `state` — Dismiss
+  when open, Reopen when dismissed, nothing when accepted (O74); one write
+  runner for both, holding a ref.
+
+### Watched red
+
+Every mutation below was applied by a script to the final code, run, and
+written back from a saved copy, with the file's sha256 compared after: every
+copy matched. Rust ran `cargo nextest run --all-features --no-fail-fast` with
+`TAIYAKU_CORPUS` unset, filtered to one package's module: the controls passed
+95 (`-p taiyaku-library`, `proposals::tests::`), 30 (`-p taiyaku-serve`,
+`curation::tests::`) and 14 (`-p taiyaku-cli`, `proposals`). Every mutant
+compiled.
+
+| applied | failed |
+| --- | --- |
+| `reopen`'s `AND state = ?3` → `AND ?3 IS NOT NULL` | `reopen_refuses_a_proposal_that_is_not_dismissed_and_writes_nothing`: `expected a refusal, got Ok(Made(()))` |
+| `reopened == 1` → `reopened <= 1` | that test, and `reopening_an_unknown_proposal_is_an_error`: `Made(())` |
+| `reopen` writes `dismissed` instead of `open` | `a_reopened_dismissal_is_the_same_proposal_open_again_across_a_rescan`, `reopen_answers_a_failed_write_as_an_error` |
+| the two refusal sentences swapped | `reopen_refuses_a_proposal_that_is_not_dismissed_and_writes_nothing` |
+| the `UPDATE`'s error swallowed (`unwrap_or(0)`) | `reopen_answers_a_failed_write_as_an_error`: it answered a refusal about a `dismissed` proposal |
+| `.delete(curation::reopen)` removed from the route | five: the reader, unknown-id, store-fault, conflict and reopen tests (405) |
+| the admin gate removed | `every_curation_route_refuses_a_reader`: `DELETE /api/library/proposals/1/dismiss answered a reader` |
+| a store fault mapped to `NoAnswer::Refused` | `a_store_fault_during_a_reopen_is_a_500_rather_than_a_conflict` (409) |
+| `present` removed | `an_unknown_id_is_a_404_on_every_route_that_takes_one` (500) |
+| the handler run on the async worker | `no_curation_route_stalls_the_runtime`: `DELETE … ran on the async worker` |
+| 204 → 200 | `reopening_puts_a_dismissed_proposal_back_in_the_open_list`, and the stall test |
+| `--reopen` left out of the action count | `proposals_refuses_more_than_one_action_at_once` |
+| `--reopen` never calls the library | the CLI reopen test and `library_proposals_refusals_exit_one_with_the_librarys_own_sentence` |
+| `--reopen` discards a refusal | the same two: `unwrap_err()` on `Ok`, and exit 0 |
+| `--reopen` unknown to `reject_unknown_flags` | three, `has no flag --reopen` |
+| `--reopen` unknown to `reject_positional_arguments` | three, `` `2` was given as one `` |
+
+The two-actions assertion passes `--db` at a scratch path. Without it, the
+mutation that stops counting `--reopen` reaches `resolve_db_path`, whose
+default is the real library under `XDG_DATA_HOME`.
+
+`web/` ran `vitest run --reporter=default` on the one file each mutation is
+about: controls passed `Proposals.test.tsx` 21, `ProposalRow.test.tsx` 38,
+`EmptyState.test.tsx` 8 and `curation.test.ts` 30.
+
+| applied | failed |
+| --- | --- |
+| the request always sends `state: 'open'` | all four new `Proposals` tests |
+| every state control sets `dismissed` | the state-control test and the header test |
+| a state control also clears the kind | the state-control test and the kind empty-state test |
+| the header always reads `open` | the header test and the reopen seam test: `'2 open'` for `'2 dismissed'` |
+| the empty state ignores the state | the header test and the kind empty-state test |
+| `decided-kind-none` drawn as `decided-none` | the kind empty-state test |
+| `decided` fixed to `dismissed` | the header test |
+| `reload` falls back to `open` | the reopen seam test: `expected 'open' to be 'dismissed'` |
+| Reopen on every row not open | the per-state controls test |
+| Dismiss on every row | the per-state controls test |
+| Reopen sends `dismissProposal` | three `ProposalRow` tests |
+| the ref guard removed | the two-presses test: `[[5],[5]]` for `[[5]]` |
+| no `onChanged` after a write | three, both dismiss tests among them |
+| `decided-none` always says `dismissed` | the `EmptyState` decided test |
+| `reopenProposal` sends `POST` | the `curation.test.ts` reopen test: `'POST'` for `'DELETE'` |
+
+### Driven in the browser
+
+A scratch root under the worktree's `target/`, four corpus volumes hardlinked
+in: `Go-Toubun no Hanayome - v01 (2018).cbz` and the Full Color Edition's, and
+Kaguya-sama's `v01 (2018)` and Full Color's, each in a directory of its
+series' name. `library scan --add` derived 4 series, 4 works and raised 2
+`edition-of` proposals. `serve --db` with `--log-requests`, vite's dev server
+in front, Chrome 153 through Playwright, 1280×800.
+
+| step | header | states | rows and their controls | sidebar count |
+| --- | --- | --- | --- | --- |
+| landed | 2 open | Open pressed | Go-Toubun: Dismiss; Kaguya: Dismiss | 2 |
+| Dismiss on Kaguya | 1 open | Open pressed | Go-Toubun: Dismiss | 1 |
+| Dismissed | 1 dismissed | Dismissed pressed | Kaguya: Reopen | 1 |
+| Reopen | 0 dismissed | Dismissed pressed | none; "Nothing dismissed … Show weak proposals reveals the ones below it." | 2 |
+| Open | 2 open | Open pressed | Go-Toubun: Dismiss; Kaguya: Dismiss | 2 |
+| Accepted | 0 accepted | Accepted pressed | none; "Nothing accepted …" | 2 |
+
+The request log holds `POST /api/library/proposals/2/dismiss` 204 and
+`DELETE /api/library/proposals/2/dismiss` 204, both from that user-agent, and
+the database afterwards held two proposals, both `open`, none with a rule.
+`find corpus -newermt` against the drive's start returned nothing.
+
+**A fresh worktree's vite cannot start the app** until `scripts/build-wasm.sh`
+has written `crates/taiyaku-wasm/pkg`, which is gitignored: the dev server
+answered "Failed to resolve import `taiyaku-wasm`" until it was run.
+
+**`scripts/check-all.sh` checks whichever checkout the caller stands in**, not
+the one it is read from: its `cd "$(git rev-parse --show-toplevel)"` resolves
+from the current directory. Invoked by absolute path from the main checkout it
+ran main's suite (2170 tests) and rebuilt main's gitignored
+`crates/taiyaku-wasm/pkg` from main's unchanged sources. The gate this branch
+reports was run from the worktree.
+
+### What remains
+
+- `library proposals` still lists open proposals only; the CLI can reopen a
+  dismissal and cannot list one.
+- An empty decided list with weak proposals hidden names the threshold
+  whether or not anything below it was decided, the same rule the open inbox
+  already follows.
+- The sidebar counts open proposals only, as before.
+- O74 is unchanged: an accepted proposal is listed, and nothing on screen
+  un-accepts it.
+
+### Counts
+
+Rust 2170 → 2178: four tests in `proposals/tests.rs`, three in
+`curation/tests.rs` and one in `library/tests.rs`; the binary test gained a
+case, not a test. `web/`: `node` 1,157 → 1,158 (one `curation.test.ts` case)
+and `jsdom` 962 → 971 (four in `ProposalRow.test.tsx`, four in
+`Proposals.test.tsx`, one in `EmptyState.test.tsx`), measured with
+`vitest run --project node` and `--project jsdom`.
+
+## O72 fix round — 2026-09-15
+
+An independent review of `4404d2d` found no blocking defect and seven things
+to address. They land as a second commit on the same branch.
+
+### 1. A decided row's controls were pinned on the line's direct children only
+
+The per-state test read `.row > button`. The reviewer's W5, an Undo calling
+`unacceptProposal` inside an accepted row's opened panel, and W5b, the same
+Undo on the line inside a `<span>`, both passed all 59 `ProposalRow` and
+`Proposals` tests. The new `ProposalRow` test mounts an accepted and a
+dismissed row, each collapsed and then opened with the panel loaded (`rule:
+null`, as the server sends for any proposal not open). It asserts every
+`button` and `[role="button"]` in the row as one list, then presses every
+enabled one and asserts `unacceptProposal`, `acceptProposal` and
+`dismissProposal` were never called.
+
+### 2. Releasing the write guard after a success was unpinned
+
+The reviewer's W2 deleted `inFlight.current = false` from the success path and
+passed: the success tests read `disabled`, which comes from `writing`, and
+never pressed again. The new test keeps both rows mounted, as a failed reload
+would, and presses Dismiss twice and Reopen twice, asserting two requests
+each.
+
+### 3. The header paired one state's count with another state's name
+
+`Proposals.tsx` drew `{total} {state}` from the pressed control while `total`
+still came from the previous answer: "37 open", press Dismissed, and "37
+dismissed" over the open rows until the dismissed list landed. The empty state
+chose its words the same way. The inbox, its counts and the state they were
+fetched for are now one piece of state, and the header and the empty state
+read that state. Emptying the list on every switch was not chosen: it blanks
+the screen each time, and its header would still need a word for "nothing
+loaded". The new test holds the second and third responses open and asserts
+the header and the empty state inside each window, in both directions.
+
+### 4. A refusal could describe a row another process had changed
+
+`reopen` ran its conditional `UPDATE` and then read the row to word the
+refusal, as two statements. A row dismissed by another process between them
+read "is `dismissed`, not dismissed", and a row deleted between them made
+`one`'s `Err` a 500.
+
+Both writes now run in one transaction. `rusqlite` 0.38's
+`unchecked_transaction` is `Transaction::new_unchecked(self,
+self.transaction_behavior)` (read in the crate source), and
+`Library::configure`, which `open_in_memory` also calls, sets `Immediate`. So
+the write lock is taken at `BEGIN` and held to the commit, and the read sees the
+row the `UPDATE` missed. The `(dismissed, no rule)` arm of `reopen`'s refusal
+and the `(not accepted, no rule)` arm of `dismiss`'s cannot be reached while
+that lock is held. Both are worded anyway, and neither is tested.
+
+A missing row is a 404 through `curation::failed_unless_gone`: after a write's
+store `Err`, it asks `proposals::lookup` again, and only a row that is gone
+turns the 500 into a 404. `dismiss` and `reopen` use it; `accept` and
+`unaccept` have the same gap behind `present` and do not.
+
+**No test reaches the race itself.** SQLite has no hook between `present`'s
+`SELECT` and the store's `BEGIN`, and a trigger that deleted the row during the
+store's own `UPDATE` is rolled back with the transaction the `Err` abandons.
+The mapping is tested directly, with a row that is gone and one that is not.
+Pointing both handlers back at `NoAnswer::Failed` survived.
+
+### 5. `dismiss` read, then wrote unconditionally — this predates O72
+
+`dismiss` read the state, refused `accepted`, and then ran `UPDATE proposal SET
+state = ?1 WHERE id = ?2` with no condition. That shape is on `main` at
+`eeff032` and came in with `cec59e2`, the library scanner (#77, 2026-08-18),
+per `git log -S` on the statement. An accept committing between the read and
+the write left a `dismissed` row holding a live `created_rule_id`. Reopening
+made that worse: `reopen`'s `WHERE state = 'dismissed'` would make the row
+`open` with its rule in force, and `acceptable`, which checks the state alone,
+lets it be accepted again beside that rule.
+
+- `reopen`'s `UPDATE` adds `AND created_rule_id IS NULL`, and its refusal for
+  a dismissed row holding a rule names `unaccept`, which removes the rule and
+  reopens the proposal. The test takes that advice and checks the row is
+  `open` with no rule anywhere.
+- `dismiss` is `UPDATE … WHERE id = ?2 AND state <> 'accepted' AND
+  created_rule_id IS NULL` in the same transaction shape, with its refusal
+  worded from the read after it.
+- **One refusal was false and is reworded.** An accepted proposal whose rule
+  has gone was told "un-accept it first", and `unaccept` refuses a proposal
+  with no rule. Both writes now say the next scan reopens it, and the test
+  runs `raise` to show it does.
+- `dismiss_refuses_an_accepted_proposal_rather_than_orphaning_its_rule`
+  checked the refusal and that the rule survived. `dismiss` never deletes a
+  rule, so a version that wrote `dismissed` over the accepted row and refused
+  anyway passed it. It now also asserts the state and `created_rule_id`.
+
+The rows the race leaves are built by hand in the tests. The race itself is
+not staged, for the reason in 4.
+
+### 6. The decided filters keep the score threshold — recorded, not changed
+
+The Accepted and Dismissed filters keep the inbox's default threshold. A weak
+decided proposal is therefore absent whenever a strong one is listed, and the
+hint that Show weak proposals reveals more is drawn only over an empty list.
+Added to the row's What remains.
+
+### 7. Wording
+
+`curation::reopen`'s doc sentence comparing the two `DELETE`s did not parse;
+it now says the route is to `POST …/dismiss` what `DELETE …/accept` is to
+`POST …/accept`. `status.md`'s `taiyaku-serve` paragraph said "those five"
+handlers resolve the row through `proposals::lookup` and "all six" run on the
+blocking pool. `rg 'present\(&conn'` finds six calls in `curation.rs` and
+`rg spawn_blocking` seven handlers, and both sentences are marked in place.
+
+### Watched red
+
+Scripts as before. Each mutation was applied to the final code, run, and
+written back from a saved copy, with sha256 matching every time. Rust ran with
+`TAIYAKU_CORPUS` unset, filtered to one package's module: controls passed 98
+(`taiyaku-library`, `proposals::tests::`) and 31 (`taiyaku-serve`,
+`curation::tests::`), and every mutant compiled. The web runs used `vitest
+--project jsdom --reporter=default` over `ProposalRow.test.tsx` and
+`Proposals.test.tsx`: the control passed 62. W5, W5b and W2 are the reviewer's
+own edits, read out of their `webmut.py`.
+
+| applied | failed |
+| --- | --- |
+| W5: Undo calling `unacceptProposal` in an accepted row's opened panel | the decided-row test: `['disclosure', 'undo:Undo', …]` |
+| W5b: Undo on an accepted row's line, inside a `<span>` | the decided-row test: `['disclosure', 'undo:Undo']` for `['disclosure']` |
+| W2: `inFlight.current = false` removed from the success path | the second-press test: `[[5]]` for `[[5], [5]]` |
+| the header reads the pressed state | the held-response test: `'2 dismissed'` for `'2 open'` |
+| the empty state reads the pressed state | the held-response test: "Nothing to answer…" where "Nothing dismissed" was expected |
+| `failed_unless_gone` answers a gone row with `Failed` | `a_write_error_for_a_proposal_that_has_gone_is_a_404_and_any_other_a_500` |
+| **`dismiss` and `reopen` handlers pass `NoAnswer::Failed` again** | **nothing — survived** |
+| `reopen`'s `AND created_rule_id IS NULL` removed | `reopen_refuses_a_dismissal_still_holding_a_rule_and_un_accepting_repairs_it`: `Made(())` |
+| `dismiss`'s `UPDATE` unconditional (`AND ?3 IS NOT NULL`) | four, `dismiss_refuses_an_accepted_proposal_rather_than_orphaning_its_rule` among them: `expected a refusal, got Ok(Made(()))` |
+| `dismiss`'s state clause removed | `an_accepted_proposal_whose_rule_has_gone_is_refused_by_dismiss_and_reopen` |
+| `dismiss`'s rule clause removed | `dismiss_refuses_a_proposal_still_holding_a_rule_though_it_is_not_accepted` |
+| `dismiss` restored to `main`'s read-then-unconditional-write | that test and the gone-rule test |
+| `dismiss` writes `dismissed` over the row, then refuses anyway | four, the accepted test at its new state assertion: `left: "dismissed"`, `right: "accepted"` |
+
+### What remains
+
+- The race in 4 and 5 is not reproduced by any test, and the handlers' use of
+  `failed_unless_gone` is unpinned.
+- `accept` and `unaccept` keep the gap between `present` and the store.
+- `accept_with`'s own comment says `unchecked_transaction` "opens a *deferred*
+  BEGIN". With `rusqlite` 0.38 it opens the connection's configured behaviour,
+  which is `Immediate`. The comment is stale, predates this branch, and is not
+  changed here.
+
+### Counts
+
+Rust 2178 → 2182, from a full `cargo nextest run --workspace --all-features`:
+three new tests in `proposals/tests.rs` and one in `curation/tests.rs`, and an
+existing test tightened. `web/`: `node` stays at 1,158, and `jsdom` goes 971 →
+974 (two in `ProposalRow.test.tsx`, one in `Proposals.test.tsx`), measured with
+`vitest run --project node` and `--project jsdom`.

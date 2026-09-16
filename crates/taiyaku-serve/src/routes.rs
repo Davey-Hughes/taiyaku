@@ -2006,7 +2006,7 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         // drives each one for a 401, `auth::tests::every_route_declares_its
         // _grant_posture` asserts its posture table's route set against this
         // function's exactly, and `curation::tests::every_curation_route
-        // _refuses_a_reader` drives all six of these for a 403.
+        // _refuses_a_reader` drives all seven of these methods for a 403.
         ("/api/library/proposals", get(crate::curation::list)),
         ("/api/library/proposals/{id}", get(crate::curation::detail)),
         (
@@ -2019,7 +2019,7 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         ),
         (
             "/api/library/proposals/{id}/dismiss",
-            axum::routing::post(crate::curation::dismiss),
+            axum::routing::post(crate::curation::dismiss).delete(crate::curation::reopen),
         ),
         // **Spec C3 §5's metadata-editing routes, closing O44.** Merged onto
         // the same two paths `library_api::work`/`one_series` already
@@ -2440,7 +2440,9 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
             GrantIndependent {
                 reason: "records, for the whole library, that a question was \
                           answered no — a proposal is not per-account state, \
-                          and no grant narrows which ones exist",
+                          and no grant narrows which ones exist. The DELETE \
+                          half takes that answer back, for the whole library \
+                          the same way",
             },
         ),
         // **Spec C3 §5's metadata-editing routes — `Refuses`, not

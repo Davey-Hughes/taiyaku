@@ -10,16 +10,34 @@
  * narrowed by the `kind` filter — each tab counts its own total regardless of
  * which one is currently selected.
  *
- * **This screen only ever asks for `state: 'open'`, and nothing in this app
- * yet shows any other state.** An inbox is exactly the set of proposals still
- * waiting on a decision, and hardcoding that here is the right call: without
- * it, accepted and dismissed rows would mix into the list with no control to
- * sort them apart. But spec C3 §4's "a dismissal you disagree with later is a
- * thing you have to be able to find" is *not* discharged by that — it is met
- * at the store and API layers only, where `state` is a query parameter
- * `curation.ts` can send. No screen sends anything but `open`, so today the
- * answer to "where do I find a dismissal" is "nowhere in the UI". A state
- * control is the gap that closes it.
+ * **Open by default, and the other two states one press away (O72).** An
+ * inbox is exactly the set of proposals still waiting on a decision, so
+ * `open` is what the screen lands on: mixing accepted and dismissed rows into
+ * that list would leave nothing to sort them apart by. Spec C3 §4 asks for
+ * the rest all the same — "accepted and dismissed proposals stay listed under
+ * their own filters. A dismissal you disagree with later is a thing you have
+ * to be able to find." The state control is those filters. Until it existed
+ * this screen sent `state: 'open'` and nothing else, so §4 was met at the
+ * store and the API and nowhere a person could reach.
+ *
+ * **The header, the tab counts and the empty states all read within the
+ * state the list on screen was fetched for**, because `counts` does: the
+ * server counts within the state the request carried. So the header says "2
+ * dismissed" rather than "2 open" over a list of dismissals, and an empty
+ * dismissed list says nothing has been dismissed rather than that there is
+ * nothing to answer. **That is the answer's state, not the pressed
+ * control's**, and the two differ for as long as a request is on its way:
+ * reading the control, pressing Dismissed over 37 open proposals drew "37
+ * dismissed" above the open rows until the dismissed list landed. The
+ * alternative — emptying the list the moment a state is pressed — was not
+ * taken: it blanks the screen on every switch, and its header would still
+ * need a word for "nothing loaded", where this one only ever describes rows
+ * actually on screen.
+ *
+ * **What a row lets a person do is the row's business, not this screen's.**
+ * `ProposalRow` reads its own proposal's `state`: an open row offers Dismiss,
+ * a dismissed one Reopen, and an accepted one nothing — O74 is why there is
+ * no Undo, since un-accepting leaves what the rule derived standing.
  *
  * **The score threshold defaults to 1, not 0.** The scale is `{0, 1, 2, 3}`;
  * 0 means "the suffix matches no edition word and the volume counts differ",
@@ -27,10 +45,11 @@
  * threshold to 0 rather than filtering anything out permanently — a weak
  * proposal must stay reachable, never suppressed.
  *
- * **The kind tabs and the threshold are independent filters.** Each control
- * sets its own piece of state and touches no other, so selecting a kind
- * cannot silently change what the threshold is, and revealing weak proposals
- * cannot silently drop back to every kind. `Proposals.test.tsx` asserts the
+ * **The state control, the kind tabs and the threshold are independent
+ * filters.** Each control sets its own piece of state and touches no other, so
+ * selecting a kind cannot silently change what the threshold is, revealing
+ * weak proposals cannot silently drop back to every kind, and moving to
+ * another state keeps both. `Proposals.test.tsx` asserts the
  * whole filter object on each click rather than the one field the click was
  * about, which is what makes that independence testable.
  *
@@ -53,9 +72,10 @@
  * row is handed as `onChanged`, and the failure banner's Retry is its other
  * caller.
  *
- * **The list and the counts are one piece of state, `undefined` until the
- * first answer lands.** They arrive in one response and describe one moment,
- * so holding them apart let them be set apart; and an `[]`/`{}` pair cannot
+ * **The list, the counts and the state they were asked for are one piece of
+ * state, `undefined` until the first answer lands.** They arrive in one
+ * response and describe one moment, so holding them apart let them be set
+ * apart; and an `[]`/`{}` pair cannot
  * be told from an inbox that answered with nothing in it, which is exactly
  * the distinction the empty state below rests on. `Search.tsx`'s `hits` and
  * `Library.tsx`'s `gridData` are the same shape for the same reason: neither
@@ -85,6 +105,8 @@ import {
   inboxTotal,
   kindLabel,
   listProposals,
+  PROPOSAL_STATES,
+  type ProposalState,
 } from './curation'
 import { EmptyState } from './EmptyState'
 import { ProposalRow } from './ProposalRow'
@@ -92,7 +114,10 @@ import { useInboxRefresh } from './shell'
 import { messageOf } from './message'
 
 export function Proposals() {
-  const [inbox, setInbox] = useState<Inbox | undefined>()
+  const [loaded, setLoaded] = useState<
+    { inbox: Inbox; state: ProposalState } | undefined
+  >()
+  const [state, setState] = useState<ProposalState>('open')
   const [kind, setKind] = useState<string | undefined>(undefined)
   const [showWeak, setShowWeak] = useState(false)
   const [expanded, setExpanded] = useState<number | null>(null)
@@ -116,17 +141,17 @@ export function Proposals() {
   // `hooks.ts`'s `useScrollFollow` carries the same suppression for the same
   // shape: a dependency the body never reads, listed because its *change* is
   // the signal.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `reloads` is a trigger, not a closure read — the body reads only `kind` and `showWeak`. Removing it, which is what this rule suggests, would leave an accept or a dismiss showing a stale list until a filter was touched.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `reloads` is a trigger, not a closure read — the body reads only `state`, `kind` and `showWeak`. Removing it, which is what this rule suggests, would leave an accept, a dismiss or a reopen showing a stale list until a filter was touched.
   useEffect(() => {
     let cancelled = false
     listProposals({
-      state: 'open',
+      state,
       kind,
       min_score: showWeak ? 0 : INBOX_MIN_SCORE,
     })
       .then((next) => {
         if (cancelled) return
-        setInbox(next)
+        setLoaded({ inbox: next, state })
         setFailure(undefined)
       })
       .catch((err: unknown) => {
@@ -136,8 +161,11 @@ export function Proposals() {
     return () => {
       cancelled = true
     }
-  }, [kind, showWeak, reloads])
+  }, [state, kind, showWeak, reloads])
 
+  const inbox = loaded?.inbox
+  // What the list on screen answers — see this file's doc comment.
+  const shown = loaded?.state ?? state
   const proposals = inbox?.proposals ?? []
   const counts = inbox?.counts ?? {}
   const total = inboxTotal(counts)
@@ -151,7 +179,9 @@ export function Proposals() {
 
   return (
     <div className="proposals">
-      <h1>{total} open</h1>
+      <h1>
+        {total} {shown}
+      </h1>
       {failure !== undefined && (
         <div className="failure">
           <p role="alert">{failure}</p>
@@ -160,6 +190,22 @@ export function Proposals() {
           </button>
         </div>
       )}
+      {/* The three states, as C3 §4's "their own filters" — the same `chips`
+          idiom as the kind row below, and a row of its own because a state
+          and a kind are two filters, not two values of one. */}
+      <div className="proposal-states chips">
+        {PROPOSAL_STATES.map(({ state: s, label }) => (
+          <button
+            key={s}
+            type="button"
+            className="state"
+            aria-pressed={state === s}
+            onClick={() => setState(s)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       {/* `chips` is `Library.tsx`'s filter-row idiom, styled in `index.css`
           down to the pressed state; `proposal-tabs` names this particular row
           and carries no rules of its own. */}
@@ -195,13 +241,20 @@ export function Proposals() {
       {inbox !== undefined && proposals.length === 0 ? (
         <EmptyState
           kind={
-            kind !== undefined && total > 0
-              ? 'kind-answered'
-              : showWeak
-                ? 'inbox-clear'
-                : 'inbox-weak-hidden'
+            shown === 'open'
+              ? kind !== undefined && total > 0
+                ? 'kind-answered'
+                : showWeak
+                  ? 'inbox-clear'
+                  : 'inbox-weak-hidden'
+              : kind !== undefined && total > 0
+                ? 'decided-kind-none'
+                : showWeak
+                  ? 'decided-none'
+                  : 'decided-weak-hidden'
           }
           label={kind === undefined ? undefined : kindLabel(kind)}
+          decided={shown === 'open' ? undefined : shown}
         />
       ) : (
         <ul className="proposal-list">

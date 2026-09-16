@@ -22,11 +22,12 @@
 //! library it would be applied to, and the body names the series it would have
 //! moved.
 //!
-//! A store that fails during any of the three writes is **500**, as a store
+//! A store that fails during any of the writes is **500**, as a store
 //! failing anywhere else here is. It was a 409 until O70: `accept_with`,
 //! `unaccept` and `dismiss` answered a refusal and a failure through one
 //! `Result<_, String>`, so their handlers mapped one type onto one status.
-//! They answer `Result<Offer<_>, String>` now — [`made`] turns the refusal
+//! They answer `Result<Offer<_>, String>` now, and `reopen` was written that
+//! way (O72) — [`made`] turns the refusal
 //! into [`NoAnswer::Refused`], and each handler turns the `Err` beside it into
 //! [`NoAnswer::Failed`] — and nothing here reads the sentence to decide which.
 //!
@@ -97,8 +98,8 @@ enum NoAnswer {
     Missing(i64),
     /// A refusal about the state of the library — see this module's own doc
     /// comment for why that is a 409 — and nothing else: the sentence of an
-    /// `Offer::Refused` from `accept_with`, `unaccept` or `dismiss`, handed to
-    /// the client whole by [`made`].
+    /// `Offer::Refused` from `accept_with`, `unaccept`, `dismiss` or `reopen`,
+    /// handed to the client whole by [`made`].
     ///
     /// **It collected their store faults too, until O70.** Those three
     /// answered a refusal and a failure through one `Result<_, String>`, so
@@ -171,6 +172,26 @@ fn present(conn: &rusqlite::Connection, id: i64) -> Result<(), NoAnswer> {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(NoAnswer::Missing(id)),
         Err(why) => Err(NoAnswer::Failed(why)),
+    }
+}
+
+/// A write's store `Err`, as the status it is owed: **404** when `id` names
+/// no proposal by the time the store read it, **500** for anything else.
+///
+/// **[`present`] answers the 404 before a write starts, and this answers it
+/// after (O72's fix round).** Another process can delete the row between the
+/// two, and the store then reports the missing row as its `Err`, which was a
+/// 500 for a proposal that is simply not there. Only a row that is gone
+/// becomes a 404: where the read fails as well, the write's own failure is
+/// what the caller is told.
+///
+/// Used by the two writes whose store call reads the row after its
+/// conditional `UPDATE`, `dismiss` and `reopen`. `accept` and `unaccept` have the same gap behind
+/// `present` and do not use it yet.
+fn failed_unless_gone(conn: &rusqlite::Connection, id: i64, why: String) -> NoAnswer {
+    match proposals::lookup(conn, id) {
+        Ok(None) => NoAnswer::Missing(id),
+        Ok(Some(_)) | Err(_) => NoAnswer::Failed(why),
     }
 }
 
@@ -562,7 +583,7 @@ pub(crate) async fn dismiss(
     let dismissed = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
         present(&conn, id)?;
-        made(proposals::dismiss(&conn, id).map_err(NoAnswer::Failed)?)
+        made(proposals::dismiss(&conn, id).map_err(|why| failed_unless_gone(&conn, id, why))?)
     })
     .await;
 
@@ -570,6 +591,44 @@ pub(crate) async fn dismiss(
         Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
         Err(why) => panicked("dismissing a proposal", &why),
+    }
+}
+
+/// `DELETE /api/library/proposals/{id}/dismiss` — undo it (O72).
+///
+/// 204: the proposal is open again, back in the inbox the dismissal took it
+/// out of. This route is to `POST …/dismiss` what `DELETE …/accept` is to
+/// `POST …/accept`, with one difference: it undoes the whole write, because a
+/// dismissal wrote nothing a scan could have applied
+/// ([`proposals::reopen`]'s own doc says why).
+///
+/// 409 for a proposal that is not a dismissal it can reopen: an open one has
+/// nothing to reopen, and an accepted one, or a dismissed one still holding
+/// an accept's rule, is reopened by un-accepting it — or, where that rule has
+/// already gone, by the next scan. 404 for an id naming no
+/// proposal, whether before the write or by the time the store read it
+/// ([`failed_unless_gone`]).
+pub(crate) async fn reopen(
+    State(state): State<Arc<ServeState>>,
+    Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
+    AxPath(id): AxPath<i64>,
+) -> Response {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
+        return refusal;
+    }
+    // `list`'s reasoning about the async worker.
+    let reopened = tokio::task::spawn_blocking(move || {
+        let conn = state.library.conn();
+        present(&conn, id)?;
+        made(proposals::reopen(&conn, id).map_err(|why| failed_unless_gone(&conn, id, why))?)
+    })
+    .await;
+
+    match reopened {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(no_answer)) => no_answer.into_response(),
+        Err(why) => panicked("reopening a proposal", &why),
     }
 }
 

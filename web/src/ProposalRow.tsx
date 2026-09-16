@@ -63,6 +63,19 @@
  * words each refusal; a summary here that had to stay in step with six of
  * them would go stale, so this says only what it knows.
  *
+ * **The line's own control follows the proposal's `state`, not the screen's
+ * filter.** An open proposal is dismissed from here, a dismissed one is
+ * reopened from here (O72), and an accepted one draws no control at all:
+ * the only undo an accept has is `unacceptProposal`, which leaves what the
+ * rule derived standing, so a button labelled Undo would say something false
+ * (O74). Reading the row's own `state` means a row can never offer the wrong
+ * one because the list it sits in was asked for something else.
+ *
+ * **Both writes share one runner, and it holds a ref as well as `disabled`.**
+ * `disabled` only takes effect once React has re-rendered, so two presses in
+ * one frame both reached the handler; a reopen sent twice answers the second
+ * with a 409 about a proposal the first had already reopened.
+ *
  * **The collapsed line names both series** — spec C3 §3's scannability is a
  * person seeing that 29 of 37 rows ask the same question, and rows that
  * cannot be told apart are not a list, they are a queue with a scrollbar.
@@ -71,7 +84,7 @@
  * every `raise_*` in the store happens to open with the subject's quoted
  * title, and which named the target at no width at all.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AcceptForm } from './AcceptForm'
 import { pageUrl, thumbUrl } from './api'
 import {
@@ -82,6 +95,7 @@ import {
   type ListedProposal,
   proposalDetail,
   relation,
+  reopenProposal,
   type Side,
   strength,
 } from './curation'
@@ -288,8 +302,9 @@ export function ProposalRow({
 }) {
   const [detail, setDetail] = useState<Detail>()
   const [failure, setFailure] = useState<string>()
-  const [dismissal, setDismissal] = useState<string>()
-  const [dismissing, setDismissing] = useState(false)
+  const [writeFailure, setWriteFailure] = useState<string>()
+  const [writing, setWriting] = useState(false)
+  const inFlight = useRef(false)
 
   useEffect(() => {
     if (!expanded) {
@@ -335,17 +350,22 @@ export function ProposalRow({
     }
   }, [expanded, proposal.id])
 
-  const dismiss = () => {
-    setDismissing(true)
-    setDismissal(undefined)
-    dismissProposal(proposal.id)
+  /** Send one of the line's writes — see this file's doc comment. */
+  const answer = (write: (id: number) => Promise<unknown>) => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setWriting(true)
+    setWriteFailure(undefined)
+    write(proposal.id)
       .then(() => {
-        setDismissing(false)
+        inFlight.current = false
+        setWriting(false)
         onChanged()
       })
       .catch((err: unknown) => {
-        setDismissing(false)
-        setDismissal(messageOf(err))
+        inFlight.current = false
+        setWriting(false)
+        setWriteFailure(messageOf(err))
       })
   }
 
@@ -371,19 +391,31 @@ export function ProposalRow({
         </button>
         {/* Accepting is a form rather than a click — C3 §3 — so the accept
             control lives in the panel beside the rule it would write, and
-            this line carries the decision that needs no form. */}
-        <button
-          type="button"
-          className="dismiss"
-          disabled={dismissing}
-          onClick={dismiss}
-        >
-          Dismiss
-        </button>
+            this line carries the decisions that need no form. */}
+        {proposal.state === 'open' && (
+          <button
+            type="button"
+            className="dismiss"
+            disabled={writing}
+            onClick={() => answer(dismissProposal)}
+          >
+            Dismiss
+          </button>
+        )}
+        {proposal.state === 'dismissed' && (
+          <button
+            type="button"
+            className="reopen"
+            disabled={writing}
+            onClick={() => answer(reopenProposal)}
+          >
+            Reopen
+          </button>
+        )}
       </div>
-      {dismissal !== undefined && (
-        <p className="dismiss-failure" role="alert">
-          {dismissal}
+      {writeFailure !== undefined && (
+        <p className="write-failure" role="alert">
+          {writeFailure}
         </p>
       )}
       {expanded && (

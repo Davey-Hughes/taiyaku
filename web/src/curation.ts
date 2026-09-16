@@ -236,9 +236,9 @@ export const proposalDetail = (id: number) =>
   getJson<Detail>(`/api/library/proposals/${id}`)
 
 /**
- * `sendJson` resolves `T | undefined` because two of this module's own
- * routes answer a 204 with nothing to parse — `unacceptProposal` and
- * `dismissProposal` below. `resolution` and `acceptProposal` are not among
+ * `sendJson` resolves `T | undefined` because three of this module's own
+ * routes answer a 204 with nothing to parse — `unacceptProposal`,
+ * `dismissProposal` and `reopenProposal` below. `resolution` and `acceptProposal` are not among
  * them: the server always answers both with a body (`Resolution` and
  * `Accepted` respectively), so narrowing that promise once, here, is what
  * lets a caller write `refusals(await resolution(...))` under
@@ -280,6 +280,33 @@ export const unacceptProposal = (id: number) =>
 /** The answer is no. Persists, so the next scan does not raise it again. */
 export const dismissProposal = (id: number) =>
   sendJson<void>(`/api/library/proposals/${id}/dismiss`, 'POST')
+
+/**
+ * Take a dismissal back: the proposal is open again (O72).
+ *
+ * The `DELETE` of the dismissal, as `unacceptProposal` is the `DELETE` of the
+ * accept — but a whole undo where that one is not, since a dismissal wrote no
+ * rule for a scan to have applied. The server refuses anything not
+ * `dismissed` with a 409 naming why.
+ */
+export const reopenProposal = (id: number) =>
+  sendJson<void>(`/api/library/proposals/${id}/dismiss`, 'DELETE')
+
+/**
+ * The states a proposal can be in, in the order the inbox offers them —
+ * `open` first, because the inbox is the set still waiting on a decision.
+ *
+ * Spec C3 §4: "Accepted and dismissed proposals stay listed under their own
+ * filters. A dismissal you disagree with later is a thing you have to be
+ * able to find." The words are what the state control and the header print.
+ */
+export const PROPOSAL_STATES = [
+  { state: 'open', label: 'Open' },
+  { state: 'accepted', label: 'Accepted' },
+  { state: 'dismissed', label: 'Dismissed' },
+] as const
+
+export type ProposalState = (typeof PROPOSAL_STATES)[number]['state']
 
 // --- pure helpers ------------------------------------------------------------
 

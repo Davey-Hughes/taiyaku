@@ -675,6 +675,23 @@ fn library_proposals_refusals_exit_one_with_the_librarys_own_sentence() {
         "the library's sentence, unreworded, on its own line: {stderr}"
     );
     assert!(!stdout.contains("dismissed proposal"), "{stdout}");
+
+    // And accepted, so a reopen (O72) is refused too, pointing at un-accepting.
+    let run = taiyaku()
+        .args(["library", "proposals", "--reopen", id, "--db", &db])
+        .output()
+        .expect("the binary runs");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(1), "a refusal is a failing exit");
+    let expected = format!(
+        "taiyaku: proposal {id} is accepted, not dismissed — un-accepting it is what reopens it"
+    );
+    assert!(
+        stderr.lines().any(|line| line == expected),
+        "the library's sentence, unreworded, on its own line: {stderr}"
+    );
+    assert!(!stdout.contains("reopened proposal"), "{stdout}");
 }
 
 /// **`if !reopened.is_empty()`, not `if reopened.is_empty()`.** An import

@@ -211,7 +211,7 @@ fn print_usage() {
     println!("       taiyaku library rules [--export | --import FILE] [--db PATH]");
     println!(
         "       taiyaku library proposals [--min-score N] [--accept ID] [--dismiss ID] \
-         [--unaccept ID] [--db PATH]"
+         [--unaccept ID] [--reopen ID] [--db PATH]"
     );
     println!("       taiyaku duplicates <copy>... -- <copy>... [--against <member>...] [--ltr]");
     println!("       taiyaku inventory <root> [--min-pages N] [--pattern SPEC]");

@@ -1791,27 +1791,156 @@ pub fn unaccept(conn: &Connection, id: i64) -> Result<Offer<()>, String> {
 /// also delete a rule out from under a decision — [`unaccept`] is the
 /// command that does that, explicitly.
 ///
+/// **Nor dismisses a proposal that still holds a rule.** An accept is what
+/// writes `created_rule_id`, so a row holding one that is not `accepted` is
+/// already a contradiction, and a dismissal on top of it would hide the rule
+/// under a label that says no rule was written.
+///
+/// **One conditional `UPDATE` in a transaction, then a read only to word a
+/// refusal — [`reopen`]'s shape, for [`reopen`]'s reason.** Until O72's fix
+/// round this read the state first and then wrote unconditionally, so an
+/// accept committing between the two left a `dismissed` row holding a live
+/// `created_rule_id`: the state this refusal exists to prevent, reached
+/// through the gap in front of it. That race predates O72. Reopening is what
+/// made it matter twice, since a reopened row with a live rule is one
+/// [`acceptable`] lets be accepted again, beside the rule still in force.
+///
 /// Answers [`Offer::Refused`], with nothing written, if it is currently
-/// `accepted` — un-accept it first.
+/// `accepted` — un-accept it first — or still holds a rule.
 ///
 /// # Errors
 ///
 /// Returns an error if `id` names no proposal — [`lookup`] tells that apart —
-/// or if the read or the update fails.
+/// or if the update, the read or the transaction fails.
 pub fn dismiss(conn: &Connection, id: i64) -> Result<Offer<()>, String> {
-    // Through [`one`], for the reason [`unaccept`] reads that way.
-    if one(conn, id)?.state == STATE_ACCEPTED {
-        return Ok(Offer::Refused(format!(
-            "proposal {id} is accepted — un-accept it first, then dismiss"
-        )));
-    }
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("starting the dismissal of proposal {id}: {e}"))?;
+    let dismissed = tx
+        .execute(
+            "UPDATE proposal SET state = ?1 \
+              WHERE id = ?2 AND state <> ?3 AND created_rule_id IS NULL",
+            rusqlite::params![STATE_DISMISSED, id, STATE_ACCEPTED],
+        )
+        .map_err(|e| format!("dismissing proposal {id}: {e}"))?;
+    let answer = if dismissed == 1 {
+        Offer::Made(())
+    } else {
+        // Through [`one`], for the reason [`unaccept`] reads that way.
+        let proposal = one(&tx, id)?;
+        Offer::Refused(match (proposal.state.as_str(), proposal.created_rule_id) {
+            (STATE_ACCEPTED, Some(_)) => {
+                format!("proposal {id} is accepted — un-accept it first, then dismiss")
+            }
+            (STATE_ACCEPTED, None) => format!(
+                "proposal {id} is accepted, but the rule it wrote has gone — the next scan \
+                 reopens it, and it can be dismissed then"
+            ),
+            (state, Some(rule)) => format!(
+                "proposal {id} is `{state}` but still holds rule {rule}, which an accept wrote \
+                 — un-accept it first, then dismiss"
+            ),
+            // The transaction took the write lock at `BEGIN` and holds it to
+            // the commit below, so no other process can have changed the row
+            // between the `UPDATE` and this read: not reachable today, and
+            // worded for the day something reads outside that lock.
+            (state, None) => format!(
+                "proposal {id} changed while it was being dismissed and is `{state}` now — ask \
+                 again"
+            ),
+        })
+    };
+    tx.commit()
+        .map_err(|e| format!("committing the dismissal of proposal {id}: {e}"))?;
+    Ok(answer)
+}
 
-    conn.execute(
-        "UPDATE proposal SET state = ?1 WHERE id = ?2",
-        rusqlite::params![STATE_DISMISSED, id],
-    )
-    .map_err(|e| format!("dismissing proposal {id}: {e}"))?;
-    Ok(Offer::Made(()))
+/// Reopen proposal `id` after a dismissal — the undo of [`dismiss`].
+///
+/// Spec C3 §4: "a dismissal you disagree with later is a thing you have to be
+/// able to find", and finding one is only half of disagreeing with it (O72).
+/// **A state change is the whole undo**, for the reason [`dismiss`] gives for
+/// being one: a dismissal wrote no rule, so nothing a scan derived from it is
+/// left to withdraw. That is what [`unaccept`] cannot say about an accept
+/// (O74), and why an accepted proposal is refused here rather than treated as
+/// one more way back to `open`.
+///
+/// Once open again it is an ordinary open proposal: the next [`raise`]
+/// refreshes its score and reason from the facts as they are then, and
+/// `proposal_identity` keeps that pass from inserting a second row beside it.
+///
+/// **One conditional `UPDATE`, then a read only to word a refusal.** Reading
+/// the state first and writing after would let a second process accept the
+/// proposal in between and have this flip an `accepted` row with a live
+/// `created_rule_id` back to `open` — the state [`dismiss`]'s own refusal
+/// exists to prevent from the other side. The `WHERE` carries the state, so
+/// nothing but a dismissal is ever rewritten.
+///
+/// **And no dismissal still holding a rule (O72's fix round).** [`dismiss`]
+/// read, then wrote unconditionally, so an accept committing between the two
+/// left a `dismissed` row with a live `created_rule_id`. Reopened, that row
+/// would be `open` with its rule in force, and [`acceptable`] would let it be
+/// accepted a second time, writing a second rule beside the first. The
+/// refusal names [`unaccept`], which removes the rule and reopens the
+/// proposal in one step.
+///
+/// **In one transaction, so the refusal is about the row the `UPDATE`
+/// missed.** Every connection this crate hands out opens a transaction with
+/// `BEGIN IMMEDIATE` (`Library::configure`), so the write lock is taken before
+/// the `UPDATE` and held to the commit, and another process cannot change the
+/// row between it and the read that words the refusal: without that, a row
+/// dismissed in the gap read "is `dismissed`, not dismissed".
+///
+/// Answers [`Offer::Refused`], with nothing written, unless the proposal is
+/// currently `dismissed` and holds no rule.
+///
+/// # Errors
+///
+/// Returns an error if `id` names no proposal — [`lookup`] tells that apart —
+/// or if the update, the read or the transaction fails.
+pub fn reopen(conn: &Connection, id: i64) -> Result<Offer<()>, String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("starting the reopen of proposal {id}: {e}"))?;
+    let reopened = tx
+        .execute(
+            "UPDATE proposal SET state = ?1 \
+              WHERE id = ?2 AND state = ?3 AND created_rule_id IS NULL",
+            rusqlite::params![STATE_OPEN, id, STATE_DISMISSED],
+        )
+        .map_err(|e| format!("reopening proposal {id}: {e}"))?;
+    let answer = if reopened == 1 {
+        Offer::Made(())
+    } else {
+        // Through [`one`], for the reason [`unaccept`] reads that way — and it
+        // is what turns an `id` naming no proposal into the same `Err` as there.
+        let proposal = one(&tx, id)?;
+        Offer::Refused(match (proposal.state.as_str(), proposal.created_rule_id) {
+            (STATE_ACCEPTED, Some(_)) => format!(
+                "proposal {id} is accepted, not dismissed — un-accepting it is what reopens it"
+            ),
+            (STATE_ACCEPTED, None) => format!(
+                "proposal {id} is accepted, but the rule it wrote has gone — the next scan \
+                 reopens it"
+            ),
+            (state, Some(rule)) => format!(
+                "proposal {id} is `{state}` but still holds rule {rule}, which an accept wrote \
+                 — un-accepting it removes that rule and reopens it"
+            ),
+            // Not reachable while the transaction holds the write lock from
+            // `BEGIN` to the commit — see this function's doc — and worded
+            // for the day it does not.
+            (STATE_DISMISSED, None) => {
+                format!("proposal {id} changed while it was being reopened — ask again")
+            }
+            (state, None) => format!(
+                "proposal {id} is `{state}`, not dismissed — only a dismissal can be reopened"
+            ),
+        })
+    };
+    tx.commit()
+        .map_err(|e| format!("committing the reopen of proposal {id}: {e}"))?;
+    Ok(answer)
 }
 
 // --- evidence ----------------------------------------------------------------
