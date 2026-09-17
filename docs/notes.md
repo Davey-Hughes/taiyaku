@@ -14864,10 +14864,18 @@ right from the first 512 bytes and records `scan_entry.format = 'rar'` — the
 half of `docs/sidecar.md`'s "a zip named `.cbr` and a RAR named `.cbz` are both
 routine" that works. `derive::is_readable` then admits only `Dir` and `Zip`, so
 all twelve are counted in `DeriveReport::unreadable` and never become members.
-One series, invisible. That is O90.
+One series, invisible. That is O90. *(O90 closed on 2026-09-17 — see "O90"
+below. The twelve were repacked to zip, and the counter now says why each
+entry was skipped. The series was not wholly invisible: the twelve were
+volumes 3–12, 19 and 20, and its other 25 volumes read throughout.)*
 
 The thirteenth `unreadable` is the counter's other site: a member whose bytes
 could not be hashed, not a format that cannot be read. One field, two causes.
+*(Both halves wrong, found while closing O90 and left as written.
+The thirteenth was `Bisque Doll de Chu ♡.cbz`, a zip that opens cleanly and
+holds 185 JPEG XL pages, so the walk could not count its pages; `classify`
+counts that before it hashes anything. And the field had four causes, not two,
+as `DeriveReport`'s own doc already said.)*
 
 ### What a derive costs when there is nothing left to hash
 
@@ -15123,6 +15131,9 @@ scan did not do: `unreadable: 13`, `unattached_chapter_dirs: 1`,
 `series_holding_no_work: 1`. The 13 are the real library's — O90's RAR-named
 `.cbz` volumes and one member whose bytes could not be hashed — so the
 confession-first ordering had something real to confess on its first run.
+*(The thirteenth was not a member that could not be hashed. It was an archive
+of JPEG XL pages whose pages the walk could not count — found while closing O90,
+see "O90".)*
 
 `last_scan_at` and `last_scan_status` were written for the first time by a
 serving process: `2026-09-04 20:38:42` / `ok`.
@@ -20952,3 +20963,236 @@ existed, returned nothing.
 
 Rust 2218 → 2220: two new tests in `cover/tests.rs`, and one there rewritten
 and renamed. `web/` is unchanged.
+
+## O90: the scan says why a file was skipped — 2026-09-17
+
+O90 closed without a RAR decoder. taiyaku is `GPL-3.0-or-later`, and RARLAB's
+UnRAR source carries a restriction the GPL forbids a distributor to add. `unrar`
+builds that source, and `unrar-rs` declares GPL-3.0 while incorporating it. The
+clean-room `rar` crate was too young for the crate every page read passes
+through. `docs/superpowers/specs/2026-09-15-o90-unreadable-attribution-design.md`
+§1 is the record, and `Format::is_readable`'s doc now points at it. What closed
+the row is the other half: the twelve files were repacked, and one number that
+stood for four causes is now split into those four.
+
+### The repack, 2026-09-15
+
+The twelve Vagabond volumes stored as RAR archives named `.cbz` were converted
+in place with `bsdtar -c --format zip --options zip:compression=store
+@<archive>`. Each was written to a temporary beside the original and verified
+entry by entry before it was renamed over the original. The RAR payloads were
+stored rather than compressed, so 4.52 GiB converted in seconds. A rescan then
+reported:
+
+| | before | after |
+| --- | --- | --- |
+| `unreadable` | 13 | **1** |
+| works | 1858 | 1870 |
+| members | 1883 | 1895 |
+| `merged` | 25 | 25 |
+
+Vagabond went from 25 works to 37, and volumes 3–12, 19 and 20 are the twelve.
+`merged` did not move, which is the control: repacking must not touch O89's
+case.
+
+**Two of the twelve failed their first verification, and the check was what was
+wrong.** It compared sorted entry names and the concatenation of every entry's
+bytes. `Vagabond - v19.cbz` and `- v20.cbz` hold their pages under a directory
+entry, which RAR records without a trailing slash and zip writes with one. So
+the name lists differed by a character on an entry that is not a page. Checked
+per entry with directories excluded by type, 178 and 198 files were
+byte-identical. Neither original was replaced while its check failed.
+
+Repacking changes every member's `sha256`, and so its work's `content_key`,
+which is O81's condition. It cost nothing here: the library held 0 `progress`
+rows and 0 `note` rows on 2026-09-15.
+
+### The thirteenth entry was not a vanished member
+
+O90's row, this file under "Twelve volumes that cannot be opened", and this
+file's account of the first scan report a serving process sent all called the
+thirteenth `unreadable` a member whose bytes could not be hashed. Each passage is now marked in place. Measured read-only on
+2026-09-16 against `/home/davey/temp/manga-test/library.db`:
+
+```
+Bisque Doll de Chu ♡/Bisque Doll de Chu ♡.cbz | format zip | pages NULL | sha256 NULL
+```
+
+`classify` tests `pages` before it hashes anything, so this entry never reached
+`digest`. The archive itself is sound. It is 168 MB; `bsdtar -tf` lists it with
+exit 0, `python3 -m zipfile -l` lists it, and `zipfile.testzip()` finds no bad
+entry. All 185 entries end `.jxl`. `taiyaku-read`'s `IMAGE_EXTENSIONS` has no
+JPEG XL, so `member_page_names` found nothing. `member_pages` then took
+`read_member`'s "no page images" refusal, and `scan::pages_of` swallowed it
+into a NULL.
+
+**A NULL page count is therefore two facts.** Either the archive would not
+open, or it opened and held nothing taiyaku reads as a page. The walk keeps no
+record of which. An archive with no page images never gets `Some(0)`, because
+`member_pages` refuses it. Only a directory reaches `Some(0)`. That is why the
+field is `uncounted` and not the spec's first `unlistable`: the one real
+instance lists perfectly well.
+
+### What changed
+
+`DeriveReport::unreadable` is a `derive::Unreadable`:
+
+| field | cause | shape |
+| --- | --- | --- |
+| `by_format` | a format `Format::is_readable` refuses, by token; `unknown` for NULL | count per token |
+| `uncounted` | a container whose pages the walk could not count | full paths |
+| `vanished` | a member gone before it could be hashed | full paths |
+| `no_pages` | a container holding no page images of its own | count |
+
+`refused_format()` and `total()` are methods, so neither sum can disagree with
+the breakdown. Paths are `root.path.join(rel_path)`, since two roots can hold
+the same `rel_path`. **Counts for two causes and paths for two was the
+person's decision on 2026-09-16.** A file someone has to find is named. A whole
+format is fixed by one loop, and a volume directory of archives is a layout
+rather than a fault, so those two are counted.
+
+The CLI's scan line prints the total and then each cause that happened.
+`config_api::derive_report_json` renders `"unreadable"` as an object through
+`unreadable_json`, which destructures with no `..` and adds `total` and
+`refused_format`. That renderer serves a scan, a rule apply and a root removal
+alike. The Settings scan report draws the total, then each cause as its own
+`data-field` row, at zero too.
+
+### The real library, through the branch
+
+Development workstation, debug build of the branch, scanning a copy of
+`library.db` in the session scratchpad:
+
+```
+  0 added, 1 updated, 0 gone
+derived 134 series, 1895 works, 1895 editions, 1895 members, 1 unattached chapter directories, 1 unreadable (1 whose pages could not be counted: /home/davey/temp/manga-test/Volumes/Bisque Doll de Chu ♡/Bisque Doll de Chu ♡.cbz), 4 series holding no work; 0 proposal(s) raised
+```
+
+Then `taiyaku serve` over the same copy, vite over the branch's `web/`, and a
+Playwright-driven "Scan now" on Configuration → Roots. The report's
+`unreadable` row read, element by element: total `1`; "In a format taiyaku does
+not read" `0` with no list; "Pages could not be counted" `1`, listing the
+Bisque Doll path; "Gone before they could be hashed" `0`; "Holding no page
+images" `0`. The report drew 47 `data-field` elements, the number
+`ScanReport.test.tsx` asserts. The long path wraps inside its cell, which works
+and is left to the style pass.
+
+### Every break, watched
+
+Each mutation was applied by hand, one at a time, to the uncommitted tree. Each
+ran against its whole crate under nextest, or against `config_api::` under
+nextest for the JSON ones, or against `ScanReport.test.tsx` under vitest for
+the web ones. A control run passed first on each target: `taiyaku-library` 848,
+`taiyaku-cli` 541, `taiyaku-serve`'s `config_api` 73 and `ScanReport.test.tsx`
+18. The file was restored and its SHA-256 checked after every mutation. All
+twenty were caught.
+
+| # | break | red |
+| --- | --- | --- |
+| M01 | a refused format counted as `no_pages` | the 5 derive tests whose fixtures hold a refused format |
+| M02 | an uncounted container counted as `no_pages` | the truncated-archive test and the `.jxl` test |
+| M03 | a no-pages directory named under `uncounted` | `a_container_holding_no_pages_of_its_own_…` only |
+| M04 | a vanished member named under `uncounted` | `an_entry_whose_bytes_have_gone_…` only |
+| M05 | `by_format` keyed by one constant | the same 5 as M01 |
+| M06 | `by_format` never incremented | the same 5 as M01 |
+| M07 | NULL format keyed `unrecognised` | `each_refused_format_is_counted_under_its_own_token` only |
+| M08 | `total()` dropping `no_pages` | `the_unreadable_sums_count_every_cause_once` only |
+| M09 | `refused_format()` counting keys, not entries | the same sums test only |
+| M10 | a vanished path not joined to its root | `an_entry_whose_bytes_have_gone_…` only |
+| M11 | the CLI omitting the vanished cause | both new CLI tests |
+| M12 | the CLI naming `uncounted` without its paths | `derive_summary_says_why_each_unreadable_entry_was_skipped` |
+| M13 | the CLI omitting the refused formats | both new CLI tests |
+| M14 | the JSON dropping the `vanished` key | `the_derive_report_renders_every_unreadable_cause_under_its_own_key` |
+| M15 | the JSON rendering `vanished` under `uncounted` | the same |
+| M16 | the JSON `total` being `refused_format` | the same |
+| M17 | the screen dropping the vanished row | 3 tests: the field count, the zero rows, the cause-by-cause test |
+| M18 | the screen drawing `uncounted`'s paths under vanished | the cause-by-cause test |
+| M19 | the screen drawing `refused_format` as the total | the cause-by-cause test |
+| M20 | the screen dropping the per-format list | the cause-by-cause test |
+
+**`scripts/mutants.sh --since main`**, run after the commit: 33 mutants, 32
+caught, 1 unviable, and no survivor outside the baseline. The unviable one is
+`admit` replaced by `Some(Default::default())`, which cannot build because
+`Seen` has no `Default`. M14, M15 and M16 are breaks cargo-mutants cannot make,
+since it generates no mutant inside a `json!` body, and most of the other
+seventeen are shapes it never generates either. The four fixture tests compare
+the whole struct by equality rather than trusting a sweep. `rustfmt` ran after the mutations and moved only line breaks.
+
+**Six more, applied independently of the branch's author** from a script of
+their own, four of them breaks the table above does not make, with a control
+first on each target (`taiyaku-library`'s `derive::` 90, `taiyaku-cli`'s
+`library::` 107, `config_api::` 73, `ScanReport.test.tsx` 18) and on
+`derive::` again after and every file's SHA-256
+checked after:
+
+| break | red |
+| --- | --- |
+| a vanished member pushed onto `uncounted` | `an_entry_whose_bytes_have_gone_…` only |
+| a no-pages directory's `rel_path` pushed onto `uncounted` | `a_container_holding_no_pages_of_its_own_…` only |
+| an uncounted path not joined to its root | the truncated-archive test and the `.jxl` test |
+| the CLI omitting the no-pages clause | both new CLI tests |
+| the JSON's `no_pages` one too high | `the_derive_report_renders_every_unreadable_cause_under_its_own_key` |
+| the screen drawing `no_pages` as zero | the cause-by-cause test |
+
+### Isolation
+
+`date -Iseconds` was stamped at 2026-09-17T00:14:16-07:00, before the scan.
+After the CLI scan and again after the browser scan, the original
+`library.db` had the same size, mtime and SHA-256 (`9250c8b5…`), and its WAL was
+still 0 bytes. `find /home/davey/temp/manga-test -newermt` the stamp returned
+one path, the `Volumes` directory itself, with mtime 00:14:22.29, the second
+of the CLI scan. That is `watch::probe`, which creates
+`.taiyaku-watch-probe-<pid>` in the root and removes it, and no such file
+remained. The root's `keeps_documents` is 0, so no document was written. A
+read-only `sqlite3 -readonly` query does move `library.db-shm`'s mtime, which is
+a reader's side effect and not content.
+
+### The JPEG XL volume, converted — 2026-09-17
+
+The person decided to convert that one file and to leave reading JPEG XL for a
+future item (O130). **This wrote into the library tree**, so the original was
+kept first: copied to
+`/home/davey/temp/manga-test/backups/2026-09-17-bisque-doll-jxl/`, outside the
+scan root `Volumes/`, and checked byte-identical by SHA-256 (`55effde9…`).
+
+`jxlinfo` called every sampled page `lossy`, with no JPEG reconstruction data,
+so the original JPEGs cannot be recovered and a JPEG target would lose a
+second generation. **PNG instead**, which holds exactly what the JPEG XL
+decodes to. Each of the 185 pages was read from the backup, decoded by `djxl`
+0.12.0 once to PNG and once to PNM, and the two required to hold identical
+pixels: 185 of 185 did, 173 greyscale and 12 RGB. The pages were written in
+their original order to a stored zip, each `.jxl` name ending `.png`, and every
+entry read back and checked against its PNG's SHA-256. 167.8 MB of JPEG XL
+became 433.4 MB of PNG. The new archive was copied beside the original under a
+dotted temporary name, checked by SHA-256 (`d01a4445…`), and renamed over it.
+
+**A rescan of a copy of `library.db`** with this branch's debug build, the
+original's hash, size and mtime checked unchanged afterwards:
+
+```
+  0 added, 3 updated, 0 gone
+derived 135 series, 1896 works, 1896 editions, 1896 members, 1 unattached chapter directories, 4 series holding no work; 0 proposal(s) raised
+```
+
+Nothing is unreadable, works went from 1895 to 1896, and the archive's
+`scan_entry` reads 185 pages. The library held no `progress` or `note` rows,
+and the archive had never been a member, so no content key named it.
+
+### What remains
+
+- **The walk records no reason for a NULL page count**, so `uncounted` cannot
+  say whether an archive would not open or held nothing taiyaku reads. Telling
+  them apart needs the refusal kept at scan time, which is a schema change.
+  *Filed as O131 on 2026-09-17.*
+- **taiyaku reads no JPEG XL page**, which is why the Bisque Doll archive was
+  unreadable until it was converted, above. `image` 0.25.9, which the server decodes pages with, has
+  no JPEG XL decoder of its own; its `hooks` module only lets one be
+  registered. Not looked into beyond that and this one archive. *Filed as O130
+  on 2026-09-17, and the archive converted — see above.*
+
+### Counts
+
+Rust 2220 → 2227 on top of O111's branch, seven new tests: four in `derive/tests.rs`, two in
+`library/tests.rs` and one in `config_api/tests.rs`. `web/` 2,134 → 2,136: two
+new `jsdom` tests in `ScanReport.test.tsx`, node 1,159 and jsdom 977 measured
+with `--reporter=default`.

@@ -1514,6 +1514,23 @@ body {
   margin: 0;
 }
 
+/* O90: the unreadable row holds its causes as a list of its own, so it takes
+   the whole width rather than one column of the grid above. */
+.scan-report .unreadable-causes {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.scan-report .unreadable-causes > dt {
+  opacity: 0.8;
+}
+
+.scan-report .unreadable-causes > dd {
+  margin: 0;
+  flex: 1;
+}
+
 .scan-report .note {
   font-size: 0.9em;
   opacity: 0.7;

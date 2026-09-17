@@ -68,6 +68,16 @@ pub(crate) fn fixture() -> crate::tests::TempDir {
 /// have reached derivation — as a container the walk refused, which is a
 /// different test's scenario and passes for the wrong reason.
 pub(crate) fn write_archive(path: &Path, pages: usize) {
+    write_archive_of(path, pages, "jpg");
+}
+
+/// [`write_archive`], with every entry named with `extension` rather than
+/// `jpg`.
+///
+/// O90: an archive whose entries are all a format `taiyaku-read` does not
+/// read as a page (`jxl`, say) opens cleanly and still has no page count,
+/// which is a different fact from an archive that will not open.
+pub(crate) fn write_archive_of(path: &Path, pages: usize, extension: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("mkdir");
     }
@@ -75,7 +85,7 @@ pub(crate) fn write_archive(path: &Path, pages: usize) {
     let mut bytes: Vec<u8> = Vec::new();
     let mut directory: Vec<u8> = Vec::new();
     for page in 0..pages {
-        let name = format!("{page:03}.jpg");
+        let name = format!("{page:03}.{extension}");
         let data = format!("not really a jpeg: {label} page {page}").into_bytes();
         let crc = crc32(&data);
         let at = u32::try_from(bytes.len()).expect("a fixture archive is a few hundred bytes");

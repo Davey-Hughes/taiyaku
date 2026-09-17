@@ -74,7 +74,7 @@ const previewBody = (over: Partial<Preview> = {}): Preview => ({
 /**
  * A whole `DeriveReport`, the same fixture shape `RemoveRoot.test.tsx` and
  * `RootRow.test.tsx` already use — `{} as Derived` is enough only until a
- * component reads one of the thirty fields, and this one now does.
+ * component reads one of the thirty-one fields, and this one now does.
  */
 const derived = (over: Partial<config.Derived> = {}): config.Derived => ({
   series: 2,
@@ -82,7 +82,14 @@ const derived = (over: Partial<config.Derived> = {}): config.Derived => ({
   editions: 71,
   members: 71,
   unattached_chapter_dirs: 0,
-  unreadable: 0,
+  unreadable: {
+    total: 0,
+    refused_format: 0,
+    by_format: {},
+    uncounted: [],
+    vanished: [],
+    no_pages: 0,
+  },
   suppressed: 0,
   rekeyed: 0,
   kept_editions: 0,

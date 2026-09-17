@@ -149,7 +149,9 @@ It already carries two: *this work has no address* — an imported work whose
 document belongs beside its sidecar, an asymmetry `metadata.rs` documents —
 and, without this, *this root keeps no documents*. Two causes behind one
 `None` is the shape O90's `unreadable` counter is filed under, and one
-instance of it is enough.
+instance of it is enough. *(O90 closed on 2026-09-17 by splitting that counter
+into its four causes, so it no longer holds two causes behind one value, the
+shape this sentence was warning against.)*
 
 ## 4. What stays out
 

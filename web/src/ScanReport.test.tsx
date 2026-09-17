@@ -25,7 +25,14 @@ const derived = (over: Partial<Derived> = {}): Derived => ({
   editions: 1883,
   members: 1883,
   unattached_chapter_dirs: 0,
-  unreadable: 0,
+  unreadable: {
+    total: 0,
+    refused_format: 0,
+    by_format: {},
+    uncounted: [],
+    vanished: [],
+    no_pages: 0,
+  },
   suppressed: 0,
   rekeyed: 0,
   kept_editions: 0,
@@ -73,12 +80,100 @@ describe('ScanReport', () => {
   })
 
   it('draws every field of both reports', () => {
-    // Forty-three fields: twelve from the walk, thirty-one from the derive.
-    // Counted rather than spot-checked, because the failure this guards is a
-    // field quietly dropped on the way out — which is exactly what happened
-    // once already on the server side.
+    // Forty-seven: twelve from the walk, thirty-one from the derive, and the
+    // four causes O90 draws inside `unreadable`. Counted rather than
+    // spot-checked, because the failure this guards is a field quietly
+    // dropped on the way out — which is exactly what happened once already on
+    // the server side.
     const host = mount(<ScanReport outcome={finished()} />)
-    expect(host.querySelectorAll('[data-field]')).toHaveLength(43)
+    expect(host.querySelectorAll('[data-field]')).toHaveLength(47)
+  })
+
+  it('says why each unreadable entry was skipped, cause by cause', () => {
+    // O90. Per element, with a different number in every cause, so a label
+    // paired with another cause's count, or a path drawn under the other
+    // list, fails here where a whole-page `toContain` would pass.
+    const host = mount(
+      <ScanReport
+        outcome={finished({
+          derive: derived({
+            unreadable: {
+              total: 29,
+              refused_format: 15,
+              by_format: { '7z': 3, rar: 12 },
+              uncounted: ['/srv/manga/Bisque Doll/Bisque Doll.cbz'],
+              vanished: ['/srv/manga/Gone - v01', '/srv/manga/Gone - v02'],
+              no_pages: 11,
+            },
+          }),
+        })}
+      />,
+    )
+    const row = host.querySelector('[data-field="unreadable"]')
+    expect(row?.querySelector(':scope > dt')?.textContent).toBe('Unreadable')
+    expect(row?.querySelector(':scope > dd')?.firstChild?.textContent).toBe(
+      '29',
+    )
+
+    const formats = row?.querySelector('[data-field="unreadable.by_format"]')
+    expect(formats?.querySelector('dt')?.textContent).toBe(
+      'In a format taiyaku does not read',
+    )
+    expect(formats?.querySelector('dd')?.firstChild?.textContent).toBe('15')
+    expect(
+      [...(formats?.querySelectorAll('li') ?? [])].map((li) => [
+        li.querySelector('code')?.textContent,
+        li.textContent,
+      ]),
+    ).toEqual([
+      ['7z', '7z 3'],
+      ['rar', 'rar 12'],
+    ])
+
+    for (const [field, label, paths] of [
+      [
+        'unreadable.uncounted',
+        'Pages could not be counted',
+        ['/srv/manga/Bisque Doll/Bisque Doll.cbz'],
+      ],
+      [
+        'unreadable.vanished',
+        'Gone before they could be hashed',
+        ['/srv/manga/Gone - v01', '/srv/manga/Gone - v02'],
+      ],
+    ] as const) {
+      const cause = row?.querySelector(`[data-field="${field}"]`)
+      expect(cause, `${field} must be drawn`).not.toBeNull()
+      expect(cause?.querySelector('dt')?.textContent).toBe(label)
+      expect(cause?.querySelector('dd')?.firstChild?.textContent).toBe(
+        String(paths.length),
+      )
+      expect(
+        [...(cause?.querySelectorAll('li code') ?? [])].map(
+          (code) => code.textContent,
+        ),
+      ).toEqual(paths)
+    }
+
+    const noPages = row?.querySelector('[data-field="unreadable.no_pages"]')
+    expect(noPages?.querySelector('dt')?.textContent).toBe(
+      'Holding no page images',
+    )
+    expect(noPages?.querySelector('dd')?.textContent).toBe('11')
+  })
+
+  it('draws every unreadable cause at zero rather than omitting it', () => {
+    const host = mount(<ScanReport outcome={finished()} />)
+    for (const field of [
+      'unreadable.by_format',
+      'unreadable.uncounted',
+      'unreadable.vanished',
+      'unreadable.no_pages',
+    ]) {
+      const cause = host.querySelector(`[data-field="${field}"]`)
+      expect(cause, `${field} must be drawn`).not.toBeNull()
+      expect(cause?.querySelector('dd')?.textContent).toBe('0')
+    }
   })
 
   it('draws alignments a fold left behind apart from rows it discarded', () => {

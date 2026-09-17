@@ -2585,6 +2585,37 @@ async fn a_scan_report_counts_the_alignments_a_fold_left_behind() {
     );
 }
 
+/// O90: `unreadable` is an object naming each cause, rendered whole.
+///
+/// **Every key, with its value, asserted by equality.** `derive_report_json`
+/// destructures with no `..`, which catches a field missing from the pattern
+/// but not a key dropped from the `json!` beside it or given another field's
+/// value, and cargo-mutants makes no mutant for a `json!` key. Every cause
+/// here holds a different number, so a value under the wrong key fails too.
+#[test]
+fn the_derive_report_renders_every_unreadable_cause_under_its_own_key() {
+    let mut report = taiyaku_library::derive::DeriveReport::default();
+    report.unreadable.by_format.insert("rar".to_string(), 12);
+    report.unreadable.by_format.insert("7z".to_string(), 3);
+    report.unreadable.uncounted = vec!["/srv/manga/a.cbz".to_string()];
+    report.unreadable.vanished = vec!["/srv/manga/b".to_string(), "/srv/manga/c".to_string()];
+    report.unreadable.no_pages = 7;
+
+    let json = crate::config_api::derive_report_json(&report);
+
+    assert_eq!(
+        json["unreadable"],
+        serde_json::json!({
+            "total": 25,
+            "refused_format": 15,
+            "by_format": { "7z": 3, "rar": 12 },
+            "uncounted": ["/srv/manga/a.cbz"],
+            "vanished": ["/srv/manga/b", "/srv/manga/c"],
+            "no_pages": 7,
+        }),
+    );
+}
+
 /// C4 §3 requires a scan already running is not startable twice, and the
 /// refusal names which root is already running rather than queueing a
 /// second walk of the same tree.

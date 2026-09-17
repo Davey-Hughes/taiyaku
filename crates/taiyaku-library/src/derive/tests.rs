@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::Connection;
 
-use crate::scan::tests::{fixture, write_archive, write_pages};
+use crate::scan::tests::{fixture, write_archive, write_archive_of, write_pages};
 use crate::{Library, derive, scan};
 
 /// A root whose volumes are **archives inside volume directories** —
@@ -338,7 +338,14 @@ fn a_format_nothing_reads_is_counted_and_produces_no_structure() {
 
     let report = derive::derive(&conn).expect("derive");
 
-    assert_eq!(report.unreadable, 1, "notes.pdf, and nothing else");
+    assert_eq!(
+        report.unreadable,
+        derive::Unreadable {
+            by_format: formats(&[("pdf", 1)]),
+            ..derive::Unreadable::default()
+        },
+        "notes.pdf, and nothing else"
+    );
     let members: i64 = conn
         .query_row(
             "SELECT count(*) FROM member WHERE path LIKE '%notes.pdf'",
@@ -402,8 +409,23 @@ fn an_entry_whose_bytes_have_gone_before_its_first_derive_is_counted_not_an_erro
         "nothing could be hashed, so nothing became a work"
     );
     assert_eq!(
-        report.unreadable, 3,
-        "the PDF, and the two members whose bytes are no longer there to hash"
+        report.unreadable,
+        derive::Unreadable {
+            by_format: formats(&[("pdf", 1)]),
+            vanished: vec![
+                under(
+                    &root,
+                    "Go-Toubun no Hanayome/Go-Toubun no Hanayome - v01 (2019)"
+                ),
+                under(
+                    &root,
+                    "Go-Toubun no Hanayome/Go-Toubun no Hanayome - v02 (2019)"
+                ),
+            ],
+            ..derive::Unreadable::default()
+        },
+        "the PDF, and the two members whose bytes are no longer there to hash, \
+         each named by its path so a person can go and look"
     );
     assert_eq!(
         report.unattached_chapter_dirs, 1,
@@ -1567,8 +1589,16 @@ fn a_container_that_would_not_open_is_counted_rather_than_written_with_no_pages(
 
     assert_eq!(report.works, 2, "v01 and v02, and not the truncated v03");
     assert_eq!(
-        report.unreadable, 2,
-        "the PDF and the archive that would not list"
+        report.unreadable,
+        derive::Unreadable {
+            by_format: formats(&[("pdf", 1)]),
+            uncounted: vec![under(
+                &root,
+                "Go-Toubun no Hanayome/Go-Toubun no Hanayome - v03.cbz"
+            )],
+            ..derive::Unreadable::default()
+        },
+        "the PDF, and the archive that would not open, named"
     );
     let volumes: i64 = conn
         .query_row("SELECT count(*) FROM work WHERE volume = 3.0", [], |r| {
@@ -2275,9 +2305,135 @@ fn a_container_holding_no_pages_of_its_own_is_counted_rather_than_silently_dropp
     let report = derive::derive(&conn).expect("derive");
 
     assert_eq!(
-        report.unreadable, 2,
-        "the two volume directories, which hold archives rather than pages"
+        report.unreadable,
+        derive::Unreadable {
+            no_pages: 2,
+            ..derive::Unreadable::default()
+        },
+        "the two volume directories, which hold archives rather than pages, \
+         and nothing else"
     );
+}
+
+/// `formats(&[("rar", 2)])` — an `Unreadable::by_format` to compare against.
+fn formats(pairs: &[(&str, usize)]) -> BTreeMap<String, usize> {
+    pairs
+        .iter()
+        .map(|(format, n)| ((*format).to_string(), *n))
+        .collect()
+}
+
+/// `rel_path` under `root`, spelled the way `Unreadable` names a file.
+fn under(root: &scan::Root, rel_path: &str) -> String {
+    root.path.join(rel_path).display().to_string()
+}
+
+/// O90's own case. A RAR archive named `.cbz` is sniffed as `rar` from its
+/// bytes and refused by format, and the refusal is counted under the token
+/// its bytes gave rather than under what its name claims.
+#[test]
+fn a_rar_archive_named_cbz_is_refused_by_its_bytes_and_counted_as_rar() {
+    let tree = crate::tests::tempdir("derive-rar-named-cbz");
+    let series = tree.path().join("Vagabond");
+    write_pages(&series.join("Vagabond - v01"), 2);
+    std::fs::write(
+        series.join("Vagabond - v02.cbz"),
+        b"Rar!\x1a\x07\x01\x00 and no decoder behind it",
+    )
+    .expect("a RAR header in a file named .cbz");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+
+    let report = derive::derive(&conn).expect("derive");
+
+    assert_eq!(report.works, 1, "v01, and not the RAR");
+    assert_eq!(
+        report.unreadable,
+        derive::Unreadable {
+            by_format: formats(&[("rar", 1)]),
+            ..derive::Unreadable::default()
+        },
+    );
+}
+
+/// `by_format` counts per token, so a library holding two refused formats
+/// says how many of each. Two RARs, one 7-Zip and a file no signature matched,
+/// which has no token and is counted as `unknown`, the spelling
+/// `taiyaku-serve`'s `stamp` already gives a format nothing recognised.
+#[test]
+fn each_refused_format_is_counted_under_its_own_token() {
+    let tree = crate::tests::tempdir("derive-refused-formats");
+    let series = tree.path().join("Series");
+    std::fs::create_dir_all(&series).expect("mkdir");
+    std::fs::write(series.join("Series - v01.cbz"), b"Rar!\x1a\x07\x00 one").expect("write");
+    std::fs::write(series.join("Series - v02.cbr"), b"Rar!\x1a\x07\x00 two").expect("write");
+    std::fs::write(
+        series.join("Series - v03.cb7"),
+        b"7z\xbc\xaf\x27\x1c and nothing else",
+    )
+    .expect("write");
+    std::fs::write(series.join("Series - v04.txt"), b"no signature at all").expect("write");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+
+    let report = derive::derive(&conn).expect("derive");
+
+    assert_eq!(
+        report.unreadable,
+        derive::Unreadable {
+            by_format: formats(&[("7z", 1), ("rar", 2), ("unknown", 1)]),
+            ..derive::Unreadable::default()
+        },
+    );
+}
+
+/// The real library's thirteenth unreadable entry, reproduced: a zip that
+/// opens cleanly and holds only JPEG XL pages, which `taiyaku-read` does not
+/// read. The walk cannot count its pages, so derivation names it with the
+/// archives that would not open. It is not a vanished member, which is what
+/// O90's row said it was.
+#[test]
+fn an_archive_of_pages_taiyaku_does_not_read_is_named_as_uncounted() {
+    let tree = crate::tests::tempdir("derive-jxl-archive");
+    let series = tree.path().join("Bisque Doll");
+    write_archive_of(&series.join("Bisque Doll - v01.cbz"), 3, "jxl");
+    write_archive(&series.join("Bisque Doll - v02.cbz"), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+
+    let report = derive::derive(&conn).expect("derive");
+
+    assert_eq!(report.works, 1, "v02, and not the JPEG XL archive");
+    assert_eq!(
+        report.unreadable,
+        derive::Unreadable {
+            uncounted: vec![under(&root, "Bisque Doll/Bisque Doll - v01.cbz")],
+            ..derive::Unreadable::default()
+        },
+    );
+}
+
+/// `refused_format` and `total` over a report whose causes all differ, so a
+/// sum that drops any one term, or counts one twice, gives another number.
+#[test]
+fn the_unreadable_sums_count_every_cause_once() {
+    let named = |n: usize| (0..n).map(|i| format!("/library/{i}")).collect::<Vec<_>>();
+    let unreadable = derive::Unreadable {
+        by_format: formats(&[("7z", 3), ("rar", 2)]),
+        uncounted: named(7),
+        no_pages: 11,
+        vanished: named(13),
+    };
+
+    assert_eq!(unreadable.refused_format(), 5);
+    assert_eq!(unreadable.total(), 5 + 7 + 11 + 13);
+    assert_eq!(derive::Unreadable::default().total(), 0);
 }
 
 #[test]

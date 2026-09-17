@@ -26,7 +26,14 @@
  * a test that enumerates the fields it expects has the same hole it is
  * checking for.
  */
-import type { Declined, Derived, Orphan, ScanOutcome, Walk } from './config'
+import type {
+  Declined,
+  Derived,
+  Orphan,
+  ScanOutcome,
+  Unreadable,
+  Walk,
+} from './config'
 import { scanFailed } from './config'
 
 /** One count, with the key the test counts on. */
@@ -134,6 +141,63 @@ function Declines({ declined }: { declined: Declined[] }) {
   )
 }
 
+/**
+ * Why derivation made nothing of an entry: the total, then each cause — O90.
+ *
+ * **One number used to stand for four causes**, and "13 unreadable" could
+ * not tell twelve RAR archives from one archive of JPEG XL pages. Each cause
+ * is its own row with its own `data-field`, drawn at zero too, for this
+ * file's rule that an empty row is a fact rather than a row to skip.
+ *
+ * A refused format is a count per token, because one loop repacks every
+ * archive of a kind. The files that are each faulty on their own are named,
+ * because the person has to find them. A container holding no page images
+ * is a layout rather than a fault, so it is only counted.
+ */
+function UnreadableCauses({ unreadable }: { unreadable: Unreadable }) {
+  const formats = Object.entries(unreadable.by_format)
+  return (
+    <div className="unreadable-causes" data-field="unreadable">
+      <dt>Unreadable</dt>
+      <dd>
+        {unreadable.total}
+        <dl>
+          <div className="paths" data-field="unreadable.by_format">
+            <dt>In a format taiyaku does not read</dt>
+            <dd>
+              {unreadable.refused_format}
+              {formats.length > 0 && (
+                <ul>
+                  {formats.map(([format, n]) => (
+                    <li key={format}>
+                      <code>{format}</code> {n}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </dd>
+          </div>
+          <Paths
+            field="unreadable.uncounted"
+            label="Pages could not be counted"
+            paths={unreadable.uncounted}
+          />
+          <Paths
+            field="unreadable.vanished"
+            label="Gone before they could be hashed"
+            paths={unreadable.vanished}
+          />
+          <Count
+            field="unreadable.no_pages"
+            label="Holding no page images"
+            n={unreadable.no_pages}
+          />
+        </dl>
+      </dd>
+    </div>
+  )
+}
+
 function WalkSection({ walk }: { walk: Walk }) {
   return (
     <section className="walk">
@@ -197,7 +261,7 @@ function WalkSection({ walk }: { walk: Walk }) {
  * so that "nothing a removal's re-derive found ever reached a caller" would
  * stop being true — and `RemoveRoot` rendering only its three counts put that
  * straight back. One component, two callers, rather than a second rendering of
- * thirty fields that could drift from this one.
+ * thirty-one fields that could drift from this one.
  */
 export function DeriveSection({ derive }: { derive: Derived }) {
   return (
@@ -205,7 +269,7 @@ export function DeriveSection({ derive }: { derive: Derived }) {
       <h3>What derivation made of it</h3>
       <dl>
         {/* What it did not do, first. */}
-        <Count field="unreadable" label="Unreadable" n={derive.unreadable} />
+        <UnreadableCauses unreadable={derive.unreadable} />
         <Count field="suppressed" label="Suppressed" n={derive.suppressed} />
         <Count
           field="unrecognised_kinds"

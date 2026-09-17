@@ -68,17 +68,93 @@ const DEFAULT_EDITION_KEY: &str = "raw";
 /// precisely so a re-derive cannot reach one.
 const SCANNER_CHAPTER_SOURCE: &str = "filename";
 
+/// Why derivation could make no structure out of an entry, one field per
+/// cause — [`DeriveReport::unreadable`]. O90.
+///
+/// **One number used to stand for all four**, and the report was what
+/// collapsed them: the doc on that number already listed four situations, and
+/// a person reading "13 unreadable" could not tell twelve RAR archives from
+/// one archive of pages taiyaku does not read.
+///
+/// **A path where a person has to find the file, a count where they do not.**
+/// A refused format is counted per token, because twelve RAR archives are
+/// fixed by one loop and their names add nothing to it, and `by_format` is
+/// bounded by the formats there are rather than by the size of the library. A
+/// container holding no pages of its own is counted, because its usual
+/// instance is a volume directory holding archives, which is a layout and not
+/// a fault. The other two are single files that something is wrong with, so
+/// they are named, for [`DeriveReport::unreadable_hand`]'s reason: the person
+/// has to be told *which* file. Each is joined to its root, since two roots
+/// can hold the same `rel_path`.
+///
+/// `docs/superpowers/specs/2026-09-15-o90-unreadable-attribution-design.md`
+/// §2.1 records the argument, and the version of it that named nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Unreadable {
+    /// Entries in a format [`taiyaku_read::Format::is_readable`] refuses, by
+    /// `scan_entry.format` token — the schema's own vocabulary, for the
+    /// reason [`taiyaku_read::Format::token`] gives. A file no signature
+    /// matched has a NULL format and no token, and is counted as `unknown`,
+    /// the spelling `taiyaku-serve`'s `stamp` already uses for it.
+    ///
+    /// A format that refused nothing has no key rather than a zero, so an
+    /// empty map and a map of zeros cannot both mean "none".
+    pub by_format: BTreeMap<String, usize>,
+    /// Containers whose pages the walk could not count, so `pages` is NULL:
+    /// an archive that would not open, **or one that opened and held nothing
+    /// `taiyaku-read` reads as a page**. The walk keeps no record of which,
+    /// because `pages_of` swallows `member_pages`' refusal whole.
+    ///
+    /// The second is not hypothetical. The one entry a real library still
+    /// counted here after its RAR archives were repacked was a zip of 185
+    /// JPEG XL pages, which `bsdtar` and Python's `zipfile` both list cleanly
+    /// (`docs/notes.md`, "O90"). "Could not list" would have been the wrong
+    /// name for it.
+    pub uncounted: Vec<String>,
+    /// Containers that listed cleanly and held no page images of their own,
+    /// so `pages` is `Some(0)` — a volume directory holding archives is one,
+    /// and the archives inside it are what become the members.
+    ///
+    /// Only a directory arrives here. An archive with no page images is a
+    /// refusal from `member_pages`, never a zero, so it lands in
+    /// [`Self::uncounted`] instead.
+    pub no_pages: usize,
+    /// Members whose file was no longer there to hash — an unmounted share,
+    /// or a tree deleted between the walk and the derive.
+    pub vanished: Vec<String>,
+}
+
+impl Unreadable {
+    /// How many entries were refused by format: `by_format`'s counts, summed.
+    ///
+    /// A method rather than a field, so the total and the breakdown cannot
+    /// disagree.
+    #[must_use]
+    pub fn refused_format(&self) -> usize {
+        self.by_format.values().sum()
+    }
+
+    /// Every entry counted for any of the four causes — the one number
+    /// [`DeriveReport::unreadable`] was before O90.
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.refused_format() + self.uncounted.len() + self.no_pages + self.vanished.len()
+    }
+}
+
+/// The [`Unreadable::by_format`] key for an entry whose `scan_entry.format`
+/// is NULL: a file no signature matched, which [`taiyaku_read::Format::token`]
+/// gives no token. `taiyaku-serve`'s `stamp` spells the same fact the same
+/// way.
+const UNKNOWN_FORMAT: &str = "unknown";
+
 /// What one [`fn@derive`] call turned the facts into.
 ///
-/// `unreadable` counts every entry derivation could make no structure out of
-/// for want of readable bytes, which is four situations and not one: a format
-/// [`taiyaku_read::Format::is_readable`] refuses, a container the walk met but
-/// could not list (so `pages` is NULL), a container that listed cleanly and
-/// held no page images of its own (so `pages` is `Some(0)` — a volume
-/// directory holding archives is one, and the archives inside it are what
-/// become the members), and a member whose file is no longer there to hash.
-/// All four are counted rather than raised, because one unmounted share or one
-/// truncated download must not leave a whole library underived.
+/// `unreadable` is every entry derivation could make no structure out of for
+/// want of readable bytes, which is four situations and not one — see
+/// [`Unreadable`], which keeps them apart. All four are reported rather than
+/// raised, because one unmounted share or one truncated download must not
+/// leave a whole library underived.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeriveReport {
     pub series: usize,
@@ -86,7 +162,7 @@ pub struct DeriveReport {
     pub editions: usize,
     pub members: usize,
     pub unattached_chapter_dirs: usize,
-    pub unreadable: usize,
+    pub unreadable: Unreadable,
     /// Entries an ancestor spoke for — a volume split into chapter
     /// subdirectories contributes one member and three of these. See
     /// [`Seen::claims_subtree`].
@@ -952,9 +1028,10 @@ enum Produces {
     /// material is lost: what it holds is described by the entries beneath
     /// it.
     Deferred,
-    /// Nothing, because there is nothing there: no pages, or a container the
-    /// walk could not list. [`classify`] counts it as
-    /// [`DeriveReport::unreadable`].
+    /// Nothing, because there is nothing there: no pages, or a container
+    /// whose pages the walk could not count. [`classify`] reports it in
+    /// [`DeriveReport::unreadable`], under [`Unreadable::no_pages`] or
+    /// [`Unreadable::uncounted`].
     Nothing,
 }
 
@@ -1085,7 +1162,8 @@ fn claims_of(seen: &[Seen]) -> BTreeSet<String> {
 /// entries produce two works rather than seven.
 fn admit(engine: &Engine, root: &Root, entry: Entry, report: &mut DeriveReport) -> Option<Seen> {
     if !is_readable(entry.format.as_deref()) {
-        report.unreadable += 1;
+        let token = entry.format.unwrap_or_else(|| UNKNOWN_FORMAT.to_string());
+        *report.unreadable.by_format.entry(token).or_default() += 1;
         return None;
     }
     let mut resolved = engine.resolve(root, &entry.rel_path);
@@ -1173,10 +1251,19 @@ fn classify(
         return Ok(());
     }
 
-    // A readable container the walk could not list — `pages_of` swallowed the
-    // refusal so one truncated download would not leave a library unscanned,
-    // and `member.pages` is NOT NULL, so there is nothing honest to write.
-    //
+    // A readable container whose pages the walk could not count —
+    // `pages_of` swallowed the refusal so one truncated download would not
+    // leave a library unscanned, and `member.pages` is NOT NULL, so there is
+    // nothing honest to write. Named, because it is one file with something
+    // wrong with it: see [`Unreadable::uncounted`] for the two things that
+    // can be.
+    let Some(pages) = entry.pages else {
+        into.report
+            .unreadable
+            .uncounted
+            .push(root.path.join(&entry.rel_path).display().to_string());
+        return Ok(());
+    };
     // **And a container that listed cleanly and held no pages**, which is not
     // the same fact and reaches the same answer: a volume directory holding
     // `.cbz` files has `pages = Some(0)`, and a member of no pages is a
@@ -1184,13 +1271,17 @@ fn classify(
     // which is the same hash for every such directory, so writing it would
     // collide every one of them onto one work. The archives *inside* it are
     // the members, and [`Seen::claims_subtree`] is what stops this entry
-    // suppressing them.
-    let Some(pages) = entry.pages.filter(|pages| *pages > 0) else {
-        into.report.unreadable += 1;
+    // suppressing them. Counted rather than named: this is a layout, not a
+    // fault.
+    if pages == 0 {
+        into.report.unreadable.no_pages += 1;
         return Ok(());
-    };
+    }
     let Some(sha256) = digest(conn, root, &entry)? else {
-        into.report.unreadable += 1;
+        into.report
+            .unreadable
+            .vanished
+            .push(root.path.join(&entry.rel_path).display().to_string());
         return Ok(());
     };
 

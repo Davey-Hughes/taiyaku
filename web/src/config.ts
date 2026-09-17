@@ -132,9 +132,39 @@ export interface Walk {
 }
 
 /**
+ * `derive::Unreadable` — why derivation made nothing of an entry, one field
+ * per cause (O90).
+ *
+ * `total` and `refused_format` are the server's own sums, sent so this
+ * client draws them rather than re-implementing either.
+ */
+export interface Unreadable {
+  /** Every entry counted for any cause. */
+  total: number
+  /** `by_format`'s counts, summed. */
+  refused_format: number
+  /**
+   * Entries in a format taiyaku does not read, by `scan_entry.format` token
+   * (`unknown` for a file no signature matched). A format that refused
+   * nothing has no key.
+   */
+  by_format: Record<string, number>
+  /**
+   * Containers whose pages the walk could not count, each by its full path:
+   * an archive that would not open, or one holding no page image taiyaku
+   * reads.
+   */
+  uncounted: string[]
+  /** Members whose file had gone before it could be hashed, by full path. */
+  vanished: string[]
+  /** Containers holding no page images of their own — a layout, not a fault. */
+  no_pages: number
+}
+
+/**
  * `derive::DeriveReport` — what derivation made of the walk.
  *
- * **All thirty fields, because the server sends all thirty.** The
+ * **All thirty-one fields, because the server sends all thirty-one.** The
  * route destructures both reports with no `..` precisely so a field cannot go
  * missing on the way out; a client type that omitted one would undo that at
  * the last step. C4 §3's discipline is that a scan names what it did not do.
@@ -145,7 +175,7 @@ export interface Derived {
   editions: number
   members: number
   unattached_chapter_dirs: number
-  unreadable: number
+  unreadable: Unreadable
   suppressed: number
   rekeyed: number
   kept_editions: number

@@ -1689,10 +1689,119 @@ fn derive_summary_names_a_hand_document_it_could_not_read() {
 fn derive_summary_prints_unattached_and_unreadable_when_nonzero() {
     let mut report = derive_report();
     report.unattached_chapter_dirs = 1;
-    report.unreadable = 7;
+    report.unreadable.no_pages = 7;
     let line = derive_summary(&report, 0);
     assert!(line.contains("1 unattached chapter directories"), "{line}");
-    assert!(line.contains("7 unreadable"), "{line}");
+    assert!(line.contains("7 unreadable ("), "{line}");
+}
+
+/// O90: the unreadable count says why, one cause at a time, with a different
+/// number in every cause so a count printed under the wrong cause's words
+/// fails. Asserted clause by clause rather than as one string, so the message
+/// says which cause went missing, and then once whole, which pins the order
+/// and the separators.
+///
+/// **The two causes that are single faulty files name them**, joined on `; `
+/// as every other list on this line is, because "1 whose pages could not be
+/// counted" over a library of two thousand archives leaves a person
+/// querying the database.
+#[test]
+fn derive_summary_says_why_each_unreadable_entry_was_skipped() {
+    let mut report = derive_report();
+    report.unreadable.by_format.insert("rar".to_string(), 12);
+    report.unreadable.by_format.insert("7z".to_string(), 3);
+    report.unreadable.uncounted = vec![
+        "/library/Bisque Doll/Bisque Doll.cbz".to_string(),
+        "/library/Broken/Broken - v01.cbz".to_string(),
+    ];
+    report.unreadable.vanished = vec![
+        "/library/Gone/Gone - v01".to_string(),
+        "/library/Gone/Gone - v02".to_string(),
+        "/library/Gone/Gone - v03".to_string(),
+        "/library/Gone/Gone - v04".to_string(),
+        "/library/Gone/Gone - v05".to_string(),
+    ];
+    report.unreadable.no_pages = 7;
+
+    let line = derive_summary(&report, 0);
+
+    assert!(line.contains(", 29 unreadable ("), "the total: {line}");
+    assert!(line.contains("3 7z"), "{line}");
+    assert!(line.contains("12 rar"), "{line}");
+    assert!(
+        line.contains(
+            "2 whose pages could not be counted: /library/Bisque Doll/Bisque Doll.cbz; \
+             /library/Broken/Broken - v01.cbz"
+        ),
+        "{line}"
+    );
+    assert!(
+        line.contains(
+            "5 gone before they could be hashed: /library/Gone/Gone - v01; \
+             /library/Gone/Gone - v02; /library/Gone/Gone - v03; /library/Gone/Gone - v04; \
+             /library/Gone/Gone - v05"
+        ),
+        "{line}"
+    );
+    assert!(line.contains("7 holding no page images"), "{line}");
+    assert!(
+        line.contains(
+            ", 29 unreadable (3 7z, 12 rar, \
+             2 whose pages could not be counted: /library/Bisque Doll/Bisque Doll.cbz; \
+             /library/Broken/Broken - v01.cbz, \
+             5 gone before they could be hashed: /library/Gone/Gone - v01; \
+             /library/Gone/Gone - v02; /library/Gone/Gone - v03; /library/Gone/Gone - v04; \
+             /library/Gone/Gone - v05, \
+             7 holding no page images)"
+        ),
+        "{line}"
+    );
+}
+
+/// Each cause prints only when it has something to say, the rule every
+/// clause of this line follows, so a report with one cause names that cause
+/// alone. One report per cause, and each asserts the other three are absent.
+#[test]
+fn derive_summary_names_only_the_unreadable_causes_that_happened() {
+    use taiyaku_library::derive::Unreadable;
+
+    // `1 rar` rather than `rar`, which "library" would contain.
+    let causes = [
+        "1 rar",
+        "whose pages could not be counted",
+        "gone before they could be hashed",
+        "holding no page images",
+    ];
+    for (only, fill) in [
+        (
+            0,
+            &(|r: &mut Unreadable| {
+                r.by_format.insert("rar".to_string(), 1);
+            }) as &dyn Fn(&mut Unreadable),
+        ),
+        (1, &|r: &mut Unreadable| {
+            r.uncounted.push("/srv/a.cbz".to_string())
+        }),
+        (2, &|r: &mut Unreadable| {
+            r.vanished.push("/srv/b".to_string())
+        }),
+        (3, &|r: &mut Unreadable| r.no_pages = 1),
+    ] {
+        let mut report = derive_report();
+        fill(&mut report.unreadable);
+        let line = derive_summary(&report, 0);
+        assert!(line.contains("1 unreadable ("), "{line}");
+        for (at, cause) in causes.iter().enumerate() {
+            assert_eq!(
+                line.contains(cause),
+                at == only,
+                "only `{}` should print: {line}",
+                causes[only]
+            );
+        }
+    }
+    let quiet = derive_summary(&derive_report(), 0);
+    assert!(!quiet.contains("unreadable"), "{quiet}");
 }
 
 /// The filename is a `content_key` naming content that no longer exists, so a

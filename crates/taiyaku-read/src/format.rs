@@ -75,6 +75,24 @@ impl Format {
     /// is what stops the two drifting — it walks every variant and asserts
     /// both sides agree, which is the check that was missing while this
     /// function had no test of any kind.
+    ///
+    /// **The seven `false`s are a decision, not a backlog — O90.** [`sniff`]
+    /// names eight containers so a scan can say what it met, and this admits
+    /// two; the seventh `false` is `Unknown`, which is no container at all. The gap was left unrecorded until a real library held a series
+    /// of RAR archives named `.cbz`: twelve volumes, sniffed correctly and
+    /// counted unreadable, with nothing anywhere saying that was intended.
+    /// **RAR in particular is refused on licence, not on difficulty.**
+    /// taiyaku is GPL-3.0-or-later, and RARLAB's UnRAR source, which `unrar`
+    /// builds and `unrar-rs` incorporates, carries a restriction the GPL does
+    /// not allow a distributor to add. The clean-room `rar` crate was too immature
+    /// for the crate every page read passes through when this was decided
+    /// (2026-09-15). The files were repacked to zip instead.
+    /// `docs/superpowers/specs/2026-09-15-o90-unreadable-attribution-design.md`
+    /// §1 is the record, and names what would reopen it: a library where
+    /// repacking is not available.
+    ///
+    /// A refusal reaches a person as `DeriveReport::unreadable`'s
+    /// `by_format`, which counts each refused format under its token.
     #[must_use]
     pub fn is_readable(self) -> bool {
         matches!(self, Self::Dir | Self::Zip)

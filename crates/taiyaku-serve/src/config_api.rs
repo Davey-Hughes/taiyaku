@@ -1400,6 +1400,33 @@ fn declined_json(declined: &hand::Declined) -> serde_json::Value {
     })
 }
 
+/// [`derive::Unreadable`] — why derivation made nothing of an entry, one key
+/// per cause (O90), [`derive_report_json`]'s `"unreadable"`.
+///
+/// **Destructured with no `..`**, for [`scan_report_json`]'s reason, one level
+/// down: a cause added to the struct is a compile error here rather than a
+/// key that never reaches the screen.
+///
+/// **`total` and `refused_format` are computed here, not stored.** They are
+/// the struct's own methods, and sending them means the client draws the
+/// server's sums rather than writing a second implementation of each.
+fn unreadable_json(unreadable: &derive::Unreadable) -> serde_json::Value {
+    let derive::Unreadable {
+        by_format,
+        uncounted,
+        no_pages,
+        vanished,
+    } = unreadable;
+    serde_json::json!({
+        "total": unreadable.total(),
+        "refused_format": unreadable.refused_format(),
+        "by_format": by_format,
+        "uncounted": uncounted,
+        "vanished": vanished,
+        "no_pages": no_pages,
+    })
+}
+
 /// [`derive::DeriveReport`], whole, field for field — [`scan_status`]'s
 /// `"derive"` key. See this section's own header comment for why every
 /// field is here, including the Vecs, which can be empty.
@@ -1448,7 +1475,7 @@ fn derive_report_json(report: &derive::DeriveReport) -> serde_json::Value {
         "editions": editions,
         "members": members,
         "unattached_chapter_dirs": unattached_chapter_dirs,
-        "unreadable": unreadable,
+        "unreadable": unreadable_json(unreadable),
         "suppressed": suppressed,
         "rekeyed": rekeyed,
         "kept_editions": kept_editions,

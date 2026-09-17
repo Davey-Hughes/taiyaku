@@ -640,12 +640,53 @@ fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
     line
 }
 
+/// Why [`derive_summary`]'s unreadable entries were skipped, one clause per
+/// cause that happened — O90.
+///
+/// **A refused format prints as its count and its token** (`12 rar`), the
+/// schema's own vocabulary, for the reason `taiyaku_read::Format::token`
+/// gives: a friendlier spelling would be a second name for a value the
+/// database already names. **The two causes that are single faulty files
+/// print their paths**, joined on `; ` like every other list on the line,
+/// because a count alone leaves a person querying the database for the file.
+/// A container holding no page images is a layout rather than a fault, so it
+/// is only counted.
+///
+/// Every clause agrees with one and with many alike, for the reason
+/// `series_holding_no_work`'s wording gives below.
+fn unreadable_causes(unreadable: &taiyaku_library::derive::Unreadable) -> String {
+    let mut causes: Vec<String> = unreadable
+        .by_format
+        .iter()
+        .map(|(format, n)| format!("{n} {format}"))
+        .collect();
+    if !unreadable.uncounted.is_empty() {
+        causes.push(format!(
+            "{} whose pages could not be counted: {}",
+            unreadable.uncounted.len(),
+            unreadable.uncounted.join("; ")
+        ));
+    }
+    if !unreadable.vanished.is_empty() {
+        causes.push(format!(
+            "{} gone before they could be hashed: {}",
+            unreadable.vanished.len(),
+            unreadable.vanished.join("; ")
+        ));
+    }
+    if unreadable.no_pages > 0 {
+        causes.push(format!("{} holding no page images", unreadable.no_pages));
+    }
+    causes.join(", ")
+}
+
 /// What one `derive` + `raise` pass over the whole library produced.
 ///
 /// `series`/`works`/`editions`/`members` print unconditionally — a library
 /// that genuinely derived nothing is exactly as informative a zero as any
 /// other. `unattached_chapter_dirs` and `unreadable` print only when
-/// non-zero, and so do `suppressed`, `rekeyed`, `kept_editions`, `merged`,
+/// non-zero (`unreadable` with its causes — see [`unreadable_causes`]), and
+/// so do `suppressed`, `rekeyed`, `kept_editions`, `merged`,
 /// `unrecognised_kinds`, `emptied_works` (with the counts of what its fold
 /// wrote, what stopped existing, what it dropped as a copy the target already
 /// held identically, and what it discarded), `unfolded_works`,
@@ -707,8 +748,13 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
             report.unattached_chapter_dirs
         );
     }
-    if report.unreadable > 0 {
-        let _ = write!(line, ", {} unreadable", report.unreadable);
+    if report.unreadable.total() > 0 {
+        let _ = write!(
+            line,
+            ", {} unreadable ({})",
+            report.unreadable.total(),
+            unreadable_causes(&report.unreadable)
+        );
     }
     if report.suppressed > 0 {
         let _ = write!(line, ", {} suppressed", report.suppressed);
