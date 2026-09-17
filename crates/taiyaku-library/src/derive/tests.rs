@@ -4588,3 +4588,49 @@ fn a_spread_flag_a_fold_writes_survives_the_next_derive() {
     derive::derive(&conn).expect("the next derive");
     assert_eq!(spreads(&conn), vec![3], "and still there after a rescan");
 }
+
+/// O89 end to end: two releases of one volume, told apart only by their
+/// directories, derive as two works of two series rather than one work of two
+/// members. Before the reconciliation this was `merged: 1` — a reader opening
+/// volume 1 got one release followed by the other as a single page sequence.
+#[test]
+fn two_releases_told_apart_only_by_their_directories_are_two_works() {
+    let tree = crate::tests::tempdir("derive-o89-two-releases");
+    write_archive(
+        &tree
+            .path()
+            .join("[Oshi no Ko]")
+            .join("[Oshi no Ko] - v01.cbz"),
+        3,
+    );
+    write_archive(
+        &tree
+            .path()
+            .join("[Oshi no Ko] - Fan Translated")
+            .join("[Oshi no Ko] - v01.cbz"),
+        5,
+    );
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+
+    let report = derive::derive(&conn).expect("derive");
+
+    assert_eq!(
+        report.merged, 0,
+        "neither release joined the other's page sequence"
+    );
+    assert_eq!(report.works, 2);
+    assert_eq!(report.members, 2);
+
+    let mut stmt = conn
+        .prepare("SELECT sort_title FROM series ORDER BY sort_title")
+        .expect("prepare");
+    let titles: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("rows");
+    assert_eq!(titles, ["[Oshi no Ko]", "[Oshi no Ko] - Fan Translated"]);
+}

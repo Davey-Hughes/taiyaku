@@ -411,15 +411,33 @@ pub(crate) fn library_with_the_seeded_defaults() -> FixtureLibrary {
 /// reorder away. `crate::preview::overrides` reports it, correctly, and the
 /// editor states it as an observation — `docs/status.md`, O95.
 ///
+/// **Since O89 (2026-09-16), this shape is reconciled.** The directory
+/// qualifies the filename's captured series — `Death Note` is a prefix of
+/// `Death Note (Colored Council)`, and `Chainsaw Man` a prefix of
+/// `Chainsaw Man - Digital Colored Comics` — so rule 1's own value stands and
+/// rule 4's capture is no longer an override. This fixture now carries
+/// `a_directory_that_qualifies_the_filenames_series_is_not_an_override`
+/// rather than O95's own two override tests, which moved to
+/// `library_with_directories_their_filenames_abbreviate`.
+///
 /// **Not a contrived shape.** Measured on the real library 2026-09-05: 27 of
 /// 128 directories, 21%, carry a filename stem differing from their
 /// directory.
 ///
-/// **Two of them, not one, and with different series either side.** Both
-/// files produce the same `(Series, rule 1, rule 4)` triple and *different*
-/// values, which is the one arrangement that can tell a row carrying its own
-/// example's values apart from a row carrying whichever entry happened to be
-/// walked last.
+/// **Two of them, not one, and with different series either side — true
+/// before O89.** Both files produced the same `(Series, rule 1, rule 4)`
+/// triple and *different* values, which was the one arrangement that could
+/// tell a row carrying its own example's values apart from a row carrying
+/// whichever entry happened to be walked last.
+///
+/// **Since O89 (2026-09-16), neither file produces that triple.** Both
+/// directories qualify their filename's captured series, so the
+/// reconciliation restores rule 1's own value and nothing here overrides
+/// Series any more — which is what
+/// `a_directory_that_qualifies_the_filenames_series_is_not_an_override`
+/// pins. Read as a description of the *shape* still on disk, this paragraph
+/// is current; read as a description of what `overrides` reports for it, it
+/// is not — `docs/status.md`, O89.
 ///
 /// **The directory rows themselves contribute nothing**, which is what keeps
 /// `examples` readable as "two archives": rule 1's `^(?<series>[^/]+)/` needs
@@ -433,6 +451,51 @@ pub(crate) fn library_with_colour_edition_directories() -> FixtureLibrary {
         (
             "Chainsaw Man - Digital Colored Comics",
             "Chainsaw Man v01.cbz",
+        ),
+    ] {
+        crate::scan::tests::write_archive(&dir.path().join(directory).join(file), 3);
+    }
+
+    let library = Library::open_in_memory().expect("an in-memory library opens");
+    {
+        let conn = library.conn();
+        let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
+        crate::scan::scan_root(&conn, &root).expect("scanning the root");
+    }
+    FixtureLibrary { library, dir }
+}
+
+/// A library on disk holding two more real shapes from O95's own
+/// measurement — this time ones O89's reconciliation leaves standing: a
+/// directory whose *filename* abbreviates its series rather than
+/// *qualifying* it, so what the filename captures is never a prefix of the
+/// directory's own value and the reconciliation never fires.
+///
+/// **These are real shapes.** On 2026-09-16 the real library still had 117
+/// entries across 11 (directory, capture) pairs where rule 1 and rule 4
+/// disagree *after* O89. The other 61 of O95's measured 178 are reconciled
+/// now, and these two directories are among the 117. (The real filenames
+/// also carry a year, `(2017)`/`(2022)`. It is omitted here so that nothing
+/// but the series pairing can decide a field.)
+///
+/// **The directory does not *qualify* the capture**, because
+/// `GTO - Paradise Lost` is not a prefix of
+/// `GTO - Great Teacher Onizuka - Paradise Lost`. So O89's reconciliation
+/// leaves rule 4 winning and the override standing.
+///
+/// **Two entries, with different values either side**, for the reason
+/// `library_with_colour_edition_directories` gives, just above. Neither
+/// directory name has a `[ _-]+v`, so the directory rows reach neither rule.
+pub(crate) fn library_with_directories_their_filenames_abbreviate() -> FixtureLibrary {
+    let dir = tempdir("preview-directories-abbreviate");
+    for (directory, file) in [
+        (
+            "GTO - Great Teacher Onizuka - 14 Days in Shonan",
+            "GTO - 14 Days in Shonan - v01.cbz",
+        ),
+        (
+            "GTO - Great Teacher Onizuka - Paradise Lost",
+            "GTO - Paradise Lost - v01.cbz",
         ),
     ] {
         crate::scan::tests::write_archive(&dir.path().join(directory).join(file), 3);

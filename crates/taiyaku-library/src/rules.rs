@@ -26,6 +26,13 @@
 //! entry at all where nothing decided the field. A later spec displays this;
 //! without it the layering is unexplainable.
 //!
+//! **One exception to last-setter-wins, added by O89.** [`Engine::resolve`]
+//! ends with a reconciliation that restores a `path`/`parent` rule's series
+//! when a later rule's *capture* replaces it with a series the directory
+//! [`qualifies`] — `Death Note (Colored Council)` outliving a filename
+//! capture of `Death Note`, say. A literal `set_series` is a decision and is
+//! never reconciled; only a series a capture produced is.
+//!
 //! # Four kinds
 //!
 //! - [`RuleKind::Prefix`] — the one-click case, "this whole directory is
@@ -433,9 +440,21 @@ impl Engine {
     /// each that matches applies, in order, setting only the fields it
     /// provides — and fall back to `root`'s own defaults for whatever no
     /// rule decided.
+    ///
+    /// **One exception, added by O89.** Before falling back to `root`, a
+    /// series a `path`/`parent` rule set is restored over a later rule's
+    /// *capture* that replaced it, if the directory's value [`qualifies`]
+    /// the capture it lost to. A literal `set_series` is never reconciled —
+    /// only a capture is, since that is the shape a fold like O95's is.
     #[must_use]
     pub fn resolve(&self, root: &Root, rel_path: &str) -> Resolved {
         let mut resolved = Resolved::empty();
+        // O89: the last series a directory-reading rule set, with that rule's
+        // id, and whether the rule now holding the series set it by capture.
+        // `Resolved::set` overwrites, so a value a later rule discards has to
+        // be kept here to be restorable after the loop.
+        let mut from_directory: Option<(String, i64)> = None;
+        let mut series_was_captured = false;
         for compiled in &self.rules {
             let rule = &compiled.rule;
             if !rule.enabled {
@@ -487,9 +506,37 @@ impl Engine {
             if matched && kind_applies_set_columns(rule.kind) {
                 apply_set_columns(rule, &mut resolved);
             }
+            // O89: whether a capture, rather than one of this rule's literal
+            // columns, is what decides the series. The capture applies after
+            // the literals, so a capture carrying a series has the last word.
+            let series_from_capture = captures.as_ref().and_then(captured_series).is_some();
             if let Some(caps) = captures {
                 apply_captures(rule, &caps, &mut resolved);
             }
+            if resolved.provenance.get(&Field::Series) == Some(&rule.id) {
+                series_was_captured = series_from_capture;
+                if matches!(rule.match_on, MatchOn::Path | MatchOn::Parent) {
+                    from_directory = resolved.series.clone().map(|series| (series, rule.id));
+                }
+            }
+        }
+        // O89: restore a qualifier a capture discarded.
+        //
+        // Seeded rule 1 reads `[Oshi no Ko] - Fan Translated` from the
+        // directory; seeded rule 4, the next rule to set a series, captures
+        // `[Oshi no Ko]` from the filename. Only a *captured* series is reconciled — a literal
+        // `set_series` is a decision and keeps its value — and only when the
+        // directory's value qualifies it, so `Downloads/One Piece - v01.cbz`,
+        // the case rule 4 exists for, is untouched. Provenance names the rule
+        // that read the directory: that rule decided the value, and this step
+        // is not a rule.
+        if series_was_captured
+            && let (Some(current), Some((directory, directory_rule))) =
+                (resolved.series.as_deref(), from_directory.as_ref())
+            && qualifies(directory, current)
+        {
+            let (directory, directory_rule) = (directory.clone(), *directory_rule);
+            resolved.set(Field::Series, directory_rule, directory);
         }
         apply_root_fallback(root, &mut resolved);
         resolved
@@ -639,6 +686,42 @@ fn match_target(match_on: MatchOn, rel_path: &str) -> &str {
     }
 }
 
+/// What may stand between a series and the qualifier a directory adds to it.
+///
+/// **A prefix that runs straight into a word character is a different name**,
+/// not a qualified one: `One Piecey` is not `One Piece` with something added.
+const QUALIFIER_SEPARATORS: [char; 5] = [' ', '-', '_', '(', '['];
+
+/// Whether `directory` is `captured` plus a qualifier — `[Oshi no Ko] - Fan
+/// Translated` against `[Oshi no Ko]`, or `Death Note (Colored Council)`
+/// against `Death Note`.
+///
+/// Three conditions: the directory starts with the captured series, what
+/// follows begins with a separator, and what follows says something — at
+/// least one letter or digit. The third is O89's pre-flight finding: the real
+/// library holds `Hunter × Hunter (Official Colored) ` with a trailing space,
+/// and without it 37 members would have moved to a series name ending in
+/// whitespace. Equal strings leave nothing after the prefix and fail the
+/// second condition, so they need no case of their own.
+fn qualifies(directory: &str, captured: &str) -> bool {
+    directory.strip_prefix(captured).is_some_and(|rest| {
+        rest.starts_with(QUALIFIER_SEPARATORS) && rest.chars().any(char::is_alphanumeric)
+    })
+}
+
+/// The non-empty `series` a capture carries.
+///
+/// Shared by [`apply_captures`], which sets the field from it, and
+/// [`Engine::resolve`], which has to know whether a capture — rather than a
+/// literal `set_series` on the same rule — decided the field. Provenance
+/// cannot say, because both paths record the same rule id. One function, so
+/// the two cannot disagree about an empty group.
+fn captured_series<'h>(caps: &regex::Captures<'h>) -> Option<&'h str> {
+    caps.name("series")
+        .map(|m| m.as_str())
+        .filter(|s| !s.is_empty())
+}
+
 /// Apply a rule's four literal `set_*` columns — the part every kind of rule
 /// shares once it has matched at all.
 fn apply_set_columns(rule: &Rule, resolved: &mut Resolved) {
@@ -670,8 +753,8 @@ fn apply_set_columns(rule: &Rule, resolved: &mut Resolved) {
 /// would be the layering model silently erasing a field a later rule never
 /// actually decided.
 fn apply_captures(rule: &Rule, caps: &regex::Captures<'_>, resolved: &mut Resolved) {
-    if let Some(m) = caps.name("series").filter(|m| !m.as_str().is_empty()) {
-        resolved.set(Field::Series, rule.id, m.as_str().to_string());
+    if let Some(series) = captured_series(caps) {
+        resolved.set(Field::Series, rule.id, series.to_string());
     }
     if let Some(m) = caps.name("edition").filter(|m| !m.as_str().is_empty()) {
         resolved.set(Field::EditionKey, rule.id, m.as_str().to_string());

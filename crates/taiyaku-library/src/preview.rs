@@ -688,10 +688,13 @@ pub fn apply(conn: &Connection, proposed: &[crate::rules::Rule]) -> Result<Appli
 /// one case the shipped defaults produce on nearly every library: migration
 /// 3's rule 1 reads a series from the directory and its rule 4 reads it from
 /// the filename, rule 4 wins, and **that is what folds a colour edition into
-/// its main series** — rule 4's own seeded note says so. Naming it a conflict
-/// made the editor offer a reorder as the fix, and the reorder is the one
-/// thing that breaks the fold. The detection below is unchanged and correct;
-/// only the noun moved. See `docs/status.md`, O95.
+/// its main series** — rule 4's own seeded note says so. *(Since O89,
+/// 2026-09-16: only where the directory does not qualify the filename's
+/// series. A directory that extends it is reconciled back to rule 1's value
+/// and is no longer an override. See `docs/status.md`, O89.)* Naming it a
+/// conflict made the editor offer a reorder as the fix, and the reorder is
+/// the one thing that breaks the fold. The detection below is unchanged and
+/// correct; only the noun moved. See `docs/status.md`, O95.
 ///
 /// **C4 §1's own worked example, and the reason this exists.** A rule sets
 /// `edition_key = "raw"` for everything under `Manga (RAW)/`; a later rule
@@ -731,6 +734,12 @@ pub fn apply(conn: &Connection, proposed: &[crate::rules::Rule]) -> Result<Appli
 /// Naming the two rules says *that* they disagree; only the values say what
 /// about, and `Death Note (Colored Council)` → `Death Note` reads instantly
 /// as a deliberate normalisation where two regexes and a path do not.
+///
+/// *(Since O89, 2026-09-16: this example predates the reconciliation.
+/// `Death Note (Colored Council)` qualifies the filename's captured
+/// `Death Note`, so `rules::Engine::resolve` now restores the directory's
+/// own value and this pairing is no longer reported as an override at all —
+/// `docs/status.md`, O89.)*
 ///
 /// **An override is about the *value*, not merely about who touched the
 /// field.** Two enabled rules setting the same field to the *same* value are
@@ -896,6 +905,14 @@ struct PartialOverride {
 /// field at that step — and since a rule's own match/capture logic never
 /// depends on any other rule, the only thing that can differ between
 /// `engines[k]` and `engines[k + 1]` is `engines[k + 1]`'s one extra rule.
+///
+/// *(Not quite, since O89. Adding a capturing rule can also trigger
+/// [`crate::rules::Engine::resolve`]'s reconciliation, which restores an
+/// earlier directory rule's series. Where a user series rule sits between
+/// that directory rule and the capture, over a qualifying directory, the
+/// chain step is credited to the capturing rule with a value it never
+/// produced — O128, `docs/status.md`.)*
+///
 /// [`crate::rules::Engine::compile`] has no incremental form, so each of these engines is
 /// compiled from scratch — a rule already compiled into `engines[5]` is
 /// compiled again into `engines[6]`, `engines[7]`, and so on.

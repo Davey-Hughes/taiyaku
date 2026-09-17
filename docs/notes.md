@@ -20489,3 +20489,226 @@ Rust 2170 → 2184, fourteen new tests — thirteen in `fold/tests.rs` and one i
 The fix round: Rust 2184 → 2189, four new tests in `fold/tests.rs` and one in
 `config_api/tests.rs`. `web/` unchanged at `node` 1,158 and `jsdom` 963, read
 off the mutation runner's control under `--reporter=default`.
+
+## O89: a directory that qualifies a captured series — 2026-09-16
+
+### The gap, and what the row got wrong
+
+O89's row said two releases of one volume merge "when only the directory, or a
+suffix after the volume marker, tells them apart", and offered three fixes: a rule
+that reads the directory, an edition key derived from it, or attribution so the
+inbox could offer the split. **Rule 1 already reads the directory.** For
+`[Oshi no Ko] - Fan Translated/[Oshi no Ko] - v01.cbz` seeded rule 1 captures
+`[Oshi no Ko] - Fan Translated`. Seeded rule 4 then captures `[Oshi no Ko]` from the
+filename, and `Resolved::set` overwrites. The qualifier is discarded by the next rule
+to set a series, after it was read correctly, and `classify` merges what is left, as it should for two
+entries that really resolve to one `(series, volume)`. The defect was upstream of
+`classify`, in which of two correct captures wins.
+
+Re-measured against the database before any code: 25 editions held more than one
+member, and **all 25 drew those members from two different parent directories.**
+None drew from one. Three series: `[Oshi no Ko]` 12, `Death Note` 9,
+`Yu Yu Hakusho` 4.
+
+### The pre-flight, before any code
+
+The first plan predicted that three directories would move. Simulating seeded rules 1
+and 4 over every member's path found eight. The simulation was checked first: its
+"before" series agreed with the database for all 1,895 members. One of the eight was
+a regression. `Hunter × Hunter (Official Colored) ` carries a trailing space, and the
+draft's "extends" would have moved 37 members to a series name ending in whitespace.
+So a qualifier must now contain a letter or a digit.
+
+The spec promised that a user's `name` rule would still win, and it could not be
+built. Seeded rule 4 is itself a `name` rule, and the draft's guard never changed an
+outcome. It was replaced, by decision, with **literals win, captures reconcile**. A
+`captured_series` helper is shared with `apply_captures`, so the two cannot disagree
+about an empty group. The renames of three series that were not colliding were
+accepted rather than narrowed away. Narrowing would need cross-entry state that
+`resolve` does not have.
+
+### Executing it: this reverses O95, by decision
+
+The pre-flight simulated the real library and never the test fixtures, and the
+conflict was in the fixtures. Task 1's first run broke three `preview::tests`. Two of
+them pinned **O95**, which had recorded rule 4 folding `Death Note (Colored Council)`
+into `Death Note` as intended. It called the editor remedy that split them "the one
+thing that broke it", and this reconciliation *is* that split. The two findings never
+met: O95 was decided without the measurement that the fold concatenates two releases
+whenever their volumes collide.
+
+**Decided 2026-09-16 that O89 governs.** A qualifying directory is its own series.
+The `edition-of` proposal folds it back with an edition key, and since accepting
+writes a literal `set_series`, it is never reconciled. O95's two tests moved to the
+GTO directories. Those are real shapes whose filename capture is not a prefix of the
+directory, so the override stands. The colour-edition fixture now pins that it is no
+longer an override. The third broken test's fixture directory `Series 1` qualified
+`Series` (remainder `" 1"`) and became `Omnibus 1`.
+
+### Over the real library, before and after
+
+`/home/davey/temp/manga-test`, after the Vagabond repack, binary at `2ee01ac`. The
+database was verified byte-identical to its backup before the scan.
+
+| | before | predicted | after |
+| --- | --- | --- | --- |
+| editions holding more than one member | 25 | 0 | **0** |
+| works | 1870 | 1895 | **1895** |
+| editions | 1870 | — | 1895 |
+| members | 1895 | 1895 | **1895** |
+| series holding a work | 129 | 133 | **133** |
+
+Printed: `derived 134 series, 1895 works, 1895 editions, 1895 members, 1 unattached
+chapter directories, 1 unreadable, 25 rekeyed, 4 series holding no work; 6
+proposal(s) raised`, against `130 series, 1870 works, … 25 merged, 1 series holding no
+work` before.
+
+A diff of member path → series changed **61 members across exactly the seven
+predicted directories**: `[Oshi no Ko] - Fan Translated` 13,
+`One Piece - Definitive Edition (Colored)` 23,
+`Parasyte - Full Color (Colored Council)` 10, `Death Note (Colored Council)` 9,
+`Yu Yu Hakusho - Colored (Colored Council)` 4,
+`Hunter × Hunter - Kurapika's Memories` 1, and
+`Shingeki no Kyojin - Kui Naki Sentaku (Complete Color Edition)` 1. No path was added
+or lost, and no numbered or range directory moved. Of O95's 178 overridden files,
+61 are reconciled and 117 still override. The simulation's two figures sum to O95's
+measured total exactly.
+
+Open proposals went from 29 to 35. `edition-of` was raised for
+`[Oshi no Ko] - Fan Translated`, `Yu Yu Hakusho - Colored (Colored Council)`, the three
+renamed series and `Kurapika's Memories` (score 0.0). `Death Note (Colored Council)`
+was **not** proposed, as predicted: `raise_edition_of` matches only a `" - "` suffix.
+That is O126.
+
+Two things the spec did not predict. **`25 rekeyed`** is the 25 formerly merged works
+whose content key changed when they lost a member. Each kept its work id; `progress`
+and `note` both held 0 rows, and no hand document existed under the root for O81 to
+strand. **Open proposals whose subject series holds no work**
+went from two to five. The renames left their old-name proposals open, and the shape
+was already there before O89 (ids 19 and 29, both
+`One Piece - Cover Stories - Digital Colored Comics`). That is O127.
+
+### Mutations, watched
+
+These were applied by hand against the whole `taiyaku-library` crate, each restored
+from git with a clean tree confirmed. The first background run was killed by the
+harness for low memory during its control run, before any mutation. The re-run went
+in foreground batches at `--test-threads=8`: 12 s against 21 s at 32 threads. Control
+and final control: 844 passed.
+
+| # | Mutation | Failed |
+| --- | --- | --- |
+| 1 | delete the reconciliation | 7 — the headline, the end-to-end, the colour-fixture preview test and four precedence tests |
+| 2 | drop the separator condition | the `qualifies` unit test |
+| 3 | drop the letter-or-digit condition | the unit test and the trailing-space test |
+| 4 | swap `qualifies`' arguments | 7 |
+| 5 | drop `series_was_captured` | both literal tests |
+| 6 | record `from_directory` for every `match_on` | 7 |
+| 7 | credit the capturing rule | 4 |
+| 8 | remove `'('` | **none** — then the unit test, after `c7b917a` |
+| 9 | `qualifies` closure → `true` | 5, including `the_four_defaults_read_a_real_library_path` |
+| 10 | `series_from_capture = true` | both literal tests |
+| 11 | drop `captured_series`' empty filter | the existing `an_empty_string_capture_does_not_overwrite_an_earlier_rules_value` |
+| 12 | `Path \| Parent` → `Path` | the parent-rule test |
+| 13 | `series_from_capture = captures.is_some()` | the literal-beside-a-capture test |
+| 14 | the first directory rule wins | 7, **five of them `proposals::tests`** |
+| 15 | a preview row's values overwritten by the last entry sharing its triple | 3 |
+| 16 | remove `'-'` | **none** — then the unit test, after `c7b917a` |
+| 17 | remove `'['` | **none** — then the unit test, after `c7b917a` |
+| 18 | remove `' '` | 8 |
+
+Three of the five separators were never the remainder's first character in any test.
+Every case put a space before the dash or bracket, and the space passed the check on
+its own. `c7b917a` adds `A-Q`, `A(Q)` and `A[Q]`. #14 is the evidence behind spec
+§1.4's claim that curation still folds these back: the widened-rule accept path
+depends on the *last* directory rule being the one the capture is compared against.
+
+Two watched-red gaps from Task 1 were closed by the controller rather than by code.
+The `Downloads` guard failed only once the `qualifies` call was deleted, since
+`Downloads` is no prefix of `One Piece` and a mutated closure never runs there. The
+headline test failed against the reconciliation removed on `rules::tests`.
+
+### What remains
+
+- **O126**: `Death Note (Colored Council)` is correct and unlinked.
+- **O127**: proposals naming a series that holds no work stay open.
+- **A range pack** such as `Naruto 1-72/Naruto - v01.cbz` would become a series named
+  `Naruto 1-72`, since a digit qualifies. Requiring a letter would not reliably prevent
+  it, because `Naruto (Digital) (1-72)` has letters. The real library has no such
+  directory, so this is recorded rather than filed.
+- **O128**: the Overrides tab can credit a rule with a value it never produced. This
+  was carried to the whole-branch review as unverified, and the review confirmed it; see
+  below.
+- **The rule preview's Matched files tab** now credits a reconciled entry to rule 1. The
+  whole-branch review judged this acceptable: "matched" has always meant "decided at
+  least one field", and before O89 rule 1 already dropped out of its own tab for 178
+  files.
+
+### The whole-branch review
+
+This was run on `9282a04..082fd36` after the gate went green. Verdict: *with fixes*.
+Nothing was critical, three findings were important, and every caller of
+`Engine::resolve` was traced. Derivation, both of the proposals dry-run engines, the
+`CANDIDATE_RULE_ID` candidate at `i64::MAX` and `preview::rows_for` are all safe under
+the new contract. Nothing in `taiyaku-serve` or `taiyaku-cli` calls `resolve` or reads
+provenance.
+
+**Important: the Overrides regression, O128.** `preview::overrides` credits each step of
+its prefix chain to the rule just added. After O89, adding a capture can also restore
+an earlier directory rule's value. The review reproduced this with a scratch program
+built against the branch and against `main`, and the controller re-ran that program on
+both. The setup is the seeded rules plus a user `name` rule at ordinal 3, over
+`Death Note (Colored Council)/Death Note - v01 (Colored Council).cbz`:
+
+| | `resolve` | Overrides row |
+| --- | --- | --- |
+| `main`, user literal `Shinigami Notebook` | `Death Note`, rule 4 | rule 4 wins, `Death Note`, `others` 1 |
+| branch, same | `Death Note (Colored Council)`, **rule 1** | rule 4 wins, **`Death Note (Colored Council)`**, `others` 0 |
+| `main`, user capture `^Death Note - (?<series>v\d+)` | `Death Note`, rule 4 | rule 4 wins, `Death Note`, `others` 1 |
+| branch, same | `Death Note (Colored Council)`, **rule 1** | rule 4 wins, **`Death Note (Colored Council)`**, `others` 0 |
+
+Filed rather than fixed. It is unreachable with only the seeded rules and the rules
+`accept` derives, though `accept_with` takes a hand-written rule of any kind, and a fix needs a decision: crediting the rule that provenance names makes the
+row truthful, but its reorder option would then offer to move rule 1 above a rule it
+already precedes. `preview.rs`'s chain doc, which said only the added rule can change a
+step, is marked in place.
+
+**Important: the engine's contract docs.** The module doc and `resolve`'s doc still said
+the last setter always wins. They now name the reconciliation as the one exception.
+
+**Important: a phantom function.** O127's Where cell named `proposals::reconcile`, which
+does not exist. `proposals.rs` says so itself, since the name comes from a comment in
+`003_scanner.sql`.
+
+**Minors fixed** (`c88d5a1`):
+- A digit qualifying (`Series 1`, `Naruto 1-72`) is now pinned, watched failing against
+  `is_alphanumeric` → `is_alphabetic`.
+- `a_directory_that_qualifies_the_filenames_series_is_not_an_override` could pass on an
+  empty result. It now resolves both fixture entries first, watched failing with the
+  reconciliation removed.
+- The GTO fixture's doc had the prefix direction backwards.
+- Doc comments in `PreviewTabs.tsx`, `rules.ts`, `preview.rs` and `tests.rs` still
+  described O95's fold as current. They are marked in place.
+- The docs fixes (O127's cell, the hand-mutation wording, the spec's `1,858` and
+  "11 directories", which is 11 pairs in 5 directories, and the plan's mutation 9) are
+  in the commit after that.
+
+**Accepted as is:**
+- `accept_with`'s refusal can name the wrong cause for a hand-widened rule that the
+  reconciliation reconciles away. It still refuses.
+- Bare `assert_eq!`s in Task 2.
+- A `[&str; 2]` comparison in Task 3.
+
+**Before deploying.** The NAS library is not the copy measured here. Check its `progress`
+and `note` rows for the 25 formerly merged works before re-deriving. Each work keeps its id while
+its edition loses a member, so a position or note recorded on the concatenated sequence
+can name a page of the release that moved away, or point past the end of the one it
+keeps. Re-derive
+promptly after deploying, too. Until then, proposal dry runs look up series titles that
+the new engine names but the database does not hold yet.
+
+### Counts
+
+Rust 2205 → 2218, thirteen new tests: eleven in `rules/tests.rs`, one in
+`derive/tests.rs` and one in `preview/tests.rs`. The gate's nextest run reported
+2218 passed and 4 skipped. `web/` is unchanged.

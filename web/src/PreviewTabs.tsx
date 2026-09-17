@@ -20,6 +20,13 @@
  * layering and for a genuine mistake both, and no detector can tell those
  * apart, because the difference is intent.
  *
+ * *(Since O89, 2026-09-16: only where the directory does not qualify the
+ * filename's series. A qualifying directory such as `Death Note (Colored
+ * Council)` is its own series, not an override — `docs/status.md`, O89.
+ * The one known exception is O128: a user series rule placed between the
+ * directory rule and a later capture still draws a row, crediting the capture
+ * with the directory's restored value.)*
+ *
  * **Matched files and Provenance read one array.** `rows` is scoped to the
  * selected rule and arrives in one request; the two tabs are two readings of
  * it — one down the file list, one across the seven fields.

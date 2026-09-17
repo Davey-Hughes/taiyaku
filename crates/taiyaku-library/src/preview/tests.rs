@@ -524,7 +524,7 @@ fn a_preview_of_the_librarys_own_unchanged_rules_reports_no_reopens() {
 /// ancestor the *same* `(series, volume)` address `Series - v01` already
 /// holds is what makes `import::scanned`'s address probe find and rewrite
 /// that existing row instead of minting a new one beside it — replacing its
-/// one member, `Series 1/Series - v01`, with the ancestor's own path and
+/// one member, `Omnibus 1/Series - v01`, with the ancestor's own path and
 /// dropping the original clean out of the `member` table. That is
 /// `works_orphaned`'s own definition: present in `before`, gone from `after`.
 ///
@@ -532,15 +532,19 @@ fn a_preview_of_the_librarys_own_unchanged_rules_reports_no_reopens() {
 /// second `set_volume` column — `rules.rs` has none, by design (see
 /// `Rule`'s own doc): only a capture or `builtin-volume` can set a number,
 /// and `builtin-volume` needs a marker word this ancestor's name does not
-/// carry. So the directory is named `Series 1`, which no marker matches on
-/// its own, and the one proposed rule both sets its series (the mechanism
-/// `DeriveReport::suppressed`'s doc comment names) and captures the trailing
-/// `1` as its volume.
+/// carry. So the directory is named `Omnibus 1`, not `Series 1` as it was
+/// before O89: `Series 1` would now *qualify* the children's own captured
+/// series — its remainder `" 1"` has a separator and a digit — so O89's
+/// reconciliation would restore both children onto `Series 1` too, leaving
+/// the ancestor's literal `Series` no longer sharing either child's address
+/// at all. `Omnibus 1` matches no marker on its own, and the one proposed
+/// rule both sets its series (the mechanism `DeriveReport::suppressed`'s doc
+/// comment names) and captures the trailing `1` as its volume.
 #[test]
 fn a_rule_that_gives_an_ancestor_a_volumes_own_address_orphans_the_volume_it_swallowed() {
     let tree = crate::tests::tempdir("preview-ancestor-swallow");
-    crate::scan::tests::write_pages(&tree.path().join("Series 1").join("Series - v01"), 2);
-    crate::scan::tests::write_pages(&tree.path().join("Series 1").join("Series - v02"), 2);
+    crate::scan::tests::write_pages(&tree.path().join("Omnibus 1").join("Series - v01"), 2);
+    crate::scan::tests::write_pages(&tree.path().join("Omnibus 1").join("Series - v02"), 2);
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
     let root = crate::scan::add_root(&conn, tree.path()).expect("add");
@@ -562,9 +566,9 @@ fn a_rule_that_gives_an_ancestor_a_volumes_own_address_orphans_the_volume_it_swa
         enabled: true,
         root_id: None,
         kind: crate::rules::RuleKind::Regex,
-        // Anchored to the ancestor's own `rel_path` exactly — `Series 1` —
+        // Anchored to the ancestor's own `rel_path` exactly — `Omnibus 1` —
         // so this rule never reaches either child directory beneath it.
-        pattern: "^Series (?P<volume>1)$".to_string(),
+        pattern: "^Omnibus (?P<volume>1)$".to_string(),
         match_on: crate::rules::MatchOn::Path,
         set_edition_key: None,
         set_kind: None,
@@ -1498,27 +1502,94 @@ fn two_rules_setting_edition_on_one_file_are_reported_with_both_ids() {
     );
 }
 
-/// **O95, executed.** The shape the real library actually has: a directory
-/// carrying an edition suffix its filenames do not, so migration 3's rule 1
-/// (series from the directory) and its rule 4 (series from the filename)
-/// produce genuinely different values and rule 4 wins — which is what folds
-/// a colour edition into its main series, and is not a mistake.
+/// **Since O89 (2026-09-16), user decision "A": a directory that qualifies
+/// the filename's captured series is reconciled onto the directory's own
+/// value and is no longer an override.** The reconciliation restores
+/// `Death Note (Colored Council)` and
+/// `Chainsaw Man - Digital Colored Comics` over rule 4's capture, so the
+/// final value is rule 1's and nothing is overridden — reversing O95's own
+/// rationale for this shape. The curation inbox's `edition-of` proposal is
+/// how a colour edition qualified by a `" - "` suffix gets folded back in
+/// now, with an edition key rather than silently through this layering —
+/// `raise_edition_of` matches only that suffix, so this fixture's own
+/// parenthesised `Death Note (Colored Council)` is not proposed as one
+/// (O126). `docs/status.md`, O89/O95.
+#[test]
+fn a_directory_that_qualifies_the_filenames_series_is_not_an_override() {
+    let fixture = crate::tests::library_with_colour_edition_directories();
+    let conn = fixture.conn();
+    let proposed = crate::rules::read(&conn).unwrap().0;
+
+    // `found.iter().all(...)` below is true on an empty `found` too, so it
+    // cannot by itself tell "reconciled onto the directory's own value" apart
+    // from "resolves to nothing at all". Resolve both entries directly and
+    // check where the value actually came from.
+    let directory_rule = proposed
+        .iter()
+        .find(|rule| rule.note.as_deref() == Some("series from the first directory under the root"))
+        .expect("the seeded rule that reads the directory");
+    let engine = crate::rules::Engine::compile(&proposed).0;
+    let root = &crate::scan::roots(&conn).unwrap()[0];
+    for (rel_path, directory) in [
+        (
+            "Death Note (Colored Council)/Death Note v01.cbz",
+            "Death Note (Colored Council)",
+        ),
+        (
+            "Chainsaw Man - Digital Colored Comics/Chainsaw Man v01.cbz",
+            "Chainsaw Man - Digital Colored Comics",
+        ),
+    ] {
+        let resolved = engine.resolve(root, rel_path);
+        assert_eq!(
+            resolved.series.as_deref(),
+            Some(directory),
+            "{rel_path} must resolve its series back to its own directory name, not the \
+             filename's capture"
+        );
+        assert_eq!(
+            resolved.provenance.get(&crate::rules::Field::Series),
+            Some(&directory_rule.id),
+            "{rel_path}'s series must be credited to the directory rule the reconciliation \
+             restored it from, not the capturing rule"
+        );
+    }
+
+    let found = overrides(&conn, &proposed).unwrap();
+
+    assert!(
+        found.iter().all(|o| o.field != crate::rules::Field::Series),
+        "since O89, a directory that qualifies the filename's series is reconciled back onto \
+         the directory's own value, so nothing here overrides Series any more: {found:?}"
+    );
+}
+
+/// **O95, executed — now on a shape O89 leaves overriding.** The shape the
+/// real library actually has: a directory whose filenames abbreviate the
+/// same series rather than qualifying it, so migration 3's rule 1 (series
+/// from the directory) and its rule 4 (series from the filename) produce
+/// genuinely different values and rule 4 wins. Since O89 (2026-09-16), a
+/// directory that *qualifies* the filename's captured series is reconciled
+/// and no longer an override, so the colour-edition shape O95 first used
+/// (`library_with_colour_edition_directories`) cannot carry this test any
+/// more — see `a_directory_that_qualifies_the_filenames_series_is_not_an_override`,
+/// just above, for what that shape asserts now instead.
 ///
 /// **This asserts the two values, and that is the whole of what is new.**
 /// `two_rules_setting_edition_on_one_file_are_reported_with_both_ids` above
 /// already pins `first` and `wins`; naming the rules says *that* they
 /// disagreed and never what about. The editor draws
-/// `Chainsaw Man - Digital Colored Comics` → `Chainsaw Man`, and a reader
-/// deciding whether this layering is deliberate has nothing else to decide
-/// from — so a row that dropped the values would still pass every assertion
-/// that existed before this one.
+/// `GTO - Great Teacher Onizuka - 14 Days in Shonan` →
+/// `GTO - 14 Days in Shonan`, and a reader deciding whether this layering is
+/// deliberate has nothing else to decide from — so a row that dropped the
+/// values would still pass every assertion that existed before this one.
 ///
 /// **`examples` is 2 and not 4.** The two directory rows this fixture also
 /// scans reach neither rule; the fixture's own doc comment says why. A count
 /// of 4 here would mean the row is claiming files it does not describe.
 #[test]
 fn the_seeded_pairing_reports_the_two_values_it_chose_between() {
-    let fixture = crate::tests::library_with_colour_edition_directories();
+    let fixture = crate::tests::library_with_directories_their_filenames_abbreviate();
     let conn = fixture.conn();
     let proposed = crate::rules::read(&conn).unwrap().0;
 
@@ -1544,14 +1615,16 @@ fn the_seeded_pairing_reports_the_two_values_it_chose_between() {
     );
     assert_eq!(
         one.first_value,
-        FieldValue::Text(Some("Chainsaw Man - Digital Colored Comics".to_string())),
+        FieldValue::Text(Some(
+            "GTO - Great Teacher Onizuka - 14 Days in Shonan".to_string()
+        )),
         "the row must carry the value the directory gave: {found:?}"
     );
     assert_eq!(
         one.wins_value,
-        FieldValue::Text(Some("Chainsaw Man".to_string())),
-        "the row must carry the value the filename gave, which is the one that folds the \
-         colour edition into its main series: {found:?}"
+        FieldValue::Text(Some("GTO - 14 Days in Shonan".to_string())),
+        "the row must carry the value the filename gave, which is the one this override \
+         reports as winning: {found:?}"
     );
     assert_eq!(
         one.examples, 2,
@@ -1758,10 +1831,10 @@ fn a_capture_that_is_not_a_number_sets_nothing() {
 /// — so "aggregate it the way the neighbouring field is aggregated" is the
 /// obvious wrong move, and it produces a row naming one file while describing
 /// another. The fixture is built so the two entries disagree on the values
-/// and agree on everything else: `Chainsaw Man - Digital Colored Comics`
-/// sorts first under `rel_paths`' own `ORDER BY rel_path`, so a
-/// last-write-wins or a maximum would leave `rel_path` pointing at Chainsaw
-/// Man while the values read `Death Note`.
+/// and agree on everything else: `GTO - Great Teacher Onizuka - 14 Days in
+/// Shonan` sorts first under `rel_paths`' own `ORDER BY rel_path`, so a
+/// last-write-wins or a maximum would leave `rel_path` pointing at 14 Days
+/// while the values read Paradise Lost.
 ///
 /// **Asserted against the row's own `rel_path`, not against a constant.**
 /// A test that hard-coded both halves would pass equally if the ordering
@@ -1769,7 +1842,7 @@ fn a_capture_that_is_not_a_number_sets_nothing() {
 /// path the row itself names is what pins them to each other.
 #[test]
 fn a_rows_values_belong_to_the_entry_it_names() {
-    let fixture = crate::tests::library_with_colour_edition_directories();
+    let fixture = crate::tests::library_with_directories_their_filenames_abbreviate();
     let conn = fixture.conn();
     let proposed = crate::rules::read(&conn).unwrap().0;
 
@@ -1789,13 +1862,22 @@ fn a_rows_values_belong_to_the_entry_it_names() {
         FieldValue::Text(Some(directory.to_string())),
         "`first_value` is what rule 1 read from THIS row's own directory: {found:?}"
     );
-    let stem = directory
-        .split_once(" (")
-        .or_else(|| directory.split_once(" - "))
-        .map_or(directory, |(before, _)| before);
+    // `wins_value` is derived from the row's own **filename**, not its
+    // directory: the GTO capture is not a prefix of its directory, so the
+    // stem-splitting `directory.split_once(" (")`/`" - "` trick this test
+    // used to use for the colour-edition fixture would read the wrong value
+    // here.
+    let filename = one
+        .rel_path
+        .rsplit('/')
+        .next()
+        .expect("every entry in this fixture has a filename");
+    let (captured, _) = filename
+        .split_once(" - v")
+        .expect("this fixture's filenames all carry \" - v\" before the volume");
     assert_eq!(
         one.wins_value,
-        FieldValue::Text(Some(stem.to_string())),
+        FieldValue::Text(Some(captured.to_string())),
         "`wins_value` is what rule 4 read from THIS row's own filename: {found:?}"
     );
     assert_ne!(

@@ -115,6 +115,13 @@ export interface Row {
  * breaks it. The store finds exactly what it always found; only the noun and
  * what the screen does with it changed.
  *
+ * *(Since O89, 2026-09-16: only where the directory does not qualify the
+ * filename's series. A qualifying directory such as `Death Note (Colored
+ * Council)` is its own series, not an override — `docs/status.md`, O89.
+ * The one known exception is O128: a user series rule placed between the
+ * directory rule and a later capture still draws a row, crediting the capture
+ * with the directory's restored value.)*
+ *
  * `first` and `wins` are positions in the request's `rules` array, the same
  * boundary `Decided` holds. `others` counts the disagreements `first` does not
  * name, so a chain of three or more says so rather than implying it is the

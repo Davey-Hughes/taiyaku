@@ -33,6 +33,11 @@ impl Rule {
         self.set_language = Some(language.to_string());
         self
     }
+    #[cfg(test)]
+    fn sets_series(mut self, series: &str) -> Self {
+        self.set_series = Some(series.to_string());
+        self
+    }
 }
 
 /// An engine over rules that are all expected to compile.
@@ -1968,4 +1973,249 @@ fn created_rule_reads_back_with_the_content_it_was_given() {
     assert_eq!(created.pattern, "^(?<series>[^/]+)/");
     assert_eq!(created.set_edition_key, Some("raw".to_string()));
     assert_eq!(created.note, Some("a hand-typed rule".to_string()));
+}
+
+/// O89: what "a directory qualifies the captured series" means, exactly.
+///
+/// The separator condition stops `One Piecey` counting as a qualified
+/// `One Piece`. The letter-or-digit condition stops a trailing space counting
+/// as a qualifier — the real library has
+/// `Hunter × Hunter (Official Colored) ` with one, and 37 members would have
+/// moved to a series name ending in whitespace.
+#[test]
+fn a_directory_qualifies_a_series_only_across_a_separator_and_with_something_to_say() {
+    // The three merged shapes measured in the real library, 2026-09-15.
+    assert!(qualifies("[Oshi no Ko] - Fan Translated", "[Oshi no Ko]"));
+    assert!(qualifies("Death Note (Colored Council)", "Death Note"));
+    assert!(qualifies(
+        "Yu Yu Hakusho - Colored (Colored Council)",
+        "Yu Yu Hakusho"
+    ));
+
+    // Every admitted separator, each as the remainder's *first* character. A
+    // space before a dash or a bracket satisfies the check on its own, so
+    // `"A - Q"` and `"A (Q)"` pin only the space: the controller's mutation
+    // sweep removed `'-'`, `'('` and `'['` from `QUALIFIER_SEPARATORS` in turn
+    // and no test failed until these three no-space cases were added.
+    for directory in [
+        "A Q", "A-Q", "A_Q", "A(Q)", "A[Q]", "A - Q", "A (Q)", "A [Q]",
+    ] {
+        assert!(qualifies(directory, "A"), "{directory:?} qualifies A");
+    }
+
+    // A digit is something to say. O89's spec §1.4 accepts a numbered
+    // directory as a qualifier (more often a sequel or part than the same
+    // series), and a range pack with it — no test pinned that until the
+    // whole-branch review asked `is_alphanumeric` → `is_alphabetic`.
+    assert!(qualifies("Series 1", "Series"));
+    assert!(qualifies("Naruto 1-72", "Naruto"));
+
+    // A remainder with nothing alphanumeric in it is not a qualifier.
+    assert!(!qualifies(
+        "Hunter × Hunter (Official Colored) ",
+        "Hunter × Hunter (Official Colored)"
+    ));
+    assert!(!qualifies("A - ", "A"));
+    assert!(!qualifies("A ()", "A"));
+
+    // Equal strings leave no remainder at all.
+    assert!(!qualifies("Vagabond", "Vagabond"));
+
+    // A prefix running straight into a word character is a different series.
+    assert!(!qualifies("One Piecey", "One Piece"));
+
+    // Not a prefix at all: the case seeded rule 4 exists for.
+    assert!(!qualifies("Downloads", "One Piece"));
+
+    // Never in the other direction.
+    assert!(!qualifies("A", "A - Q"));
+}
+
+/// O89's headline: seeded rule 1 reads the directory, seeded rule 4 — the next
+/// rule to set a series — captures a shorter one from the filename, and the
+/// qualifier survives.
+#[test]
+fn a_directory_that_qualifies_the_captured_series_keeps_its_qualifier() {
+    let engine = engine_of(&defaults());
+
+    let fan = engine.resolve(
+        &root(),
+        "[Oshi no Ko] - Fan Translated/[Oshi no Ko] - v01.cbz",
+    );
+    assert_eq!(fan.series.as_deref(), Some("[Oshi no Ko] - Fan Translated"));
+    assert_eq!(fan.volume, Some(1.0), "the volume still comes from rule 2");
+
+    let official = engine.resolve(&root(), "[Oshi no Ko]/[Oshi no Ko] - v01.cbz");
+    assert_eq!(official.series.as_deref(), Some("[Oshi no Ko]"));
+
+    let parenthesised = engine.resolve(
+        &root(),
+        "Death Note (Colored Council)/Death Note - v01 (Colored Council).cbz",
+    );
+    assert_eq!(
+        parenthesised.series.as_deref(),
+        Some("Death Note (Colored Council)")
+    );
+}
+
+/// The case seeded rule 4 exists for, which this must not break: a root whose
+/// first directory is not a series. The test that fails if the reconciliation
+/// is written too wide.
+#[test]
+fn a_directory_that_is_not_the_series_still_loses_to_the_filename() {
+    let engine = engine_of(&defaults());
+
+    let resolved = engine.resolve(&root(), "Downloads/One Piece - v01.cbz");
+    assert_eq!(resolved.series.as_deref(), Some("One Piece"));
+    assert_eq!(
+        resolved.provenance[&Field::Series],
+        4,
+        "rule 4 still decided it"
+    );
+}
+
+/// The trailing-space directory, through the engine rather than the predicate.
+#[test]
+fn a_trailing_space_on_a_directory_does_not_become_part_of_the_series() {
+    let engine = engine_of(&defaults());
+
+    let resolved = engine.resolve(
+        &root(),
+        "Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v01.cbz",
+    );
+    assert_eq!(
+        resolved.series.as_deref(),
+        Some("Hunter × Hunter (Official Colored)")
+    );
+}
+
+/// A restored series is credited to the rule that read the directory.
+///
+/// `crate::preview` reads provenance to tell a person why a field holds what it
+/// holds. Any id the reconciliation invented would either name a rule that did
+/// not decide this or collide with `ROOT_FALLBACK`.
+#[test]
+fn a_restored_series_is_credited_to_the_rule_that_read_the_directory() {
+    let engine = engine_of(&defaults());
+
+    let resolved = engine.resolve(
+        &root(),
+        "[Oshi no Ko] - Fan Translated/[Oshi no Ko] - v01.cbz",
+    );
+    assert_eq!(
+        resolved.series.as_deref(),
+        Some("[Oshi no Ko] - Fan Translated")
+    );
+    assert_eq!(resolved.provenance[&Field::Series], 1);
+}
+
+/// Literals win: a person who writes the short name as a literal keeps it.
+#[test]
+fn a_literal_series_on_a_name_rule_is_never_reconciled() {
+    let mut rules = defaults();
+    rules.push(rule(5, "prefix", "", "name").sets_series("[Oshi no Ko]"));
+    let engine = engine_of(&rules);
+
+    let resolved = engine.resolve(
+        &root(),
+        "[Oshi no Ko] - Fan Translated/[Oshi no Ko] - v01.cbz",
+    );
+    assert_eq!(
+        resolved.series.as_deref(),
+        Some("[Oshi no Ko]"),
+        "a literal is a decision, so the directory does not override it"
+    );
+    assert_eq!(resolved.provenance[&Field::Series], 5);
+}
+
+/// Captures reconcile: a user rule that *extracts* the short name from the
+/// filename is treated exactly like seeded rule 4.
+#[test]
+fn a_captured_series_on_a_users_name_rule_is_reconciled_like_rule_four() {
+    let mut rules = defaults();
+    rules.push(rule(5, "regex", r"^(?<series>\[Oshi no Ko\])", "name"));
+    let engine = engine_of(&rules);
+
+    let resolved = engine.resolve(
+        &root(),
+        "[Oshi no Ko] - Fan Translated/[Oshi no Ko] - v01.cbz",
+    );
+    assert_eq!(
+        resolved.series.as_deref(),
+        Some("[Oshi no Ko] - Fan Translated")
+    );
+    assert_eq!(resolved.provenance[&Field::Series], 1);
+}
+
+/// A directory equal to the captured series changes nothing, including which
+/// rule is credited.
+#[test]
+fn an_unqualified_directory_leaves_rule_four_credited() {
+    let engine = engine_of(&defaults());
+
+    let resolved = engine.resolve(&root(), "Vagabond/Vagabond - v03.cbz");
+    assert_eq!(resolved.series.as_deref(), Some("Vagabond"));
+    assert_eq!(resolved.provenance[&Field::Series], 4);
+}
+
+/// A `parent` rule reads a directory as surely as a `path` rule does. A root with
+/// a grouping level above its series — `Manga/<series>/<file>` — is where one is
+/// written, because a `path` capture would read `Manga`.
+#[test]
+fn a_series_read_by_a_parent_rule_is_restored_too() {
+    let engine = engine_of(&[
+        rule(1, "regex", "^(?<series>.+)$", "parent"),
+        rule(2, "builtin-volume", "", "name"),
+        rule(4, "regex", "^(?<series>.+?)[ _-]+v", "name"),
+    ]);
+
+    let resolved = engine.resolve(
+        &root(),
+        "Manga/[Oshi no Ko] - Fan Translated/[Oshi no Ko] - v01.cbz",
+    );
+    assert_eq!(
+        resolved.series.as_deref(),
+        Some("[Oshi no Ko] - Fan Translated")
+    );
+    assert_eq!(resolved.provenance[&Field::Series], 1);
+}
+
+/// A literal `set_series` stays a literal on a rule that also captures something
+/// else. Having captures at all is not the same as capturing the series, and only
+/// the second makes the value an extraction that can be reconciled.
+#[test]
+fn a_literal_series_beside_a_capture_of_another_field_is_never_reconciled() {
+    let mut rules = defaults();
+    rules.push(rule(5, "regex", r"v(?<volume>\d+)", "name").sets_series("[Oshi no Ko]"));
+    let engine = engine_of(&rules);
+
+    let resolved = engine.resolve(
+        &root(),
+        "[Oshi no Ko] - Fan Translated/[Oshi no Ko] - v01.cbz",
+    );
+    assert_eq!(
+        resolved.series.as_deref(),
+        Some("[Oshi no Ko]"),
+        "rule 5 captured a volume, not a series, so its series is a literal"
+    );
+    assert_eq!(resolved.provenance[&Field::Series], 5);
+}
+
+/// When two directory-reading rules set the series in turn, the *later* one is the
+/// value a capture discarded, so it is the one restored and the one credited.
+#[test]
+fn the_last_directory_reading_rule_is_the_one_restored() {
+    let engine = engine_of(&[
+        rule(1, "regex", "^(?<series>[^/]+)/", "path"),
+        rule(2, "prefix", "", "path").sets_series("[Oshi no Ko] - Fan TL"),
+        rule(3, "builtin-volume", "", "name"),
+        rule(4, "regex", "^(?<series>.+?)[ _-]+v", "name"),
+    ]);
+
+    let resolved = engine.resolve(
+        &root(),
+        "[Oshi no Ko] - Fan Translated/[Oshi no Ko] - v01.cbz",
+    );
+    assert_eq!(resolved.series.as_deref(), Some("[Oshi no Ko] - Fan TL"));
+    assert_eq!(resolved.provenance[&Field::Series], 2);
 }
