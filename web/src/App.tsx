@@ -1906,9 +1906,8 @@ function App({ work, onLeave }: AppProps) {
   // they swapped onto this arrives with `view` still at 4×, on a page `zoomable`
   // refuses to engage on. They cannot zoom back out to undo it. Multiplied
   // through, that walks up the ladder and, past its top rung, `requestedLongEdge`
-  // answers `undefined` — **the original bytes**, a full-resolution generation
-  // behind `cover.rs`'s two-permit `GENERATION_LIMIT`, for a page drawn
-  // fit-whole. `1` is what it is actually drawn at.
+  // answers `undefined` — **the original bytes**, the whole page at full
+  // resolution, for a page drawn fit-whole. `1` is what it is actually drawn at.
   //
   // `'single'` rather than `mode` for the mirror reason: `pageBoxLongEdge`
   // halves the width in `'two'` because each cell there holds one page, and a

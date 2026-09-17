@@ -476,10 +476,10 @@ fn a_broken_cached_tile_is_regenerated_and_replaced() {
 
 /// O105, for a reading-sized page. This one does not go through `at_path`,
 /// so it had its own copy of the defect and needs its own witness. The long
-/// edge is 8 against a 16x16 page, so `fit_at` resizes and a file is cached.
+/// edge is 8 against a 16x16 page, so the page is resized and a file is cached.
 #[test]
 fn a_broken_cached_reading_page_is_regenerated_and_replaced() {
-    let expected = fit_at(&real_page_bytes(), 8).unwrap().unwrap();
+    let expected = resize_to_long_edge(&real_page_bytes(), 8).unwrap();
     for (kind, broken) in broken_cache_files() {
         let dir = tempdir_for_test();
         let path = page_cache_path(dir.path(), "abc", 3, 8);
@@ -544,18 +544,19 @@ fn hold_every_permit() -> (
     (one_holder, permits)
 }
 
-/// Runs `hit` on another thread while this thread holds every generation
+/// Runs `request` on another thread while this thread holds every generation
 /// permit, and returns what it served, or `None` if it had not finished
 /// within five seconds.
 ///
-/// A hit that wrongly waits for a permit blocks past the deadline. The
-/// permits are released after it, so that test fails instead of hanging.
-fn served_while_every_permit_is_held<T: Send>(hit: impl FnOnce() -> T + Send) -> Option<T> {
+/// A request that wrongly waits for a permit blocks past the deadline: a
+/// cache hit, or since O111 a page that already fits. The permits are
+/// released after it, so that test fails instead of hanging.
+fn served_while_every_permit_is_held<T: Send>(request: impl FnOnce() -> T + Send) -> Option<T> {
     let (_one_holder, held) = hold_every_permit();
     let (sent, received) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
         scope.spawn(move || {
-            let _ = sent.send(hit());
+            let _ = sent.send(request());
         });
         let served = received
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -566,20 +567,24 @@ fn served_while_every_permit_is_held<T: Send>(hit: impl FnOnce() -> T + Send) ->
 }
 
 /// Starts `generate` on another thread while this thread holds every
-/// generation permit. Returns whether it had fetched its page after 300 ms,
+/// generation permit. Returns whether it had raised its flag after 300 ms,
 /// and whether it had once the permits were released and it finished.
 ///
-/// A correct generation cannot fetch while the permits are held, so the
-/// first answer is `false` however slow the machine is. Only a generation
-/// that skips the permit can make it `true`, and 300 ms is ample for that to
-/// show. The permits are released before the thread is joined, so a correct
-/// implementation cannot hang this.
-fn fetched_while_every_permit_is_held(
+/// `generate` raises the flag at the step that must wait for a permit. For
+/// a cover that is the fetch. For a reading page it is finishing, because
+/// since O111 a page fetches and reads its header before it takes one.
+///
+/// A correct generation cannot reach that step while the permits are held,
+/// so the first answer is `false` however slow the machine is. Only a
+/// generation that skips the permit can make it `true`, and 300 ms is ample
+/// for that to show. The permits are released before the thread is joined,
+/// so a correct implementation cannot hang this.
+fn flagged_while_every_permit_is_held(
     generate: impl FnOnce(&std::sync::atomic::AtomicBool) + Send,
 ) -> (bool, bool) {
-    let fetched = std::sync::atomic::AtomicBool::new(false);
+    let flag = std::sync::atomic::AtomicBool::new(false);
     let (_one_holder, held) = hold_every_permit();
-    let seen = &fetched;
+    let seen = &flag;
     let early = std::thread::scope(|scope| {
         scope.spawn(move || generate(seen));
         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -587,7 +592,7 @@ fn fetched_while_every_permit_is_held(
         drop(held);
         early
     });
-    (early, fetched.load(Ordering::SeqCst))
+    (early, flag.load(Ordering::SeqCst))
 }
 
 /// A cache hit never waits for a generation permit. `cached`'s doc gives
@@ -655,7 +660,7 @@ fn a_cached_reading_page_is_served_while_every_generation_permit_is_held() {
 fn a_cold_cover_waits_for_a_generation_permit() {
     let dir = tempdir_for_test();
 
-    let (early, finally) = fetched_while_every_permit_is_held(|fetched| {
+    let (early, finally) = flagged_while_every_permit_is_held(|fetched| {
         cached_or_generated(dir.path(), "abc", || {
             fetched.store(true, Ordering::SeqCst);
             Ok(real_page_bytes())
@@ -670,24 +675,84 @@ fn a_cold_cover_waits_for_a_generation_permit() {
     assert!(finally, "and must fetch it once a permit is free");
 }
 
-/// The same, for `cached_or_generated_page`, which takes its own permit.
+/// The same, for `cached_or_generated_page`, which takes its own permit
+/// around the resize.
+///
+/// **What waits is the resize, not the fetch.** This test watched the fetch
+/// until O111, when the fetch and the header parse moved out of the permit
+/// so that a page that fits skips the queue. A page that needs resizing now
+/// fetches while the permits are held and waits before it decodes, so the
+/// flag is raised once the call has returned a resized page. Deleting the
+/// permit around the resize makes it finish inside the 300 ms.
 #[test]
-fn a_cold_reading_page_waits_for_a_generation_permit() {
+fn a_cold_reading_page_that_needs_resizing_waits_for_a_generation_permit() {
     let dir = tempdir_for_test();
 
-    let (early, finally) = fetched_while_every_permit_is_held(|fetched| {
-        cached_or_generated_page(dir.path(), "abc", 3, 8, || {
-            fetched.store(true, Ordering::SeqCst);
-            Ok(real_page_bytes())
-        })
-        .unwrap();
+    let (early, finally) = flagged_while_every_permit_is_held(|resized| {
+        let served =
+            cached_or_generated_page(dir.path(), "abc", 3, 8, || Ok(real_page_bytes())).unwrap();
+        assert!(
+            matches!(served, Fitted::Resized(_)),
+            "a 16x16 page asked for at 8 is resized"
+        );
+        resized.store(true, Ordering::SeqCst);
     });
 
     assert!(
         !early,
-        "a cold reading page must not fetch while every permit is held"
+        "a reading page must not be resized while every permit is held"
     );
-    assert!(finally, "and must fetch once a permit is free");
+    assert!(finally, "and must be once a permit is free");
+}
+
+/// O111: a page that already fits never waits for a generation permit.
+///
+/// Learning that it fits takes the fetch and a header parse. Neither decodes
+/// anything, so neither needs the permit, which bounds decode memory. Both
+/// ran inside it until O111, and a page that fit queued behind a cold
+/// filmstrip for a median of about 165 ms (`docs/notes.md`, "O111").
+#[test]
+fn a_page_that_already_fits_is_served_while_every_generation_permit_is_held() {
+    let dir = tempdir_for_test();
+
+    let served = served_while_every_permit_is_held(|| {
+        cached_or_generated_page(dir.path(), "abc", 3, 16, || Ok(real_page_bytes())).unwrap()
+    });
+
+    assert_eq!(
+        served,
+        Some(Fitted::Original(real_page_bytes())),
+        "a 16x16 page fits a long edge of 16 and must not wait for a permit"
+    );
+}
+
+/// A page is resized exactly when its long edge exceeds the request.
+///
+/// O111 split `fit_at` into `fits_within` and `resize_to_long_edge` so the
+/// permit could sit between them. This pins the boundary on both sides, a
+/// page equal to the request and one a pixel over, through the halves and
+/// through `cached_or_generated_page`, and pins the resized bytes to what
+/// `resize_to_long_edge` makes.
+#[test]
+fn a_page_is_resized_only_when_its_long_edge_exceeds_the_request() {
+    let page = real_page_bytes();
+    assert!(fits_within(&page, 16).unwrap(), "16x16 fits 16");
+    assert!(!fits_within(&page, 15).unwrap(), "16x16 does not fit 15");
+    let resized = resize_to_long_edge(&page, 15).unwrap();
+    let decoded = image::load_from_memory(&resized).unwrap();
+    assert_eq!(decoded.width().max(decoded.height()), 15);
+
+    let dir = tempdir_for_test();
+    assert_eq!(
+        cached_or_generated_page(dir.path(), "abc", 3, 16, || Ok(page.clone())).unwrap(),
+        Fitted::Original(page.clone()),
+        "a page equal to the request is handed back"
+    );
+    assert_eq!(
+        cached_or_generated_page(dir.path(), "abc", 3, 15, || Ok(page.clone())).unwrap(),
+        Fitted::Resized(resized),
+        "a page a pixel over it is resized, to what `resize_to_long_edge` makes"
+    );
 }
 
 /// A second request for the same reading-sized page reads the cache rather

@@ -3367,9 +3367,10 @@ async fn a_malformed_truth_body_is_refused_in_this_servers_own_words() {
 /// The filter that does it could be `>= 1` — admitting 1 — with every
 /// other test still green, because no test asked for a width of 1 and the
 /// comment above the filter claimed `fit_at` would decline it anyway. It
-/// does not: `fit_at` returns `None` only when the page is *already*
-/// within the requested edge, so at `w=1` a 16-pixel page is re-encoded
-/// down to one pixel and handed to the reader as a JPEG.
+/// did not: `fit_at` returned `None` only when the page was *already*
+/// within the requested edge, and `cover::fits_within` has held that
+/// decision since O111, so at `w=1` a 16-pixel page is re-encoded down to
+/// one pixel and handed to the reader as a JPEG.
 #[tokio::test]
 async fn a_width_of_one_is_absent_rather_than_a_one_pixel_page() {
     let (state, _fixture) = crate::test_support::state_with_real_pages();

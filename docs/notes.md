@@ -16362,7 +16362,8 @@ five seconds: 5.1 s under nextest for `at_path`, and 5.8 s under plain
 generates that mutant because it does not delete statements. Two tests now
 hold every permit, through the same lock, and require a cold generation not
 to have fetched its page after 300 ms and to have fetched it once the permits
-are released. Hand-applied: deleting the permit in `at_path` fails the cover
+are released. *(Since O111, on 2026-09-17, a reading page fetches outside the
+permit, so the page test watches its resize finish instead — see "O111".)* Hand-applied: deleting the permit in `at_path` fails the cover
 test, deleting it in `cached_or_generated_page` fails the page test, and
 building `GENERATION_LIMIT` with `MAX_CONCURRENT_GENERATIONS + 1` fails both.
 Setting `MAX_CONCURRENT_GENERATIONS` to 64 passes, deliberately: the tests
@@ -16758,7 +16759,8 @@ justifies it by decode memory (`MAX_DECODE_ALLOC`). What would change is that
 a request needing a resize would hold its fetched page while it queues for the
 decode.
 
-*Filed as O111 on 2026-09-13, with no code change.*
+*Filed as O111 on 2026-09-13, with no code change, and closed on 2026-09-17 —
+see "O111" below.*
 
 ### The fix
 
@@ -16879,7 +16881,8 @@ against 8.2 on `en-fan`, where before the fix it trailed by 1.7 and 2.0 ms.
   queues for the decode, which it does not today. That is narrower than it
   sounds: a full-size request already fetches with no permit at all, and the
   permit's own doc comment justifies it by decode memory. That trade is its
-  own item. *Filed as O111 on 2026-09-13.*
+  own item. *Filed as O111 on 2026-09-13, and closed on 2026-09-17 — see
+  "O111" below.*
 - **Prefetch warms full-size URLs** the reader then never requests at that size
   when it draws a page fit-whole, above. On a first visit every turn fetches
   its page cold, and a page is sent twice. *Filed as O110 on 2026-09-13, and
@@ -17034,6 +17037,8 @@ nothing to sweep.
   permit. Its `?w=` requests take `GENERATION_LIMIT` whenever the page is not
   already cached, so prefetch now queues for the same two permits as a cold
   filmstrip. O111's wait was measured before that. *Added to O111's entry.*
+  *O111 closed on 2026-09-17: a page that already fits takes no permit now, so
+  this holds only for a page that needs a resize — see "O111" below.*
 - **The prefetch window was tuned against full-size decodes.** `ahead: 1`,
   `behind: 1` and `maxConcurrent: 3` were settled by #35's runs, when every
   page prefetch warmed decoded at 2147×3056, about 26 MB. Fetched at 1024 an
@@ -20712,3 +20717,238 @@ the new engine names but the database does not hold yet.
 Rust 2205 → 2218, thirteen new tests: eleven in `rules/tests.rs`, one in
 `derive/tests.rs` and one in `preview/tests.rs`. The gate's nextest run reported
 2218 passed and 4 skipped. `web/` is unchanged.
+
+## O111: a page that fits skips the permit — 2026-09-17
+
+### The gap, and why the row's decision was narrowed
+
+`cover::cached_or_generated_page` served a cache hit, then took
+`GENERATION_LIMIT`, then fetched the page, then parsed its header in `fit_at`
+to learn whether a resize was needed. A page that already fit decoded nothing
+and still queued for one of two permits to find that out. O107's timing
+measured the wait at a median of 163.8–166.5 ms behind a cold filmstrip, and
+170.1 and 169.7 ms after O107's own fix ("O107", "The permit wait", above).
+
+O111's row filed it as a decision with two shapes. The build design
+(`docs/superpowers/specs/2026-09-15-o111-permit-scope-design.md`) narrowed it.
+The permit's own doc comment justifies it by decode memory and by nothing else,
+and a full-size request already fetches with no permit. So taking the fetch and
+the header parse out of the permit makes the `?w=` path agree with the permit's
+stated purpose and with the full-size path. Its memory cost is the one the row
+already named: a page that needs a resize holds its fetched bytes while it
+queues, one per queued request, and that cost is not measured. A budget for reading pages alone lost, because two budgets bound two
+things and their sum bounds nothing.
+
+### What the design had not seen
+
+Three found by the pre-flight before any code, and two while building:
+
+- **A test pinned the ordering this changes.**
+  `a_cold_reading_page_waits_for_a_generation_permit` asserted that a cold page
+  does not *fetch* while every permit is held. After the change a page that
+  needs a resize does fetch then, by design. The test was rewritten to watch
+  the resize finish. This reverses no closed decision: O105's row pins that
+  deleting the permit at either site is caught, and so is a semaphore built
+  with one permit more than `MAX_CONCURRENT_GENERATIONS`. The rewritten test
+  catches both: the first is in the table below, and the second, applied by
+  hand on 2026-09-17, turned it and `a_cold_cover_waits_for_a_generation_permit`
+  red, 25 of 27 `cover::` tests passing. `cached_or_generated_page`'s doc already said "Moving the fetch
+  out of the permit is a separate change".
+- **Doc comments defined a generation as "fetching a page and decoding it"**:
+  `Semaphore`'s and `MAX_CONCURRENT_GENERATIONS`'. Still true of covers and
+  tiles, no longer of reading pages, and both now say which.
+- **O107's timing kept no script.** It is rebuilt from the description above
+  and kept in the repository this time: `scripts/permit-wait.py` makes the
+  requests, and `scripts/permit-wait.sh` serves one build with its own
+  database and cache and runs it. One check in the kept script is not the one
+  that ran: the runs checked each resize's content type, which cannot fail on
+  `raw-mono`'s JPEG pages, and the kept script counts the resized pages in the
+  cache instead. The cache each build's last run left held a `-r768` file
+  for every resize that run asked for, 7, 13 and 7, beside the warmed hit. The three builds below were run in order,
+  each started only after 30 s with no `cargo`, `rustc`, `nextest` or
+  `vitest` process running.
+- **`fit_at` could not stay `pub`**, as the design said it would. With
+  `cached_or_generated_page` calling the halves, it had no production caller,
+  and `-D warnings` refuses dead code. It is gone. Its halves are
+  `fits_within` (the header) and `resize_to_long_edge` (the decode), and its
+  doc comment's arguments moved onto them. The comments in `routes.rs` and
+  `routes/tests.rs` that name `fit_at` historically now say where the decision
+  lives.
+- **`App.tsx` said a full-size page is a generation behind the permit.** Its
+  comment on a borrowed page's long edge called the original bytes "a
+  full-resolution generation behind `cover.rs`'s two-permit
+  `GENERATION_LIMIT`". A full-size request has never taken a permit or
+  resized anything, before O111 or since. It now says the whole page at full
+  resolution, which is the cost the comment was arguing about.
+
+### The change
+
+```rust
+let fetched = page()?;
+if fits_within(fetched.as_ref(), long_edge)? {
+    return Ok(Fitted::Original(fetched));
+}
+let bytes = {
+    let _permit = GENERATION_LIMIT.acquire();
+    resize_to_long_edge(fetched.as_ref(), long_edge)?
+};
+```
+
+`at_path`, which covers and tiles share, still fetches inside the permit. Each
+always decodes, so fetching first would not spare it the wait, and would hold
+its page in memory through it.
+
+### Timed before and after
+
+**Substrate.** This workstation, not the NAS: 32 cores, the corpus on local
+NVMe with a warm page cache. Release builds of `main` (`c2e3e72`, built in a
+detached worktree) and of this branch. Each build served a scratch copy of
+`gotoubun-v01`'s sidecar with every member path made absolute, with a fresh
+copy of a scratch database holding one admin account and its API key, and a
+fresh `--cache`. The machine was not idle: another project's browser tests, a
+desktop file indexer and a game were running at points, which is why load is
+given beside every run and `main` was run again after the fix.
+
+**Method**, O107's as described, with three differences. A page that **needs a
+resize** was added to each round: `raw-mono` at `?w=768`, a different page each
+round, so none was a cache hit. The design expected it not to improve. Times
+are whole responses, request sent to body read, where O107 did not record which
+it took. p90 is nearest-rank. The added request makes a round longer, so n per
+filmstrip run is 7 or 8 on `main`, against 14 in O107.
+
+Everything else as before: the tile cache wiped (the one cached reading page
+kept), all 187 `en-mono` tiles requested cold over six keep-alive connections,
+and 300 ms in, one connection requesting in turn `raw-mono` page 10 at
+`?w=1024` (685×1024, so it fits), the same page at full size, the same page at
+`?w=768` (a cache hit, warmed first), and the resize, then 50 ms, for three
+seconds. Three runs without the filmstrip interleaved with three with it. Checked
+once per build before the runs: the page at `?w=1024` and at full size came
+back with the same type and size, `image/jpeg`, 197077 B, and the hit 83482 B,
+the sizes `strace` recorded under O107. Milliseconds:
+
+`main`, `c2e3e72`, 00:07:
+| run | filmstrip | fits `?w=1024` median / p90 / max | resize `?w=768` median / p90 / max | full size median / p90 / max | cache hit median / p90 / max | n | load |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | no | 1.67 / 2.16 / 2.31 | 19.80 / 21.03 / 23.72 | 1.32 / 1.61 / 1.89 | 0.18 / 0.30 / 2.27 | 41 | 5.48 |
+| 2 | yes, 6.9 s, tiles 220 ms | **167.03 / 273.17 / 273.17** | 187.00 / 270.27 / 270.27 | 1.35 / 1.59 / 1.59 | 0.19 / 0.30 / 0.30 | 7 | 5.20 |
+| 3 | no | 2.05 / 2.49 / 2.91 | 21.52 / 23.89 / 26.27 | 1.65 / 1.99 / 2.16 | 0.32 / 0.39 / 0.98 | 40 | 4.78 |
+| 4 | yes, 7.2 s, tiles 227 ms | **179.37 / 286.88 / 286.88** | 206.74 / 285.46 / 285.46 | 1.57 / 1.83 / 1.83 | 0.28 / 0.56 / 0.56 | 7 | 4.78 |
+| 5 | no | 1.81 / 2.18 / 3.10 | 20.13 / 21.61 / 22.57 | 1.55 / 1.89 / 2.15 | 0.28 / 0.39 / 0.59 | 41 | 4.74 |
+| 6 | yes, 7.0 s, tiles 222 ms | **167.94 / 269.72 / 269.72** | 189.89 / 282.64 / 282.64 | 1.47 / 1.74 / 1.74 | 0.26 / 0.38 / 0.38 | 7 | 4.36 |
+
+The fix, 00:09:
+| run | filmstrip | fits `?w=1024` median / p90 / max | resize `?w=768` median / p90 / max | full size median / p90 / max | cache hit median / p90 / max | n | load |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | no | 1.90 / 2.19 / 2.58 | 20.82 / 22.19 / 22.94 | 1.45 / 1.74 / 2.19 | 0.25 / 0.33 / 0.54 | 41 | 2.96 |
+| 2 | yes, 7.0 s, tiles 222 ms | **1.79 / 2.02 / 2.05** | 177.27 / 228.95 / 266.48 | 1.39 / 1.53 / 1.60 | 0.22 / 0.31 / 0.37 | 13 | 2.96 |
+| 3 | no | 1.77 / 2.04 / 2.63 | 20.07 / 21.22 / 23.14 | 1.44 / 1.87 / 2.08 | 0.23 / 0.31 / 0.44 | 41 | 3.13 |
+| 4 | yes, 7.1 s, tiles 226 ms | **2.05 / 2.25 / 2.42** | 194.39 / 236.37 / 277.25 | 1.49 / 1.87 / 1.89 | 0.22 / 0.30 / 0.30 | 12 | 2.96 |
+| 5 | no | 1.75 / 1.97 / 2.29 | 20.52 / 21.43 / 22.02 | 1.45 / 1.70 / 2.06 | 0.23 / 0.31 / 0.64 | 41 | 2.81 |
+| 6 | yes, 6.9 s, tiles 223 ms | **1.78 / 1.89 / 2.25** | 176.62 / 203.19 / 246.69 | 1.41 / 1.66 / 1.77 | 0.18 / 0.28 / 0.30 | 13 | 2.58 |
+
+`main` again, straight after, 00:10:
+| run | filmstrip | fits `?w=1024` median / p90 / max | resize `?w=768` median / p90 / max | full size median / p90 / max | cache hit median / p90 / max | n | load |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | no | 1.83 / 2.12 / 2.34 | 19.70 / 21.25 / 27.70 | 1.36 / 1.52 / 1.91 | 0.18 / 0.29 / 0.32 | 41 | 2.19 |
+| 2 | yes, 7.6 s, tiles 240 ms | **169.00 / 201.32 / 201.32** | 212.63 / 374.13 / 374.13 | 1.85 / 2.86 / 2.86 | 0.33 / 0.65 / 0.65 | 7 | 2.10 |
+| 3 | no | 1.71 / 1.98 / 2.53 | 20.15 / 21.75 / 26.57 | 1.43 / 1.81 / 2.07 | 0.23 / 0.34 / 0.37 | 41 | 5.87 |
+| 4 | yes, 7.1 s, tiles 227 ms | **161.81 / 178.71 / 178.71** | 186.96 / 328.61 / 328.61 | 1.51 / 1.84 / 1.84 | 0.26 / 0.49 / 0.49 | 8 | 5.40 |
+| 5 | no | 1.91 / 2.27 / 2.46 | 20.70 / 22.18 / 24.11 | 1.52 / 1.76 / 1.94 | 0.27 / 0.38 / 0.50 | 41 | 5.10 |
+| 6 | yes, 7.1 s, tiles 227 ms | **170.13 / 281.28 / 281.28** | 196.50 / 278.15 / 278.15 | 1.46 / 1.79 / 1.79 | 0.22 / 0.31 / 0.31 | 7 | 5.10 |
+
+**The wait is gone.** Behind a cold filmstrip, a page that fits answered in a
+median of 167.0–179.4 ms on `main`, 1.78–2.05 ms on the fix, and 161.8–170.1 ms
+on `main` again. The first filmstrip run of that last batch had a lower load
+(2.10) than any run of the fix and still waited 169.0 ms, so a quieter machine
+did not produce the drop. With no filmstrip it was 1.67–2.05 ms on all three builds,
+so the fix left the path it changed no slower. Behind a filmstrip the rebuilt
+script's medians on `main`, 161.8–179.4 ms, overlap O107's 163.8–166.5 ms. With
+no filmstrip it reads about a millisecond lower than O107's 2.93–3.07 ms, and
+that millisecond is most likely O107's second read: those runs were taken
+before O107's fix, whose own A/B put the read at about 1.1 ms for this page and
+rung. The comparison above is within one script.
+
+**A page that needs a resize did not move by anything like that, as the design
+predicted.** Its median was 176.6–194.4 ms on the fix, against 187.0–212.6 ms
+across both runs of `main`, the ranges overlapping, n 7 to 13 a run. Pooled
+over every sample, the median was 181.7 ms on the fix (n 38) against 197.8 ms
+on `main` (n 43), about 16 ms lower; the mean of the run medians was 14 ms
+lower. It still queues for the permit behind the tiles, which is the bound this
+change keeps. The difference is not explained.
+One difference between the builds is the round itself: on `main` each
+round's fitting page waits for a permit before the resize is asked for, so
+fewer rounds fit in the window (7 or 8 against 12 or 13) and each resize lands
+at a different point in the filmstrip. That is a guess, not a measurement. A filmstrip took 6.9–7.6 s and a tile a median of 220–240 ms on
+every build, so the page that stopped queueing did not slow the tiles.
+
+### Every break, watched
+
+Each applied by hand to `cover.rs` and run against all of `taiyaku-serve` under
+nextest; the file was restored from a copy and its SHA-256 checked after each.
+A control passed 593 of 593 before the six and again after. Outputs are in
+`scratchpad/o111/mutations/`. The first, second and fourth were then applied
+again independently of the branch's author, from a script of their own, with
+the same controls either side: each turned red exactly the tests listed.
+
+| break | red | failing test |
+| --- | --- | --- |
+| the permit put back around the fetch, as on `main` | 1 | `a_page_that_already_fits_is_served_while_every_generation_permit_is_held` |
+| the permit deleted around the resize | 1 | `a_cold_reading_page_that_needs_resizing_waits_for_a_generation_permit` |
+| the permit around the header parse only, the resize outside it | 1 | `a_page_that_already_fits_is_served_while_every_generation_permit_is_held` |
+| `fits_within`'s `<=` turned to `<` | 5 | the boundary test, `a_page_that_already_fits_is_fetched_once_and_handed_back`, the fits-while-held test, and two `routes` tests of a page that fits |
+| `fits_within`'s `<=` turned to `>` | 14 | seven `cover` tests and seven `routes` tests, among them all three above |
+| `let _permit =` turned to `let _ =` around the resize | **0** | none |
+
+The first row is O111's defect put back, and only the new test sees it. The
+third is the shape a move of the permit could plausibly take, and the same test
+sees it, because the header parse would then queue. **The last row survives**,
+and the design's risk section predicted the class. A guard bound to `_` is
+dropped the moment it is taken, so the resize waits for a free permit and then
+decodes without holding one. Every test waits on the acquire and none can see
+the release. `at_path` takes its permit the same way, and was not mutated.
+Seeing it would take a generation held part-way through inside its permit
+while a test counts the permits left. `at_path`'s fetch runs inside its permit
+and could be held so; the page's resize takes no closure to hold. *Filed as
+O129.*
+
+### What the mutation sweep could and could not see
+
+`scripts/mutants.sh --since main`, on the committed branch: 14 mutants, 10
+caught, 4 unviable, none missed, no survivor outside the baseline. All four
+unviable ones are `cached_or_generated_page`'s whole-function replacements,
+because `Fitted<P>` has no constructor, `From`, `FromIterator` or `Default`,
+which is O107's finding again. The caught ten are `fits_within` answering
+`Ok(true)` or `Ok(false)` and its `<=` turned to `>`, three constant bodies for
+`resize_to_long_edge`, three for `thumbnail_at`, and `get_page` answering a
+default response. **It made no mutant of the permit itself**, since it does not
+delete or move statements, and none turning `<=` to `<`. The table above is
+what covers both.
+
+### Isolation
+
+The corpus was read and never written. Every server served the scratch sidecar
+with its database and cache under the session scratchpad. After the last run,
+`find corpus -newermt 2026-09-16T23:30:00-07:00`, before the branch's worktree
+existed, returned nothing.
+
+### What remains
+
+- **Peak memory with fetched pages queued** is not measured. A page that needs
+  a resize now holds its fetched bytes while it waits for a permit, and the
+  permits do not bound how many wait: that is one fetched page per queued
+  request. The design guessed it small beside `MAX_DECODE_ALLOC`, and named
+  the wrong quantity in doing so, since two permits bound the decodes and not
+  the queue.
+- **The NAS, and a page turn drawn in the browser**, which the row named as
+  what would decide it. The design argues that a before and after on the
+  machine that measured 165 ms is valid for this comparison. It does not stand
+  in for either.
+- **The `let _` survivor** above, measured around the resize. `at_path` takes
+  its permit the same way and was not mutated. *Filed as O129 on 2026-09-17.*
+- **Prefetch at `?w=` still spends permits** on a page that needs a resize
+  (O110's "What remains"). A page that fits no longer does.
+
+### Counts
+
+Rust 2218 → 2220: two new tests in `cover/tests.rs`, and one there rewritten
+and renamed. `web/` is unchanged.

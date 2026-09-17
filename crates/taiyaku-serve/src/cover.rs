@@ -137,7 +137,7 @@ fn page_key_at(sha256: &str, offset: u32, long_edge: u32, format_version: u32) -
 /// `FORMAT_VERSION`'s counterpart for reading-sized pages, versioned separately
 /// so a change to how a *page* is produced does not throw away every cover and
 /// tile in a large library, or the reverse. Bumped when the resize filter moved
-/// off `thumbnail`'s sampler — see `fit_at`.
+/// off `thumbnail`'s sampler — see `resize_to_long_edge`.
 const PAGE_FORMAT_VERSION: u32 = 2;
 
 /// The largest long edge this server will resize to.
@@ -148,10 +148,10 @@ const PAGE_FORMAT_VERSION: u32 = 2;
 /// come from it.
 pub const MAX_FIT_LONG_EDGE: u32 = 4096;
 
-/// Fit a page inside `long_edge`, or say that it already fits.
+/// Whether a page already fits inside `long_edge`, from its header alone.
 ///
-/// **`None` means "serve the original bytes", and it is the answer that makes
-/// this safe to apply to every edition.** A page whose long edge is already
+/// **`true` means "serve the original bytes", and it is the answer that makes
+/// resizing safe to apply to every edition.** A page whose long edge is already
 /// within the request is returned untouched rather than re-encoded: re-encoding
 /// it would cost quality for no pixels gained, and on this corpus `raw-mono`
 /// (685×1024) and `en-fan` (1114×1600) are frequently already smaller than what
@@ -163,14 +163,17 @@ pub const MAX_FIT_LONG_EDGE: u32 = 4096;
 /// corpus's largest pages takes. That is what lets the decision be made per
 /// request without a cache entry to remember it in.
 ///
-/// Always JPEG on the resize path, for `thumbnail_at`'s reason: one declared
-/// content type rather than whatever the archive happened to hold.
-pub fn fit_at(page: &[u8], long_edge: u32) -> Result<Option<Vec<u8>>, String> {
+/// **Apart from [`resize_to_long_edge`], and O111 is why.** They were one
+/// function, `fit_at`, and `cached_or_generated_page` called it inside the
+/// generation permit. Split, the permit is taken between them: after this
+/// check, and only for a page that needs the decode.
+fn fits_within(page: &[u8], long_edge: u32) -> Result<bool, String> {
     // Two readers, and the second is not waste. `into_dimensions` consumes the
     // one it is called on, and it is what makes the cheap path cheap: it stops
     // at the frame header, so a page that already fits costs microseconds and no
     // decode at all. Only a page that genuinely needs resizing pays for a second
-    // header parse, which is nothing beside the decode that follows it.
+    // header parse, in `resize_to_long_edge`, which is nothing beside the decode
+    // that follows it.
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
     let mut reader = image::ImageReader::new(std::io::Cursor::new(page))
@@ -180,10 +183,18 @@ pub fn fit_at(page: &[u8], long_edge: u32) -> Result<Option<Vec<u8>>, String> {
     let (width, height) = reader
         .into_dimensions()
         .map_err(|e| format!("fit: unreadable dimensions: {e}"))?;
-    if width.max(height) <= long_edge {
-        return Ok(None);
-    }
+    Ok(width.max(height) <= long_edge)
+}
 
+/// A page decoded, resized to fit inside `long_edge` and encoded as JPEG.
+///
+/// **Only for a page [`fits_within`] has said does not fit.** `resize` scales
+/// up as readily as down, so on a page already inside `long_edge` this would
+/// enlarge it.
+///
+/// Always JPEG, for `thumbnail_at`'s reason: one declared content type rather
+/// than whatever the archive happened to hold.
+fn resize_to_long_edge(page: &[u8], long_edge: u32) -> Result<Vec<u8>, String> {
     // **Not `thumbnail`'s sampler, and the filter is the reason.** `image`
     // documents it as "a fast integer algorithm where each source pixel
     // contributes to exactly one target pixel… may give aliasing artifacts" —
@@ -202,7 +213,7 @@ pub fn fit_at(page: &[u8], long_edge: u32) -> Result<Option<Vec<u8>>, String> {
         long_edge,
         image::imageops::FilterType::CatmullRom,
     );
-    Ok(Some(encode_jpeg(scaled, "fit")?))
+    encode_jpeg(scaled, "fit")
 }
 
 /// A reading-sized page, or the page itself when it already fits.
@@ -225,16 +236,24 @@ pub enum Fitted<P> {
 
 /// Read a cached reading-sized page, or make one and cache it.
 ///
-/// A page that `fit_at` says already fits comes back as `Fitted::Original`
+/// A page that `fits_within` says already fits comes back as `Fitted::Original`
 /// and **nothing is cached**: the correct output for that request is the
 /// member's own bytes, which no cache could hold more cheaply than the archive
 /// does. `page` runs at most once, so a page that fits is read once.
 ///
-/// **Only a cache hit skips the permit.** The fetch runs inside it, and so does
-/// the header parse that decides a page fits, so a request for a page that
-/// fits queues behind a cold filmstrip like any generation. `docs/notes.md`
-/// measures that wait under O107. Moving the fetch out of the permit is a
-/// separate change.
+/// **The permit is taken for the resize alone, and O111 is why.** A cache hit,
+/// the fetch, and the header parse that decides whether the page fits all run
+/// without it. Until O111 the fetch and the header parse ran inside it, so a
+/// request for a page that fits, which decodes nothing, queued behind a cold
+/// filmstrip for a median of about 165 ms (`docs/notes.md`, under O107 and
+/// O111). The permit bounds decode memory, and only the resize decodes.
+///
+/// **The cost is a fetched page held while it queues.** A page that needs a
+/// resize is fetched before it waits for the permit, so its bytes are in memory
+/// for the wait. A full-size request already holds a fetched page with no
+/// permit at all, so this is not a new shape here. `at_path` still fetches
+/// inside the permit. A cover or a tile always decodes, so fetching first
+/// would not spare it the wait, and would hold its page in memory through it.
 ///
 /// Shares `GENERATION_LIMIT` with covers and tiles rather than taking a bound
 /// of its own. All three do the same expensive thing — decode a page at up to
@@ -252,13 +271,13 @@ pub fn cached_or_generated_page<P: AsRef<[u8]>>(
     if let Some(found) = cached(&path) {
         return Ok(Fitted::Resized(found));
     }
+    let fetched = page()?;
+    if fits_within(fetched.as_ref(), long_edge)? {
+        return Ok(Fitted::Original(fetched));
+    }
     let bytes = {
         let _permit = GENERATION_LIMIT.acquire();
-        let fetched = page()?;
-        match fit_at(fetched.as_ref(), long_edge)? {
-            Some(bytes) => bytes,
-            None => return Ok(Fitted::Original(fetched)),
-        }
+        resize_to_long_edge(fetched.as_ref(), long_edge)?
     };
     if std::fs::create_dir_all(dir).is_ok() {
         // Discarded for `at_path`'s reason: the page was generated and the
@@ -300,8 +319,13 @@ fn cached(path: &Path) -> Option<Vec<u8>> {
     (found.starts_with(b"\xff\xd8\xff") && found.ends_with(b"\xff\xd9")).then_some(found)
 }
 
-/// How many cover generations — fetching a page and decoding it — may run at
-/// once.
+/// How many generations may decode at once: a cover or a tile, fetching its
+/// page and decoding it, or a reading page resizing one it has already
+/// fetched.
+///
+/// **A reading page fetches outside the permit, and covers and tiles fetch
+/// inside it.** O111 moved a reading page's fetch and header parse out, so
+/// that a page that fits never queues; see `cached_or_generated_page`.
 ///
 /// Unbounded is dangerous at `MAX_DECODE_ALLOC`'s ceiling: `notes.md`
 /// measured four concurrent art-book decodes peaking at 3.0 GB, and the
@@ -318,10 +342,10 @@ const MAX_CONCURRENT_GENERATIONS: usize = 2;
 /// A minimal counting semaphore, built on `Mutex` and `Condvar` so this stays
 /// dependency-free.
 ///
-/// Guards only the *generation* step (fetching a page and decoding it) — see
-/// `cached_or_generated` — never the cache-hit read, which has to stay fully
-/// parallel or a warm OPDS grid would queue behind a decode limit it does not
-/// need.
+/// Guards only the *generation* step — fetching and decoding a cover or tile in
+/// `at_path`, resizing a reading page in `cached_or_generated_page` — never the
+/// cache-hit read, which has to stay fully parallel or a warm OPDS grid would
+/// queue behind a decode limit it does not need.
 #[derive(Debug)]
 struct Semaphore {
     available: Mutex<usize>,
@@ -429,7 +453,8 @@ pub fn thumbnail_at(page: &[u8], long_edge: u32) -> Result<Vec<u8>, String> {
     let decoded = decode_limited(page, "cover")?;
     // `thumbnail`'s own fast sampler, kept for covers and tiles: at 512px and
     // 160px its aliasing is invisible and it is the cheaper of the two. A page
-    // a reader actually looks at goes through `fit_at` instead, which says why.
+    // a reader actually looks at goes through `resize_to_long_edge` instead,
+    // which says why.
     encode_jpeg(decoded.thumbnail(long_edge, long_edge), "cover")
 }
 

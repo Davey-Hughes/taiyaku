@@ -862,10 +862,12 @@ async fn get_page(
     // leaves the reader with a blank cell. Zero and one are treated as absent,
     // and that filter is load-bearing rather than a shortcut. The sentence that
     // used to be here — "`fit_at` would answer `None` for them anyway once no
-    // real page is that small" — had the condition backwards: `fit_at` answers
-    // `None` when the page is *already* within the requested edge, so at `w=1`
-    // it answers `Some` and re-encodes. Without this filter `?w=1` hands a
-    // reader a one-pixel JPEG rather than the page.
+    // real page is that small" — had the condition backwards: `fit_at` answered
+    // `None` when the page was *already* within the requested edge, so at `w=1`
+    // it answered `Some` and re-encoded. `cover::fits_within` has held that
+    // decision since O111, and it too calls a page fitting only when it is
+    // already within the edge. Without this filter `?w=1` hands a reader a
+    // one-pixel JPEG rather than the page.
     // `a_width_of_one_is_absent_rather_than_a_one_pixel_page` is the witness.
     let long_edge = query
         .w
@@ -915,7 +917,7 @@ async fn get_page(
             state.page(found, &edition, index)
         })?;
         match fitted {
-            // `fit_at` always writes JPEG, and says so rather than echoing
+            // A resize always writes JPEG, and says so rather than echoing
             // whatever the archive held.
             crate::cover::Fitted::Resized(bytes) => Ok(crate::source::ServedPage {
                 bytes,
