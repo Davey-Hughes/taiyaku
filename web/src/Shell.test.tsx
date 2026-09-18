@@ -146,6 +146,18 @@ describe('Shell', () => {
     expect(vi.mocked(library.status)).toHaveBeenCalledTimes(1)
   })
 
+  it('offers the theme switch at the foot of the sidebar', async () => {
+    vi.stubGlobal('localStorage', fakeStorage())
+    const host = await settle(<Shell>{null}</Shell>)
+    const column = host.querySelector('.sidebar-column')
+    expect(column?.lastElementChild?.classList.contains('theme-control')).toBe(
+      true,
+    )
+    expect(
+      column?.querySelectorAll('.theme-control input[type="radio"]'),
+    ).toHaveLength(3)
+  })
+
   it('draws the roots list for an admin and not for a reader', async () => {
     const asAdmin = await settle(
       <Shell>

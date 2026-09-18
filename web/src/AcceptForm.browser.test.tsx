@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
 import * as curation from './curation'
 import './index.css'
+import tokensSource from './styles/tokens.css?raw'
 import { ProposalRow } from './ProposalRow'
 import { mount } from './testing/mount'
 
@@ -34,9 +35,10 @@ import { mount } from './testing/mount'
  * line beneath it, and whether the prefix is readable end to end or scrolls.
  *
  * **Both colour schemes, set through `color-scheme` on the root.** Everything
- * below `.library` is drawn from CSS system colours, which resolve against
- * that property — so overriding it is how a real Chromium is asked for the
- * dark palette without a second browser instance.
+ * below `.library` is drawn from the tokens in `styles/tokens.css`, each a
+ * `light-dark()` pair that resolves against that property — so overriding it
+ * is how a real Chromium is asked for the ink palette without a second browser
+ * instance.
  *
  * CI does not run this project (see `vite.config.ts`: no Chromium), so
  * nothing here is a gate. It is the measurement, kept runnable.
@@ -230,7 +232,7 @@ describe('the accept form, in a browser', () => {
     // rather than becoming a sixth item on the row of fields — where it would
     // read as another thing to fill in, and would push a field off the line.
     // It is quiet by size and not by colour: smaller than the sentence over
-    // the button, at the same full-contrast `CanvasText` as everything else
+    // the button, at the same full-contrast `--text` as everything else
     // on this panel.
     const scope = box(host, '.accept-form .scope')
     expect(scope.top).toBeGreaterThan(box(host, '.field.pattern').top)
@@ -326,7 +328,7 @@ describe('the accept form, in a browser', () => {
       // form sits in for the whole of every widening. The refusal and the
       // control now share the reader's text colour; that Accept is
       // unavailable is said below, by the ground and the border.
-      // `CanvasText` resolves to real pixels here and in `jsdom` it does not
+      // `var(--text)` resolves to real pixels here and in `jsdom` it does not
       // resolve at all, which is why this lives in this project.
       const refusal = host.querySelector('.refusals li')
       if (!refusal) throw new Error('no refusal line rendered')
@@ -357,41 +359,56 @@ describe('the accept form, in a browser', () => {
     }
   })
 
-  it('paints the system colours `index.css.test.ts` computes its ratios from', async () => {
-    // That file cannot render, so it recomputes WCAG's math against RGB
-    // values measured here once. Measured once and then left is how a figure
-    // drifts, so this is the re-measurement: if Chromium's palette moves, the
-    // contrast gate in the `node` project is modelling a browser that no
-    // longer exists and this fails rather than that passing quietly.
-    const modelled = {
-      light: {
-        Canvas: 'rgb(255, 255, 255)',
-        CanvasText: 'rgb(0, 0, 0)',
-        ButtonFace: 'rgb(239, 239, 239)',
-        GrayText: 'rgb(128, 128, 128)',
-      },
-      dark: {
-        Canvas: 'rgb(18, 18, 18)',
-        CanvasText: 'rgb(255, 255, 255)',
-        ButtonFace: 'rgb(107, 107, 107)',
-        GrayText: 'rgb(128, 128, 128)',
-      },
+  it('paints the tokens `index.css.test.ts` computes its ratios from', async () => {
+    // That file cannot render, so it parses `tokens.css`'s `light-dark()` pairs
+    // and recomputes WCAG's math from them, assuming paper under `light` and
+    // ink under `dark`. This is the check that a real Chromium agrees: every
+    // pair, resolved in each scheme, paints the half the model took. What
+    // fails here while the model goes on passing is a rule elsewhere in the
+    // stylesheet redefining a token, and Chromium disagreeing with the model
+    // about which half `color-scheme` picks. A pair written the wrong way
+    // round does *not* fail here — this reads the same pair the model does
+    // and expects the same half — and `index.css.test.ts`'s floors catch it
+    // instead, for ten of the twelve (measured by reversing each in turn).
+    // `--line-strong`'s reversal passes the floors in both schemes and is
+    // caught only by the token model's "reproduces four ratios" test (4.59
+    // against 3.58); nothing catches a reversed `--line`, which has no floor.
+    //
+    // Every mismatch is collected before the assertion, as that file's floors
+    // test does, so a token redefined for both schemes is named in both.
+    const pairs = [
+      ...tokensSource.matchAll(
+        /--([a-z-]+):\s*light-dark\(\s*(#[0-9a-fA-F]{6})\s*,\s*(#[0-9a-fA-F]{6})\s*\)/g,
+      ),
+    ]
+    // Exactly spec §2's twelve, so an unread or empty file fails here rather
+    // than passing a loop that ran no iterations.
+    expect(pairs).toHaveLength(12)
+    const rgb = (hex: string) => {
+      const n = Number.parseInt(hex.slice(1), 16)
+      return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`
     }
 
+    const mismatches: string[] = []
     for (const scheme of ['light', 'dark'] as const) {
       document.documentElement.style.colorScheme = scheme
       const probe = document.createElement('span')
       document.body.append(probe)
       try {
-        for (const [name, expected] of Object.entries(modelled[scheme])) {
-          probe.style.color = name
-          expect(`${scheme} ${name}: ${getComputedStyle(probe).color}`).toBe(
-            `${scheme} ${name}: ${expected}`,
-          )
+        for (const [, name, paper, ink] of pairs) {
+          probe.style.color = `var(--${name})`
+          const painted = getComputedStyle(probe).color
+          const modelled = rgb(scheme === 'light' ? paper : ink)
+          if (painted !== modelled) {
+            mismatches.push(
+              `${scheme} --${name}: painted ${painted}, modelled ${modelled}`,
+            )
+          }
         }
       } finally {
         probe.remove()
       }
     }
+    expect(mismatches).toEqual([])
   })
 })

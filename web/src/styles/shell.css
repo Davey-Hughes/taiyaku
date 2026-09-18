@@ -1,0 +1,160 @@
+/* The library screen: sidebar plus main, spec C1 §2 and §11 step 6.
+ *
+ * This screen is UI chrome, not artwork, so it draws from the theme's tokens
+ * in `tokens.css` rather than the `--box-*` palette, which is fixed against
+ * the artwork on purpose. The tokens follow `color-scheme` — the OS's, or the
+ * reader's choice through `data-theme` — the way a hardcoded palette would
+ * not. (Until 2026-09-17 this block used CSS system colours; `tokens.css`
+ * maps each keyword to its token.)
+ *
+ * `.library` does not touch `html`, `body` or `#root`'s `height: 100%` chain —
+ * that chain exists so `PageView` can constrain a page to the viewport, and
+ * this screen wants the opposite: it scrolls. So `.library` gets its own
+ * `height: 100%` (inherited from that chain) and its own `overflow-y: auto`
+ * on `main`, rather than changing the chain or setting `height: auto` on the
+ * three selectors it feeds. */
+.library {
+  display: grid;
+  grid-template-columns: 14rem 1fr;
+  height: 100%;
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* was `.sidebar`; the border and the scroll belong to the column holding both
+ * the navigation and the settings, so the two scroll together. */
+.sidebar-column {
+  border-right: 1px solid var(--line-strong);
+  overflow-y: auto;
+}
+
+.sidebar {
+  padding: 1rem;
+}
+
+.browse-settings {
+  padding: 0 1rem 1rem;
+}
+
+.browse-settings button {
+  margin-top: 0.5rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.sidebar-primary {
+  list-style: none;
+  margin: 0 0 1.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sidebar-heading {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
+  margin: 0 0 0.5rem;
+}
+
+.sidebar-roots {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.sidebar a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.sidebar a:hover {
+  text-decoration: underline;
+}
+
+/* The open-proposals count, beside its link rather than on it: a badge drawn
+ * over the text would move with the link's own underline on hover. Tokens,
+ * like everything below `.library` — `--accent`/`--on-accent` is held to a
+ * 4.5:1 floor by `index.css.test.ts` in both themes. */
+.sidebar-primary .count {
+  margin-left: 0.4rem;
+  border-radius: 0.6rem;
+  padding: 0.05rem 0.4rem;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 0.75rem;
+}
+
+.library > main {
+  overflow-y: auto;
+  padding: 1rem 1.5rem;
+}
+
+/* The theme switch (`ThemeControl.tsx`): three native radios drawn as one
+ * segmented row. The inputs stay in the layout at zero opacity over their
+ * labels, so a click, a tap and the arrow keys all reach the real control;
+ * `:has()` carries the checked and focused states up to the label. */
+.theme-control {
+  min-inline-size: 0;
+  margin: 0;
+  border: 0;
+  padding: 0 1rem 1rem;
+}
+
+/* The legend carries `.sidebar-heading` like the sidebar's `h2`s, but it is
+ * not a heading, so `base.css`'s heading rule — the title face, 600, a 1.25
+ * line — does not reach it. Without these three it drew in the UI face at 400
+ * on a taller line than "Roots" above it. */
+.theme-control legend {
+  padding: 0;
+  font-family: var(--font-title);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.theme-control .segments {
+  display: flex;
+  border: 1px solid var(--line-strong);
+}
+
+.theme-control label {
+  position: relative;
+  flex: 1;
+  padding: 0.25rem 0;
+  font-size: var(--text-ui);
+  text-align: center;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.theme-control label + label {
+  border-left: 1px solid var(--line-strong);
+}
+
+.theme-control input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.theme-control label:has(input:checked) {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.theme-control label:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

@@ -181,8 +181,8 @@ const readoutStyle: CSSProperties = {
 // already does the work. Same recipe `stripStyle` above and `panelStyle`
 // (`NotePanel.tsx`, `CreditsPanel.tsx`, `Help.tsx`) use for that box —
 // `rgba(24, 24, 24, …)` and `rgba(255, 255, 255, …)`, not the library
-// screen's `Canvas`/`ButtonFace` system colours (`index.css`'s `.chips
-// button`), which follow OS light/dark and would put a light-mode button on
+// screen's `--bg`/`--surface` tokens (`styles/library.css`'s `.chips
+// button`), which follow the theme and would put a paper button on
 // a reader deliberately dark regardless of theme.
 const leaveButtonStyle: CSSProperties = {
   position: 'absolute',

@@ -1,0 +1,108 @@
+/* Design tokens — every colour the themed screens use (spec 2026-09-17 §2,
+ * `docs/superpowers/specs/2026-09-17-style-pass-design.md`).
+ *
+ * Each colour is written once, as `light-dark(<paper>, <ink>)`, and
+ * `color-scheme` picks the half: the OS's preference by default, or the
+ * reader's choice through `data-theme` on `<html>` (`theme.ts`). Every text
+ * colour clears 4.5:1 on `--bg`, `--surface` and `--field` in its theme, and
+ * `--line-strong` clears 3:1 on all three; `index.css.test.ts` recomputes both
+ * from this file, so a value changed here is checked where it is changed.
+ *
+ * **Reading older comments in `styles/`.** Until 2026-09-17 these rules used
+ * CSS system colours, and a comment written before then names the keyword its
+ * rule used. Each became the token beside it:
+ *
+ *   Canvas → --bg                 CanvasText → --text
+ *   ButtonFace → --surface        ButtonBorder → --line-strong
+ *   GrayText → --muted            Highlight, LinkText → --accent
+ *   HighlightText → --on-accent
+ *
+ * A contrast figure quoted in such a comment was measured against the system
+ * colour, not the token. */
+
+@import "@fontsource/shippori-mincho-b1/600.css";
+@import "@fontsource/shippori-mincho-b1/700.css";
+@import "@fontsource/zen-kaku-gothic-new/400.css";
+@import "@fontsource/zen-kaku-gothic-new/500.css";
+@import "@fontsource/zen-kaku-gothic-new/700.css";
+
+/* Tabular digits for tables. Zen Kaku Gothic New's digits are proportional —
+ * its Latin subset advances them 383 to 509 units and has no `tnum` feature,
+ * read with fontTools on 2026-09-17 — so a column of page counts would jitter.
+ * This face covers the ten digits only, from whichever tabular system sans the
+ * device has; every other character falls through to `--font-ui`. */
+@font-face {
+  font-family: "taiyaku figures";
+  src:
+    local("Helvetica Neue"), local("Roboto"), local("Noto Sans"),
+    local("DejaVu Sans"), local("Arial");
+  unicode-range: U+0030-0039;
+}
+
+:root {
+  color-scheme: light dark;
+
+  --bg: light-dark(#f3eee3, #15130f);
+  --surface: light-dark(#e9e2d2, #211e18);
+  --field: light-dark(#fbf8f2, #1b1914);
+  --line: light-dark(#d6ccb9, #35312a);
+  --line-strong: light-dark(#897d68, #746c60);
+  --text: light-dark(#231e17, #ece4d4);
+  --muted: light-dark(#6b6151, #a69b87);
+  --accent: light-dark(#b0361d, #e8715a);
+  --on-accent: light-dark(#fbf8f2, #15130f);
+  --danger: light-dark(#9e1b32, #f28b9a);
+  --success: light-dark(#3f6b2f, #95c283);
+  --warning: light-dark(#7d5500, #e2b55c);
+
+  --font-title: "Shippori Mincho B1", serif;
+  --font-ui: "Zen Kaku Gothic New", system-ui, sans-serif;
+  --font-figures: "taiyaku figures", var(--font-ui);
+
+  --text-h1: 2rem;
+  --text-h2: 1.5rem;
+  --text-h3: 1.25rem;
+  --text-body: 1rem;
+  --text-ui: 0.875rem;
+  --text-meta: 0.75rem;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --radius-control: 2px;
+}
+
+:root[data-theme="paper"] {
+  color-scheme: light;
+}
+
+:root[data-theme="ink"] {
+  color-scheme: dark;
+}
+
+/* The box palette.
+ *
+ * Fixed rather than following `color-scheme`, unlike everything else here: a
+ * box is drawn on *artwork*, and the artwork does not change with the reader's
+ * OS theme. A palette that flipped would put a pale outline on a white page.
+ *
+ * Orange because the interior pages are greyscale line art, so a saturated hue
+ * cannot be mistaken for the page the way any grey can.
+ *
+ * **Covers are not.** An earlier version of this note claimed the corpus was
+ * white paper throughout, which the first screenshot of page 0 disproved — it
+ * is a full-colour cover, pink and orange and red, and an orange box on it has
+ * no hue advantage at all. That case is carried by the dark outline instead,
+ * which is the reason this is three parts rather than one: no single signal
+ * survives both a white gutter and a saturated cover. */
+:root {
+  --box-line: #4a2400;
+  --box-edge: rgba(255, 236, 210, 0.85);
+  --box-fill: rgba(255, 145, 0, 0.2);
+  --box-fill-strong: rgba(255, 145, 0, 0.42);
+}

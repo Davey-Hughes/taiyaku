@@ -21196,3 +21196,179 @@ Rust 2220 → 2227 on top of O111's branch, seven new tests: four in `derive/tes
 `library/tests.rs` and one in `config_api/tests.rs`. `web/` 2,134 → 2,136: two
 new `jsdom` tests in `ScanReport.test.tsx`, node 1,159 and jsdom 977 measured
 with `--reporter=default`.
+
+## Style pass ①: the foundation — 2026-09-17
+
+PR ①'s tokens, fonts, base rules and theme switch — per
+`docs/superpowers/specs/2026-09-17-style-pass-design.md` — were driven in a
+real browser against a scratch copy of the NAS library before the gate ran.
+What follows is what that pass measured; nothing here is assumed.
+
+### The split, and the bundle it ships
+
+Task 1's split, which moves `index.css`'s rules into six `@import`ed partials,
+changes nothing that ships: `diff -r target/style-pass/dist-before
+target/style-pass/dist-split` printed no differences — `dist identical`, same
+bytes and the same content-hashed file names.
+
+The fonts are the growth this PR adds. Sizes here are apparent bytes, every
+file's `find -printf '%s'` summed; this section first gave the two totals as
+612 KB and 36 MB, which were `du -sh`'s disk usage. Before the fonts, at
+`948efbc`, `target/style-pass/dist-before` held 604,783 bytes, with one CSS
+asset of 16,306 bytes. After them and before the strip below, at `b42c095`,
+`target/style-pass/dist-after` held 34,294,658 bytes, with a 713.98 kB CSS
+asset (312.31 kB gzip); the JS is close to untouched — `main` 191.45 kB (58.04
+kB gzip), `label` 10.87 kB (4.29 kB gzip), the shared chunk 215.92 kB (68.92 kB
+gzip) — and the wasm binary's 170.46 kB is unchanged. The difference is fonts:
+570 `.woff2` files, 14,841,516 bytes total, and 574 `.woff` fallbacks,
+18,148,448 bytes, plus 693,791 bytes of `@font-face` CSS in that build (608
+rules; the CSS asset grew 697,682 bytes, the rest this PR's own rules), since
+`@fontsource` splits each weight into about 121 `unicode-range` subsets. Before
+the user chose to keep every subset (option A, decided 2026-09-17), the
+alternatives were measured too: Latin subsets alone would cost about 18 kB of
+CSS total (`latin-400.css` is 310 bytes, one `@font-face`) with Japanese falling
+back to the device font, against 966,336 bytes (Zen Kaku Gothic New 400) to
+1,992,116 bytes (Shippori Mincho B1 700) per weight for a whole Japanese-subset
+file.
+
+**The `.woff` fallbacks are stripped from the build**, a user decision of
+2026-09-18. Each `@font-face` from `@fontsource` lists `url(….woff2)
+format('woff2'), url(….woff) format('woff')`, and every browser that
+understands `light-dark()` supports woff2, so the second source is never
+fetched. `web/src/stripWoff.ts`, a PostCSS plugin wired through
+`vite.config.ts`'s `css.postcss`, removes it before Vite emits anything. Built
+at `b09ac9a` into `target/style-pass/dist-stripped`, these are the current
+figures: 0 `.woff` files and 570 `.woff2` (14,841,516 bytes, unchanged), a
+573.60 kB CSS asset (243.22 kB gzip), 16,005,973 bytes in all, and the JS
+chunks at the same sizes as `dist-after`. Summed rule by rule, the 608
+`@font-face` rules in each built CSS asset come to 693,791 bytes in
+`dist-after` and 553,346 in `dist-stripped`. The CSS shrank by more than the
+URLs' text because Vite inlines a small asset as a `data:` URI: 33 *more*
+`.woff` sources, beyond the 574 files, were inlined that way — 607 `.woff`
+sources in all — and went with the rest. The 37 inlined `.woff2` stay, and
+every other font URL in the stripped CSS names a file that exists in `dist`.
+
+### The figures face, and what a page downloads
+
+Zen Kaku Gothic New has no tabular figures, read from the font file with
+fontTools before any of the above ran: its Latin subset
+(`@fontsource/zen-kaku-gothic-new@5.3.0`, `latin-400`) carries only the `ccmp`,
+`frac`, `vert` and `vrt2` GSUB features, no `tnum`, and its digit advances are
+0: 504, 1: 383, 2: 445, 3: 484, 4: 493, 5: 468, 6: 493, 7: 412, 8: 509, 9: 475
+units. That is why tables use `--font-figures`, a `taiyaku figures` face that
+maps U+0030–0039 to a local tabular sans and falls back to `--font-ui` for
+everything else. Measured in a `<table>` inside `.library`, after
+`document.fonts.ready`: `1111111111` and `8888888888` both come to 101.8 px.
+Outside a table the same two strings come to 61.28 px and 81.45 px — the
+control that shows Zen Kaku Gothic New's own digits are proportional, so the
+fallback face is doing the work and the first pair is not vacuous.
+
+On `/`, signed in, in ink, the library page downloaded five font files
+totalling 84,196 bytes: the two Latin subsets,
+`zen-kaku-gothic-new-latin-400-normal.woff2` (9,752 bytes) and
+`shippori-mincho-b1-latin-600-normal.woff2` (32,452), and three Japanese
+subsets fetched because the library holds Japanese titles —
+`shippori-mincho-b1-115-600-normal.woff2` (15,416),
+`shippori-mincho-b1-104-600-normal.woff2` (17,772) and
+`zen-kaku-gothic-new-97-400-normal.woff2` (8,804) — the lazy per-subset
+behaviour working as designed.
+
+### Tokens resolve, and the choice persists
+
+On `/` at 1440×900, with Ink chosen, `getComputedStyle('.library')` answers
+`data-theme="ink"`, `color-scheme: dark`, background `rgb(21, 19, 15)` and
+colour `rgb(236, 228, 212)`, and `localStorage['taiyaku.prefs.theme']` holds
+`{"choice":"ink"}`. After a full reload, `data-theme` is still `ink` before any
+React code runs — the pre-paint script — the background is still the ink value,
+and the Ink radio is checked. The body font family resolves to `"Zen Kaku
+Gothic New", system-ui, sans-serif`; `.sidebar-heading`'s to `"Shippori Mincho
+B1", serif`.
+
+The other three cases, measured afterwards on the same page through
+Playwright's `emulateMedia`. With Paper chosen, the ground is `rgb(243, 238,
+227)` and the text `rgb(35, 30, 23)`, `color-scheme: light` — and they stay
+exactly that with the OS emulated as dark, which is what pinning a theme is
+for. With System chosen, `data-theme` is absent and `color-scheme` reads
+`light dark`; under an emulated dark OS the ground is the ink value, `rgb(21,
+19, 15)` with text `rgb(236, 228, 212)`, and under an emulated light OS the
+paper value. So all three choices do what spec §3 says, in both directions.
+
+### The reader, and the browser project
+
+With the chrome shown at 1440×900 in ink, the reader's layout button `single` —
+a bare `<button>` — computes `border-radius: 0px`, `border-width: 2px` and
+background `rgb(107, 107, 107)`, so `base.css`'s scoped control rules do not
+reach it; and `font-family: Arial`, which is the evidence that `:root`'s font
+does not reach it either: the UA stylesheet sets a font on `button`, so a bare
+button does not inherit one. What it keeps is the platform's UA default —
+Arial is what Chromium on Linux gave — not a promise of Arial; another browser
+or OS may draw another face. Task 4's review had predicted these buttons would
+change font; measured, they do not. What does change is anything that opts in
+with `font: inherit`: `Chrome.tsx`'s Library button computes `"Zen Kaku Gothic
+New", system-ui, sans-serif` in a 70.67 × 32.39 box, and
+`document.elementFromPoint` at its centre still answers `Library` — O65's
+property holds. The readout row computes the same family. `body`'s background
+is now `rgb(21, 19, 15)` in ink, the surround the reader draws over until PR ③
+makes it `#000`.
+
+The browser test project — 5 files, 28 tests, covering O65's docked button
+among others — passed in full at `b42c095`; its baseline before any task was
+also 28, one case having been replaced by another in Task 2. It passed 28 of
+28 again after the whole-branch review's fix round.
+
+### Screens read, by whom, and what nobody read
+
+Signed in against a copy of the real library (134 series). This section first
+said the screens were read "in both themes"; only the library was, and its
+"paper" screenshot was taken with *System* chosen under a light OS. What was
+read:
+
+- **The controller's first pass**, at 1440×900: login (System, so paper), the
+  library (System under a light OS, and Ink), proposals (Ink), configuration →
+  roots (Ink) and the reader with its chrome (Ink); and the library at 390×844
+  (Ink). Every one legible, the accent carrying links and pressed chips, and
+  nothing left in a browser-default grey.
+- **The whole-branch reviewer**, whose screenshots the controller viewed:
+  search, account, proposals, rules, users, the series grid, the series
+  *table* and the reader, all in Paper at 1440×900; and login at 390×844 in Ink
+  and in Paper, including a refused sign-in, whose refusal draws in `--danger`
+  and is legible in both.
+- **The controller's second pass**: configuration → roots at 390×844 in Paper
+  and in Ink, legible. The page does not scroll sideways (`scrollWidth` 390
+  equals `clientWidth`), but `.library > main` is 151 px wide holding 317 px of
+  content, so it scrolls inside itself — PR ②'s drawer and ⑤'s admin work. And
+  the reader in Paper at 1440×900 with the Settings panel (`s`) and the
+  keyboard help (`?`) open: both legible, but their native checkboxes, number
+  inputs and scrollbar draw *light* inside the fixed-dark panels, because
+  nothing in the reader sets `color-scheme: dark` yet. That is spec §3 item 5,
+  which the spec now gives to PR ③.
+- **Not read by anyone**: the account overlay inside the reader (`A`), the
+  notes and credits panels, the labeller, and the rule preview's two tables
+  (`PreviewTabs.tsx`) — the app's other tables, and the ones spec §2's
+  densest-configuration-table question is actually about.
+
+**Tables.** The only `<table>`s in the app are the series page's —
+`Series.tsx`'s `.editions`, its table layout — and the rule preview's two, in
+`PreviewTabs.tsx`. Configuration → roots renders none; it is fields in cards,
+so the claim this section first made, that it was the dense table spec §2's
+open question asked about, was wrong. On `/series/6` in table layout, in Paper,
+`--font-figures` on the whole `table` draws every digit inside a volume's *file
+name* in the figures face, heavier than the title around it — "Berserk -
+v**01** (**2003**).cbz". The user left that to PR ② on 2026-09-18: ② restyles
+that table and puts the figures face on its numeric columns only. Whether the
+figures face reads fine in the rule preview's tables is still unanswered,
+since nobody opened one; PR ⑤, which restyles that screen, owns it.
+
+**Safari below 17.5.** `light-dark()` needs Safari 17.5 (iOS 17.5). Simulated
+in Chromium by giving every token a function the browser does not parse — the
+whole-branch reviewer's probe — everything drawn from a token computes to a
+transparent background, black text and no border, and the theme switch does
+nothing. Before this PR the system colours worked there. The user accepted it
+on 2026-09-18: the web UI requires Safari 17.5 or later.
+
+At 390×844 the library still keeps its `14rem` sidebar and scrolls sideways,
+unchanged by this PR and by PR ②'s work — recorded here so the before/after is
+on file, and left for ② to fix. The reader's page surround staying ink's
+`rgb(21, 19, 15)` rather than pure black is PR ③'s, which also picks up
+`viewport-fit=cover`, moved out of this PR because without ③'s safe-area
+padding it would put the library under a phone's notch in landscape.

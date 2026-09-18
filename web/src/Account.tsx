@@ -104,9 +104,10 @@ interface Look {
 /**
  * **The panel's colours are fixed dark**, like the reader chrome it opens
  * over. **The page's are none**: at `/account` this sits inside `.library`,
- * which follows the viewer's colour scheme, and on a light `Canvas` the
- * panel's `#a8ffb4` notice is pale green on white. `index.css`'s `.account`
- * block draws the page in system colours instead. The layout-only inline
+ * which follows the viewer's colour scheme, and on a paper `--bg` the
+ * panel's `#a8ffb4` notice is pale green on paper. `styles/admin.css`'s
+ * `.account` block draws the page in the theme's tokens instead. The
+ * layout-only inline
  * styles below — `rowStyle`, the headings, the small print — serve both.
  */
 const LOOKS: Record<'panel' | 'page', Look> = {

@@ -6,6 +6,7 @@ import { playwright } from '@vitest/browser-playwright'
 // rather than a silently ignored block.
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
+import { stripWoff } from './src/stripWoff.ts'
 
 // taiyaku-wasm is a `link:` dependency, linked into node_modules from
 // crates/taiyaku-wasm/pkg — a directory outside `web/`. Vite's dev-server
@@ -22,6 +23,10 @@ const wasmPkgDir = fileURLToPath(new URL('../crates/taiyaku-wasm/pkg', import.me
 // keeps deliberately, so a native shell can use the same API.
 export default defineConfig({
   plugins: [react()],
+  // `@fontsource`'s `.woff` fallbacks, removed before Vite emits them: every
+  // browser that can draw the tokens loads the `.woff2` beside each one. See
+  // `src/stripWoff.ts`.
+  css: { postcss: { plugins: [stripWoff()] } },
   // **Three test projects, because three different questions need three
   // different environments.**
   //
@@ -53,15 +58,16 @@ export default defineConfig({
           include: ['src/**/*.test.ts'],
           exclude: ['src/**/*.browser.test.*'],
           // Vitest's default `css: false` stubs every CSS import — `?raw`
-          // included — to an empty string, which is fine for the rest of
-          // this project (no test here reads CSS text) but breaks
-          // `index.css.test.ts`'s `import cssSource from './index.css?raw'`,
-          // the WCAG-contrast regression test for the browser pass's D2 and
-          // D3: `Login.theme.test.ts` already reads `.tsx` source the same
-          // way to catch a hardcoded colour, and CSS needs the identical
-          // treatment to catch a wrong opacity. Scoped to `index.css` alone,
-          // not `css: true`, so no other test pays for real CSS processing.
-          css: { include: [/index\.css/] },
+          // included — to an empty string. The tests that read stylesheet
+          // text rather than render it (jsdom resolves neither `light-dark()`
+          // nor a composited `opacity`) need the real text, so CSS is
+          // processed for every `.css` file under `src/` and nothing else —
+          // not `css: true`. **Every** file there, not a list of the ones
+          // read today: a stylesheet left off the list reaches
+          // `colourLiterals.test.ts` as `''` and is counted as holding no
+          // colour at all, which is why that test also refuses an empty
+          // one.
+          css: { include: [/\/src\/.+\.css(?:\?|$)/] },
         },
       },
       {

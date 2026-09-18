@@ -118,8 +118,8 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Six crates, 2227 tests, plus 2,136 in `web/`'s TypeScript — 1,159 in the `node`
-project and 977 in the `jsdom` one — and twenty-eight more in a
+Six crates, 2227 tests, plus 2,176 in `web/`'s TypeScript — 1,192 in the `node`
+project and 984 in the `jsdom` one — and twenty-eight more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `rusqlite` (features `["backup"]`, against
@@ -171,11 +171,20 @@ wants and all things tedious to get right twice. Measured on `pnpm build`:
 the shipped bundle moved from 294.37 kB raw / 94.54 kB gzip to 337.22 kB raw /
 109.30 kB gzip, **+42.85 kB raw / +14.76 kB gzip**, of which `react-router`
 alone cost +37.59 kB raw / +13.16 kB gzip measured in isolation when it landed
-(Task 7),
-and `tract-onnx` as a
-dev-dependency of `taiyaku-cli` alone, for phase 3's gated measurement — it
-reaches no binary and no other crate. The twenty-four run under Vitest's browser
-mode over Playwright's
+(Task 7), and `tract-onnx` as a dev-dependency of `taiyaku-cli` alone, for
+phase 3's gated measurement — it reaches no binary and no other crate. The
+style pass's first PR added `@fontsource/shippori-mincho-b1` and
+`@fontsource/zen-kaku-gothic-new`, which are fonts and CSS rather than code.
+In apparent bytes, the built `web/dist` held 604,783 before them, its CSS
+asset 16,306 bytes, and 34,294,658 with them: a 713.98 kB CSS asset (312.31 kB
+gzip), JS essentially unmoved — `main` 191.45 kB (58.04 kB gzip), `label`
+10.87 kB (4.29 kB gzip), the shared chunk 215.92 kB (68.92 kB gzip) — and the
+growth 570 `.woff2` font files totalling 14,841,516 bytes and 574 `.woff`
+fallbacks totalling 18,148,448. The same PR then strips the `.woff` fallbacks
+from the build, since every browser that can draw the tokens loads woff2:
+`web/dist` now holds 16,005,973 bytes, with no `.woff` file and a 573.60 kB
+CSS asset (243.22 kB gzip). The twenty-eight run under Vitest's browser mode
+over Playwright's
 Chromium, and cover only what no Node environment can answer: `jsdom` has no
 layout engine and no real `HTMLImageElement.decode()`, and every defect the page
 area has shipped was one or the other. They are **not** a CI job — a cacheless

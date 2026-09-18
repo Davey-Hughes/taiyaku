@@ -1,41 +1,80 @@
 import { describe, expect, it } from 'vitest'
-import cssSource from './index.css?raw'
+import adminSource from './styles/admin.css?raw'
+import librarySource from './styles/library.css?raw'
+import shellSource from './styles/shell.css?raw'
+import tokensSource from './styles/tokens.css?raw'
+import { rules, selectors, subject } from './testing/css'
 
 /**
- * WCAG AA contrast checks for the 2026-08-21 browser pass's D2 and D3 —
- * see the comments above `.alignment-panel .paired` and
- * `.volumes li.without .cover-box` in `index.css` for the fixes themselves.
+ * WCAG AA contrast, computed from the stylesheets' own text.
  *
- * **jsdom cannot answer this by rendering.** `Login.theme.test.ts` already
- * notes jsdom does not resolve CSS system colours or composite `opacity`
- * into real pixels, so a test that mounts the page and reads
- * `getComputedStyle` would be asserting a fiction. Instead this reads
- * `index.css`'s own text and recomputes the same WCAG relative-luminance
- * math a real browser applies, against the actual `ButtonFace` / `CanvasText`
- * / `Canvas` RGB values a real Chromium reports for each colour scheme —
- * measured once via `getComputedStyle` on a live page (not invented):
+ * **jsdom cannot answer this by rendering** — it resolves neither
+ * `light-dark()` nor a composited `opacity` into pixels — so this reads the
+ * `light-dark(<paper>, <ink>)` pairs in `styles/tokens.css` and the rules in
+ * `styles/`, and recomputes the relative-luminance arithmetic a browser
+ * applies.
  *
- * - light: `Canvas` `rgb(255 255 255)`, `CanvasText` `rgb(0 0 0)`,
- *   `ButtonFace` `rgb(239 239 239)`
- * - dark: `Canvas` `rgb(18 18 18)`, `CanvasText` `rgb(255 255 255)`,
- *   `ButtonFace` `rgb(107 107 107)`
+ * **Why the model is trusted.** Until 2026-09-17 these rules used CSS system
+ * colours, and this file modelled the values a live Chromium reported for
+ * them; that model reproduced the browser pass's own figures (D2's 3.81:1 in
+ * dark, the disabled Accept's 1.35:1), which is what showed it was the real
+ * one. No rule names a system colour now, so the token model earns the same
+ * trust by reproducing four ratios the style pass's spec computed outside this
+ * file (`docs/superpowers/specs/2026-09-17-style-pass-design.md`, §2).
  *
- * Plugging the unfixed values into the formulas below reproduces the
- * browser pass's own figures exactly — `.paired` at `opacity: 0.75` comes
- * out to 3.81:1 dark / 9.63:1 light, and the old whole-`<li>` `opacity: 0.5`
- * comes out to 3.98:1 (title, light) and 3.71:1 / 3.01:1 (button, light /
- * dark) — which is what shows this model is the real one and not a guess.
+ * Three regression checks predate the tokens and are kept, recomputed against
+ * them: D2 and D3 from the 2026-08-21 browser pass, and the disabled Accept.
+ * The fixes are described above `.alignment-panel .paired` and
+ * `.volumes li.without .cover-box` in `styles/library.css`, and above
+ * `.proposal-detail .accept:disabled` in `styles/admin.css`.
  */
 
-const LIGHT = {
-  canvas: [255, 255, 255] as const,
-  canvasText: [0, 0, 0] as const,
-  buttonFace: [239, 239, 239] as const,
+type Rgb = readonly [number, number, number]
+const SCHEMES = ['paper', 'ink'] as const
+type Scheme = (typeof SCHEMES)[number]
+
+const cssSource = [shellSource, librarySource, adminSource].join('\n')
+
+/**
+ * Every stylesheet under `src/`, by path — `index.css` and every partial in
+ * `styles/`, the ones `ruleBody` below reads and the ones it does not — for
+ * D3's check, which has to hold wherever a rule is written.
+ */
+const STYLESHEETS = import.meta.glob<string>('./**/*.css', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+})
+
+function hex(value: string): Rgb {
+  const n = Number.parseInt(value.slice(1), 16)
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
 }
-const DARK = {
-  canvas: [18, 18, 18] as const,
-  canvasText: [255, 255, 255] as const,
-  buttonFace: [107, 107, 107] as const,
+
+/** Every `--name: light-dark(#paper, #ink)` in `tokens.css`. */
+const TOKENS = new Map<string, Record<Scheme, Rgb>>(
+  [
+    ...tokensSource.matchAll(
+      /--([a-z-]+):\s*light-dark\(\s*(#[0-9a-fA-F]{6})\s*,\s*(#[0-9a-fA-F]{6})\s*\)/g,
+    ),
+  ].map((m): [string, Record<Scheme, Rgb>] => [
+    m[1],
+    { paper: hex(m[2]), ink: hex(m[3]) },
+  ]),
+)
+
+function token(name: string, scheme: Scheme): Rgb {
+  const pair = TOKENS.get(name)
+  if (!pair)
+    throw new Error(`tokens.css has no light-dark() pair for --${name}`)
+  return pair[scheme]
+}
+
+/** A declared `var(--name)`, as the colour that token paints in `scheme`. */
+function resolve(value: string, scheme: Scheme): Rgb {
+  const m = value.match(/^var\(--([a-z-]+)\)$/)
+  if (!m) throw new Error(`not a token reference: ${value}`)
+  return token(m[1], scheme)
 }
 
 function channelLum(c: number): number {
@@ -43,37 +82,27 @@ function channelLum(c: number): number {
   return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
 }
 
-function relLum([r, g, b]: readonly [number, number, number]): number {
+function relLum([r, g, b]: Rgb): number {
   return (
     0.2126 * channelLum(r) + 0.7152 * channelLum(g) + 0.0722 * channelLum(b)
   )
 }
 
 /** WCAG contrast ratio between two sRGB colours. */
-function contrast(
-  a: readonly [number, number, number],
-  b: readonly [number, number, number],
-): number {
+function contrast(a: Rgb, b: Rgb): number {
   const la = relLum(a)
   const lb = relLum(b)
-  const hi = Math.max(la, lb)
-  const lo = Math.min(la, lb)
-  return (hi + 0.05) / (lo + 0.05)
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
 }
 
 /**
- * `opacity` composites the *whole element group* against what is behind it
- * — not the text colour alone blended toward the background it sits on. A
- * group of `n` opaque layers rendered at `alpha` shows, wherever a layer
- * painted, `alpha * layer + (1 - alpha) * backdrop`; `alpha = 1` is the
- * unchanged colour, which is what lets one helper cover both the dimmed and
- * the undimmed case below.
+ * `opacity` composites the *whole element group* against what is behind it —
+ * not the text colour alone blended toward the background it sits on. A group
+ * rendered at `alpha` shows, wherever a layer painted,
+ * `alpha * layer + (1 - alpha) * backdrop`; `alpha = 1` is the unchanged
+ * colour, which is what lets one helper cover the dimmed and undimmed cases.
  */
-function composite(
-  fg: readonly [number, number, number],
-  backdrop: readonly [number, number, number],
-  alpha: number,
-): [number, number, number] {
+function composite(fg: Rgb, backdrop: Rgb, alpha: number): Rgb {
   return [
     alpha * fg[0] + (1 - alpha) * backdrop[0],
     alpha * fg[1] + (1 - alpha) * backdrop[1],
@@ -86,8 +115,19 @@ function ruleBody(selector: string): string {
     `${selector.replace(/[.[\]]/g, '\\$&')}\\s*\\{([^}]*)\\}`,
   )
   const m = cssSource.match(re)
-  if (!m) throw new Error(`no rule found for ${selector} in index.css`)
+  if (!m) throw new Error(`no rule found for ${selector} in styles/`)
   return m[1]
+}
+
+function declared(body: string, property: string): string | undefined {
+  const m = body.match(new RegExp(`(?:^|;)\\s*${property}:\\s*([^;]+)`))
+  return m?.[1].trim()
+}
+
+function required(body: string, property: string): string {
+  const value = declared(body, property)
+  if (value === undefined) throw new Error(`rule sets no ${property}: ${body}`)
+  return value
 }
 
 function opacityOf(body: string): number {
@@ -96,45 +136,215 @@ function opacityOf(body: string): number {
   return Number(m[1])
 }
 
-describe('D2: `.alignment-panel .paired` clears WCAG AA in both schemes', () => {
-  // The rule this is guarding: `.paired` is `178 of 180`, the number the
-  // panel exists to show, faded by `opacity`. `ButtonFace` is a mid-grey in
-  // dark and near-white in light, so one opacity lands at two very
-  // different ratios — the fix must clear 4.5:1 in both, not just the one
-  // the original author happened to check.
-  const opacity = opacityOf(ruleBody('.alignment-panel .paired'))
-
-  it('clears 4.5:1 in dark — the scheme the unfixed 0.75 failed at 3.81:1', () => {
-    const ratio = contrast(
-      composite(DARK.canvasText, DARK.buttonFace, opacity),
-      DARK.buttonFace,
+describe('the token model', () => {
+  it('reproduces four ratios the spec computed outside this file', () => {
+    expect(contrast(token('text', 'paper'), token('bg', 'paper'))).toBeCloseTo(
+      14.3,
+      2,
     )
-    expect(ratio).toBeGreaterThanOrEqual(4.5)
-  })
-
-  it('clears 4.5:1 in light too', () => {
-    const ratio = contrast(
-      composite(LIGHT.canvasText, LIGHT.buttonFace, opacity),
-      LIGHT.buttonFace,
+    expect(
+      contrast(token('muted', 'paper'), token('surface', 'paper')),
+    ).toBeCloseTo(4.71, 2)
+    expect(
+      contrast(token('line-strong', 'ink'), token('bg', 'ink')),
+    ).toBeCloseTo(3.58, 2)
+    expect(contrast(token('accent', 'ink'), token('bg', 'ink'))).toBeCloseTo(
+      6.13,
+      2,
     )
-    expect(ratio).toBeGreaterThanOrEqual(4.5)
   })
 })
 
+const GROUNDS = ['bg', 'surface', 'field'] as const
+const TEXT_TOKENS = [
+  'text',
+  'muted',
+  'accent',
+  'danger',
+  'success',
+  'warning',
+] as const
+
+describe("spec §2's floors hold in both themes", () => {
+  for (const scheme of SCHEMES) {
+    it(`every text colour clears 4.5:1 and every control border 3:1 in ${scheme}`, () => {
+      const failures: string[] = []
+      for (const ground of GROUNDS) {
+        for (const text of TEXT_TOKENS) {
+          const ratio = contrast(token(text, scheme), token(ground, scheme))
+          if (ratio < 4.5) {
+            failures.push(`--${text} on --${ground}: ${ratio.toFixed(2)}`)
+          }
+        }
+        const border = contrast(
+          token('line-strong', scheme),
+          token(ground, scheme),
+        )
+        if (border < 3) {
+          failures.push(`--line-strong on --${ground}: ${border.toFixed(2)}`)
+        }
+      }
+      const onAccent = contrast(
+        token('on-accent', scheme),
+        token('accent', scheme),
+      )
+      if (onAccent < 4.5) {
+        failures.push(`--on-accent on --accent: ${onAccent.toFixed(2)}`)
+      }
+      expect(failures).toEqual([])
+    })
+  }
+})
+
+describe('D2: `.alignment-panel .paired` clears WCAG AA in both themes', () => {
+  // `.paired` is `178 of 180`, the number the panel exists to show, faded by
+  // `opacity` over the panel's own ground. One opacity lands at different
+  // ratios on different grounds, so it has to clear 4.5:1 in both themes.
+  const panel = ruleBody('.alignment-panel')
+  const opacity = opacityOf(ruleBody('.alignment-panel .paired'))
+
+  for (const scheme of SCHEMES) {
+    it(`clears 4.5:1 in ${scheme}`, () => {
+      const ground = resolve(required(panel, 'background'), scheme)
+      const text = resolve(required(panel, 'color'), scheme)
+      expect(
+        contrast(composite(text, ground, opacity), ground),
+      ).toBeGreaterThanOrEqual(4.5)
+    })
+  }
+})
+
+/** The cover's own parts — the only things `.without` may legitimately dim. */
+const COVER_PARTS = ['.cover-box', 'img', '.cover-missing']
+
+/**
+ * The opacity a rule's body dims with, below 1 — as a plain `opacity`
+ * property or as `filter: opacity(…)` — checked declaration by declaration,
+ * or `undefined` if neither is present below 1.
+ */
+function dimmingOpacity(body: string): number | undefined {
+  for (const declaration of body.split(';')) {
+    const plain = declaration.match(/^\s*opacity:\s*([\d.]+)(%?)/)
+    if (plain) {
+      const value = Number(plain[1]) / (plain[2] === '%' ? 100 : 1)
+      if (value < 1) return value
+    }
+    const filtered = declaration.match(
+      /^\s*filter:.*?\bopacity\(\s*([\d.]+)(%?)/,
+    )
+    if (filtered) {
+      const value = Number(filtered[1]) / (filtered[2] === '%' ? 100 : 1)
+      if (value < 1) return value
+    }
+  }
+  return undefined
+}
+
+/**
+ * Every rule, in every stylesheet given, that dims a `.without` tile itself
+ * — `opacity` or `filter: opacity()` below 1 on a selector that contains
+ * `.without` anywhere — rather than one of the cover's own parts inside it,
+ * as `.volumes li.without .cover-box` does. An allowlist on what the
+ * selector's last compound targets (`.cover-box`, `img`, `.cover-missing`),
+ * not a spelling match on `.without`'s own compound: a combinator, a
+ * wildcard or a different class after it all still count as dimming the
+ * tile. `where` names the file and the one selector, so a failure says
+ * which.
+ *
+ * **What it cannot see**, measured by the review of the fix that made it an
+ * allowlist: `.without` spelled as an attribute selector,
+ * `[class~="without"]`, is not recognised; and `dimmingOpacity` takes the
+ * first dimming declaration in source order rather than the cascade's last,
+ * so `opacity: 0.5; opacity: 1` is flagged although it does not dim. The
+ * first fails open, the second closed; neither shape exists in `styles/`.
+ */
+function dimsTheTile(
+  stylesheets: Record<string, string>,
+): Array<{ where: string; opacity: number }> {
+  const found: Array<{ where: string; opacity: number }> = []
+  for (const [path, source] of Object.entries(stylesheets)) {
+    for (const { prelude, body } of rules(source)) {
+      const opacity = dimmingOpacity(body)
+      if (opacity === undefined) continue
+      for (const selector of selectors(prelude)) {
+        if (!selector.includes('.without')) continue
+        if (COVER_PARTS.includes(subject(selector))) continue
+        found.push({ where: `${path}: ${selector}`, opacity })
+      }
+    }
+  }
+  return found
+}
+
+/** `dimsTheTile`'s findings as `file: selector → opacity`, for a diff. */
+const described = (stylesheets: Record<string, string>): string[] =>
+  dimsTheTile(stylesheets).map(({ where, opacity }) => `${where} → ${opacity}`)
+
 describe('D3: a dimmed volume tile fades its cover, not its label or its button', () => {
-  // The defect: `.volumes li.without { opacity: 0.5 }` dimmed the whole
-  // `<li>` as one group — cover, title and the `i` button together — even
-  // though the tile is not disabled: its link still navigates and its
-  // button still opens the panel. `groupOpacity` below is what that bare
-  // rule contributes to the title's and the button's own contrast; if the
-  // rule is gone (the fix), there is nothing left to dim them and this is 1.
+  // The defect: `.volumes li.without { opacity: 0.5 }` dimmed the whole `<li>`
+  // — cover, title and the `i` button together — though the tile is not
+  // disabled. `groupOpacity` is what `dimsTheTile` finds: any `opacity` or
+  // `filter: opacity()` below 1 on a selector that contains `.without`,
+  // unless what it actually dims — the selector's last compound — is the
+  // cover itself (`.cover-box`, `img` or `.cover-missing`). With none left
+  // (the fix) there is nothing to dim the title or the button and it is 1.
   function groupOpacity(): number {
-    const m = cssSource.match(/\.volumes li\.without\s*\{([^}]*)\}/)
-    return m ? opacityOf(m[1]) : 1
+    return Math.min(1, ...dimsTheTile(STYLESHEETS).map((r) => r.opacity))
   }
 
-  it('no longer dims the whole tile as one group', () => {
-    expect(cssSource).not.toMatch(/\.volumes li\.without\s*\{/)
+  const library = ruleBody('.library')
+  const button = ruleBody('.volumes .panel-open')
+
+  it('reads index.css and every partial in styles/', () => {
+    expect(Object.keys(STYLESHEETS)).toEqual(
+      expect.arrayContaining([
+        './index.css',
+        './styles/admin.css',
+        './styles/annotations.css',
+        './styles/base.css',
+        './styles/library.css',
+        './styles/shell.css',
+        './styles/tokens.css',
+      ]),
+    )
+    expect(STYLESHEETS['./styles/library.css']).toContain(
+      '.volumes li.without .cover-box',
+    )
+  })
+
+  it('no longer dims the whole tile as one group, in any stylesheet', () => {
+    expect(described(STYLESHEETS)).toEqual([])
+  })
+
+  it('flags the tile itself however it is dimmed, but not the cover inside it', () => {
+    expect(
+      described({
+        'probe.css': `
+          .volumes li.without, .volumes li.unused { opacity: 0.5 }
+          .volumes .without { opacity: 50% }
+          .volumes li.without:is(.a, .b) { color: red; opacity: .4 }
+          .volumes li.without > * { opacity: 0.5 }
+          .volumes li.without * { opacity: 0.5 }
+          .volumes li.without a { opacity: 0.5 }
+          .volumes li.without .title { opacity: 0.5 }
+          .volumes li.without .panel-open { opacity: 0.5 }
+          .volumes li.without { filter: opacity(0.5) }
+          .volumes li.without .cover-box { opacity: 0.5 }
+          .volumes li.without img, .volumes li.without .cover-missing { opacity: 0.5 }
+          .volumes li.without { opacity: 1 }
+        `,
+      }),
+    ).toEqual([
+      'probe.css: .volumes li.without → 0.5',
+      'probe.css: .volumes .without → 0.5',
+      'probe.css: .volumes li.without:is(.a, .b) → 0.4',
+      'probe.css: .volumes li.without > * → 0.5',
+      'probe.css: .volumes li.without * → 0.5',
+      'probe.css: .volumes li.without a → 0.5',
+      'probe.css: .volumes li.without .title → 0.5',
+      'probe.css: .volumes li.without .panel-open → 0.5',
+      'probe.css: .volumes li.without → 0.5',
+    ])
   })
 
   it('dims the cover box instead, and still dims it (not merely relocated to a no-op)', () => {
@@ -142,79 +352,43 @@ describe('D3: a dimmed volume tile fades its cover, not its label or its button'
     expect(opacity).toBeLessThan(1)
   })
 
-  it('leaves the title at 4.5:1 or better in both schemes', () => {
-    const alpha = groupOpacity()
-    const lightRatio = contrast(
-      composite(LIGHT.canvasText, LIGHT.canvas, alpha),
-      LIGHT.canvas,
-    )
-    const darkRatio = contrast(
-      composite(DARK.canvasText, DARK.canvas, alpha),
-      DARK.canvas,
-    )
-    expect(lightRatio).toBeGreaterThanOrEqual(4.5)
-    expect(darkRatio).toBeGreaterThanOrEqual(4.5)
-  })
+  for (const scheme of SCHEMES) {
+    it(`leaves the title at 4.5:1 or better in ${scheme}`, () => {
+      const alpha = groupOpacity()
+      const ground = resolve(required(library, 'background'), scheme)
+      const text = resolve(required(library, 'color'), scheme)
+      expect(
+        contrast(composite(text, ground, alpha), ground),
+      ).toBeGreaterThanOrEqual(4.5)
+    })
 
-  it('leaves the `i` button at 4.5:1 or better in both schemes', () => {
-    const alpha = groupOpacity()
-    const lightText = composite(LIGHT.canvasText, LIGHT.canvas, alpha)
-    const lightFace = composite(LIGHT.buttonFace, LIGHT.canvas, alpha)
-    const darkText = composite(DARK.canvasText, DARK.canvas, alpha)
-    const darkFace = composite(DARK.buttonFace, DARK.canvas, alpha)
-    expect(contrast(lightText, lightFace)).toBeGreaterThanOrEqual(4.5)
-    expect(contrast(darkText, darkFace)).toBeGreaterThanOrEqual(4.5)
-  })
+    it(`leaves the \`i\` button at 4.5:1 or better in ${scheme}`, () => {
+      const alpha = groupOpacity()
+      const ground = resolve(required(library, 'background'), scheme)
+      const text = composite(
+        resolve(required(button, 'color'), scheme),
+        ground,
+        alpha,
+      )
+      const face = composite(
+        resolve(required(button, 'background'), scheme),
+        ground,
+        alpha,
+      )
+      expect(contrast(text, face)).toBeGreaterThanOrEqual(4.5)
+    })
+  }
 })
 
 /**
- * **The disabled Accept — the one place on the proposals panel where the
- * "WCAG exempts an inactive component" exemption was the wrong call.**
- *
- * `.proposal-detail .accept` is disabled for the whole of every edit whose
- * answer is a refusal, which is the state the form sits in while a pattern is
- * being widened — not a momentary one like the dismiss button beside it. It
- * shipped at `color: GrayText` over the `ButtonFace` its enabled rule paints,
- * which the model above puts at **1.35:1 in dark** and 3.43:1 in light: the
- * word was gone and only the border said a control was there.
- *
- * Those two figures are what this block's own model produces for the unfixed
- * declarations, which is what shows it is the real one — the same check the
- * D2/D3 comment above makes of itself. `GrayText` is `rgb(128 128 128)` in
- * both schemes, measured off a live Chromium the way the three colours above
- * were, and reconfirmed by `AcceptForm.browser.test.tsx`, which reads the
- * shipped control's own computed colours rather than modelling them.
- *
- * The fix keeps the word at full contrast and says "unavailable" with the
- * ground and the border instead, so what this guards is both halves: legible
- * in either scheme, and still not drawn as the live control.
+ * **The disabled Accept** — the one place on the proposals panel where "WCAG
+ * exempts an inactive component" was the wrong call, because the form sits
+ * disabled for the whole of every edit whose answer is a refusal. It shipped at
+ * `GrayText` over `ButtonFace`, 1.35:1 in dark Chromium. The fix keeps the word
+ * at full contrast and says "unavailable" with the ground and the border
+ * instead, so this guards both halves.
  */
-describe('the disabled Accept is legible in both schemes', () => {
-  const GRAY_TEXT = [128, 128, 128] as const
-
-  const PALETTE = {
-    light: {
-      Canvas: LIGHT.canvas,
-      CanvasText: LIGHT.canvasText,
-      ButtonFace: LIGHT.buttonFace,
-      GrayText: GRAY_TEXT,
-    },
-    dark: {
-      Canvas: DARK.canvas,
-      CanvasText: DARK.canvasText,
-      ButtonFace: DARK.buttonFace,
-      GrayText: GRAY_TEXT,
-    },
-  } as const
-
-  type Scheme = keyof typeof PALETTE
-  type ColourName = keyof (typeof PALETTE)['light']
-
-  function declared(body: string, property: string): string | undefined {
-    const m = body.match(new RegExp(`(?:^|;)\\s*${property}:\\s*([^;]+)`))
-    return m?.[1].trim()
-  }
-
+describe('the disabled Accept is legible in both themes', () => {
   const enabled = ruleBody('.proposal-detail .accept')
   const disabled = ruleBody('.proposal-detail .accept:disabled')
 
@@ -227,49 +401,18 @@ describe('the disabled Accept is legible in both schemes', () => {
     return value
   }
 
-  function rgb(
-    name: string,
-    scheme: Scheme,
-  ): readonly [number, number, number] {
-    const found = PALETTE[scheme][name as ColourName]
-    if (!found) throw new Error(`not a system colour this model knows: ${name}`)
-    return found
+  for (const scheme of SCHEMES) {
+    it(`clears 4.5:1 in ${scheme}`, () => {
+      expect(
+        contrast(
+          resolve(effective('color'), scheme),
+          resolve(effective('background'), scheme),
+        ),
+      ).toBeGreaterThanOrEqual(4.5)
+    })
   }
 
-  it('reproduces the shipped defect from the same model, so the model is the real one', () => {
-    // `GrayText` on the enabled rule's `ButtonFace`, which is what the file
-    // held before this block existed.
-    expect(
-      contrast(rgb('GrayText', 'dark'), rgb('ButtonFace', 'dark')),
-    ).toBeCloseTo(1.35, 2)
-    expect(
-      contrast(rgb('GrayText', 'light'), rgb('ButtonFace', 'light')),
-    ).toBeCloseTo(3.43, 2)
-  })
-
-  it('clears 4.5:1 in dark — the scheme the shipped `GrayText` failed at 1.35:1', () => {
-    expect(
-      contrast(
-        rgb(effective('color'), 'dark'),
-        rgb(effective('background'), 'dark'),
-      ),
-    ).toBeGreaterThanOrEqual(4.5)
-  })
-
-  it('clears 4.5:1 in light too', () => {
-    expect(
-      contrast(
-        rgb(effective('color'), 'light'),
-        rgb(effective('background'), 'light'),
-      ),
-    ).toBeGreaterThanOrEqual(4.5)
-  })
-
   it('is still not drawn as the live control', () => {
-    // The other half, and the reason legibility alone is not the whole fix: a
-    // readable button that looks exactly like the enabled one says the form
-    // is ready when it is refusing. The ground and the border carry that
-    // here, since the word no longer can.
     expect(declared(disabled, 'background')).toBeDefined()
     expect(declared(disabled, 'background')).not.toBe(
       declared(enabled, 'background'),

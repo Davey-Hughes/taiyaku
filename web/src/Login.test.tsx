@@ -59,6 +59,37 @@ describe('Login', () => {
     expect(onSignedIn).toHaveBeenCalledOnce()
   })
 
+  it('carries the class base.css scopes the theme’s controls to', () => {
+    const host = mount(<Login onSignedIn={noop} />)
+    expect(host.firstElementChild?.classList.contains('login')).toBe(true)
+  })
+
+  /**
+   * The heading is the wordmark, and the 対訳 seal inside it is drawn for the
+   * eye only — `aria-hidden` — so the heading's accessible name is `taiyaku`
+   * alone. No testing-library here, so the name is computed as it comes out
+   * for this markup: the heading's text, less every `aria-hidden` descendant.
+   */
+  it('names its heading taiyaku, not the seal beside it', () => {
+    const host = mount(<Login onSignedIn={noop} />)
+    const heading = host.querySelector('h2')
+    if (!heading) throw new Error('no heading')
+    expect(heading.textContent).toContain('対訳')
+
+    // Neither attribute present: an `aria-label` here would give the heading
+    // that value as its accessible name outright, and the text-content
+    // computation below would never run at all — so this rules out the
+    // heading being named "対訳" by a label rather than by its content.
+    expect(heading.hasAttribute('aria-label')).toBe(false)
+    expect(heading.hasAttribute('aria-labelledby')).toBe(false)
+
+    const named = heading.cloneNode(true) as HTMLElement
+    for (const hidden of named.querySelectorAll('[aria-hidden="true"]')) {
+      hidden.remove()
+    }
+    expect(named.textContent?.trim()).toBe('taiyaku')
+  })
+
   /**
    * A wrong password is shown here rather than routed on. Routing to the login
    * screen *from* the login screen is a loop that looks to a reader like

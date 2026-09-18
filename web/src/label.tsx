@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { getSidecar, getTruth, listWorks, putTruth } from './api.ts'
 import './index.css'
 import { Labeller } from './Labeller.tsx'
+import { applyTheme, loadTheme } from './theme.ts'
 import type { TruthPorts } from './truthWrite.ts'
 
 /**
@@ -23,6 +24,12 @@ const TRUTH_PORTS: TruthPorts = {
   get: getTruth,
   put: putTruth,
 }
+
+// The labeller shares the tokens but has no pre-paint script of its own, so it
+// takes the stored theme here: before React renders, but a module script runs
+// only once the page is parsed, so the browser may already have painted it
+// once in the OS's scheme.
+applyTheme(loadTheme(), document.documentElement)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

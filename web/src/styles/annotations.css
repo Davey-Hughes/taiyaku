@@ -1,0 +1,247 @@
+/* Visible while you draw, quiet enough to label through.
+ *
+ * This was a 1px `currentColor` outline at `opacity: 0.15` — "out of the way
+ * until you go for them", the requirement that killed the sidebar box list.
+ * Against real pages it was not quiet, it was invisible: at 0.15 a hairline
+ * over halftone artwork is indistinguishable from the screentone beneath it,
+ * reported from an actual labelling session as "impossible to see". A box
+ * nobody can see is a box nobody can check, against the one input this
+ * instrument has.
+ *
+ * The requirement it was serving still holds and is now met by *alpha in the
+ * fill* rather than by opacity on the whole element: the infill is light
+ * enough to read text through, so the page stays legible with every box on it
+ * drawn. Three parts, because one is not enough on line art — the dark outline
+ * carries the shape, the pale inner line keeps that outline legible where it
+ * crosses black ink, and the fill says which side is inside. */
+.region-box {
+  border: 2px solid var(--box-line);
+  background: var(--box-fill);
+  box-shadow: inset 0 0 0 1px var(--box-edge);
+  transition: background 80ms ease-out;
+}
+.region-box:hover,
+.region-box[data-selected="true"] {
+  background: var(--box-fill-strong);
+  box-shadow:
+    inset 0 0 0 1px #fff,
+    0 0 0 2px var(--box-line);
+}
+
+/* Which kind a box carries, on the box itself.
+ *
+ * `RegionOverlay` puts `data-kind` on every box precisely so this can exist —
+ * "a colour difference is invisible to a test and to a reader who cannot
+ * distinguish them" — and nothing rendered it, so pressing `1`-`6` gave no
+ * confirmation at all. That bears directly on label quality, which is the one
+ * input this whole instrument has.
+ *
+ * Two signals, neither of them colour.
+ *
+ * The kind's own name, printed from `attr(data-kind)` rather than from six
+ * hand-written `content` rules. There is nothing to keep in step: a kind added
+ * to `taiyaku-core`'s `Kind` and to `labelling.ts` labels itself the day it
+ * arrives, and no rule can be the one somebody forgot. It carries its own
+ * opacity now that the box no longer has one to ride, so the box under the
+ * pointer says `sfx` in full while a crowded page stays readable.
+ *
+ * And a border style per kind, because a 10px word set over line art is not
+ * legible at any size a badge can be, while a dotted-versus-solid edge is
+ * separable at a glance across the whole page at once. This half *is* six
+ * rules, and a kind without one falls back to the plain outline above —
+ * legible, and named by its badge, just not separable at a glance until a rule
+ * is added here. */
+.region-box::after {
+  content: attr(data-kind);
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 0 2px;
+  font-size: 10px;
+  line-height: 1.4;
+  font-weight: 700;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--box-line);
+  /* The badge used to ride the box's own `opacity`, which is gone — so without
+   * this every box on a crowded page shouts its kind at full strength and the
+   * labels become the page. Faint at rest, full on approach: the same
+   * behaviour as before, now stated on the thing it applies to. */
+  opacity: 0.45;
+  transition: opacity 80ms ease-out;
+}
+.region-box:hover::after,
+.region-box[data-selected="true"]::after {
+  opacity: 1;
+}
+/* The reading axis, as a tick in the box's own corner.
+ *
+ * `v`, `h` and *not applicable* were set by three keys and shown by nothing on
+ * the page: the only readout was the one line at the foot of the screen, and
+ * that describes the selected box alone. So a page of boxes gave no way to see
+ * which had been given an axis, which had been given the wrong one, or whether
+ * a keystroke had landed at all — reported from a labelling session as not
+ * being able to tell them apart.
+ *
+ * A shape rather than a colour or a letter: the axis *is* an orientation, so a
+ * bar lying the way the text reads is the shortest path from the mark to the
+ * meaning, and it stays legible at the size a 10px glyph does not. The circle
+ * for `none` is not a smaller bar on purpose — "no direction" has to read as a
+ * different kind of answer, not as a shorter one.
+ *
+ * Opposite corner from the kind badge, so a box carries both without either
+ * covering the artwork it is drawn around. */
+.region-box::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  background: var(--box-line);
+  /* A light halo, so the mark reads on black ink and on white paper alike.
+   * The kind badge is legible for the same reason — it sits on an opaque
+   * `--bg` — and the first version of this tick, a bare bar at half opacity,
+   * disappeared into a busy colour cover exactly the way the original box
+   * outline did. */
+  box-shadow: 0 0 0 2px var(--bg);
+  opacity: 0.85;
+  transition: opacity 80ms ease-out;
+}
+.region-box[data-axis="v"]::before {
+  width: 3px;
+  height: 14px;
+}
+.region-box[data-axis="h"]::before {
+  width: 14px;
+  height: 3px;
+}
+.region-box[data-axis="none"]::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.region-box:hover::before,
+.region-box[data-selected="true"]::before {
+  opacity: 1;
+}
+
+.region-box[data-kind="dialogue"] {
+  border-style: solid;
+}
+.region-box[data-kind="narration"] {
+  border-style: double;
+  border-width: 3px;
+}
+.region-box[data-kind="sfx"] {
+  border-style: dotted;
+  border-width: 2px;
+}
+.region-box[data-kind="logo"] {
+  border-style: groove;
+  border-width: 3px;
+}
+.region-box[data-kind="credits"] {
+  border-style: ridge;
+  border-width: 3px;
+}
+.region-box[data-kind="other"] {
+  border-style: dashed;
+}
+
+/* The ignore hatch, last so it wins the border style from every kind above —
+ * a box excused from scoring has to be tellable from one that is scored no
+ * matter what it holds, and its badge keeps saying which kind it is. Cross
+ * hatching rather than a colour, for the reason at the top of this block.
+ *
+ * Loose hatching, though: at the 4px pitch this started on, the lines closed
+ * over the artwork and an ignored box hid the very thing it was declining to
+ * judge. The point of the flag is to say "I looked at this and could not call
+ * it", which requires still being able to look at it.
+ * `absorbs` in `score.rs` calls this "the ignore hatch"; this is it. */
+.region-box[data-ignore="true"] {
+  border-style: dashed;
+  /* Hatched over the same fill rather than instead of it, so an ignored box is
+   * still one of these boxes — `currentColor` here would follow the theme and
+   * go pale on white paper, which is the failure the palette above exists to
+   * avoid. */
+  background:
+    repeating-linear-gradient(
+      45deg,
+      transparent 0 9px,
+      rgba(74, 36, 0, 0.5) 9px 10px
+    ),
+    var(--box-fill);
+}
+
+/* The keys, at the foot of the labeller.
+ *
+ * Generated from `labelKeys.ts`'s `LABEL_KEYS` — the same table `Labeller.tsx`
+ * dispatches its keydown handler through — so there is nothing here that can
+ * disagree with what the keys actually do.
+ *
+ * Quiet by default and readable on approach, the rule the box outlines above
+ * already follow: a legend that competes with the artwork is a legend that has
+ * to be turned off, and a labeller works page after page with the page as the
+ * thing being looked at. It wraps rather than scrolls, because a row pushed off
+ * the end of a line is a key nobody finds. */
+.labeller-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  opacity: 0.55;
+  transition: opacity 80ms ease-out;
+}
+.labeller-legend:hover {
+  opacity: 1;
+}
+
+.labeller-legend kbd {
+  font: inherit;
+  font-weight: 700;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-right: 4px;
+}
+
+/* The box as it is being drawn.
+ *
+ * Same palette as a committed box, deliberately not the same appearance: the
+ * marching outline says *this is not a box yet*, and a preview indistinguishable
+ * from the thing it previews is one a labeller stops trusting the moment the two
+ * disagree. No badge and no fill weight — it has no kind yet, and it is about to
+ * be replaced by the real box a frame later. */
+.region-preview {
+  border: 2px dashed var(--box-line);
+  background: var(--box-fill);
+  box-shadow: inset 0 0 0 1px var(--box-edge);
+}
+
+/* Nothing on the page area is text to be selected.
+ *
+ * A drag across artwork is a box being drawn, but the browser has no way to
+ * know that: it did what a drag across a document always does and ran a text
+ * selection under the pointer, painting the page and everything past it blue.
+ * On every box. Reported from a labelling session as the highlight selecting
+ * the whole page.
+ *
+ * **Not fixed by cancelling `pointerdown`**, which is the obvious reach and
+ * would put a worse bug back: the spec says a cancelled `pointerdown`
+ * suppresses the compatibility mouse events, `click` among them, and `click`
+ * is how a box is selected at all. That is the same failure pointer capture
+ * caused, arrived at from the other direction. This is CSS precisely so it
+ * touches no events.
+ *
+ * The image stops being a hit target for the same gesture's sake: an `<img>`
+ * is natively draggable, so a press on the artwork also started a
+ * drag-and-drop with a ghost of the page floating under the cursor. The
+ * labeller reads the image's geometry rather than its events — `toFractions`
+ * measures it through `querySelector` — so it loses nothing by being
+ * untouchable, and the pointer lands on the page container that wanted it. */
+.label-page {
+  user-select: none;
+}
+.label-page img {
+  pointer-events: none;
+}

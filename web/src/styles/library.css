@@ -1,0 +1,366 @@
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+.chips button {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.35rem 0.9rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.chips button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+
+.continue ul {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0;
+  display: flex;
+  gap: 0.75rem;
+  overflow-x: auto;
+}
+
+.continue li {
+  flex: 0 0 auto;
+}
+
+/* `.tile-unreadable` is the same chip, offered to a work whose files have
+ * left the disk — O62, applied here for the reason I1 of the whole-branch
+ * review names this strip: the reader was mid-read when the files went, so
+ * this is the likeliest place to meet the gap. `color` is split from the
+ * shared box below because `.continue a`'s `--accent` would otherwise paint
+ * a control that is deliberately not a link. */
+.continue a,
+.continue .tile-unreadable {
+  display: block;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.continue a {
+  color: var(--accent);
+}
+
+.continue .tile-unreadable {
+  color: var(--text);
+}
+
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 1rem;
+}
+
+/* `.tile-unreadable` alongside `a`, not instead of it: O62's grid and
+ * unfiled-work tiles render the identical cover/title box whether or not the
+ * volume is still readable — see `Series.tsx`'s `VolumeCover` and
+ * `SeriesGrid.tsx` — and the only difference is whether it sits inside a
+ * `<Link>` or a plain `<span>`. `color: inherit` was already the rule here
+ * rather than `--accent`, so this needs no separate colour: the readable
+ * case already reads as plain text, not an accent-coloured link. */
+.grid li a,
+.volumes li a,
+.grid li .tile-unreadable,
+.volumes li .tile-unreadable {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+/* The cover, and the tile drawn in its place when it will not load — §8's
+ * third empty state. Both share the box so a placeholder occupies exactly the
+ * space the artwork would have, and the grid does not reflow as covers arrive
+ * or fail. Tokens, not `--box-*`: this is chrome, not artwork. */
+.grid img,
+.grid .cover-missing,
+.volumes img,
+.volumes .cover-missing {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+.grid img,
+.volumes img {
+  object-fit: cover;
+}
+
+.grid .cover-missing,
+.volumes .cover-missing {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.85rem;
+  line-height: 1.3;
+  text-align: center;
+}
+
+.grid .title,
+.volumes .title {
+  font-size: 0.9rem;
+  line-height: 1.3;
+}
+
+/* The volume list on a series page — spec C1 §3. Narrower tiles than the
+ * library grid's `9rem`: a series page shows volumes of one work, so the
+ * covers are near-identical and the title under each is what distinguishes
+ * them. Everything else it shares with `.grid` by name, above. */
+.volumes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+  gap: 1rem;
+}
+
+/* §4's `density`. Compact is the same grid with less room per tile — not a
+ * different layout, which is the whole argument of §3. After both `.grid`
+ * and `.volumes` in source order, so its higher specificity does not read as
+ * a cascade defect to the descending-specificity lint rule. */
+.library.compact .grid,
+.library.compact .volumes {
+  grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+  gap: 0.6rem;
+}
+
+/* §3 puts the alignment mark **on the cover**, which needs a positioned box
+ * around it — Plan A shipped it below the title and its ledger carried that
+ * forward as this plan's to fix.
+ *
+ * `--bg`/`--text` rather than a translucent black: a mark over artwork
+ * has to stay legible against a white gutter and a saturated cover alike,
+ * which is the same requirement `--box-*` exists for above and the same one
+ * `Login.tsx`'s hardcoded `#111` failed. */
+.cover-box {
+  position: relative;
+  display: block;
+}
+
+.cover-box .aligned {
+  position: absolute;
+  right: 0.25rem;
+  bottom: 0.25rem;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+/* §3's preset B. Tokens, like every other rule in this block. */
+.editions {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.editions th,
+.editions td {
+  border-bottom: 1px solid var(--line-strong);
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.editions th {
+  font-weight: 600;
+}
+
+.editions a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.editions a:hover {
+  text-decoration: underline;
+}
+
+/* The download control in a cell — spec C2 §8, as the addendum's §2.1 resolves
+ * it for this layout: the page count *is* the link, so no column is added.
+ *
+ * **`--accent` is wrong here even though these are links**, which a browser
+ * pass caught and no test could. `.editions a` above paints the Volume cell,
+ * which navigates to the reader; painting the page counts the same colour
+ * made every number in the table read as the same kind of thing as that,
+ * when one opens a volume and the other downloads 334 MB of it. §2.1's
+ * argument was that linking the number "adds no element to the layout at
+ * all" — true of the DOM and false of the visual weight, so the colour stays
+ * the cell's own and a dotted underline carries the affordance instead. */
+.editions a.get {
+  color: inherit;
+  text-decoration: underline dotted;
+  text-underline-offset: 0.2em;
+}
+
+.editions a.get:hover {
+  text-decoration: underline solid;
+}
+
+/* A dashed border rather than a lighter colour: the cell means "this edition
+ * is not here", and opacity alone reads as "loading" against a screen whose
+ * covers arrive one at a time. */
+.editions td.missing {
+  border: 1px dashed var(--line-strong);
+  color: var(--text);
+  opacity: 0.55;
+  text-align: center;
+}
+
+.edition-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+}
+
+/* Dimmed, not hidden — see the component's own note.
+ *
+ * **On the cover, not the whole tile.** Opacity on the `<li>` also dimmed
+ * `.title` and the `i` button — legible text and a control the reader can
+ * still use (the link still navigates, the button still opens the panel;
+ * neither is disabled) faded to a fail: measured (Chromium system colours,
+ * whole-`<li>` opacity composited against the page's `Canvas` backdrop)
+ * `.title` at **3.98:1 light**, the button at **3.71:1 light / 3.01:1
+ * dark** — all below WCAG AA's 4.5:1. What the dimming is meant to say is
+ * "the edition you picked does not cover this volume", which is a fact about
+ * the artwork, so the opacity now scopes to `.cover-box` and leaves the
+ * title and button at full opacity: measured after, `.title` on `Canvas` is
+ * **21.00:1 light / 18.73:1 dark** and the button's `CanvasText` on
+ * `ButtonFace` is **18.26:1 light / 5.33:1 dark** — both comfortably clear.
+ *
+ * **Opacity *and* greyscale, because opacity alone is ambiguous here.** A
+ * cover at reduced opacity on a screen whose covers arrive one at a time
+ * reads as "still loading"; draining the colour out of the artwork as well
+ * reads as a deliberate state, because nothing about loading makes an image
+ * monochrome. The two together say "this volume exists and the edition you
+ * picked does not cover it", which is the fact §3 wants shown rather than
+ * hidden.
+ *
+ * **`.cover-missing` as well as `img`.** `Cover.tsx` calls a cold cover "the
+ * common first-run case, not an edge one", and when it fails to load it
+ * renders that placeholder span instead of an `<img>` at all. Greyscale on
+ * `img` alone left a dimmed volume with a failed cover at opacity by itself
+ * — the one cue this rule's own comment above says reads as "still
+ * loading". */
+.volumes li.without .cover-box {
+  opacity: 0.5;
+}
+
+.volumes li.without img,
+.volumes li.without .cover-missing {
+  filter: grayscale(1);
+}
+
+/* The download control — spec C2 §8. Modelled on `.panel-open` below, which
+ * sits in the same place under a tile and must not look like a different
+ * kind of thing.
+ *
+ * **`display: inline-block` is load-bearing, not tidying.** `.volumes li a`
+ * (line 442) sets `display: flex; flex-direction: column` on every anchor in
+ * a tile — written when the tile's own `<Link>` was the only anchor that had
+ * ever been in one. Without this override the control stretches to the full
+ * tile width and stacks. jsdom computes no layout, so `Series.test.tsx`
+ * passes either way and only a browser sees it. */
+.volumes a.get {
+  display: inline-block;
+  align-self: start;
+  margin-top: 0.15rem;
+  padding: 0 0.4rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  text-decoration: none;
+}
+
+.volumes .panel-open {
+  margin-top: 0.15rem;
+  padding: 0 0.4rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.alignment-panel {
+  margin-top: 0.35rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+.alignment-panel ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.alignment-panel .pair {
+  font-weight: 600;
+}
+
+/* `178 of 180` is the number this panel exists to show, so it must clear
+ * WCAG AA (4.5:1) as text, not merely as decoration. `ButtonFace` is a
+ * mid-grey in dark and near-white in light, so the same opacity lands at two
+ * very different ratios: measured (Chromium system colours, `CanvasText` at
+ * this opacity over `ButtonFace`) at the previous `0.75`, **3.81:1 dark /
+ * 9.63:1 light** — dark fails. At `0.9`, **4.69:1 dark / 15.46:1 light** —
+ * both clear 4.5:1, with headroom rather than sitting on the boundary. */
+.alignment-panel .paired {
+  opacity: 0.9;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+}
+
+.search-box input {
+  flex: 1;
+  max-width: 24rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}

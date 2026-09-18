@@ -1,0 +1,120 @@
+/* Element defaults — spec 2026-09-17 §2 and §5 ①. */
+:root {
+  font: 16px / 1.5 var(--font-ui);
+}
+
+/*
+ * `PageView`'s `height: 100%` chain (and the `<img>`'s `max-height: 100%`)
+ * only constrains anything if every ancestor up to the viewport has a
+ * definite height. Without this, `html`/`body`/`#root` are auto-height —
+ * sized to their content, i.e. to the image — so `max-height: 100%` resolves
+ * against an undefined height and is ignored: a tall page overflows the
+ * viewport instead of being downscaled to fit it.
+ */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* **Everything below is scoped to the screens the style pass has reached**,
+ * not the whole document. The reader draws its chrome over artwork with
+ * inline styles that set some properties and leave the rest to the browser,
+ * so a document-wide `button` rule would change a filmstrip tile's border or
+ * a panel button's padding under geometry that the reader's own PR redraws.
+ * `:where()` on both halves keeps every rule here at zero specificity, so
+ * each class rule in `shell.css`, `library.css` and `admin.css` still wins
+ * exactly as it did. `base.css.test.ts` holds the scope. */
+:where(.library, .login) :where(h1, h2, h3) {
+  font-family: var(--font-title);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+:where(.library, .login) :where(h1) {
+  font-size: var(--text-h1);
+}
+
+:where(.library, .login) :where(h2) {
+  font-size: var(--text-h2);
+}
+
+:where(.library, .login) :where(h3) {
+  font-size: var(--text-h3);
+}
+
+:where(.library, .login) :where(a) {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+
+:where(.library, .login) :where(button, input, select, textarea) {
+  font: inherit;
+  color: inherit;
+}
+
+:where(.library, .login)
+  :where(
+    button,
+    select,
+    textarea,
+    input:not([type="checkbox"], [type="radio"], [type="range"])
+  ) {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+}
+
+:where(.library, .login) :where(button, select) {
+  background: var(--surface);
+}
+
+:where(.library, .login) :where(input, textarea) {
+  background: var(--field);
+}
+
+:where(.library, .login) :where(button) {
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+}
+
+:where(.library, .login) :where(button:disabled) {
+  cursor: default;
+}
+
+:where(.library, .login)
+  :where(
+    input[type="checkbox"],
+    input[type="radio"],
+    input[type="range"],
+    progress
+  ) {
+  accent-color: var(--accent);
+}
+
+:where(.library, .login) :where(table) {
+  border-collapse: collapse;
+  font-family: var(--font-figures);
+  font-variant-numeric: tabular-nums;
+}
+
+:where(.library, .login) :where(th) {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+:where(.library, .login) :where(:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

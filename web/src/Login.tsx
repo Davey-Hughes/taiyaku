@@ -16,71 +16,79 @@ import { messageOf } from './message'
  * try. What it knows is whether the server accepted the credentials.
  */
 
-// This screen used to be reachable only from inside the reader, which is
-// deliberately dark because it draws over artwork — so a fixed dark palette
-// was correct here too. It now fronts the library instead (`Gate.tsx`), which
-// follows `color-scheme: light dark` via CSS system colours, so a hardcoded
-// dark palette here would hand a light-preference reader a dark login screen
-// immediately ahead of a light library. These styles follow suit, the same
-// way `index.css`'s library rules do: `Canvas`/`CanvasText` for the backdrop
-// and card text, `ButtonFace`/`ButtonBorder` for the card and field surfaces.
-// (Not `--box-*` — that palette is fixed on purpose, for artwork this screen
-// never draws over.)
+// The sign-in screen takes the theme like every screen inside `.library`
+// (spec 2026-09-17 §2): paper or ink by the reader's choice, the title face
+// for the wordmark, `--danger` for a refusal. Its controls are drawn by
+// `styles/base.css`, whose rules reach this screen through the `login` class
+// on the overlay, so what stays inline here is layout — and the accent on the
+// one button that submits.
+//
+// History worth keeping: this screen shipped a hardcoded dark palette (`#111`,
+// `#ffb4a8`) when it only ever appeared over the reader, and handed a
+// light-preference reader a dark screen once it fronted the library.
+// `colourLiterals.test.ts` now refuses any colour literal or system colour
+// the guard counts in this file — a colour named in words would pass it.
 const overlayStyle: CSSProperties = {
   position: 'fixed',
   inset: 0,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  background: 'Canvas',
+  background: 'var(--bg)',
   zIndex: 30,
 }
 
 const panelStyle: CSSProperties = {
-  background: 'ButtonFace',
-  color: 'CanvasText',
-  border: '1px solid ButtonBorder',
-  borderRadius: 12,
-  // Tuned to read as a soft lift rather than a hard edge in both schemes —
-  // the original `0 10px 30px rgba(0, 0, 0, 0.45)` was sized for a dark
-  // backdrop and reads as a bruise on a white one.
-  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.2)',
-  padding: '24px 28px',
   width: 'min(360px, 90vw)',
+  padding: '32px 28px',
+  borderTop: '1px solid var(--line)',
+  borderBottom: '1px solid var(--line)',
+}
+
+const wordmarkStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  margin: 0,
+}
+
+/** 対訳, *taiyaku*, set vertically in the accent like a seal. */
+const sealStyle: CSSProperties = {
+  writingMode: 'vertical-rl',
+  padding: '4px 3px 3px',
+  background: 'var(--accent)',
+  color: 'var(--on-accent)',
+  fontSize: 'var(--text-meta)',
+  letterSpacing: '0.1em',
+  lineHeight: 1,
 }
 
 const fieldStyle: CSSProperties = {
   display: 'block',
+  boxSizing: 'border-box',
   width: '100%',
   marginTop: 6,
   padding: '8px 10px',
-  borderRadius: 6,
-  // `rgba(255, 255, 255, 0.2)` was invisible on a light background; a system
-  // colour gives the field a boundary that holds in both schemes, the same
-  // way `.sidebar`'s and `.chips button`'s borders do in `index.css`.
-  border: '1px solid ButtonBorder',
-  background: 'Canvas',
-  color: 'inherit',
-  font: 'inherit',
 }
 
-const labelStyle: CSSProperties = { display: 'block', marginTop: 14 }
+const labelStyle: CSSProperties = {
+  display: 'block',
+  marginTop: 16,
+  fontSize: 'var(--text-ui)',
+}
 
-// There is no system colour for "error". `#ffb4a8` was tuned for the old
-// dark-only backdrop (11.01:1 against `rgb(18, 18, 18)`) but falls to 1.70:1
-// on white — nowhere near WCAG AA's 4.5:1. The reverse is also true: a red
-// dark enough to clear AA on white (e.g. `#b00020`, 7.33:1) clears only
-// 2.56:1 on `rgb(18, 18, 18)`. The two requirements don't overlap for any
-// single fixed colour — the luminance a colour needs to read on white
-// (<=0.183) and the luminance it needs to read on near-black (>=0.202) are
-// disjoint ranges, not a coincidence of these two particular reds. `light-
-// dark()` picks between two literals using the same `color-scheme: light
-// dark` signal that resolves the system colours above, so each one only ever
-// has to clear AA against the canvas it is actually shown on.
 const errorStyle: CSSProperties = {
-  marginTop: 14,
-  color: 'light-dark(#b00020, #ffb4a8)',
-  fontSize: '0.9em',
+  marginTop: 16,
+  color: 'var(--danger)',
+  fontSize: 'var(--text-ui)',
+}
+
+const submitStyle: CSSProperties = {
+  ...fieldStyle,
+  marginTop: 24,
+  borderColor: 'var(--accent)',
+  background: 'var(--accent)',
+  color: 'var(--on-accent)',
 }
 
 export interface LoginProps {
@@ -114,9 +122,14 @@ export function Login({ onSignedIn }: LoginProps) {
   }
 
   return (
-    <div style={overlayStyle}>
+    <div className="login" style={overlayStyle}>
       <form style={panelStyle} onSubmit={submit}>
-        <h2 style={{ margin: 0, fontSize: '1.1em' }}>taiyaku</h2>
+        <h2 style={wordmarkStyle}>
+          <span style={sealStyle} aria-hidden="true">
+            対訳
+          </span>
+          taiyaku
+        </h2>
         <label style={labelStyle}>
           Name
           <input
@@ -145,11 +158,7 @@ export function Login({ onSignedIn }: LoginProps) {
             {failure}
           </p>
         )}
-        <button
-          type="submit"
-          style={{ ...fieldStyle, marginTop: 18, cursor: 'pointer' }}
-          disabled={busy}
-        >
+        <button type="submit" style={submitStyle} disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
       </form>

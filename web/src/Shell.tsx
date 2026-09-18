@@ -7,8 +7,8 @@
  * `shell.ts`'s context rather than through a prop, so a screen that does not
  * care about it says nothing about it.
  *
- * System colours throughout — see `index.css`'s `.library` block, and
- * `Login.tsx`, which shipped a hardcoded `#111` on this app's front door.
+ * The theme's tokens throughout — see `styles/tokens.css`, and `Login.tsx`,
+ * which once shipped a hardcoded `#111` on this app's front door.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { BrowseSettings } from './BrowseSettings'
@@ -25,6 +25,7 @@ import { fieldChanged, sliceFor, sliceReset } from './module'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
 import { InboxRefreshContext, StatusContext } from './shell'
 import { Sidebar } from './Sidebar'
+import { ThemeControl } from './ThemeControl'
 import { messageOf } from './message'
 
 /**
@@ -178,6 +179,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 openProposals={openProposals}
               />
               <BrowseSettings prefs={prefs} onChange={change} onReset={reset} />
+              <ThemeControl />
             </div>
             <main>
               {failure !== undefined && <p role="alert">{failure}</p>}

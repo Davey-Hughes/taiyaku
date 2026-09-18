@@ -22,7 +22,9 @@
  * that touches `localStorage` at all — checked rather than assumed, and worth
  * keeping true: a value stored anywhere else would be the first one whose key
  * nobody thought about, on an origin this reader may share with whatever else
- * is served from it.
+ * is served from it. One *reader* sits outside `web/src`: `index.html`'s
+ * pre-paint script reads `taiyaku.prefs.theme`, which `theme.ts` writes
+ * through this module and `theme.test.ts` holds the script to.
  *
  * That is also why the reading mode became a `ReaderModule` rather than a
  * direct `loadPrefs('mode', …)` call when it needed to persist — see
