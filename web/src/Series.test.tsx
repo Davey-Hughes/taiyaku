@@ -672,6 +672,25 @@ describe('Series, table layout', () => {
     const cells = [...host.querySelectorAll('table.editions tbody td')]
     expect(cells.some((c) => c.textContent === '180')).toBe(true)
   })
+
+  it('sits in a box of its own that scrolls sideways, so the page never does', async () => {
+    const host = await settleWith({ layout: 'table' })
+    expect(host.querySelector('.table-scroll > table.editions')).not.toBeNull()
+  })
+
+  it('marks the page counts, and only them, for the figures face', async () => {
+    const host = await settleWith({ layout: 'table' })
+    const marked = [...host.querySelectorAll('.editions tbody tr')].map((row) =>
+      [...row.querySelectorAll('td')].map((td) =>
+        td.classList.contains('pages'),
+      ),
+    )
+    // The second volume has no `en` edition: its third cell is the dash.
+    expect(marked).toEqual([
+      [false, true, true],
+      [false, true, false],
+    ])
+  })
 })
 
 describe('Series, the edition selector', () => {

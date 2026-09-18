@@ -120,6 +120,52 @@ function checkboxLabelled(host: HTMLElement, label: string): HTMLInputElement {
   return box
 }
 
+/** ☰, found by the column it controls rather than by its icon. */
+function menuButton(host: HTMLElement): HTMLButtonElement {
+  const button = host.querySelector<HTMLButtonElement>(
+    'button[aria-controls="library-menu"]',
+  )
+  if (!button) throw new Error('no menu button')
+  return button
+}
+
+/** The sidebar column, by the id ☰ names. */
+function menu(host: HTMLElement): HTMLElement {
+  const column = host.querySelector<HTMLElement>('#library-menu')
+  if (!column) throw new Error('nothing carries the id ☰ controls')
+  return column
+}
+
+function openMenu(host: HTMLElement) {
+  act(() => {
+    menuButton(host).click()
+  })
+}
+
+/**
+ * A `matchMedia` for jsdom, which has none: one list whose `matches` the test
+ * flips, calling its listeners the way a window resized across the
+ * breakpoint would.
+ */
+function fakeMatchMedia() {
+  const listeners = new Set<() => void>()
+  const list = {
+    matches: false,
+    addEventListener: (_type: string, listener: () => void) => {
+      listeners.add(listener)
+    },
+    removeEventListener: (_type: string, listener: () => void) => {
+      listeners.delete(listener)
+    },
+  }
+  const matchMedia = vi.fn((_query: string) => list)
+  const widen = () => {
+    list.matches = true
+    for (const listener of listeners) listener()
+  }
+  return { matchMedia, widen }
+}
+
 describe('Shell', () => {
   beforeEach(() => {
     // Call records, not implementations — `asks for no count at all for a
@@ -559,5 +605,155 @@ describe('Shell', () => {
       </Shell>,
     )
     expect(checkboxLabelled(after, 'show roots').checked).toBe(true)
+  })
+
+  /**
+   * The drawer — spec 2026-09-17 §7.1. jsdom lays nothing out, so this pins
+   * the state and the attributes; `Shell.browser.test.tsx` measures what a
+   * browser does with them: where Tab can go, whether the page scrolls
+   * behind the drawer, where the column sits.
+   */
+  describe('the menu below 900 px', () => {
+    it('draws ☰ closed, naming the column it opens, with nothing inert', async () => {
+      const host = await settle(
+        <Shell>
+          <p>x</p>
+        </Shell>,
+      )
+      const button = menuButton(host)
+      expect(button.getAttribute('aria-label')).toBe('Menu')
+      expect(button.getAttribute('aria-expanded')).toBe('false')
+      expect(menu(host).classList.contains('sidebar-column')).toBe(true)
+      expect(menu(host).hasAttribute('role')).toBe(false)
+      expect(menu(host).hasAttribute('aria-modal')).toBe(false)
+      expect(host.querySelector('.phone-bar')?.hasAttribute('inert')).toBe(
+        false,
+      )
+      expect(host.querySelector('main')?.hasAttribute('inert')).toBe(false)
+      expect(host.querySelector('.scrim')).toBeNull()
+    })
+
+    it('opens the column as a modal dialog and makes what is behind it inert', async () => {
+      const host = await settle(
+        <Shell>
+          <p>x</p>
+        </Shell>,
+      )
+      openMenu(host)
+      expect(menuButton(host).getAttribute('aria-expanded')).toBe('true')
+      const column = menu(host)
+      expect(column.getAttribute('role')).toBe('dialog')
+      expect(column.getAttribute('aria-modal')).toBe('true')
+      expect(column.getAttribute('aria-label')).toBe('Menu')
+      expect(column.hasAttribute('inert')).toBe(false)
+      expect(host.querySelector('.phone-bar')?.hasAttribute('inert')).toBe(true)
+      expect(host.querySelector('main')?.hasAttribute('inert')).toBe(true)
+      expect(
+        host.querySelector('.library')?.classList.contains('menu-open'),
+      ).toBe(true)
+    })
+
+    it('takes focus to its first link, and gives it back to ☰ on Escape', async () => {
+      const host = await settle(
+        <Shell>
+          <p>x</p>
+        </Shell>,
+      )
+      openMenu(host)
+      expect(document.activeElement).toBe(
+        menu(host).querySelector('a[href="/"]'),
+      )
+      act(() => {
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+        )
+      })
+      expect(menuButton(host).getAttribute('aria-expanded')).toBe('false')
+      expect(document.activeElement).toBe(menuButton(host))
+    })
+
+    it('closes from the Close button inside it, and gives focus back to ☰', async () => {
+      const host = await settle(
+        <Shell>
+          <p>x</p>
+        </Shell>,
+      )
+      openMenu(host)
+      const close =
+        menu(host).querySelector<HTMLButtonElement>('button.menu-close')
+      expect(close?.getAttribute('aria-label')).toBe('Close menu')
+      act(() => {
+        close?.click()
+      })
+      expect(menuButton(host).getAttribute('aria-expanded')).toBe('false')
+      expect(document.activeElement).toBe(menuButton(host))
+    })
+
+    it('closes on a tap on the page behind it', async () => {
+      const host = await settle(
+        <Shell>
+          <p>x</p>
+        </Shell>,
+      )
+      openMenu(host)
+      const scrim = host.querySelector<HTMLButtonElement>('.scrim')
+      expect(scrim?.getAttribute('aria-label')).toBe('Close menu')
+      act(() => {
+        scrim?.click()
+      })
+      expect(menuButton(host).getAttribute('aria-expanded')).toBe('false')
+      expect(host.querySelector('.scrim')).toBeNull()
+    })
+
+    it('closes when a link in it is followed', async () => {
+      const host = await settle(
+        <Shell>
+          <p>x</p>
+        </Shell>,
+      )
+      openMenu(host)
+      const search =
+        menu(host).querySelector<HTMLAnchorElement>('a[href="/search"]')
+      if (!search) throw new Error('no search link in the menu')
+      await act(async () => {
+        search.click()
+      })
+      expect(menuButton(host).getAttribute('aria-expanded')).toBe('false')
+    })
+
+    it('closes when the window widens past the breakpoint, where the column is the sidebar again', async () => {
+      const media = fakeMatchMedia()
+      vi.stubGlobal('matchMedia', media.matchMedia)
+      const host = await settle(
+        <Shell>
+          <p>x</p>
+        </Shell>,
+      )
+      openMenu(host)
+      expect(media.matchMedia).toHaveBeenCalledWith('(width >= 900px)')
+      act(() => {
+        media.widen()
+      })
+      expect(menuButton(host).getAttribute('aria-expanded')).toBe('false')
+    })
+
+    it('draws the wordmark at the top of the column, and as the bar’s way home', async () => {
+      const host = await settle(
+        <Shell>
+          <p>x</p>
+        </Shell>,
+      )
+      expect(menu(host).firstElementChild?.classList.contains('wordmark')).toBe(
+        true,
+      )
+      expect(
+        host.querySelector('.phone-bar a[href="/"] .wordmark'),
+      ).not.toBeNull()
+      expect(
+        host
+          .querySelector('.phone-bar a[href="/search"]')
+          ?.getAttribute('aria-label'),
+      ).toBe('Search')
+    })
   })
 })

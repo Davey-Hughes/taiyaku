@@ -29,10 +29,13 @@ import { mount } from './testing/mount'
  * written from memory — and both widths are here because the defect lived at
  * exactly one of them.
  *
- * **700 and 1100 are not arbitrary.** `.library` is a fixed 14rem sidebar
- * plus `main`'s 1.5rem padding, so the list is 428px at the first and 828px
- * at the second — either side of the 32rem container query that reflows the
- * row. `index.css` says the same thing from the other end.
+ * **460 and 1100 are not arbitrary.** 460px since the style pass's ②: below
+ * 900px the sidebar leaves the flow, and 460 − 2 × 16 gives `main` the 428px
+ * that 700 − 224 − 48 gave it beside the 14rem sidebar — the same list width
+ * the row reflows at either way. At 1100px `.library` is still the fixed
+ * 14rem sidebar plus `main`'s 1.5rem padding, so the list is 828px there —
+ * either side of the 32rem container query that reflows the row.
+ * `styles/admin.css` says the same thing from the other end.
  *
  * CI does not run this project (see `vite.config.ts`: no Chromium), so
  * nothing here is a gate. It is the measurement, kept runnable, so the next
@@ -131,6 +134,10 @@ async function inboxAt(width: number): Promise<HTMLElement> {
     await Promise.resolve()
     await Promise.resolve()
   })
+  // A track sized by its text measures narrower before the web fonts arrive —
+  // 3.3px for the reflowed row at 460px, 6.2px for the title column at 1100px —
+  // so every measurement in this file is taken once they have.
+  await document.fonts.ready
   if (!host) throw new Error('nothing mounted')
   return host
 }
@@ -166,7 +173,8 @@ describe('the collapsed inbox row, in a browser', () => {
     const listed = rows(host)
     expect(listed).toHaveLength(4)
 
-    // Measured: the list is 828px and the title column 500px of it.
+    // Measured: the list is 828px and the title column 506.6px of it, with the
+    // web fonts loaded.
     const first = listed[0]
     if (!first) throw new Error('no first row')
     expect(boxOf(first, '.what')).toBeGreaterThan(400)
@@ -199,16 +207,17 @@ describe('the collapsed inbox row, in a browser', () => {
     ).toBeLessThanOrEqual(host.querySelector('main')?.clientWidth ?? 0)
   })
 
-  it('reflows at 700px rather than cutting the title to ten characters', async () => {
-    const host = await inboxAt(700)
+  it('reflows at 460px rather than cutting the title to ten characters', async () => {
+    const host = await inboxAt(460)
     const first = rows(host)[0]
     if (!first) throw new Error('no first row')
 
     // **The measurement the review was about.** The row drew the `reason`
     // sentence in a flex column that measured 100px here — ten characters,
     // `"Monster - `, identical on every `edition-of` row in the inbox. The
-    // container query gives the titles the whole row instead: measured 323px,
-    // and the subject and its target both fit.
+    // container query gives the titles the whole row instead: measured
+    // 326.6px once the web fonts have loaded — at 460px on this branch, as
+    // at 700px before it — and the subject and its target both fit.
     expect(boxOf(first, '.what')).toBeGreaterThan(300)
     expect(cut(first, '.subject')).toBe(false)
     expect(cut(first, '.arrow')).toBe(false)
@@ -240,7 +249,7 @@ describe('the collapsed inbox row, in a browser', () => {
   it('leaves the arrow line off a proposal that names one series', async () => {
     // `attach-chapters`. A row that drew it anyway reads `↳ related to null`,
     // and jsdom cannot tell that from a row one line shorter.
-    const host = await inboxAt(700)
+    const host = await inboxAt(460)
     const chapters = rows(host)[3]
     if (!chapters) throw new Error('no attach-chapters row')
 

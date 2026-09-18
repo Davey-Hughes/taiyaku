@@ -14,7 +14,9 @@ import {
  * **Its own file because two panels render it and they disagree about exactly
  * one thing.** The reader's `Settings.tsx` is a centred modal over artwork and
  * is dark on purpose; the browse screens are UI chrome and follow
- * `color-scheme`. `rowStyle` is that disagreement, passed in. Everything else —
+ * `color-scheme`. `rowStyle` is that disagreement: the reader's panel passes
+ * its own, and the browse panel passes none and draws its rows from
+ * `shell.css`. Everything else —
  * the inference §4 calls "generated rather than hoped" — is shared, which is
  * the only way that claim stays true when one of the two changes.
  */
@@ -27,7 +29,7 @@ export function FieldControl({
   field: Field
   value: unknown
   onChange: (raw: unknown) => void
-  rowStyle: CSSProperties
+  rowStyle?: CSSProperties
 }) {
   const label = humanize(field.key)
   if (field.kind === 'boolean') {

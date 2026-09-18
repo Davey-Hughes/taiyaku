@@ -241,11 +241,12 @@ describe('Proposals', () => {
     // tab selected they differ at runtime on every screen.
     expect(host.querySelector('h1')?.textContent).toBe('35 open')
 
-    // The row is `Library.tsx`'s `.chips` filter row, not a second idiom
-    // beside it: `index.css` carries no `.proposal-tabs` rules at all, so
-    // dropping this class leaves the tabs as browser-default buttons. jsdom
-    // computes no styles, so the class is the only part of that a test here
-    // can hold on to.
+    // The row is drawn by `library.css`'s plain `.chips` pill rules — the
+    // ones the library's own row overrides with `library-chips` — and no
+    // stylesheet carries `.proposal-tabs` rules, so dropping `chips` leaves
+    // them as `base.css`'s plain buttons, with nothing marking the pressed
+    // one. jsdom computes no styles, so the class is the only part of that a
+    // test here can hold on to.
     const tabRow = host.querySelector('.proposal-tabs')
     expect(tabRow?.classList.contains('chips')).toBe(true)
 

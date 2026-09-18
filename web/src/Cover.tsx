@@ -19,9 +19,11 @@ import { useState } from 'react'
  * twice. The placeholder's text is the *drawing*, standing in for artwork, and
  * `aria-hidden` keeps that from becoming the same repetition.
  *
- * **Two screens draw it**: the library's series tiles and a series page's
- * volume tiles. One copy, because the failure-by-`src` rule and the empty
- * `alt` are the kind of detail that survives in one file and drifts in two.
+ * **Three components draw it**: `SeriesGrid` — the library's series tiles and
+ * search's hits — a series page's volume tiles, and the continue strip's
+ * cards (`Library.tsx`'s `ContinueCard`). One copy, because the
+ * failure-by-`src` rule and the empty `alt` are the kind of detail that
+ * survives in one file and drifts in two.
  */
 export function Cover({ src, title }: { src: string; title: string }) {
   const [failed, setFailed] = useState<string>()

@@ -21372,3 +21372,208 @@ on file, and left for ② to fix. The reader's page surround staying ink's
 `rgb(21, 19, 15)` rather than pure black is PR ③'s, which also picks up
 `viewport-fit=cover`, moved out of this PR because without ③'s safe-area
 padding it would put the library under a phone's notch in landscape.
+
+## Style pass ②: the shell and the library — 2026-09-18
+
+PR ② — the drawer below 900 px, the document scrolling on a phone, and the
+library home, series page and search in the ink-and-paper look — per
+`docs/superpowers/specs/2026-09-17-style-pass-design.md` §5 ② and §7, was
+driven in Chromium against the scratch copy of the NAS library and on the
+user's iPhone before the gate ran. What follows is what was measured; nothing
+here is assumed.
+
+### Before any task: the narrow layout, tried and reverted
+
+The narrow layout was added to `shell.css` while planning, and the browser
+project run against it: 27 of 28 passed. The one failure was
+`Proposals.browser.test.tsx`'s "reflows at 700px", `expected 217.5625 to be
+greater than 217.5625` — below 900 px the sidebar leaves the flow, so a 700 px
+window gives the inbox's list 668 px and the row no longer reflows. With that
+file and `AcceptForm.browser.test.tsx` moved to 460 px, all 8 of their cases
+passed: 460 − 2 × 16 = 428 px, the width 700 − 224 − 48 gave the list beside
+the 14 rem sidebar. The trial was reverted before Task 1.
+
+What the two files measure at 460 px is what they measured at 700 px before:
+`.proposal-detail` 426 px, and the form and its pattern 406.8 px, on this
+branch and in a worktree at `8cae846` (at 1100 px, 826 and 806.8). **The
+inbox's `.what` column is the one width that moved, and it moved with the
+fonts, not the layout**: 326.625 px once the web fonts have loaded, at 460 px
+here and at 700 px on `main`, and 323.3125 px before they arrive. Task 2
+recorded the first, the whole-branch review the second, and each was right for
+its run; the review of the first fix round found the cause by logging inside
+the real test (0 font faces loaded: 323.3125, three times; three loaded:
+326.625). `inboxAt` now awaits `document.fonts.ready`, and three runs gave
+326.625 each.
+
+Probes, run before the code was written: biome's `useAriaPropsSupportedByRole`
+refuses `aria-modal={open ? true : undefined}` beside a conditional `role` —
+"The ARIA attribute 'aria-modal' is not supported by this element" — and
+passes the same attributes spread from a constant, which is `Shell.tsx`'s
+`AS_DIALOG`; an inline SVG with `aria-hidden="true"` passes the recommended
+set; and an 8-digit `light-dark()` pair, `:root:has()`, `-webkit-line-clamp`
+and a two-value `transition` all lint clean.
+
+Three predictions in the plan were wrong, and each was caught by running
+rather than by reading:
+
+- Task 2 put the `edition` and `work` builders and `sideways()` in
+  `Shell.browser.test.tsx` for Tasks 4 and 5 to use, and `tsc`'s
+  `noUnusedLocals` failed on all three (TS6133). They moved to Task 4.
+- Task 3's first hand mutation, dropping `end` from the Library `NavLink`,
+  failed nothing: react-router 8.3.0's `NavLink` counts a longer path as inside
+  `to` only where the next character is `/`
+  (`dist/development/lib/dom/lib.js`, lines 387–388), which after `/` it never
+  is. `end` was removed, and the comment says what holds it.
+- Task 4 expected the old pill chips to wrap at 390 px. They fit on one line,
+  about 345 of 358 px, once Task 2 had taken the sidebar out of the flow — spec
+  §0's "wrap one per line" was the 14 rem sidebar's doing. The case that holds
+  the row is proven by hand mutation against the new CSS instead.
+
+### The browser pass
+
+At `c6138cc`, with vite serving the working tree, at 390×844 and 1440×900, in
+Paper and in Ink: the library home (the continue strip holding four volumes,
+seeded by opening each in the reader on the scratch copy), a series in grid
+and in table layout (`/series/6`, Berserk), search (`berserk`) and the
+proposals inbox at both widths; and at 390 only, the drawer open, the empty
+inbox (Dismissed), configuration → roots, account, and the sign-in screen. 30
+screenshots, in `target/style-pass/two/pass/`, every one read. The plan said
+32; its own list makes 30.
+
+- **Nothing scrolls sideways**: `scrollWidth − clientWidth` was 0 on all 26
+  screens of the main matrix, configuration and account at 390 px included.
+  In ①'s pass configuration → roots at 390 px squeezed `main` to 151 px beside
+  the sidebar; it now has the width, and the root's card fits.
+- **The shell**: ☰, the wordmark and the search icon in a bar with a hairline
+  under it; the drawer shows the wordmark with ✕ beside it, the navigation in
+  the text colour with the current screen in the accent, the three headings in
+  the title face with their hairlines, the settings rows and the theme
+  control, over a dimmed page. At 1440 px the sidebar marks Library on `/`,
+  Search on `/search`, Proposals on `/proposals`, and nothing on a series.
+- **The home**: cover cards under "Continue" with the volume in `--muted`, the
+  chips as underlined tabs with "Added" at the far end, and a volume count
+  under each series ("12 volumes", "13 volumes"). At 390 px, where the strip overflows, desktop Chromium draws its
+  native horizontal scrollbar; it follows `color-scheme` (dark in Ink), as spec §3 intends, so
+  it is not a stray default.
+- **The series table**: volume names in the UI face and page counts in the
+  figures face, with their dotted underline — ①'s heavy digits inside file
+  names are gone.
+- **The inbox keeps its pills**, state and kind rows alike, and the empty
+  inbox draws a title-face heading over muted prose.
+- **The sign-in screen** matches ①'s: panel top about 257 px and the seal at
+  28–46 px, the same as ①'s review sheet scaled back from its 0.667. My script
+  saved the two themes under each other's names — it set the theme without a
+  reload before signing out — and they were renamed.
+- **The real library has no series with a second edition** — every
+  `editions > works` query came back empty — so no missing cell exists on real
+  material; the cell was measured by inserting one (below).
+
+Fix round 2 changed the strip's gap to its heading (16 px back to 12) and gave
+the pressed library tab an explicit `background: none` after this pass, so the
+home screen was screenshotted again at `8c5c072`, at 390 px in both themes
+(`home-head-*.png`, read): the first card 12 px under the heading and level
+with it at 16 px, the pressed tab's background transparent, and no sideways
+scroll.
+
+### Measured in the page
+
+At 390×844, `/series/6` in table layout, in both themes: the Volume cell's
+font is `"Zen Kaku Gothic New", system-ui, sans-serif` and a page count's is
+`"taiyaku figures", "Zen Kaku Gothic New", …`. A `td.missing` inserted into a
+real row computes colour `rgb(107, 97, 81)` in Paper and `rgb(166, 155, 135)`
+in Ink — `--muted` — opacity 1, and a dashed border in `--line-strong`
+(`rgb(137, 125, 104)`, `rgb(116, 108, 96)`).
+
+On `/` with the drawer open, in both themes: the root's `overflow-y` is
+`hidden`, `<main>` and the bar are `inert`, focus is on "Library", the column
+spans 0 to 321 px (320 and its border), ✕ sits at (268, 8), 44×44, and
+`elementFromPoint` answers the column at (100, 400) and the scrim at
+(370, 400). The Theme heading's hairline is 231.4 px, reaching the column's
+edge as Roots' 240.6 px does. After Escape the root's overflow is `visible`
+and focus is back on ☰.
+
+### On the iPhone
+
+Through `tailscale serve` to vite (tailnet only; `serve` needed no
+`--trusted-proxy`, sign-in answering 204). All 748 requests the phone made
+carry `Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) …
+Version/26.6.1 Mobile/15E148 Safari/604.1` — Safari 26.6.1; the phone's own
+iOS version was not recorded. The user's answers:
+
+1. ☰ opens the drawer, and a tap on the dimmed page, ✕ and following a link
+   inside it each close it.
+2. With the drawer open, a drag on the dimmed page leaves the library behind
+   it still: `overflow: hidden` on the root holds on iOS.
+3. Safari's toolbar shrinks as the library scrolls, and a tap on the status
+   bar scrolls back to the top.
+4. The drawer's links, the tabs and a tile's ↓ and `i` are easy to hit.
+5. The series table did not scroll sideways, correctly: Berserk has one
+   edition and fits, and the library has no wider table. A synthetic
+   five-edition table holds it in the browser project.
+6. VoiceOver was not tried. **The user put accessibility checks in a pass of
+   their own at the end of the style pass.**
+
+The user also found that the reader's single- and two-page modes turn no page
+by touch — spec §0's finding, and PR ④'s — and that **covers are blurry**:
+every cover in the library is the filmstrip thumbnail, 160 px on its long edge
+and 113×160 for a typical cover (the series
+cover route redirects to `/pages/0/thumb`, whose long edge is `cover.rs`'s
+`THUMB_LONG_EDGE`, 160), drawn at 171×256 CSS px on a 3× phone — about 4.8×
+upscaled. Not ②'s doing; its phone tiles make it obvious.
+
+### What the reviews found
+
+Five task reviews approved their tasks. The whole-branch review found no
+Critical and five Important:
+
+1. No test could see the open drawer on screen: deleting the open column's
+   `transform: none`, the scrim's `display: block` or the column's
+   `z-index: 30` failed nothing. A browser case now opens the drawer, waits
+   out the slide, and checks the column at the left edge, the scrim beside it,
+   and a tap there closing it; each of the three mutations fails it.
+2. The `.what` figure — see above.
+3. Comments the new layout had made untrue: `admin.css`'s list widths,
+   `Cover.tsx`'s count of screens, `shell.css`'s header, and the spec's credit
+   to `end` on `/`.
+4. The tab look had reached the proposals inbox, a ⑤ screen, where "All"
+   and "Hide weak proposals" drew the accent underline side by side. **The
+   user decided**: the library's own row only (`.chips.library-chips`); the
+   inbox keeps its pills until ⑤.
+5. The modal drawer had no way out inside it: the scrim sits outside the
+   `aria-modal` region and ☰ is inert. **The user decided**: a Close button.
+
+The review of that fix round found two more Important — three comments still
+said the inbox reuses the library's row, and the width above — and ten Minor,
+among them: the strip's test checked only its top edge, the strip's top
+padding pushed the page down 4 px, the pressed library tab kept its look only
+by source order (the blocks swapped, it drew `--text` on `--accent`, about
+2.7:1, and no test failed), and the Close button's placement was untested. Its
+first proposed test was wrong — `.wordmark` spans the column, so nothing can
+sit to its right — and a Range over the wordmark's contents replaced it
+(`mark.right` 120, the button's `left` 268). The review of the second fix round
+found its tests sound — every mutation it tried failed where it should — and
+four comments it had rewritten still untrue: `Shell.tsx`'s sentence had lost
+its reason clause; `admin.css` hung `Monster - The Pe…`, #88's 139 px
+quotation, on the 106.6 px track, which reads `Monster - T…` (and the fonts
+*widen* that track, from 100.5 px refused to 106.6 px loaded); the 1100 px
+case quoted the cold-font 500 px, 506.6 px once they load; and a jsdom comment
+still called the inbox's tabs without `chips` browser-default buttons, false
+since ①'s `base.css`. A third round replaced the four sentences, which I read
+against those measurements, and held the Close button's centre, not merely
+its box, within the wordmark's height — moved to 32 px or 44 px from the top
+it now fails. Important findings per pass: 5, 2, 4 (text only), 0.
+
+### Left for later
+
+- **O132**: reading progress on the continue strip, behind a setting.
+- **Blurry covers**: O133, fixed in its own PR straight after ② — the user's
+  decision, 2026-09-18.
+- **An accessibility pass** at the end of the style pass, VoiceOver included.
+- **Touch in the reader**: PR ④.
+- Cosmetic and untested: crossing below 900 px by resizing animates the
+  column sliding out; in a mouse-driven window under 900 px, opening the drawer
+  hides the page's scrollbar and the page reflows; nothing tests the
+  reduced-motion rule or `main`'s `min-width: 0` at 900 px and up; and the new
+  Sidebar case mounts four times and unmounts one.
+
+Tests: Rust 2227, unchanged; `web/` node 1,201, jsdom 1,000, browser 37.

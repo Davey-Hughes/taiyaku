@@ -28,11 +28,18 @@ import { mount } from './testing/mount'
  * on the panel because a real one is a `rel_path` prefix, and the refusal is
  * the measured `Publisher/` collateral in `refusals`' own sentence.
  *
- * **700 and 1100 for the reason `Proposals.browser.test.tsx` gives**: with a
- * fixed 14rem sidebar and `main`'s padding, the expanded panel measures 426px
- * at the first and 826px at the second. The pattern keeps the form's whole
- * width at both; what changes is how many of the four short fields fit on the
- * line beneath it, and whether the prefix is readable end to end or scrolls.
+ * **460 and 1100 for the reason `Proposals.browser.test.tsx` gives**: 460px
+ * since the style pass's ②: below 900px the sidebar leaves the flow, and
+ * 460 − 2 × 16 gives `main` the 428px that 700 − 224 − 48 gave it beside the
+ * 14rem sidebar. The expanded panel, `.proposal-detail` (`ProposalRow.tsx`),
+ * measures 426px at 460px on this branch — the same 426px it measured at
+ * 700px before the move, since `main`'s content width does not change. The
+ * form inside it, and the pattern within the form, both measure 407px there
+ * too, at 460px same as at 700px before it. At 1100px — unaffected by the
+ * move, since the breakpoint is 900px — `.proposal-detail` measures 826px
+ * and the form 807px of it. The pattern keeps the form's whole width at
+ * both; what changes is how many of the four short fields fit on the line
+ * beneath it, and whether the prefix is readable end to end or scrolls.
  *
  * **Both colour schemes, set through `color-scheme` on the root.** Everything
  * below `.library` is drawn from the tokens in `styles/tokens.css`, each a
@@ -264,8 +271,8 @@ describe('the accept form, in a browser', () => {
     fitsItsColumn(host)
   })
 
-  it('wraps the fields at 700px rather than crushing the pattern', async () => {
-    const host = await panelAt(700, 'light')
+  it('wraps the fields at 460px rather than crushing the pattern', async () => {
+    const host = await panelAt(460, 'light')
 
     // The pattern still has the whole row — measured 407px, against 325px
     // when it shared the line — and the short fields wrap under it rather
@@ -287,7 +294,7 @@ describe('the accept form, in a browser', () => {
     // The sentence is long by construction — it names the edition, the kind,
     // the series, a count of works and what is *not* touched — and it is the
     // thing a person reads before pressing the button under it.
-    const host = await panelAt(700, 'light')
+    const host = await panelAt(460, 'light')
 
     expect(cut(host, '.consequence')).toBe(false)
     expect(box(host, '.consequence').width).toBeLessThanOrEqual(
@@ -310,7 +317,7 @@ describe('the accept form, in a browser', () => {
 
   it('draws the refusal and a disabled Accept, in both colour schemes', async () => {
     for (const scheme of ['light', 'dark'] as const) {
-      const host = await panelAt(700, scheme, COLLATERAL)
+      const host = await panelAt(460, scheme, COLLATERAL)
 
       const control = host.querySelector<HTMLButtonElement>('button.accept')
       if (!control) throw new Error('no accept control rendered')
@@ -347,7 +354,7 @@ describe('the accept form, in a browser', () => {
         background: getComputedStyle(control).backgroundColor,
         border: getComputedStyle(control).borderStyle,
       }
-      const live = await panelAt(700, scheme)
+      const live = await panelAt(460, scheme)
       const enabled = live.querySelector<HTMLButtonElement>('button.accept')
       if (!enabled) throw new Error('no accept control rendered')
       expect(enabled.disabled).toBe(false)

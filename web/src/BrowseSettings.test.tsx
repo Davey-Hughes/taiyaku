@@ -116,4 +116,18 @@ describe('BrowseSettings', () => {
       vi.resetModules()
     }
   })
+
+  it('draws its rows from the stylesheet, with no inline style', () => {
+    const host = mount(
+      <BrowseSettings
+        prefs={browseModule.defaults}
+        onChange={() => {}}
+        onReset={() => {}}
+      />,
+    )
+    const styled = [...host.querySelectorAll('label')].filter((label) =>
+      label.hasAttribute('style'),
+    )
+    expect(styled).toEqual([])
+  })
 })

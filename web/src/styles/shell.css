@@ -7,12 +7,15 @@
  * not. (Until 2026-09-17 this block used CSS system colours; `tokens.css`
  * maps each keyword to its token.)
  *
- * `.library` does not touch `html`, `body` or `#root`'s `height: 100%` chain —
- * that chain exists so `PageView` can constrain a page to the viewport, and
- * this screen wants the opposite: it scrolls. So `.library` gets its own
- * `height: 100%` (inherited from that chain) and its own `overflow-y: auto`
- * on `main`, rather than changing the chain or setting `height: auto` on the
- * three selectors it feeds. */
+ * At 900px and up, `.library` does not touch `html`, `body` or `#root`'s
+ * `height: 100%` chain — that chain exists so `PageView` can constrain a page
+ * to the viewport, and this screen wants the opposite: it scrolls. So
+ * `.library` gets its own `height: 100%` (inherited from that chain) and its
+ * own `overflow-y: auto` on `main`, rather than changing the chain or setting
+ * `height: auto` on the three selectors it feeds. Below 900px the document
+ * scrolls instead — `.library` takes its content's height and `main` stops
+ * scrolling — for the reason the `@media (width < 900px)` block below gives
+ * (iOS Safari's toolbar and status-bar tap). */
 .library {
   display: grid;
   grid-template-columns: 14rem 1fr;
@@ -29,21 +32,35 @@
 }
 
 .sidebar {
-  padding: 1rem;
+  padding: var(--space-4);
 }
 
 .browse-settings {
-  padding: 0 1rem 1rem;
+  padding: 0 var(--space-4) var(--space-4);
+}
+
+/* One row per preference: the label's text at one end, its control at the
+ * other. `FieldControl` draws a `<label>` per field of every kind but a
+ * nested object's, which is a `<div>` this rule does not reach — no browse
+ * preference is of that kind; the reader's own panel passes it an inline row
+ * style instead, because that panel is dark on purpose. */
+.browse-settings label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  font-size: var(--text-ui);
 }
 
 .browse-settings button {
-  margin-top: 0.5rem;
-  padding: 0.25rem 0.6rem;
+  margin-top: var(--space-2);
+  padding: var(--space-1) var(--space-3);
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   background: var(--surface);
   color: var(--text);
-  font-size: 0.8rem;
+  font-size: var(--text-ui);
   cursor: pointer;
 }
 
@@ -56,12 +73,28 @@
   gap: 0.5rem;
 }
 
+/* The section headings — Roots, Library, Theme — in the title face with a
+ * hairline running to the column's edge, as the mockup the user chose drew
+ * them (spec 2026-09-17 §7.1). `--muted` rather than the `opacity: 0.65` they
+ * had: a token has a floor `index.css.test.ts` checks, and an opacity has
+ * none. */
 .sidebar-heading {
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  opacity: 0.65;
-  margin: 0 0 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-family: var(--font-title);
+  font-size: var(--text-ui);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.sidebar-heading::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
 }
 
 .sidebar-roots {
@@ -73,9 +106,15 @@
   gap: 0.35rem;
 }
 
+/* Navigation in the text colour, and the screen you are on in the accent —
+ * `NavLink` marks it `aria-current="page"` (`Sidebar.tsx`). */
 .sidebar a {
-  color: var(--accent);
+  color: var(--text);
   text-decoration: none;
+}
+
+.sidebar a[aria-current="page"] {
+  color: var(--accent);
 }
 
 .sidebar a:hover {
@@ -92,10 +131,14 @@
   padding: 0.05rem 0.4rem;
   background: var(--accent);
   color: var(--on-accent);
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
 }
 
+/* `min-width: 0` because a grid item's automatic minimum is its min-content
+ * width: one unbreakable word inside `<main>` would otherwise widen the `1fr`
+ * track past the viewport. */
 .library > main {
+  min-width: 0;
   overflow-y: auto;
   padding: 1rem 1.5rem;
 }
@@ -111,15 +154,13 @@
   padding: 0 1rem 1rem;
 }
 
-/* The legend carries `.sidebar-heading` like the sidebar's `h2`s, but it is
- * not a heading, so `base.css`'s heading rule — the title face, 600, a 1.25
- * line — does not reach it. Without these three it drew in the UI face at 400
- * on a taller line than "Roots" above it. */
+/* The legend carries `.sidebar-heading` like the sidebar's `h2`s, and that
+ * rule now sets the face, the weight and the line itself. A legend shrinks to
+ * its text by default, and the heading's hairline reaches the column's edge
+ * only if the legend does. */
 .theme-control legend {
+  width: 100%;
   padding: 0;
-  font-family: var(--font-title);
-  font-weight: 600;
-  line-height: 1.25;
 }
 
 .theme-control .segments {
@@ -157,4 +198,189 @@
 .theme-control label:has(input:focus-visible) {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* The wordmark (`Wordmark.tsx`): 対訳 set vertically in the accent like a
+ * seal, then the name. It sets no size or weight; where it is drawn does —
+ * the sign-in screen's `<h2>`, the phone bar's way home, the sidebar's top.
+ * `display: flex` is what the sign-in heading itself had before this
+ * component took its markup, so that screen draws as it did. */
+.wordmark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-title);
+}
+
+.wordmark .seal {
+  padding: 4px 3px 3px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--text-meta);
+  line-height: 1;
+  letter-spacing: 0.1em;
+  writing-mode: vertical-rl;
+}
+
+/* The wordmark at the column's top, at both widths (spec 2026-09-17 §7.1). */
+.sidebar-column > .wordmark {
+  padding: var(--space-4) var(--space-4) 0;
+  font-size: var(--text-h3);
+  font-weight: 700;
+}
+
+/* The phone bar, the scrim and the drawer's Close button exist below 900 px
+ * only — the `@media` block below draws them. */
+.phone-bar,
+.scrim,
+.menu-close {
+  display: none;
+}
+
+/* Below 900 px — spec 2026-09-17 §7.1. The sidebar column becomes a drawer
+ * that ☰ slides in, and the *document* scrolls rather than `<main>`: iOS
+ * Safari shrinks its toolbar, and scrolls to the top on a tap on the status
+ * bar, only for the document's own scroll. So `.library` takes its content's
+ * height here and the bar sticks. While the drawer is open — `menu-open`,
+ * set by `Shell.tsx` — the bar and `<main>` are `inert` and the root stops
+ * scrolling. `Shell.browser.test.tsx` measures all three. */
+@media (width < 900px) {
+  .library {
+    display: block;
+    height: auto;
+    min-height: 100%;
+  }
+
+  .phone-bar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    height: 52px;
+    padding: 0 var(--space-2);
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
+  }
+
+  .phone-bar .menu-button,
+  .phone-bar .search {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+  }
+
+  .phone-bar svg,
+  .menu-close svg {
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+  }
+
+  .phone-bar .home {
+    flex: 1;
+    color: inherit;
+    font-size: var(--text-h3);
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  /* The drawer's own way out (spec 2026-09-17 §7.1): the scrim sits outside
+   * the dialog and ☰ is inert while it is open. */
+  .menu-close {
+    position: absolute;
+    top: var(--space-2);
+    right: var(--space-2);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+  }
+
+  .library > main {
+    overflow-y: visible;
+    padding: var(--space-4);
+  }
+
+  /* Off-canvas, and `visibility: hidden` as well, so neither Tab nor a screen
+   * reader reaches it while closed. Visibility waits out the slide on the way
+   * out and flips at once on the way in. */
+  .sidebar-column {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 30;
+    width: min(20rem, 85vw);
+    border-right: 1px solid var(--line);
+    background: var(--bg);
+    overscroll-behavior: contain;
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition:
+      transform 200ms ease,
+      visibility 0s linear 200ms;
+  }
+
+  .library.menu-open .sidebar-column {
+    transform: none;
+    visibility: visible;
+    transition: transform 200ms ease;
+  }
+
+  .scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    padding: 0;
+    border: 0;
+    background: var(--scrim);
+  }
+
+  :root:has(.library.menu-open) {
+    overflow: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-column,
+  .library.menu-open .sidebar-column {
+    transition: none;
+  }
+}
+
+/* 44 px rows for a finger (spec 2026-09-17 §7.1). */
+@media (pointer: coarse) {
+  .sidebar-primary a,
+  .sidebar-roots a {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .browse-settings label,
+  .browse-settings button {
+    min-height: 44px;
+  }
+
+  .theme-control label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+  }
 }

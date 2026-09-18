@@ -206,9 +206,10 @@ export function Proposals() {
           </button>
         ))}
       </div>
-      {/* `chips` is `Library.tsx`'s filter-row idiom, styled in `index.css`
-          down to the pressed state; `proposal-tabs` names this particular row
-          and carries no rules of its own. */}
+      {/* `chips` draws the filter rows as pills, styled in `styles/library.css`
+          down to the pressed state (the library's own row adds
+          `library-chips` for its tabs); `proposal-tabs` names this
+          particular row and carries no rules of its own. */}
       <div className="proposal-tabs chips">
         <button
           type="button"

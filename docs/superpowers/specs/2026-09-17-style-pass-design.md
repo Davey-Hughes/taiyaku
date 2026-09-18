@@ -1,6 +1,7 @@
 # The style pass — design
 
-**Status: settled in brainstorming on 2026-09-17. Not built.**
+**Status: settled in brainstorming on 2026-09-17. ① merged as #162
+(`c70413e`). ②'s details settled on 2026-09-18, in §7.**
 
 Written in the style of the rest of `docs/`: every decision records the
 alternative it beat and what it cost, a figure asserted here was measured on
@@ -333,7 +334,8 @@ series table: **the figures face on the numeric columns only** — ① sets
 too (§2), and the user left that to ② on 2026-09-18 — and `.editions
 td.missing`'s "—", which at `opacity: 0.55` measures 3.60:1 on Paper's `bg`
 (5.12:1 on Ink's; it was 4.76:1 on a white `Canvas`): ② checks it against the
-3:1 non-text floor, or raises it, when it restyles that table.
+3:1 non-text floor, or raises it, when it restyles that table. §7 has the
+details, settled with the user on 2026-09-18.
 
 **③ Reader.** The black ground; the top bar (back to the library, title and
 edition, layout, settings) and the bottom bar (strip, progress, readout) in
@@ -358,6 +360,13 @@ scan report, including the long path that wraps inside its cell, which
 `docs/notes.md` recorded during O90 as working and "left to the style pass";
 the account screen. The colour-literal allowlist reaches empty.
 
+**Then an accessibility pass**, after ⑤ — decided by the user on
+2026-09-18, when ②'s device pass reached VoiceOver: "keep the accessibility
+stuff as a pass at the end". It checks every screen the pass restyled with
+VoiceOver on the phone and a screen reader on the desktop, including the
+drawer's Close button and whether VoiceOver's escape gesture closes it,
+rather than each PR checking its own screens alone.
+
 **Every PR, before it is opened:**
 
 1. `scripts/check-all.sh`, with its `all green` line quoted.
@@ -379,3 +388,216 @@ the account screen. The colour-literal allowlist reaches empty.
   pass.
 - **O63** (the table layout cannot reach alignment detail). It is a decision
   already taken, and ② restyles the table without reopening it.
+- **Reading progress on the continue strip** — O132, filed by ②. The user
+  wants it, behind a setting (§7.2), but it needs the server to send a page
+  where it now stores a slot, so it follows the pass.
+- **Blurry covers** — O133, filed by ②'s device pass. Every cover in the
+  library is the reader's 160 px filmstrip thumbnail; the fix is the server's,
+  and the user put it in its own PR straight after ②.
+
+## 7. PR ② in detail
+
+Settled with the user on 2026-09-18, before planning. What §5 ② already
+says is not repeated here.
+
+**Measured first**, on `c70413e`, with the scratch copy of the NAS library
+served in Chromium at 390×844. The library still draws its 14 rem sidebar
+at that width, with the chips wrapping one per line, as §0 found on
+`dbd47a3`. With the sidebar column hidden by an injected rule and the grid
+set to one column, a series page gave two volume columns of 155.5 px, and
+an open alignment panel and metadata editor fitted inside their tile: the
+volume grid needs a narrower frame, not a new layout.
+
+### 7.1 The shell
+
+**Chosen: one sidebar, which CSS moves off-canvas below 900 px.** The
+alternatives were a native `<dialog>` opened with `showModal()` — the
+browser traps focus, closes on Escape and draws the backdrop — and a second
+copy of the sidebar inside a drawer. The dialog lost because the same
+sidebar is the permanent column at 900 px and above, so its content would
+have to move between the column and the dialog at every crossing of the
+breakpoint. The copy lost outright: the theme control's radios share one
+`name`, and two groups would uncheck each other. `inert` gives this
+approach the focus containment the dialog would have, at the cost of the
+focus and Escape handling written here — forty lines or so, a guess made
+before writing them.
+
+**The phone bar**, below 900 px only: ☰, the wordmark, and a search icon,
+52 px tall, a `--line` hairline beneath, pinned with `position: sticky`.
+☰ is a `<button>` labelled "Menu" with `aria-expanded` and `aria-controls`
+naming the sidebar column. The search icon is a link to `/search` labelled
+"Search", and the wordmark is a link home. The icons are inline SVG in
+`currentColor`, so they add no colour literal.
+
+**The wordmark** — 対訳 set vertically in the accent like a seal, then
+*taiyaku* — becomes one `Wordmark` component. It was `Login.tsx`'s markup and
+inline style objects before ②; the sign-in screen keeps its `<h2>` around the
+component, the phone bar wraps it in its home link, and the sidebar draws it
+at its top, unlinked, with the Library link just below.
+
+**The drawer**, below 900 px, is the sidebar column, sliding in from the
+left at `min(20rem, 85vw)` over a scrim. While it is open:
+
+1. the column has `role="dialog"`, `aria-modal="true"` and the label "Menu";
+2. the phone bar and `<main>` carry `inert`;
+3. the document does not scroll;
+4. focus moves to the column's first link.
+
+It closes on Escape, on a tap on the scrim, on its own Close button, on
+any navigation, and when the viewport widens to 900 px or more (a
+`matchMedia` change listener, guarded, because jsdom has none). Focus then
+returns to ☰ — except on widening, where ☰ is not drawn and focus stays in
+the sidebar, measured in Chromium by the pre-merge claim check.
+
+**The Close button** — a ✕ at the drawer's top, beside the wordmark, drawn
+below 900 px only — was added on 2026-09-18 after the whole-branch review
+found the modal had no way out inside it: the scrim sits outside the
+`aria-modal` region and ☰ is inert, so under VoiceOver following a link
+could have been the only exit. It is what the W3C's dialog guidance asks
+for. Focus still opens on the first link, so the button is one Shift+Tab
+away rather than the first thing announced. Closed, the column is
+`visibility: hidden` as well as off-screen, so neither Tab nor a screen
+reader reaches it. The slide takes 200 ms, and none under
+`prefers-reduced-motion`.
+
+**Below 900 px the document scrolls, not `<main>`.** At and above it,
+`.library` keeps today's frame: a full-height grid whose `<main>` scrolls
+beside the sidebar. On a phone, iOS Safari shrinks its toolbar, and scrolls
+to the top on a tap on the status bar, only for the document's own scroll —
+neither happens inside an inner scroller, which is the belief this rests on;
+only the document-scroll half was tried on a device — so below 900 px `.library` takes
+its content's height and the bar sticks. The drawer's scroll lock is then
+`overflow: hidden` on the root while the drawer is open, and it holds on
+iOS: measured on the user's iPhone on 2026-09-18, in Safari 26.6.1 (every
+request's user-agent read), a drag on the scrim left the library behind the
+open drawer still, the toolbar shrank as the library scrolled, and a tap on
+the status bar scrolled back to the top.
+
+**The sidebar, at both widths**, keeps its content — navigation, roots,
+the library settings, the theme control:
+
+- The wordmark at its top.
+- Navigation links in `--text`, the current screen's in `--accent` —
+  `NavLink`'s `aria-current="page"`; a series page marks nothing, because
+  React Router's `NavLink` counts a longer path as inside `to` only where
+  the next character is `/`, which after `/` it never is. *(This said
+  "with `end` on `/`"; ② found `end` there a no-op in react-router 8.3.0
+  and removed it.)* Root links stay plain `Link`s: `NavLink` compares the
+  path, not the query, so every `/?root=N` would read as current.
+- The section headings — Roots, Library, Theme — in the title face with a
+  `--line` hairline running to the edge, as in the mockup the user chose,
+  and coloured `--muted` rather than today's `opacity: 0.65`.
+- The library settings' rows move from `BrowseSettings.tsx`'s inline
+  `rowStyle` object to a class (§4 rule 4 — this is their PR). Their
+  controls stay native `select`s and checkboxes, so a phone opens its own
+  picker.
+- Links and controls get 44 px rows under `(pointer: coarse)`.
+
+**Proposals, Configuration and Account** sit inside the shell, so they get
+the bar and the drawer in ②. What is inside them is ⑤'s, and a sideways
+scroll inside one of them at 390 px stays until ⑤.
+
+### 7.2 The screens
+
+**The continue strip shows covers.** The mockup the user chose on
+2026-09-17 showed one work with its cover, "Vol. 1 · page 8" and a progress
+bar. The page has no page to show: `progress` holds a `slot` per edition
+(`schema/001_initial.sql`, migration 009), and nothing turns a slot into a
+page for the home route. Shown both on 2026-09-18, **the user wants both,
+chosen by a setting, and covers first**: ② ships covers, and O132 carries
+the progress version and the setting that picks between them — the
+`continueStrip` checkbox becoming *Off / Covers / Progress*. Each card:
+
+- a 104 px cover, `workCover(slug, opens)`, which is the thumbnail of the
+  edition the reader will open, from data `/api/library/home` already sends;
+- the title in the title face, at most two lines;
+- "Vol. N" in `--muted` when `volume` is set;
+- no link, and "files missing — cannot be opened" in `--warning`, when
+  `unreadable(w)` — the card keeps its place, as O62's chip did before ②.
+
+The row scrolls sideways under a "Continue" heading in the title face with a
+hairline after it.
+
+**The chips become underlined tabs**, as in the chosen mockup: `--muted`
+text, the pressed one `--text` over a 2 px `--accent` underline. They stay
+the same `aria-pressed` buttons. "Added" moves to the row's far end, because
+it sorts where the others filter. **On the library's own row only**, by a
+class of its own: `Proposals.tsx` draws its state and kind filters with the
+same `chips` class, and they keep their pills until ⑤ restyles that screen.
+Decided by the user on 2026-09-18, after the whole-branch review found the
+tab look had reached the inbox, where "All" and "Hide weak proposals"
+drew the accent underline side by side.
+
+**The grid.** Covers take square corners (§2) and a `--line` hairline
+instead of a rounded `--line-strong` border. Titles take the title face.
+Under each title a new line in `--muted` gives the series' `works` count —
+"42 volumes", "1 volume" — which `SeriesCard` already carries. A phone
+gets two columns, three in compact. Works that belong to no series keep
+their title-only tiles, restyled. The empty states, which had no CSS at
+all before ②, take the title face for their headings and `--muted` for their
+text — the proposals inbox's too, since it draws the same `EmptyState`
+component, which is accepted rather than scoped away: muted prose under a
+heading is not a restyle of that screen.
+
+**The series page.** Its title stays an `<h1>` in the title face, and a
+long one wraps rather than widening the page. Volume tiles take the grid's
+cover treatment. The ↓ and `i` controls take 2 px corners and are at least
+24 px square, 44 px under `(pointer: coarse)`. The alignment panel takes
+square corners and a hairline.
+
+**The series table** sits in its own box that scrolls sideways, so the page
+never does. §5's two items:
+
+- **The figures face on the page-count cells only.** `.editions` sets
+  `--font-ui` on the table and `--font-figures` on those cells; `base.css`'s
+  rule for every other table stays, because the rule preview's tables are
+  ⑤'s question (§2).
+- **`td.missing` loses its `opacity: 0.55`.** The "—" becomes `--muted`,
+  5.25:1 on Paper's `bg` and 6.77:1 on Ink's (§2's table), clearing the text
+  floor and not only the 3:1 one; the dashed border goes back to full
+  `--line-strong`, 3.49:1 and 3.58:1.
+
+**Search.** The field is full width on a phone and 24 rem at most above
+900 px, on `--field` — `.search-box input` overrode `base.css`'s `--field`
+with `--bg` before ②. Hits use the grid above.
+
+**At 390 px the page never scrolls sideways** on `/`, `/series/:id` in
+either layout, or `/search`.
+
+### 7.3 Tests and checks
+
+On top of §5's list for every PR:
+
+- **jsdom.** ☰'s `aria-expanded` goes false to true and its
+  `aria-controls` names the column; while open the column has
+  `role="dialog"` and `aria-modal`, and the bar and `<main>` are `inert`;
+  Escape, a scrim tap, the Close button, a navigation and a stubbed
+  media-query change each close it; focus goes to the first link on open
+  and back to ☰ on close.
+  The continue card's cover `src` is `workCover(slug, opens)`, its
+  "Vol. N" shows, and an unreadable one has no link. The grid's count reads
+  "42 volumes" and "1 volume". The table sits in its scroll box, and only
+  the page-count cells carry the figures class.
+- **Node, over the CSS.** `.editions td.missing` has no `opacity`, its
+  colour clears 4.5:1 and its border 3:1 in both themes; the sidebar
+  headings take a token rather than opacity; the figures face reaches the
+  page-count cells only. `base.css.test.ts`'s scope holds. The
+  colour-literal allowlist has no entry to lower — the library's files are
+  already at zero — and it fails any literal ② adds.
+- **The browser project** (Chromium; the gate runs it, CI does not). At
+  390×844 the page does not scroll sideways on the home, series grid, series
+  table and search screens; the closed drawer is out of Tab's reach, the open
+  one keeps Tab inside it, and the document does not scroll behind it; the
+  open drawer sits at the left edge, above the scrim, and a tap beside it
+  lands on the scrim and closes it. At 1440 there is no bar, no Close button,
+  and the sidebar shows. *(The open drawer's place on screen was added after
+  the whole-branch review: deleting its `transform: none`, the scrim's
+  `display: block` or the column's `z-index` had failed no test.)*
+- **The browser pass** covers the whole matrix — 390 and 1440, Paper and
+  Ink, home, series grid and table, search, and the drawer open — and reads
+  every screenshot.
+- **The iPhone**, over the tailnet: the drawer opening and closing, the page
+  not scrolling behind it, the toolbar shrinking on scroll, and tap sizes.
+  The user-agent is read before any result is believed.
+- **O132 is filed** in `docs/status.md`: the continue strip's progress
+  version and the setting that picks between it and covers.

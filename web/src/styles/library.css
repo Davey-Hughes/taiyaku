@@ -1,3 +1,6 @@
+/* The filter rows' pills — the proposals inbox's state and kind rows
+ * (`Proposals.tsx`), which keep them until the style pass's ⑤ restyles that
+ * screen (spec 2026-09-17 §7.2). */
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -21,41 +24,79 @@
   border-color: var(--accent);
 }
 
+/* The library's own row as underlined tabs, as the mockup the user chose
+ * drew them (spec 2026-09-17 §7.2): the pressed one in the text colour over
+ * the accent, the rest muted. "Added" (`.sort`) sits at the row's far end,
+ * because it sorts where the others filter. */
+.chips.library-chips {
+  align-items: baseline;
+  gap: var(--space-1) var(--space-5);
+  margin: var(--space-5) 0 var(--space-4);
+}
+
+.chips.library-chips button {
+  padding: var(--space-1) 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  font-size: var(--text-ui);
+}
+
+.chips.library-chips button[aria-pressed="true"] {
+  background: none;
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.chips.library-chips .sort {
+  margin-left: auto;
+}
+
+/* The continue strip — spec 2026-09-17 §7.2: a row of cover cards under a
+ * heading with a hairline after it. The row scrolls sideways inside itself,
+ * so the page never does. `.tile-unreadable` is the same card with no link,
+ * for a work whose files have left the disk — O62, applied here for the
+ * reason I1 of the whole-branch review names this strip: the reader was
+ * mid-read when the files went. The list pads itself by `--space-1` on the
+ * top and sides, and pulls its margin back by as much there, so a cover's
+ * hairline and a card's focus ring are not clipped at its edge; the
+ * bottom's `--space-2` keeps the cards clear of a scrollbar. */
+.continue h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-h3);
+}
+
+.continue h2::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
 .continue ul {
   list-style: none;
-  margin: 0;
-  padding: 0.25rem 0;
+  margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) 0;
+  padding: var(--space-1) var(--space-1) var(--space-2);
   display: flex;
-  gap: 0.75rem;
+  gap: var(--space-3);
   overflow-x: auto;
 }
 
 .continue li {
-  flex: 0 0 auto;
+  flex: 0 0 104px;
 }
 
-/* `.tile-unreadable` is the same chip, offered to a work whose files have
- * left the disk — O62, applied here for the reason I1 of the whole-branch
- * review names this strip: the reader was mid-read when the files went, so
- * this is the likeliest place to meet the gap. `color` is split from the
- * shared box below because `.continue a`'s `--accent` would otherwise paint
- * a control that is deliberately not a link. */
 .continue a,
 .continue .tile-unreadable {
-  display: block;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  padding: 0.5rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: inherit;
   text-decoration: none;
-  white-space: nowrap;
-}
-
-.continue a {
-  color: var(--accent);
-}
-
-.continue .tile-unreadable {
-  color: var(--text);
 }
 
 .grid {
@@ -89,24 +130,29 @@
  * third empty state. Both share the box so a placeholder occupies exactly the
  * space the artwork would have, and the grid does not reflow as covers arrive
  * or fail. Tokens, not `--box-*`: this is chrome, not artwork. */
+/* Square corners and a hairline (spec 2026-09-17 §2 and §7.2): the cover is
+ * the artwork, and the rule only says where it ends. */
 .grid img,
 .grid .cover-missing,
 .volumes img,
-.volumes .cover-missing {
+.volumes .cover-missing,
+.continue img,
+.continue .cover-missing {
   width: 100%;
   aspect-ratio: 2 / 3;
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  box-shadow: 0 0 0 1px var(--line);
   background: var(--surface);
 }
 
 .grid img,
-.volumes img {
+.volumes img,
+.continue img {
   object-fit: cover;
 }
 
 .grid .cover-missing,
-.volumes .cover-missing {
+.volumes .cover-missing,
+.continue .cover-missing {
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -114,15 +160,40 @@
   padding: 0.5rem;
   overflow: hidden;
   color: var(--text);
-  font-size: 0.85rem;
+  font-size: var(--text-ui);
   line-height: 1.3;
   text-align: center;
 }
 
+/* Titles in the title face; `anywhere` so a long file name breaks rather
+ * than widening its column. */
 .grid .title,
-.volumes .title {
-  font-size: 0.9rem;
+.volumes .title,
+.continue .title {
+  font-family: var(--font-title);
+  font-size: var(--text-ui);
+  font-weight: 600;
   line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.continue .title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.grid .meta,
+.continue .meta {
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+/* "files missing — cannot be opened", wherever a tile or the series table says it. */
+.unreadable {
+  color: var(--warning);
+  font-size: var(--text-meta);
 }
 
 /* The volume list on a series page — spec C1 §3. Narrower tiles than the
@@ -167,29 +238,40 @@
   bottom: 0.25rem;
   padding: 0.1rem 0.35rem;
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   background: var(--bg);
   color: var(--text);
-  font-size: 0.8rem;
+  font-size: var(--text-meta);
   line-height: 1.4;
 }
 
-/* §3's preset B. Tokens, like every other rule in this block. */
+/* §3's preset B, in a box that scrolls sideways (spec 2026-09-17 §7.2). The
+ * table takes the UI face and gives the figures face back to its page-count
+ * cells only: `base.css` puts the figures face on every table, and here that
+ * drew the digits inside a volume's file name heavier than its title. Its
+ * headings are `base.css`'s — muted, 500. */
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 .editions {
   border-collapse: collapse;
   width: 100%;
+  font-family: var(--font-ui);
 }
 
 .editions th,
 .editions td {
-  border-bottom: 1px solid var(--line-strong);
-  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--line);
+  padding: var(--space-2) var(--space-3);
   text-align: left;
-  font-size: 0.9rem;
+  font-size: var(--text-ui);
 }
 
-.editions th {
-  font-weight: 600;
+.editions td.pages {
+  font-family: var(--font-figures);
+  font-variant-numeric: tabular-nums;
 }
 
 .editions a {
@@ -222,22 +304,33 @@
   text-decoration: underline solid;
 }
 
-/* A dashed border rather than a lighter colour: the cell means "this edition
- * is not here", and opacity alone reads as "loading" against a screen whose
- * covers arrive one at a time. */
+/* A dashed border, because the cell means "this edition is not here" and a
+ * fade alone reads as "loading" against a screen whose covers arrive one at a
+ * time. The dash is `--muted` rather than the text colour at `opacity: 0.55`,
+ * which measured 3.60:1 on Paper's ground (spec 2026-09-17 §5 ②): the token
+ * clears 4.5:1 in both themes, and the border stays at full `--line-strong`.
+ * `index.css.test.ts` holds both. */
 .editions td.missing {
   border: 1px dashed var(--line-strong);
-  color: var(--text);
-  opacity: 0.55;
+  color: var(--muted);
   text-align: center;
 }
 
+/* A `<select>` is as wide as its longest option, and a real edition label is
+ * a file name with a count after it — so the control may shrink, and the page
+ * never widens for it. */
 .edition-selector {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
-  margin: 0 0 1rem;
-  font-size: 0.9rem;
+  gap: var(--space-2);
+  max-width: 100%;
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-ui);
+}
+
+.edition-selector select {
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* Dimmed, not hidden — see the component's own note.
@@ -282,34 +375,41 @@
  * sits in the same place under a tile and must not look like a different
  * kind of thing.
  *
- * **`display: inline-block` is load-bearing, not tidying.** `.volumes li a`
- * (line 442) sets `display: flex; flex-direction: column` on every anchor in
+ * **An inline display is load-bearing, not tidying** — `inline-flex` since
+ * the style pass, so its 24 px box centres the arrow. `.volumes li a`
+ * (above) sets `display: flex; flex-direction: column` on every anchor in
  * a tile — written when the tile's own `<Link>` was the only anchor that had
  * ever been in one. Without this override the control stretches to the full
  * tile width and stacks. jsdom computes no layout, so `Series.test.tsx`
  * passes either way and only a browser sees it. */
 .volumes a.get {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   align-self: start;
+  min-width: 24px;
+  min-height: 24px;
   margin-top: 0.15rem;
   padding: 0 0.4rem;
   border: 1px solid var(--line-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-control);
   background: var(--surface);
   color: var(--text);
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
   line-height: 1.5;
   text-decoration: none;
 }
 
 .volumes .panel-open {
+  min-width: 24px;
+  min-height: 24px;
   margin-top: 0.15rem;
   padding: 0 0.4rem;
   border: 1px solid var(--line-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-control);
   background: var(--surface);
   color: var(--text);
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
   line-height: 1.5;
   cursor: pointer;
 }
@@ -317,11 +417,11 @@
 .alignment-panel {
   margin-top: 0.35rem;
   padding: 0.5rem 0.6rem;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  border: 1px solid var(--line);
+  border-radius: 0;
   background: var(--surface);
   color: var(--text);
-  font-size: 0.8rem;
+  font-size: var(--text-meta);
 }
 
 .alignment-panel ul {
@@ -347,20 +447,60 @@
   opacity: 0.9;
 }
 
+/* The field on `--field` like every input `base.css` draws — it overrode that
+ * with `--bg` until the style pass — at most 24 rem wide, and the whole row on
+ * a phone. Its border, corners, colour and font are `base.css`'s. */
 .search-box {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin: 0 0 1rem;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-ui);
 }
 
 .search-box input {
   flex: 1;
+  min-width: 0;
   max-width: 24rem;
-  padding: 0.35rem 0.5rem;
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
+  padding: var(--space-2) var(--space-3);
+  background: var(--field);
+}
+
+/* A series title breaks rather than widening the page. */
+.library > main h1 {
+  overflow-wrap: anywhere;
+}
+
+/* The empty states (`EmptyState.tsx`), which had no rules of their own: the
+ * heading is `base.css`'s, the prose muted, the command in a box of its own
+ * that scrolls rather than widening the page. */
+.empty p {
+  max-width: 40rem;
+  color: var(--muted);
+}
+
+.empty pre {
+  overflow-x: auto;
+  padding: var(--space-3);
+  background: var(--surface);
+  font-size: var(--text-ui);
+}
+
+/* 44 px targets for a finger (spec 2026-09-17 §7.1). */
+@media (pointer: coarse) {
+  .chips.library-chips button {
+    min-height: 44px;
+  }
+
+  .volumes a.get,
+  .volumes .panel-open {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+@media (width < 900px) {
+  .search-box input {
+    max-width: none;
+  }
 }

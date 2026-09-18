@@ -124,4 +124,26 @@ describe('the sidebar', () => {
       'Account',
     )
   })
+
+  it('marks the screen it is on, the library only on the library itself, and never a root', () => {
+    const on = (path: string) =>
+      mount(
+        <MemoryRouter initialEntries={[path]}>
+          <Sidebar
+            roots={[{ id: 4, name: 'Manga' }]}
+            showRoots={true}
+            admin={true}
+          />
+        </MemoryRouter>,
+      )
+    const current = (host: HTMLElement) =>
+      [...host.querySelectorAll('[aria-current="page"]')].map((a) =>
+        a.getAttribute('href'),
+      )
+
+    expect(current(on('/'))).toEqual(['/'])
+    expect(current(on('/search'))).toEqual(['/search'])
+    expect(current(on('/config/roots'))).toEqual(['/config'])
+    expect(current(on('/series/3'))).toEqual([])
+  })
 })

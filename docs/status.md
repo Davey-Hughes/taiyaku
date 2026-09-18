@@ -118,8 +118,8 @@ boundary only a spoke has, which a reader found at one press.
 
 ## What is built
 
-Six crates, 2227 tests, plus 2,176 in `web/`'s TypeScript — 1,192 in the `node`
-project and 984 in the `jsdom` one — and twenty-eight more in a
+Six crates, 2227 tests, plus 2,201 in `web/`'s TypeScript — 1,201 in the `node`
+project and 1,000 in the `jsdom` one — and thirty-seven more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower` and `ureq` in the server, `rusqlite` (features `["backup"]`, against
@@ -1367,7 +1367,7 @@ both are waiting on L2.
 
 ### Open items
 
-One hundred and thirty-one, each found by a whole-branch review, carried as a deferral,
+One hundred and thirty-three, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -1395,7 +1395,8 @@ and reading which URLs the browser requested for it, turned up by
 measuring what else stood where a fix had just moved a button, turned up by
 five branches running their test suites on one machine at once, turned up by
 what those branches found past the edges of their rows, turned up by
-checking the premise a fix had been briefed on, or turned up
+checking the premise a fix had been briefed on, turned up by the person
+looking at a new screen on their own phone, or turned up
 by answering a question an earlier item's notes wrote down and left open, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
@@ -1403,7 +1404,7 @@ visible act rather than a thing someone remembers. **Eighty-five are now closed
 — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20,
 O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43,
 O44, O47, O53, O54, O55, O62, O64, O65, O67, O70, O71, O72, O73, O75, O76, O77, O78, O79, O80, O83, O84, O85, O86, O89, O90, O92, O93, O94, O95, O96,
-O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O113, O114, O115, O116, O117, O119, O120 and O121 — leaving forty-six.** *(It read "leaving fifty" against
+O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O113, O114, O115, O116, O117, O119, O120 and O121 — leaving forty-eight.** *(It read "leaving fifty" against
 forty-nine open rows from the moment O97 closed: the count of closed items
 moved and the count of open ones did not, which is the drift the sweep at the
 head of this section exists to catch and did not run. Corrected here. **It
@@ -1473,7 +1474,7 @@ O72 closed the same day on a branch of its own, once a dismissal had been found
 under its own filter and reopened in the browser, and took it to forty.
 O76 closed the same day on a branch of its own, once a fold had been driven over
 real archives before and after, and took it to thirty-nine; O121 opened and closed
-on that branch, as O113 did, so it moved the closed count and not the open one. O122 through O125 opened the same day with no code change, from what that six-branch queue left unfiled, and took it to forty-three — a sentence this parenthetical did not get until O89's branch counted the table against it, which is the drift the sweep at the head of this section exists to catch. O89 closed on 2026-09-16 on a branch of its own, once a real library had been re-derived against figures written down in advance and each of eighteen hand mutations had failed a test, and took it to forty-two. O126, O127 and O128 opened on that branch, from what that re-derive and the branch's whole-branch review met past O89's own row, and took it to forty-five. O111 closed on 2026-09-17 on a branch of its own, once a page that fits had been timed behind a cold filmstrip before and after, and took it to forty-four. O129 opened on that branch, from a hand mutation no test caught, and took it back to forty-five. O90 closed on 2026-09-17 on a branch of its own, once the scan said why each entry it skipped was skipped and a copy of the real library had named its one remaining file, and took it to forty-four. O130 and O131 opened on that branch, from what that one file turned out to be, and took it to forty-six.)*
+on that branch, as O113 did, so it moved the closed count and not the open one. O122 through O125 opened the same day with no code change, from what that six-branch queue left unfiled, and took it to forty-three — a sentence this parenthetical did not get until O89's branch counted the table against it, which is the drift the sweep at the head of this section exists to catch. O89 closed on 2026-09-16 on a branch of its own, once a real library had been re-derived against figures written down in advance and each of eighteen hand mutations had failed a test, and took it to forty-two. O126, O127 and O128 opened on that branch, from what that re-derive and the branch's whole-branch review met past O89's own row, and took it to forty-five. O111 closed on 2026-09-17 on a branch of its own, once a page that fits had been timed behind a cold filmstrip before and after, and took it to forty-four. O129 opened on that branch, from a hand mutation no test caught, and took it back to forty-five. O90 closed on 2026-09-17 on a branch of its own, once the scan said why each entry it skipped was skipped and a copy of the real library had named its one remaining file, and took it to forty-four. O130 and O131 opened on that branch, from what that one file turned out to be, and took it to forty-six. O132 and O133 opened on 2026-09-18 on the style pass's ② branch, from its design and its device pass, and took it to forty-eight.)*
 
 **What spec A2's fourth review reported and nobody has verified.** Four rounds
 returned fifteen findings each. Round four's fifteen were: two fixed as security
@@ -1662,6 +1663,8 @@ each is in the detail below; the table is what a reader scans.
 | O129 | [ ] | **No test sees a generation permit released as soon as it is taken.** Bound to `_` rather than to a name, as in `let _ = GENERATION_LIMIT.acquire();`, the guard drops at the end of its own statement: the call still waits for a free permit, and the decode after it then runs holding none, so the bound `MAX_CONCURRENT_GENERATIONS` puts on decode memory is gone. Every test waits on the acquire, and none can see the release. **Measured on 2026-09-17 while closing O111** (`docs/notes.md`, "O111", "Every break, watched"): with `cached_or_generated_page`'s guard turned so, all 593 `taiyaku-serve` tests passed, and cargo-mutants makes no mutant of the permit at all. `cover::at_path` takes its permit the same way and was not mutated. **What would catch it**: a generation held part-way through inside its permit while a test counts the permits left. `at_path` fetches inside its permit, so a fetch closure could be held there; `cached_or_generated_page`'s resize takes no closure, so holding it mid-decode needs a seam that does not exist | `cover::cached_or_generated_page`, `cover::at_path`, `GENERATION_LIMIT` | a hand mutation while closing O111, 2026-09-17 |
 | O130 | [ ] | **taiyaku reads no JPEG XL page, so an archive of `.jxl` pages is never a member.** `taiyaku-read`'s `IMAGE_EXTENSIONS` does not list `jxl`, so `member_pages` finds no page in such an archive and refuses it, the walk stores its `pages` as NULL, and derivation reports it under `Unreadable::uncounted`. The `image` crate taiyaku decodes with, 0.25.9, has no JPEG XL codec; its `hooks` module is the only place it names the format. **Found while closing O90** (`docs/notes.md`, "O90"): the one entry a real library still counted unreadable after its RAR volumes were repacked was `Bisque Doll de Chu ♡.cbz`, a zip that lists cleanly and holds 185 lossy JPEG XL pages. **That file was converted to PNG on 2026-09-17**, outside taiyaku, with the original kept as a backup outside the scan root. Every page was pixel-identical to its `djxl` decode, the archive went from 168 MB to 433 MB, and a rescan of a copy of the library read it as a member of 185 pages, taking works from 1895 to 1896 with nothing left unreadable. **Deferred by the person's decision** on 2026-09-17: reading JPEG XL is a future feature. **What would decide it**: a decoder checked against GPL-3.0-or-later for licence and against `taiyaku-read`'s place for maturity, as O90's design §1 did for RAR, and a library where converting is not available | `taiyaku_read`'s `IMAGE_EXTENSIONS`, `taiyaku_read::member_pages` | closing O90, 2026-09-17 |
 | O131 | [ ] | **The walk keeps no reason for a NULL page count, so an archive that would not open and one whose pages taiyaku does not read are reported alike.** `scan::pages_of` calls `taiyaku_read::member_pages(…).ok()` and drops the refusal, and the refusal is what tells the two apart: `no page images` for an archive that opened, an open or parse error for one that did not. So `Unreadable::uncounted` names the file and not the cause, under the one label "whose pages could not be counted", and a person has to open the archive to learn whether it is broken or in a format taiyaku does not read. **Found while closing O90**, whose one real case was the second kind (O130). **What would decide it**: whether the reason earns a `scan_entry` column. `pages_of` swallows the refusal so that one bad file cannot fail a library's scan, and storing the message would not undo that | `scan::pages_of`, `derive::Unreadable::uncounted` | closing O90, 2026-09-17 |
+| O132 | [ ] | **The continue strip shows no reading progress.** Each card draws a volume's cover, title and number (style pass ②), not where the reader is in it: the mockup the user chose on 2026-09-17 drew "Vol. 1 · page 8" and a bar, but `progress` holds a `slot` per edition, and nothing turns a slot into a page for `/api/library/home`. **The user wants both, chosen by a setting** (2026-09-18): the browse module's `continueStrip` checkbox becoming *Off / Covers / Progress*. What it needs: the home route sending each continuing work's page and page count in the edition it opens — resolved from the slot through that edition's spread flags and its work's reading direction, as the reader resolves it — and the card drawing them | `browse::home`, `library_api.rs`'s `/api/library/home`, `Library.tsx`'s `ContinueCard`, `browseModule.ts`'s `continueStrip` | the style pass's ② design, 2026-09-18 |
+| O133 | [ ] | **Every cover in the library is the reader's filmstrip thumbnail, so covers are blurry on a phone.** `/api/library/series/{id}/cover` redirects to `/api/works/{slug}/{edition}/pages/0/thumb`, and the web draws that same route for a series page's volume tiles and the continue strip's cards (`library.ts`'s `workCover`). Its long edge is `cover.rs`'s `THUMB_LONG_EDGE`, 160 — "sized for the strip rather than for a grid" — so a cover arrives 160 px on its long edge, 113×160 for a typical one. A phone's two-column grid draws it at about 171×256 CSS px, 513×768 device pixels at 3×: about 4.8× upscaled, and visibly blurry on the user's iPhone (2026-09-18); a 1440 px desktop at 1× draws it at about 152×228, 1.4×. `cover.rs` already makes a 512 px cover (`LONG_EDGE`), for OPDS feeds only. Not caused by the style pass; its phone tiles made it obvious. **The user decided** (2026-09-18) to fix it in its own PR after ②. What would settle it: a cover size for the web — 512 px or more, for a 3× phone — through the cover path and its cache, and the web's covers drawn from it | `cover.rs`'s `THUMB_LONG_EDGE` and `LONG_EDGE`, `library_api.rs`'s `cover`, `library.ts`'s `workCover` | the style pass's ② device pass, 2026-09-18 |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -4059,7 +4062,7 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the forty-six open items tabled above — twenty-two of them found by
+What remains: the forty-eight open items tabled above — twenty-two of them found by
 a whole-branch review or by the review of one's own fixes (O42 and O44 among
 them — **O44 has since closed, on 2026-08-29, and is no longer one of them** — O96 from the *third* such pass over one branch, which is the most any
 change here has had — **it has since closed, on 2026-09-06, and is no longer one

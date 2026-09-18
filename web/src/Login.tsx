@@ -1,6 +1,7 @@
 import { useState, type CSSProperties, type FormEvent } from 'react'
 import { login } from './api'
 import { messageOf } from './message'
+import { Wordmark } from './Wordmark'
 
 /**
  * The sign-in screen.
@@ -45,22 +46,10 @@ const panelStyle: CSSProperties = {
   borderBottom: '1px solid var(--line)',
 }
 
-const wordmarkStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 10,
+// The wordmark draws itself (`Wordmark.tsx`, `styles/shell.css`); the
+// heading around it only drops its margin.
+const headingStyle: CSSProperties = {
   margin: 0,
-}
-
-/** 対訳, *taiyaku*, set vertically in the accent like a seal. */
-const sealStyle: CSSProperties = {
-  writingMode: 'vertical-rl',
-  padding: '4px 3px 3px',
-  background: 'var(--accent)',
-  color: 'var(--on-accent)',
-  fontSize: 'var(--text-meta)',
-  letterSpacing: '0.1em',
-  lineHeight: 1,
 }
 
 const fieldStyle: CSSProperties = {
@@ -124,11 +113,8 @@ export function Login({ onSignedIn }: LoginProps) {
   return (
     <div className="login" style={overlayStyle}>
       <form style={panelStyle} onSubmit={submit}>
-        <h2 style={wordmarkStyle}>
-          <span style={sealStyle} aria-hidden="true">
-            対訳
-          </span>
-          taiyaku
+        <h2 style={headingStyle}>
+          <Wordmark />
         </h2>
         <label style={labelStyle}>
           Name

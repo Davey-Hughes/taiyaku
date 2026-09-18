@@ -2,6 +2,11 @@ import { Link } from 'react-router'
 import { Cover } from './Cover'
 import { type SeriesCard, unreadable, type WorkCard } from './library'
 
+/** "42 volumes", "1 volume": a series' `works`, as its tile says it. */
+function volumeCount(works: number): string {
+  return works === 1 ? '1 volume' : `${works} volumes`
+}
+
 /**
  * The library's tiles: series, then the works that belong to none.
  *
@@ -28,6 +33,7 @@ export function SeriesGrid({
               {s.aligned > 0 && <span className="aligned">⇄ {s.aligned}</span>}
             </span>
             <span className="title">{s.title}</span>
+            <span className="meta">{volumeCount(s.works)}</span>
           </Link>
         </li>
       ))}

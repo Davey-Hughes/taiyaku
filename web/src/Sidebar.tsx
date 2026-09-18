@@ -65,6 +65,16 @@
  * first request, so the two cannot mean different things. This file does not
  * hold it, and draws the number it is handed.
  *
+ * **The screen you are on is marked by `NavLink`'s `aria-current="page"`**,
+ * which `shell.css` draws in the accent (spec 2026-09-17 §7.1). `/` needs no
+ * `end`: React Router's `NavLink` counts a longer path as inside `to` only
+ * where the next character is `/`, and after `/` it never is — read in
+ * react-router 8.3.0 — so a series page marks nothing rather than the
+ * library, which `Sidebar.test.tsx` holds. `/config` has no `end`, so every
+ * configuration tab marks it. The root links stay plain `Link`s: `NavLink`
+ * compares the path and not the query, so every `/?root=N` would read as
+ * current on the library.
+ *
  * **This paragraph once described behaviour that was not true, and that is
  * worth keeping on record rather than editing away.** `Library` passed a
  * hardcoded `false` from the day it was written until 2026-08-21, so no
@@ -73,7 +83,7 @@
  * it — which is also why this version states as little of that contract as
  * `Sidebar` itself needs.
  */
-import { Link } from 'react-router'
+import { Link, NavLink } from 'react-router'
 import type { RootCard } from './library'
 
 export interface SidebarProps {
@@ -101,28 +111,28 @@ export function Sidebar({
     <nav className="sidebar" aria-label="Library">
       <ul className="sidebar-primary">
         <li>
-          <Link to="/">Library</Link>
+          <NavLink to="/">Library</NavLink>
         </li>
         <li>
-          <Link to="/search">Search</Link>
+          <NavLink to="/search">Search</NavLink>
         </li>
         {admin && (
           <li>
-            <Link to="/proposals">
+            <NavLink to="/proposals">
               Proposals
               {openProposals !== undefined && (
                 <span className="count">{openProposals}</span>
               )}
-            </Link>
+            </NavLink>
           </li>
         )}
         {admin && (
           <li>
-            <Link to="/config">Configuration</Link>
+            <NavLink to="/config">Configuration</NavLink>
           </li>
         )}
         <li>
-          <Link to="/account">Account</Link>
+          <NavLink to="/account">Account</NavLink>
         </li>
       </ul>
       {showRoots && roots.length > 0 && (

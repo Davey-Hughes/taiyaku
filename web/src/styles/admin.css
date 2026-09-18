@@ -12,15 +12,18 @@
  *
  * **The `container-type` on `.proposal-list` below is the only such rule in
  * this file, and it is here because the width that decides this layout is not
- * the viewport's.** `.library` is a fixed 14rem sidebar plus the rest, so at
- * a 700px window the list is 428px wide and at 1100px it is 828px; a media
- * query would have to hardcode that 14rem a second time and go wrong the day
- * the sidebar changed. The list asks its own width instead.
+ * the viewport's.** At 900px and up `.library` is a fixed 14rem sidebar plus
+ * the rest, so at an 1100px window the list is 828px wide; below 900px the
+ * sidebar leaves the flow (the style pass's ②), so a 460px window gives the
+ * list 428px — the width a 700px window gave it beside the sidebar before. A
+ * media query would have to hardcode that 14rem a second time and go wrong
+ * the day the sidebar changed. The list asks its own width instead.
  *
- * **The tab row has no rules here.** It reuses `.chips` above — the filter
- * row `Library.tsx` already draws, pressed state included. `.proposal-tabs`
- * is a name for tests and for this comment, not a second idiom to keep in
- * agreement with the first.
+ * **The tab row has no rules here.** It reuses `library.css`'s plain `.chips`
+ * pill rules, which since the style pass's ② are the inbox's own — the
+ * library's row adds `library-chips` for its tabs — until ⑤ restyles this
+ * screen; `.proposal-tabs` is still a name for tests and for this comment,
+ * carrying no rules of its own.
  *
  * Tokens, like everything else below `.library`. */
 .proposals h1 {
@@ -189,12 +192,13 @@
 /* Narrow: the titles take the row to themselves, under the kind and the
  * strength pill.
  *
- * 32rem is where the middle track stops being able to hold a title. At a
- * 700px window this list is 428px and that track measured 139px — `Monster -
- * The Pe…`, which is the same defect one line further down. Below the
- * threshold the kind and the pill keep the first line (they are short, and
- * they are the two fields a person counts down the list) and the titles get
- * the full width of the row. */
+ * 32rem is where the middle track stops being able to hold a title. At a 428px
+ * list — a 460px window since the style pass's ②, a 700px one before it — that
+ * track measured 139px when this was written (#88) — `Monster - The Pe…` — and
+ * 106.6px since the style pass's ①, with its fonts loaded — `Monster - T…` —
+ * the same defect one line further down. Below the threshold the kind and the
+ * pill keep the first line (they are short, and they are the two fields a
+ * person counts down the list) and the titles get the full width of the row. */
 @container inbox (max-width: 32rem) {
   .proposals .row .disclosure {
     grid-template-columns: minmax(0, 1fr) auto;

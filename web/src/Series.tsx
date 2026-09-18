@@ -91,6 +91,12 @@ function editionColumns(works: WorkCard[]): { key: string; label: string }[] {
  * scan (`held.missing > 0`). Conflating the two in one class or one word
  * would read a volume that never had a raw release the same as one whose raw
  * release just vanished, which are different repairs.
+ *
+ * **Two things for a phone** (spec 2026-09-17 §7.2): the table sits in a box
+ * that scrolls sideways, so a series with several editions never makes the
+ * page do so; and each page count is `pages`, the one cell `library.css`
+ * draws in the figures face — the table itself takes the UI face, so the
+ * digits inside a volume's file name are the title's own.
  */
 function Table({
   works,
@@ -101,107 +107,110 @@ function Table({
 }) {
   const columns = editionColumns(works)
   return (
-    <table className="editions">
-      <thead>
-        <tr>
-          <th scope="col">Volume</th>
-          {columns.map((c) => (
-            <th scope="col" key={c.key}>
-              {c.label}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {works.map((w) => (
-          <tr key={w.slug}>
-            <td>
-              {unreadable(w) ? (
-                // **O62 — the link is the treatment, not a badge.** Spec C1
-                // §8 asks for a work whose members are gone to be "shown as
-                // unreadable rather than offered and then failing at the
-                // first page", and a mark beside a live link still sends a
-                // reader into a page that cannot load. The volume keeps its
-                // name: withholding that too would read as a library that
-                // has lost the work rather than one that cannot open it.
-                <>
-                  <span className="title">{w.title}</span>{' '}
-                  <span className="unreadable">
-                    files missing — cannot be opened
-                  </span>
-                </>
-              ) : (
-                <Link to={`/read/${w.slug}`}>{w.title}</Link>
-              )}
-              {w.aligned && (
-                <span className="aligned" title="has an aligned edition">
-                  {' '}
-                  ⇄
-                </span>
-              )}
-            </td>
-            {columns.map((c) => {
-              const held = w.editions.find((e) => e.key === c.key)
-              return held ? (
-                // **The page count *is* the control.** Spec C2 §8 asked for
-                // "the same control as a column", which does not survive this
-                // layout's shape: there is one column per edition and no
-                // single edition a row is already showing, so a separate
-                // column would have to pick one arbitrarily — inside the one
-                // view whose whole purpose is comparing them side by side.
-                // §8's "one control rather than three" was an argument about
-                // the tile, which has an edition selector and therefore a
-                // settled question; a row has neither. The number in the cell
-                // is already the per-edition fact, so linking it adds no
-                // element to the layout at all.
-                <td
-                  key={c.key}
-                  // Per edition, because `missing` is: one edition of a
-                  // volume can have lost its files while another is intact,
-                  // and offering the intact one is right.
-                  {...(held.missing > 0
-                    ? {
-                        'data-unreadable': 'true',
-                        'aria-label': `${c.label}, ${held.missing} of ${held.members} files missing`,
-                      }
-                    : {})}
-                >
-                  {held.missing > 0 ? (
-                    held.pages
-                  ) : mayDownload ? (
-                    <a
-                      className="get"
-                      href={editionDownload(w.slug, c.key)}
-                      download
-                      // **The count is in the label, not only in the
-                      // content.** `aria-label` *replaces* an element's
-                      // content for its accessible name, and this cell holds
-                      // nothing but the anchor — so labelling it "download …"
-                      // alone stopped a screen reader announcing the page
-                      // count at all, which is the one fact the cell exists
-                      // to carry.
-                      aria-label={`download ${w.title} — ${c.label}, ${held.pages} pages`}
-                    >
-                      {held.pages}
-                    </a>
-                  ) : (
-                    held.pages
-                  )}
-                </td>
-              ) : (
-                <td
-                  key={c.key}
-                  className="missing"
-                  aria-label={`no ${c.label} edition`}
-                >
-                  —
-                </td>
-              )
-            })}
+    <div className="table-scroll">
+      <table className="editions">
+        <thead>
+          <tr>
+            <th scope="col">Volume</th>
+            {columns.map((c) => (
+              <th scope="col" key={c.key}>
+                {c.label}
+              </th>
+            ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {works.map((w) => (
+            <tr key={w.slug}>
+              <td>
+                {unreadable(w) ? (
+                  // **O62 — the link is the treatment, not a badge.** Spec C1
+                  // §8 asks for a work whose members are gone to be "shown as
+                  // unreadable rather than offered and then failing at the
+                  // first page", and a mark beside a live link still sends a
+                  // reader into a page that cannot load. The volume keeps its
+                  // name: withholding that too would read as a library that
+                  // has lost the work rather than one that cannot open it.
+                  <>
+                    <span className="title">{w.title}</span>{' '}
+                    <span className="unreadable">
+                      files missing — cannot be opened
+                    </span>
+                  </>
+                ) : (
+                  <Link to={`/read/${w.slug}`}>{w.title}</Link>
+                )}
+                {w.aligned && (
+                  <span className="aligned" title="has an aligned edition">
+                    {' '}
+                    ⇄
+                  </span>
+                )}
+              </td>
+              {columns.map((c) => {
+                const held = w.editions.find((e) => e.key === c.key)
+                return held ? (
+                  // **The page count *is* the control.** Spec C2 §8 asked for
+                  // "the same control as a column", which does not survive this
+                  // layout's shape: there is one column per edition and no
+                  // single edition a row is already showing, so a separate
+                  // column would have to pick one arbitrarily — inside the one
+                  // view whose whole purpose is comparing them side by side.
+                  // §8's "one control rather than three" was an argument about
+                  // the tile, which has an edition selector and therefore a
+                  // settled question; a row has neither. The number in the cell
+                  // is already the per-edition fact, so linking it adds no
+                  // element to the layout at all.
+                  <td
+                    key={c.key}
+                    className="pages"
+                    // Per edition, because `missing` is: one edition of a
+                    // volume can have lost its files while another is intact,
+                    // and offering the intact one is right.
+                    {...(held.missing > 0
+                      ? {
+                          'data-unreadable': 'true',
+                          'aria-label': `${c.label}, ${held.missing} of ${held.members} files missing`,
+                        }
+                      : {})}
+                  >
+                    {held.missing > 0 ? (
+                      held.pages
+                    ) : mayDownload ? (
+                      <a
+                        className="get"
+                        href={editionDownload(w.slug, c.key)}
+                        download
+                        // **The count is in the label, not only in the
+                        // content.** `aria-label` *replaces* an element's
+                        // content for its accessible name, and this cell holds
+                        // nothing but the anchor — so labelling it "download …"
+                        // alone stopped a screen reader announcing the page
+                        // count at all, which is the one fact the cell exists
+                        // to carry.
+                        aria-label={`download ${w.title} — ${c.label}, ${held.pages} pages`}
+                      >
+                        {held.pages}
+                      </a>
+                    ) : (
+                      held.pages
+                    )}
+                  </td>
+                ) : (
+                  <td
+                    key={c.key}
+                    className="missing"
+                    aria-label={`no ${c.label} edition`}
+                  >
+                    —
+                  </td>
+                )
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 

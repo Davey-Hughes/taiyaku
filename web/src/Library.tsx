@@ -22,6 +22,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { useBrowsePrefs } from './browseModule'
+import { Cover } from './Cover'
 import { EmptyState } from './EmptyState'
 import {
   type Chip,
@@ -33,6 +34,8 @@ import {
   type Sort,
   sorted,
   unreadable,
+  type WorkCard,
+  workCover,
 } from './library'
 import { SeriesGrid } from './SeriesGrid'
 import { useLibraryStatus } from './shell'
@@ -43,6 +46,23 @@ const CHIPS: { id: Chip; label: string }[] = [
   { id: 'multi', label: 'Multi-edition' },
   { id: 'unread', label: 'Unread' },
 ]
+
+/**
+ * One card in the continue strip — spec 2026-09-17 §7.2. The cover is the
+ * thumbnail of the edition the reader will open for this account (`opens`,
+ * O84), not the series cover, because the strip is about a volume. What the
+ * card cannot show is where the reader is in it: `progress` holds a slot, and
+ * the home route sends no page — O132.
+ */
+function ContinueCard({ w }: { w: WorkCard }) {
+  return (
+    <>
+      <Cover src={workCover(w.slug, w.opens)} title={w.title} />
+      <span className="title">{w.title}</span>
+      {w.volume !== null && <span className="meta">Vol. {w.volume}</span>}
+    </>
+  )
+}
 
 export function Library() {
   const prefs = useBrowsePrefs()
@@ -105,20 +125,22 @@ export function Library() {
                   // back into a page that cannot load. The volume keeps its
                   // name, same as `Series.tsx`'s `Table`.
                   <span className="tile-unreadable">
-                    {w.title}{' '}
+                    <ContinueCard w={w} />
                     <span className="unreadable">
                       files missing — cannot be opened
                     </span>
                   </span>
                 ) : (
-                  <Link to={`/read/${w.slug}`}>{w.title}</Link>
+                  <Link to={`/read/${w.slug}`}>
+                    <ContinueCard w={w} />
+                  </Link>
                 )}
               </li>
             ))}
           </ul>
         </section>
       )}
-      <div className="chips">
+      <div className="chips library-chips">
         {CHIPS.map((c) => (
           <button
             key={c.id}
@@ -131,6 +153,7 @@ export function Library() {
         ))}
         <button
           type="button"
+          className="sort"
           aria-pressed={sort === 'added'}
           onClick={() => setSort(sort === 'added' ? 'title' : 'added')}
         >

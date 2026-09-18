@@ -516,4 +516,76 @@ describe('the library screen', () => {
     expect(added?.getAttribute('aria-pressed')).toBe('true')
     expect(hrefs()).toEqual(['/series/2', '/series/1'])
   })
+
+  it('draws each continue card from the edition its reader will open', async () => {
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [
+        work({
+          slug: 'half-read-v02',
+          opens: 'en',
+          editions: [
+            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 0 },
+            { key: 'en', label: 'En', members: 1, pages: 178, missing: 0 },
+          ],
+        }),
+      ],
+      added: [],
+      read: [],
+    })
+    const host = await show()
+    const strip = host.querySelector('[data-testid="continue"]')
+    expect(strip?.querySelector('img')?.getAttribute('src')).toBe(
+      '/api/works/half-read-v02/en/pages/0/thumb',
+    )
+  })
+
+  it('says which volume a continue card is, and nothing where it has no number', async () => {
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [
+        work({ slug: 'numbered', title: 'Numbered v03', volume: 3 }),
+        work({ slug: 'special', title: 'A Special', volume: null }),
+      ],
+      added: [],
+      read: [],
+    })
+    const host = await show()
+    const cards = [...host.querySelectorAll('[data-testid="continue"] li')]
+    expect(cards.map((c) => c.querySelector('.meta')?.textContent)).toEqual([
+      'Vol. 3',
+      undefined,
+    ])
+  })
+
+  it('keeps the cover on a continue card whose files are gone', async () => {
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [
+        work({
+          slug: 'gone-v01',
+          editions: [
+            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 1 },
+          ],
+        }),
+      ],
+      added: [],
+      read: [],
+    })
+    const host = await show()
+    const strip = host.querySelector('[data-testid="continue"]')
+    expect(strip?.querySelector('a')).toBeNull()
+    expect(strip?.querySelector('.tile-unreadable img')).not.toBeNull()
+  })
+
+  it('says how many volumes each series holds', async () => {
+    vi.mocked(library.grid).mockResolvedValue({
+      series: [
+        series({ id: 1, title: 'Many', works: 42 }),
+        series({ id: 2, title: 'One', works: 1 }),
+      ],
+      unfiled: [],
+    })
+    const host = await show()
+    expect(
+      [...host.querySelectorAll('.grid .meta')].map((m) => m.textContent),
+    ).toEqual(['42 volumes', '1 volume'])
+  })
 })

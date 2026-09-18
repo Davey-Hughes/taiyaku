@@ -421,3 +421,98 @@ describe('the disabled Accept is legible in both themes', () => {
     expect(declared(enabled, 'border')).toContain('solid')
   })
 })
+
+/**
+ * The sidebar's section headings — Roots, Library, Theme. They were faded with
+ * `opacity: 0.65`, which has no floor anyone checks; spec 2026-09-17 §7.1
+ * gives them `--muted` instead, on the page's own ground.
+ */
+describe('the sidebar headings are legible in both themes', () => {
+  const heading = ruleBody('.sidebar-heading')
+
+  it('are not faded with opacity', () => {
+    expect(declared(heading, 'opacity')).toBeUndefined()
+  })
+
+  for (const scheme of SCHEMES) {
+    it(`clear 4.5:1 on the page's ground in ${scheme}`, () => {
+      const ground = resolve(
+        required(ruleBody('.library'), 'background'),
+        scheme,
+      )
+      expect(
+        contrast(resolve(required(heading, 'color'), scheme), ground),
+      ).toBeGreaterThanOrEqual(4.5)
+    })
+  }
+})
+
+/**
+ * The series table's missing cell — spec 2026-09-17 §5 ② and §7.2. It was
+ * `opacity: 0.55` over the text colour, 3.60:1 on Paper's ground; it is now
+ * `--muted`, with its dashed border back at full `--line-strong`.
+ */
+describe('the series table’s missing cell is legible in both themes', () => {
+  const missing = ruleBody('.editions td.missing')
+
+  it('is not faded with opacity', () => {
+    expect(declared(missing, 'opacity')).toBeUndefined()
+  })
+
+  for (const scheme of SCHEMES) {
+    it(`draws its dash at 4.5:1 and its border at 3:1 in ${scheme}`, () => {
+      const ground = resolve(
+        required(ruleBody('.library'), 'background'),
+        scheme,
+      )
+      const border = required(missing, 'border').match(/var\(--[a-z-]+\)/)
+      if (!border) throw new Error('the missing cell’s border names no token')
+      expect(
+        contrast(resolve(required(missing, 'color'), scheme), ground),
+      ).toBeGreaterThanOrEqual(4.5)
+      expect(
+        contrast(resolve(border[0], scheme), ground),
+      ).toBeGreaterThanOrEqual(3)
+    })
+  }
+})
+
+/**
+ * The figures face on the page counts only — spec 2026-09-17 §5 ②. `base.css`
+ * sets it on every table inside `.library`, which drew the digits inside a
+ * volume's file name heavier than the title around them; the series table
+ * takes the UI face and gives the figures face back to its page-count cells.
+ */
+describe('the figures face reaches the series table’s page counts only', () => {
+  it('sets the UI face on the table and the figures face on its page counts', () => {
+    expect(declared(ruleBody('.editions'), 'font-family')).toBe(
+      'var(--font-ui)',
+    )
+    expect(declared(ruleBody('.editions td.pages'), 'font-family')).toBe(
+      'var(--font-figures)',
+    )
+  })
+
+  it('is named by no other rule in the screens’ stylesheets', () => {
+    const naming = rules(cssSource)
+      .filter((rule) => rule.body.includes('--font-figures'))
+      .map((rule) => rule.prelude)
+    expect(naming).toEqual(['.editions td.pages'])
+  })
+})
+
+/**
+ * The tab look belongs to the library's own filter row. `Proposals.tsx` draws
+ * its state and kind filters with the same `chips` class, and they keep their
+ * pills until the style pass's ⑤ (spec 2026-09-17 §7.2, decided 2026-09-18).
+ */
+describe('the chips keep their pills everywhere but the library’s own row', () => {
+  it('draws a plain chip row as pills and the library’s as tabs', () => {
+    const pill = ruleBody('.chips button')
+    expect(declared(pill, 'border-radius')).toBe('999px')
+    expect(declared(pill, 'background')).toBe('var(--surface)')
+    expect(
+      declared(ruleBody('.chips.library-chips button'), 'background'),
+    ).toBe('none')
+  })
+})

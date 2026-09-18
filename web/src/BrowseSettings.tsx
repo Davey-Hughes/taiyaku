@@ -9,21 +9,13 @@
  * near-black slab, correct because it draws over artwork. This is sidebar
  * chrome and follows `color-scheme`, so it shares the control (Task 8's
  * `settingsFields.tsx`) and not the chrome. `Login.tsx` is why that
- * distinction is written down rather than assumed.
+ * distinction is written down rather than assumed. Its rows are drawn by
+ * `shell.css`'s `.browse-settings label`, so it hands `FieldControl` no
+ * `rowStyle`.
  */
-import type { CSSProperties } from 'react'
 import { type BrowsePrefs, browseModule } from './browseModule'
 import { FieldControl } from './settingsFields'
 import { fieldsOf } from './settingsPanel'
-
-const rowStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: 8,
-  padding: '4px 0',
-  fontSize: '0.85rem',
-}
 
 export interface BrowseSettingsProps {
   prefs: BrowsePrefs
@@ -52,7 +44,6 @@ export function BrowseSettings({
           key={field.key}
           field={field}
           value={prefs[field.key as keyof BrowsePrefs]}
-          rowStyle={rowStyle}
           onChange={(raw) => {
             onChange(field.key, raw)
           }}
