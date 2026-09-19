@@ -723,13 +723,38 @@ async fn no_works_route_stalls_the_runtime() {
 
     let (stalled, response) = the_runtime_stalls_on(
         &library,
-        get_thumb(State(Arc::clone(&state)), page(), as_the_fixture_account()),
+        get_thumb(
+            State(Arc::clone(&state)),
+            page(),
+            Query(Vec::new()),
+            HeaderMap::new(),
+            as_the_fixture_account(),
+        ),
     )
     .await;
     assert!(
         !stalled,
         "get_thumb (GET /api/works/{{work}}/{{edition}}/pages/{{index}}/thumb) ran on the async \
          worker"
+    );
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // O133: a library cover — the tile route at a cover size — takes the other
+    // branch, through `serve_page`, and is driven on its own.
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        get_thumb(
+            State(Arc::clone(&state)),
+            page(),
+            Query(vec![("w".to_string(), "256".to_string())]),
+            HeaderMap::new(),
+            as_the_fixture_account(),
+        ),
+    )
+    .await;
+    assert!(
+        !stalled,
+        "get_thumb at a cover size (GET …/pages/0/thumb?w=256) ran on the async worker"
     );
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -859,13 +884,39 @@ async fn no_grant_check_stalls_the_runtime() {
 
     let (stalled, response) = the_runtime_stalls_on(
         &library,
-        get_thumb(State(Arc::clone(&state)), page(), granted()),
+        get_thumb(
+            State(Arc::clone(&state)),
+            page(),
+            Query(Vec::new()),
+            HeaderMap::new(),
+            granted(),
+        ),
     )
     .await;
     if stalled {
         stalled_on.push("get_thumb");
     }
     assert_answered("get_thumb", response, StatusCode::OK).await;
+
+    // This watchdog sees a call's first wait, which for a reader with roots is
+    // `refuse_if_hidden`'s, so this re-proves only the grant check on the sized
+    // branch; `no_works_route_stalls_the_runtime`, with an empty grant, is the
+    // test that sees past it into `serve_page`.
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        get_thumb(
+            State(Arc::clone(&state)),
+            page(),
+            Query(vec![("w".to_string(), "256".to_string())]),
+            HeaderMap::new(),
+            granted(),
+        ),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("get_thumb at a cover size");
+    }
+    assert_answered("get_thumb at a cover size", response, StatusCode::OK).await;
 
     let tag = sidecar_etag(
         &state
@@ -3962,5 +4013,108 @@ async fn a_restricted_account_cannot_patch_alignments_on_a_work_in_a_withheld_ro
         hand_writes, 0,
         "no correction may reach the shared rows for a work outside the grant, \
          whatever the response said"
+    );
+}
+
+/// The account `refuse_if_cannot_stream` refuses: may browse and download, not
+/// read pages here. User 1 is made an ordinary user first, because a capability
+/// is withheld from a user, never from an admin.
+fn without_can_stream(state: &ServeState) {
+    let conn = state.library.conn();
+    conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+        .expect("user 1 is an ordinary user");
+    conn.execute("UPDATE user SET can_stream = 0", [])
+        .expect("withholds can_stream");
+}
+
+/// An image's long edge, in pixels.
+fn long_edge_of(body: &[u8]) -> u32 {
+    let image = image::load_from_memory(body).expect("a decodable image");
+    image.width().max(image.height())
+}
+
+/// O133's review: a library cover is page 0 at 256, 512 or 768 px, and it must
+/// reach an account that may download but not read here —
+/// `refuse_if_cannot_stream`'s doc says why a download-only account still sees
+/// its shelf. O133's first version drew covers through the page route, which
+/// refuses that account, so every tile on its shelf would have been a
+/// placeholder. The page route still refuses it, and that half is asserted too.
+#[tokio::test]
+async fn a_download_only_account_sees_covers_at_every_size_and_still_no_pages() {
+    let (state, _fixture) = crate::test_support::state_with_tall_pages();
+    without_can_stream(&state);
+    let app = crate::test_support::authenticating(build_router(state.clone()), &state.library);
+
+    for edge in crate::cover::COVER_LONG_EDGES {
+        let uri = format!("/api/works/w/a/pages/0/thumb?w={edge}");
+        let (status, headers, body) = fetch(&app, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(long_edge_of(&body), edge, "{uri}: page 0 at {edge} px");
+        assert_eq!(
+            headers.get(header::CONTENT_TYPE).expect("a content type"),
+            "image/jpeg",
+            "{uri}"
+        );
+    }
+
+    let (status, _, _) = fetch(&app, "/api/works/w/a/pages/0?w=256", None).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the page route still refuses to show this account a page"
+    );
+}
+
+/// The tile route's `w` is for covers and nothing else: page 0, at one of
+/// `cover::COVER_LONG_EDGES`. Any other page, any other size, or a `w` that is
+/// not a number gets the filmstrip tile, so an account without `can_stream`
+/// cannot read the pages it may not stream at a size worth reading.
+#[tokio::test]
+async fn the_tile_route_sizes_page_zero_only_and_only_to_a_cover_size() {
+    let (state, _fixture) = crate::test_support::state_with_tall_pages();
+    without_can_stream(&state);
+    let app = crate::test_support::authenticating(build_router(state.clone()), &state.library);
+
+    for uri in [
+        "/api/works/w/a/pages/1/thumb?w=768",
+        "/api/works/w/a/pages/0/thumb?w=700",
+        "/api/works/w/a/pages/0/thumb?w=1000",
+        "/api/works/w/a/pages/0/thumb?w=abc",
+        "/api/works/w/a/pages/0/thumb",
+    ] {
+        let (status, _, body) = fetch(&app, uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(long_edge_of(&body), 160, "{uri} is the filmstrip tile");
+    }
+}
+
+/// A sized cover carries the page route's validator, so a grid visited again
+/// answers `304` for each cover rather than sending them all again.
+#[tokio::test]
+async fn a_sized_cover_answers_its_own_validator_with_a_304() {
+    let (state, _fixture) = crate::test_support::state_with_tall_pages();
+    let app = build_router(state);
+
+    let uri = "/api/works/w/a/pages/0/thumb?w=512";
+    let (status, headers, _) = fetch(&app, uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let tag = headers
+        .get(header::ETAG)
+        .expect("a sized cover carries an ETag")
+        .to_str()
+        .expect("ascii")
+        .to_owned();
+    let (again, _, body) = fetch(&app, uri, Some(&tag)).await;
+    assert_eq!(again, StatusCode::NOT_MODIFIED);
+    assert!(body.is_empty(), "a 304 sends no body");
+
+    // A `w` given twice is read, not refused: the first one decides.
+    let (status, _, body) = fetch(&app, "/api/works/w/a/pages/0/thumb?w=768&w=256", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let decoded = image::load_from_memory(&body).expect("a decodable image");
+    assert_eq!(
+        decoded.width().max(decoded.height()),
+        768,
+        "the first `w` decides the size"
     );
 }

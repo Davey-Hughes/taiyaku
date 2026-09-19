@@ -1731,25 +1731,34 @@ async fn every_route_declares_its_grant_posture() {
             continue;
         }
         let path = grant_proof_concrete(pattern);
-        let response = refuses_router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(&path)
-                    .header("authorization", &credential)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .expect("router answers");
-        assert_eq!(
-            response.status(),
-            StatusCode::NOT_FOUND,
-            "{pattern} is classified Refuses, but GET {path} from an \
-             account granted a different root answered {}",
-            response.status()
-        );
+        // **O133: the tile route's cover sizes are driven too.** With `?w=` at
+        // a cover size, page 0 is served by `serve_page`, which asks no grant
+        // of its own, so `get_thumb`'s `refuse_if_hidden` is all that keeps a
+        // withheld edition's cover hidden. The review of O133's fix moved that
+        // call below the sized branch and every test still passed.
+        let sized = (*pattern == "/api/works/{work}/{edition}/pages/{index}/thumb")
+            .then(|| format!("{path}?w=768"));
+        for path in std::iter::once(path).chain(sized) {
+            let response = refuses_router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(&path)
+                        .header("authorization", &credential)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .expect("router answers");
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "{pattern} is classified Refuses, but GET {path} from an \
+                 account granted a different root answered {}",
+                response.status()
+            );
+        }
     }
 
     // **The four metadata PATCH routes, and what now protects them — O86.**

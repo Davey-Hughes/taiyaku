@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Unauthenticated } from './api'
 import {
+  coverSources,
   type EditionCard,
   grid,
   home,
@@ -13,6 +14,7 @@ import {
   unreadable,
   work,
   type WorkCard,
+  workCover,
 } from './library'
 
 const edition = (over: Partial<EditionCard> = {}): EditionCard => ({
@@ -238,5 +240,30 @@ describe('the browse client', () => {
       })
       expect(unreadable(w)).toBe(false)
     })
+  })
+})
+
+/**
+ * O133: a library cover is offered at three long edges, one per screen
+ * density, instead of the 160 px filmstrip tile a phone upscaled nearly
+ * fivefold.
+ */
+describe('cover sources', () => {
+  it('offers a cover at 256, 512 and 768 px, for one, two and three device pixels per CSS pixel', () => {
+    expect(coverSources('/api/library/series/7/cover')).toEqual({
+      src: '/api/library/series/7/cover?w=256',
+      srcSet:
+        '/api/library/series/7/cover?w=256 1x, /api/library/series/7/cover?w=512 2x, /api/library/series/7/cover?w=768 3x',
+    })
+  })
+
+  it('adds its size to a URL that already carries a query', () => {
+    expect(coverSources('/cover?root=2').src).toBe('/cover?root=2&w=256')
+  })
+
+  it('draws a volume from page 0 of the edition it shows, through the tile route', () => {
+    expect(workCover('go toubun', 'raw/en')).toBe(
+      '/api/works/go%20toubun/raw%2Fen/pages/0/thumb',
+    )
   })
 })

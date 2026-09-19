@@ -148,6 +148,14 @@ const PAGE_FORMAT_VERSION: u32 = 2;
 /// come from it.
 pub const MAX_FIT_LONG_EDGE: u32 = 4096;
 
+/// The long edges a library cover is served at — O133: one per screen density,
+/// for a tile drawn about 256 CSS px on its long edge at one, two and three
+/// device pixels per CSS pixel. The web's `library.ts` offers the same three
+/// (`COVER_LONG_EDGES` there), and the tile route sizes page 0 to these and to
+/// nothing else, so a cover is never a way to read a page an account may not
+/// stream.
+pub const COVER_LONG_EDGES: [u32; 3] = [256, 512, 768];
+
 /// Whether a page already fits inside `long_edge`, from its header alone.
 ///
 /// **`true` means "serve the original bytes", and it is the answer that makes
@@ -252,8 +260,13 @@ pub enum Fitted<P> {
 /// resize is fetched before it waits for the permit, so its bytes are in memory
 /// for the wait. A full-size request already holds a fetched page with no
 /// permit at all, so this is not a new shape here. `at_path` still fetches
-/// inside the permit. A cover or a tile always decodes, so fetching first
-/// would not spare it the wait, and would hold its page in memory through it.
+/// inside the permit. An OPDS cover or a filmstrip tile always decodes, so
+/// fetching first would not spare it the wait, and would hold its page in
+/// memory through it. **A library cover comes here since O133**, sized by the
+/// tile route's `?w=` (`routes.rs::cover_edge`), so a cold grid holds a
+/// fetched page per queued cover while the permits resize; that cost was
+/// accepted for the page route's output — the filter chosen for line art, and
+/// one cache file shared with the page route at the same size.
 ///
 /// Shares `GENERATION_LIMIT` with covers and tiles rather than taking a bound
 /// of its own. All three do the same expensive thing — decode a page at up to

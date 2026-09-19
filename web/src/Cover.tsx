@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { coverSources } from './library'
 
 /**
  * A series cover, or a placeholder carrying its title — §8's third empty state.
@@ -24,6 +25,13 @@ import { useState } from 'react'
  * cards (`Library.tsx`'s `ContinueCard`). One copy, because the
  * failure-by-`src` rule and the empty `alt` are the kind of detail that
  * survives in one file and drifts in two.
+ *
+ * **`src` is a cover URL that takes `?w=`**, and the image is offered at
+ * three sizes, one per screen density (`library.ts`'s `coverSources`, O133):
+ * the browser fetches 256 px on a 1× screen and 768 px on a 3× phone. The
+ * failure is still remembered by that URL: the browser fetches one of the
+ * three, and if it fails the placeholder stands in for the cover, whichever
+ * size it was.
  */
 export function Cover({ src, title }: { src: string; title: string }) {
   const [failed, setFailed] = useState<string>()
@@ -33,9 +41,11 @@ export function Cover({ src, title }: { src: string; title: string }) {
         {title}
       </span>
     )
+  const sources = coverSources(src)
   return (
     <img
-      src={src}
+      src={sources.src}
+      srcSet={sources.srcSet}
       alt=""
       loading="lazy"
       onError={() => {

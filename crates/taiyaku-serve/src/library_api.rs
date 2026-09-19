@@ -293,10 +293,19 @@ pub(crate) async fn search(
 /// 307 rather than 301: which work stands for a series changes when C3 sets a
 /// cover, when a volume is added, or when a grant changes, and a permanent
 /// redirect would be cached past all three.
+///
+/// **`?w=` asks for the cover at that long edge instead of the 160 px tile** —
+/// O133. A phone's grid draws a cover at about 256 CSS px, 768 device pixels
+/// at 3×. The redirect carries a `w` that is one of `cover::COVER_LONG_EDGES`
+/// on to the tile route, which serves page 0 at that size; any other `w` gets
+/// the tile, as the tile route itself would answer it. Not the page route: it
+/// refuses an account without `can_stream`, and a download-only account must
+/// still see its shelf (`routes.rs::refuse_if_cannot_stream`).
 pub(crate) async fn cover(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
     AxPath(id): AxPath<i64>,
+    Query(query): Query<Vec<(String, String)>>,
 ) -> Response {
     on_the_library(state, "the series cover", move |conn| {
         let target = match browse::cover_work(conn, &principal.roots, id) {
@@ -314,12 +323,17 @@ pub(crate) async fn cover(
         // edition the reader cannot see — with `cover_work`'s own doc comment
         // promising the opposite. Whole-branch review, 2026-08-20.
         let CoverTarget { slug, edition, .. } = target;
+        let tile = format!("/api/works/{slug}/{edition}/pages/0/thumb");
+        let location = match crate::routes::first_query_value(&query, "w")
+            .and_then(|w| w.parse::<u32>().ok())
+            .filter(|edge| crate::cover::COVER_LONG_EDGES.contains(edge))
+        {
+            Some(edge) => format!("{tile}?w={edge}"),
+            None => tile,
+        };
         (
             StatusCode::TEMPORARY_REDIRECT,
-            [(
-                axum::http::header::LOCATION,
-                format!("/api/works/{slug}/{edition}/pages/0/thumb"),
-            )],
+            [(axum::http::header::LOCATION, location)],
         )
             .into_response()
     })

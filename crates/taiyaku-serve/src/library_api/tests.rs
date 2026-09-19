@@ -198,6 +198,49 @@ async fn a_series_cover_redirects_to_the_existing_thumbnail_route() {
     );
 }
 
+/// O133: a caller that says how large it will draw the cover is sent to the
+/// tile route at that size, which serves page 0 there — not to the page route,
+/// which refuses an account without `can_stream`. A `w` that is not one of the
+/// cover sizes, or not a number, keeps the tile, and is not refused.
+#[tokio::test]
+async fn a_series_cover_asked_for_a_cover_size_redirects_to_the_tile_at_that_size() {
+    let (router, state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
+    let series_id: i64 = {
+        let conn = state.library.conn();
+        conn.query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
+            .expect("reads the series")
+    };
+
+    for (w, ends) in [
+        ("512", "/pages/0/thumb?w=512"),
+        ("1", "/pages/0/thumb"),
+        ("1000", "/pages/0/thumb"),
+        ("abc", "/pages/0/thumb"),
+        ("768&w=256", "/pages/0/thumb?w=768"),
+    ] {
+        let response = get(
+            &router,
+            &format!("/api/library/series/{series_id}/cover?w={w}"),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::TEMPORARY_REDIRECT,
+            "w={w}"
+        );
+        let location = response
+            .headers()
+            .get(axum::http::header::LOCATION)
+            .expect("a Location header")
+            .to_str()
+            .expect("ascii");
+        assert!(
+            location.starts_with("/api/works/") && location.ends_with(ends),
+            "w={w} points at {ends}: {location}"
+        );
+    }
+}
+
 /// A series this caller cannot see is a 404, the same answer as one that does
 /// not exist — spec C1 §5.1, and the enumeration refusal this project applies
 /// elsewhere.
@@ -993,6 +1036,7 @@ async fn no_browse_route_stalls_the_runtime() {
                     State(Arc::clone(&state)),
                     who(),
                     AxPath(1),
+                    Query(Vec::new()),
                 )),
             ),
             (

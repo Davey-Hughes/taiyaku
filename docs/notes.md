@@ -21577,3 +21577,143 @@ it now fails. Important findings per pass: 5, 2, 4 (text only), 0.
   Sidebar case mounts four times and unmounts one.
 
 Tests: Rust 2227, unchanged; `web/` node 1,201, jsdom 1,000, browser 37.
+
+## O133: covers sized per screen — 2026-09-18
+
+Found on the user's iPhone during style pass ②'s device pass: covers were
+visibly blurry. Every cover in the library was the reader's filmstrip tile —
+`/api/library/series/{id}/cover` answered 307 to `/pages/0/thumb`, and the web
+drew the same route for volume tiles and continue cards — 160 px on its long
+edge (`cover.rs`'s `THUMB_LONG_EDGE`), drawn at about 256 CSS px on a phone's
+grid, 768 device pixels at 3×. **The user chose one size per screen density**
+over 768 px everywhere or 512 px everywhere.
+
+**The fix sizes page 0 on the tile route.** `GET /api/works/{work}/{edition}/pages/0/thumb?w=N`,
+for N one of `cover::COVER_LONG_EDGES` (256, 512, 768), is page 0 fitted inside
+a long edge of N, served by `routes.rs::serve_page` — the page route's own
+body, moved out of `get_page` so that both call it — so it is resized with
+`CatmullRom` rather than `thumbnail`'s fast sampler, cached per size by content
+in the same file the page route would use, and carries the page route's `ETag`
+and `Cache-Control` (`private, no-cache`). Any other page, any other size, and a
+`w` that is not a number get the 160 px tile (`cover_edge`). The web draws the
+tile URL with `srcSet` `?w=256 1x, ?w=512 2x, ?w=768 3x` (`library.ts`'s
+`coverSources`, drawn by `Cover.tsx`), and the series cover route passes a
+cover size through: `?w=512` answers 307 to `/pages/0/thumb?w=512`, and `?w=1`,
+`?w=1000`, `?w=abc` or no `w` to the plain tile.
+
+**The first version sent covers through the page route** — `workCover` named
+`/pages/0` and the series cover route redirected to `/pages/0?w=N` — and the
+review of that version found what it cost: the page route refuses an account
+without `can_stream` (`refuse_if_cannot_stream`, whose own doc says covers must
+stay outside it so that a download-only account still sees its shelf), so
+every cover on such an account's shelf would have been a placeholder. The
+reviewer measured it on a copy of the scratch library with such an account
+added: the unsized series cover 200, every sized one 403. The gate had been
+green, because the one test of that policy,
+`download/tests.rs::without_can_stream_the_pages_are_403_and_the_download_still_works`,
+asks only for the unsized tile, and asks `!= 403` of a fixture whose tile
+answers 404. Sizing the page route for such an account instead was not an
+option: it would let it read every page at up to 4096 px. So the tile route
+takes the size, for page 0 and three sizes only. The first version's bytes and
+this one's are the same — the same function makes them, into the same cache
+file — so the measurements below, taken on the first, stand for both where
+they say so.
+
+Measured on the scratch copy over HTTP, on the first version's debug binary:
+Berserk v01's page 0 (1810×2560) comes back 181×256 (17,623 bytes), 362×512
+(55,191) and 543×768 (106,981), each with an `ETag` ending `-r256v2`,
+`-r512v2`, `-r768v2`. The fix, on a release build, answers the same three
+sizes through the tile route (below).
+
+In Chromium at three device pixels per CSS pixel and 390×844, the first version
+fetched `w=768` for each of the first six covers on the home screen, continue
+cards and grid tiles alike; the fix, emulated the same way with the cache
+disabled, fetched `…/pages/0/thumb?w=768` for the four continue cards and
+`…/cover?w=768` for the two series tiles, all six loaded, and at 1× and
+1440×900 it fetched `?w=256` for the same six. **`naturalWidth` reads 170–181 there, not 543**:
+with density descriptors a browser reports the image's size divided by the
+density it was chosen for (543 / 3 = 181), so it is not the evidence it looks
+like — the `w=768` in `currentSrc` and the 543×768 the route returns are. At
+1× and 1440×900, in the first version's debug run, the two covers loaded within
+six seconds fetched `w=256`; the rest had not loaded, because each size of each
+cover is generated on its first request and a debug resize takes seconds.
+
+**On the user's iPhone**, through `tailscale serve` to the first version, the user
+looked at the library home and reported the covers sharp.
+The request log holds 62 requests from it, all with the user-agent
+`Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) … Version/26.6.1
+Mobile/15E148 Safari/604.1`, and every one of its 42 cover requests — 20
+series-cover redirects and 22 page 0s — asked for `w=768`; none asked for the
+tile. The fix draws the same bytes from the same cache file, so the phone was
+not asked again.
+
+**What a cold cover costs, timed on a release build** of the first version, on this
+workstation (not the NAS the deployment runs on), against the scratch copy with
+an empty cache directory, one request at a time through the series cover route
+with redirects followed, for the first twelve series: a cold tile took a median
+of 31 ms (max 181), and then cold covers at `w=256`, 512 and 768 took 34, 39 and
+49 ms (max 310, 284, 295); a second request for `w=768` took 1 ms (max 6). The
+comparison flatters the resize a little: each series' tile was asked for first,
+so its archive was already in the operating system's file cache when the three
+sizes were made. In the debug binary a cold resize took about 2.4 s. The fix,
+timed the same way on its own release build with an empty cache, for eleven
+series — 1–5, 7–10, 137 and 138, as the review read them back from that run's
+cache files, the script having kept no list: cold covers at 256, 512 and 768 px took a median
+of 35, 38 and 48 ms (max 302, 287, 292), and a second 768 px request 1 ms (max
+3). A cold tile took a median of 52 ms (max 210) in that run; the review's
+repeat of the same eleven on its own server gave 31 ms for the tile and 38, 39
+and 46 ms for the covers, so the covers' figures held and the tile's did not.
+
+The first version's five hand mutations, each against its own test and
+restored after: `Cover.tsx` without `srcSet` failed "leaves a cover that loads
+alone" at the `srcset` assertion; `coverSources` numbering densities from 0
+failed its own test and "leaves a cover that loads alone"; `workCover` back to
+the unsized tile failed four `Series.test.tsx` cases, `Library.test.tsx`'s
+continue-card case and the `workCover` test; and the series cover handler
+ignoring `w`, and without its `> 1` filter, each failed its redirect test.
+
+The fix's five, the same way, after a control run of the five tests they
+touch: the stream check put back on the sized branch failed
+`a_download_only_account_sees_covers_at_every_size_and_still_no_pages` at
+`?w=256` (403); `cover_edge` without `index == 0` failed
+`the_tile_route_sizes_page_zero_only_and_only_to_a_cover_size` at page 1;
+`cover_edge` taking any size failed it at `?w=1000`; the sized branch serving
+the whole page failed the download-only test at the image's long edge; and the
+redirect passing any `w` failed
+`a_series_cover_asked_for_a_cover_size_redirects_to_the_tile_at_that_size` at
+`?w=1`. The page-1-and-other-sizes test passed before the fix as well as
+after, which is what it is for: it holds the line the fix must not cross.
+
+**A download-only account, measured on the fix.** A copy of the scratch
+library, served by the fix's release build, with an account `dlonly` added and
+its `can_stream` set to 0: sign-in 204 and the series list 200; the series
+cover with no `w`, `?w=1000` and `?w=abc` all 200 through the plain tile at
+113×160; `?w=256`, 512 and 768 all 200 through `/pages/0/thumb?w=N` at
+181×256, 362×512 and 543×768; a `workCover` URL at `?w=256` 200; page 0
+through the page route at `?w=256` still 403; and page 1's tile at `?w=768`
+the 160 px tile. The first version answered every sized cover 403 for such an
+account.
+
+**The review of the fix** found its behaviour right and the move into
+`serve_page` faithful, and one gap: nothing tested the grant check on the sized
+branch. `serve_page` asks no grant, so `get_thumb`'s `refuse_if_hidden` is all
+that hides a withheld edition's cover at 768 px, and the review moved that call
+below the sized branch with every test passing. `every_route_declares_its_grant_posture`
+now drives the tile route at `?w=768` too, and the same mutation fails it
+("answered 200 OK"). It also found: a `w` given twice answered `400` on both
+routes, where `main` ignored the query, so both now read the first `w`
+(`routes::first_query_value`) — reading the last instead fails the redirect
+test at `?w=768&w=256`; only `?w=1000` pinned the three sizes, so a range
+`2..=768` passed every test, and `?w=700` now fails it; the two stall tests
+never reached the sized branch, so a library-mutex wait added there passed, and
+both now call it — `no_works_route_stalls_the_runtime` fails on that wait; and
+O122's row undercounted the handlers that take a work's lock on the async
+worker by two, `get_page` and now `get_thumb`'s cover sizes, marked on that
+row. **Left as found**: a page 0 already within the size is served as the
+archive's own bytes and type, as the page route serves it, so a TIFF page 0 —
+which `taiyaku-read` reads — would draw only in Safari where the JPEG tile drew
+everywhere; and `download/tests.rs::without_can_stream_the_pages_are_403_and_the_download_still_works`
+still asks only `!= 403` of an unsized tile its fixture answers 404, which the
+new route tests now cover properly.
+
+Tests: Rust 2231 (+4), web node 1,204 (+3), jsdom 1,000, browser 37.

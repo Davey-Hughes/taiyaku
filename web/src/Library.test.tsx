@@ -480,7 +480,12 @@ describe('the library screen', () => {
     it('leaves a cover that loads alone', async () => {
       const host = await withCover()
       expect(host.querySelector('img')?.getAttribute('src')).toBe(
-        '/api/library/series/1/cover',
+        '/api/library/series/1/cover?w=256',
+      )
+      // O133: the browser picks the size for its screen's density — 768 px on
+      // a 3× phone, where the 160 px filmstrip tile used to be upscaled.
+      expect(host.querySelector('img')?.getAttribute('srcset')).toBe(
+        '/api/library/series/1/cover?w=256 1x, /api/library/series/1/cover?w=512 2x, /api/library/series/1/cover?w=768 3x',
       )
       expect(host.querySelector('.cover-missing')).toBeNull()
     })
@@ -535,7 +540,7 @@ describe('the library screen', () => {
     const host = await show()
     const strip = host.querySelector('[data-testid="continue"]')
     expect(strip?.querySelector('img')?.getAttribute('src')).toBe(
-      '/api/works/half-read-v02/en/pages/0/thumb',
+      '/api/works/half-read-v02/en/pages/0/thumb?w=256',
     )
   })
 

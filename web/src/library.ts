@@ -129,18 +129,50 @@ export const oneSeries = (id: number) =>
   )
 
 /**
- * A volume's cover: page 0 of one of its editions, through the thumbnail route
- * the reader already has.
+ * A volume's cover: page 0 of one of its editions, through the tile route the
+ * filmstrip already uses. Without `?w=` it is the 160 px filmstrip tile; at a
+ * `w` from `COVER_LONG_EDGES` below — `coverSources` adds one — it is page 0
+ * at that size (O133). The tile route rather than the page route, because the
+ * page route refuses an account without `can_stream` and every account must
+ * see its shelf (`routes.rs::refuse_if_cannot_stream`).
  *
  * **Not a `/api/library/…` route, and there is deliberately no such thing.**
- * `/api/library/series/{id}/cover` is a 307 to exactly this URL — see
- * `library_api.rs::cover`, whose whole argument is that a series cover *is* an
- * edition cover and a second pipeline would be a second implementation of
- * caching, guarding and `Cache-Control`. A volume tile already knows which
- * edition it is showing, so it needs no redirect to find out.
+ * `/api/library/series/{id}/cover?w=` is a 307 to exactly this URL at that
+ * size — see `library_api.rs::cover`, whose whole argument is that a series
+ * cover *is* an edition cover and a second pipeline would be a second
+ * implementation of caching, guarding and `Cache-Control`. A volume tile
+ * already knows which edition it is showing, so it needs no redirect to find
+ * out.
  */
 export const workCover = (slug: string, edition: string) =>
   `/api/works/${encodeURIComponent(slug)}/${encodeURIComponent(edition)}/pages/0/thumb`
+
+/**
+ * The long edges a library cover is offered at, one per screen density — O133.
+ *
+ * A tile is drawn about 256 CSS px on its long edge (a phone's two-column
+ * grid; a desktop tile is a little smaller), so 256, 512 and 768 are what one,
+ * two and three device pixels per CSS pixel draw it at. Covers came from the
+ * filmstrip's tile until O133, 160 px on its long edge — upscaled nearly
+ * fivefold on a 3× phone.
+ *
+ * **The server holds the same three** (`cover.rs`'s `COVER_LONG_EDGES`): the
+ * tile route sizes page 0 to those and to nothing else, and answers any other
+ * `w` with the 160 px tile, so a size added here alone would draw a blurry
+ * cover rather than fail.
+ */
+const COVER_LONG_EDGES = [256, 512, 768] as const
+
+/** A cover URL at each of `COVER_LONG_EDGES`, for an `<img>`'s `src` and `srcSet`. */
+export function coverSources(url: string): { src: string; srcSet: string } {
+  const at = (edge: number) => `${url}${url.includes('?') ? '&' : '?'}w=${edge}`
+  return {
+    src: at(COVER_LONG_EDGES[0]),
+    srcSet: COVER_LONG_EDGES.map((edge, i) => `${at(edge)} ${i + 1}x`).join(
+      ', ',
+    ),
+  }
+}
 
 /**
  * One edition as a single CBZ — spec C2's download route.

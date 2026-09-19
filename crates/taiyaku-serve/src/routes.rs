@@ -874,6 +874,25 @@ async fn get_page(
         .filter(|edge| *edge > 1)
         .map(|edge| edge.min(crate::cover::MAX_FIT_LONG_EDGE));
 
+    serve_page(state, id, edition, index, long_edge, &headers).await
+}
+
+/// A page, at `long_edge` or as the archive holds it, after whatever refusals
+/// the route that called this has already made.
+///
+/// `get_page` calls it for every page, after its stream check; `get_thumb`
+/// calls it for a library cover — page 0 at one of `cover::COVER_LONG_EDGES` —
+/// without one (O133). One body, so the cover a download-only account sees is
+/// exactly the image, the cache file and the validator the page route would
+/// have given it.
+async fn serve_page(
+    state: Arc<ServeState>,
+    id: String,
+    edition: String,
+    index: u32,
+    long_edge: Option<u32>,
+    headers: &HeaderMap,
+) -> Response {
     // O1: the validator comes from what the sidecar already holds in
     // memory — the member's recorded `sha256` and this page's offset within
     // it — so it can be checked here, on the async worker, before
@@ -890,7 +909,7 @@ async fn get_page(
         Err(message) => return not_found(message),
     };
     let tag = page_etag(&sha256, offset, long_edge);
-    if if_none_match_hits(&headers, &tag) {
+    if if_none_match_hits(headers, &tag) {
         return not_modified(&tag, Some(PAGE_CACHE_CONTROL));
     }
 
@@ -950,23 +969,61 @@ async fn get_page(
     }
 }
 
+/// The first value of `key` in a query string's pairs, if it has one.
+///
+/// Read from the raw pairs rather than through a struct, so a value that is not
+/// a number, or a key given twice, is ignored rather than refused with a `400`
+/// in terms of a Rust type: the tile route and the series cover route took no
+/// query until O133, and answered every one of those as if it were absent.
+pub(crate) fn first_query_value<'a>(pairs: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    pairs
+        .iter()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.as_str())
+}
+
+/// The long edge to serve a tile request at, if it is a library cover: page 0,
+/// at exactly one of `cover::COVER_LONG_EDGES`. Anything else is the tile.
+///
+/// Page 0 alone, and those sizes alone, because this route skips
+/// `refuse_if_cannot_stream`: sizing any page to any width here would hand an
+/// account that may not stream every page at a size worth reading.
+fn cover_edge(index: u32, w: Option<&str>) -> Option<u32> {
+    let edge = w?.parse::<u32>().ok()?;
+    (index == 0 && crate::cover::COVER_LONG_EDGES.contains(&edge)).then_some(edge)
+}
+
 /// A filmstrip tile for one page.
 ///
 /// Separate from `get_page` rather than a query parameter on it, because the
-/// two have different cache lifetimes and different content types: a page is
-/// whatever the archive holds, a tile is always JPEG.
+/// two have different content types: a page is whatever the archive holds, a
+/// tile is always JPEG. (They once had different cache lifetimes too; both send
+/// `PAGE_CACHE_CONTROL` now.) (A library cover, below,
+/// is the exception: it is the page route's answer, so a page 0 already within
+/// the size is the archive's own bytes and type.)
 ///
-/// It sends `Cache-Control` and **no `ETag`**, which is not an oversight.
+/// The tile sends `Cache-Control` and **no `ETag`**, which is not an oversight.
 /// `get_page` can answer a `304` before doing any work because
 /// `locate_member` derives the tag from the in-memory sidecar; here the
 /// member `sha256` and offset are found inside `spawn_blocking`, one level in,
 /// so a validator would arrive too late to skip anything a tile costs. The
 /// freshness header removes the round trip without needing one; adding the
 /// tag would mean hoisting the lookup out here, which is its own change and
-/// buys only a cheaper request after this header has expired.
+/// buys only a cheaper request after this header has expired. A library cover
+/// does carry one: it is served by `serve_page`, whose lookup runs out here.
+///
+/// **`?w=` makes page 0 a library cover** (O133): at 256, 512 or 768 px on its
+/// long edge (`cover::COVER_LONG_EDGES`) it is served by `serve_page`, exactly
+/// as the page route would size it, validator and all. It is here rather than
+/// on the page route because covers must reach an account without
+/// `can_stream`, which the page route refuses (`refuse_if_cannot_stream` says
+/// why), and `cover_edge` keeps it to covers: any other page or size is the
+/// tile.
 async fn get_thumb(
     State(state): State<Arc<ServeState>>,
     AxPath((id, edition, raw)): AxPath<(String, String, String)>,
+    Query(query): Query<Vec<(String, String)>>,
+    headers: HeaderMap,
     request_extensions: axum::http::Extensions,
 ) -> Response {
     if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &edition).await {
@@ -976,6 +1033,9 @@ async fn get_thumb(
         Ok(index) => index,
         Err(refusal) => return refusal.into_response(),
     };
+    if let Some(edge) = cover_edge(index, first_query_value(&query, "w")) {
+        return serve_page(state, id, edition, index, Some(edge), &headers).await;
+    }
     // Decoding blocks and can allocate up to `MAX_DECODE_ALLOC`; `get_page`'s
     // reasoning applies unchanged.
     let fetched = tokio::task::spawn_blocking(move || {

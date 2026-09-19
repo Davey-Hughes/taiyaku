@@ -326,6 +326,54 @@ pub(crate) fn state_with_real_pages() -> (std::sync::Arc<ServeState>, Fixture) {
     (local_state(work, &fixture), fixture)
 }
 
+/// O133's fixture: work `w`, edition `a`, one member of two pages, each
+/// 600×900.
+///
+/// Every library cover size — 256, 512 and 768 on the long edge — is a real
+/// resize of these pages, and the filmstrip tile's 160 is a different size
+/// from all three, so a test can tell from the image alone which one it was
+/// served. `work_with_real_pages`' 16×16 page fits inside every one of them
+/// and comes back untouched, which cannot tell them apart.
+pub(crate) fn state_with_tall_pages() -> (std::sync::Arc<ServeState>, Fixture) {
+    let fixture = Fixture::new("tall-pages");
+    let root = fixture.path();
+    let page = png(image::RgbImage::from_pixel(
+        600,
+        900,
+        image::Rgb([200, 120, 60]),
+    ));
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(root.join("a1.cbz")).unwrap());
+    for n in 1..=2 {
+        zip.start_file(
+            format!("p{n}.png"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(&page).unwrap();
+    }
+    zip.finish().unwrap();
+
+    let json = r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "a": { "label": "A", "members": [
+              { "path": "a1.cbz", "sha256": "tall", "pages": 2 }
+            ], "spreads": [] }
+          },
+          "hub": "a",
+          "alignments": []
+        }"#;
+    let path = root.join("taiyaku.json");
+    std::fs::write(&path, json).unwrap();
+    let work = Work::new(
+        "w".into(),
+        path,
+        taiyaku_core::Sidecar::from_json(json).unwrap(),
+    );
+    (local_state(work, &fixture), fixture)
+}
+
 /// `work` read from disk by `LocalLibrary`, caching under `fixture`'s
 /// directory so that the cache goes when the fixture does.
 fn local_state(work: Work, fixture: &Fixture) -> std::sync::Arc<ServeState> {

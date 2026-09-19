@@ -182,7 +182,7 @@ describe('Series, grid layout', () => {
   it('draws each volume cover from its own edition rather than the series redirect', async () => {
     const host = await settle()
     expect(host.querySelector('.volumes img')?.getAttribute('src')).toBe(
-      '/api/works/gotoubun-v01/raw/pages/0/thumb',
+      '/api/works/gotoubun-v01/raw/pages/0/thumb?w=256',
     )
   })
 
@@ -736,7 +736,7 @@ describe('Series, the edition selector', () => {
       select.dispatchEvent(new Event('change', { bubbles: true }))
     })
     expect(host.querySelector('.volumes img')?.getAttribute('src')).toBe(
-      '/api/works/gotoubun-v01/en/pages/0/thumb',
+      '/api/works/gotoubun-v01/en/pages/0/thumb?w=256',
     )
   })
 
@@ -765,7 +765,7 @@ describe('Series, the edition selector', () => {
       select.dispatchEvent(new Event('change', { bubbles: true }))
     })
     expect(host.querySelector('.volumes img')?.getAttribute('src')).toBe(
-      '/api/works/gotoubun-v01/raw/pages/0/thumb',
+      '/api/works/gotoubun-v01/raw/pages/0/thumb?w=256',
     )
     expect(
       [...host.querySelectorAll('.volumes li')].some((li) =>
@@ -799,7 +799,7 @@ describe('Series, the edition selector', () => {
     const firstLi = host.querySelectorAll('.volumes li')[0] as HTMLElement
     const imgBefore = firstLi.querySelector('img')
     expect(imgBefore?.getAttribute('src')).toBe(
-      '/api/works/gotoubun-v01/raw/pages/0/thumb',
+      '/api/works/gotoubun-v01/raw/pages/0/thumb?w=256',
     )
 
     // jsdom loads no images at all, so the failure has to be delivered the
@@ -820,7 +820,7 @@ describe('Series, the edition selector', () => {
     // remembered for the old `src` must not apply to this one.
     expect(firstLi.querySelector('.cover-missing')).toBeNull()
     expect(firstLi.querySelector('img')?.getAttribute('src')).toBe(
-      '/api/works/gotoubun-v01/en/pages/0/thumb',
+      '/api/works/gotoubun-v01/en/pages/0/thumb?w=256',
     )
   })
 
