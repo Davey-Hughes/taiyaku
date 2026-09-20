@@ -143,4 +143,22 @@ describe('CreditsPanel', () => {
     button?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(onClose).toHaveBeenCalledOnce()
   })
+
+  it('docks as a panel between the bars, its look in the stylesheet', () => {
+    const host = mount(
+      <CreditsPanel
+        visible={true}
+        work="work"
+        edition="raw"
+        pages={[3]}
+        skipping={false}
+        onGo={noop}
+        onClose={noop}
+      />,
+    )
+    const panel = host.querySelector('[role="dialog"]') as HTMLElement
+    expect(panel.className).toBe('docked-panel')
+    expect(panel.getAttribute('style')).toBeNull()
+    expect(host.querySelector('img')?.className).toBe('reader-thumb')
+  })
 })

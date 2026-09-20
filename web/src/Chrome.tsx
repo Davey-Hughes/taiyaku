@@ -8,31 +8,8 @@ import {
   type MotionPrefs,
 } from './modules/motion'
 import { readoutRow, type ReadoutsPrefs } from './modules/readouts'
-
-const readoutHeight = 32
-const gapAboveReadout = 8
-const inset = 16
-
-/// How tall the strip stands, reading or correcting.
-///
-/// Not a guess, and not the 76px this used to be: `cover.rs`'s
-/// `THUMB_LONG_EDGE` generates tiles at 160px on the long edge, and a manga
-/// page is portrait, so 160px *is* a tile's natural height. At 76 the strip
-/// rendered them at 45px — 28% of the resolution already on the wire, paid
-/// for and thrown away. This adds the rail's own 6px padding and the tile's
-/// 2px border, top and bottom, to show that image at exactly 1:1.
-///
-/// It was briefly taller only while correcting, on the argument that reading
-/// wants a scrubber and correcting wants to compare artwork. A manual pass
-/// asked for the larger size in both, which is the better call: recognising
-/// a page you have already read is easier at 160px too, and one height means
-/// the strip does not resize under a reader entering correction mode.
-///
-/// Going beyond this means raising `THUMB_LONG_EDGE`, which invalidates every
-/// cached tile by construction (the constant is folded into the cache path)
-/// and multiplies the 1.12 MiB per edition O11 records. `previewMaxHeight`
-/// below is the cheaper answer for the one case that needs more.
-const stripHeight = 160 + 6 * 2 + 2 * 2
+import type { Mode } from './pairing'
+import { TopBar } from './TopBar'
 
 /// How large the hover preview may stand, as a fraction of the viewport.
 ///
@@ -47,42 +24,64 @@ const stripHeight = 160 + 6 * 2 + 2 * 2
 /// candidates, one at a time, at human speed.
 const previewMaxHeight = '55vh'
 
-/// Where the band just above the strip begins, measured from the reader's
-/// bottom edge: the readout row, the gap over it, the strip, and 8px clear of
-/// the strip's top. The hover preview stands on it while correcting, and the
-/// `Library` button docks on it otherwise.
-const aboveStrip = readoutHeight + gapAboveReadout + stripHeight + 8
-
-// `position: absolute` against the nearest positioned ancestor — `App.tsx`'s
-// root, which carries `position: relative` for exactly this — rather than a
-// flex child of the toolbar/page-area column those sit in. An absolutely
-// positioned box is removed from that flow entirely, so mounting or
-// unmounting it cannot change the page area's size: the one property this
-// component exists to guarantee. `overflow: hidden` here (not on the rail)
-// is what clips the tiles to the rounded corners without also clipping the
-// box-shadow, which paints from the border box outward and is unaffected by
-// an element's own `overflow`.
-const stripStyle: CSSProperties = {
+// The bottom bar (spec 2026-09-17 §8.4): one full-width band docked to the
+// reader's bottom edge — the strip, the progress line and the readout row,
+// padded by the safe areas. It replaced a strip floating 16 px in from each
+// side over a readout band of its own.
+//
+// `position: absolute` against `App.tsx`'s root, which carries `position:
+// relative` for exactly this, rather than a flex child of the page-area
+// column: an absolutely positioned box is removed from that flow entirely, so
+// mounting or unmounting it cannot change the page area's size — the one
+// property this component exists to guarantee. `zIndex: 3` stands it over the
+// page's own layers (`Annotations`' overlay is at 2); the docked panels share
+// the figure and dock clear of it (`--panel-bottom`, `styles/reader.css`).
+const bottomBarStyle: CSSProperties = {
   position: 'absolute',
-  left: inset,
-  right: inset,
-  bottom: readoutHeight + gapAboveReadout,
-  height: stripHeight,
-  borderRadius: 12,
-  overflow: 'hidden',
-  background: 'rgba(24, 24, 24, 0.92)',
-  boxShadow: '0 10px 30px rgba(0, 0, 0, 0.45)',
+  left: 0,
+  right: 0,
+  bottom: 0,
+  zIndex: 3,
+  paddingLeft: 'var(--safe-left)',
+  paddingRight: 'var(--safe-right)',
+  paddingBottom: 'var(--safe-bottom)',
+}
+
+// The strip: its tiles at the breakpoint's size plus the rail's padding and
+// the tiles' borders. `--strip-tile` in `styles/reader.css` has the two sizes
+// and why each — 160 px, the thumbnail's own height, from 900 px up, and 96 on
+// a phone — and a height that depends on the viewport is a custom property
+// because an inline style cannot hold a media query.
+const stripStyle: CSSProperties = { height: 'var(--strip-height)' }
+
+// How far through the edition, as a line across the bar: `readoutLines`'
+// `progress`, the fraction the readout's percentage prints — the two agree
+// except where the slot count has gone backwards, which `progress` clamps at 1
+// and `positionLine` does not (see `ReadoutLines.progress`).
+const progressStyle: CSSProperties = {
+  height: 'var(--progress-height)',
+  margin: '0 var(--space-3)',
 }
 
 // The hover preview: a page-sized look at the tile under the pointer, while
-// correcting. Centred horizontally and standing on top of the strip, so a
-// reader's eye travels the shortest distance between the candidate and the
-// page they are comparing it against.
+// correcting. Centred horizontally and standing 8 px clear of the bottom bar,
+// so a reader's eye travels the shortest distance between the candidate and
+// the page they are comparing it against. Before style pass ③ this band also
+// held the `Library` button (O65), which is why that button stood down while
+// correcting; it is in the top bar now.
+//
+// `zIndex: 3`, matching the two bars (this file's `bottomBarStyle`, above):
+// the bars were raised to 3 to clear `Annotations`' overlay at 2, but this
+// preview — drawn over the page while correcting, the one surface here that
+// most needs to stand clear of everything else on it — was left at `auto`
+// until the whole-branch review found note tints, tabs and the side list
+// drawing over the page it shows.
 const previewStyle: CSSProperties = {
   position: 'absolute',
-  left: inset,
-  right: inset,
-  bottom: aboveStrip,
+  left: 'var(--space-4)',
+  right: 'var(--space-4)',
+  bottom: 'calc(var(--safe-bottom) + var(--reader-bottom-bar) + 8px)',
+  zIndex: 3,
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'center',
@@ -95,123 +94,39 @@ const previewImgStyle: CSSProperties = {
   maxWidth: '100%',
   width: 'auto',
   objectFit: 'contain',
-  borderRadius: 8,
-  background: 'rgba(24, 24, 24, 0.92)',
-  boxShadow: '0 10px 30px rgba(0, 0, 0, 0.55)',
 }
 
-const previewLabelStyle: CSSProperties = {
-  padding: '2px 8px',
-  borderRadius: 10,
-  background: 'rgba(24, 24, 24, 0.92)',
-  color: 'rgba(255, 255, 255, 0.9)',
-  fontSize: '0.8em',
-}
-
-// The readout row docks to the bottom edge instead of floating — the strip
-// above it is the one that is lifted off.
+// The readout row, the bar's last line.
 //
-// `height: readoutHeight` alone is not enough to keep the row from
-// reflowing: a row that wraps to two lines grows past a fixed `height`
-// rather than being constrained by it. `whiteSpace: 'nowrap'` forbids the
-// wrap outright, and `overflow: 'hidden'`/`textOverflow: 'ellipsis'` are
-// what happens instead if the joined text ever runs wider than the strip —
-// truncated with an ellipsis rather than pushed onto a second line that
-// would grow the box. `readoutRow` (`modules/readouts.ts`) is the other half
-// of this: a fixed segment order, so which readouts are enabled or have
-// something to say right now changes the row's *length*, never the order
-// pieces appear in.
+// `height` alone is not enough to keep the row from reflowing: a row that
+// wraps to two lines grows past a fixed `height` rather than being
+// constrained by it. `whiteSpace: 'nowrap'` forbids the wrap outright, and
+// `overflow: 'hidden'`/`textOverflow: 'ellipsis'` are what happens instead if
+// the joined text ever runs wider than the bar. `readoutRow`
+// (`modules/readouts.ts`) is the other half of this: a fixed segment order, so
+// which readouts are enabled or have something to say right now changes the
+// row's *length*, never the order pieces appear in.
 const readoutStyle: CSSProperties = {
-  position: 'absolute',
-  left: 0,
-  right: 0,
-  bottom: 0,
-  height: readoutHeight,
+  height: 'var(--readout-height)',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   gap: 4,
   padding: '0 12px',
-  fontSize: '0.85em',
-  color: 'rgba(255, 255, 255, 0.85)',
-  background: 'rgba(0, 0, 0, 0.6)',
   whiteSpace: 'nowrap',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
 }
 
-// The reader's own way back to the library, docked at the left end of the
-// band just above the strip.
-//
-// Not the top-right corner `CreditsPanel`, `Help` and `NotePanel`'s shared
-// shell all dock at (`top: 16, right: 16, zIndex: 3` — see e.g.
-// `NotePanel.tsx`'s `panelStyle`). This button used to sit there, directly
-// under whichever of them was open, and their explicit `zIndex: 3` always
-// beat its implicit `auto`. A higher `zIndex` here would only trade "hidden
-// behind the panel" for "drawn on top of the panel's own content", which is
-// not reachable either, just differently broken.
-//
-// And not the top-left corner it moved to next (O65 in `docs/status.md`).
-// `App.tsx`'s layout-mode buttons lay out in normal flow along the top edge
-// from 8,8, and at `top: 16, left: 16` this button, stacked above them, sat
-// over the centres of `single` and `two`: with the chrome open, a click on
-// either one left the reader. Clearing them from the top would mean tracking
-// the toolbar's rendered height, which depends on the browser's own button
-// styles rather than on anything in this codebase. `aboveStrip` comes from
-// this file's own constants, so the button moves with the strip it sits on.
-//
-// Nothing else docks in that band while reading, but one thing can reach up
-// into it: a note list placed below the page (`NoteList`'s `belowStyle`). At
-// ten notes the left ends of its top one or two visible rows sat under this
-// button, and at four nothing did; every row that took a click at its centre
-// before still does (`docs/notes.md`, "O65"). While correcting, the hover
-// preview (`previewStyle`) docks there outright: it stands on the same
-// `aboveStrip` in a box running from `left: inset` to `right: inset`, so this
-// corner is inside it and a wide enough preview draws over it. That is one of
-// two reasons the button only renders while `filmstrip.correcting` is unset,
-// below in `Chrome` itself. The other is that a correction is a transient,
-// task-focused state with nothing for a "back to the library" control to
-// offer — the reader is choosing a counterpart page, not browsing. The `L`
-// key stays live throughout regardless — see `Chrome`'s own comment on the
-// button below.
-//
-// Styled to match, rather than left as a bare native `<button>`: this floats
-// directly over artwork with nothing behind it, unlike the panels' own
-// unstyled `Close`/`Export` buttons, which sit inside a dark box that
-// already does the work. Same recipe `stripStyle` above and `panelStyle`
-// (`NotePanel.tsx`, `CreditsPanel.tsx`, `Help.tsx`) use for that box —
-// `rgba(24, 24, 24, …)` and `rgba(255, 255, 255, …)`, not the library
-// screen's `--bg`/`--surface` tokens (`styles/library.css`'s `.chips
-// button`), which follow the theme and would put a paper button on
-// a reader deliberately dark regardless of theme.
-const leaveButtonStyle: CSSProperties = {
-  position: 'absolute',
-  bottom: aboveStrip,
-  left: inset,
-  // At the panels' own `zIndex: 3`, so a future change that ever shares
-  // their corner again loses no stacking fight the way the implicit `auto`
-  // used to.
-  zIndex: 3,
-  border: 'none',
-  borderRadius: 8,
-  padding: '6px 14px',
-  font: 'inherit',
-  fontSize: '0.85em',
-  cursor: 'pointer',
-  background: 'rgba(24, 24, 24, 0.92)',
-  color: 'rgba(255, 255, 255, 0.92)',
-  boxShadow: '0 10px 30px rgba(0, 0, 0, 0.45)',
-}
-
 export interface ChromeProps extends FilmstripProps {
-  /** Whether the strip and the readout row are shown at all. */
+  /** Whether the two bars are shown at all. */
   visible: boolean
   /** The `motion` module's current prefs — drives the fade this component plays on showing. */
   motion: MotionPrefs
-  /** Which of the four readout lines are switched on — see `modules/readouts.ts`. */
+  /** Which of the readout lines are switched on — see `modules/readouts.ts`. */
   readouts: ReadoutsPrefs
   /**
-   * The four readout lines' text, already computed by `App.tsx` from
+   * The readout lines' text, already computed by `App.tsx` from
    * `modules/readouts.ts`'s pure functions — `Chrome` only lays them out, it
    * does not derive any of them itself. `position` and `chapter` are always
    * strings (`positionLine`/`chapterReadout` never answer "nothing to say");
@@ -220,9 +135,7 @@ export interface ChromeProps extends FilmstripProps {
    *
    * Each is display-ready already: a percentage, a 1-based slot, a chapter
    * label — none of it is a value that could leak into storage, a URL or the
-   * server the way a raw zero-based slot could, so there is no display-vs-
-   * internal distinction left to guard here the way `Chrome`'s old
-   * `displaySlot` prop had to.
+   * server the way a raw zero-based slot could.
    */
   position: string
   time?: string
@@ -230,17 +143,30 @@ export interface ChromeProps extends FilmstripProps {
   health?: string
   /** The note count — derived by `modules/annotations.ts`, absent where the work has none. */
   notes?: string
+  /** How far through the edition, 0 to 1 — `readoutLines`' `progress`. */
+  progress: number
+  /** The work's title, for the top bar; absent until the library answers — `readerTitle.ts`. */
+  title?: string
+  /** The top bar's second line: `Vol. N · <label>`, or the edition's key — `readerTitle.ts`. */
+  editionLine: string
+  /** The layout on screen, and the top bar's way to change it. */
+  mode: Mode
+  onMode: (mode: Mode) => void
+  /** Whether the settings panel is open; ⚙ toggles it. */
+  settingsOpen: boolean
+  onSettings: () => void
   /** Back to the library grid — spec C1 §6. */
   onLeave: () => void
 }
 
 /**
- * The strip and the readout row — brought in and taken away together by
- * `Tab` (`keys.ts`'s `{ kind: 'chrome' }`), never separately. Returns `null`
- * while hidden, rather than e.g. `visibility: hidden`, so the hidden state
- * really is "no chrome at all" — the design's edge-to-edge reading with no
- * persistent chrome — and not merely invisible chrome still doing layout
- * work.
+ * The reader's two bars — the top bar (`TopBar.tsx`) and the bottom bar of
+ * strip, progress line and readout row — brought in and taken away together
+ * by `Tab` (`keys.ts`'s `{ kind: 'chrome' }`), never separately (spec
+ * 2026-09-17 §8.1). Returns `null` while hidden, rather than e.g.
+ * `visibility: hidden`, so the hidden state really is "no chrome at all" —
+ * edge-to-edge reading with nothing on screen but the page — and not merely
+ * invisible chrome still doing layout work.
  *
  * That unmount is also why only *showing* the chrome fades and hiding it
  * does not: an element that has already unmounted has nothing left on
@@ -252,22 +178,20 @@ export interface ChromeProps extends FilmstripProps {
  * all in the environment tested (docs/status.md, "the tiles'
  * `loading=\"lazy\"` does not defer thumbnail requests"). So keeping
  * `Chrome` mounted and fading its opacity to zero instead would trade the
- * unmount's real protection for `loading="lazy"`'s measured-absent one: a
- * `Filmstrip` merely faded to invisible while still laid out on screen would
- * fire the full thumbnail burst on every session, whether or not the reader
- * ever presses `Tab` — a real, ongoing bandwidth cost with, now, no viewport
- * safety net behind it. That is a stronger reason to keep the asymmetry
- * (fade in, snap out) than existed before the measurement, not a weaker one.
+ * unmount's real protection for `loading="lazy"`'s measured-absent one.
  * If this is revisited, what would settle it is a network trace comparing
- * today's `Tab`-press burst against a mounted-with-`opacity: 0` prototype —
- * not taken here, and out of scope for this comment.
+ * today's `Tab`-press burst against a mounted-with-`opacity: 0` prototype.
+ *
+ * **While correcting, the top bar is not drawn**: `CorrectionBanner` takes
+ * the top edge (§8.3). That keeps O65's rule that the way back to the
+ * library stands down during a correction — a transient, task-focused state
+ * with nothing for "back to the library" to offer — while `L` (`keys.ts`)
+ * still leaves: a pending correction has not been written to anything, so
+ * leaving loses nothing.
  *
  * The readout row shows whichever of position, alignment health, reading
- * time and chapter `readouts` has switched on, joined by `readoutRow` in
- * that fixed order — health sits right after position, ahead of time and
- * chapter, so it is not the first segment a narrow, clipped row drops; see
- * `readoutRow`'s own doc for why, and the row's own style comment below for
- * why order (not presence) is what has to stay fixed at all.
+ * time, chapter and notes `readouts` has switched on, joined by `readoutRow`
+ * in that fixed order — see `readoutRow`'s own doc for why.
  */
 export function Chrome({
   visible,
@@ -278,14 +202,21 @@ export function Chrome({
   chapter,
   health,
   notes,
+  progress,
+  title,
+  editionLine,
+  mode,
+  onMode,
+  settingsOpen,
+  onSettings,
   onLeave,
   ...filmstrip
 }: ChromeProps) {
   const animating = isAnimating(motion)
 
   // Which tile the pointer is over, while correcting. Held here rather than
-  // in `Filmstrip` because the preview has to render outside the strip's own
-  // `overflow: hidden` — see the preview's JSX below.
+  // in `Filmstrip` because the preview is drawn outside the bottom bar — see
+  // the preview's JSX below.
   const [preview, setPreview] = useState<{ page: number; half?: 'L' | 'R' }>()
 
   // Whether the fade has settled on fully shown. Starts at `!animating` so a
@@ -303,11 +234,8 @@ export function Chrome({
   // schedules the frame that flips `shown` to `true` a moment after the
   // render below first paints at `opacity: 0`, which is what gives the
   // already-declared `transition` something to animate. Its returned cleanup
-  // is what makes a rapid re-toggle safe: React runs it before this effect
-  // fires again, cancelling a still-pending frame rather than letting it
-  // land later against whichever state is current by then. Extracted to
-  // `motion.ts` rather than inlined so it can be tested directly against a
-  // stubbed `requestAnimationFrame`, with no DOM involved — see
+  // is what makes a rapid re-toggle safe. Extracted to `motion.ts` so it can
+  // be tested directly against a stubbed `requestAnimationFrame` — see
   // `motion.test.ts`.
   useEffect(
     () => scheduleFade(visible, animating, setShown),
@@ -327,59 +255,61 @@ export function Chrome({
   return (
     <>
       {/*
-        The hover preview, rendered as a *sibling* of the strip rather than
-        inside it: `stripStyle` carries `overflow: hidden` to clip tiles to
-        its rounded corners, which would clip this too. Sits above the strip
-        and is `pointerEvents: 'none'`, so moving toward it never takes the
-        hover off the tile that summoned it.
-
-        Only while correcting — `onPreview` is only wired then (see
-        `Filmstrip`), so `preview` cannot be set otherwise, but the condition
-        is written out anyway rather than relying on that.
+        The hover preview, a sibling of the bars rather than inside the
+        bottom one, so the bar's own box does not clip it. `pointerEvents:
+        'none'`, so moving toward it never takes the hover off the tile that
+        summoned it. Only while correcting — `onPreview` is only wired then
+        (see `Filmstrip`), but the condition is written out anyway.
       */}
       {filmstrip.correcting && preview && (
         <div style={{ ...previewStyle, ...fade }}>
           <img
+            className="reader-preview-img"
             src={pageUrl(filmstrip.work, filmstrip.edition, preview.page)}
             alt=""
             style={previewImgStyle}
           />
-          <span style={previewLabelStyle}>
+          <span className="reader-preview-label">
             {preview.half
               ? `page ${preview.page + 1} ${preview.half}`
               : `page ${preview.page + 1}`}
           </span>
         </div>
       )}
-      <div style={{ ...stripStyle, ...fade }}>
-        {/* `visible` is always true here — `Chrome` returns `null` above
-            otherwise — but passed through explicitly anyway, since
-            `Filmstrip`'s own scroll-into-view effect is keyed on it; see
-            `Filmstrip.tsx`'s doc for why. */}
-        <Filmstrip {...filmstrip} visible={visible} onPreview={setPreview} />
-      </div>
-      <div style={{ ...readoutStyle, ...fade }} role="status">
-        {row}
-      </div>
-      {/* Hidden while correcting, when the hover preview stands in this
-          button's band — see `leaveButtonStyle`'s own comment above for
-          both reasons. `onLeave` is still one keystroke away regardless: `L` (`keys.ts`,
-          listed on the generated help screen) keeps working during a
-          correction. That is deliberate, not an oversight matching this
-          button — the key is the documented path, and a reader who presses
-          it has explicitly asked to leave. A pending correction has not
-          been written to anything yet, so leaving loses nothing; only this
-          button, which is a convenience rather than the only way out, needs
-          to get out of the banner's way. */}
       {!filmstrip.correcting && (
-        <button
-          type="button"
-          style={{ ...leaveButtonStyle, ...fade }}
-          onClick={onLeave}
-        >
-          Library
-        </button>
+        <TopBar
+          title={title}
+          editionLine={editionLine}
+          mode={mode}
+          onMode={onMode}
+          settingsOpen={settingsOpen}
+          onSettings={onSettings}
+          onLeave={onLeave}
+          style={fade}
+        />
       )}
+      <div className="reader-bottom-bar" style={{ ...bottomBarStyle, ...fade }}>
+        <div style={stripStyle}>
+          {/* `visible` is always true here — `Chrome` returns `null` above
+              otherwise — but passed through explicitly anyway, since
+              `Filmstrip`'s own scroll-into-view effect is keyed on it; see
+              `Filmstrip.tsx`'s doc for why. */}
+          <Filmstrip {...filmstrip} visible={visible} onPreview={setPreview} />
+        </div>
+        <div
+          className="reader-progress"
+          style={progressStyle}
+          aria-hidden="true"
+        >
+          <div
+            className="reader-progress-fill"
+            style={{ height: '100%', width: `${progress * 100}%` }}
+          />
+        </div>
+        <div className="reader-readout" style={readoutStyle} role="status">
+          {row}
+        </div>
+      </div>
     </>
   )
 }

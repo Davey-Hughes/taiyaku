@@ -113,3 +113,31 @@
   --box-fill: rgba(255, 145, 0, 0.2);
   --box-fill-strong: rgba(255, 145, 0, 0.42);
 }
+
+/* The reader's own three (spec 2026-09-17 §2 and §8.2). Fixed, like the box
+ * palette and unlike the pairs above: the reader is dark in both themes. Each
+ * is an Ink value from those pairs — `--bg` #15130f and `--text` #ece4d4 — at
+ * the opacity §2 gives it, and `index.css.test.ts` holds them to the pairs. */
+:root {
+  --reader-ground: #000;
+  --reader-panel: rgb(21 19 15 / 0.92);
+  --reader-hair: rgb(236 228 212 / 0.14);
+}
+
+/* What the notes overlay draws on artwork (spec 2026-09-17 §8.5): fixed, for
+ * the box palette's reason — the artwork does not follow the theme — and at
+ * exactly the values `Annotations.tsx` and `NoteList.tsx` drew before they
+ * became tokens. */
+:root {
+  /* A note number's digit on its coloured tab or chip. */
+  --art-ink: rgba(20, 20, 20, 0.9);
+  /* Behind a note's words inside its region, and the words. */
+  --art-caption: rgba(16, 16, 16, 0.82);
+  --art-caption-text: rgba(255, 255, 255, 0.95);
+  /* The dark lines under a region's outline, so it holds on white paper. */
+  --art-edge: rgba(0, 0, 0, 0.85);
+  --art-edge-soft: rgba(0, 0, 0, 0.7);
+  --art-edge-faint: rgba(0, 0, 0, 0.5);
+  /* A region's fill while the pointer is still drawing it. */
+  --art-drawing: rgba(0, 0, 0, 0.42);
+}

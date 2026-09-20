@@ -141,7 +141,7 @@ const tabStyle = (
   fontSize: 11,
   lineHeight: '22px',
   textAlign: 'center',
-  color: travelled ? colour : 'rgba(20, 20, 20, 0.9)',
+  color: travelled ? colour : 'var(--art-ink)',
   fontWeight: 600,
   // Solid is written here, hollow is written elsewhere — a distinction drawn
   // in *fill* rather than in colour, which is what leaves colour free to mean
@@ -180,8 +180,8 @@ const bodyStyle: CSSProperties = {
   padding: '2px 5px',
   maxHeight: '100%',
   overflow: 'hidden',
-  background: 'rgba(16, 16, 16, 0.82)',
-  color: 'rgba(255, 255, 255, 0.95)',
+  background: 'var(--art-caption)',
+  color: 'var(--art-caption-text)',
   fontSize: '0.78em',
   lineHeight: 1.25,
   // Long words (a URL, a Japanese run with no spaces) must wrap rather than
@@ -208,7 +208,8 @@ const pinStyle = (region: Region, colour: NoteColour): CSSProperties => ({
   borderRadius: '50%',
   border: `2px solid ${colour.edge}`,
   background: colour.tint,
-  boxShadow: '0 0 0 1px rgba(0, 0, 0, 0.7), inset 0 0 0 1px rgba(0, 0, 0, 0.5)',
+  boxShadow:
+    '0 0 0 1px var(--art-edge-soft), inset 0 0 0 1px var(--art-edge-faint)',
 })
 
 const tintStyle = (region: Region, colour: NoteColour): CSSProperties => ({
@@ -265,8 +266,8 @@ const pendingStyle = (
         marginTop: -10,
         borderRadius: '50%',
         border: `2px dashed ${colour.edge}`,
-        background: drawing ? 'rgba(0, 0, 0, 0.42)' : colour.tint,
-        boxShadow: '0 0 0 1px rgba(0, 0, 0, 0.85)',
+        background: drawing ? 'var(--art-drawing)' : colour.tint,
+        boxShadow: '0 0 0 1px var(--art-edge)',
       }
     : {
         position: 'absolute',
@@ -274,10 +275,9 @@ const pendingStyle = (
         top: `${region.y * 100}%`,
         width: `${region.w * 100}%`,
         height: `${region.h * 100}%`,
-        background: drawing ? 'rgba(0, 0, 0, 0.42)' : colour.tint,
+        background: drawing ? 'var(--art-drawing)' : colour.tint,
         outline: `2px dashed ${colour.edge}`,
-        boxShadow:
-          '0 0 0 1px rgba(0, 0, 0, 0.85), inset 0 0 0 1px rgba(0, 0, 0, 0.85)',
+        boxShadow: '0 0 0 1px var(--art-edge), inset 0 0 0 1px var(--art-edge)',
       }
 
 /**
@@ -290,6 +290,8 @@ const pendingStyle = (
  * which is 359px in the two-page geometry `paintedBox` records against this
  * box's fixed 240px — room there, and nothing promising it at another window
  * size. Into the page is the one side that is always as wide as the page.
+ *
+ * Its look is `.reader-popover`'s, the panels' (spec 2026-09-17 §8.5).
  */
 const popoverStyle = (
   offset: number,
@@ -310,14 +312,10 @@ const popoverStyle = (
   transform: 'translateY(-50%)',
   width: 240,
   padding: '6px 9px',
-  borderRadius: 6,
-  background: 'rgba(16, 16, 16, 0.94)',
-  color: 'rgba(255, 255, 255, 0.95)',
   fontSize: '0.82em',
   lineHeight: 1.3,
   pointerEvents: 'none',
   overflowWrap: 'anywhere',
-  boxShadow: '0 6px 18px rgba(0, 0, 0, 0.5)',
 })
 
 export interface AnnotationsProps {
@@ -449,9 +447,12 @@ export function Annotations({
               second apart.
             */}
               {hovering && h.note.body && (
-                <span style={popoverStyle(offset, tabSide)}>
+                <span
+                  className="reader-popover"
+                  style={popoverStyle(offset, tabSide)}
+                >
                   {h.travelled && (
-                    <em style={{ opacity: 0.75 }}>on {h.note.edition}: </em>
+                    <em className="reader-muted">on {h.note.edition}: </em>
                   )}
                   {h.note.body}
                 </span>

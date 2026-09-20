@@ -180,4 +180,64 @@ describe('NoteList', () => {
     ;(buttons[0] as HTMLButtonElement).click()
     expect(opened).toEqual(['second', 'first'])
   })
+
+  it('docks beside the page where a panel docks, between the bars', () => {
+    const host = mount(
+      <NoteList here={[here()]} placement="side" onOpen={() => {}} />,
+    )
+    const list = host.firstElementChild as HTMLElement
+    expect(list.style.top).toBe('var(--panel-top)')
+    expect(list.style.maxHeight).toBe(
+      'max(8rem, calc(100% - var(--panel-top) - var(--panel-bottom)))',
+    )
+    expect(list.className).toBe('note-list note-list-side')
+  })
+
+  /**
+   * O112, answered in spec 2026-09-17 §8.1: under the bottom bar the list
+   * steps aside — hidden, but mounted and still taking its space, so the page
+   * area does not change size on `Tab`.
+   */
+  it('steps aside under the bars while they are shown, keeping its space', () => {
+    const host = mount(
+      <NoteList here={[here()]} placement="below" onOpen={() => {}} covered />,
+    )
+    const list = host.firstElementChild as HTMLElement
+    expect(list.style.visibility).toBe('hidden')
+    expect(list.style.flex).toBe('0 0 auto')
+    expect(host.querySelector('[role="listitem"]')).not.toBeNull()
+  })
+
+  it('shows under the page while the bars are away', () => {
+    const host = mount(
+      <NoteList here={[here()]} placement="below" onOpen={() => {}} />,
+    )
+    expect((host.firstElementChild as HTMLElement).style.visibility).toBe('')
+  })
+
+  it('never steps aside beside the page, which docks clear of the bars', () => {
+    const host = mount(
+      <NoteList here={[here()]} placement="side" onOpen={() => {}} covered />,
+    )
+    expect((host.firstElementChild as HTMLElement).style.visibility).toBe('')
+  })
+
+  it('pads the list under the page by the safe areas', () => {
+    const host = mount(
+      <NoteList here={[here()]} placement="below" onOpen={() => {}} />,
+    )
+    const list = host.firstElementChild as HTMLElement
+    expect(list.style.padding).toBe(
+      '8px calc(12px + var(--safe-right)) calc(8px + var(--safe-bottom)) calc(12px + var(--safe-left))',
+    )
+    expect(list.className).toBe('note-list note-list-below')
+  })
+
+  it('draws a number chip’s digit in the artwork’s ink', () => {
+    const host = mount(
+      <NoteList here={[here()]} placement="side" onOpen={() => {}} />,
+    )
+    const chip = host.querySelector('button > span') as HTMLElement
+    expect(chip.style.color).toBe('var(--art-ink)')
+  })
 })

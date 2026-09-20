@@ -20,10 +20,11 @@ import type { Mode } from '../pairing'
  * key nobody would think to namespace. Everything the reader remembers about
  * a person now goes through one path; see `prefs.ts`.
  *
- * The mode also has buttons of its own above the page, so the settings entry
- * is a second way to reach the same preference rather than the only one. That
- * is the same shape as `annotations`' `reveal`, which has both a key and a
- * toggle, and it costs nothing: both write the one slice.
+ * The mode also has buttons of its own in the top bar, which `Tab` shows, so
+ * the settings entry is a second way to reach the same preference rather
+ * than the only one. That is the same shape as `annotations`' `reveal`,
+ * which has both a key and a toggle, and it costs nothing: both write the
+ * one slice.
  */
 export interface LayoutPrefs {
   mode: Mode

@@ -34,7 +34,14 @@ function Reader() {
   const { work } = useParams()
   const navigate = useNavigate()
   if (!work) return <Navigate to="/" replace />
-  return <App key={work} work={work} onLeave={() => void navigate('/')} />
+  // `.reader-route` blacks out the page from the first frame (spec 2026-09-17
+  // §8.2): `App` draws nothing until its load answers, so its own `.reader`
+  // root is not there for `styles/reader.css`'s ground rule until then.
+  return (
+    <div className="reader-route">
+      <App key={work} work={work} onLeave={() => void navigate('/')} />
+    </div>
+  )
 }
 
 /**

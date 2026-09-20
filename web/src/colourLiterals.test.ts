@@ -32,16 +32,6 @@ const EXEMPT = new Set(['./styles/tokens.css', './palette.ts'])
 
 const ALLOWED: Record<string, number> = {
   './Account.tsx': 10,
-  './Annotations.tsx': 13,
-  './Borrowed.tsx': 5,
-  './Chrome.tsx': 11,
-  './CorrectionBanner.tsx': 2,
-  './CreditsPanel.tsx': 5,
-  './Filmstrip.tsx': 4,
-  './Help.tsx': 4,
-  './NoteList.tsx': 5,
-  './NotePanel.tsx': 6,
-  './Settings.tsx': 5,
   './styles/annotations.css': 2,
 }
 

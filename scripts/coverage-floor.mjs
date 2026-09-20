@@ -141,7 +141,7 @@ const FORMATS = [
     // report as "not an istanbul summary". It still failed, but it failed
     // saying the wrong thing. `total` is a count and is `0` there.
     detect: (report) => typeof report?.total?.lines?.total === 'number',
-    // **108 files measured on a clean tree, 2026-09-11; seven of margin.** The
+    // **115 files measured on a clean tree, 2026-09-19; seven of margin.** The
     // margin has only to cover a deliberate exclusion, and the block this guards
     // names its exclusions one file at a time on purpose — three named files and
     // one directory today, beside three test-and-declaration wildcards. Counted
@@ -150,24 +150,26 @@ const FORMATS = [
     //
     // Seven rather than fifty, because the failure to catch is not only the bare
     // collapse. Measured, by mutating `coverage.include` and re-running — the
-    // three rows below were first run 2026-08-14 and **re-run 2026-09-11**, and
+    // three rows below were first run 2026-08-14, re-run 2026-09-11 and
+    // **re-run again 2026-09-19** (the whole-branch review of style pass ③), and
     // each still behaves the way it did, at the counts the larger tree gives:
     //
     //   ['nope/**/*.ts']       →  0 files. Vitest prints `Unknown% ( 0/0 )` for
     //                             all four metrics and **exits 0**.
-    //   ['src/*.ts']           → 94 files (was 52). One deleted `*`, and all 14
-    //                             files of `src/modules` leave the gate. Vitest
-    //                             reports 97.25/92.43/99.11/99.18 — every
+    //   ['src/*.ts']           → 101 files (was 94, was 52). All 14 files of
+    //                             `src/modules` still leave the gate. Vitest
+    //                             reports 97.64/93.89/99.14/99.29 — every
     //                             threshold passed, because a file that is
     //                             absent is a file no per-file check visits.
-    //   ['src/**/*.ts']        → 108 files, unchanged. Dropping the `.tsx` glob
+    //   ['src/**/*.ts']        → 115 files, unchanged. Dropping the `.tsx` glob
     //                             costs nothing: vitest's coverage `include`
     //                             resolves `*.ts` across its extension list, so
     //                             it still matches `.tsx`. Assumed otherwise
     //                             first; measured, and it was wrong.
     //
-    // **This number has now gone stale into a hole twice, which is the thing it
-    // exists to prevent, and the second time is the one worth reading.** It was
+    // **This number has now gone stale into a hole three times, which is the
+    // thing it exists to prevent, and the third time is the one worth
+    // reading.** It was
     // 50 first, derived when the clean tree held 57 files; web/src reached 66,
     // the near-miss reached 52, and on 2026-08-14 that middle row passed this
     // check — fourteen files left the gate, every vitest threshold stayed green,
@@ -192,17 +194,31 @@ const FORMATS = [
     // `src` in the report (`src/testing` is excluded, `__screenshots__` holds no
     // source), so "drop a directory" has exactly one meaning here.
     //
+    // **It went stale a third time, and this is the one the whole-branch review
+    // of style pass ③ found.** web/src grew to 115 (`TopBar.tsx` and
+    // `readerTitle.ts`, style pass ③'s reader work, plus unrelated growth on
+    // `main` since 2026-09-11), and the near-miss grew with it, to 101 — which is
+    // exactly the old floor, so `['src/*.ts']` now *passes* `coverage-floor`
+    // rather than tripping it: the gate had stopped catching the case it exists
+    // for. **Re-derived 2026-09-19, the same arithmetic again**: clean tree 115,
+    // near-miss 101, and the fourteen files between them still split seven and
+    // seven — `src/modules` still holds fourteen files, so the gap the near-miss
+    // opens has not widened, only the tree around it has. → **108.**
+    //
     // The lesson is in the arithmetic, not the number. A fixed `minFiles` against
     // a growing tree loosens on its own, silently, and nothing here derives it —
     // so re-run the three rows above when web/src grows by roughly ten files, and
     // treat "the near-miss still trips it" as the property to check rather than
-    // "the count is still above the floor". Twice now the *count* was
-    // comfortably above the floor at the moment the floor had stopped working.
+    // "the count is still above the floor". Three times now the *count* was at
+    // or above the floor at the moment the floor had stopped working — twice
+    // comfortably (52 against 50, 94 against 59) and the third time exactly on
+    // it (101 against 101), which a passing exit code cannot tell apart from
+    // the first two.
     //
     // If a deliberate exclusion ever does trip this, that is the check working:
     // re-derive the number beside the exclusion rather than widening it on
     // reflex.
-    minFiles: 101,
+    minFiles: 108,
     /**
      * Two points below the lowest measured figure for each metric — the rule
      * these were set by, and no longer quite true of all four. Re-measured

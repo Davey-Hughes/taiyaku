@@ -511,6 +511,29 @@ describe('readoutLines', () => {
     expect(backwards.time).toBe('2m read · ~0m left')
   })
 
+  /**
+   * The bottom bar's progress line (spec 2026-09-17 §8.4) is the same
+   * `(slot + 1) / total` the position line prints as its percentage, so the
+   * two cannot disagree.
+   */
+  it('reports how far through the edition, as the fraction the percentage shows', () => {
+    const half = lines(at('a', 3))
+    expect(half.position).toContain('50%')
+    expect(half.progress).toBe(0.5)
+  })
+
+  it('never reports past the end, for a slot count that has gone backwards', () => {
+    const backwards = readoutLines(
+      at('a', 20),
+      { ...fakeResolver({ a: whole(30) }, {}), slotCount: () => 3 },
+      [],
+      'a',
+      { here: 0, total: 0 },
+      CLOCK,
+    )
+    expect(backwards.progress).toBe(1)
+  })
+
   it('counts notes here against the work’s own total', () => {
     expect(lines(at('a', 0)).notes).toBe('2 notes here of 7')
   })
@@ -527,7 +550,7 @@ describe('readoutLines', () => {
     expect(none.notes).toBeUndefined()
   })
 
-  /** All five, in one call, so `Chrome` can be handed strings and nothing else. */
+  /** All six, in one call — five strings and the progress fraction, so `Chrome` can lay out the row and fill the progress line from one answer. */
   it('answers every line the row lays out', () => {
     expect(Object.keys(lines(at('b', 0)))).toEqual([
       'position',
@@ -535,6 +558,7 @@ describe('readoutLines', () => {
       'health',
       'time',
       'notes',
+      'progress',
     ])
   })
 })

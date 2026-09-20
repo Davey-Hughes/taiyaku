@@ -21717,3 +21717,128 @@ still asks only `!= 403` of an unsized tile its fixture answers 404, which the
 new route tests now cover properly.
 
 Tests: Rust 2231 (+4), web node 1,204 (+3), jsdom 1,000, browser 37.
+
+## Style pass ③: the reader — 2026-09-19
+
+What §8 of `docs/superpowers/specs/2026-09-17-style-pass-design.md` promised,
+measured. The app is this branch (`style-pass-3-reader`, `e67f667`) served by
+vite against `taiyaku serve` on the scratch copy of the NAS library
+(`target/style-pass/lib/library.db`, 1,896 works), driven in Chromium through
+Playwright at 1440×900 and 390×844, and opened on the user's iPhone over the
+tailnet. Every figure below was read off the running app unless it says
+otherwise.
+
+**The planning probes.** `light-dark()` in an unregistered custom property
+resolves where a property *uses* the token, against that element's
+`color-scheme`: a page holding the token rules, one paragraph outside a
+`color-scheme: dark` box and one inside, computed Ink's text
+`rgb(236, 228, 212)` for the inside paragraph in all four combinations of
+{Paper pinned, System} × {OS light, OS dark}, in Chromium 151 and Firefox 153,
+while the outside paragraph followed the theme. jsdom keeps `var()` verbatim in
+an inline style — `border-color`, `bottom: calc(var(…) + 8px)`, `background`,
+and a four-value `padding` shorthand all read back exactly as written, with the
+shorthand's longhands empty — which is why the reader's viewport-dependent
+geometry stays inline and reads custom properties. Biome 2.5.7 accepts
+`env(safe-area-inset-top, 0px)`, `html:has(.reader)`, `rgb(21 19 15 / 0.92)`,
+a custom property redefined inside `@media (width < 900px)`, and
+`clip-path: inset(50%)`. Today's layout row, before it was removed, measured
+37 px tall with the page area at 863 px at 1440×900 (987 at 768×1024).
+
+**The bars, in the app.** At 1440×900 with the chrome shown: the top bar is
+0–52 across the full width; the bottom bar 689–900, 211 px tall — its 1 px
+rule, the 176 px strip, the 2 px progress line and the 32 px readout row; the
+page area is 0–900, the reader's whole height, and the same figure with the
+chrome hidden, which is the 37 px the layout row used to take. At 390×844: the
+top bar 0–52, the bottom bar 697–844 at 147 px, the strip 112. No sideways
+scroll at either size. The top bar's text computes to `rgb(236, 228, 212)` and
+the body's background to `rgb(0, 0, 0)`.
+
+**The panel docking rule (§8.1), in the app.** At 390×844 the keyboard help
+sits at top 68 — the top bar's 52 plus 16 — and bottom 681, which is exactly
+16 px above the bottom bar's 697; left 16, right 374. At 1440×900 the same
+rule holds against the 689 px bar.
+
+**Paper and Ink are the same reader, to the pixel.** Captured back to back in
+one state (single, slot 5, chrome shown, notes off), flipping only
+`data-theme`: **0 differing pixels** over the whole 1440×900 viewport
+(ImageMagick `compare -metric AE`). At 390×844 the same comparison gives 88
+differing pixels, confined by `compare`'s own trim to a 366×12 box at (12,
+824) — the readout row, where the reading clock ticked between the two shots.
+*(An earlier comparison of 177,960 pixels was two different pages and two
+different note states, not a theme difference; the pair has to be captured
+back to back.)*
+
+**The bar's ink over each ground, sampled from the screenshot.** At the top
+bar's own row: `srgb(19, 17, 14)` where it lies over the black letterbox and
+`srgb(39, 37, 34)` where it lies over the white page — within a unit per
+channel of the "panel over white artwork" the spec's §8.2 contrast model
+computes (`rgb(40, 38, 34)`). The difference is *consistent with* the browser
+quantising the panel's own layer before compositing it, which was not
+measured: round(0.92 × 21, 19, 15) is (19, 17, 14), and + 0.08 × 255 lands on
+(39, 37, 34) — both channels the sample reads. The layout
+icons' stroke reads `srgb(236, 228, 212)`, Ink's `--text`.
+
+**O112's answer, in the app.** With two notes on the slot on screen and the
+list under the page: chrome hidden, the list is visible and the page area is
+835 px at 1440×900 (779 at 390×844); chrome shown, the list's computed
+visibility is `hidden` and the page area is **the same figure**, so the page
+does not resize on `Tab`; the readout still says "2 notes here of 2".
+
+**The strip's tiles are shorter than the slot they sit in, by the scrollbar.**
+The rail is `overflow-x: auto`, and a real volume's 207 tiles always overflow
+it, so a classic scrollbar takes 15 px off the rail's client height: at
+1440×900 a tile button measures 149 px and its image 145 inside the 176 px
+strip; at 390×844, 85 and 81 inside 112. The spec's "shown at exactly 1:1"
+therefore holds only where scrollbars overlay rather than take space — iOS
+does overlay them. This is not new: the rail's `overflow-x: auto` predates
+this branch, and so does the subtraction. Filed as O138. The browser
+project's own tile-height case passes because its six-page fixture never
+overflows the rail.
+
+**Scroll mode does not follow a tile taken from the strip.** In scroll mode
+with the chrome shown, clicking the tile for slot 10 moves the reader's
+position — the readout reads `slot 10 / 207 · p. 10` — while the view stays
+where it was: pages 4 and 5 at the top, `scrollTop` unchanged at 9,803.
+**Measured on `main` the same way**, in a worktree served beside this branch
+against the same server: the readout reads slot 10 and `scrollTop` stays 0,
+pages 0 and 1 at the top. So this predates the branch; filed as O136. What
+this branch did add, `scroll-padding-top` on the page area, is in place and
+computes to 52 px, so the *next* scroll target clears the top bar.
+
+**Correcting, a gap and a borrowed page could not be reached in this
+library.** Every one of its 1,896 works is single-edition and unaligned
+(`editions.length === 1` for all of them, `aligned` false for all of them), so
+`c` has nothing to correct and neither arm of the gap/borrowed code can be
+entered. Adding the repository's `corpus/` as a second root and scanning it
+(808 s, `last_scan_status: ok`; its report counted 1,955 editions and
+2,006 members, against the 1,947 and 1,998 rows the database then held —
+the report's counters are the derive's, not row counts) produced 38
+proposals — `edition-of` and `attach-chapters`, including
+"Go-Toubun no Hanayome - Full Color Edition may be the Full Color Edition
+edition of Go-Toubun no Hanayome" — rather than multi-edition works, and
+accepting one goes through the proposals screen, which is ⑤'s. The three
+states' geometry is pinned in jsdom instead (`Chrome.test.tsx` draws no top
+bar while correcting; `CorrectionBanner.test.tsx` pins the banner in the top
+bar's place; `Borrowed.test.tsx` pins the mark below the bar's line), and
+④'s device pass is where they are first seen on a screen.
+
+**The iPhone**, over the tailnet, user-agent read from
+`target/style-pass/three/requests.log` before any answer was believed: 188
+requests from `Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X)
+AppleWebKit/605.1.15 … Version/26.6.1 Mobile/15E148 Safari/604.1`. The user
+reports: the library upright sits clear of the status bar and its last row of
+covers clear of the home indicator; held sideways everything stays clear of
+the notch and the rounded corners, the drawer included; opening a work is
+**black from the first moment**, with no flash of paper — which is what the
+`.reader-route` wrapper is for; in the reader the ground is black edge to edge
+and the status bar draws as transparent black over it; and nothing sits under
+the notch or the home indicator that should not. The bars themselves, their
+44 px targets and Safari's own resolution of the tokens inside `.reader` are
+④'s device pass, since a phone cannot open the chrome until touch input
+exists.
+
+**One thing the phone found that the desktop could not.** With the note
+editor open, a tap on the page draws a region rather than closing the editor,
+so on a touch screen the only way out of the panel is Delete: `Escape` and a
+click on the background are what `NotePanel`'s own doc offers, and neither is
+available to a finger. Filed as O137.

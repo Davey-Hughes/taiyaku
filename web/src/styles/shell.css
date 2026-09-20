@@ -143,6 +143,17 @@
   padding: 1rem 1.5rem;
 }
 
+/* The safe areas (spec 2026-09-17 §8.2). `index.html`'s `viewport-fit=cover`
+ * lets the page run under a phone's notch, rounded corners and home
+ * indicator, so the frame pads itself by the insets the browser reports —
+ * zero on a screen without them. After the main `.library` rule, which
+ * `index.css.test.ts`'s `ruleBody` reads first. */
+.library {
+  box-sizing: border-box;
+  padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px)
+    env(safe-area-inset-left, 0px);
+}
+
 /* The theme switch (`ThemeControl.tsx`): three native radios drawn as one
  * segmented row. The inputs stay in the layout at zero opacity over their
  * labels, so a click, a tap and the arrow keys all reach the real control;
@@ -258,8 +269,9 @@
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    height: 52px;
-    padding: 0 var(--space-2);
+    box-sizing: border-box;
+    height: calc(52px + env(safe-area-inset-top, 0px));
+    padding: env(safe-area-inset-top, 0px) var(--space-2) 0;
     border-bottom: 1px solid var(--line);
     background: var(--bg);
   }
@@ -299,7 +311,7 @@
    * the dialog and ☰ is inert while it is open. */
   .menu-close {
     position: absolute;
-    top: var(--space-2);
+    top: calc(var(--space-2) + env(safe-area-inset-top, 0px));
     right: var(--space-2);
     display: inline-flex;
     align-items: center;
@@ -325,6 +337,9 @@
     inset: 0 auto 0 0;
     z-index: 30;
     width: min(20rem, 85vw);
+    box-sizing: border-box;
+    padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px)
+      env(safe-area-inset-left, 0px);
     border-right: 1px solid var(--line);
     background: var(--bg);
     overscroll-behavior: contain;

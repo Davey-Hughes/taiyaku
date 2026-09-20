@@ -3,61 +3,16 @@ import type { ReaderModule } from './module'
 import { fieldsOf } from './settingsPanel'
 import { FieldControl } from './settingsFields'
 
-// A centred modal rather than a docked panel — unlike `Chrome`'s strip and
-// readout row, which must never cover the page underneath, the settings
-// panel is opened deliberately (`s`, `modules/settings.ts`) and is meant to
-// take the reader's attention while it is up, the same way `Gap` owns the
-// screen while a slot has no counterpart.
-const overlayStyle: CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  background: 'rgba(0, 0, 0, 0.6)',
-  zIndex: 20,
-}
-
-const panelStyle: CSSProperties = {
-  background: 'rgba(24, 24, 24, 0.96)',
-  color: 'rgba(255, 255, 255, 0.92)',
-  borderRadius: 12,
-  boxShadow: '0 10px 30px rgba(0, 0, 0, 0.45)',
-  padding: '20px 24px',
-  width: 'min(480px, 90vw)',
-  maxHeight: '80vh',
-  overflowY: 'auto',
-}
-
-const sectionStyle: CSSProperties = {
-  marginTop: 16,
-  paddingTop: 16,
-  borderTop: '1px solid rgba(255, 255, 255, 0.15)',
-}
-
-const sectionHeaderStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: 12,
-}
-
+// A field's row, handed to `FieldControl`, which takes its layout as an
+// object because the library's own settings pass theirs (`settingsFields.tsx`).
+// Colour and type are `.reader-dialog-panel`'s, in `styles/reader.css`, like
+// the rest of this panel's look (spec 2026-09-17 §8.5).
 const rowStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
   gap: 12,
   padding: '6px 0',
-  fontSize: '0.9em',
-}
-
-// `opacity: 0.7` is `FieldControl`'s own muted styling for the `'object'`-kind
-// summary below — reused here rather than a second shade invented for the
-// same purpose, of a module's own note about itself.
-const noteStyle: CSSProperties = {
-  margin: '4px 0 0',
-  fontSize: '0.9em',
-  opacity: 0.7,
 }
 
 export interface SettingsProps {
@@ -97,6 +52,11 @@ export interface SettingsProps {
   onChange: (id: string, key: string, raw: unknown) => void
   /** Reset one module's whole preference slice back to its defaults. */
   onReset: (id: string) => void
+  /**
+   * Close the panel. Its own button because ⚙ opens it by pointer (spec
+   * 2026-09-17 §8.3), and `s` — the only other way out — is a key.
+   */
+  onClose: () => void
 }
 
 /**
@@ -119,12 +79,18 @@ export function Settings({
   notes,
   onChange,
   onReset,
+  onClose,
 }: SettingsProps) {
   if (!visible) return null
   return (
-    <div style={overlayStyle} role="dialog" aria-label="Settings">
-      <div style={panelStyle}>
-        <h2 style={{ marginTop: 0, marginBottom: 0 }}>Settings</h2>
+    <div className="reader-dialog" role="dialog" aria-label="Settings">
+      <div className="reader-dialog-panel">
+        <div className="reader-panel-head">
+          <h2 className="reader-panel-title">Settings</h2>
+          <button type="button" className="reader-button" onClick={onClose}>
+            Close
+          </button>
+        </div>
         {modules.map((mod) => {
           const fields = fieldsOf(mod.defaults as object, mod.options)
           if (fields.length === 0) return null
@@ -134,10 +100,14 @@ export function Settings({
           >
           const note = notes?.[mod.id]
           return (
-            <section key={mod.id} style={sectionStyle}>
-              <div style={sectionHeaderStyle}>
-                <h3 style={{ margin: 0 }}>{mod.label}</h3>
-                <button type="button" onClick={() => onReset(mod.id)}>
+            <section key={mod.id} className="reader-section">
+              <div className="reader-section-head">
+                <h3 className="reader-section-title">{mod.label}</h3>
+                <button
+                  type="button"
+                  className="reader-button"
+                  onClick={() => onReset(mod.id)}
+                >
                   Reset
                 </button>
               </div>
@@ -150,7 +120,7 @@ export function Settings({
                   rowStyle={rowStyle}
                 />
               ))}
-              {note && <p style={noteStyle}>{note}</p>}
+              {note && <p className="reader-meta reader-note">{note}</p>}
             </section>
           )
         })}

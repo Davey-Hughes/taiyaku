@@ -139,4 +139,36 @@ describe('Borrowed', () => {
     })
     expect(taken).toEqual([97])
   })
+
+  it('marks the borrowed page in the warning colour, its look in the stylesheet', () => {
+    const host = mount(<Borrowed {...props} />)
+    const mark = host.querySelector('button') as HTMLButtonElement
+    expect(mark.className).toBe('borrowed-mark')
+    expect(mark.style.background).toBe('')
+    expect((host.firstElementChild as HTMLElement).style.boxShadow).toBe(
+      'inset 4px 0 0 0 var(--warning)',
+    )
+  })
+
+  it('docks the mark below the top bar’s line, clear of a phone’s notch, whether or not the chrome is shown', () => {
+    // The top bar covers `top: 0` (whole-branch review): measured in
+    // Chromium at 390×844 with the chrome shown, `elementFromPoint` at the
+    // mark's centre returned the bar, not the mark — the pointer's only way
+    // into the offers, and back out. Docked here unconditionally, the same
+    // rule spec §8.1 gives the panels: always below the top bar's line, and
+    // above the bottom bar's, whether or not the chrome is shown.
+    const host = mount(<Borrowed {...props} />)
+    const mark = host.querySelector('button') as HTMLButtonElement
+    expect(mark.style.top).toBe('calc(var(--safe-top) + var(--reader-top-bar))')
+    expect(mark.style.left).toBe('var(--safe-left)')
+  })
+
+  it('docks the caption 32px below the mark’s own top, at the same left edge', () => {
+    const host = mount(<Borrowed {...props} />)
+    const caption = host.querySelector('.borrowed-caption') as HTMLElement
+    expect(caption.style.top).toBe(
+      'calc(var(--safe-top) + var(--reader-top-bar) + 32px)',
+    )
+    expect(caption.style.left).toBe('var(--safe-left)')
+  })
 })

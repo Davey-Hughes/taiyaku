@@ -160,9 +160,11 @@ import {
 } from './notesWrite'
 import { NoteList } from './NoteList'
 import { NotePanel } from './NotePanel'
+import { work as workDetail, type WorkDetail } from './library'
 import { cellOf, groups, type Group, type Mode } from './pairing'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
 import { display, navigate } from './reading'
+import { titleLines } from './readerTitle'
 import { Settings } from './Settings'
 import { allSlots, openWork, type Session, type StartupPorts } from './startup'
 import {
@@ -306,6 +308,19 @@ function App({ work, onLeave }: AppProps) {
   // `?`/`h`'s target (`modules/help.ts`), the same shape again. Both keys
   // carry one intent, so this is one flag and not two.
   const [helpVisible, setHelpVisible] = useState(false)
+
+  // The top bar's title and edition labels (spec 2026-09-17 §8.3): the
+  // library's, with metadata edits applied, which the sidecar's `work.title`
+  // and `editions.*.label` are not. Asked once beside the load and never
+  // waited on: until it answers, or if it fails, the bar names the edition by
+  // its key (`readerTitle.ts`). No stale-answer guard: `Routes.tsx` keys this
+  // component by `work`, so one instance only ever asks about one work.
+  const [detail, setDetail] = useState<WorkDetail>()
+  useEffect(() => {
+    workDetail(work).then(setDetail, (err: unknown) => {
+      if (!(err instanceof Unauthenticated)) console.error(err)
+    })
+  }, [work])
 
   // `c`'s target. Set to a `Pending` assertion the moment correction mode
   // opens (`pending.b` still absent — meaning no counterpart has been picked
@@ -2363,12 +2378,16 @@ function App({ work, onLeave }: AppProps) {
   // tile in this strip than a gap was.
   const stripAnchor = gapMoves && (gapMoves.before?.at ?? gapMoves.after?.at)
 
+  // What the top bar says — `readerTitle.ts`.
+  const heading = titleLines(detail, shown.edition)
+
   return (
     // `position: relative` is what `Chrome` positions itself against —
     // `position: absolute` removes it from this flex column's layout flow
-    // entirely, so it can overlay the toolbar and the page area below
-    // without either one changing size when it mounts or unmounts.
+    // entirely, so it can overlay the page area without the page area's own
+    // size changing when the bars mount or unmount.
     <div
+      className="reader"
       style={{
         display: 'flex',
         flexDirection: 'column',
@@ -2377,34 +2396,31 @@ function App({ work, onLeave }: AppProps) {
       }}
     >
       <div
-        style={{
-          flex: '0 0 auto',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: 8,
-        }}
-      >
-        {(['single', 'two', 'scroll'] as const).map((m) => (
-          <button
-            key={m}
-            type="button"
-            onClick={() => setMode(m)}
-            aria-pressed={m === mode}
-          >
-            {m}
-          </button>
-        ))}
-      </div>
-      <div
+        className="page-area"
         style={{
           flex: '1 1 auto',
           minHeight: 0,
           overflow: mode === 'scroll' ? 'auto' : 'hidden',
           // What `Annotations`' `inset: 0` is measured against — the page
-          // area, not the whole reader, so a margin tab sits beside the page
-          // rather than beside the toolbar.
+          // area, not the whole reader. The two share a top edge now that the
+          // layout row is gone; they differ at the bottom, where the root
+          // also holds the note list placed below the page in flow
+          // (`<NoteList placement="below">`, after this page area) — a
+          // margin tab measured against the root could reach into that list
+          // instead of stopping at the page.
           position: 'relative',
+          // Scroll mode's `scrollIntoView({ block: 'start' })` (`hooks.ts`'s
+          // `useScrollToCurrent`) puts the current group's top at the page
+          // area's own top edge — which the top bar now draws over while it
+          // is shown. `scrollPaddingTop` moves the *target* down to clear the
+          // bar without moving the page area itself, so its size stays what
+          // O112 needs it to stay. Conditional on `chromeVisible` rather than
+          // set unconditionally: with the chrome hidden there is no bar to
+          // clear, and a fixed offset would move the scroll target for no
+          // reason the moment the bars come down.
+          scrollPaddingTop: chromeVisible
+            ? 'calc(var(--safe-top) + var(--reader-top-bar))'
+            : undefined,
           // What the pointer is for right now, while the editor is open:
           // sweep out a rectangle, or push the one already there. Without
           // this, that a region can be moved at all is invisible until a
@@ -2481,10 +2497,11 @@ function App({ work, onLeave }: AppProps) {
           />
         )}
         {/*
-          Beside the page, inside the page area so it sits in the margin the
-          page leaves rather than over the toolbar. Only while revealed: the
-          list is a way to *read* the notes, and `r` is the key that asks for
-          that.
+          Beside the page, inside the page area. Being inside it does not keep
+          the list clear of the top bar, since the two share a top edge: that
+          is left to where `NoteList`'s side style docks it. Only while
+          revealed: the list is a way to *read* the notes, and `r` is the key
+          that asks for that.
         */}
         {at &&
           annotationsPrefs.reveal &&
@@ -2554,7 +2571,12 @@ function App({ work, onLeave }: AppProps) {
         )}
       </div>
       {at && annotationsPrefs.reveal && notesPlacement === 'below' && (
-        <NoteList here={here} placement="below" onOpen={openNote} />
+        <NoteList
+          here={here}
+          placement="below"
+          onOpen={openNote}
+          covered={chromeVisible}
+        />
       )}
       <Chrome
         visible={chromeVisible}
@@ -2570,6 +2592,13 @@ function App({ work, onLeave }: AppProps) {
         chapter={readouts.chapter}
         health={readouts.health}
         notes={readouts.notes}
+        progress={readouts.progress}
+        title={heading.title}
+        editionLine={heading.editionLine}
+        mode={mode}
+        onMode={setMode}
+        settingsOpen={settingsVisible}
+        onSettings={() => setSettingsVisible((open) => !open)}
         work={work}
         edition={pending ? pending.to : shown.edition}
         slots={correcting ? correcting.slots : slots}
@@ -2715,6 +2744,7 @@ function App({ work, onLeave }: AppProps) {
         notes={settingsNotes}
         onChange={handleSettingChange}
         onReset={handleSettingReset}
+        onClose={() => setSettingsVisible(false)}
       />
       <CreditsPanel
         visible={creditsVisible}

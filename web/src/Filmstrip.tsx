@@ -37,20 +37,19 @@ const tileStyle: CSSProperties = {
 
 const currentTileStyle: CSSProperties = {
   ...tileStyle,
-  borderColor: '#fff',
+  borderColor: 'var(--accent)',
 }
 
 // The `R`/`L` mark on one half of a split spread. Bottom-left rather than
 // centred, so it never covers the part of a panel a reader is comparing, and
-// high-contrast because it sits on artwork of unknown brightness.
+// high-contrast because it sits on artwork of unknown brightness: the
+// reader's panel and text, from `.reader-half-badge` in `styles/reader.css`.
 const halfBadgeStyle: CSSProperties = {
   position: 'absolute',
   bottom: 2,
   left: 2,
   padding: '0 4px',
   borderRadius: 3,
-  background: 'rgba(0, 0, 0, 0.72)',
-  color: '#fff',
   fontSize: 10,
   lineHeight: '14px',
   fontWeight: 600,
@@ -62,7 +61,7 @@ const resolvedTileStyle: CSSProperties = {
   // Dashed, not solid: the solid border already means "where you are", and a
   // reader choosing a counterpart has to tell "where the alignment says this
   // lands" apart from it at a glance. Same longhand-only rule as above.
-  borderColor: '#f2b134',
+  borderColor: 'var(--warning)',
   borderStyle: 'dashed',
 }
 
@@ -391,7 +390,11 @@ export function Filmstrip({
                 time `tilePages` splits a spread into two tiles at all — see
                 `pairing.ts`'s `correctionTiles`.
               */}
-                {half && <span style={halfBadgeStyle}>{half}</span>}
+                {half && (
+                  <span className="reader-half-badge" style={halfBadgeStyle}>
+                    {half}
+                  </span>
+                )}
               </span>
             ))}
           </button>

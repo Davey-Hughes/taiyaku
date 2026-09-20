@@ -81,9 +81,46 @@ describe('Settings', () => {
         prefs={{}}
         onChange={vi.fn()}
         onReset={vi.fn()}
+        onClose={vi.fn()}
       />,
     )
     expect(host.children.length).toBe(0)
+  })
+
+  it('closes on its own Close button, since ⚙ opens it by pointer', () => {
+    const onClose = vi.fn()
+    const host = mount(
+      <Settings
+        visible
+        modules={modules}
+        prefs={{}}
+        onChange={vi.fn()}
+        onReset={vi.fn()}
+        onClose={onClose}
+      />,
+    )
+    const close = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Close',
+    )
+    close?.click()
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('draws as the reader’s dialog, its look in the stylesheet', () => {
+    const host = mount(
+      <Settings
+        visible
+        modules={modules}
+        prefs={{}}
+        onChange={vi.fn()}
+        onReset={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    const dialog = host.querySelector('[role="dialog"]') as HTMLElement
+    expect(dialog.className).toBe('reader-dialog')
+    expect(dialog.getAttribute('style')).toBeNull()
+    expect(dialog.firstElementChild?.className).toBe('reader-dialog-panel')
   })
 
   it('renders a dialog with one section per module that has fields, skipping one that has none', () => {
@@ -94,6 +131,7 @@ describe('Settings', () => {
         prefs={{}}
         onChange={vi.fn()}
         onReset={vi.fn()}
+        onClose={vi.fn()}
       />,
     )
     const dialog = host.querySelector('[role="dialog"]')
@@ -113,6 +151,7 @@ describe('Settings', () => {
         prefs={{}}
         onChange={vi.fn()}
         onReset={vi.fn()}
+        onClose={vi.fn()}
       />,
     )
     const checkbox = host.querySelector(
@@ -151,6 +190,7 @@ describe('Settings', () => {
         }}
         onChange={vi.fn()}
         onReset={vi.fn()}
+        onClose={vi.fn()}
       />,
     )
     const checkbox = host.querySelector(
@@ -187,6 +227,7 @@ describe('Settings', () => {
         }}
         onChange={vi.fn()}
         onReset={vi.fn()}
+        onClose={vi.fn()}
       />,
     )
     const number = host.querySelector(
@@ -214,6 +255,7 @@ describe('Settings', () => {
         prefs={{}}
         onChange={onChange}
         onReset={vi.fn()}
+        onClose={vi.fn()}
       />,
     )
     const checkbox = host.querySelector(
@@ -232,6 +274,7 @@ describe('Settings', () => {
         prefs={{}}
         onChange={onChange}
         onReset={vi.fn()}
+        onClose={vi.fn()}
       />,
     )
     const number = host.querySelector(
@@ -250,6 +293,7 @@ describe('Settings', () => {
         prefs={{}}
         onChange={onChange}
         onReset={vi.fn()}
+        onClose={vi.fn()}
       />,
     )
     const text = host.querySelector('input[type="text"]') as HTMLInputElement
@@ -266,6 +310,7 @@ describe('Settings', () => {
         prefs={{}}
         onChange={onChange}
         onReset={vi.fn()}
+        onClose={vi.fn()}
       />,
     )
     const select = host.querySelector('select') as HTMLSelectElement
@@ -282,9 +327,12 @@ describe('Settings', () => {
         prefs={{}}
         onChange={vi.fn()}
         onReset={onReset}
+        onClose={vi.fn()}
       />,
     )
-    const resetButton = host.querySelector('button') as HTMLButtonElement
+    const resetButton = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Reset',
+    ) as HTMLButtonElement
     expect(resetButton.textContent).toBe('Reset')
     act(() => resetButton.click())
     expect(onReset).toHaveBeenCalledWith('modA')
@@ -299,6 +347,7 @@ describe('Settings', () => {
         notes={{ modA: 'This module does nothing on this particular work.' }}
         onChange={vi.fn()}
         onReset={vi.fn()}
+        onClose={vi.fn()}
       />,
     )
     const section = host.querySelector('section')
@@ -320,6 +369,7 @@ describe('Settings', () => {
         notes={{ someOtherModule: 'Not modA’s note.' }}
         onChange={vi.fn()}
         onReset={vi.fn()}
+        onClose={vi.fn()}
       />,
     )
     const section = host.querySelector('section')

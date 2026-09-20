@@ -136,6 +136,13 @@ describe('the routes', () => {
     )
   })
 
+  it('puts the reader inside its route box, which blacks out the page before the reader draws', () => {
+    const host = at('/read/gotoubun-v01')
+    expect(
+      host.querySelector('.reader-route > [data-testid="reader"]'),
+    ).not.toBeNull()
+  })
+
   it('does not mount the reader anywhere else', async () => {
     const host = at('/')
     // Negative half: the reader is absent. On its own this would also pass

@@ -182,3 +182,24 @@ describe('CorrectionBanner, once a counterpart is picked', () => {
     expect(confirmed).toBe(0)
   })
 })
+
+describe('CorrectionBanner, where it stands', () => {
+  /** Spec 2026-09-17 §8.3: the top bar is not drawn while correcting, and this takes its place. */
+  it('takes the top bar’s place: the reader’s top edge, full width, over the page', () => {
+    const host = mount(<CorrectionBanner {...props()} />)
+    const banner = host.firstElementChild as HTMLElement
+    expect(banner.className).toBe('reader-banner')
+    expect([banner.style.top, banner.style.left, banner.style.right]).toEqual([
+      '0px',
+      '0px',
+      '0px',
+    ])
+    expect(Number(banner.style.zIndex)).toBe(3)
+    expect(banner.style.padding).toContain('var(--safe-top)')
+  })
+
+  it('gives its buttons the reader’s button look', () => {
+    const host = mount(<CorrectionBanner {...props({ pending: picked })} />)
+    for (const b of buttons(host)) expect(b.className).toBe('reader-button')
+  })
+})

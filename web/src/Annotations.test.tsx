@@ -157,7 +157,7 @@ describe('Annotations', () => {
         />,
       )
       const pending = host.firstElementChild?.firstElementChild as HTMLElement
-      expect(pending.style.background).toBe('rgba(0, 0, 0, 0.42)')
+      expect(pending.style.background).toBe('var(--art-drawing)')
       expect(pending.style.width).toBe('20%')
       expect(pending.style.height).toBe('30%')
       expect(pending.querySelector('p')).toBeNull()
@@ -231,7 +231,7 @@ describe('Annotations', () => {
         />,
       )
       const pending = host.firstElementChild?.firstElementChild as HTMLElement
-      expect(pending.style.background).toBe('rgba(0, 0, 0, 0.42)')
+      expect(pending.style.background).toBe('var(--art-drawing)')
     })
   })
 

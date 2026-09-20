@@ -18,33 +18,37 @@ import { noteColour } from './palette'
  *
  * Placement is `notes.ts`'s `listPlacement`: beside the page where the window
  * is wide enough for the margin to hold it, under the page where it is not,
- * and whichever a reader asks for in settings. This component only lays out
- * the rows; where it is mounted is `App.tsx`'s business, which is why there is
- * no positioning in these styles beyond filling what it is given.
+ * and whichever a reader asks for in settings. `App.tsx` decides only which of
+ * the two `here` mounts as — beside the page (`sideStyle`) or under it
+ * (`belowStyle`) — not where either one sits: beside the page, this component
+ * docks itself the way a panel does, between the bars (`sideStyle`'s own
+ * `top`/`maxHeight`, below); under the page, it fills what it is given.
  */
 const sideStyle: CSSProperties = {
   position: 'absolute',
-  top: 8,
-  right: 8,
+  // Where a docked panel stands (spec 2026-09-17 §8.5): below the top bar's
+  // line and above the bottom bar's, whether or not the bars are shown —
+  // `--panel-top` and `--panel-bottom` in `styles/reader.css`.
+  top: 'var(--panel-top)',
+  right: 'calc(var(--space-4) + var(--safe-right))',
   // Height from what it holds, not from the page. Pinning `bottom` as well as
   // `top` stretched the panel down the whole margin however few notes were in
   // it, so two rows sat at the top of a column of empty background — a box
   // that looked like it had lost its contents. `maxHeight` keeps a long list
-  // scrolling inside the page rather than past it.
-  maxHeight: 'calc(100% - 16px)',
+  // scrolling between the bars rather than under them, floored at 8rem the
+  // same way `.docked-panel` is in `styles/reader.css`, for a window too
+  // short to fit both bars with anything left between them.
+  maxHeight: 'max(8rem, calc(100% - var(--panel-top) - var(--panel-bottom)))',
   width: 240,
   overflowY: 'auto',
   display: 'flex',
   flexDirection: 'column',
   gap: 6,
   padding: 10,
-  borderRadius: 8,
-  background: 'rgba(24, 24, 24, 0.9)',
-  color: 'rgba(255, 255, 255, 0.92)',
-  fontSize: '0.85em',
   zIndex: 3,
 }
 
+// Padded by the safe areas, since it runs to the reader's bottom edge.
 const belowStyle: CSSProperties = {
   flex: '0 0 auto',
   maxHeight: '28%',
@@ -52,10 +56,8 @@ const belowStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: 6,
-  padding: '8px 12px',
-  background: 'rgba(24, 24, 24, 0.9)',
-  color: 'rgba(255, 255, 255, 0.92)',
-  fontSize: '0.85em',
+  padding:
+    '8px calc(12px + var(--safe-right)) calc(8px + var(--safe-bottom)) calc(12px + var(--safe-left))',
 }
 
 const rowStyle: CSSProperties = {
@@ -77,7 +79,7 @@ const numberStyle = (colour: string): CSSProperties => ({
   height: 18,
   borderRadius: 3,
   background: colour,
-  color: 'rgba(20, 20, 20, 0.9)',
+  color: 'var(--art-ink)',
   fontSize: 11,
   fontWeight: 600,
   lineHeight: '18px',
@@ -89,13 +91,26 @@ export interface NoteListProps {
   here: NoteHere[]
   placement: 'side' | 'below'
   onOpen: (id: string) => void
+  /**
+   * Whether `Chrome`'s bars are shown — O112, answered in spec 2026-09-17
+   * §8.1. Under the bottom bar the list below the page is `visibility:
+   * hidden`: still mounted and still taking its space, so the page area keeps
+   * its size on `Tab`, which `Chrome` exists to guarantee. The list beside the
+   * page docks clear of both bars and ignores this.
+   */
+  covered?: boolean
 }
 
-export function NoteList({ here, placement, onOpen }: NoteListProps) {
+export function NoteList({ here, placement, onOpen, covered }: NoteListProps) {
   if (here.length === 0) return null
   return (
     <div
-      style={placement === 'side' ? sideStyle : belowStyle}
+      className={`note-list note-list-${placement}`}
+      style={
+        placement === 'side'
+          ? sideStyle
+          : { ...belowStyle, visibility: covered ? 'hidden' : undefined }
+      }
       aria-label="Notes on this page"
       role="list"
     >
@@ -115,12 +130,12 @@ export function NoteList({ here, placement, onOpen }: NoteListProps) {
                 both said in the row rather than left to be inferred from a
                 marker the reader may not have found yet. */}
             {h.travelled && (
-              <em style={{ opacity: 0.7 }}>on {h.note.edition} · </em>
+              <em className="reader-muted">on {h.note.edition} · </em>
             )}
             {isPoint(h.note.region) && (
-              <em style={{ opacity: 0.7 }}>point · </em>
+              <em className="reader-muted">point · </em>
             )}
-            {h.note.body || <em style={{ opacity: 0.7 }}>empty</em>}
+            {h.note.body || <em className="reader-muted">empty</em>}
           </span>
         </button>
       ))}

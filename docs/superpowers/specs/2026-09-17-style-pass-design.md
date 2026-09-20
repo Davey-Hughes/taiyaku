@@ -1,7 +1,8 @@
 # The style pass — design
 
 **Status: settled in brainstorming on 2026-09-17. ① merged as #162
-(`c70413e`). ②'s details settled on 2026-09-18, in §7.**
+(`c70413e`), ② as #163 (`053ad8c`). ②'s details settled on 2026-09-18, in
+§7; ③'s on 2026-09-19, in §8.**
 
 Written in the style of the rest of `docs/`: every decision records the
 alternative it beat and what it cost, a figure asserted here was measured on
@@ -347,7 +348,10 @@ inputs and scrollbar inside their fixed-dark panels.
 **O112 sits exactly here** — with the chrome open, the strip and the readout
 row cover a note list placed below the page — and this PR redraws that bar,
 so its options go back to the user once the bar's geometry exists, rather
-than being decided silently in either direction.
+than being decided silently in either direction. §8 has the details, O112's
+answer included, settled with the user on 2026-09-19. *(O112 closed on
+2026-09-19, with that answer built and measured — see its entry in
+`docs/status.md`.)*
 
 **④ Touch.** A tap on the left or right third turns the page, mirrored for a
 right-to-left edition; a tap in the middle shows or hides the chrome; a
@@ -601,3 +605,275 @@ On top of §5's list for every PR:
   The user-agent is read before any result is believed.
 - **O132 is filed** in `docs/status.md`: the continue strip's progress
   version and the setting that picks between it and covers.
+
+## 8. PR ③ in detail
+
+Settled with the user on 2026-09-19, before planning, against mockups drawn
+at 390×844 with a real page and real strip tiles from the scratch copy of the
+NAS library (in the brainstorming session's gitignored directory). What §5 ③
+already says is not repeated here.
+
+**What exists**, read from `main` at `dbb68e4` for this section:
+
+- The `single`, `two` and `scroll` buttons sit in flow above the page at all
+  times — `App.tsx`'s toolbar row, outside `Chrome`. Measured in the
+  browser project on `dbb68e4`, in Chromium with the fonts ① bundles: the
+  row is 37 px tall and the page area below it 863 px at 1440×900 (987 at
+  768×1024), so the row costs 37 px of every height-bound page.
+  There is no layout key: the Settings panel's Layout section is the only
+  other way to the same preference (`modules/layout.ts`).
+- `Chrome` is the strip, floating 16 px in from each side at 176 px tall
+  with rounded corners and a shadow, the readout row docked to the bottom
+  edge beneath it, and `Library` docked in the band above the strip (O65).
+- Help, Credits and the notes panel dock at `top: 16, right: 16`; the note
+  list beside the page at `top: 8, right: 8` of the page area. Settings is a
+  centred dialog that only its own key, `s`, closes: `keyPlan`'s `Escape`
+  branch has no arm for it, and it has no Close button.
+- The reader does not know the work's title or its editions' labels. It
+  reads the sidecar through `SidecarShape`, which keeps `work.reading`,
+  `hub`, `alignments` and the editions' keys, and not `work.title` or any
+  edition's `label`.
+
+**One mechanism, measured before it was chosen.** The tokens are
+`light-dark()` pairs on unregistered custom properties, so a `light-dark()`
+should be resolved where a property uses the token, against that element's
+`color-scheme`, not where the token is defined. Measured with a page holding
+the token rules, one paragraph outside a `color-scheme: dark` box and one
+inside it, in Chromium 151 and Firefox 153, under Paper pinned and System,
+with the OS emulated light and dark: the inside paragraph computed Ink's
+text, `rgb(236, 228, 212)`, in all four combinations, and a `color-mix()`
+of the `bg` pair at 92% computed Ink's; the outside paragraph followed the
+theme. WebKit is not installed here. Safari is checked on the iPhone in ④'s
+device pass, the first time a phone can open anything the reader draws in
+the tokens: until ④ a phone cannot show the chrome.
+
+### 8.1 Decisions
+
+| Question | Chosen | Beat, and why |
+| --- | --- | --- |
+| Does the top bar come and go? | **With the bottom bar**: both are the chrome, drawn over the page, shown and hidden together | *The top bar stays*, today's shape restyled: layout, settings and the way out always one click away, but a 52 px band on screen at all times, taken off every height-bound page — most pages on a desktop, and every page on a phone held sideways (in portrait a page is width-bound, so there the band costs only the look) |
+| How tall is the strip on a phone? | **96 px tiles below 900 px**, 160 at and above it | *160 everywhere*: one rule, and the size a manual pass asked for so a page already read is recognised. On the mockup's geometry the two bars cover about 27% of a 390×844 screen at 96 and 35% at 160, with about five tiles in view against three; *computed from the mockup, not measured in the app* |
+| Where does a panel sit when the top bar shows? | **Always below the bar's line**, and above the bottom bar's, whether or not the chrome is shown | *At the top, stepping down while the bar shows*: uses the top 52 px while reading, but the panel jumps on every `Tab`, under a hand reaching for one of its rows. *Opening a panel hides the chrome*: a behaviour change, and a reader opening Help to find a key would lose the strip they were looking at |
+| O112: the note list under the page, while the chrome is shown | **Hidden**, keeping its space | *Lifted onto the bottom bar*: stays readable and clickable, but with the list's 28% and both bars up to about 55% of a phone is covered, and while correcting the list and the hover preview would share the band above the strip. *Making room* and *floating it over the strip* are ruled out again for O112's reasons: the first resizes the page on every `Tab`, the second hides the tiles |
+
+The first answer costs a pointer reader a step: changing layout takes `Tab`
+first, or the Settings panel. It returns the toolbar's 37 px to the page.
+The last one costs reading or opening a note while the strip is up; the
+readout can still say how many there are, with its notes line switched on. What O112 named as a
+cost of floating the list above the strip — the band where O65 docked
+`Library` — is gone either way, because `Library` moves into the top bar.
+
+### 8.2 The frame
+
+- **A `.reader` class on the reader's root**, styled in
+  `styles/reader.css`, the partial §4 reserved for it. The root's inline
+  geometry — the flex column, `height: 100%`, `position: relative` —
+  stays inline (§4 rule 3).
+- **`color-scheme: dark` on `.reader`** (§3 item 5). By the measurement
+  above, every token resolves to its Ink value inside the reader in both
+  themes, so the bars and panels use the ordinary tokens — `--text`,
+  `--muted`, `--accent`, `--line` — and there is no second palette. Native
+  checkboxes, number inputs and scrollbars inside it are dark.
+- **Three tokens of the reader's own**, in `tokens.css`: `--reader-ground`
+  `#000`, `--reader-panel` Ink's `bg` at 92%, `--reader-hair` Ink's `text`
+  at 14% — §2's values, not new ones. Over black, `--reader-panel` computes
+  to about `rgb(19, 17, 14)`, on which Ink's text measures 14.86:1, muted
+  6.85, accent 6.21 and warning 9.84; over white artwork, where a panel can
+  also sit, it computes to about `rgb(40, 38, 34)`, and the four measure
+  11.97, 5.52, 5.00 and 7.92 — every one above 4.5.
+- **Black behind the reader.** `:root:has(.reader-route, .reader)` and its
+  `body` arm take `--reader-ground` too, so overscroll and whatever shows
+  under Safari's toolbar are black rather than paper. `.reader-route` is the
+  box `Routes.tsx` wraps the reader in, so the ground is black from the first
+  frame: `App` draws nothing until its load answers, and its own `.reader`
+  root is not there until then. The user's iPhone confirmed it — a work opens
+  black, with no flash of paper.
+- **The page area keeps `scroll-padding-top` while the chrome is shown**, the
+  top bar's height plus the top safe area, so a page scroll mode lands on
+  stops below the bar rather than under it. It moves the scroll target only;
+  the page area's own size is unchanged, which is what lets the bars overlay
+  without resizing it. (A page already parked at its top when `Tab` arrives
+  stays where it is — `useScrollToCurrent` is not keyed on the chrome — and
+  scroll mode does not follow a page taken from the strip at all, which is
+  O136 and predates this PR.)
+- **`viewport-fit=cover`** in `index.html` (§3 item 6), with
+  `env(safe-area-inset-*)` padding on the reader's two bars and panel
+  docking, and on the library's shell: the phone bar, the drawer column and
+  the sides of the frame. The library would otherwise sit under the notch in
+  landscape, which is why §3 moved this to ③. *Built on `.library` itself
+  rather than on `<main>` as this line first said: at and above 900 px that
+  moves the sidebar off a landscape phone's notch too, and below it the
+  sticky phone bar is inset with the frame, so its hairline stops short of
+  both screen edges. The device pass found the library clear of the notch,
+  the rounded corners and the home indicator in both orientations.*
+
+### 8.3 The top bar
+
+- **Left to right**: `‹ Library`; the title block; the layout control —
+  three `aria-pressed` buttons drawn as icons in `currentColor`, keeping
+  today's accessible names, because the words would leave the title about
+  70 px at 390 px wide (*a guess from the mockup's type sizes*); and ⚙,
+  which opens Settings. 52 px tall plus the top safe area, on
+  `--reader-panel`, a `--reader-hair` rule beneath it. Each control is at
+  least 44 px square under `(pointer: coarse)`, as ② made the sidebar's
+  rows.
+- **The title block**: the work's title in the title face and, under it in
+  `--muted`, `Vol. N · <label>` for the edition on screen — the one Space
+  moves to. Both come from `/api/library/works/{slug}`, fetched once beside
+  the load; any signed-in user may call it (`routes.rs` lists it
+  `Filters`). It carries the library's title and each edition's label,
+  with metadata edits applied, which the sidecar's `work.title` and
+  `editions.*.label` do not: those are the file on disk, and an edit is
+  written to the database (`title_hand`, `label_hand`). The cost is one
+  small request per open. Until it answers, or if it fails, the bar shows
+  the edition's key alone.
+- **Shown with the bottom bar, fading with it.** While correcting it is not
+  drawn and `CorrectionBanner` takes its place at the top, which keeps O65's
+  rule that `Library` stands down during a correction; `L` still leaves.
+- **This reverses O65's dock.** `Library` leaves the band above the strip.
+  O65 declined "moving it into the toolbar row" because the button would
+  have lost `Chrome`'s fade and its hide-while-correcting rule; the toolbar
+  is now inside `Chrome`, so it keeps both. O65's two pins —
+  `Chrome.test.tsx`'s declared geometry and `App.browser.test.tsx`'s
+  `elementFromPoint` — are rewritten for the new place, not deleted.
+- **Settings gains a Close button.** ⚙ is a pointer's way in, so the
+  dialog needs a pointer's way out; today only `s` closes it.
+- **`Tab` reaches no top-bar control at all.** `keyPlan` answers `Tab`
+  with `toggle-chrome` and does not prevent its focus move, so one `Tab`
+  shows the bars and the next hides them. **Measured in Chromium at
+  1440×900 with real keys, on this branch and on `main` alike**: the first
+  `Tab` focuses the strip tile after the current one, not any top-bar
+  control; `Space` then activates that tile and turns a page rather than
+  swapping editions; a second `Tab` returns focus to `<body>`. Every
+  control has another keyboard route — `L`, `s`, and Layout inside
+  Settings — so nothing is out of reach; filed as O135 for the
+  accessibility pass (§5) rather than fixed here, together with Settings
+  closing on neither `Escape` nor `s` once ⚙ has opened it.
+
+### 8.4 The bottom bar
+
+- **One full-width bar docked to the bottom edge**, replacing the floating
+  strip and the separate readout band: the strip, a 2 px progress line, the
+  readout row, then the bottom safe area; `--reader-panel`, a
+  `--reader-hair` rule on top.
+- **Tiles 160 px at and above 900 px, 96 below**: a strip 176 or 112 px
+  tall with the rail's padding and the tiles' borders. One custom property,
+  set by the breakpoint, sizes it, and the hover preview stands on the same
+  property, so it stays just above the strip at both widths. On a 3× phone
+  a tile shows the 160 px thumbnail stretched 1.8× at 96, against 3× at
+  160; still soft either way, which is filed below as O134. *Those are the
+  slot's figures, not the drawn tile's, wherever a scrollbar takes space:
+  the rail is `overflow-x: auto`, a real volume's tiles always overflow it,
+  and a classic scrollbar costs 15 px — measured in Chromium on the running
+  app, a tile image is 145 px inside the 176 px strip and 81 inside the 112.
+  It predates this PR and does not happen where scrollbars overlay, as on
+  iOS; filed as O138.*
+- **The progress line** is `--line`, filled in `--accent` to
+  `(slot + 1) / total` — the fraction `positionLine` already turns into the
+  readout's percentage, so the two agree except where the slot count has gone
+  backwards, which `progress` clamps at 1 and `positionLine` does not.
+- **The readout row** keeps `readoutRow`'s text, order and ellipsis;
+  centred, `--muted`, the 0.75rem step.
+- **The strip's colours**: the current tile's ring from `#fff` to
+  `--accent`; the correcting counterpart's dashed ring from `#f2b134` to
+  `--warning` (Ink's `#e2b55c`); a split spread's R/L badge on
+  `--reader-panel` in `--text`. `Filmstrip.test.tsx`'s two *coloured*
+  `borderColor` assertions change — its three `transparent` ones have nothing
+  to tokenise — each watched failing with the old value put back (§4 rule 6).
+
+### 8.5 Panels, the note list and the rest
+
+- **Docking.** Help, Credits, the notes panel and the note list beside the
+  page sit at the top right, 16 px below the top bar's line — the top safe
+  area, 52 and 16 — and stop 16 px above the bottom bar's top edge, whether
+  or not the chrome is shown. A long one scrolls inside itself. At phone
+  width a panel is the screen less 32 px, as today.
+- **The look** (§2): square corners, `--reader-panel`, a 1 px
+  `--reader-hair` border, no shadow; headings in the title face, rows
+  divided by hairlines. Settings stays a centred dialog in the same look.
+  The panels' own buttons — Close, Export, Reset and the rest — take a
+  reader button style from `reader.css`, since `base.css`'s element rules
+  reach only `.library` and `.login` (§5 ①); until now they were the
+  browser's own.
+  Each panel's visual inline styles become classes in `reader.css` — §4
+  rule 4, this being their PR — while position and size stay inline where
+  a test pins them.
+- **The note list under the page** is `visibility: hidden` while the chrome
+  is shown — mounted, and keeping its space, so the page area does not
+  change on `Tab` — and takes the bottom safe area while it is not. O112
+  closes.
+- **The rest**: `CorrectionBanner` an ink panel in the top bar's place;
+  `Gap`'s message in `--text` on the black; `Borrowed`'s gold mark,
+  `rgba(180, 140, 60, 0.9)`, to `--warning`, with Ink's `bg` on it at
+  9.72:1; the notes popover on the page in the panel look.
+- **The borrowed page's mark docks below the top bar's line**, by §8.1's
+  rule for panels, and takes the left safe area with it. Added after the
+  whole-branch review measured the top bar covering it: at 390×844 with the
+  chrome shown the mark occupied 0–26 px under a bar of 0–52, and
+  `elementFromPoint` at its centre answered the bar — and that mark is the
+  pointer's only way into the offers and back out. The user chose docking it
+  over leaving it covered, on 2026-09-19.
+- **Colours drawn on artwork keep their values** (§2) and become named
+  tokens in `tokens.css`'s box group, so no component holds a literal: the
+  note overlay's outlines and drawing fill, and the dark digits on the note
+  list's coloured number chips.
+- **The allowlist** loses its entries for `Annotations.tsx`, `Borrowed.tsx`,
+  `Chrome.tsx`, `CorrectionBanner.tsx`, `CreditsPanel.tsx`,
+  `Filmstrip.tsx`, `Help.tsx`, `NoteList.tsx`, `NotePanel.tsx` and
+  `Settings.tsx`. Two remain: `Account.tsx`, which is ⑤'s screen, and
+  `styles/annotations.css`, whose two literals — a selected region box's
+  white inner line and the ignore hatch — are the labeller's, not the
+  reader's. §4 rule 2 wants ⑤ to end with an empty list, and §6 leaves the
+  labeller out of the pass; the two cannot both hold, and ⑤ settles which
+  gives way.
+
+### 8.6 Tests and checks
+
+On top of §5's list for every PR:
+
+- **jsdom.** The top bar renders only while the chrome is shown, and not
+  while correcting, when the banner does; `Library` calls `onLeave`, the
+  layout buttons carry `aria-pressed`, ⚙ opens Settings and Settings' Close
+  closes it. The title and `Vol. N · label` come from the work's detail,
+  fall back to the edition's key, and follow Space. The progress fill is
+  `(slot + 1) / total`. The note list under the page stays mounted and is
+  `visibility: hidden` while the chrome is shown.
+- **Node, over the CSS.** `.reader` declares `color-scheme: dark`; Ink's
+  text, muted and accent clear 4.5:1 on `--reader-panel` over black and
+  over white; the tile height follows the 900 px breakpoint; `index.html`
+  carries `viewport-fit=cover`; the allowlist is lowered.
+- **The browser project** (Chromium; the gate runs it, CI does not). With
+  Paper pinned, the bar's text computes to Ink's `--text` — the check that
+  the mechanism measured above holds in the app and not only in a probe. At 390×844 and
+  1440×900: the bars meet the edges, tiles measure 96 and 160, a panel sits
+  between the two bars, and the page area is the same size with the chrome
+  shown and hidden. O65's `elementFromPoint` check, rewritten for `Library`
+  in the top bar; O112's, with the chrome hidden every note row takes a
+  click at its centre and with it shown the list is hidden.
+- **The browser pass** against the scratch copy of the library, at 390 and
+  1440, in Paper and in Ink — where the reader should look the same, which
+  is itself a check — in single, two and scroll, with a panel open, while
+  correcting, and with notes under the page. *Run on 2026-09-19
+  (`docs/notes.md`, "Style pass ③"). Paper and Ink came out **identical to
+  the pixel** at 1440×900, captured back to back in one state, and at
+  390×844 differed only in the readout's ticking clock. Correcting, a gap
+  and a borrowed page could not be reached: every work in that library is
+  single-edition and unaligned, and the repository's corpus, added as a
+  second root, produced proposals rather than multi-edition works —
+  accepting one is ⑤'s screen. Their geometry is pinned in jsdom, and ④'s
+  device pass is where they are first seen.*
+- **The iPhone**, over the tailnet, the user-agent read first: the safe
+  areas in portrait and landscape on the library and on the reader while
+  reading, and what Safari's toolbar shows over the reader. The bars' safe
+  areas, their 44 px tap targets under `(pointer: coarse)`, and Safari's
+  resolution of the tokens inside `.reader` move to ④'s device pass, since
+  a phone cannot open the chrome before ④.
+- **Filed** in `docs/status.md`: O112, **closed**; and five opened —
+  **O134**, the strip soft on a 3× phone, because its tiles are the 160 px
+  thumbnail and sharper ones are the server's to send, as O133 did for
+  covers; **O135**, for the accessibility pass, the keyboard reaching no
+  top-bar control and Settings closing on neither `Escape` nor `s`;
+  **O136**, scroll mode not following a page taken from the strip, measured
+  on `main` too; **O137**, the note editor having no exit a finger can
+  reach, which ④'s touch design owns; and **O138**, the rail's scrollbar
+  spending 15 px of every tile.

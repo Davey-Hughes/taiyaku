@@ -25,7 +25,7 @@ describe('layoutModule', () => {
     expect(layoutModule.options?.mode).toContain(layoutModule.defaults.mode)
   })
 
-  it('claims no keys — the mode has buttons above the page', () => {
+  it('claims no keys — the mode has buttons in the top bar, shown with the strip', () => {
     expect(layoutModule.keys ?? []).toEqual([])
   })
 })

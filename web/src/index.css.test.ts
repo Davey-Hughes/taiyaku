@@ -196,6 +196,61 @@ describe("spec §2's floors hold in both themes", () => {
   }
 })
 
+/** `--name: rgb(r g b / a)` in `tokens.css`, as its channels and its alpha. */
+function readerToken(name: string): { rgb: Rgb; alpha: number } {
+  const m = tokensSource.match(
+    new RegExp(`--${name}:\\s*rgb\\((\\d+) (\\d+) (\\d+) / ([\\d.]+)\\)`),
+  )
+  if (!m) throw new Error(`tokens.css has no rgb() value for --${name}`)
+  return {
+    rgb: [Number(m[1]), Number(m[2]), Number(m[3])],
+    alpha: Number(m[4]),
+  }
+}
+
+const BLACK: Rgb = [0, 0, 0]
+const WHITE: Rgb = [255, 255, 255]
+
+describe("the reader's tokens (spec §8.2)", () => {
+  it("are Ink's --bg and --text at §2's opacities, over a black ground", () => {
+    expect(tokensSource).toMatch(/--reader-ground:\s*#000;/)
+    expect(readerToken('reader-panel')).toEqual({
+      rgb: token('bg', 'ink'),
+      alpha: 0.92,
+    })
+    expect(readerToken('reader-hair')).toEqual({
+      rgb: token('text', 'ink'),
+      alpha: 0.14,
+    })
+  })
+
+  it('reproduce two ratios the spec computed outside this file', () => {
+    const { rgb, alpha } = readerToken('reader-panel')
+    expect(
+      contrast(token('text', 'ink'), composite(rgb, BLACK, alpha)),
+    ).toBeCloseTo(14.86, 2)
+    expect(
+      contrast(token('muted', 'ink'), composite(rgb, WHITE, alpha)),
+    ).toBeCloseTo(5.52, 2)
+  })
+
+  for (const [under, ground] of [
+    ['black', BLACK],
+    ['white artwork', WHITE],
+  ] as const) {
+    it(`keep every Ink text colour above 4.5:1 on a panel over ${under}`, () => {
+      const { rgb, alpha } = readerToken('reader-panel')
+      const panel = composite(rgb, ground, alpha)
+      const failures = TEXT_TOKENS.map(
+        (text) => [text, contrast(token(text, 'ink'), panel)] as const,
+      )
+        .filter(([, ratio]) => ratio < 4.5)
+        .map(([text, ratio]) => `--${text}: ${ratio.toFixed(2)}`)
+      expect(failures).toEqual([])
+    })
+  }
+})
+
 describe('D2: `.alignment-panel .paired` clears WCAG AA in both themes', () => {
   // `.paired` is `178 of 180`, the number the panel exists to show, faded by
   // `opacity` over the panel's own ground. One opacity lands at different

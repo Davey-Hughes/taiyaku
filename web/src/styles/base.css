@@ -28,14 +28,18 @@ body {
   color: var(--on-accent);
 }
 
-/* **Everything below is scoped to the screens the style pass has reached**,
- * not the whole document. The reader draws its chrome over artwork with
- * inline styles that set some properties and leave the rest to the browser,
- * so a document-wide `button` rule would change a filmstrip tile's border or
- * a panel button's padding under geometry that the reader's own PR redraws.
- * `:where()` on both halves keeps every rule here at zero specificity, so
- * each class rule in `shell.css`, `library.css` and `admin.css` still wins
- * exactly as it did. `base.css.test.ts` holds the scope. */
+/* **Everything below is scoped to `.library` and `.login`, and, deliberately,
+ * still not the reader** — the style pass has now reached it (style pass ③),
+ * and it is excluded on purpose rather than by omission. The reader's own
+ * surfaces are styled in `reader.css`, with inline styles that set some
+ * properties and leave the rest to the browser, so a document-wide `button`
+ * rule would change a filmstrip tile's border or a panel button's padding
+ * under geometry `reader.css` and the reader's components set on their own
+ * terms, and it would reach the page's own controls too, which are never this
+ * style pass's to restyle. `:where()` on both halves keeps every rule here at
+ * zero specificity, so each class rule in `shell.css`, `library.css`,
+ * `admin.css` and `reader.css` still wins exactly as it did.
+ * `base.css.test.ts` holds the scope. */
 :where(.library, .login) :where(h1, h2, h3) {
   font-family: var(--font-title);
   font-weight: 600;

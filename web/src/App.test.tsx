@@ -52,6 +52,8 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeResolver, whole } from './fixtures'
+import { Unauthenticated } from './api'
+import type { WorkDetail } from './library'
 import type { NotesDoc } from './notes'
 import type { Resolver } from './resolver'
 import { mount, rerender } from './testing/mount'
@@ -80,6 +82,9 @@ const ports = vi.hoisted(() => ({
   listKeys: vi.fn(),
   listSessions: vi.fn(),
   wasmResolver: vi.fn(),
+  // `library.ts`'s `work()`: the top bar's title and the editions' labels
+  // (spec 2026-09-17 §8.3), fetched once beside the load.
+  workDetail: vi.fn(),
 }))
 
 vi.mock('taiyaku-wasm', () => ({
@@ -111,6 +116,11 @@ vi.mock('./api', async (importOriginal) => ({
   logout: ports.logout,
   listKeys: ports.listKeys,
   listSessions: ports.listSessions,
+}))
+
+vi.mock('./library', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./library')>()),
+  work: ports.workDetail,
 }))
 
 const { default: App } = await import('./App')
@@ -168,6 +178,22 @@ function corpus(): Resolver {
 }
 
 const emptyNotes = (): NotesDoc => ({ work: WORK, notes: [] })
+
+/** `/api/library/works/{slug}` for `WORK`, as far as the top bar reads it. */
+const libraryDetail = (): WorkDetail => ({
+  id: 1,
+  slug: WORK,
+  title: 'Volume One',
+  volume: 1,
+  aligned: true,
+  pages: 6,
+  editions: [
+    { key: 'raw', label: 'Raw, monochrome', members: 1, pages: 6, missing: 0 },
+    { key: 'en', label: 'English official', members: 1, pages: 6, missing: 0 },
+  ],
+  opens: 'raw',
+  alignments: [],
+})
 
 /**
  * `prefs.test.ts`'s own storage double, for the same reason it has one: the
@@ -253,6 +279,7 @@ beforeEach(() => {
     }),
   )
   ports.wasmResolver.mockImplementation(async () => resolver)
+  ports.workDetail.mockResolvedValue(libraryDetail())
 })
 
 // ---- the harness ------------------------------------------------------------
@@ -413,12 +440,13 @@ function field(
 }
 
 /**
- * The page area — the second child of the reader's root column, and what
- * `pageAreaRef` points at. The wheel listener and the swap's measurements are
- * both on this element rather than on the page inside it.
+ * The page area — `.page-area`, and what `pageAreaRef` points at. The wheel
+ * listener and the swap's measurements are both on this element rather than
+ * on the page inside it. Found by its class: it was the root's second child
+ * until the layout row left for the top bar (style pass ③).
  */
 const pageArea = (host: HTMLElement) =>
-  host.firstElementChild?.children[1] as HTMLElement
+  host.querySelector('.page-area') as HTMLElement
 
 const button = (host: ParentNode, text: string) =>
   [...host.querySelectorAll('button')].find(
@@ -557,6 +585,13 @@ describe('opening a work', () => {
     ])
   })
 
+  it('marks its root as the reader, and the page area inside it', async () => {
+    const host = await open()
+    const root = host.firstElementChild as HTMLElement
+    expect(root.classList.contains('reader')).toBe(true)
+    expect(pageArea(host)?.parentElement).toBe(root)
+  })
+
   /**
    * `Routes.tsx`'s `<App key={work} .../>` is what keeps this file's "loads
    * exactly once" assumption true rather than an assumption maintained by
@@ -690,6 +725,8 @@ describe('the reader keys', () => {
 
   it('a reader key stands down while focus is in a control', async () => {
     const host = await open()
+    // The reader draws no button until `Tab` shows the bars (style pass ③).
+    press('Tab')
     const button = host.querySelector('button')
     expect(button).not.toBeNull()
     // A window-level listener has no way to know a focused button is about to
@@ -864,6 +901,100 @@ describe('leaving the reader', () => {
     press('Tab')
     click(button(host, 'Library'))
     expect(onLeave).toHaveBeenCalled()
+  })
+
+  it('shows the layout control only with the chrome, not above the page', async () => {
+    const host = await open()
+    expect(button(host, 'two')).toBeUndefined()
+    press('Tab')
+    expect(button(host, 'two')).toBeDefined()
+  })
+
+  it('names the work and the edition on screen in the top bar, and follows the edition', async () => {
+    const host = await open()
+    press('Tab')
+    expect(host.querySelector('.reader-title-work')?.textContent).toBe(
+      'Volume One',
+    )
+    expect(host.querySelector('.reader-title-edition')?.textContent).toBe(
+      'Vol. 1 · Raw, monochrome',
+    )
+    press('2')
+    await settle()
+    expect(host.querySelector('.reader-title-edition')?.textContent).toBe(
+      'Vol. 1 · English official',
+    )
+    // Space is MRU (`keyplan.test.ts`'s "a digit shows that edition, and
+    // Space returns to the last one"): pressing it returns to the edition
+    // being left when '2' was pressed, and the title follows it there too
+    // (spec §8.6).
+    press(' ')
+    await settle()
+    expect(host.querySelector('.reader-title-edition')?.textContent).toBe(
+      'Vol. 1 · Raw, monochrome',
+    )
+    expect(ports.workDetail).toHaveBeenCalledOnce()
+    expect(ports.workDetail).toHaveBeenCalledWith(WORK)
+  })
+
+  it('names the edition by its key when the library does not answer, and says why in the console', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    ports.workDetail.mockRejectedValue(new Error('no server'))
+    const host = await open()
+    press('Tab')
+    expect(host.querySelector('.reader-title')?.textContent).toBe('raw')
+    expect(logged).toHaveBeenCalledWith(expect.any(Error))
+    logged.mockRestore()
+  })
+
+  it('says nothing in the console when the title fetch finds the session gone', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    ports.workDetail.mockRejectedValue(new Unauthenticated())
+    const host = await open()
+    press('Tab')
+    expect(host.querySelector('.reader-title')?.textContent).toBe('raw')
+    expect(logged).not.toHaveBeenCalled()
+    logged.mockRestore()
+  })
+
+  it('⚙ opens and closes the settings panel', async () => {
+    const host = await open()
+    press('Tab')
+    click(button(host, 'Settings'))
+    expect(dialog(host, 'Settings')).not.toBeNull()
+    expect(button(host, 'Settings').getAttribute('aria-expanded')).toBe('true')
+    click(button(host, 'Settings'))
+    expect(dialog(host, 'Settings')).toBeNull()
+    expect(button(host, 'Settings').getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it("Settings' Close button closes the panel", async () => {
+    const host = await open()
+    press('s')
+    expect(dialog(host, 'Settings')).not.toBeNull()
+    click(button(host, 'Close'))
+    expect(dialog(host, 'Settings')).toBeNull()
+  })
+
+  it('fills the progress line to where the reader stands', async () => {
+    const host = await open()
+    press('Tab')
+    // Stored progress is `raw` slot 2 of six: (2 + 1) / 6.
+    expect(
+      (host.querySelector('.reader-progress-fill') as HTMLElement).style.width,
+    ).toBe('50%')
+  })
+
+  it('gives the page area scroll padding to clear the top bar, only while it is shown', async () => {
+    const host = await open()
+    // Hidden: no bar covers the page area, so nothing is reserved for it.
+    expect(pageArea(host).style.scrollPaddingTop).toBe('')
+    press('Tab')
+    expect(pageArea(host).style.scrollPaddingTop).toBe(
+      'calc(var(--safe-top) + var(--reader-top-bar))',
+    )
+    press('Tab')
+    expect(pageArea(host).style.scrollPaddingTop).toBe('')
   })
 })
 
@@ -1056,6 +1187,42 @@ describe('the note editor', () => {
     press('r')
     expect(prefsFor('annotations').reveal).toBe(false)
     expect(host.querySelector('[aria-label="Notes on this page"]')).toBeNull()
+  })
+
+  it('O112: the note list under the page steps aside while the chrome is up, and comes back', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.annotations',
+      JSON.stringify({
+        markers: true,
+        travel: true,
+        reveal: true,
+        notesList: 'below',
+      }),
+    )
+    ports.getNotes.mockResolvedValue({
+      doc: {
+        work: WORK,
+        notes: [
+          {
+            id: 'note-1',
+            edition: 'raw',
+            slot: 2,
+            body: 'a note already here',
+            created: '2026-01-01T00:00:00.000Z',
+            updated: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      },
+      etag: 'n1',
+    })
+    const host = await open()
+    const list = () =>
+      host.querySelector('[aria-label="Notes on this page"]') as HTMLElement
+    expect(list().style.visibility).toBe('')
+    press('Tab')
+    expect(list().style.visibility).toBe('hidden')
+    press('Tab')
+    expect(list().style.visibility).toBe('')
   })
 
   it('opens a note from its entry in the list', async () => {
@@ -1252,17 +1419,17 @@ describe('the preference keys', () => {
 
   it('the mode buttons change what the page area draws', async () => {
     const host = await open()
-    const two = [...host.querySelectorAll('button')].find(
-      (b) => b.textContent === 'two',
-    )
-    click(two as Element)
+    // In the top bar since style pass ③, which `Tab` brings in with the strip.
+    press('Tab')
+    const two = button(host, 'two')
+    click(two)
     await settle()
     expect(pages(host)).toHaveLength(2)
     expect(prefsFor('layout').mode).toBe('two')
-    const scroll = [...host.querySelectorAll('button')].find(
-      (b) => b.textContent === 'scroll',
-    )
-    click(scroll as Element)
+    expect(two.getAttribute('aria-pressed')).toBe('true')
+    expect(button(host, 'single').getAttribute('aria-pressed')).toBe('false')
+    const scroll = button(host, 'scroll')
+    click(scroll)
     await settle()
     // Scroll mounts every group at once — six slots, six pages.
     expect(pages(host)).toHaveLength(6)

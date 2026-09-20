@@ -79,12 +79,14 @@ export function Gap({
         textAlign: 'center',
       }}
     >
-      <p style={{ fontSize: '1.1em', margin: 0 }}>
+      <p className="reader-gap-title">
         No <strong>{edition}</strong> page for <strong>{from.edition}</strong>{' '}
         page {from.page}.
       </p>
       {verdict && (
-        <p style={{ margin: 0, opacity: 0.8 }}>{sentence[verdict]}</p>
+        <p className="reader-muted" style={{ margin: 0 }}>
+          {sentence[verdict]}
+        </p>
       )}
       <GapOffers
         reading={reading}

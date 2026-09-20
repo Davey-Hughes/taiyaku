@@ -1,35 +1,11 @@
 import type { CSSProperties } from 'react'
 import { thumbUrl } from './api'
 
-// Same shell as `NotePanel`'s, deliberately: panels that open over the page
-// with different keys should not be two different-looking objects.
-//
-// **The reason given here for not sharing it has expired.** It read "a shared
-// style module for two callers is indirection without a second reader", and
-// there are four copies now — this, `NotePanel`, `Settings` and `Help`, the
-// last arriving 2026-08-08. Two of them have already drifted in ways nobody
-// decided. Extracting it is a change across four components and belongs to a
-// pass of its own rather than to the branch that added the fourth; recorded
-// here so the next person to add a fifth finds the argument already lost
-// rather than making it again.
-const panelStyle: CSSProperties = {
-  position: 'absolute',
-  top: 16,
-  right: 16,
-  width: 360,
-  maxWidth: 'calc(100% - 32px)',
-  maxHeight: '70vh',
-  overflowY: 'auto',
-  zIndex: 3,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-  padding: 12,
-  borderRadius: 8,
-  background: 'rgba(24, 24, 24, 0.94)',
-  color: 'rgba(255, 255, 255, 0.92)',
-  boxShadow: '0 10px 30px rgba(0, 0, 0, 0.45)',
-}
+// The panel is `.docked-panel` in `styles/reader.css`, shared with `Help` and
+// the notes panel (spec 2026-09-17 §8.5). This comment used to record that the
+// reason for copying it had expired at four copies: three copies of this docked
+// shell are one class now, and `Settings`' own — the fourth this comment
+// counted — is `.reader-dialog-panel`.
 
 const rowStyle: CSSProperties = {
   display: 'flex',
@@ -37,7 +13,7 @@ const rowStyle: CSSProperties = {
   gap: 10,
   padding: '6px 0',
   border: 'none',
-  borderTop: '1px solid rgba(255, 255, 255, 0.12)',
+  borderTop: '1px solid var(--reader-hair)',
   background: 'none',
   color: 'inherit',
   font: 'inherit',
@@ -56,7 +32,6 @@ const thumbStyle: CSSProperties = {
   objectFit: 'contain',
   display: 'block',
   flex: '0 0 auto',
-  background: 'rgba(0, 0, 0, 0.35)',
 }
 
 export interface CreditsPanelProps {
@@ -116,18 +91,18 @@ export function CreditsPanel({
   if (!visible) return null
   return (
     <div
-      style={panelStyle}
+      className="docked-panel"
       role="dialog"
       aria-label={`Credit pages in ${edition}`}
     >
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <strong style={{ flex: 1 }}>Credit pages — {edition}</strong>
-        <button type="button" onClick={onClose}>
+      <div className="reader-panel-head">
+        <strong className="reader-panel-title">Credit pages — {edition}</strong>
+        <button type="button" className="reader-button" onClick={onClose}>
           Close
         </button>
       </div>
       {pages.length === 0 ? (
-        <p style={{ margin: 0, opacity: 0.8 }}>
+        <p className="reader-muted" style={{ margin: 0 }}>
           No credit pages found in {edition}.
         </p>
       ) : (
@@ -135,7 +110,7 @@ export function CreditsPanel({
           {/* What the setting beside this panel is currently doing, said where
               the reader is looking at its consequences rather than only in the
               settings panel two keys away. */}
-          <p style={{ margin: 0, opacity: 0.8 }}>
+          <p className="reader-muted" style={{ margin: 0 }}>
             {skipping
               ? 'These are kept out of the reading flow. Taking one still goes there.'
               : 'These are still in the reading flow. Switch on “skip” in settings to set them aside.'}
@@ -148,6 +123,7 @@ export function CreditsPanel({
               onClick={() => onGo(page)}
             >
               <img
+                className="reader-thumb"
                 src={thumbUrl(work, edition, page)}
                 alt=""
                 style={thumbStyle}

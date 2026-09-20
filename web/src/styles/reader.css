@@ -1,0 +1,443 @@
+/* The reader — spec 2026-09-17 §8.
+ *
+ * Dark in both themes: `color-scheme: dark` on `.reader` resolves every
+ * `light-dark()` token to its Ink half inside the reader — measured in
+ * Chromium 151 and Firefox 153 (§8) — so the bars and panels draw from the
+ * ordinary tokens and nothing here keeps a second palette. `--reader-ground`,
+ * `--reader-panel` and `--reader-hair` (`tokens.css`) are the three values §2
+ * gives the reader alone.
+ *
+ * Geometry stays inline in the components, where their tests pin it (§4 rule
+ * 3). What varies with the viewport — the strip's height, the safe areas,
+ * where a panel docks — is a custom property here, which those inline styles
+ * read with `var()`. */
+
+/* The route's own box, so the ground is black from the first frame: `App`
+ * draws nothing until its load answers, and its `.reader` root is not there
+ * until then. */
+.reader-route {
+  height: 100%;
+}
+
+:root:has(.reader-route, .reader),
+:root:has(.reader-route, .reader) body {
+  background: var(--reader-ground);
+}
+
+.reader {
+  --reader-top-bar: 52px;
+  /* The strip's tiles. 160 px is `cover.rs`'s `THUMB_LONG_EDGE`, a tile's
+   * natural height, which a manual pass asked for; below the breakpoint 96,
+   * so a phone shows about five pages and the two bars cover about 27% of a
+   * 390×844 screen rather than 35% (§8.1) — computed from the mockup, not
+   * measured in the app. Not raised further for a bigger
+   * strip: `THUMB_LONG_EDGE` is folded into the cache path, so raising it
+   * invalidates every cached tile and multiplies the 1.12 MiB per edition
+   * O11 records. The hover preview (`Chrome.tsx`'s `previewMaxHeight`) is
+   * the cheaper answer for the one case that needs more. */
+  --strip-tile: 160px;
+  /* The rail's 6 px padding and a tile's 2 px border, top and bottom
+   * (`Filmstrip.tsx`'s `railStyle` and `tileStyle`). */
+  --strip-height: calc(var(--strip-tile) + 16px);
+  /* Spec 2026-09-17 §8.4's own figure, "a 2 px progress line". */
+  --progress-height: 2px;
+  /* `Chrome.tsx`'s old `readoutHeight` constant, carried over rather than
+   * re-picked when the readout row moved into this bar. */
+  --readout-height: 32px;
+  /* The bottom bar above the safe area: its 1 px rule, the strip, the
+   * progress line and the readout row. */
+  --reader-bottom-bar: calc(
+    1px +
+    var(--strip-height) +
+    var(--progress-height) +
+    var(--readout-height)
+  );
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  /* Where a panel docks (§8.1): below the top bar's line and above the bottom
+   * bar's, whether or not the chrome is shown, so a panel never moves. */
+  --panel-top: calc(var(--safe-top) + var(--reader-top-bar) + var(--space-4));
+  --panel-bottom: calc(
+    var(--safe-bottom) +
+    var(--reader-bottom-bar) +
+    var(--space-4)
+  );
+  color-scheme: dark;
+  background: var(--reader-ground);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+@media (width < 900px) {
+  .reader {
+    --strip-tile: 96px;
+  }
+}
+
+/* Visually hidden, still read out, and still the button's text: the words
+ * behind the top bar's icons (`TopBar.tsx`). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The top bar (spec 2026-09-17 §8.3). Its geometry is `TopBar.tsx`'s. */
+.reader-top-bar {
+  border-bottom: 1px solid var(--reader-hair);
+  background: var(--reader-panel);
+  color: var(--text);
+}
+
+.reader-top-bar svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.reader-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 36px;
+  padding: 0 var(--space-2) 0 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-ui);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.reader-back:hover {
+  color: var(--text);
+}
+
+.reader-title {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.reader-title-work,
+.reader-title-edition {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.reader-title-work {
+  font-family: var(--font-title);
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+
+.reader-title-edition {
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+.reader-layout {
+  display: inline-flex;
+  border: 1px solid var(--reader-hair);
+  border-radius: var(--radius-control);
+}
+
+.reader-layout button,
+.reader-icon-button {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.reader-layout button {
+  min-width: 36px;
+  min-height: 32px;
+  color: var(--muted);
+}
+
+.reader-layout button[aria-pressed="true"] {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.reader-icon-button {
+  min-width: 40px;
+  min-height: 40px;
+  color: var(--text);
+}
+
+.reader :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 44 px for a finger (spec 2026-09-17 §8.3). The bar is 52 px, so they fit. */
+@media (pointer: coarse) {
+  .reader-back,
+  .reader-layout button,
+  .reader-icon-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* The bottom bar (spec 2026-09-17 §8.4). Its geometry is `Chrome.tsx`'s. */
+.reader-bottom-bar {
+  border-top: 1px solid var(--reader-hair);
+  background: var(--reader-panel);
+  color: var(--text);
+}
+
+.reader-progress {
+  background: var(--line);
+}
+
+.reader-progress-fill {
+  background: var(--accent);
+}
+
+.reader-readout {
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+/* The strip's R/L mark on half a spread, drawn over the thumbnail. */
+.reader-half-badge {
+  background: var(--reader-panel);
+  color: var(--text);
+}
+
+.reader-preview-img {
+  background: var(--reader-panel);
+}
+
+.reader-preview-label {
+  padding: 2px var(--space-2);
+  background: var(--reader-panel);
+  color: var(--text);
+  font-size: var(--text-meta);
+}
+
+/* The docked panels — Help, Credits and the notes panel (spec 2026-09-17
+ * §8.5): one class for what was four copies of one inline object. 16 px below
+ * the top bar's line and above the bottom bar's, whether or not the bars are
+ * shown, so a panel never moves; a long one scrolls inside itself, and a
+ * window too short for the bars still gets 8rem. */
+.docked-panel {
+  position: absolute;
+  top: var(--panel-top);
+  right: calc(var(--space-4) + var(--safe-right));
+  z-index: 3;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 384px;
+  max-width: calc(
+    100% -
+    2 *
+    var(--space-4) -
+    var(--safe-left) -
+    var(--safe-right)
+  );
+  max-height: max(8rem, calc(100% - var(--panel-top) - var(--panel-bottom)));
+  overflow-y: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--reader-hair);
+  background: var(--reader-panel);
+  color: var(--text);
+  font-size: var(--text-ui);
+}
+
+/* Settings: a dialog over a scrim, in the panels' look. */
+.reader-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+}
+
+.reader-dialog-panel {
+  box-sizing: border-box;
+  width: min(480px, 90vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: var(--space-5);
+  border: 1px solid var(--reader-hair);
+  background: var(--reader-panel);
+  color: var(--text);
+  font-size: var(--text-ui);
+}
+
+.reader-dialog-panel :where(input, select) {
+  font: inherit;
+  accent-color: var(--accent);
+}
+
+.reader-panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.reader-panel-title {
+  flex: 1;
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: var(--text-h3);
+  font-weight: 600;
+}
+
+.reader-panel-heading {
+  margin: var(--space-2) 0 0;
+  color: var(--muted);
+  font-family: var(--font-title);
+  font-size: var(--text-ui);
+  font-weight: 600;
+}
+
+.reader-section {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--reader-hair);
+}
+
+.reader-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.reader-section-title {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+
+.reader-muted {
+  color: var(--muted);
+}
+
+.reader-meta {
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+.reader-note {
+  margin: var(--space-1) 0 0;
+}
+
+/* A panel's own button — Close, Reset, Export, Delete, a gap's offers — which
+ * until style pass ③ was the browser's own: `base.css`'s element rules reach
+ * only `.library` and `.login`. */
+.reader-button {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.reader-button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.reader-field {
+  box-sizing: border-box;
+  padding: var(--space-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+}
+
+/* A note colour's swatch, the chosen one ringed: the panel, then the text. */
+.reader-swatch[aria-pressed="true"] {
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 4px var(--text);
+}
+
+/* Behind a credit page's thumbnail, the letterbox it is drawn into. */
+.reader-thumb {
+  background: var(--reader-ground);
+}
+
+@media (pointer: coarse) {
+  .reader-button {
+    min-height: 44px;
+  }
+}
+
+/* The note list beside the page or under it (`NoteList.tsx`). */
+.note-list {
+  background: var(--reader-panel);
+  color: var(--text);
+  font-size: var(--text-ui);
+}
+
+.note-list-side {
+  border: 1px solid var(--reader-hair);
+}
+
+.note-list-below {
+  border-top: 1px solid var(--reader-hair);
+}
+
+/* The correction banner, in the top bar's place (`CorrectionBanner.tsx`). */
+.reader-banner {
+  border-bottom: 1px solid var(--reader-hair);
+  background: var(--reader-panel);
+  color: var(--text);
+}
+
+/* A gap's sentence (`Gap.tsx`), on the black. */
+.reader-gap-title {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: var(--text-h3);
+  font-weight: 600;
+}
+
+/* A page borrowed from another edition (`Borrowed.tsx`): the mark in the
+ * warning colour with Ink's ground on it, 9.72:1, and its caption. */
+.borrowed-mark {
+  background: var(--warning);
+  color: var(--bg);
+}
+
+.borrowed-caption {
+  background: var(--reader-panel);
+  color: var(--text);
+}
+
+/* A note's words beside its tab, on the page (`Annotations.tsx`). */
+.reader-popover {
+  border: 1px solid var(--reader-hair);
+  background: var(--reader-panel);
+  color: var(--text);
+}

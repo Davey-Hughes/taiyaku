@@ -156,7 +156,8 @@ export default defineConfig({
       // Read these from `coverage/coverage-summary.json`, not from the text
       // table — the table omits every file at 100% on all four metrics, and
       // showed 18 rows against the JSON's 57 files when these were set. The
-      // report holds 109 files as of 2026-09-12.
+      // report holds 115 files as of 2026-09-19 (counted from the JSON's own
+      // keys, excluding `total`; was 109 on 2026-09-12).
       //
       // **The margins narrow on their own, and `branches` proved it.** Nothing
       // regressed: the 66 files that existed on 2026-08-14 still measured

@@ -6,22 +6,21 @@ import type { Position } from './resolver'
 import { mount, rerender } from './testing/mount'
 
 /**
- * `Chrome` is the strip-plus-readout-row wrapper — `Filmstrip.tsx` (its own
- * test, elsewhere) owns tile layout, `modules/motion.ts`'s `scheduleFade`
- * (pinned in `motion.test.ts`) owns the frame-scheduling arithmetic, and
- * `modules/readouts.ts`'s `readoutRow` (pinned in `readouts.test.ts`) owns
- * the join. What is only pinned here is what `Chrome` itself does: the
- * `visible` unmount gate, wiring the fade schedule through a real
- * `useEffect` across a hide/show cycle on one instance, the hover-preview
- * state it owns (because the preview has to escape the strip's own
- * `overflow: hidden`), and passing the right, gated fields to `readoutRow`.
+ * `Chrome` is the two bars — `TopBar.tsx` (its own test) owns the top bar's
+ * controls, `Filmstrip.tsx` (its own test) owns tile layout,
+ * `modules/motion.ts`'s `scheduleFade` (pinned in `motion.test.ts`) owns the
+ * frame-scheduling arithmetic, and `modules/readouts.ts`'s `readoutRow`
+ * (pinned in `readouts.test.ts`) owns the join. What is only pinned here is
+ * what `Chrome` itself does: the `visible` unmount gate, where each bar docks
+ * and what goes in it, the top bar standing down while correcting, wiring the
+ * fade through a real `useEffect` across a hide/show cycle, the hover-preview
+ * state it owns, and passing the right, gated fields to `readoutRow`.
  */
 
-// jsdom has no layout engine and, relatedly, implements no `scrollIntoView`
-// at all — `Filmstrip.tsx`'s own centring effect calls it unconditionally on
-// mount and on every dependency change, and `Chrome` always mounts a
-// `Filmstrip` as a child. Stubbed here only so that effect does not throw;
-// what it centres on is `Filmstrip`'s own test's concern, not this file's.
+// jsdom has no layout engine and implements no `scrollIntoView` —
+// `Filmstrip.tsx`'s own centring effect calls it on mount. Stubbed only so
+// that effect does not throw; what it centres on is `Filmstrip`'s test's
+// concern.
 Element.prototype.scrollIntoView ??= () => {}
 
 const slots: Position[] = [{ page: 0 }, { page: 1, half: 'L' }, { page: 2 }]
@@ -43,6 +42,13 @@ const baseProps: ChromeProps = {
   chapter: 'c001',
   health: 'sound pair',
   notes: '3 notes',
+  progress: 0.25,
+  title: 'Volume One',
+  editionLine: 'Vol. 1 · Raw',
+  mode: 'single',
+  onMode: vi.fn(),
+  settingsOpen: false,
+  onSettings: vi.fn(),
   reading: 'ltr',
   work: 'work1',
   edition: 'ed1',
@@ -53,90 +59,117 @@ const baseProps: ChromeProps = {
   onLeave: vi.fn(),
 }
 
+const buttonNamed = (host: ParentNode, text: string) =>
+  [...host.querySelectorAll('button')].find((b) => b.textContent === text) as
+    | HTMLButtonElement
+    | undefined
+
+const bottomBar = (host: HTMLElement) =>
+  host.querySelector('.reader-bottom-bar') as HTMLElement
+
 describe('Chrome', () => {
   it('renders nothing while hidden — an unmount, not merely invisible chrome', () => {
     const host = mount(<Chrome {...baseProps} visible={false} />)
     expect(host.children.length).toBe(0)
   })
 
-  it('renders the strip and a status row while visible', () => {
+  it('renders both bars while visible', () => {
     const host = mount(<Chrome {...baseProps} />)
-    // One button per group's tile, plus the control back to the library.
-    expect(host.querySelectorAll('button').length).toBe(groups.length + 1)
+    // One button per group's tile, plus the top bar's five: Library, the
+    // three layouts and Settings.
+    expect(host.querySelectorAll('button').length).toBe(groups.length + 5)
+    expect(host.querySelector('.reader-top-bar')).not.toBeNull()
     expect(host.querySelector('[role="status"]')).not.toBeNull()
   })
 
   it('gives the reader a way back to the library', () => {
     const onLeave = vi.fn()
     const host = mount(<Chrome {...baseProps} onLeave={onLeave} />)
-    const leave = [...host.querySelectorAll('button')].find(
-      (b) => b.textContent === 'Library',
-    )
-    expect(leave).toBeDefined()
-    leave?.click()
+    buttonNamed(host, 'Library')?.click()
     expect(onLeave).toHaveBeenCalledOnce()
   })
 
-  it('docks the way back at a corner none of the reader’s own panels use, and stacks at or above them', () => {
+  /**
+   * Spec 2026-09-17 §8.3, reversing O65's dock above the strip: the way back
+   * is in the top bar now, which is inside this component, so it keeps the
+   * fade and stands down while correcting as O65's button did.
+   * `App.browser.test.tsx` measures that nothing covers it.
+   */
+  it('puts the way back in the top bar, on the reader’s top edge', () => {
     const host = mount(<Chrome {...baseProps} />)
-    const leave = [...host.querySelectorAll('button')].find(
-      (b) => b.textContent === 'Library',
-    ) as HTMLElement
-
-    // jsdom has no layout engine (`App.test.tsx`'s own note on this), so
-    // nothing here can ask whether this button's box actually overlaps
-    // `CreditsPanel`'s, `Help`'s or `NotePanel`'s — all three dock their
-    // shared shell at `top: 16, right: 16, zIndex: 3` (see e.g.
-    // `NotePanel.tsx`'s `panelStyle`). What jsdom answers honestly is the
-    // style actually declared: this button used to carry that exact same
-    // `top: 16, right: 16` with no `zIndex` at all, which is what let an
-    // open panel's explicit `zIndex: 3` cover it outright. The pin is that
-    // `right` is gone — not merely that `left` is present — since `left`
-    // alongside a leftover `right` would still be the same box.
-    expect(leave.style.left).toBe('16px')
-    expect(leave.style.right).toBe('')
-
-    // Belt and suspenders: an explicit `zIndex` at least as high as the
-    // panels' own `zIndex: 3`, so a future change that ever does share their
-    // corner again loses no stacking fight the way the implicit `auto` did.
-    expect(Number(leave.style.zIndex)).toBeGreaterThanOrEqual(3)
+    const bar = host.querySelector('.reader-top-bar') as HTMLElement
+    expect(bar.style.top).toBe('0px')
+    expect(bar.contains(buttonNamed(host, 'Library') as Node)).toBe(true)
   })
 
-  it('docks the way back just above the strip, not on the top edge where App’s layout buttons sit', () => {
-    const host = mount(<Chrome {...baseProps} />)
-    const leave = [...host.querySelectorAll('button')].find(
-      (b) => b.textContent === 'Library',
-    ) as HTMLElement
-
-    // O65: at `top: 16` this button sat over `App.tsx`'s `single` and `two`
-    // mode buttons, which lay out in normal flow at 8,8, so a click meant for
-    // either one left the reader. `App.browser.test.tsx` measures that with a
-    // real layout; jsdom has none, so what this pins is the declared
-    // geometry — no `top` at all, and a `bottom` that clears the strip's own
-    // top edge, read from the strip's style rather than copied from it.
-    expect(leave.style.top).toBe('')
-    const strip = host.querySelector('[role="status"]')
-      ?.previousElementSibling as HTMLElement
-    const stripTop =
-      Number.parseFloat(strip.style.bottom) +
-      Number.parseFloat(strip.style.height)
-    expect(Number.parseFloat(leave.style.bottom)).toBeGreaterThan(stripTop)
+  it('hands the top bar its title, edition line, layout and settings', () => {
+    const onMode = vi.fn()
+    const onSettings = vi.fn()
+    const host = mount(
+      <Chrome
+        {...baseProps}
+        mode="two"
+        settingsOpen
+        onMode={onMode}
+        onSettings={onSettings}
+      />,
+    )
+    expect(host.querySelector('.reader-title')?.textContent).toBe(
+      'Volume OneVol. 1 · Raw',
+    )
+    expect(buttonNamed(host, 'two')?.getAttribute('aria-pressed')).toBe('true')
+    expect(buttonNamed(host, 'Settings')?.getAttribute('aria-expanded')).toBe(
+      'true',
+    )
+    buttonNamed(host, 'scroll')?.click()
+    expect(onMode).toHaveBeenCalledWith('scroll')
+    buttonNamed(host, 'Settings')?.click()
+    expect(onSettings).toHaveBeenCalledOnce()
   })
 
-  it('hides the way back to the library while correcting, when the hover preview stands in its band', () => {
+  it('draws no top bar while correcting, when the banner has the top edge', () => {
     const host = mount(<Chrome {...baseProps} correcting={{ to: 'ed2' }} />)
-    const leave = [...host.querySelectorAll('button')].find(
-      (b) => b.textContent === 'Library',
-    )
-    expect(leave).toBeUndefined()
+    expect(host.querySelector('.reader-top-bar')).toBeNull()
+    expect(buttonNamed(host, 'Library')).toBeUndefined()
+    expect(bottomBar(host)).not.toBeNull()
   })
 
-  it('shows the way back to the library when not correcting', () => {
+  it('docks one bottom bar to the reader’s bottom edge, padded by the safe areas', () => {
     const host = mount(<Chrome {...baseProps} />)
-    const leave = [...host.querySelectorAll('button')].find(
-      (b) => b.textContent === 'Library',
-    )
-    expect(leave).toBeDefined()
+    const bar = bottomBar(host)
+    expect(bar.style.position).toBe('absolute')
+    expect([bar.style.left, bar.style.right, bar.style.bottom]).toEqual([
+      '0px',
+      '0px',
+      '0px',
+    ])
+    expect(Number(bar.style.zIndex)).toBe(3)
+    expect(bar.style.paddingBottom).toBe('var(--safe-bottom)')
+    expect(bar.style.paddingLeft).toBe('var(--safe-left)')
+    expect(bar.style.paddingRight).toBe('var(--safe-right)')
+  })
+
+  it('stacks the strip, the progress line and the readout row inside it, in that order', () => {
+    const host = mount(<Chrome {...baseProps} />)
+    const [strip, progress, readout] = [
+      ...bottomBar(host).children,
+    ] as HTMLElement[]
+    expect(strip.style.height).toBe('var(--strip-height)')
+    expect(strip.querySelectorAll('button')).toHaveLength(groups.length)
+    expect(progress.classList.contains('reader-progress')).toBe(true)
+    expect(progress.getAttribute('aria-hidden')).toBe('true')
+    expect(progress.style.height).toBe('var(--progress-height)')
+    expect(readout.getAttribute('role')).toBe('status')
+    expect(readout.style.height).toBe('var(--readout-height)')
+    expect(readout.classList.contains('reader-readout')).toBe(true)
+  })
+
+  it('fills the progress line to the fraction it is handed', () => {
+    const host = mount(<Chrome {...baseProps} progress={0.25} />)
+    const fill = host.querySelector('.reader-progress-fill') as HTMLElement
+    expect(fill.style.width).toBe('25%')
+    rerender(<Chrome {...baseProps} progress={1} />)
+    expect(fill.style.width).toBe('100%')
   })
 
   it('joins the readout row in position/health/time/chapter/notes order', () => {
@@ -169,14 +202,21 @@ describe('Chrome', () => {
 
   it('reveals the hovered tile’s page as a preview while correcting, labelled with its half', () => {
     const host = mount(<Chrome {...baseProps} correcting={{ to: 'ed2' }} />)
-    const tiles = host.querySelectorAll('button')
+    // Scoped to the bottom bar: the top bar is absent while correcting, so
+    // `host.querySelectorAll('button')` would happen to find only tiles
+    // either way, but this names the reason rather than relying on it.
+    const tiles = bottomBar(host).querySelectorAll('button')
 
     // Tile 0 is slot 0, a plain page with no half.
     act(() => tiles[0]?.focus())
     let img = host.querySelector('img[alt=""]') as HTMLImageElement
     expect(img).not.toBeNull()
     expect(img.getAttribute('src')).toBe('/api/works/work1/ed1/pages/0')
+    expect(img.classList.contains('reader-preview-img')).toBe(true)
     expect(img.nextElementSibling?.textContent).toBe('page 1')
+    expect(
+      img.nextElementSibling?.classList.contains('reader-preview-label'),
+    ).toBe(true)
 
     // Tile 1 is slot 1, one half ('L') of a joined spread.
     act(() => tiles[1]?.focus())
@@ -187,6 +227,21 @@ describe('Chrome', () => {
     // Blurring the tile clears the preview rather than leaving it stuck.
     act(() => tiles[1]?.blur())
     expect(host.querySelector('img[alt=""]')).toBeNull()
+  })
+
+  it('stands the hover preview just above the bottom bar', () => {
+    const host = mount(<Chrome {...baseProps} correcting={{ to: 'ed2' }} />)
+    // Scoped to the bottom bar for the same reason as the test above.
+    act(() => bottomBar(host).querySelectorAll('button')[0]?.focus())
+    const preview = host.querySelector('img[alt=""]')
+      ?.parentElement as HTMLElement
+    expect(preview.style.bottom).toBe(
+      'calc(var(--safe-bottom) + var(--reader-bottom-bar) + 8px)',
+    )
+    // The bars are `zIndex: 3` (`Annotations`' overlay is 2) and the preview
+    // matches them, so note tints, tabs and the side list cannot draw over
+    // the page it shows.
+    expect(preview.style.zIndex).toBe('3')
   })
 
   describe('the fade, driven through a real useEffect across a hide/show cycle', () => {
@@ -220,24 +275,27 @@ describe('Chrome', () => {
       for (const cb of callbacks) cb(0)
     }
 
-    const opacityOf = (host: HTMLElement) =>
-      (host.querySelector('[role="status"]') as HTMLElement).style.opacity
+    /** Both bars' opacity — they fade as one. */
+    const opacities = (host: HTMLElement) => [
+      (host.querySelector('.reader-top-bar') as HTMLElement).style.opacity,
+      bottomBar(host).style.opacity,
+    ]
 
     it('starts fully shown, with no opacity declared, when animation is off', () => {
       const host = mount(<Chrome {...baseProps} />)
-      expect(opacityOf(host)).toBe('')
+      expect(opacities(host)).toEqual(['', ''])
       expect(pending.size).toBe(0)
     })
 
-    it('paints at opacity 0 on first show, then flips to 1 once the scheduled frame lands', () => {
+    it('paints both bars at opacity 0 on first show, then flips them to 1 once the scheduled frame lands', () => {
       const host = mount(
         <Chrome {...baseProps} motion={{ animate: true, ms: 80 }} />,
       )
-      expect(opacityOf(host)).toBe('0')
+      expect(opacities(host)).toEqual(['0', '0'])
       expect(pending.size).toBe(1)
 
       act(() => flush())
-      expect(opacityOf(host)).toBe('1')
+      expect(opacities(host)).toEqual(['1', '1'])
     })
 
     it('resets shown on hide and repeats the same one-frame-late fade on the next show — no flash', () => {
@@ -245,7 +303,7 @@ describe('Chrome', () => {
         <Chrome {...baseProps} motion={{ animate: true, ms: 80 }} />,
       )
       act(() => flush())
-      expect(opacityOf(host)).toBe('1')
+      expect(opacities(host)).toEqual(['1', '1'])
 
       // Hide: the component instance survives (only its return value goes to
       // null), and the effect's own `!visible` branch is what resets `shown`
@@ -263,10 +321,10 @@ describe('Chrome', () => {
       // unreset, this would paint straight at opacity 1 — a flash of chrome
       // already fully visible with nothing having animated it there.
       rerender(<Chrome {...baseProps} motion={{ animate: true, ms: 80 }} />)
-      expect(opacityOf(host)).toBe('0')
+      expect(opacities(host)).toEqual(['0', '0'])
 
       act(() => flush())
-      expect(opacityOf(host)).toBe('1')
+      expect(opacities(host)).toEqual(['1', '1'])
     })
   })
 })

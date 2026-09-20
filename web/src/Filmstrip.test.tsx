@@ -76,13 +76,16 @@ describe('tiles', () => {
     const imgR = btns[2].querySelector('img')
     expect(imgR?.getAttribute('alt')).toBe('page 3 R')
     expect(btns[2].textContent).toBe('R')
+    expect(btns[2].querySelector('.reader-half-badge')?.textContent).toBe('R')
 
     const imgL = btns[3].querySelector('img')
     expect(imgL?.getAttribute('alt')).toBe('page 3 L')
     expect(btns[3].textContent).toBe('L')
+    expect(btns[3].querySelector('.reader-half-badge')?.textContent).toBe('L')
 
     expect(btns[0].textContent).toBe('')
     expect(btns[0].querySelector('img')?.getAttribute('alt')).toBe('page 11')
+    expect(btns[0].querySelector('.reader-half-badge')).toBeNull()
   })
 
   // A pair (`two` mode's non-spread grouping): both slots are separate
@@ -112,11 +115,11 @@ describe('tiles', () => {
 })
 
 describe('current tile', () => {
-  it('marks the current group aria-current with a solid white border', () => {
+  it('marks the current group aria-current with a solid accent border', () => {
     const host = mount(<Filmstrip {...props({ currentIndex: 1 })} />)
     const btns = buttons(host)
     expect(btns[1].getAttribute('aria-current')).toBe('true')
-    expect(btns[1].style.borderColor).toBe('rgb(255, 255, 255)')
+    expect(btns[1].style.borderColor).toBe('var(--accent)')
     expect(btns[1].style.borderStyle).toBe('solid')
   })
 
@@ -155,7 +158,7 @@ describe('correcting: the resolved (dashed) tile', () => {
       />,
     )
     const btns = buttons(host)
-    expect(btns[2].style.borderColor).toBe('rgb(242, 177, 52)')
+    expect(btns[2].style.borderColor).toBe('var(--warning)')
     expect(btns[2].style.borderStyle).toBe('dashed')
     // Resolved is not current: no aria-current on it either.
     expect(btns[2].getAttribute('aria-current')).toBeNull()

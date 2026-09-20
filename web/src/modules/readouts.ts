@@ -489,22 +489,33 @@ export interface ReadoutClock {
   now: number
 }
 
-/** All five readout lines, as `Chrome` takes them. */
+/** All six fields `Chrome` takes — five readout lines and, since style pass
+ * ③, the progress fraction the bottom bar's line is filled to. */
 export interface ReadoutLines {
   position: string
   chapter: string
   health: string | undefined
   time: string
   notes: string | undefined
+  /**
+   * How far through the edition, 0 to 1 — not a line of text, but the bottom
+   * bar's progress line (spec 2026-09-17 §8.4), computed here from the same
+   * `(slot + 1) / total` the position line turns into its percentage.
+   * Clamped at 1 for a slot count that has gone backwards, the case `time`'s
+   * `Math.max` guards — and this is exactly where the two *can* disagree:
+   * `positionLine` has no such clamp, so in that state it prints a percentage
+   * past 100% while this holds at 1.
+   */
+  progress: number
 }
 
 /**
- * The five lines, from one `Display`.
+ * The six fields, from one `Display`.
  *
- * `Chrome` takes strings and lays them out; **every branch behind them is
- * here** rather than in a render body where nothing can reach it. Seven of the
- * calls are one-liners into the functions above, and the value of the function
- * is the three things that are not:
+ * `Chrome` takes strings (and one fraction) and lays them out; **every branch
+ * behind them is here** rather than in a render body where nothing can reach
+ * it. Seven of the calls are one-liners into the functions above, and the
+ * value of the function is the four things that are not:
  *
  * - `?? slot + 1` for an edition the resolver cannot count, so a line still
  *   renders rather than `NaN%`.
@@ -513,6 +524,10 @@ export interface ReadoutLines {
  * - `gapHealth` rather than `healthReadout` in a gap, so the view and the row
  *   beneath it cannot contradict each other — see `gapHealth`'s own doc for the
  *   silence that produces without it.
+ * - `Math.min((from.slot + 1) / total, 1)` for `progress`, clamping the same
+ *   slot count the same way — but unlike `time`'s clamp, this one has no
+ *   matching clamp on `position`'s percentage, so the two fields can disagree
+ *   in exactly that state (see `progress`'s own doc on `ReadoutLines`).
  *
  * The note count is deliberately against *every* note on the work rather than
  * the ones a display preference currently admits: "2 notes here of 7" is a fact
@@ -552,5 +567,6 @@ export function readoutLines(
       slotsLeft: Math.max(total - (from.slot + 1), 0),
     }),
     notes: noteCountLine(notes.here, notes.total),
+    progress: Math.min((from.slot + 1) / total, 1),
   }
 }

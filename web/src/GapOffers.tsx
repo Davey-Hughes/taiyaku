@@ -30,7 +30,7 @@ export function GapOffers({
 }: GapOffersProps) {
   if (before === undefined && after === undefined) {
     return (
-      <p style={{ margin: 0, opacity: 0.8 }}>
+      <p className="reader-muted" style={{ margin: 0 }}>
         No paired page nearby in {edition} either.
       </p>
     )
@@ -44,12 +44,20 @@ export function GapOffers({
       }}
     >
       {before && (
-        <button type="button" onClick={() => onTake(before.slot)}>
+        <button
+          type="button"
+          className="reader-button"
+          onClick={() => onTake(before.slot)}
+        >
           {reading === 'rtl' ? '→' : '←'} {edition} page {before.page}
         </button>
       )}
       {after && (
-        <button type="button" onClick={() => onTake(after.slot)}>
+        <button
+          type="button"
+          className="reader-button"
+          onClick={() => onTake(after.slot)}
+        >
           {edition} page {after.page} {reading === 'rtl' ? '←' : '→'}
         </button>
       )}

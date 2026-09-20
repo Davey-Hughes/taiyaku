@@ -259,6 +259,25 @@ describe('NotePanel, editing', () => {
     // second.
     expect(host.querySelectorAll('p')).toHaveLength(1)
   })
+
+  it('docks as a panel between the bars, its look in the stylesheet', () => {
+    const host = mount(<NotePanel {...baseProps()} />)
+    const panel = host.querySelector('[role="dialog"]') as HTMLElement
+    expect(panel.className).toBe('docked-panel')
+    expect(panel.getAttribute('style')).toBeNull()
+  })
+
+  it('rings the chosen swatch from the stylesheet, by aria-pressed', () => {
+    const host = mount(
+      <NotePanel {...baseProps({ draft: note({ color: 'rose' }) })} />,
+    )
+    for (const swatch of host.querySelectorAll<HTMLButtonElement>(
+      '[role="group"] button',
+    )) {
+      expect(swatch.classList.contains('reader-swatch')).toBe(true)
+      expect(swatch.style.boxShadow).toBe('')
+    }
+  })
 })
 
 describe('NotePanel, reviewing', () => {

@@ -50,20 +50,33 @@ export interface BorrowedProps {
  * They are one control seen from two sides — press to see what is missing,
  * press to go back — so a reader should not have to work out that a differently
  * styled button in a different place is the same affordance. Sharing the object
- * is also what stops one of them being restyled alone.
+ * is also what stops one of them being restyled alone. Its colours are
+ * `.borrowed-mark`'s, in `styles/reader.css`: `--warning` with Ink's ground on
+ * it (spec 2026-09-17 §8.5).
+ *
+ * **Docked below the top bar's line, whether or not the chrome is shown** —
+ * the same rule spec §8.1 gives the docked panels: always below the top
+ * bar's line, and above the bottom bar's, whether or not the chrome is shown.
+ * `top: 0` used to sit the mark directly under the reader's top edge, which
+ * the top bar now draws over: measured in Chromium at 390×844 with the chrome
+ * shown, the mark occupied 0–26 px, the bar 0–52 px, and `elementFromPoint` at
+ * the mark's centre returned the bar, not the mark. The mark is the pointer's
+ * *only* way into the offers, and back out (see this file's own doc), so a
+ * bar covering it made both unreachable while the bars were up. `left:
+ * 'var(--safe-left)'` for the same reason `top` moves: `0` sits under a
+ * phone's notch in landscape now that `index.html` carries
+ * `viewport-fit=cover`.
  */
 const MARK_STYLE = {
   position: 'absolute',
-  top: 0,
-  left: 0,
+  top: 'calc(var(--safe-top) + var(--reader-top-bar))',
+  left: 'var(--safe-left)',
   zIndex: 1,
   border: 'none',
   padding: '4px 10px',
   font: 'inherit',
-  fontSize: '0.85em',
+  fontSize: 'var(--text-meta)',
   cursor: 'pointer',
-  background: 'rgba(180, 140, 60, 0.9)',
-  color: '#1a1a1a',
 } as const
 
 /**
@@ -147,6 +160,7 @@ export function Borrowed({
       <div style={{ position: 'relative', height: '100%' }}>
         <button
           type="button"
+          className="borrowed-mark"
           onClick={() => setShowingOffers(false)}
           style={MARK_STYLE}
         >
@@ -162,11 +176,12 @@ export function Borrowed({
         height: '100%',
         // The tinted leading edge. Inset rather than a border on the page
         // itself, so it cannot alter the geometry `fit` computes.
-        boxShadow: 'inset 4px 0 0 0 rgba(180, 140, 60, 0.9)',
+        boxShadow: 'inset 4px 0 0 0 var(--warning)',
       }}
     >
       <button
         type="button"
+        className="borrowed-mark"
         onClick={() => setShowingOffers(true)}
         style={MARK_STYLE}
       >
@@ -195,33 +210,36 @@ export function Borrowed({
           covers only the one corner every borrowed page already spends on the
           mark, leaving the rest of the artwork alone at any viewport height.
 
-          `top: 32` clears MARK_STYLE's own rendered height rather than
+          The `+ 32px` clears MARK_STYLE's own rendered height rather than
           reserving space for it through layout: that button is
           `position: absolute` (so the two marks in this file share one
           object, per MARK_STYLE's own doc) and an absolutely positioned
           sibling never contributes to another element's flow, so nothing
           here can push this block down automatically. 32 is MARK_STYLE's
-          text (0.85em over the 1.5 line-height it inherits from `index.css`'s
+          text (`--text-meta`, 0.75rem, over the 1.5 line-height it inherits from `index.css`'s
           root) plus its 4px top and bottom padding, rounded up a few px for a
           visible gap — a duplicated number, not a shared one, so a change to
-          MARK_STYLE's size needs a matching change here. No explicit `width`
+          MARK_STYLE's size needs a matching change here. The rest of the
+          expression — `calc(var(--safe-top) + var(--reader-top-bar) + …)` —
+          is MARK_STYLE's own `top`, repeated so the caption clears the same
+          bar the mark does rather than assuming the mark sits at the
+          reader's top edge. No explicit `width`
           for the same reason: unset, an absolutely positioned block shrinks
           to its content instead of stretching to fill its containing block,
           which is what keeps this corner small instead of redrawing the bar
           it replaced one row higher. */}
       <div
+        className="borrowed-caption"
         style={{
           position: 'absolute',
-          top: 32,
-          left: 0,
+          top: 'calc(var(--safe-top) + var(--reader-top-bar) + 32px)',
+          left: 'var(--safe-left)',
           zIndex: 1,
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'flex-start',
           gap: 8,
           padding: '6px 10px',
-          background: 'rgba(0, 0, 0, 0.65)',
-          color: '#f2f2f2',
         }}
       >
         <p style={{ margin: 0 }}>No {viewing} page here.</p>

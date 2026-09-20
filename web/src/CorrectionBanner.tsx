@@ -41,22 +41,24 @@ export function CorrectionBanner({
   onCancel,
 }: CorrectionBannerProps) {
   return (
+    // In the top bar's place (spec 2026-09-17 §8.3): `Chrome` draws no top
+    // bar while correcting, so this runs the reader's full width from its top
+    // edge, padded by the safe areas, and stands at the bars' `zIndex: 3`.
     <div
       role="status"
+      className="reader-banner"
       style={{
         position: 'absolute',
-        top: 16,
-        left: 16,
-        right: 16,
-        zIndex: 1,
+        top: 0,
+        left: 0,
+        right: 0,
+        zIndex: 3,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         gap: 8,
-        padding: '10px 16px',
-        borderRadius: 8,
-        background: 'rgba(24, 24, 24, 0.92)',
-        color: 'rgba(255, 255, 255, 0.92)',
+        padding:
+          'calc(var(--safe-top) + 10px) calc(16px + var(--safe-right)) 10px calc(16px + var(--safe-left))',
         textAlign: 'center',
       }}
     >
@@ -88,16 +90,26 @@ export function CorrectionBanner({
               ? `${pending.from} ${describePosition(displaced)} will lose its ${pending.to} counterpart.`
               : `Nothing loses its counterpart — ${pending.to} ${describePosition(pending.b)} pairs with nothing today.`}
           </p>
-          {notice && <p style={{ margin: 0, opacity: 0.85 }}>{notice}</p>}
+          {notice && <p style={{ margin: 0 }}>{notice}</p>}
           {/* Both disabled while the write is on the wire — see
               `submitting`'s doc in `App.tsx`. Cancel especially: it is the
               control that most looks like it undoes the write, and it is the
               one that cannot. */}
           <div style={{ display: 'flex', gap: 8 }}>
-            <button type="button" disabled={submitting} onClick={onConfirm}>
+            <button
+              type="button"
+              className="reader-button"
+              disabled={submitting}
+              onClick={onConfirm}
+            >
               {submitting ? 'Writing…' : 'Confirm'}
             </button>
-            <button type="button" disabled={submitting} onClick={onCancel}>
+            <button
+              type="button"
+              className="reader-button"
+              disabled={submitting}
+              onClick={onCancel}
+            >
               Cancel
             </button>
           </div>

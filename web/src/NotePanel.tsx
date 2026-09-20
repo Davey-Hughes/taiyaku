@@ -9,24 +9,8 @@ import {
 } from './notes'
 import { COLOUR_NAMES, DEFAULT_COLOUR, noteColour } from './palette'
 
-const panelStyle: CSSProperties = {
-  position: 'absolute',
-  top: 16,
-  right: 16,
-  width: 360,
-  maxWidth: 'calc(100% - 32px)',
-  maxHeight: '70vh',
-  overflowY: 'auto',
-  zIndex: 3,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-  padding: 12,
-  borderRadius: 8,
-  background: 'rgba(24, 24, 24, 0.94)',
-  color: 'rgba(255, 255, 255, 0.92)',
-  boxShadow: '0 10px 30px rgba(0, 0, 0, 0.45)',
-}
+// The panel is `.docked-panel` in `styles/reader.css`, shared with `Help` and
+// `CreditsPanel` (spec 2026-09-17 §8.5).
 
 const rowStyle: CSSProperties = {
   display: 'flex',
@@ -34,7 +18,7 @@ const rowStyle: CSSProperties = {
   gap: 2,
   padding: '6px 0',
   border: 'none',
-  borderTop: '1px solid rgba(255, 255, 255, 0.12)',
+  borderTop: '1px solid var(--reader-hair)',
   background: 'none',
   color: 'inherit',
   font: 'inherit',
@@ -166,7 +150,7 @@ export function NotePanel({
 
   return (
     <div
-      style={panelStyle}
+      className="docked-panel"
       role="dialog"
       aria-label={mode === 'edit' ? 'Note' : 'All notes'}
     >
@@ -175,7 +159,7 @@ export function NotePanel({
           {/* Where the note is anchored, stated before it is written: a note
               is anchored to a slot of one edition, and a reader who swapped a
               moment ago should not have to remember which. */}
-          <p style={{ margin: 0, opacity: 0.8, fontSize: '0.85em' }}>
+          <p className="reader-meta" style={{ margin: 0 }}>
             {draft.edition} slot {draft.slot} ·{' '}
             {draft.region ? 'region' : 'whole page'}
           </p>
@@ -186,6 +170,7 @@ export function NotePanel({
             rows={5}
             aria-label="Note body"
             placeholder="Drag on the page to mark a region."
+            className="reader-field"
             style={{ width: '100%', resize: 'vertical', font: 'inherit' }}
           />
           {/*
@@ -206,6 +191,7 @@ export function NotePanel({
                 <button
                   key={name}
                   type="button"
+                  className="reader-swatch"
                   disabled={busy}
                   onClick={() => onColour(name)}
                   aria-label={name}
@@ -218,16 +204,13 @@ export function NotePanel({
                     borderRadius: '50%',
                     border: 'none',
                     background: noteColour(name).tab,
-                    boxShadow: chosen
-                      ? '0 0 0 2px rgba(24, 24, 24, 0.94), 0 0 0 4px rgba(255, 255, 255, 0.9)'
-                      : 'none',
                     cursor: 'pointer',
                   }}
                 />
               )
             })}
           </div>
-          {notice && <p style={{ margin: 0, opacity: 0.85 }}>{notice}</p>}
+          {notice && <p style={{ margin: 0 }}>{notice}</p>}
           {/* Every exit disabled while the write is on the wire, the same rule
               the correction banner follows: Delete especially, since it is the
               control that most looks like it undoes the save it is racing. */}
@@ -247,14 +230,13 @@ export function NotePanel({
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <button
               type="button"
+              className="reader-button"
               disabled={busy}
               onClick={() => onDelete(draft.id)}
             >
               Delete
             </button>
-            <span
-              style={{ marginLeft: 'auto', opacity: 0.65, fontSize: '0.8em' }}
-            >
+            <span className="reader-meta" style={{ marginLeft: 'auto' }}>
               {busy ? 'saving…' : 'saved · esc or click away when done'}
             </span>
           </div>
@@ -269,7 +251,7 @@ export function NotePanel({
               alignItems: 'center',
             }}
           >
-            <strong>
+            <strong className="reader-panel-title">
               {entries.length} note{entries.length === 1 ? '' : 's'}
             </strong>
             <span style={{ display: 'flex', gap: 8 }}>
@@ -278,6 +260,7 @@ export function NotePanel({
                   has happened to their notes. */}
               <button
                 type="button"
+                className="reader-button"
                 disabled={!canUndo || busy}
                 onClick={onUndo}
                 title="Undo (z)"
@@ -286,6 +269,7 @@ export function NotePanel({
               </button>
               <button
                 type="button"
+                className="reader-button"
                 disabled={!canRedo || busy}
                 onClick={onRedo}
                 title="Redo (Z)"
@@ -294,19 +278,20 @@ export function NotePanel({
               </button>
               <button
                 type="button"
+                className="reader-button"
                 disabled={entries.length === 0}
                 onClick={download}
               >
                 Export
               </button>
-              <button type="button" onClick={onClose}>
+              <button type="button" className="reader-button" onClick={onClose}>
                 Close
               </button>
             </span>
           </div>
-          {notice && <p style={{ margin: 0, opacity: 0.85 }}>{notice}</p>}
+          {notice && <p style={{ margin: 0 }}>{notice}</p>}
           {entries.length === 0 && (
-            <p style={{ margin: 0, opacity: 0.8 }}>
+            <p className="reader-muted" style={{ margin: 0 }}>
               Nothing written yet. <em>n</em> starts a note on the page you are
               reading.
             </p>
@@ -319,7 +304,7 @@ export function NotePanel({
               onClick={() => onGo(entry)}
               disabled={entry.here === undefined}
             >
-              <span style={{ opacity: 0.75, fontSize: '0.85em' }}>
+              <span className="reader-meta">
                 {/* The same colour the page draws it in, so a note found here
                     is recognisable there without reading a word. */}
                 <span
